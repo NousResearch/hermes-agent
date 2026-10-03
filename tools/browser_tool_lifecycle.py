@@ -169,7 +169,7 @@ def _cleanup_inactive_browser_sessions():
         _bt.logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
         try:
             with _session_owner_scope(task_id):
-                cleanup_browser(task_id)
+                cleanup_browser(task_id, include_sidecar=False)
             _forget_session_tracking(task_id)
         except Exception as e:
             with _bt._cleanup_lock:
@@ -577,29 +577,33 @@ def _cleanup_old_recordings(max_age_hours=72):
         _unlink_older_than(recordings_dir, "session_*.webm", max_age_hours, "recording")
 
 
-def _drop_last_active_binding(task_id: str) -> None:
-    """Drop stale last-active ownership after cleaning ``task_id``: a bare task always, a
-    sidecar only if it was still the recorded owner (a later click must not resurrect a
-    cleaned sidecar while a primary-session binding is preserved)."""
+def _drop_last_active_binding(task_id: str, *, owner_only: bool = False) -> None:
+    """Drop stale last-active ownership after cleaning ``task_id``: a bare task always (unless
+    ``owner_only``), otherwise only if it was still the recorded owner (a later click must not
+    resurrect a cleaned session, nor lose a binding to a session that is still alive)."""
     bare_task_id = _bt._bare_task_id_for_session_key(task_id)
-    if bare_task_id == task_id or _bt._last_active_session_key.get(bare_task_id) == task_id:
+    if (bare_task_id == task_id and not owner_only) or _bt._last_active_session_key.get(bare_task_id) == task_id:
         _bt._last_active_session_key.pop(bare_task_id, None)
 
 
-def cleanup_browser(task_id: Optional[str] = None) -> None:
+def cleanup_browser(task_id: Optional[str] = None, *, include_sidecar: bool = True) -> None:
     """Clean up browser session(s) for a task: a bare task id reaps BOTH the primary
-    session and any hybrid local sidecar; a ``::local`` key reaps only that one."""
+    session and any hybrid local sidecar; a ``::local`` key reaps only that one.
+
+    The idle janitor passes ``include_sidecar=False``: the primary and its sidecar keep
+    separate activity clocks, so an idle cloud primary says nothing about a sidecar the
+    agent is still driving."""
     if task_id is None:
         task_id = "default"
 
     session_keys = [task_id]
     sidecar_key = f"{task_id}{_bt._LOCAL_SUFFIX}"
     with _bt._cleanup_lock:
-        if not _bt._is_local_sidecar_key(task_id) and sidecar_key in _bt._active_sessions:
+        if include_sidecar and not _bt._is_local_sidecar_key(task_id) and sidecar_key in _bt._active_sessions:
             session_keys.append(sidecar_key)
     for session_key in session_keys:
         _cleanup_single_browser_session(session_key)
-    _drop_last_active_binding(task_id)
+    _drop_last_active_binding(task_id, owner_only=not include_sidecar)
 
 
 def _kill_verified_daemon(socket_dir: str, session_name: str) -> bool:
@@ -662,7 +666,7 @@ def _force_reap_browser_session(task_id: str) -> None:
         _bt._recording_sessions.discard(task_id)
     if session_info:
         _release_session_resources(task_id, session_info)
-    _drop_last_active_binding(task_id)
+    _drop_last_active_binding(task_id, owner_only=True)
 
 
 def _cleanup_single_browser_session(task_id: str) -> None:

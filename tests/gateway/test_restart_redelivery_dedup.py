@@ -136,6 +136,67 @@ async def test_different_platform_bypasses_dedup(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("platform", ["discord", "slack"])
+async def test_nontelegram_restart_replay_is_deduplicated_by_message_id(tmp_path, monkeypatch, platform):
+    """Discord and Slack retries carry a stable message id instead of a Telegram update id."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    source = SessionSource(
+        platform=Platform(platform), chat_id=f"{platform}-channel", chat_type="dm", user_id="u1"
+    )
+
+    first_runner, _adapter = make_restart_runner()
+    first_runner.request_restart = MagicMock(return_value=True)
+    first = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=source, message_id="first")
+    await first_runner._handle_restart_command(first)
+    first_runner.request_restart.assert_called_once()
+
+    replay_runner, _adapter = make_restart_runner()
+    replay_runner.request_restart = MagicMock(return_value=True)
+    await replay_runner._handle_restart_command(first)
+    replay_runner.request_restart.assert_not_called()
+
+    next_runner, _adapter = make_restart_runner()
+    next_runner.request_restart = MagicMock(return_value=True)
+    next_event = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=source, message_id="next")
+    await next_runner._handle_restart_command(next_event)
+    next_runner.request_restart.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_telegram_same_message_id_in_another_chat_with_newer_update_restarts(tmp_path, monkeypatch):
+    """Telegram IDs are per-chat, so only its ordered update ID identifies a replay."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    marker = tmp_path / ".restart_last_processed.json"
+    marker.write_text(json.dumps({
+        "platform": "telegram",
+        "message_id": "42",
+        "update_id": 100,
+        "requested_at": time.time(),
+    }))
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="other-chat", chat_type="group", user_id="u1"
+    )
+    event = MessageEvent(
+        text="/restart", message_type=MessageType.TEXT, source=source,
+        message_id="42", platform_update_id=101,
+    )
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    await runner._handle_restart_command(event)
+
+    runner.request_restart.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_marker_missing_but_booted_from_restart_ignores_redelivery(tmp_path, monkeypatch):
     """Missing marker + just booted from a /restart + young process → treat as stale.
 
@@ -159,5 +220,4 @@ async def test_marker_missing_but_booted_from_restart_ignores_redelivery(tmp_pat
     runner.request_restart.assert_not_called()
     # One-shot: the flag is consumed so a later legitimate /restart is honored.
     assert runner._booted_from_restart is False
-
 

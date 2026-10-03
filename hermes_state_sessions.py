@@ -44,7 +44,7 @@ _MODEL_CONFIG_ROW_MISSING = object()
 
 # ``lineage(id)``: the compression lineage of the session bound twice as ``(?, ?)`` —
 # ancestors through compression-ended parents plus compression continuations after it.
-_LINEAGE_CTE_SQL = """
+_LINEAGE_CTE_SQL = f"""
             WITH RECURSIVE
               ancestors(id) AS (
                 SELECT ?
@@ -54,6 +54,7 @@ _LINEAGE_CTE_SQL = """
                 JOIN sessions child ON child.id = a.id
                 JOIN sessions parent ON parent.id = child.parent_session_id
                 WHERE parent.end_reason = 'compression'
+                  {_non_continuation_child_sql('child.', 'parent.id')}
               ),
               descendants(id) AS (
                 SELECT ?
@@ -63,6 +64,7 @@ _LINEAGE_CTE_SQL = """
                 JOIN sessions parent ON parent.id = d.id
                 JOIN sessions child ON child.parent_session_id = parent.id
                 WHERE parent.end_reason = 'compression'
+                  {_non_continuation_child_sql('child.', 'parent.id')}
               ),
               lineage(id) AS (
                 SELECT id FROM ancestors

@@ -80,6 +80,10 @@ def _add_context_variants(model_ids: List[str]) -> List[str]:
     """
     from agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, has_codex_context_variant
 
+    from agent.model_metadata import codex_context_policy
+    if codex_context_policy() == "large":
+        return list(model_ids)
+
     out: List[str] = []
     present = set(model_ids)
     for model_id in model_ids:

@@ -230,6 +230,9 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     from agent.model_metadata import estimate_messages_tokens_rough
 
     agent = st.agent
+    # A byte-size rejection must shed tool images before spending compaction budget.
+    if agent._try_strip_image_parts_from_tool_messages(st.api_messages, remember_model=False):
+        return st.done("continue")
     exhausted = st.count_attempt(payload_too_large=True)
     if exhausted is not None:
         return exhausted

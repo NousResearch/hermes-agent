@@ -49,16 +49,6 @@ _UNSUPPORTED = LocalPidNamespace(None, False)
 _LOCAL_PID_NS: Optional[LocalPidNamespace] = None
 
 
-def _parse_pid_namespace_link(link: str) -> Optional[str]:
-    """``"pid:[4026532534]"`` -> ``"4026532534"``; None when unparseable.
-
-    Split out from the resolver so the parsing can be tested as the pure
-    string -> string mapping it is, on any host.
-    """
-    match = re.search(r"\[(\d+)\]", link or "")
-    return match.group(1) if match else None
-
-
 def _resolve_local_pid_namespace() -> LocalPidNamespace:
     if sys.platform != "linux":
         return _UNSUPPORTED
@@ -66,7 +56,8 @@ def _resolve_local_pid_namespace() -> LocalPidNamespace:
         link = os.readlink("/proc/self/ns/pid")
     except OSError:
         return LocalPidNamespace(None, True)
-    return LocalPidNamespace(_parse_pid_namespace_link(link), True)
+    match = re.search(r"\[(\d+)\]", link)  # "pid:[4026532534]"
+    return LocalPidNamespace(match.group(1) if match else None, True)
 
 
 def _local_pid_namespace() -> LocalPidNamespace:

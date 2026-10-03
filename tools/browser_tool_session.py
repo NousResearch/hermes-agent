@@ -6,15 +6,18 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 
 import base64
 import json
+import functools
 import logging
 import os
 import shutil
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_constants import get_hermes_home
 from tools.browser_tool_origin import origin as _bt
 from tools import browser_tool_cdp as _cdp
 from tools import browser_tool_cloud as _cloud
@@ -153,7 +156,11 @@ def _prepare_session_socket_dir(session_name: str) -> str:
     return socket_dir
 
 
-def _agent_browser_command_env(socket_dir: str) -> Dict[str, str]:
+def _agent_browser_command_env(
+    socket_dir: str,
+    *,
+    shared_cdp: bool = False,
+) -> Dict[str, str]:
     """Credential-scrubbed env for one command: PATH fallbacks, the session socket dir, and
     daemon-side idle self-termination (agent-browser 0.24+) mirroring the Python janitor
     unless the user set ``AGENT_BROWSER_IDLE_TIMEOUT_MS`` explicitly."""
@@ -168,7 +175,11 @@ def _agent_browser_command_env(socket_dir: str) -> Dict[str, str]:
     if executable:
         env["AGENT_BROWSER_EXECUTABLE_PATH"] = executable
     env["AGENT_BROWSER_SOCKET_DIR"] = socket_dir
-    if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in env:
+    if shared_cdp:
+        # The tab binding belongs to the whole turn, including time spent
+        # waiting on the page; agent-browser documents 0 as disabled.
+        env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = "0"
+    elif "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in env:
         env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = str(_daemon_idle_timeout_seconds() * 1000)
     return env
 
@@ -305,15 +316,18 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
 def _create_cloud_session_or_fallback(task_id: str, provider) -> Dict[str, Any]:
     """Cloud session; fall back to local Chromium (marked degraded) on failure. ``cdp_url``
     is resolved here because some providers return an HTTP discovery URL, not a websocket."""
+    provider_candidate: Any = None
     try:
-        session_info = provider.create_session(task_id)
-        if not session_info or not isinstance(session_info, dict):
-            raise ValueError(f"Cloud provider returned invalid session: {session_info!r}")
+        provider_candidate = provider.create_session(task_id)
+        if not provider_candidate or not isinstance(provider_candidate, dict):
+            raise ValueError(f"Cloud provider returned invalid session: {provider_candidate!r}")
+        session_info = dict(provider_candidate)
+        session_info["_provider_cleanup_owner"] = provider
         if session_info.get("cdp_url"):
-            session_info = dict(session_info)
             session_info["cdp_url"] = _cdp._resolve_cdp_override(str(session_info["cdp_url"]))
         return session_info
     except Exception as e:
+        _lifecycle._dispose_unpublished_session(task_id, provider_candidate, provider)
         provider_name = type(provider).__name__
         _bt.logger.warning("Cloud provider %s failed (%s); attempting fallback to local Chromium for task %s",
                            provider_name, e, task_id, exc_info=True)
@@ -342,60 +356,139 @@ def _create_session_for_key(task_id: str, force_local: bool) -> Dict[str, Any]:
     return _create_cloud_session_or_fallback(task_id, provider)
 
 
-def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
-    """Get or create session info for a session key (thread-safe); also starts the
-    inactivity thread and touches activity. A ``::local`` key forces local Chromium
-    even with a cloud provider configured."""
+def _abandon_session_creation(bare_task_id: str, generation: int) -> None:
+    """Return a failed current creator's STARTING state to ACTIVE."""
+    with _bt._cleanup_lock:
+        if (
+            _lifecycle._task_generation_locked(bare_task_id) == generation
+            and _lifecycle._task_state_locked(bare_task_id)
+            is _lifecycle.BrowserTaskState.STARTING
+            and not _lifecycle._task_has_active_sessions_locked(bare_task_id)
+        ):
+            _lifecycle._set_task_state_locked(
+                bare_task_id, _lifecycle.BrowserTaskState.ACTIVE
+            )
+
+
+def _get_session_info(
+    task_id: Optional[str] = None,
+    *,
+    _for_cleanup: bool = False,
+) -> Dict[str, Any]:
+    """Get/create one session key with generation-fenced publication."""
     if task_id is None:
         task_id = "default"
+    bare_task_id = _bt._bare_task_id_for_session_key(task_id)
 
     _lifecycle._start_browser_cleanup_thread()
-    _lifecycle._update_session_activity(task_id)
-
     with _bt._cleanup_lock:
+        state = _lifecycle._task_state_locked(bare_task_id)
         existing_session = _bt._active_sessions.get(task_id)
-
-    def _replacement_after_teardown() -> Optional[Dict[str, Any]]:
-        # Teardown removes the activity entry; re-touch so the reaper tracks the
-        # replacement. Another thread may already have re-created it — reuse that.
-        _lifecycle._update_session_activity(task_id)
-        with _bt._cleanup_lock:
-            replacement = _bt._active_sessions.get(task_id)
-        return replacement if replacement is not None and replacement is not existing_session else None
+        cleanup_lookup = (
+            _for_cleanup
+            and state is _lifecycle.BrowserTaskState.RETIRING
+            and existing_session is not None
+        )
+        if (
+            state
+            in {
+                _lifecycle.BrowserTaskState.RETIRING,
+                _lifecycle.BrowserTaskState.RETIRED,
+            }
+            and not cleanup_lookup
+        ):
+            raise _lifecycle._BrowserSessionRetiredError(task_id)
+        if not _for_cleanup:
+            _bt._session_last_activity[task_id] = time.time()
+            _bt._session_owner_homes.setdefault(task_id, str(get_hermes_home()))
 
     if existing_session is not None:
-        # Suspect recycle: a command timeout marked this session; the expensive recycle
-        # lives here at next use, not on the timeout path (mark must stay cheap).
         if not _bt._browser_session_backend(task_id).ensure_healthy():
-            replacement = _replacement_after_teardown()
-            if replacement is not None:
+            _lifecycle._update_session_activity(task_id)
+            with _bt._cleanup_lock:
+                replacement = _bt._active_sessions.get(task_id)
+            if replacement is not None and replacement is not existing_session:
                 return replacement
             existing_session = None
-        elif not _lifecycle._session_has_expired(existing_session) and not _local_backend_process_dead(existing_session):
+        elif _for_cleanup or (
+            not _lifecycle._session_has_expired(existing_session)
+            and not _local_backend_process_dead(existing_session)
+        ):
             return existing_session
         else:
             _bt.logger.info("Replacing expired or dead browser session for task %s", task_id)
-            _lifecycle._cleanup_single_browser_session(task_id)
-            replacement = _replacement_after_teardown()
-            if replacement is not None:
-                return replacement
+            if not _lifecycle._cleanup_browser_session_keys(
+                task_id,
+                [task_id],
+                reason=_lifecycle.BrowserCleanupReason.PROVIDER_EXPIRY,
+            ):
+                raise _lifecycle._BrowserSessionRetiredError(task_id)
+            return _get_session_info(task_id)
 
-    force_local = _bt._is_local_sidecar_key(task_id)
-    session_info = _create_session_for_key(task_id, force_local)
+    if _for_cleanup:
+        raise _lifecycle._BrowserSessionRetiredError(task_id)
 
     with _bt._cleanup_lock:
-        if task_id in _bt._active_sessions:  # created concurrently during the network call — don't leak ours
-            return _bt._active_sessions[task_id]
-        session_info = dict(session_info)
-        session_info.setdefault("session_key", task_id)
-        session_info.setdefault("owner_task_id", _bt._bare_task_id_for_session_key(task_id))
-        _bt._active_sessions[task_id] = session_info
-        _bt._suspect_browser_sessions.pop(task_id, None)  # brand-new session is healthy by definition
+        state = _lifecycle._task_state_locked(bare_task_id)
+        if state in {
+            _lifecycle.BrowserTaskState.RETIRING,
+            _lifecycle.BrowserTaskState.RETIRED,
+        }:
+            raise _lifecycle._BrowserSessionRetiredError(task_id)
+        winner = _bt._active_sessions.get(task_id)
+        if winner is not None:
+            return winner
+        creation_generation = _lifecycle._task_generation_locked(bare_task_id)
+        if not _lifecycle._task_has_active_sessions_locked(bare_task_id):
+            _lifecycle._set_task_state_locked(
+                bare_task_id, _lifecycle.BrowserTaskState.STARTING
+            )
 
-    # Lazy-start the CDP supervisor (idempotent). Skip local sidecars (no CDP URL) and
-    # Lightpanda sessions (Browser Use mode hides the tools that consume supervisor state).
+    force_local = _bt._is_local_sidecar_key(task_id)
+    try:
+        session_info = _create_session_for_key(task_id, force_local)
+    except BaseException:
+        _abandon_session_creation(bare_task_id, creation_generation)
+        raise
+
+    with _bt._cleanup_lock:
+        current_state = _lifecycle._task_state_locked(bare_task_id)
+        stale_creator = (
+            _lifecycle._task_generation_locked(bare_task_id) != creation_generation
+            or current_state
+            in {
+                _lifecycle.BrowserTaskState.RETIRING,
+                _lifecycle.BrowserTaskState.RETIRED,
+            }
+        )
+        winner = _bt._active_sessions.get(task_id)
+        if not stale_creator and winner is None:
+            session_info = dict(session_info)
+            session_info.setdefault("session_key", task_id)
+            session_info.setdefault("owner_task_id", bare_task_id)
+            session_info["_lifecycle_generation"] = creation_generation
+            _bt._active_sessions[task_id] = session_info
+            _bt._suspect_browser_sessions.pop(task_id, None)
+            _lifecycle._set_task_state_locked(
+                bare_task_id, _lifecycle.BrowserTaskState.ACTIVE
+            )
+            published = True
+        else:
+            published = False
+
+    if not published:
+        _lifecycle._dispose_unpublished_session(task_id, session_info)
+        if stale_creator:
+            raise _lifecycle._BrowserSessionRetiredError(task_id)
+        return winner
+
     if not force_local and not (session_info.get("features") or {}).get("lightpanda"):
-        _cdp._ensure_cdp_supervisor(task_id)
+        if session_info.get("cdp_url"):
+            _cdp._ensure_cdp_supervisor(
+                task_id, expected_generation=creation_generation
+            )
+        else:
+            _cdp._ensure_cdp_supervisor(task_id)
 
     return session_info
 
@@ -405,7 +498,6 @@ def _discard_timed_out_browser_session(task_id: str, session_info: Dict[str, Any
     with _bt._cleanup_lock:
         if _bt._active_sessions.get(task_id) is not session_info:
             return
-        _cdp._stop_cdp_supervisor(task_id)
         if session_info.get("bb_session_id") or session_info.get("cdp_url"):
             replacement = dict(session_info)
             replacement["session_name"] = f"h_{uuid.uuid4().hex[:10]}"
@@ -418,6 +510,10 @@ def _discard_timed_out_browser_session(task_id: str, session_info: Dict[str, Any
         bare_task_id = _bt._bare_task_id_for_session_key(task_id)
         if _bt._last_active_session_key.get(bare_task_id) == task_id:
             _bt._last_active_session_key.pop(bare_task_id, None)
+
+    # Stopping can join a starter whose publication guard needs the lifecycle
+    # lock. Never wait for it while holding ``_cleanup_lock``.
+    _cdp._stop_cdp_supervisor(task_id)
 
     session_name = str(session_info.get("session_name") or "")
     if session_name and os.path.isfile(os.path.join(task_socket_dir, f"{session_name}.pid")):
@@ -480,6 +576,19 @@ def _handle_browser_command_timeout(task_id: str, session_info: Dict[str, Any], 
     ``bb_session_id`` so cloud cleanup works). Local: ``_recycle_local_session``.
     See #68139, #72205, #72206.
     """
+    if _lifecycle._is_task_owned_shared_cdp_session(session_info):
+        if not _lifecycle._cleanup_browser_session_keys(
+            task_id,
+            [task_id],
+            reason=_lifecycle.BrowserCleanupReason.INACTIVITY,
+        ):
+            _bt.logger.warning(
+                "Timed-out shared-CDP session %s remains fail-closed until "
+                "its exact target cleanup can be confirmed",
+                task_id,
+            )
+        return
+
     if session_info.get("bb_session_id") or session_info.get("cdp_url"):
         _discard_timed_out_browser_session(task_id, session_info, task_socket_dir)
         return
@@ -667,7 +776,7 @@ def _sandbox_wrap(cmd_parts: List[str], browser_env: Dict[str, str], task_socket
                              remote_env["AGENT_BROWSER_PROFILE"]], user=sandbox_host._user_for(env), timeout=15)
         env._bd_browser_dirs_ready = True
     remote_env["AGENT_BROWSER_ARGS"] = ",".join(CHROMIUM_SANDBOX_BYPASS_ARGS)  # container: no userns for Chromium's own sandbox
-    # cmd_parts = <agent-browser argv0 (+npx spec)> + backend args + command; keep everything after argv0.
+    # cmd_parts = <selected agent-browser argv0> + backend args + command; keep everything after argv0.
     tail = cmd_parts[len(_agent_browser_argv(cmd_parts[0])):]
     wrapped = streams.remote_command(env, [_SANDBOX_AGENT_BROWSER, *tail], child_env=remote_env,
                                      user=sandbox_host._user_for(env), interactive=True)
@@ -677,7 +786,7 @@ def _sandbox_wrap(cmd_parts: List[str], browser_env: Dict[str, str], task_socket
     return wrapped, host_env
 
 
-def _browser_command_preflight() -> Dict[str, Any]:
+def _browser_command_preflight(*, _allow_cleanup: bool = False) -> Dict[str, Any]:
     """Fail fast before spawning (missing CLI, Termux gap, interrupt, no Chromium in local
     mode — else every call hangs for command_timeout). Error result, or ``{"browser_cmd": path}``."""
     from tools.bot_desktop import placement, runtime as _bd_runtime
@@ -687,7 +796,7 @@ def _browser_command_preflight() -> Dict[str, Any]:
         return {"success": False, "error": f"The browser cannot run here: {e}"}
     if where == placement.TERMINAL:
         from tools.interrupt import is_interrupted
-        if is_interrupted():
+        if not _allow_cleanup and is_interrupted():
             return {"success": False, "error": "Interrupted"}
         return {"browser_cmd": _SANDBOX_AGENT_BROWSER}  # resolved inside the sandbox, not on this host
     try:
@@ -708,7 +817,7 @@ def _browser_command_preflight() -> Dict[str, Any]:
         return {"success": False, "error": hint}
 
     from tools.interrupt import is_interrupted
-    if is_interrupted():
+    if not _allow_cleanup and is_interrupted():
         return {"success": False, "error": "Interrupted"}
     return {"browser_cmd": browser_cmd}
 
@@ -719,11 +828,18 @@ def _spawn_and_collect(
 ) -> Dict[str, Any]:
     """Run the prepared agent-browser argv once and interpret its output (handles timeout)."""
     task_socket_dir = _prepare_session_socket_dir(session_info["session_name"])
+    task_owned_shared_cdp = _lifecycle._is_task_owned_shared_cdp_session(session_info)
+    if task_owned_shared_cdp:
+        _lifecycle._write_shared_cdp_endpoint(
+            task_socket_dir,
+            session_info["session_name"],
+            str(session_info.get("cdp_url") or ""),
+        )
     _bt.logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                  command, task_id, task_socket_dir, len(task_socket_dir))
     if engine != "lightpanda":
         _ensure_screen_for_headed_chromium()  # first command forks the daemon; a headed window needs the screen up
-    browser_env = _agent_browser_command_env(task_socket_dir)
+    browser_env = _agent_browser_command_env(task_socket_dir, shared_cdp=task_owned_shared_cdp)
 
     # Lightpanda rejects Chromium-only launch flags: strip current and legacy vars;
     # Chrome commands and fallback use the shared Chromium policy.
@@ -760,6 +876,37 @@ def _spawn_and_collect(
         stderr = f.read()
     _unlink_command_output_files(stdout_path, stderr_path)
     return _interpret_browser_command_output(command, stdout, stderr, proc.returncode)
+
+
+def _serialize_browser_task_command(func):
+    """Fence browser subprocess dispatch against task cleanup."""
+
+    @functools.wraps(func)
+    def _wrapped(
+        task_id: str,
+        command: str,
+        args: List[str] = None,
+        timeout: Optional[int] = None,
+        _engine_override: Optional[str] = None,
+        _allow_cleanup: bool = False,
+    ) -> Dict[str, Any]:
+        if _allow_cleanup:
+            # Cleanup already owns the same per-task operation lock.
+            return func(
+                task_id,
+                command,
+                args,
+                timeout,
+                _engine_override,
+                _allow_cleanup=True,
+            )
+        bare_task_id = _bt._bare_task_id_for_session_key(task_id or "default")
+        with _lifecycle._task_cleanup_operation_lock(bare_task_id):
+            if _lifecycle._is_browser_task_unavailable(task_id):
+                return _lifecycle._browser_session_retired_result(task_id)
+            return func(task_id, command, args, timeout, _engine_override)
+
+    return _wrapped
 
 
 def run_fenced(session_info: Dict[str, Any], fn: Callable[[], Dict[str, Any]]) -> Dict[str, Any]:
@@ -819,11 +966,49 @@ def _bot_desktop_attach_port(session_info: Dict[str, Any]) -> Optional[int]:
                                                  exclude_session=session_info["session_name"])
 
 
+def _find_shared_cdp_runtime() -> str:
+    """Verify the runtime at the chosen placement, never a different host's CLI."""
+    if not _browser_in_sandbox():
+        return _install._find_agent_browser(require_pin_tab=True)
+    from tools.bot_desktop import runtime as _bd_runtime, sandbox_host
+    from tools.environments import streams
+
+    env = _bd_runtime._sandbox_env(create=False)
+    message = ("Shared-CDP page isolation requires agent-browser >=0.34.0 with --pin-tab support "
+               "inside the configured terminal sandbox. Update that sandbox's pinned browser runtime, "
+               "then retry. A host installation cannot authorize remote page access.")
+    if env is None:
+        raise _install.AgentBrowserCapabilityError(message)
+    try:
+        version = streams.run_in(env, [_SANDBOX_AGENT_BROWSER, "--version"],
+                                 user=sandbox_host._user_for(env), timeout=10)
+        match = _install._SEMVER_TRIPLE_RE.search(
+            (version.stdout + version.stderr).decode("utf-8", errors="replace"))
+        if (version.returncode != 0 or match is None
+                or tuple(int(part) for part in match.groups()) < _bt.AGENT_BROWSER_PIN_TAB_MIN_VERSION):
+            raise _install.AgentBrowserCapabilityError(message)
+        help_result = streams.run_in(env, [_SANDBOX_AGENT_BROWSER, "--help"],
+                                     user=sandbox_host._user_for(env), timeout=10)
+        help_text = (help_result.stdout + help_result.stderr).decode("utf-8", errors="replace")
+        if help_result.returncode != 0 or not all(flag in help_text for flag in ("--pin-tab", "--session", "--cdp")):
+            raise _install.AgentBrowserCapabilityError(message)
+    except (OSError, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
+        raise _install.AgentBrowserCapabilityError(message) from exc
+    return _SANDBOX_AGENT_BROWSER
+
+
 def _dispatch_browser_command(
     task_id: str, session_info: Dict[str, Any], browser_cmd: str, command: str, args: List[str],
     timeout: int, _engine_override: Optional[str],
 ) -> "tuple[str, Dict[str, Any]]":
     """Build the agent-browser argv for ``session_info`` and run it once → ``(engine, result)``."""
+    if _lifecycle._is_task_owned_shared_cdp_session(session_info):
+        try:
+            browser_cmd = _find_shared_cdp_runtime()
+        except _install.AgentBrowserCapabilityError as exc:
+            return "auto", {"success": False, "error": str(exc), "code": "pin_tab_unavailable",
+                            "data": {"required_agent_browser": ">=0.34.0",
+                                     "non_cdp_available": True}}
     # Cleanup stops the supervisor before closing the backend; keep it stopped.
     if command != "close" and session_info.get("cdp_url"):
         _cdp._ensure_cdp_supervisor(task_id)
@@ -837,6 +1022,8 @@ def _dispatch_browser_command(
     backend_args = ["--session", session_info["session_name"]]
     if session_info.get("cdp_url"):
         backend_args += ["--cdp", session_info["cdp_url"]]
+        if _lifecycle._is_task_owned_shared_cdp_session(session_info):
+            backend_args.append("--pin-tab")
     else:
         if (bd_port := _bot_desktop_attach_port(session_info)) is not None:
             # A Chromium already runs on the Bot Desktop's shared profile (the human clicked the dock's
@@ -862,28 +1049,37 @@ def _dispatch_browser_command(
     return engine, result
 
 
+@_serialize_browser_task_command
 def _run_browser_command(
     task_id: str,
     command: str,
     args: List[str] = None,
     timeout: Optional[int] = None,
     _engine_override: Optional[str] = None,
+    _allow_cleanup: bool = False,
 ) -> Dict[str, Any]:
     """Run one agent-browser CLI command against the task's session; returns its parsed JSON.
     ``timeout=None`` reads ``browser.command_timeout``; ``_engine_override`` forces an engine
     for this call only (Lightpanda fallback retries with Chrome without touching global state)."""
+    if not _allow_cleanup and _lifecycle._is_browser_task_unavailable(task_id):
+        return _lifecycle._browser_session_retired_result(task_id)
+
     if timeout is None:
         timeout = _bt._safe_command_timeout()
     args = args or []
 
-    preflight = _browser_command_preflight()
+    preflight = (_browser_command_preflight(_allow_cleanup=True)
+                 if _allow_cleanup else _browser_command_preflight())
     if "browser_cmd" not in preflight:
         return preflight
     browser_cmd = preflight["browser_cmd"]
 
     for attempt in range(2):
         try:
-            session_info = _get_session_info(task_id)
+            session_info = (_get_session_info(task_id, _for_cleanup=True)
+                            if _allow_cleanup else _get_session_info(task_id))
+        except _lifecycle._BrowserSessionRetiredError:
+            return _lifecycle._browser_session_retired_result(task_id)
         except Exception as e:
             _bt.logger.warning("Failed to create browser session for task=%s: %s", task_id, e)
             return {"success": False, "error": f"Failed to create browser session: {str(e)}"}

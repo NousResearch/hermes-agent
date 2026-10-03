@@ -4,6 +4,11 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 
 import functools
 import os
+import re
+import subprocess
+from typing import Optional
+
+from hermes_cli._subprocess_compat import windows_hide_flags
 import shutil
 
 from hermes_constants import agent_browser_runnable, is_termux as _is_termux_environment
@@ -11,7 +16,6 @@ from tools.browser_tool_origin import origin_module as _origin
 from tools import browser_tool_cdp as _cdp
 from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_lightpanda_fallback as _lp
-
 
 @functools.lru_cache(maxsize=1)
 def _discover_homebrew_node_dirs() -> tuple[str, ...]:
@@ -28,12 +32,10 @@ def _discover_homebrew_node_dirs() -> tuple[str, ...]:
         if os.path.isdir(bin_dir := os.path.join(homebrew_opt, entry, "bin"))
     )
 
-
 def _browser_candidate_path_dirs() -> list[str]:
     """System PATH fallbacks for externally owned browser helpers."""
     _bt = _origin()
     return [*_discover_homebrew_node_dirs(), *_bt._SANE_PATH_DIRS]
-
 
 def _merge_browser_path(existing_path: str = "") -> str:
     """Prepend browser-specific PATH fallbacks without reordering existing entries."""
@@ -44,41 +46,109 @@ def _merge_browser_path(existing_path: str = "") -> str:
             prefix_parts.append(part)
     return os.pathsep.join(prefix_parts + path_parts)
 
-
 def _browser_install_hint() -> str:
     if _is_termux_environment():
         return "npm install -g agent-browser && agent-browser install"
     return "hermes pm install agent-browser (system libraries: npx playwright install-deps chromium)"
-
 
 def _agent_browser_candidate_present(path: str | None) -> bool:
     if not path:
         return False
     return os.path.isfile(path) and (os.name == "nt" or os.access(path, os.X_OK))
 
+class AgentBrowserCapabilityError(RuntimeError):
+    """The selected CLI/runtime cannot provide strict shared-CDP target pinning."""
 
-def _find_agent_browser(*, validate: bool = True) -> str:
-    """Select PM's exact binary, then an external PATH/Homebrew installation.
+_SEMVER_TRIPLE_RE = re.compile(r"(?<!\d)(\d+)\.(\d+)\.(\d+)(?![\d-])")
 
-    Termux owns its browser installation. Elsewhere PM may acquire a missing
-    CLI at execution time, subject to its lazy-install policy. Readiness checks
-    (``validate=False``) never execute or install anything. Selection is not
-    cached: a new PM fact or profile must be visible immediately.
+def _version_probe_env() -> dict[str, str]:
+    from pm import env_for
+    env = _origin()._build_browser_env()
+    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
+    return env_for("agent-browser", base_env=env)
+
+def _probe_agent_browser_version(path: str) -> Optional[tuple[int, int, int]]:
+    """Run a concrete CLI's real ``--version`` entrypoint and parse semver."""
+    if not os.path.exists(path) or (os.name != "nt" and not os.access(path, os.X_OK)):
+        return None
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+            env=_version_probe_env(),
+            creationflags=windows_hide_flags(),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    match = _SEMVER_TRIPLE_RE.search(f"{result.stdout}\n{result.stderr}")
+    return tuple(int(part) for part in match.groups()) if match is not None else None
+
+def _pin_tab_candidate_status(path: str) -> bool:
+    """Verify the concrete command supports the pinning protocol before page access.
+
+    PM selects the native Rust CLI/daemon; it does not require Node. External
+    npm wrappers retain their own published engine requirements.
+    """
+    version = _probe_agent_browser_version(path)
+    if version is None or version < _origin().AGENT_BROWSER_PIN_TAB_MIN_VERSION:
+        return False
+    try:
+        result = subprocess.run([path, "--help"], capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=10,
+                                env=_version_probe_env(), creationflags=windows_hide_flags(), check=False)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    help_text = f"{result.stdout}\n{result.stderr}"
+    return result.returncode == 0 and all(flag in help_text for flag in ("--pin-tab", "--session", "--cdp"))
+
+def _pin_tab_capability_error() -> str:
+    return ("Shared-CDP page isolation requires agent-browser >=0.34.0 with --pin-tab support. "
+            "Install the pinned native runtime with 'hermes pm install agent-browser', then retry. "
+            "An external compatible agent-browser on PATH is also supported. No unpinned package is downloaded.")
+
+def _find_agent_browser(*, validate: bool = True, require_pin_tab: bool = False) -> str:
+    """Use PM's selected executable, then an external PATH/Homebrew installation.
+
+    Shared CDP requires a verified pin-tab-capable CLI/runtime before any browser
+    command is dispatched. PM remains the only lazy-install owner; an older pin
+    fails closed instead of introducing an alternate download path. Readiness
+    checks without pinning never execute or acquire a package. Selection is not
+    cached, so updated PM facts and profile changes are visible immediately.
     """
     import pm
 
     termux = _is_termux_environment()
+    checked = set()
+
+    def usable(candidate):
+        if candidate in checked:
+            return False
+        checked.add(candidate)
+        if require_pin_tab:
+            return _pin_tab_candidate_status(candidate)
+        return (agent_browser_runnable if validate else _agent_browser_candidate_present)(candidate)
+
     if not termux:
         installed = pm.installed_package("agent-browser")
         if installed and installed.binary is not None:
-            return str(installed.binary)
-    usable = agent_browser_runnable if validate else _agent_browser_candidate_present
+            candidate = str(installed.binary)
+            if not require_pin_tab or usable(candidate):
+                return candidate
     for search_path in (None, _merge_browser_path("")):
         if search_path == "":
             continue
         candidate = shutil.which("agent-browser", path=search_path)
         if candidate and usable(candidate):
             return candidate
+    if require_pin_tab and (termux or pm.installed_package("agent-browser") is not None):
+        raise AgentBrowserCapabilityError(_pin_tab_capability_error())
     hint = f"agent-browser CLI not found. Install it with: {_browser_install_hint()}"
     if validate and not termux:
         try:
@@ -87,15 +157,17 @@ def _find_agent_browser(*, validate: bool = True) -> str:
             raise FileNotFoundError(f"{hint}\n{exc}") from exc
         installed = pm.installed_package("agent-browser")
         if installed and installed.binary is not None:
-            return str(installed.binary)
+            candidate = str(installed.binary)
+            if not require_pin_tab or _pin_tab_candidate_status(candidate):
+                return candidate
+    if require_pin_tab:
+        raise AgentBrowserCapabilityError(_pin_tab_capability_error())
     raise FileNotFoundError(hint)
-
 
 def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
     """Frozen old-updater surface names this module too (the extraction-era home); tools.browser_tool
     carries the permanent definition. No npx work is performed; relaunch instead."""
     return False
-
 
 def _chromium_installed() -> bool:
     """An explicit browser executable or PM's selected full Chromium exists."""
@@ -103,7 +175,6 @@ def _chromium_installed() -> bool:
 
     ab_path = chromium_executable()
     return bool(ab_path and (os.path.isfile(ab_path) or shutil.which(ab_path)))
-
 
 def _maybe_autoinstall_chromium() -> bool:
     """Install only PM's pinned full Chromium, never the upstream browser pair.
@@ -127,7 +198,6 @@ def _maybe_autoinstall_chromium() -> bool:
         return False
     return _chromium_installed()
 
-
 def _running_in_docker() -> bool:
     """Best-effort detection of whether we're inside a Docker container."""
     if os.path.exists("/.dockerenv"):
@@ -137,7 +207,6 @@ def _running_in_docker() -> bool:
             return "docker" in fp.read()
     except OSError:
         return False
-
 
 def check_browser_requirements() -> bool:
     """Whether the browser tools should be advertised.
@@ -170,7 +239,6 @@ def check_browser_requirements() -> bool:
         return True
     # Local Chrome mode needs Chromium on disk or the CLI hangs until the command timeout.
     return _chromium_installed()
-
 
 def check_browser_vision_requirements() -> bool:
     """Advertise ``browser_vision`` only with BOTH a working browser AND a vision backend.

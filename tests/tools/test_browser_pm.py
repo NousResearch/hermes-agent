@@ -353,3 +353,44 @@ def test_browser_readiness_ignores_ambient_chromium(browser_store, monkeypatch, 
     assert install.check_browser_requirements() is (backend != "local")
     publish("chromium")
     assert install.check_browser_requirements()
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("version,offers_pin,supported", [
+    ("0.33.1", True, False), ("0.34.0", False, False), ("0.34.0", True, True),
+])
+def test_pm_pin_capability_uses_selected_command_without_node(
+    browser_store, monkeypatch, version, offers_pin, supported,
+):
+    _, store, publish = browser_store
+    binary = publish("agent-browser", f"#!{sys.executable}\n" +
+        "import sys\n" +
+        f"print('agent-browser {version}' if '--version' in sys.argv else " +
+        repr("--session --cdp --pin-tab" if offers_pin else "--session --cdp") + ")\n")
+    before = (store / "facts.json").read_bytes()
+    def forbidden(*args, **kwargs):
+        pytest.fail("capability probing must not acquire an alternate runtime")
+    monkeypatch.setattr(pm, "ensure", forbidden)
+    assert install._find_agent_browser(validate=False) == str(binary)
+    if supported:
+        assert install._find_agent_browser(require_pin_tab=True) == str(binary)
+    else:
+        with pytest.raises(install.AgentBrowserCapabilityError, match="pin-tab"):
+            install._find_agent_browser(require_pin_tab=True)
+    assert (store / "facts.json").read_bytes() == before
+
+
+@pytest.mark.platforms("posix")
+def test_external_pin_cli_remains_available_when_pm_cli_is_incompatible(
+    browser_store, monkeypatch, tmp_path,
+):
+    _, _, publish = browser_store
+    pm_binary = publish("agent-browser", f"#!{sys.executable}\nprint('agent-browser 0.33.1')\n")
+    external_dir = tmp_path / "external pin-capable browser"
+    external_dir.mkdir()
+    external = external_dir / "agent-browser"
+    external.write_text(f"#!{sys.executable}\nimport sys\n"
+                        "print('agent-browser 0.34.0' if '--version' in sys.argv else '--session --cdp --pin-tab')\n")
+    external.chmod(0o755)
+    monkeypatch.setenv("PATH", str(external_dir))
+    assert install._find_agent_browser() == str(pm_binary)
+    assert install._find_agent_browser(require_pin_tab=True) == str(external)

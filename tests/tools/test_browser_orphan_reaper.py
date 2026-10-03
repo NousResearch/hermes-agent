@@ -3,10 +3,14 @@ daemons whose Python parent exited without cleaning up."""
 
 import os
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from tools import browser_tool_lifecycle as bt_lifecycle
+from tools import browser_tool_session as bt_session
+from tools import browser_tool_install as bt_install
+from tools import browser_tool_cdp as bt_cdp
 
 
 @pytest.fixture
@@ -27,8 +31,15 @@ def _isolate_sessions():
     bt._active_sessions.update(orig)
 
 
-def _make_socket_dir(tmpdir, session_name, pid=None, owner_pid=None):
-    """Create a fake agent-browser socket directory with optional PID files.
+def _make_socket_dir(
+    tmpdir,
+    session_name,
+    pid=None,
+    owner_pid=None,
+    pinned_target_id=None,
+    cdp_endpoint=None,
+):
+    """Create a fake agent-browser socket directory with optional ownership files.
 
     Args:
         tmpdir: base temp directory
@@ -36,13 +47,22 @@ def _make_socket_dir(tmpdir, session_name, pid=None, owner_pid=None):
         pid: daemon PID to write to <session>.pid (None = no file)
         owner_pid: owning hermes PID to write to <session>.owner_pid
                    (None = no file; tests the legacy path)
+        pinned_target_id: exact owned target recorded by agent-browser
+        cdp_endpoint: browser-level endpoint persisted by Hermes
     """
     d = tmpdir / f"agent-browser-{session_name}"
     d.mkdir()
     if pid is not None:
-        (d / f"{session_name}.pid").write_text(str(pid))
+        (d / f"{session_name}.pid").write_text(str(pid), encoding="utf-8")
     if owner_pid is not None:
-        (d / f"{session_name}.owner_pid").write_text(str(owner_pid))
+        (d / f"{session_name}.owner_pid").write_text(str(owner_pid), encoding="utf-8")
+    if pinned_target_id is not None:
+        (d / f"{session_name}.target").write_text(
+            '{"targetId":"' + pinned_target_id + '","url":"about:blank","pinned":true}',
+            encoding="utf-8",
+        )
+    if cdp_endpoint is not None:
+        (d / f"{session_name}.cdp_endpoint").write_text(cdp_endpoint, encoding="utf-8")
     return d
 
 
@@ -156,10 +176,232 @@ class TestReapOrphanedBrowserSessions:
         from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
 
         d = _make_socket_dir(fake_tmpdir, "h_corrupt1234")
-        (d / "h_corrupt1234.pid").write_text("not-a-number")
+        (d / "h_corrupt1234.pid").write_text("not-a-number", encoding="utf-8")
 
         _reap_orphaned_browser_sessions()
         assert not d.exists()
+
+    def test_live_orphan_closes_exact_pinned_target_before_reaping(
+        self, fake_tmpdir
+    ):
+        from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(
+            fake_tmpdir,
+            "cdp_owned1234",
+            pid=12345,
+            owner_pid=54321,
+            pinned_target_id="TARGET-OWNED",
+        )
+        terminated = []
+        with patch("gateway.status._pid_exists", side_effect=[False, True]), \
+             patch("gateway.status.get_process_start_time", return_value=777), \
+             patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
+             patch("tools.browser_tool_lifecycle._close_orphaned_pinned_target", return_value=True) as close_target, \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=lambda pid, expected_start=None: terminated.append(pid)):
+            _reap_orphaned_browser_sessions()
+
+        close_target.assert_called_once_with(str(d), "cdp_owned1234")
+        assert terminated == [12345]
+        assert not d.exists()
+
+    def test_transient_pinned_close_failure_retains_daemon_and_ownership(
+        self, fake_tmpdir
+    ):
+        from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(
+            fake_tmpdir,
+            "cdp_retry1234",
+            pid=12345,
+            owner_pid=54321,
+            pinned_target_id="TARGET-RETRY",
+        )
+        terminated = []
+        with patch("gateway.status._pid_exists", side_effect=[False, True]), \
+             patch("tools.browser_tool_lifecycle._verify_reapable_browser_daemon", return_value=True), \
+             patch("tools.browser_tool_lifecycle._close_orphaned_pinned_target", return_value=False), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid", side_effect=terminated.append):
+            _reap_orphaned_browser_sessions()
+
+        assert terminated == []
+        assert d.exists()
+        assert (d / "cdp_retry1234.target").exists()
+
+    def test_dead_pinned_daemon_retains_exact_ownership_record(self, fake_tmpdir):
+        from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(
+            fake_tmpdir,
+            "cdp_dead12345",
+            pid=12345,
+            owner_pid=54321,
+            pinned_target_id="TARGET-DEAD",
+        )
+        with patch("gateway.status._pid_exists", side_effect=[False, False]):
+            _reap_orphaned_browser_sessions()
+
+        assert d.exists()
+        assert (d / "cdp_dead12345.target").exists()
+
+    def test_dead_daemon_with_endpoint_closes_target_and_removes_directory(
+        self, fake_tmpdir
+    ):
+        from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(
+            fake_tmpdir,
+            "cdp_dead_recoverable",
+            pid=12345,
+            owner_pid=54321,
+            pinned_target_id="TARGET-DEAD-RECOVERABLE",
+            cdp_endpoint="ws://shared/devtools/browser/opaque",
+        )
+        with (
+            patch("gateway.status._pid_exists", side_effect=[False, False]),
+            patch(
+                "tools.browser_tool_cdp._close_shared_cdp_target_confirmed",
+                return_value=True,
+            ) as close_target,
+        ):
+            _reap_orphaned_browser_sessions()
+
+        close_target.assert_called_once_with(
+            "ws://shared/devtools/browser/opaque",
+            "TARGET-DEAD-RECOVERABLE",
+        )
+        assert not d.exists()
+
+    @pytest.mark.parametrize(
+        "metadata",
+        [
+            None,
+            "{truncated",
+            "[]",
+            '{"pinned":true}',
+        ],
+        ids=["missing", "truncated", "non_object", "wrong_schema"],
+    )
+    def test_unknown_shared_target_metadata_preserves_daemon_and_directory(
+        self,
+        fake_tmpdir,
+        metadata,
+    ):
+        session_name = f"cdp_unknown_{abs(hash(str(metadata)))}"
+        d = _make_socket_dir(
+            fake_tmpdir,
+            session_name,
+            pid=12345,
+            owner_pid=54321,
+        )
+        if metadata is not None:
+            (d / f"{session_name}.target").write_text(metadata, encoding="utf-8")
+
+        with (
+            patch("gateway.status._pid_exists", return_value=False),
+            patch(
+                "tools.process_registry.ProcessRegistry._terminate_host_pid"
+            ) as terminate,
+        ):
+            self._run_reaper()
+
+        terminate.assert_not_called()
+        assert d.exists()
+
+    def test_unreadable_shared_target_metadata_is_unknown(
+        self,
+        fake_tmpdir,
+        monkeypatch,
+    ):
+        session_name = "cdp_unreadable"
+        d = _make_socket_dir(
+            fake_tmpdir,
+            session_name,
+            pid=12345,
+            owner_pid=54321,
+        )
+        target_file = d / f"{session_name}.target"
+        target_file.write_text('{"pinned":true,"targetId":"TARGET"}', encoding="utf-8")
+        original_read_text = Path.read_text
+
+        def _read_text(path, *args, **kwargs):
+            if path == target_file:
+                raise PermissionError("unreadable")
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _read_text)
+        with (
+            patch("gateway.status._pid_exists", return_value=False),
+            patch(
+                "tools.process_registry.ProcessRegistry._terminate_host_pid"
+            ) as terminate,
+        ):
+            self._run_reaper()
+
+        terminate.assert_not_called()
+        assert d.exists()
+
+    def test_non_object_metadata_does_not_abort_remaining_orphan_sweep(
+        self,
+        fake_tmpdir,
+    ):
+        cdp_name = "cdp_nonobject_continue"
+        cdp_dir = _make_socket_dir(
+            fake_tmpdir,
+            cdp_name,
+            pid=12345,
+            owner_pid=54321,
+        )
+        (cdp_dir / f"{cdp_name}.target").write_text("[]", encoding="utf-8")
+        legacy_dir = _make_socket_dir(fake_tmpdir, "h_stale_after_unknown")
+        from tools.browser_tool import BROWSER_ORPHAN_GRACE_SECONDS
+
+        _age_socket_dir(legacy_dir, BROWSER_ORPHAN_GRACE_SECONDS + 600)
+
+        with patch("gateway.status._pid_exists", return_value=False):
+            self._run_reaper()
+
+        assert cdp_dir.exists()
+        assert not legacy_dir.exists()
+
+    @staticmethod
+    def _run_reaper():
+        from tools.browser_tool_lifecycle import _reap_orphaned_browser_sessions
+
+        _reap_orphaned_browser_sessions()
+
+    def test_orphan_close_uses_persisted_endpoint_and_exact_target_without_discovery(
+        self, fake_tmpdir, monkeypatch
+    ):
+        session_name = "cdp_exact123"
+        socket_dir = _make_socket_dir(
+            fake_tmpdir,
+            session_name,
+            pinned_target_id="TARGET-OWNED",
+            cdp_endpoint="ws://shared/devtools/browser/opaque",
+        )
+        calls = []
+        monkeypatch.setattr(
+            bt_cdp,
+            "_close_shared_cdp_target_confirmed",
+            lambda cdp_url, target_id: calls.append((cdp_url, target_id)) or True,
+        )
+        assert bt_lifecycle._close_orphaned_pinned_target(
+            str(socket_dir), session_name
+        )
+        assert calls == [("ws://shared/devtools/browser/opaque", "TARGET-OWNED")]
+
+    def test_orphan_close_without_persisted_endpoint_fails_closed(self, fake_tmpdir):
+        session_name = "cdp_legacy_no_endpoint"
+        socket_dir = _make_socket_dir(
+            fake_tmpdir,
+            session_name,
+            pinned_target_id="TARGET-LEGACY",
+        )
+
+        assert bt_lifecycle._close_orphaned_pinned_target(str(socket_dir), session_name) is False
+        assert socket_dir.exists()
 
 
 class TestOwnerPidCrossProcess:
@@ -200,6 +442,102 @@ class TestOwnerPidCrossProcess:
 
 
 
+    def test_write_shared_cdp_endpoint_is_private(self, fake_tmpdir):
+        session_name = "cdp_private_endpoint"
+        bt_lifecycle._write_shared_cdp_endpoint(
+            str(fake_tmpdir),
+            session_name,
+            "ws://user:secret@shared/devtools/browser/opaque",
+        )
+
+        endpoint_file = fake_tmpdir / f"{session_name}.cdp_endpoint"
+        assert endpoint_file.read_text(encoding="utf-8") == (
+            "ws://user:secret@shared/devtools/browser/opaque"
+        )
+        assert endpoint_file.stat().st_mode & 0o777 == 0o600
+
+    def test_run_browser_command_persists_shared_cdp_endpoint(
+        self, fake_tmpdir, monkeypatch
+    ):
+        import tools.browser_tool as bt
+
+        session_name = "cdp_endpoint_wiring"
+
+        class _FakePopen:
+            def __init__(self, *args, **kwargs):
+                raise RuntimeError("short-circuit after endpoint write")
+
+        monkeypatch.setattr(bt_session.subprocess, "Popen", _FakePopen)
+        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda **_kwargs: "/bin/true")
+        monkeypatch.setattr(bt_install, "_chromium_installed", lambda: True)
+        monkeypatch.setattr(
+            bt_session,
+            "_get_session_info",
+            lambda _task_id: {
+                "session_name": session_name,
+                "bb_session_id": None,
+                "cdp_url": "ws://shared/devtools/browser/opaque",
+                "features": {"cdp_override": True},
+            },
+        )
+
+        with patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(fake_tmpdir)):
+            result = bt_session._run_browser_command(
+                task_id="test_task", command="goto", args=[]
+            )
+
+        assert result["success"] is False
+        assert "short-circuit" in result["error"]
+
+        endpoint_file = (
+            fake_tmpdir
+            / f"agent-browser-{session_name}"
+            / f"{session_name}.cdp_endpoint"
+        )
+        assert endpoint_file.read_text(encoding="utf-8") == "ws://shared/devtools/browser/opaque"
+        assert endpoint_file.stat().st_mode & 0o777 == 0o600
+
+    def test_run_browser_command_calls_write_owner_pid(
+        self, fake_tmpdir, monkeypatch
+    ):
+        """_run_browser_command wires _write_owner_pid after mkdir."""
+        import tools.browser_tool as bt
+
+        session_name = "h_wiringtest1"
+
+        # Short-circuit Popen so we exit after the owner_pid write
+        class _FakePopen:
+            def __init__(self, *a, **kw):
+                raise RuntimeError("short-circuit after owner_pid")
+
+        monkeypatch.setattr(bt_session.subprocess, "Popen", _FakePopen)
+        monkeypatch.setattr(bt_install, "_find_agent_browser", lambda: "/bin/true")
+        monkeypatch.setattr("tools.browser_tool_install._chromium_installed", lambda: True)
+        monkeypatch.setattr(
+            bt_session, "_get_session_info",
+            lambda task_id: {"session_name": session_name},
+        )
+
+        calls = []
+        orig_write = bt_lifecycle._write_owner_pid
+
+        def _spy(*a, **kw):
+            calls.append(a)
+            orig_write(*a, **kw)
+
+        monkeypatch.setattr("tools.browser_tool_lifecycle._write_owner_pid", _spy)
+
+        with patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(fake_tmpdir)):
+            try:
+                bt_session._run_browser_command(task_id="test_task", command="goto", args=[])
+            except Exception:
+                pass
+
+        assert calls, "_run_browser_command must call _write_owner_pid"
+        # First positional arg is the socket_dir, second is the session_name
+        socket_dir_arg, session_name_arg = calls[0][0], calls[0][1]
+        assert session_name_arg == session_name
+        assert session_name in socket_dir_arg
 
 
 class TestReaperIdentityGuard:
@@ -358,11 +696,11 @@ class TestSocketDirIdleSeconds:
         d = tmp_path / "agent-browser-h_reuse"
         d.mkdir()
         f = d / "_stdout_click"
-        f.write_text("x")
+        f.write_text("x", encoding="utf-8")
         _age_socket_dir(d, 7200)
         assert _socket_dir_idle_seconds(str(d)) > 7000
 
-        f.write_text("y")  # rewrite in place — dir mtime stays stale
+        f.write_text("y", encoding="utf-8")  # rewrite in place — dir mtime stays stale
         assert time.time() - os.path.getmtime(d) > 7000, "precondition"
         assert _socket_dir_idle_seconds(str(d)) < 5
 
@@ -517,9 +855,43 @@ class TestPeriodicOrphanReap:
                        side_effect=lambda: reap_calls.append(1)), \
                  patch("tools.browser_tool_lifecycle._cleanup_inactive_browser_sessions",
                        side_effect=fake_cleanup), \
-                 patch("tools.browser_tool.time.sleep"):
+                 patch("tools.browser_tool_lifecycle.time.sleep"):
                 bt_lifecycle._browser_cleanup_thread_worker()
         finally:
             bt._cleanup_running = orig_running
 
         assert len(reap_calls) > 1, "startup-only reap would give exactly 1"
+
+
+@pytest.mark.parametrize("ownership", ["pinned", "missing", "corrupt"])
+def test_live_foreign_owner_keeps_shared_cdp_page_despite_old_socket_activity(tmp_path, monkeypatch, ownership):
+    """Another Hermes process cannot infer inactivity from its own empty tracking map."""
+    import subprocess
+    import sys
+    from unittest.mock import MagicMock
+    from tools import browser_tool as bt
+
+    owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        name = "cdp_foreign_live"
+        d = _make_socket_dir(tmp_path, name, pid=12345, owner_pid=owner.pid,
+                             pinned_target_id="FOREIGN-OWNED" if ownership == "pinned" else None,
+                             cdp_endpoint="ws://shared/devtools/browser/foreign")
+        if ownership == "corrupt":
+            (d / f"{name}.target").write_text("{broken", encoding="utf-8")
+        _age_socket_dir(d, bt.BROWSER_ORPHAN_GRACE_SECONDS + 600)
+        assert owner.poll() is None
+        assert bt_lifecycle._owner_pid_alive(str(d), name) == (owner.pid, True)
+        close = MagicMock(return_value=True)
+        kill = MagicMock(return_value=True)
+        monkeypatch.setattr(bt_lifecycle, "_close_orphaned_pinned_target", close)
+        monkeypatch.setattr(bt_lifecycle, "_terminate_verified_daemon", kill)
+
+        assert bt_lifecycle._reap_socket_dir(str(d), name, tracked_names=set()) is False
+        close.assert_not_called()
+        kill.assert_not_called()
+        assert d.exists()
+        assert (d / f"{name}.owner_pid").read_text() == str(owner.pid)
+    finally:
+        owner.terminate()
+        owner.wait(timeout=5)

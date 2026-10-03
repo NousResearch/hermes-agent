@@ -192,13 +192,12 @@ def _current_page_origin(task_id: str) -> Optional[str]:
 
 
 def _visible_selector_probe(selector: str) -> str:
-    """Return a probe that ignores controls hidden by a page or its ancestors."""
+    """Return a probe with the same visibility filter used by the fill path."""
     return (
         "Array.from(document.querySelectorAll(" + repr(selector) + ")).some(el => {"
         " const style = window.getComputedStyle(el);"
-        " const rect = el.getBoundingClientRect();"
         " return style.display !== 'none' && style.visibility !== 'hidden'"
-        " && style.visibility !== 'collapse' && rect.width > 0 && rect.height > 0;"
+        " && el.getClientRects().length !== 0;"
         "})"
     )
 

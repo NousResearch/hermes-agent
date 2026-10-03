@@ -351,6 +351,12 @@ def _finalize_single_query(cli) -> None:
             _shutdown_agent_memory_provider(getattr(cli, "agent", None) or cli_module._active_agent_ref)
         except Exception:
             logger.debug("one-shot memory provider shutdown failed", exc_info=True)
+        agent = getattr(cli, "agent", None) or cli_module._active_agent_ref
+        if agent is not None:
+            try:
+                agent.close()
+            except Exception:
+                logger.debug("one-shot agent cleanup failed", exc_info=True)
     finally:
         # Even a failed settlement must not pin the lease: the failure mode to avoid
         # at all costs is a dead-ish process holding ownership, not a dangling row.

@@ -3518,8 +3518,11 @@ class GatewayRunner(
         self._init_registries_and_clocks()
 
     def _init_runtime_settings(self) -> None:
-        """Load ephemeral per-call config (prefill, reasoning, busy modes, timeouts, routing)."""
-        self._prefill_messages = self._load_prefill_messages()
+        """Load ephemeral per-call config (reasoning, busy modes, timeouts, fallback).
+
+        ``prefill_messages_file`` and ``provider_routing`` are NOT snapshotted here: a boot-time
+        copy is the launch profile's, so every multiplexed profile would inherit it. Turns read
+        them from the active profile's config (``_build_fresh_agent`` / ``pr = ...``)."""
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
         self._show_reasoning = self._load_show_reasoning()
@@ -3541,7 +3544,6 @@ class GatewayRunner(
         self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
         self._cron_drain_timeout = self._load_cron_drain_timeout()
         self._signal_interrupt_grace_timeout = self._load_signal_interrupt_grace_timeout()
-        self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
 
     def _init_session_store(self) -> None:

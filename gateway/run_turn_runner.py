@@ -1117,7 +1117,8 @@ class TurnRunner:
             max_iterations=max_iterations, quiet_mode=True, verbose_logging=False,
             enabled_toolsets=ctx.enabled_toolsets, disabled_toolsets=ctx.disabled_toolsets,
             ephemeral_system_prompt=combined_ephemeral or None,
-            prefill_messages=runner._prefill_messages or None,
+            # Read in the routed profile's scope (a boot snapshot is the launch profile's).
+            prefill_messages=runner._load_prefill_messages() or None,
             reasoning_config=reasoning_config, service_tier=runner._service_tier,
             request_overrides=turn_route.get("request_overrides"),
             providers_allowed=pr.get("only"), providers_ignored=pr.get("ignore"), providers_order=pr.get("order"),
@@ -1931,7 +1932,8 @@ class TurnRunner:
                 "final_response": t("gateway.errors.no_credentials"),
                 "messages": [], "api_calls": 0, "tools": [],
             }
-        pr = runner._provider_routing
+        # Per turn, like reasoning/service tier below: the routed profile's own provider_routing.
+        pr = runner._load_provider_routing()
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
         runner._reasoning_config = reasoning_config
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)

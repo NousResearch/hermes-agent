@@ -645,7 +645,8 @@ likewise per profile, and end-of-session memory extraction for an evicted
 secondary session runs under that profile's scope.
 
 Per-turn runtime settings follow the routed profile as well: `agent.max_turns`,
-`fallback_providers`, `file_read_max_chars`, `tool_output.*`, `browser.*`
+`fallback_providers`, `provider_routing` (including `data_collection`),
+`prefill_messages_file`, `file_read_max_chars`, `tool_output.*`, `browser.*`
 timeouts, `timezone` (including the `TZ` handed to `execute_code` sandboxes),
 the media-delivery policy (`gateway.strict`, `media_delivery_allow_dirs`,
 `trust_recent_files*`) and the Nous `auth.json` used for auxiliary calls are all

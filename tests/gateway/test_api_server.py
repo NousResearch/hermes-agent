@@ -955,6 +955,9 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["runs_idempotency"]["supported"] is True
             assert data["features"]["runs_idempotency"]["durable"] is True
+            assert data["features"]["runs_idempotency"]["event_replay"] is True
+            assert data["features"]["runs_idempotency"]["approval_receipts"] is True
+            assert data["features"]["runs_idempotency"]["approval_recovery"] is True
             assert data["features"]["model_options"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"

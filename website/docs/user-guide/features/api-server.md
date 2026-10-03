@@ -551,6 +551,10 @@ still executing remains visible to status polling, approval, stop control, and
 concurrency accounting until its executor work actually exits. A connected SSE
 subscriber continues draining normally.
 
+For idempotent runs, commentary and terminal events are persisted before delivery.
+This includes cancellation before the executor starts and runs handled by a live
+Bot Chat owner; reconnecting clients receive the same terminal event as status polling.
+
 ### POST /v1/runs/\{run_id\}/stop
 
 Interrupt a running agent turn. The endpoint returns immediately with `{"status": "stopping"}` while Hermes asks the active agent to stop at the next safe interruption point.
@@ -558,9 +562,25 @@ The run stays tracked as `stopping` until the executor-backed work exits, then
 settles as `cancelled`; requesting stop never hides a worker that is still
 running.
 
+For an approval-recovery successor, stop prevents a pending frozen tool from
+starting and interrupts an already-running tool or final continuation. A settled
+tool receipt is retained, but no further continuation starts after stop. Task
+cancellation also waits for executor work to exit. If tool dispatch began and no
+result can be committed, the successor ends as `unrecoverable` with
+`intervention_reason: "tool_effect_uncertain"`; cancellation does not prove that
+the tool had no effect.
+
+Gateway shutdown applies the same dispatch and continuation fences to recovery
+successors. They settle as `interrupted` while preserving any committed tool
+receipt; an uncertain dispatched effect still requires intervention.
+
 ### POST /v1/runs/\{run_id\}/approval
 
 Resolve a pending approval for a run that is waiting on a human decision (for example, a tool call gated behind an approval policy). The body carries the approval decision; the run resumes once the decision is recorded. This endpoint is advertised in `/v1/capabilities` as the `run_approval` feature so external UIs can detect support before surfacing an approval prompt.
+
+Repeating the same durable approval decision returns its existing receipt without
+waking the waiter or dispatching the tool a second time, including while the original
+run is still active. A conflicting decision is rejected.
 
 MCP trust-gate consent — a write-capable tool on a server configured `trust: untrusted` — surfaces the same way: the run emits an `approval.request` event and parks in `waiting_for_approval` until this endpoint resolves it (`once` runs the tool, `deny` blocks it).
 

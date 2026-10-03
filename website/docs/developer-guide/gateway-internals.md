@@ -24,6 +24,8 @@ The messaging gateway is the long-running process that connects Hermes to 20+ ex
 | `gateway/platform_registry.py` | Adapter registry, factories, and deferred (lazy) loaders for bundled platform plugins |
 | `plugins/platforms/<name>/` | Bundled messaging adapters (most platforms: `adapter.py` + `plugin.yaml`) |
 | `gateway/platforms/` | Shared `base.py` plus legacy/direct adapters (Signal, API server, webhooks, …) |
+| `gateway/platforms/api_server_runs.py` | API run admission, executor lifetime, event delivery, and recovery execution |
+| `gateway/platforms/api_server_run_approval.py` | Run approval authorization, durable decision receipts, and recovery admission |
 
 ## Architecture Overview
 

@@ -193,16 +193,16 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         return thinking_config
     if effort not in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
         effort = "medium"
-    # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
-    # is stricter (low/high). Clamp Hermes' wider effort set to what each
-    # family accepts so we never forward an undocumented level verbatim.
+    # Gemini 3 Flash documents low/medium/high thinking levels. Gemini 3.0 Pro launched with a
+    # stricter low/high contract; 3.1 Pro added ``medium`` (Google's 3.1 Pro model card). Only 3.0
+    # Pro keeps the strict clamp, so later 3.x Pro releases inherit the wider surface.
     if normalized_model.startswith("gemini-3"):
-        if "flash" in normalized_model:
+        if normalized_model.startswith("gemini-3-pro") and "flash" not in normalized_model:
+            thinking_config["thinkingLevel"] = "high" if effort in _HIGH_EFFORTS else "low"
+        elif "flash" in normalized_model or "pro" in normalized_model:
             thinking_config["thinkingLevel"] = (
                 "low" if effort in {"minimal", "low"} else "high" if effort in _HIGH_EFFORTS else "medium"
             )
-        elif "pro" in normalized_model:
-            thinking_config["thinkingLevel"] = "high" if effort in _HIGH_EFFORTS else "low"
     return thinking_config
 
 

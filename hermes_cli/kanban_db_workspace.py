@@ -675,6 +675,33 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+def _worktree_add_timeout() -> int:
+    """Timeout for ``git worktree add``. The old hard 60s cap killed full
+    checkouts of large monorepos mid-flight (41k+ files under real-time AV
+    scanning can exceed it easily, #126004); the default now allows a full
+    checkout while ``HERMES_KANBAN_WORKTREE_TIMEOUT`` overrides it."""
+    raw = os.environ.get("HERMES_KANBAN_WORKTREE_TIMEOUT", "").strip()
+    try:
+        return max(1, int(raw)) if raw else 600
+    except ValueError:
+        return 600
+
+
+def _discard_partial_worktree(repo_root: Path, target: Path) -> None:
+    """Best-effort removal of a half-materialized worktree. Git writes the
+    ``.git`` pointer before checking out files, so a leftover partial directory
+    passes the common-dir reuse shortcut above and a retry would run a worker
+    inside an incomplete checkout (#126004). Never raises: the caller is
+    already on a failure path and its own error must survive. ``prune`` runs
+    last, after the directory is gone, so an admin registration the ``remove``
+    could not clear (damaged metadata) is still dropped."""
+    with contextlib.suppress(Exception):
+        _git(repo_root, "worktree", "remove", "--force", str(target), timeout=30)
+    shutil.rmtree(target, ignore_errors=True)
+    with contextlib.suppress(Exception):
+        _git(repo_root, "worktree", "prune", timeout=30)
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
     """Materialize ``target`` as a linked git worktree under ``repo_root``."""
     target = target.expanduser()
@@ -686,9 +713,14 @@ def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> Non
         args = ["worktree", "add", str(target), branch_name]
     else:
         args = ["worktree", "add", "-b", branch_name, str(target), "HEAD"]
-    result = _git(repo_root, *args, timeout=60)
+    try:
+        result = _git(repo_root, *args, timeout=_worktree_add_timeout())
+    except subprocess.TimeoutExpired:
+        _discard_partial_worktree(repo_root, target)
+        raise
     if result.returncode != 0:
         stderr = (result.stderr or result.stdout or "").strip()
+        _discard_partial_worktree(repo_root, target)
         raise RuntimeError(
             f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
         )

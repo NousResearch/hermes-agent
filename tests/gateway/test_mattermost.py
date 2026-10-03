@@ -3,7 +3,7 @@ import json
 import os
 import time
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageType
@@ -393,6 +393,115 @@ class TestMattermostMentionBehavior:
             await self.adapter._handle_ws_event(self._make_event("hello", channel_id="chan_456"))
             assert self.adapter.handle_message.called
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("message", "api_result", "expected", "lookup_count"), [
+        pytest.param(
+            "ping @hermes-bot @other-bot @helper-bot for @human-user",
+            [{"username": "hermes-bot", "is_bot": True},
+             {"username": "other-bot", "is_bot": True},
+             {"username": "helper-bot", "is_bot": True},
+             {"username": "human-user", "is_bot": False}],
+            "ping for @human-user", 1, id="bots-stripped-human-preserved"),
+        pytest.param(
+            "value  =  expression @hermes-bot @other-bot",
+            [{"username": "other-bot", "is_bot": True}],
+            "value  =  expression", 1, id="unrelated-whitespace"),
+        pytest.param(
+            "ping @hermes-bot @other-bot", RuntimeError("lookup failed"),
+            "ping  @other-bot", 1, id="raised-lookup-failure"),
+        pytest.param(
+            "ping @hermes-bot @other-bot", {}, "ping  @other-bot", 1,
+            id="non-list-lookup-failure"),
+        pytest.param(
+            "@hermes-bot please tell @channel about X", None,
+            "please tell @channel about X", 0, id="special-mention-no-lookup"),
+        pytest.param(
+            "@hermes-bot @other-bot tell @here",
+            [{"username": "other-bot", "is_bot": True}],
+            "tell @here", 1, id="special-mention-with-peer"),
+        pytest.param(
+            "@hermes-bot please ask @other-bot.",
+            [{"username": "other-bot", "is_bot": True}],
+            "please ask .", 1, id="trailing-dot"),
+        pytest.param(
+            "@hermes-bot ask @other-bot and @unknown-user",
+            [{"username": "other-bot", "is_bot": True}],
+            "ask and @unknown-user", 1, id="completed-walk-keeps-unresolved"),
+    ])
+    async def test_peer_bot_filter_single_page(
+            self, message, api_result, expected, lookup_count):
+        if isinstance(api_result, Exception):
+            self.adapter._api_get = AsyncMock(side_effect=api_result)
+        else:
+            self.adapter._api_get = AsyncMock(return_value=api_result)
+
+        await self.adapter._handle_ws_event(self._make_event(message))
+
+        assert self.adapter.handle_message.call_args[0][0].text == expected
+        assert self.adapter._api_get.await_count == lookup_count
+        if lookup_count:
+            self.adapter._api_get.assert_awaited_once_with(
+                "users?in_channel=chan_456&page=0&per_page=200")
+
+    @pytest.mark.asyncio
+    async def test_multi_bot_fanout_finds_peer_bot_on_second_users_page(self):
+        first_page = [
+            {"username": f"human-{index}", "is_bot": False}
+            for index in range(200)
+        ]
+        second_page = [{"username": "other-bot", "is_bot": True}]
+        self.adapter._api_get = AsyncMock(side_effect=[first_page, second_page])
+
+        await self.adapter._handle_ws_event(
+            self._make_event("ping @hermes-bot @other-bot")
+        )
+
+        message = self.adapter.handle_message.call_args[0][0]
+        assert message.text == "ping"
+        assert self.adapter._api_get.await_args_list == [
+            call("users?in_channel=chan_456&page=0&per_page=200"),
+            call("users?in_channel=chan_456&page=1&per_page=200"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_unresolved_mention_stops_at_member_page_cap(self):
+        def fresh_page(endpoint):
+            page = int(endpoint.split("page=")[1].split("&")[0])
+            if page >= 50:
+                raise AssertionError("member walk exceeded page cap")
+            return [
+                {"username": f"human-{page}-{index}", "is_bot": False}
+                for index in range(200)
+            ]
+
+        self.adapter._api_get = AsyncMock(side_effect=fresh_page)
+
+        await self.adapter._handle_ws_event(
+            self._make_event("ping @hermes-bot @never-resolves")
+        )
+
+        assert self.adapter.handle_message.call_args[0][0].text == "ping  @never-resolves"
+        assert self.adapter._api_get.await_count == 50
+
+    @pytest.mark.asyncio
+    async def test_unresolved_mention_stops_when_pagination_stalls(self):
+        """A server that keeps returning the same page must not loop forever."""
+        stalled_page = [
+            {"username": f"human-{index}", "is_bot": False}
+            for index in range(200)
+        ]
+        self.adapter._api_get = AsyncMock(return_value=list(stalled_page))
+
+        await self.adapter._handle_ws_event(
+            self._make_event("ping @hermes-bot @never-resolves")
+        )
+
+        assert self.adapter.handle_message.call_args[0][0].text == "ping  @never-resolves"
+        assert self.adapter._api_get.await_args_list == [
+            call("users?in_channel=chan_456&page=0&per_page=200"),
+            call("users?in_channel=chan_456&page=1&per_page=200"),
+        ]
+
 
 # ---------------------------------------------------------------------------
 # File upload (send_image)
@@ -708,4 +817,3 @@ class TestMultiplexProfileScope:
             # skipped -- writing here would leak into every other profile's
             # os.environ.
             assert "MATTERMOST_REQUIRE_MENTION" not in os.environ
-

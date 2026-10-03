@@ -173,6 +173,17 @@ def _desktop_packaged_executable_in(release_dir: Path) -> Optional[Path]:
     existing = [p for p in candidates if p.exists()]
     if not existing:
         return None
+    if len(existing) > 1 and sys.platform != "win32":
+        arch = _desktop_staging_arch()
+        # Judge only the platform output dir directly under release_dir (linux-arm64-unpacked,
+        # mac-arm64): its ancestors are shared by every candidate and may themselves say "arm64"
+        # (this host's own .staging-<pid>-arm64-... dir, a checkout under .../linux-arm64-src).
+        matching = [
+            p for p in existing
+            if ("arm64" in p.relative_to(release_dir).parts[0].lower()) == (arch == "arm64")
+        ]
+        if matching:
+            existing = matching
     if sys.platform == "win32" and len(existing) > 1:
         # A stale win-arm64-unpacked next to the real win-unpacked: picking by
         # mtime can hand a wrong-architecture Hermes.exe to the launcher. Prefer
@@ -206,6 +217,35 @@ _DESKTOP_PREVIOUS_SUFFIX = ".previous"
 _DESKTOP_SWAP_RENAME_RETRY_DELAYS_S = (0.5, 1.0, 1.0, 1.0)
 
 
+def _desktop_staging_arch() -> str:
+    """Canonical architecture bound into a staging directory's identity."""
+    machine = (facts.native_arch() if sys.platform == "win32" else platform.machine()).lower()
+    return "arm64" if machine in {"arm64", "aarch64"} else "x64"
+
+
+def _desktop_staging_owner_alive(pid: int) -> bool:
+    """Whether a staging owner still exists; permission refusal means alive."""
+    if pid <= 0:
+        return False
+    # Never os.kill(pid, 0): on Windows it delivers CTRL_C_EVENT to the target's console group.
+    from gateway.status import _pid_exists
+    return _pid_exists(pid)
+
+
+def _desktop_staging_scope(desktop_dir: Path, env: Optional[dict] = None) -> str:
+    """Opaque identity for paths that select the desktop's persistent data."""
+    selected_env = os.environ if env is None else env
+    path_env = {
+        name: selected_env.get(name, "")
+        for name in (
+            "HERMES_HOME", "HERMES_DESKTOP_USER_DATA_DIR", "HERMES_DATA_DIR_SUFFIX",
+            "HOME", "LOCALAPPDATA", "XDG_CONFIG_HOME",
+        )
+    }
+    identity = {"desktop": os.path.realpath(desktop_dir), "env": path_env}
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+
+
 def _rename_riding_out_file_lock(src: Path, dst: Path) -> None:
     """``os.rename`` that retries a transient PermissionError with bounded backoff; re-raises the last one."""
     for attempt, delay in enumerate(_DESKTOP_SWAP_RENAME_RETRY_DELAYS_S, start=1):
@@ -221,12 +261,23 @@ def _rename_riding_out_file_lock(src: Path, dst: Path) -> None:
     os.rename(src, dst)
 
 
-def _desktop_staging_dir(desktop_dir: Path) -> Path:
-    """Fresh staging dir ``apps/desktop/.staging-<pid>-<ts>``: a sibling of ``release/`` (same fs → the
-    swap is a rename) but not inside it, so ``release/*-unpacked`` globs never see it. Sweeps leftovers."""
+def _desktop_staging_dir(desktop_dir: Path, *, env: Optional[dict] = None) -> Path:
+    """Fresh owner/architecture/data-scope-bound staging sibling of ``release/``.
+
+    Keeping the path-affecting environment in the identity prevents two update
+    channels that share a checkout but use different homes/user-data roots from
+    treating each other's staging tree as their own.
+    """
     for stale in desktop_dir.glob(f"{_DESKTOP_STAGING_PREFIX}*"):
-        shutil.rmtree(stale, ignore_errors=True)
-    return desktop_dir / f"{_DESKTOP_STAGING_PREFIX}{os.getpid()}-{int(_time_mod.time())}"
+        # Both this layout and the older ``.staging-<pid>-<ts>`` start with the owner's pid: keep a
+        # live owner's tree, sweep a dead one's. A name without a pid was never ours to keep.
+        match = re.match(r"\.staging-(\d+)-", stale.name)
+        if match is None or not _desktop_staging_owner_alive(int(match.group(1))):
+            shutil.rmtree(stale, ignore_errors=True)
+    return desktop_dir / (
+        f"{_DESKTOP_STAGING_PREFIX}{os.getpid()}-{_desktop_staging_arch()}-"
+        f"{_desktop_staging_scope(desktop_dir, env)}-{int(_time_mod.time())}"
+    )
 
 
 def _desktop_unpacked_root(exe: Path, release_dir: Path) -> Path:
@@ -1591,7 +1642,7 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
               "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
     build_args = ["--icons", str(icons)] if icons else []
     build_cmd = [npm, "run", "build", "--", *build_args]
-    staging_dir = None if source_mode else _desktop_staging_dir(desktop_dir)
+    staging_dir = None if source_mode else _desktop_staging_dir(desktop_dir, env=build_env)
     if staging_dir is not None:
         # electron-builder packs in place; only the verified staging tree may
         # replace the running app, never a failed or incomplete build.

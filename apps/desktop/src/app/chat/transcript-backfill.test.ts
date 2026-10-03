@@ -10,6 +10,7 @@ import {
   extendRefreshPageToOverlap,
   graftRefreshedTailOntoBackfill,
   mergeOlderTranscriptPage,
+  removeLiveCopiesOfHydratedRows,
   transcriptBackfillAvailable,
   unhideOpeningUserRows
 } from './transcript-backfill'
@@ -290,6 +291,30 @@ describe('graftRefreshedTailOntoBackfill', () => {
     const refreshed = [chat('a', 1), chat('b', 2)]
 
     expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
+  })
+})
+
+describe('removeLiveCopiesOfHydratedRows', () => {
+  it('removes an id-less live copy when hydration has the same durable row', () => {
+    const live = chat('same turn')
+    const hydrated = chat('same turn', 42)
+
+    expect(removeLiveCopiesOfHydratedRows([live, hydrated])).toEqual([hydrated])
+  })
+
+  it('keeps a distinct pending repeated user turn', () => {
+    const durable = chat('same turn', 41)
+    const pending = { ...chat('same turn'), id: 'user-pending-repeat' }
+
+    expect(removeLiveCopiesOfHydratedRows([durable, pending])).toEqual([durable, pending])
+  })
+
+  it('keeps repeated durable rows and unrelated live rows', () => {
+    const first = chat('same turn', 41)
+    const second = chat('same turn', 42)
+    const live = chat('still streaming')
+
+    expect(removeLiveCopiesOfHydratedRows([first, second, live])).toEqual([first, second, live])
   })
 })
 

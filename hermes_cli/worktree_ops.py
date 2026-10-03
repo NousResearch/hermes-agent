@@ -956,6 +956,10 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
 
         try:
             branch = _git(["branch", "--show-current"], str(entry), timeout=5).stdout.strip()
+            # Our own .worktreeinclude symlinks are the only untracked state a reap verdict
+            # allows; drop them so the plain (non --force) remove still succeeds.
+            for rel in _include_symlink_paths(str(entry), repo_root):
+                (entry / rel).unlink()
             remove_result = _git(["worktree", "remove", str(entry)], repo_root, timeout=15)
             if remove_result.returncode != 0:
                 logger.debug("Failed to remove worktree %s: %s", entry.name, remove_result.stderr.strip())

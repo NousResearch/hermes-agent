@@ -66,3 +66,20 @@ def test_startup_reclaim_preserves_work_added_after_classification(repository, k
     assert tree.is_dir()
     assert (tree / "README.md").read_text(encoding="utf-8") == "new work after audit\n"
     assert _git(root, "rev-parse", "--verify", "scratch")
+
+
+def test_startup_reclaim_still_removes_include_symlink_only_tree(repository):
+    from hermes_cli.worktree_ops import _classify_prune_candidates, _reap_prune_verdicts
+
+    root, tree = repository
+    (root / "node_modules").mkdir()
+    (root / ".worktreeinclude").write_text("node_modules\n", encoding="utf-8")
+    (root / ".gitignore").write_text("node_modules/\n.worktrees/\n", encoding="utf-8")
+    os.symlink(root / "node_modules", tree / "node_modules")
+    verdicts = _classify_prune_candidates(str(root), [(tree, time.time() - 86400, False)])
+    assert verdicts[0][3] == "reap"
+
+    _reap_prune_verdicts(str(root), verdicts, stale_work_cutoff=0)
+
+    assert not tree.exists()
+    assert (root / "node_modules").is_dir()

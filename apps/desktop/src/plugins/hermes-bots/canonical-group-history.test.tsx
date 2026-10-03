@@ -23,6 +23,7 @@ vi.mock('./canonical-group-labels', async () => {
     send: 'Send', stop: 'Stop', download: 'Download', discard: 'Discard', cancel: 'Cancel', you: 'You' }) }
 })
 
+import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
 
 const binding = { connectionId: 'original-owner', profile: 'reviewer', roomId: 'room-one' }
@@ -159,4 +160,71 @@ it('hides empty bookkeeping rows, but keeps unknown kinds and bookkeeping that c
   expect(history.getByText('room.future_kind')).toBeTruthy()
   expect(history.queryByText('turn.settled')).toBeNull()
   expect(history.queryByText('room.activity')).toBeNull()
+})
+
+it('keeps Layer 7 bookkeeping quiet and words host changes and waiting work from display fields, without new reads', async () => {
+  const wentOffline = new Date()
+  wentOffline.setHours(9, 30, 0, 0)
+  const offlineSince = wentOffline.getTime() / 1000
+  const time = new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit' }).format(wentOffline)
+  const english = 'This group now continues on install:0123456789abcdef0123456789abcdef (with the operator’s attestation).'
+  const system = { kind: 'system', id: 'room-driver' }
+
+  const events = [
+    { seq: 1, event_id: 'said', kind: 'message.user', actor: { kind: 'user', id: 'desktop' }, payload: { text: 'hello' } },
+    { seq: 2, event_id: 'admitted', kind: 'task.admitted', actor: system, payload: { task_id: 'task-1', generation: 1 } },
+    { seq: 3, event_id: 'custody', kind: 'custody.configured', actor: system, payload: { voters: [{ install_id: 'install:a', role: 'custodian' }] } },
+    { seq: 4, event_id: 'state', kind: 'succession.state', actor: system, payload: { state: 'moving' } },
+    { seq: 5, event_id: 'moved', kind: 'authority.transition', actor: system,
+      payload: { text: english, to_name: 'Home VPS', from_name: 'Mac mini', offline_since: offlineSince } },
+    { seq: 6, event_id: 'moved-no-origin', kind: 'authority.transition', actor: system,
+      payload: { text: english, to_name: 'Home VPS', from_name: null, offline_since: offlineSince } },
+    { seq: 7, event_id: 'moved-unnamed', kind: 'authority.transition', actor: system,
+      payload: { text: english, to_name: null, from_name: null, offline_since: null } },
+    { seq: 8, event_id: 'moved-older', kind: 'authority.transition', actor: system, payload: { text: 'Older gateway notice.' } },
+    { seq: 9, event_id: 'waiting-bot', kind: 'turn.deferred', actor: system,
+      payload: { member_id: 'm-atlas', task_id: 'task-2', reason: 'waiting_for_host', resource: 'bot', host_name: 'Mac mini' } },
+    { seq: 10, event_id: 'waiting-file', kind: 'turn.deferred', actor: system,
+      payload: { member_id: 'm-mira', task_id: 'task-3', reason: 'waiting_for_host', resource: 'file', host_name: null } },
+    { seq: 11, event_id: 'other-reason', kind: 'turn.deferred', actor: system, payload: { member_id: 'm-mira', reason: 'approval_pending' } }
+  ]
+
+  request.mockImplementation(async (_route, method) => {
+    if (method === 'groups.state') {return { room: { name: 'Room' } }}
+
+    if (method === 'groups.log') {return { events }}
+    throw new Error(`Unexpected method ${method}`)
+  })
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const history = within(screen.getByRole('log'))
+  await waitFor(() => expect(history.getByText('hello')).toBeTruthy())
+
+  for (const kind of ['task.admitted', 'custody.configured', 'succession.state']) {expect(history.queryByText(kind)).toBeNull()}
+  expect(history.getByText(`This group now continues on Home VPS. Mac mini went offline at ${time}.`)).toBeTruthy()
+  expect(history.getByText('This group now continues on Home VPS.')).toBeTruthy()
+  expect(history.getByText('This group now continues on another computer.')).toBeTruthy()
+  expect(history.getByText('Older gateway notice.')).toBeTruthy()
+  expect(history.queryByText(english)).toBeNull()
+  expect(history.queryByText(/install:/)).toBeNull()
+  expect(history.getByText('Waiting for Mac mini: this needs a Bot that’s only there.')).toBeTruthy()
+  expect(history.getByText('Waiting for another computer: this needs a file that’s only there.')).toBeTruthy()
+  expect(history.getByText('turn.deferred')).toBeTruthy()
+  expect(request.mock.calls.every(call => ['groups.state', 'groups.log'].includes(call[1]))).toBe(true)
+})
+
+it('keeps every placeholder of the host-change and waiting copy in all nine locales', () => {
+  const english = CANONICAL_GROUP_LOCALES.en
+
+  const keys = ['continuedOn', 'continuedOnSince', 'continuedOnUnnamed', 'waitingForHostBot', 'waitingForHostFile',
+    'waitingForUnnamedHostBot', 'waitingForUnnamedHostFile'] as const
+
+  const placeholders = (text: string) => (text.match(/\{\w+\}/g) ?? []).sort()
+
+  expect(Object.keys(CANONICAL_GROUP_LOCALES)).toHaveLength(9)
+
+  for (const [locale, messages] of Object.entries(CANONICAL_GROUP_LOCALES)) {
+    for (const key of keys) {
+      expect(placeholders(messages[key]), `${locale}.${key}`).toEqual(placeholders(english[key]))
+    }
+  }
 })

@@ -6,7 +6,7 @@ Bot Mode lists gateway rooms separately from classic rooms, which Desktop runs i
 
 One classifier (`groupExecutionMode`) decides from `groups.capabilities`. A connection is canonical only when its `methods` include `groups.discard`, and it can run rooms only when `driver` is `true`. A `-32601` reply, or any other capability payload (current `main`, standalone `hermes serve` or `hermes dashboard`), means classic rooms. A transport error shows the driver as unavailable with **Retry now**, but a connection already classified classic in this session keeps its classic composer.
 
-Today only Desktop's local gateway connection reaches the canonical surface. SSH, URL remotes and Nous Cloud connect to the standalone web server, which answers with the legacy surface, so their rooms stay classic until that server exposes the canonical one.
+The connection kind plays no part in this choice. Today only Desktop's local gateway connection advertises the canonical surface: SSH, URL remotes and Nous Cloud reach the standalone web server, which answers with the legacy surface, so their rooms stay classic until a remote endpoint advertises the canonical methods.
 
 On a canonical connection the creation dialog creates a gateway group when the roster qualifies: two to six members, all on this connection, with unique profiles and non-reserved handles. Other rosters are created as classic rooms, and the dialog says why. On a default install the gateway refuses members that are not listed under `hosted_rooms.profiles`; the dialog explains this and links the hosted profile guide.
 
@@ -22,5 +22,7 @@ The gateway owns the log and the work. Desktop reads `groups.state`, and reads `
 - **Retry, Discard and approvals** come only from `driver_status.pending_actions` and send the exact member, task, generation and request identity. Discard requires confirmation that prior side effects are not undone.
 - **Attachments** upload with `groups.attachment.upload` and download with `groups.attachment.download`.
 - **Rename** (`groups.rename`) keeps one event id per intended name across retries. **Disband** (`groups.disband`) asks for confirmation, and only a confirmed tombstone removes the room from Desktop and closes its tab. Both appear only when the gateway advertises them.
+
+Bookkeeping events with nothing to show stay out of the history: `turn.settled`, `room.activity`, `task.admitted`, `custody.configured` and `succession.state`. When a group moves to another computer, Desktop words the `authority.transition` notice and a `turn.deferred` that is `waiting_for_host` in the reader's language from their display fields (`to_name`, `from_name`, `offline_since`, `resource`, `host_name`), with generic wording when a name is unknown. An older gateway's English `text` remains the fallback. This needs no extra reads.
 
 Errors stay visible, and no failed gateway-room action falls back to Desktop-run execution. Membership editing is not offered. Room discovery is durable on the gateway rather than replicated through Desktop `ui_meta`.

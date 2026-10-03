@@ -50,6 +50,13 @@ export interface CanonicalGroupMessages {
   disbandWarning: string
   confirmDisband: string
   disbandUnconfirmed: string
+  continuedOn: string
+  continuedOnSince: string
+  continuedOnUnnamed: string
+  waitingForHostBot: string
+  waitingForHostFile: string
+  waitingForUnnamedHostBot: string
+  waitingForUnnamedHostFile: string
 }
 
 export const HOSTED_PROFILE_OWNERS_URL = 'https://hermes-agent.nousresearch.com/docs/developer-guide/hosted-profile-owners'
@@ -106,7 +113,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'Disband',
     disbandWarning: 'Disbanding stops the room’s work and closes it on the gateway. This can’t be undone.',
     confirmDisband: 'Confirm disband',
-    disbandUnconfirmed: 'The gateway did not confirm the disband. The room was kept.'
+    disbandUnconfirmed: 'The gateway did not confirm the disband. The room was kept.',
+    continuedOn: 'This group now continues on {target}.',
+    continuedOnSince: 'This group now continues on {target}. {host} went offline at {time}.',
+    continuedOnUnnamed: 'This group now continues on another computer.',
+    waitingForHostBot: 'Waiting for {host}: this needs a Bot that’s only there.',
+    waitingForHostFile: 'Waiting for {host}: this needs a file that’s only there.',
+    waitingForUnnamedHostBot: 'Waiting for another computer: this needs a Bot that’s only there.',
+    waitingForUnnamedHostFile: 'Waiting for another computer: this needs a file that’s only there.'
   },
   ja: {
     pendingActionUnconfirmed: 'この操作を確認できませんでした。グループチャットを更新して状態を確認してください。',
@@ -159,7 +173,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: '解散',
     disbandWarning: '解散するとルームの作業が停止し、ゲートウェイ上でルームが閉じられます。元に戻せません。',
     confirmDisband: '解散を確定',
-    disbandUnconfirmed: 'ゲートウェイが解散を確認しませんでした。ルームは残っています。'
+    disbandUnconfirmed: 'ゲートウェイが解散を確認しませんでした。ルームは残っています。',
+    continuedOn: 'このグループは現在{target}で続いています。',
+    continuedOnSince: 'このグループは現在{target}で続いています。{host}は{time}にオフラインになりました。',
+    continuedOnUnnamed: 'このグループは現在、別のコンピューターで続いています。',
+    waitingForHostBot: '{host}を待っています：そこにしかないBotが必要です。',
+    waitingForHostFile: '{host}を待っています：そこにしかないファイルが必要です。',
+    waitingForUnnamedHostBot: '別のコンピューターを待っています：そこにしかないBotが必要です。',
+    waitingForUnnamedHostFile: '別のコンピューターを待っています：そこにしかないファイルが必要です。'
   },
   zh: {
     pendingActionUnconfirmed: '无法确认此操作。请刷新群聊以检查其状态。',
@@ -212,7 +233,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: '解散',
     disbandWarning: '解散会停止该群组的工作并在网关上关闭它。此操作无法撤销。',
     confirmDisband: '确认解散',
-    disbandUnconfirmed: '网关未确认解散。该群组已保留。'
+    disbandUnconfirmed: '网关未确认解散。该群组已保留。',
+    continuedOn: '此群聊现在在{target}上继续。',
+    continuedOnSince: '此群聊现在在{target}上继续。{host}于{time}离线。',
+    continuedOnUnnamed: '此群聊现在在另一台电脑上继续。',
+    waitingForHostBot: '正在等待{host}：这需要一个只在那里的Bot。',
+    waitingForHostFile: '正在等待{host}：这需要一个只在那里的文件。',
+    waitingForUnnamedHostBot: '正在等待另一台电脑：这需要一个只在那里的Bot。',
+    waitingForUnnamedHostFile: '正在等待另一台电脑：这需要一个只在那里的文件。'
   },
   'zh-hant': {
     pendingActionUnconfirmed: '無法確認此操作。請重新整理群聊以檢查其狀態。',
@@ -265,7 +293,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: '解散',
     disbandWarning: '解散會停止該群組的工作並在閘道上關閉它。此動作無法復原。',
     confirmDisband: '確認解散',
-    disbandUnconfirmed: '閘道未確認解散。該群組已保留。'
+    disbandUnconfirmed: '閘道未確認解散。該群組已保留。',
+    continuedOn: '此群聊現在在{target}上繼續。',
+    continuedOnSince: '此群聊現在在{target}上繼續。{host}於{time}離線。',
+    continuedOnUnnamed: '此群聊現在在另一台電腦上繼續。',
+    waitingForHostBot: '正在等待{host}：這需要一個只在那裡的Bot。',
+    waitingForHostFile: '正在等待{host}：這需要一個只在那裡的檔案。',
+    waitingForUnnamedHostBot: '正在等待另一台電腦：這需要一個只在那裡的Bot。',
+    waitingForUnnamedHostFile: '正在等待另一台電腦：這需要一個只在那裡的檔案。'
   },
   ar: {
     pendingActionUnconfirmed: 'لم نتمكن من تأكيد هذا الإجراء. حدّث محادثة المجموعة للتحقق من حالته.',
@@ -318,7 +353,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'حلّ',
     disbandWarning: 'يؤدي حلّ الغرفة إلى إيقاف عملها وإغلاقها على البوابة. لا يمكن التراجع عن ذلك.',
     confirmDisband: 'تأكيد الحلّ',
-    disbandUnconfirmed: 'لم تؤكد البوابة حلّ الغرفة. تم الإبقاء عليها.'
+    disbandUnconfirmed: 'لم تؤكد البوابة حلّ الغرفة. تم الإبقاء عليها.',
+    continuedOn: 'تستمر هذه المجموعة الآن على {target}.',
+    continuedOnSince: 'تستمر هذه المجموعة الآن على {target}. أصبح {host} غير متصل عند {time}.',
+    continuedOnUnnamed: 'تستمر هذه المجموعة الآن على جهاز كمبيوتر آخر.',
+    waitingForHostBot: 'بانتظار {host}: يحتاج هذا إلى بوت موجود هناك فقط.',
+    waitingForHostFile: 'بانتظار {host}: يحتاج هذا إلى ملف موجود هناك فقط.',
+    waitingForUnnamedHostBot: 'بانتظار جهاز كمبيوتر آخر: يحتاج هذا إلى بوت موجود هناك فقط.',
+    waitingForUnnamedHostFile: 'بانتظار جهاز كمبيوتر آخر: يحتاج هذا إلى ملف موجود هناك فقط.'
   },
   ru: {
     pendingActionUnconfirmed: 'Не удалось подтвердить это действие. Обновите групповой чат, чтобы проверить его состояние.',
@@ -374,7 +416,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'Расформировать',
     disbandWarning: 'Расформирование останавливает работу комнаты и закрывает её на шлюзе. Это нельзя отменить.',
     confirmDisband: 'Подтвердить расформирование',
-    disbandUnconfirmed: 'Шлюз не подтвердил расформирование. Комната сохранена.'
+    disbandUnconfirmed: 'Шлюз не подтвердил расформирование. Комната сохранена.',
+    continuedOn: 'Теперь эта группа продолжает работу на компьютере {target}.',
+    continuedOnSince: 'Теперь эта группа продолжает работу на компьютере {target}. Компьютер {host} отключился в {time}.',
+    continuedOnUnnamed: 'Теперь эта группа продолжает работу на другом компьютере.',
+    waitingForHostBot: 'Ожидание компьютера {host}: для этого нужен Бот, который есть только там.',
+    waitingForHostFile: 'Ожидание компьютера {host}: для этого нужен файл, который есть только там.',
+    waitingForUnnamedHostBot: 'Ожидание другого компьютера: для этого нужен Бот, который есть только там.',
+    waitingForUnnamedHostFile: 'Ожидание другого компьютера: для этого нужен файл, который есть только там.'
   },
   fr: {
     pendingActionUnconfirmed: 'Cette action n’a pas pu être confirmée. Actualisez la discussion pour vérifier son état.',
@@ -429,7 +478,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'Dissoudre',
     disbandWarning: 'La dissolution arrête le travail du salon et le ferme sur la passerelle. C’est irréversible.',
     confirmDisband: 'Confirmer la dissolution',
-    disbandUnconfirmed: 'La passerelle n’a pas confirmé la dissolution. Le salon est conservé.'
+    disbandUnconfirmed: 'La passerelle n’a pas confirmé la dissolution. Le salon est conservé.',
+    continuedOn: 'Ce groupe continue désormais sur {target}.',
+    continuedOnSince: 'Ce groupe continue désormais sur {target}. L’ordinateur {host} s’est déconnecté à {time}.',
+    continuedOnUnnamed: 'Ce groupe continue désormais sur un autre ordinateur.',
+    waitingForHostBot: 'En attente de l’ordinateur {host} : il faut un Bot qui ne se trouve que là-bas.',
+    waitingForHostFile: 'En attente de l’ordinateur {host} : il faut un fichier qui ne se trouve que là-bas.',
+    waitingForUnnamedHostBot: 'En attente d’un autre ordinateur : il faut un Bot qui ne se trouve que là-bas.',
+    waitingForUnnamedHostFile: 'En attente d’un autre ordinateur : il faut un fichier qui ne se trouve que là-bas.'
   },
   de: {
     pendingActionUnconfirmed: 'Diese Aktion konnte nicht bestätigt werden. Aktualisiere den Gruppenchat, um ihren Status zu prüfen.',
@@ -485,7 +541,14 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'Auflösen',
     disbandWarning: 'Das Auflösen stoppt die Arbeit des Raums und schließt ihn auf dem Gateway. Das lässt sich nicht rückgängig machen.',
     confirmDisband: 'Auflösen bestätigen',
-    disbandUnconfirmed: 'Das Gateway hat das Auflösen nicht bestätigt. Der Raum bleibt bestehen.'
+    disbandUnconfirmed: 'Das Gateway hat das Auflösen nicht bestätigt. Der Raum bleibt bestehen.',
+    continuedOn: 'Diese Gruppe läuft jetzt auf {target} weiter.',
+    continuedOnSince: 'Diese Gruppe läuft jetzt auf {target} weiter. {host} ist um {time} offline gegangen.',
+    continuedOnUnnamed: 'Diese Gruppe läuft jetzt auf einem anderen Computer weiter.',
+    waitingForHostBot: 'Warten auf {host}: Dafür wird ein Bot gebraucht, den es nur dort gibt.',
+    waitingForHostFile: 'Warten auf {host}: Dafür wird eine Datei gebraucht, die es nur dort gibt.',
+    waitingForUnnamedHostBot: 'Warten auf einen anderen Computer: Dafür wird ein Bot gebraucht, den es nur dort gibt.',
+    waitingForUnnamedHostFile: 'Warten auf einen anderen Computer: Dafür wird eine Datei gebraucht, die es nur dort gibt.'
   },
   es: {
     pendingActionUnconfirmed: 'No pudimos confirmar esta acción. Actualiza el chat para comprobar su estado.',
@@ -540,6 +603,13 @@ export const CANONICAL_GROUP_LOCALES = {
     disband: 'Disolver',
     disbandWarning: 'Disolver detiene el trabajo de la sala y la cierra en la puerta de enlace. No se puede deshacer.',
     confirmDisband: 'Confirmar disolución',
-    disbandUnconfirmed: 'La puerta de enlace no confirmó la disolución. La sala se conserva.'
+    disbandUnconfirmed: 'La puerta de enlace no confirmó la disolución. La sala se conserva.',
+    continuedOn: 'Este grupo continúa ahora en {target}.',
+    continuedOnSince: 'Este grupo continúa ahora en {target}. {host} se desconectó ({time}).',
+    continuedOnUnnamed: 'Este grupo continúa ahora en otro equipo.',
+    waitingForHostBot: 'Esperando a {host}: esto necesita un Bot que solo está allí.',
+    waitingForHostFile: 'Esperando a {host}: esto necesita un archivo que solo está allí.',
+    waitingForUnnamedHostBot: 'Esperando a otro equipo: esto necesita un Bot que solo está allí.',
+    waitingForUnnamedHostFile: 'Esperando a otro equipo: esto necesita un archivo que solo está allí.'
   }
 } satisfies Record<string, CanonicalGroupMessages>

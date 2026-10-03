@@ -2456,10 +2456,8 @@ def get_minimax_oauth_auth_status() -> Dict[str, Any]:
     state = get_provider_auth_state("minimax-oauth")
     if not state or not state.get("access_token"):
         return {"logged_in": False, "provider": "minimax-oauth"}
-    try:
-        token_valid = datetime.fromisoformat(state.get("expires_at", "")).timestamp() > time.time()
-    except Exception:
-        token_valid = True  # access_token is known non-empty here
+    expires_at = _parse_iso_timestamp(state.get("expires_at"))
+    token_valid = expires_at is None or expires_at > time.time()
     return {
         "logged_in": token_valid, "provider": "minimax-oauth",
         "region": state.get("region", "global"), "expires_at": state.get("expires_at")}

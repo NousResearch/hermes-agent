@@ -2911,18 +2911,15 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> None:
         """Apply Matrix reply/thread relation metadata to an outbound payload."""
         thread_id = str((metadata or {}).get("thread_id") or "")
-        # Use explicit reply_to, then metadata fallback, then None.
-        effective_reply_to = reply_to or (metadata or {}).get("reply_to_message_id") or None
-        if effective_reply_to:
-            msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": effective_reply_to}}
+        if reply_to:
+            msg_content["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to}}
         if thread_id:
             relates_to = msg_content.get("m.relates_to", {})
             relates_to["rel_type"] = "m.thread"
             relates_to["event_id"] = thread_id
             relates_to["is_falling_back"] = True
-            # Non-thread clients render the reply fallback; default it to the thread root
-            # only when there's no specific message to reply to.
-            relates_to.setdefault("m.in_reply_to", {"event_id": effective_reply_to or thread_id})
+            # Non-thread clients render the reply fallback; default it to the thread root.
+            relates_to.setdefault("m.in_reply_to", {"event_id": reply_to or thread_id})
             msg_content["m.relates_to"] = relates_to
 
     def _extract_outbound_mentions(self, text: str) -> list[str]:

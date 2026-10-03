@@ -7,7 +7,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
 from hermes_state_ids import new_session_id
 
@@ -161,7 +161,17 @@ class SessionLifecycleMixin:
             self._set_turn_marker_locked(session_key, entry, None, None)
         return True
 
-    def recover_interrupted_turns(self, max_age_seconds: int = 60 * 60) -> int:
+    def get_active_turn_token(self, session_key: str) -> Optional[str]:
+        """Return the current exact turn owner without exposing other state."""
+        with self._lock:
+            entry = self._entry_locked(session_key)
+            return entry.active_turn_token if entry is not None else None
+
+    def recover_interrupted_turns(
+        self,
+        max_age_seconds: int = 60 * 60,
+        completed_turn_tokens: Optional[Dict[str, set[str]]] = None,
+    ) -> int:
         """Promote crash-left turn markers into ``resume_pending`` (unclean startup only).
         Old/invalid markers are cleared without resuming; suspended sessions are never re-armed.
         Returns the number of newly promoted sessions."""
@@ -172,6 +182,16 @@ class SessionLifecycleMixin:
             nonlocal promoted
             if not entry.active_turn_token:
                 return False
+            completed_tokens = (completed_turn_tokens or {}).get(entry.session_key, set())
+            turn_is_completed = (
+                entry.active_turn_token == completed_tokens
+                if isinstance(completed_tokens, str)
+                else entry.active_turn_token in completed_tokens
+            )
+            if turn_is_completed:
+                entry.active_turn_token = None
+                entry.active_turn_started_at = None
+                return True
             started_at = entry.active_turn_started_at
             # Epoch arithmetic: a pre-upgrade naive marker reads as local time, an aware one exactly.
             marker_is_stale = started_at is None or (

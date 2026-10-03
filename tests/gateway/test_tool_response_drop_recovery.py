@@ -76,13 +76,15 @@ def _strip_everything(adapter, monkeypatch):
     """Force the extract pipeline to reduce text_content to "" with no
     attachments — the exact failure mode that made the drop invisible."""
     monkeypatch.setattr(
-        type(adapter), "extract_media", staticmethod(lambda content: ([], content))
+        type(adapter), "extract_media",
+        staticmethod(lambda content, *, include_unavailable=False: ([], content)),
     )
     monkeypatch.setattr(
         type(adapter), "extract_images", staticmethod(lambda content: ([], ""))
     )
     monkeypatch.setattr(
-        type(adapter), "extract_local_files", staticmethod(lambda content: ([], ""))
+        type(adapter), "extract_local_files",
+        staticmethod(lambda content, *, include_unavailable=False: ([], "")),
     )
 
 

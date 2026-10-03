@@ -620,9 +620,15 @@ def goal_blocks_loop_tick(session_id: str) -> bool:
         from hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id=session_id)
-        return mgr.is_active() and not mgr.is_waiting()
+        # is_waiting() first performs an authoritative serialized refresh and
+        # any expired-barrier CAS cleanup. A verified parked goal yields the
+        # idle boundary; a verified active non-waiting goal owns it.
+        waiting = mgr.is_waiting()
+        return mgr.is_active() and not waiting
     except Exception:
-        return False
+        # Unknown durable state may still contain an active goal. Fail closed:
+        # never admit a competing synthetic /loop turn on a failed read/CAS.
+        return True
 
 
 LOOP_HELP = (

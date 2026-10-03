@@ -2211,6 +2211,7 @@ from gateway.run_profile_reconcile import GatewayProfileReconcileMixin
 from gateway.run_plugin_rewire import GatewayPluginRewireMixin
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    DeliveryOwnedReply,
     _reply_anchor_for_event,
     _terminal_sentinel_start,
 )
@@ -2223,6 +2224,10 @@ from gateway.restart import (
 
 
 logger = logging.getLogger(__name__)
+
+
+class GoalContinuationPublicationError(RuntimeError):
+    """A completed continuation could not cross its durable publication fence."""
 
 
 def _best_effort(fn: Callable[[], Any], debug_msg: Optional[str] = None) -> Any:
@@ -3611,6 +3616,10 @@ class GatewayRunner(
         self._startup_restore_in_progress = False
         self._startup_restore_queue: List[MessageEvent] = []
         self._startup_restore_tasks: List[asyncio.Task] = []
+        from hermes_constants import get_hermes_home
+        # Claims are gateway-process recovery state. Pin them to the gateway owner's
+        # home so a multiplexed turn's temporary profile scope cannot split the FIFO.
+        self._goal_continuation_claim_home = get_hermes_home()
         # Set by start_gateway() only for an explicit ``--replace`` launch; scoped to each adapter's
         # cold-start connect and removed before any reconnect can run.
         self._platform_lock_takeover_on_start = False

@@ -85,6 +85,15 @@ def flush_pending_to_file(pending: Dict[str, Any], *, reason: str = "shutdown") 
     flush_dir, ts, flushed = _get_flush_dir(), int(time.time()), 0
     for session_key, value in list(pending.items()):
         if value is not None:
+            # A durable continuation claim already owns this exact typed FIFO
+            # event. Re-spooling it would duplicate or downgrade it on restart.
+            try:
+                from gateway.goal_continuation_claims import event_claim_identity
+
+                if event_claim_identity(value) is not None:
+                    continue
+            except (ImportError, TypeError):
+                pass
             flushed += _flush_value(flush_dir, "pending", session_key, value, reason=reason, ts=ts)
     if flushed:
         logger.info("Flushed %d pending message(s) to %s (reason=%s)", flushed, flush_dir, reason)
@@ -106,6 +115,15 @@ def flush_overflow_to_file(overflow_by_session: Dict[str, Any], *, reason: str =
             continue
         for seq, value in enumerate(list(events)):
             if value is not None:
+                # Durable claims own their complete FIFO, including overflow
+                # successors; the legacy spool must not replay them again.
+                try:
+                    from gateway.goal_continuation_claims import event_claim_identity
+
+                    if event_claim_identity(value) is not None:
+                        continue
+                except (ImportError, TypeError):
+                    pass
                 flushed += _flush_value(flush_dir, "overflow", session_key, value, reason=reason,
                                         ts=ts, seq=seq)
     if flushed:

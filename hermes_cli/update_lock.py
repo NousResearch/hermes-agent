@@ -296,6 +296,56 @@ def describe_holder(holder: UpdateHolder | None) -> str:
     )
 
 
+def hold_update_marker_for_fleet_restart() -> bool:
+    """Keep the Desktop update gate closed across the fleet-restart tail (#126177).
+
+    An update driven from OUTSIDE the Desktop (a maintenance script, another
+    profile's CLI, the gateway's own /update) runs its fleet bounce in the
+    detached completion child, whose parent has typically already exited — the
+    update marker it wrote names a dead pid, so the Desktop's gate sees "no
+    live update" while the fleet is bouncing, and a backend respawn raced the
+    restarting gateway into "Hermes Desktop is quitting." Re-writing the
+    marker owned by THIS process (the one that bounces the units) parks the
+    Desktop until :func:`release_fleet_restart_marker_holds` drops it at the
+    end of fleet verification.
+
+    This is deliberately not ``UpdateLock.acquire`` — the completing child is
+    not a second competing updater but the SAME update's tail, so an
+    ancestor-owned or handoff-held marker is re-owned rather than refused.
+    Never raises; False when the marker path cannot be written.
+    """
+    try:
+        marker = update_marker_path()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
+        _FLEET_RESTART_HOLDERS.add(marker)
+        return True
+    except Exception as exc:
+        logger.debug("Could not hold the update marker for the fleet restart: %s", exc)
+        return False
+
+
+def release_fleet_restart_marker_holds() -> None:
+    """Drop every marker hold taken by :func:`hold_update_marker_for_fleet_restart`. Never raises.
+
+    Only a marker still owned by this process is removed: a handoff partner (an
+    orchestrating updater that adopted the tail) must never lose its claim.
+    """
+    while _FLEET_RESTART_HOLDERS:
+        marker = _FLEET_RESTART_HOLDERS.pop()
+        try:
+            owner = int(marker.read_text(encoding="utf-8-sig").splitlines()[0].strip())
+        except (OSError, IndexError, ValueError):
+            continue
+        if owner != os.getpid():
+            continue  # a handoff partner took ownership — still a live update
+        with suppress(OSError):
+            marker.unlink()
+
+
+_FLEET_RESTART_HOLDERS: set = set()
+
+
 class UpdateLock:
     """Context manager owning the shared update marker for this process.
 

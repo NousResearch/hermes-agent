@@ -552,3 +552,54 @@ class TestAncestryUnderUnreadableProcesses:
 
         lock.release()
         assert marker.exists(), "the orchestrator still needs its marker"
+
+
+# ---------------------------------------------------------------------------
+# Fleet-restart tail hold (#126177)
+# ---------------------------------------------------------------------------
+
+def test_fleet_restart_hold_rewrites_a_dead_owner_marker(marker, other_pid):
+    """The tail's hold must re-own a marker whose updater pid is gone.
+
+    The completion child runs the fleet bounce after its parent has typically
+    exited; the marker the parent wrote names a dead pid, so the Desktop's gate
+    reads "no live update" while units are bouncing. The hold rewrites the
+    marker owned by the bouncing process itself.
+    """
+    from hermes_cli.update_lock import (
+        hold_update_marker_for_fleet_restart, release_fleet_restart_marker_holds,
+    )
+
+    _claim(marker, DEAD_PID)  # the parent updater is gone
+    assert read_live_update(path=marker) is None, "precondition: dead-owner marker reads as no update"
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("HERMES_HOME", str(marker.parent))
+        assert hold_update_marker_for_fleet_restart() is True
+
+    holder = read_live_update(path=marker)
+    assert holder is not None, "the Desktop gate must see a live update while the fleet bounces"
+    assert holder.pid == os.getpid(), "the bouncing process owns the hold"
+
+    release_fleet_restart_marker_holds()
+    assert not marker.exists(), "verification done: the gate opens again"
+
+
+def test_fleet_restart_hold_ignores_a_foreign_takeover(marker, other_pid):
+    """Release only drops a marker this process still owns (#126177).
+
+    A handoff partner that adopted the marker after our hold must not lose its
+    claim when our verification tail finishes.
+    """
+    from hermes_cli.update_lock import (
+        hold_update_marker_for_fleet_restart, release_fleet_restart_marker_holds,
+    )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("HERMES_HOME", str(marker.parent))
+        assert hold_update_marker_for_fleet_restart() is True
+
+    # A handoff partner (the Tauri updater) rewrote the marker with its own pid.
+    _claim(marker, other_pid)
+    release_fleet_restart_marker_holds()
+    assert marker.exists(), "the partner's claim survives our release"

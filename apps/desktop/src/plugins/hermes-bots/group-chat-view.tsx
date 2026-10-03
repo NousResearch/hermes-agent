@@ -159,6 +159,25 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
 
   delete all[group]
 
+  // A room that was mid-turn when it is disbanded keeps its backend session
+  // by design ("intentionally KEPT" below), but the turn already in flight has
+  // no reason to finish: nothing will commit its reply — the epoch bump drops
+  // it — so the model call would grind on burning tokens and firing side
+  // effects (browser prompts, file writes) into a room the user just
+  // discarded. Reuse the Stop primitive — epoch bump + per-member hold +
+  // session.interrupt for the member on turn — before the tombstone, so the
+  // same three legs Stop uses apply here too.
+  if (prior.running) {
+    try {
+      // Legacy rooms may carry no log at all; a stop scoped to the bare
+      // 'legacy' thread is the same fallback the room itself uses.
+      const lastEntry = prior.log?.at(-1)
+      await stopGroupThread(group, lastEntry ? groupThreadOf(lastEntry) : 'legacy', members)
+    } catch {
+      /* best-effort: the epoch bump + tombstone below still retire the room */
+    }
+  }
+
   // Remember the disband durably BEFORE any remote write can stall: the
   // pending sync job alone forgets it once the retry ladder gives up or the
   // window closes, and a gateway mirror that missed the tombstone push would

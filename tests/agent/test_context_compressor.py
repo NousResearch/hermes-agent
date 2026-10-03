@@ -224,6 +224,60 @@ class TestSummarizeToolResultSkillTools:
         assert _summarize_tool_result("skill_view", json.dumps({"name": "github"}), "x" * 100) == "[skill_view] name=github (100 chars)"
 
 
+class TestSummarizeToolResultOutcome:
+    """A compaction stub must carry the outcome of the call (#131244): a refused ``read_file``, a
+    rate-limited ``web_search``, a dead cron run, a non-zero process exit or a failed MCP tool used to
+    compress into the same stub as the success it never was, and the post-compaction agent reported
+    the success."""
+
+    @staticmethod
+    def _stub(tool_name, args, payload):
+        return _summarize_tool_result(tool_name, json.dumps(args), json.dumps(payload))
+
+    @pytest.mark.parametrize("tool_name, args, payload, expected", [
+        ("read_file", {"path": "gone.py", "offset": 1}, {"error": "File not found: gone.py"},
+         "[read_file] read gone.py from line 1 (36 chars) FAILED: File not found: gone.py"),
+        ("web_search", {"query": "hermes"}, {"error": "rate limited"},
+         "[web_search] query='hermes' (25 chars result) FAILED: rate limited"),
+        ("memory", {"action": "add", "target": "a note"}, {"error": "unknown action"},
+         "[memory] add on a note FAILED: unknown action"),
+        ("text_to_speech", {}, {"error": "no voice available"},
+         "[text_to_speech] generated audio (31 chars) FAILED: no voice available"),
+        ("cronjob_manage", {"action": "create"}, {"success": False}, "[cronjob] create FAILED"),
+        ("cronjob_manage", {"action": "run"},
+         {"success": True, "job": {"execution_success": False, "execution_error": "agent exited with code 1"}},
+         "[cronjob] run FAILED: agent exited with code 1"),
+        ("process_manage", {"action": "poll", "session_id": "p1"},
+         {"status": "exited", "exit_code": 1, "completion_reason": "nonzero_exit"},
+         "[process] poll session=p1 FAILED: exit code 1"),
+        # Every MCP/plugin tool falls through to the generic stub.
+        ("some_mcp_tool", {"a": 1}, {"error": "boom"}, "[some_mcp_tool] a=1 (17 chars result) FAILED: boom"),
+    ])
+    def test_failed_call_stub_is_marked_failed(self, tool_name, args, payload, expected):
+        assert self._stub(tool_name, args, payload) == expected
+
+    @pytest.mark.parametrize("tool_name, args, payload, expected", [
+        ("web_search", {"query": "hermes"}, {"results": [{"title": "hit"}]},
+         "[web_search] query='hermes' (31 chars result)"),
+        ("text_to_speech", {}, {"success": True, "path": "/tmp/out.wav"}, "[text_to_speech] generated audio (41 chars)"),
+        # ``job`` carries stored state from earlier runs; only this call's outcome may mark the stub.
+        ("cronjob_manage", {"action": "poll"},
+         {"success": True, "job": {"error": "last run failed", "execution_success": True}}, "[cronjob] poll"),
+        ("process_manage", {"action": "poll", "session_id": "p1"}, {"status": "exited", "exit_code": 0},
+         "[process] poll session=p1"),
+        ("process_manage", {"action": "poll", "session_id": "p1"}, {"status": "running", "pid": 4242},
+         "[process] poll session=p1"),
+        # The agent's own kill and a run the scheduler is already firing are not failures.
+        ("process_manage", {"action": "poll", "session_id": "p1"},
+         {"status": "exited", "exit_code": -15, "completion_reason": "killed"}, "[process] poll session=p1"),
+        ("cronjob_manage", {"action": "run"},
+         {"success": True, "job": {"execution_skipped": "Already being fired by the scheduler; not run again."}},
+         "[cronjob] run SKIPPED: Already being fired by the scheduler; not run again."),
+    ])
+    def test_successful_call_stub_is_not_marked(self, tool_name, args, payload, expected):
+        assert self._stub(tool_name, args, payload) == expected
+
+
 class TestSummarizeToolResultClarify:
     def test_preserves_resolved_user_response_without_metadata(self):
         content = json.dumps({"responses": [{

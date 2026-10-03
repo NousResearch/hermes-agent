@@ -235,7 +235,7 @@ class SessionTelegramTopicsMixin:
                     SELECT * FROM telegram_dm_topic_bindings
                     WHERE profile_name = ? AND chat_id = ? AND thread_id = ?
                     """, (profile_name, str(chat_id), str(thread_id)))
-        return dict(row) if row else None
+        return self._session_row_dict(row) if row else None
 
     def list_telegram_topic_bindings_for_chat(
         self, *, chat_id: str, profile_name: str = "default"
@@ -246,7 +246,8 @@ class SessionTelegramTopicsMixin:
             "SELECT * FROM telegram_dm_topic_bindings WHERE profile_name = ? AND chat_id = ? ORDER BY updated_at DESC",
             (profile_name, str(chat_id)),
         )
-        return [dict(row) for row in rows]
+        # Same normalization boundary as every other public projection (#109465 review).
+        return [self._session_row_dict(row) for row in rows]
 
     def get_telegram_topic_binding_by_session(self, *, session_id: str) -> Optional[Dict[str, Any]]:
         """Reverse lookup via the UNIQUE INDEX on session_id; None when unbound."""
@@ -254,7 +255,7 @@ class SessionTelegramTopicsMixin:
                     SELECT * FROM telegram_dm_topic_bindings
                     WHERE session_id = ?
                     """, (str(session_id),))
-        return dict(row) if row else None
+        return self._session_row_dict(row) if row else None
 
     def delete_telegram_topic_binding(self, *, chat_id: str, thread_id: str, profile_name: str = "default") -> int:
         """Remove the binding row for one (chat, thread) pair. Called when the Bot API confirms

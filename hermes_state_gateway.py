@@ -323,7 +323,7 @@ class SessionGatewayMixin:
     def load_gateway_routing_entries(self, *, scope: str = "") -> Dict[str, str]:
         """Load routing entries for *scope* as {session_key: entry_json}."""
         rows = self._read_all("SELECT session_key, entry_json FROM gateway_routing WHERE scope = ?", (scope,))
-        return {r["session_key"]: r["entry_json"] for r in rows}
+        return {self._public_cell(r["session_key"]): self._public_cell(r["entry_json"]) for r in rows}
 
     def list_never_active_keyed_sessions(self, *, older_than_days: float) -> List[Dict[str, Any]]:
         """Keyed, still-open rows with no evidence of a single turn (no messages, tokens, tool/API calls,
@@ -364,7 +364,9 @@ class SessionGatewayMixin:
             """,
             (cutoff,),
         )
-        return [dict(r) for r in rows]
+        # Same normalization boundary as the other public session projections: a corrupt cell
+        # stored in BLOB storage bypasses text_factory and must not escape as bytes (#109465 review).
+        return [self._session_row_dict(r) for r in rows]
 
     def gateway_routing_entry_for_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """The routing entry (any scope) whose current owner is *session_id*, or None. The id lives
@@ -879,7 +881,7 @@ class SessionGatewayMixin:
         rows = self._read_all(
             "SELECT backend_id, pid, started_at, last_heartbeat, profile, host FROM gateway_heartbeats"
             " ORDER BY last_heartbeat DESC")
-        return [dict(r) for r in rows]
+        return [self._session_row_dict(r) for r in rows]
 
     def request_handoff(self, session_id: str, platform: str) -> bool:
         """Mark a session pending handoff to *platform*; False if a handoff is already in flight."""
@@ -898,8 +900,9 @@ class SessionGatewayMixin:
                 (session_id,))
             if not row:
                 return None
-            return {"state": row["handoff_state"], "platform": row["handoff_platform"],
-                    "error": row["handoff_error"]}
+            return {"state": self._public_cell(row["handoff_state"]),
+                    "platform": self._public_cell(row["handoff_platform"]),
+                    "error": self._public_cell(row["handoff_error"])}
         except Exception:
             return None
 

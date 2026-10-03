@@ -10,6 +10,21 @@
 2. Some tools need env vars (check `.env`)
 3. `/reset` after enabling tools
 
+### Search tools broken (`search_files`, session_search, web_search)
+Three independent failure classes; check the profile's `logs/errors.log` and `logs/agent.log` and confirm which one you hit:
+- **`tool_search` module errors** — `module 'tools.tool_search' has no attribute 'is_bridge_tool'`, or
+  "Tool search assembly skipped: No module named 'snowballstemmer'". Root cause: the venv is **incompletely provisioned**
+  (`snowballstemmer` missing → `tools.tool_search_catalog` import fails → `tools.tool_search` loads as a partial module).
+  Fix: install it into the environment's interpreter (`<env>/Scripts/python -m pip install snowballstemmer` on Windows, `<env>/bin/python -m pip install snowballstemmer` on POSIX), delete stale `tools/__pycache__/tool_search*.pyc`, restart hermes.
+  Long-term: rebuild the venv properly (`pip install -e .`, or fix the repo `pyproject.toml` so `uv sync` completes) so deps
+  don't go missing again.
+- **`web_search` errors “configured to use '<name>' ... no registered web search provider”** — `web.search_backend`
+  points at a provider that isn't installed (often a custom plugin dropped in an update). Fix: pick a bundled, keyless
+  provider → `hermes plugins enable web-ddgs` then `hermes config set web.search_backend ddgs`. ddgs falls back to the
+  keyless free tier if DuckDuckGo returns nothing.
+- **`search_files` “rg: regex parse error / unclosed group”** — the pattern is treated as a regex; a literal containing
+  unbalanced parens (e.g. `build_subdomain()`) breaks ripgrep. Search the bare string or escape metacharacters.
+
 ### Model/provider issues
 1. `hermes doctor` — check config and dependencies
 2. `hermes auth` — re-authenticate OAuth providers (or `hermes auth add <provider>`)

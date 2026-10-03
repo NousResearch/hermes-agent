@@ -464,8 +464,48 @@ class TestVoiceChannelCommands:
 
 
     @pytest.mark.asyncio
-    async def test_join_success(self, runner):
-        """Successful join sets voice_mode and returns confirmation."""
+    @pytest.mark.parametrize("saved_mode", [None, "all", "voice_only", "off"])
+    async def test_join_success(self, runner, saved_mode):
+        """Joining preserves an explicit reply policy, defaulting only new chats."""
+        if saved_mode is not None:
+            runner._voice_mode["discord:123"] = saved_mode
+        mock_channel = MagicMock()
+        mock_channel.name = "General"
+        mock_adapter = AsyncMock()
+        mock_adapter.join_voice_channel = AsyncMock(return_value=True)
+        mock_adapter.get_user_voice_channel = AsyncMock(return_value=mock_channel)
+        mock_adapter._voice_text_channels = {}
+        mock_adapter._voice_sources = {}
+        mock_adapter._voice_input_callback = None
+        mock_adapter._auto_tts_enabled_chats = set()
+        mock_adapter._auto_tts_disabled_chats = set()
+        event = self._make_discord_event()
+        event.source.chat_type = "group"
+        event.source.chat_name = "Hermes Server / #general"
+        runner.adapters[event.source.platform] = mock_adapter
+        result = await runner._handle_voice_channel_join(event)
+        assert "General" in result
+        expected_mode = saved_mode or "all"
+        assert ("123" in mock_adapter._auto_tts_enabled_chats) == (expected_mode != "off")
+        assert ("123" in mock_adapter._auto_tts_disabled_chats) == (expected_mode == "off")
+        if expected_mode == "off":
+            assert "keep replies as text" in result
+        elif expected_mode == "voice_only":
+            assert "only to voice messages" in result
+        assert runner._voice_mode["discord:123"] == expected_mode
+        assert runner._load_voice_modes()["discord:123"] == expected_mode
+        assert mock_adapter._voice_sources[111]["chat_id"] == "123"
+        assert mock_adapter._voice_sources[111]["chat_type"] == "group"
+
+
+    @pytest.mark.asyncio
+    async def test_join_preserves_saved_voice_only_mode(self, runner):
+        """A previously saved voice_only mode must survive /voice join (#81041).
+
+        Regression: /voice join unconditionally overwrote the channel's voice
+        mode with "all", silently degrading a saved voice_only session to
+        speaking every typed reply in the VC.
+        """
         mock_channel = MagicMock()
         mock_channel.name = "General"
         mock_adapter = AsyncMock()
@@ -478,11 +518,15 @@ class TestVoiceChannelCommands:
         event.source.chat_type = "group"
         event.source.chat_name = "Hermes Server / #general"
         runner.adapters[event.source.platform] = mock_adapter
+
+        # Operator previously opted into voice_only (voice in -> voice out;
+        # text in -> text out). The join must not clobber it.
+        runner._voice_mode["discord:123"] = "voice_only"
+
         result = await runner._handle_voice_channel_join(event)
-        assert "General" in result
-        assert runner._voice_mode["discord:123"] == "all"
-        assert mock_adapter._voice_sources[111]["chat_id"] == "123"
-        assert mock_adapter._voice_sources[111]["chat_type"] == "group"
+
+        assert "joined" in result.lower()
+        assert runner._voice_mode["discord:123"] == "voice_only"
 
 
     @pytest.mark.asyncio

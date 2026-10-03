@@ -581,6 +581,8 @@ gateway:
     channel_join_failed: "Kon nie by stemkanaal aansluit nie: {error}"
     channel_deps_missing: "Stem-afhanklikhede ontbreek (PyNaCl / davey). Voer uit: `{hint}`"
     channel_join_permissions: "Kon nie by stemkanaal aansluit nie. Kontroleer die bot se toestemmings (Connect + Speak)."
+    channel_joined_voice_only: "By stemkanaal **{name}** aangesluit. Ek antwoord net op stemboodskappe met stem. Gebruik /voice leave om te ontkoppel."
+    channel_joined_off: "By stemkanaal **{name}** aangesluit. Antwoorde bly teks. Gebruik /voice on vir stemantwoorde of /voice leave om te ontkoppel."
     channel_joined: "By stemkanaal **{name}** aangesluit.\nEk sal my antwoorde praat en na jou luister. Gebruik /voice leave om te ontkoppel."
     channel_not_joined: "Nie in 'n stemkanaal nie."
     channel_left: "Stemkanaal verlaat."

@@ -581,6 +581,8 @@ gateway:
     channel_join_failed: "Ses kanalına katılınamadı: {error}"
     channel_deps_missing: "Ses bağımlılıkları eksik (PyNaCl / davey). Çalıştırın: `{hint}`"
     channel_join_permissions: "Ses kanalına katılınamadı. Bot izinlerini kontrol edin (Connect + Speak)."
+    channel_joined_voice_only: "**{name}** ses kanalına katıldım. Yalnızca sesli mesajlara sesli yanıt vereceğim. Ayrılmak için /voice leave kullanın."
+    channel_joined_off: "**{name}** ses kanalına katıldım. Yanıtlar metin olarak kalacak. Sesli yanıtlar için /voice on, ayrılmak için /voice leave kullanın."
     channel_joined: "**{name}** ses kanalına katıldım.\nYanıtlarımı sesli söyleyip sizi dinleyeceğim. Bağlantıyı kesmek için /voice leave kullanın."
     channel_not_joined: "Bir ses kanalında değilim."
     channel_left: "Ses kanalından ayrıldım."

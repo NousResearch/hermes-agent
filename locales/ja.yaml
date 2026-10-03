@@ -581,6 +581,8 @@ gateway:
     channel_join_failed: "音声チャンネルに参加できませんでした: {error}"
     channel_deps_missing: "音声用の依存パッケージがありません (PyNaCl / davey)。実行してください: `{hint}`"
     channel_join_permissions: "音声チャンネルに参加できませんでした。ボットの権限 (接続 + 発言) を確認してください。"
+    channel_joined_voice_only: "音声チャンネル **{name}** に参加しました。音声メッセージにのみ音声で返信します。切断には /voice leave を使ってください。"
+    channel_joined_off: "音声チャンネル **{name}** に参加しました。返信はテキストのままです。音声返信は /voice on、切断は /voice leave を使ってください。"
     channel_joined: "音声チャンネル **{name}** に参加しました。\n返答は音声で読み上げ、あなたの声を聞き取ります。切断するには /voice leave を使ってください。"
     channel_not_joined: "音声チャンネルに参加していません。"
     channel_left: "音声チャンネルから退出しました。"

@@ -2711,6 +2711,9 @@ DEFAULT_CONFIG = {
         # auto = CUDA on NVIDIA, Metal on macOS, Vulkan on other GPUs, else CPU. Explicit:
         # cuda|metal|vulkan|hip|cpu.
         "backend": "auto",
+        # Catalog MTP recommendations are hardware-dependent. "auto" keeps them enabled;
+        # "off" lets users veto speculative decoding when it regresses their machine.
+        "speculative": "auto",
         "models_max": 4,  # Router process: how many models may be resident at once.
         "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
         # Extra ports detection probes for an external llama-server (besides 8080).

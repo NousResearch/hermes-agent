@@ -10,12 +10,30 @@ Usage:
     python search_arxiv.py --id 2402.03300
     python search_arxiv.py --id 2402.03300,2401.12345
 """
+import re
 import sys
 import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 
 NS = {'a': 'http://www.w3.org/2005/Atom'}
+
+
+def parse_arxiv_id(full_id):
+    """Split an arXiv id into (base id, version suffix).
+
+    A plain split on 'v' truncates archive names that contain a 'v'
+    (solv-int, adap-org, chao-dyn, patt-sol, comp-gas), e.g.
+    'solv-int/9701001v1' -> 'sol'. Anchor the version suffix to the
+    end of the string instead.
+
+    A malformed suffix (e.g. a trailing bare 'v' with no digits, as in
+    '2402.03300v') rides along as part of the base id untouched, since
+    arXiv never emits ids in that form.
+    """
+    match = re.fullmatch(r"(.+?)(v\d+)?", full_id)
+    return match.group(1), match.group(2) or ""
+
 
 def search(query=None, author=None, category=None, ids=None, max_results=5, sort="relevance"):
     params = {}
@@ -62,20 +80,19 @@ def search(query=None, author=None, category=None, ids=None, max_results=5, sort
         title = entry.find('a:title', NS).text.strip().replace('\n', ' ')
         raw_id = entry.find('a:id', NS).text.strip()
         full_id = raw_id.split('/abs/')[-1] if '/abs/' in raw_id else raw_id
-        arxiv_id = full_id.split('v')[0]  # base ID for links
+        arxiv_id, version = parse_arxiv_id(full_id)
         published = entry.find('a:published', NS).text[:10]
         updated = entry.find('a:updated', NS).text[:10]
         authors = ', '.join(a.find('a:name', NS).text for a in entry.findall('a:author', NS))
         summary = entry.find('a:summary', NS).text.strip().replace('\n', ' ')
         cats = ', '.join(c.get('term') for c in entry.findall('a:category', NS))
-        
-        version = full_id[len(arxiv_id):] if full_id != arxiv_id else ""
+
         print(f"{i+1}. {title}")
         print(f"   ID: {arxiv_id}{version} | Published: {published} | Updated: {updated}")
         print(f"   Authors: {authors}")
         print(f"   Categories: {cats}")
         print(f"   Abstract: {summary[:300]}{'...' if len(summary) > 300 else ''}")
-        print(f"   Links: https://arxiv.org/abs/{arxiv_id} | https://arxiv.org/pdf/{arxiv_id}")
+        print(f"   Links: https://arxiv.org/abs/{full_id} | https://arxiv.org/pdf/{full_id}")
         print()
 
 

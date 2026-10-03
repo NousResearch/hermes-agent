@@ -440,7 +440,7 @@ import {
   releaseLocalBackendSlot,
   releaseLocalBackendSlotAfterExit
 } from './pool-spawn-coordinator'
-import { createPoolStopper } from './pool-stop'
+import { createPoolStopper, withPoolEntryAfterStop } from './pool-stop'
 import { poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession } from './portal-session'
 import {
@@ -11315,81 +11315,82 @@ async function ensureRegistryBackend(
   }
 
   const key = backendScopeKey(id, profile)
-  const existing = backendPool.get(key)
 
-  if (existing) {
-    if (!passive) {
-      existing.lastActiveAt = Date.now()
+  return withPoolEntryAfterStop(backendPool, poolStopper, key, async existing => {
+    if (existing) {
+      if (!passive) {
+        existing.lastActiveAt = Date.now()
+      }
+
+      const connectionPromise = existing.connectionPromise
+
+      // A remote process can die while its local SSH forward stays LISTENing.
+      // Validate the exact cached descriptor at dispatch time; background
+      // revalidation is renderer-driven and may never run while the Bots pane is
+      // closed. Concurrent clicks share one retire/reconnect sequence.
+      return registryDispatchRevalidation.run(connectionPromise, () =>
+        ensureHealthyPooledRemoteBackendForDispatch({
+          connectionPromise,
+          currentConnectionPromise: () => backendPool.get(key)?.connectionPromise || null,
+          probe: (connection, requestPath, options) => fetchJsonForBackend(connection, requestPath, options),
+          reconnect: () => ensureRegistryBackend(id, profile, '', { passive }),
+          retire: async (error: any) => {
+            // A late failure from an old descriptor must never tear down a newer
+            // entry that another caller has already installed.
+            if (backendPool.get(key) !== existing) {
+              return
+            }
+
+            rememberLog(
+              `Pooled remote backend "${key}" failed its dispatch probe (${error?.message || error}); reconnecting on demand.`
+            )
+            await stopPoolBackend(key)
+
+            if (source.kind === 'ssh') {
+              await sshBootstrapCoordinator.cancelAndWait(key)
+              await teardownSshConnection(key)
+            }
+          }
+        })
+      )
     }
 
-    const connectionPromise = existing.connectionPromise
+    assertNotPassiveSpawn(passive, key)
+    await evictLruPoolBackends(poolMaxBackends() - 1)
 
-    // A remote process can die while its local SSH forward stays LISTENing.
-    // Validate the exact cached descriptor at dispatch time; background
-    // revalidation is renderer-driven and may never run while the Bots pane is
-    // closed. Concurrent clicks share one retire/reconnect sequence.
-    return registryDispatchRevalidation.run(connectionPromise, () =>
-      ensureHealthyPooledRemoteBackendForDispatch({
-        connectionPromise,
-        currentConnectionPromise: () => backendPool.get(key)?.connectionPromise || null,
-        probe: (connection, requestPath, options) => fetchJsonForBackend(connection, requestPath, options),
-        reconnect: () => ensureRegistryBackend(id, profile, '', { passive }),
-        retire: async (error: any) => {
-          // A late failure from an old descriptor must never tear down a newer
-          // entry that another caller has already installed.
-          if (backendPool.get(key) !== existing) {
-            return
-          }
-
-          rememberLog(
-            `Pooled remote backend "${key}" failed its dispatch probe (${error?.message || error}); reconnecting on demand.`
-          )
-          await stopPoolBackend(key)
-
-          if (source.kind === 'ssh') {
-            await sshBootstrapCoordinator.cancelAndWait(key)
-            await teardownSshConnection(key)
-          }
-        }
-      })
-    )
-  }
-
-  assertNotPassiveSpawn(passive, key)
-  await evictLruPoolBackends(poolMaxBackends() - 1)
-
-  if (readDesktopConnectionsRegistry() !== registry || backendPool.get(key)) {
-    return ensureRegistryBackend(connectionId, profile, managedUpdateCorrelation, opts)
-  }
-
-  const entry = {
-    process: null,
-    port: null,
-    token: null,
-    connectionPromise: null,
-    lastActiveAt: Date.now(),
-    remoteBaseUrl: null
-  }
-
-  entry.connectionPromise = connectRegistryBackend(
-    source,
-    profile,
-    key,
-    entry,
-    resolveRegistrySshConfig(),
-    source.kind === 'ssh' ? resolveRegistryEffectiveFingerprint() : null,
-    managedUpdateCorrelation
-  ).catch(error => {
-    if (backendPool.get(key) === entry) {
-      backendPool.delete(key)
+    if (readDesktopConnectionsRegistry() !== registry || backendPool.get(key)) {
+      return ensureRegistryBackend(connectionId, profile, managedUpdateCorrelation, opts)
     }
 
-    throw error
+    const entry = {
+      process: null,
+      port: null,
+      token: null,
+      connectionPromise: null,
+      lastActiveAt: Date.now(),
+      remoteBaseUrl: null
+    }
+
+    entry.connectionPromise = connectRegistryBackend(
+      source,
+      profile,
+      key,
+      entry,
+      resolveRegistrySshConfig(),
+      source.kind === 'ssh' ? resolveRegistryEffectiveFingerprint() : null,
+      managedUpdateCorrelation
+    ).catch(error => {
+      if (backendPool.get(key) === entry) {
+        backendPool.delete(key)
+      }
+
+      throw error
+    })
+    backendPool.set(key, entry)
+    startPoolIdleReaper()
+
+    return entry.connectionPromise
   })
-  backendPool.set(key, entry)
-  startPoolIdleReaper()
-
-  return entry.connectionPromise
 }
 
 // Dial a non-local registry connection for one profile. Never spawns a local
@@ -11499,43 +11500,44 @@ async function ensureManagedSshBackend(source, profile, correlationId) {
 
 async function ensureManagedSshBackendAtKey(source, profile, key, correlationId, tokenPersistenceSource = '') {
   managedConnectionUpdateGate.assertCanDial(source.id, correlationId)
-  const existing = backendPool.get(key)
 
-  if (existing) {
-    existing.lastActiveAt = Date.now()
+  return withPoolEntryAfterStop(backendPool, poolStopper, key, async existing => {
+    if (existing) {
+      existing.lastActiveAt = Date.now()
 
-    return existing.connectionPromise
-  }
-
-  const entry = {
-    process: null,
-    port: null,
-    token: null,
-    connectionPromise: null,
-    lastActiveAt: Date.now(),
-    remoteBaseUrl: null
-  }
-
-  entry.connectionPromise = connectRegistryBackend(
-    source,
-    profile,
-    key,
-    entry,
-    managedSshConfig(source, profile),
-    null,
-    correlationId,
-    tokenPersistenceSource
-  ).catch(error => {
-    if (backendPool.get(key) === entry) {
-      backendPool.delete(key)
+      return existing.connectionPromise
     }
 
-    throw error
-  })
-  backendPool.set(key, entry)
-  startPoolIdleReaper()
+    const entry = {
+      process: null,
+      port: null,
+      token: null,
+      connectionPromise: null,
+      lastActiveAt: Date.now(),
+      remoteBaseUrl: null
+    }
 
-  return entry.connectionPromise
+    entry.connectionPromise = connectRegistryBackend(
+      source,
+      profile,
+      key,
+      entry,
+      managedSshConfig(source, profile),
+      null,
+      correlationId,
+      tokenPersistenceSource
+    ).catch(error => {
+      if (backendPool.get(key) === entry) {
+        backendPool.delete(key)
+      }
+
+      throw error
+    })
+    backendPool.set(key, entry)
+    startPoolIdleReaper()
+
+    return entry.connectionPromise
+  })
 }
 
 async function restoreManagedPrimarySshBackend(source, profile, correlationId) {

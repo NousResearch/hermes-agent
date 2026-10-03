@@ -105,7 +105,7 @@ When reading blocks from `GET /v1/blocks/{page_id}/children`, each block has a `
 | `child_page` | — | `.child_page.title` |
 | `child_database` | — | `.child_database.title` |
 
-Rich text arrays contain objects with `.plain_text` — concatenate them for readable output.
+Rich text arrays contain objects with `.plain_text`: concatenate them for readable output.
 
 ---
 

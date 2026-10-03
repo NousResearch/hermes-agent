@@ -5,7 +5,12 @@ gated by ``wake_surface_enabled``). Engines live in :mod:`tools.wake_word_engine
 this module owns config, the capture loop and the process-wide listener singleton.
 Capture reuses voice mode's 16 kHz mono int16 ``sounddevice`` path on a daemon
 thread; callers ``pause()`` while a voice turn holds the mic and ``resume()`` once
-idle (two input streams on one device is unreliable cross-platform).
+idle (two input streams on one device is unreliable cross-platform). The stream is a
+CALLBACK stream at the device's DEFAULT block size, reassembled into capture
+frames: an explicit ``blocksize`` re-sizes the CoreAudio device buffer under any
+other live input stream on macOS and stops it — ``||PaMacCore (AUHAL)|| Error on
+line 2523: err='-50'`` from ``AudioUnitRender`` — which is how re-arming this
+listener used to silence voice mode's recorder.
 """
 
 from __future__ import annotations
@@ -39,12 +44,8 @@ SAMPLE_RATE = 16000  # 16 kHz mono int16 — Whisper-native and what every engin
 # several frames while the caller is still reacting.
 _FIRE_COOLDOWN_SECONDS = 2.0
 _START_TIMEOUT_SECONDS = 5.0
-_READ_POLL_SECONDS = 0.05  # slice between read_available polls; bounds halt latency
-# Some hostapis (Windows DirectSound) never advance ``read_available`` even while
-# audio flows; after this much starvation the poll guard is abandoned for the
-# blocking read (see ``_Capture.read``).
-_READ_STALL_FALLBACK_SECONDS = 2.0
 _HALT_JOIN_SECONDS = 2.0
+_QUEUE_FRAMES = 64  # capture frames buffered ahead of the reader; the oldest drop past it
 
 # Ambient-speech rejection: N consecutive over-threshold frames before firing
 # (a stray phoneme spikes one frame; a real phrase holds several).
@@ -435,46 +436,67 @@ class _Capture:
     """One armed audio source: a PortAudio stream (local) or the feed queue (client)."""
 
     stream: Any = None  # sounddevice.InputStream, None in client mode
-    queue: Any = None  # client-capture frame queue, None in local mode
+    queue: Any = None  # frame queue: filled by the stream callback (local) or wake.feed
     np: Any = None
     rate: int = SAMPLE_RATE
     frame_length: int = 1280  # samples per read at ``rate``
-    # Set once ``read_available`` proves unreliable for this stream: skip the poll
-    # guard and go straight to the blocking read.
-    _skip_available_poll: bool = False
+    _pending: Any = None  # carry between device blocks while assembling one frame
+
+    def _push(self, indata, frames, time_info, status) -> None:
+        """PortAudio callback: chop device-sized blocks into exact ``frame_length`` frames.
+
+        The stream keeps the device's DEFAULT block size. An explicit ``blocksize``
+        re-sizes the CoreAudio device buffer under any other live input stream on macOS
+        and stops it (``-50`` from ``AudioUnitRender``), which is how re-arming this
+        listener used to silence voice mode's recorder mid-turn.
+        """
+        try:
+            block = indata[:, 0] if getattr(indata, "ndim", 1) == 2 else indata
+            if self._pending is not None and len(self._pending):
+                pending, self._pending = self._pending, None
+                block = (self.np.concatenate((pending, block)) if self.np is not None
+                         else list(pending) + list(block))
+            size, offset = self.frame_length, 0
+            while len(block) - offset >= size:
+                frame, offset = block[offset:offset + size], offset + size
+                try:
+                    self.queue.put_nowait(frame.copy())
+                except queue.Full:  # reader is behind: drop the oldest, keep the newest
+                    with suppress(Exception):
+                        self.queue.get_nowait()
+                    with suppress(Exception):
+                        self.queue.put_nowait(frame.copy())
+            tail = block[offset:]
+            self._pending = tail if len(tail) else None
+        except Exception as e:  # a callback that raises tears the stream down
+            logger.debug("wake word: capture callback error: %s", e)
 
     def read(self, stop: Optional[threading.Event] = None):
         """One raw block; None when nothing arrived within ~250 ms (client) or ``stop`` was
         set while waiting (local). Stream errors propagate.
 
-        A PortAudio ``read(n)`` blocks until ``n`` samples exist and, on a wedged ALSA/
-        PipeWire device, never returns — so the halting thread's ``join`` timed out and
-        ``close()`` raced the still-pending read. Poll ``read_available`` in short slices
-        against ``stop`` and only call ``read`` once the block is guaranteed to be there.
-
-        A device that never advances ``read_available`` (Windows DirectSound) would spin
-        here forever, so after ``_READ_STALL_FALLBACK_SECONDS`` of starvation the guard is
-        abandoned (with a warning) and the blocking read takes over; a truly wedged
-        blocking read is released by ``_halt_thread`` aborting the stream.
+        The stream itself is never read: ``read()`` is illegal on a callback stream, and a
+        blocking read on a wedged ALSA/PipeWire device never returns — the halting thread's
+        ``join`` timed out and ``close()`` raced the still-pending read. Draining a queue
+        cannot wedge, so ``pause()`` is bounded by the timeout below however the device
+        misbehaves; ``_halt_thread`` still aborts the capture, which releases a callback
+        stuck inside PortAudio.
         """
-        if self.stream is not None:
-            available = getattr(self.stream, "read_available", None)
-            if stop is not None and available is not None and not self._skip_available_poll:
-                stalled = 0.0
-                while self.stream.read_available < self.frame_length:
-                    if stop.wait(_READ_POLL_SECONDS):
-                        return None
-                    stalled += _READ_POLL_SECONDS
-                    if stalled >= _READ_STALL_FALLBACK_SECONDS:
-                        logger.warning(
-                            "wake word: read_available stuck below frame length for "
-                            "%.1fs — falling back to blocking reads", stalled)
-                        self._skip_available_poll = True
-                        break
-            return self.stream.read(self.frame_length)[0]
-        with suppress(Exception):
+        try:
             return self.queue.get(timeout=0.25)
+        except Exception:
+            pass
+        if stop is not None and stop.is_set():
+            return None
+        self._raise_if_stopped()
         return None
+
+    def _raise_if_stopped(self) -> None:
+        """Report a stream that stopped on its own: this AUHAL failure, an unplug, a device
+        switch. It delivers nothing from then on, so without this the reader waits on an
+        empty queue forever and the mic stays deaf; the caller reopens or releases it."""
+        if getattr(self.stream, "active", None) is False:
+            raise RuntimeError("wake word: input stream stopped producing audio")
 
     def close(self) -> None:
         """``abort()`` first: it discards pending buffers and unblocks any in-flight read,
@@ -510,7 +532,7 @@ class WakeWordDetector:
         self._stop, self._callback_inflight = threading.Event(), threading.Event()
         self._lock, self._last_fire = threading.Lock(), 0.0
         # Client-capture PCM queue (int16 mono frames). Local mode ignores this.
-        self._audio_q: "queue.Queue[Any]" = queue.Queue(maxsize=64)
+        self._audio_q: "queue.Queue[Any]" = queue.Queue(maxsize=_QUEUE_FRAMES)
         # True when the stream is open but every frame is (near-)silence, so status
         # surfaces can tell "armed" from "deaf".
         self.audio_silent, self._silent_frames = False, 0
@@ -587,8 +609,8 @@ class WakeWordDetector:
         if t is not None and t is not threading.current_thread():
             t.join(timeout=_HALT_JOIN_SECONDS)
             if t.is_alive():
-                # The reader is wedged in a blocking read (read_available proved
-                # unreliable, or the device died mid-read). abort() discards pending
+                # The reader is stuck inside PortAudio (a callback blocked in the host
+                # call, or a device that died mid-read). abort() discards pending
                 # buffers and unblocks it; close() is idempotent and the reader's
                 # own finally will close it again.
                 cap = self._cap
@@ -630,13 +652,14 @@ class WakeWordDetector:
             with suppress(OverflowError, ValueError):
                 cap.rate = int(round(rate))
         cap.frame_length = max(1, int(round(frame_length * cap.rate / SAMPLE_RATE)))
+        cap.queue = queue.Queue(maxsize=_QUEUE_FRAMES)
         logger.info("wake word: opening microphone device=%s selector=%r hostapi=%s "
                     "default_rate=%s capture_rate=%d engine_rate=%d", details.get("name") or "system default",
                     self.input_device, details.get("hostapi") or "unknown",
                     details.get("default_samplerate") or "unknown", cap.rate, SAMPLE_RATE)
         try:
             cap.stream = sd.InputStream(device=self.input_device, samplerate=cap.rate, channels=1,
-                                        dtype="int16", blocksize=cap.frame_length)
+                                        dtype="int16", callback=cap._push)
             cap.stream.start()
         except Exception as e:
             cap.close()

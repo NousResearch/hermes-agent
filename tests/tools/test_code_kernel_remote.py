@@ -225,13 +225,69 @@ class TestOwnershipIsolation(RemoteKernelBase):
         self.assertEqual(len(_REMOTE_KERNELS), 2)
         shutdown_remote_kernels_for_owner("owner-a")
         self.assertEqual(len(_REMOTE_KERNELS), 1)
-        remaining_owner = next(iter(_REMOTE_KERNELS))[0]
+        remaining_owner = next(iter(_REMOTE_KERNELS))[0].session_key
         self.assertEqual(remaining_owner, "owner-b")
+
+    def test_same_session_id_keeps_profile_backend_reset_and_lru_ownership(self):
+        """The host registry must never reuse another profile's remote transport."""
+        import tempfile
+        from pathlib import Path
+
+        from agent.secret_scope import is_multiplex_active, set_multiplex_active
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from tools.approval_context import reset_current_session_key, set_current_session_key
+
+        env_a = ScriptedEnv(_spawn_ok_handlers([
+            _cell(stdout="alpha-first\n"),
+            _cell(stdout="alpha-back\n", execution_count=2),
+        ]))
+        env_b = ScriptedEnv(_spawn_ok_handlers([
+            _cell(stdout="beta-first\n"),
+            _cell(stdout="beta-reset\n"),
+        ]))
+
+        def run(home, env, *, reset=False):
+            home_token = set_hermes_home_override(home)
+            session_token = set_current_session_key("same-raw-session")
+            try:
+                return _run(env, task="same-turn", reset=reset)
+            finally:
+                reset_current_session_key(session_token)
+                reset_hermes_home_override(home_token)
+
+        previous_multiplex = is_multiplex_active()
+        set_multiplex_active(True)
+        try:
+            with tempfile.TemporaryDirectory() as root, \
+                 patch("tools.code_kernel._lifecycle_limits", return_value=(1, 1800)):
+                home_a, home_b = Path(root, "profile-a"), Path(root, "profile-b")
+                home_a.mkdir()
+                home_b.mkdir()
+                first_a = run(home_a, env_a)
+                first_b = run(home_b, env_b)
+                reset_b = run(home_b, env_b, reset=True)
+                back_a = run(home_a, env_a)
+        finally:
+            set_multiplex_active(previous_multiplex)
+
+        assert first_a is not None and first_b is not None
+        assert reset_b is not None and back_a is not None
+        self.assertEqual(first_a["stdout"], "alpha-first\n", first_a)
+        self.assertFalse(first_a["kernel"]["reused"], first_a)
+        self.assertEqual(first_b["stdout"], "beta-first\n", first_b)
+        self.assertFalse(first_b["kernel"]["reused"], first_b)
+        self.assertEqual(reset_b["stdout"], "beta-reset\n", reset_b)
+        self.assertTrue(reset_b["kernel"]["state_reset"], reset_b)
+        self.assertEqual(back_a["stdout"], "alpha-back\n", back_a)
+        self.assertTrue(back_a["kernel"]["reused"], back_a)
+        self.assertEqual(len(_REMOTE_KERNELS), 2, "max_session_kernels is per profile")
+        self.assertEqual(sum("nohup" in command for command in env_a.commands), 1)
+        self.assertEqual(sum("nohup" in command for command in env_b.commands), 2)
 
 
 class TestIdleReapAndCapEviction(RemoteKernelBase):
     """Unlike local session kernels, remote kernels had no idle-reap or
-    process-wide cap: _REMOTE_KERNELS grew one entry per distinct
+    per-profile cap: _REMOTE_KERNELS grew one entry per distinct
     (owner, env_type, task_env_id) that was never revisited, for the life
     of the gateway process."""
 
@@ -254,7 +310,7 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
             sandbox_tools=frozenset(), timeout=10, max_tool_calls=5,
             reset=False, idle_exit=1800,
         )
-        owners = {key[0] for key in _REMOTE_KERNELS}
+        owners = {key[0].session_key for key in _REMOTE_KERNELS}
         self.assertNotIn("stale", owners)
         self.assertIn("fresh", owners)
 
@@ -268,7 +324,7 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
                     reset=False, idle_exit=1800,
                 )
             self.assertEqual(len(_REMOTE_KERNELS), 2)
-            owners = {key[0] for key in _REMOTE_KERNELS}
+            owners = {key[0].session_key for key in _REMOTE_KERNELS}
             self.assertNotIn("owner-0", owners)
             self.assertIn("owner-1", owners)
             self.assertIn("owner-2", owners)
@@ -299,7 +355,7 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
                 time.sleep(0.005)
             env = ScriptedEnv(_spawn_ok_handlers([_cell()]))
             _run(env, task="settled")
-            owners = {key[0] for key in _REMOTE_KERNELS}
+            owners = {key[0].session_key for key in _REMOTE_KERNELS}
             self.assertIn("busy", owners)
             gate.set()
             worker.join(10)

@@ -10,10 +10,11 @@ thread's context (= per-cell tool authority); and death detection — a failed
 liveness probe reads as *kernel died: state lost* and the next call respawns,
 never a hung poll (every wait is bounded by the cell timeout).
 
-Same invariants as local: owner = approval session key with the ``::child::``
-qualifier (one resolver in tools.code_kernel), same generated tool stubs, same
-output post-processing in the caller. ``reset=true`` kills and respawns. Spawn
-failure fails OPEN to the per-call path with a note.
+Same invariants as local: owner = immutable profile-home key plus approval
+session key with the ``::child::`` qualifier (one resolver in
+tools.code_kernel), same generated tool stubs, same output post-processing in
+the caller. ``reset=true`` kills and respawns. Spawn failure fails OPEN to the
+per-call path with a note.
 """
 from __future__ import annotations
 
@@ -28,7 +29,12 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from tools.code_kernel import RUNNER_CELL_SOURCE, KernelRegistry
+from tools.code_kernel import (
+    RUNNER_CELL_SOURCE,
+    KernelOwner,
+    KernelRegistry,
+    _owner_for_session,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +119,8 @@ class RemoteKernel:
     kernel_dir: str
     pid: str
     rpc_token: str
-    owner: str
+    owner: KernelOwner
+    idle_timeout: int
     last_used: float = field(default_factory=time.monotonic)
     execution_count: int = 0
     cell_seq: int = 0
@@ -151,7 +158,8 @@ class RemoteKernel:
                 logger.debug(failure, exc_info=True)
 
 
-def _kernel_key(owner: str, env_type: str, task_env_id: str, sandbox_tools: frozenset) -> Tuple:
+def _kernel_key(owner: KernelOwner, env_type: str, task_env_id: str,
+                sandbox_tools: frozenset) -> Tuple:
     """The hermes_tools stub module is generated from ``sandbox_tools`` once, at spawn, so a kernel
     is only reusable by calls with the SAME tool set; a different set gets its own kernel."""
     return (owner, "remote", env_type, task_env_id, tuple(sorted(sandbox_tools)))
@@ -170,30 +178,33 @@ def shutdown_remote_kernels_for_owner(owner: str) -> None:
     """Session-boundary disposal — wired to the same clear_session hook as
     local kernels, so /new and session close reap both kinds."""
     if owner:
-        _REGISTRY.shutdown(owner)
+        _REGISTRY.shutdown(_owner_for_session(owner))
 
 
-def shutdown_remote_kernels_where(owner_matches: Callable[[str], bool]) -> None:
+def shutdown_remote_kernels_where(owner_matches: Callable[[KernelOwner], bool]) -> None:
     """Dispose every remote kernel whose owner satisfies the predicate (a finished child's kernels)."""
     _REGISTRY.shutdown(owner_matches=owner_matches)
 
 
-def _reap_unlocked(idle_timeout: int) -> List["RemoteKernel"]:
-    """Pop idle-expired, unattached remote kernels; caller tears them down outside the lock. The
+def _reap_unlocked() -> List["RemoteKernel"]:
+    """Pop idle-expired, unattached kernels by their owner's captured limit.
+
+    Caller tears them down outside the lock. The
     runner self-exits after the same idle window, so this clears the HOST-side entry — without it
     the map grew one entry per never-revisited (owner, env_type, task_env_id) for the gateway's life."""
     now = time.monotonic()
     doomed = [key for key, kernel in _REMOTE_KERNELS.items()
-              if kernel.attached == 0 and now - kernel.last_used > idle_timeout]
+              if kernel.attached == 0 and now - kernel.last_used > kernel.idle_timeout]
     return [_REMOTE_KERNELS.pop(key) for key in doomed]
 
 
 def _evict_over_cap_unlocked(keep: Tuple) -> List["RemoteKernel"]:
-    """Pop least-recently-used unattached remote kernels beyond the process-wide cap (the same
-    ``max_session_kernels`` bound as local kernels, applied independently to this map)."""
+    """Pop the owning profile's LRU kernels beyond its configured cap."""
     from tools.code_kernel import _lifecycle_limits
     cap, _ = _lifecycle_limits()
-    unpinned = [key for key in _REMOTE_KERNELS if not _REMOTE_KERNELS[key].pinned]
+    profile_key = keep[0].profile_key
+    unpinned = [key for key in _REMOTE_KERNELS
+                if key[0].profile_key == profile_key and not _REMOTE_KERNELS[key].pinned]
     if len(unpinned) <= cap:
         return []
     by_age = sorted((key for key in unpinned if key != keep and _REMOTE_KERNELS[key].attached == 0),
@@ -204,7 +215,7 @@ def _evict_over_cap_unlocked(keep: Tuple) -> List["RemoteKernel"]:
 atexit.register(shutdown_all_remote_kernels)
 
 
-def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
+def _spawn_remote_kernel(env, env_type: str, owner: KernelOwner, task_env_id: str,
                          sandbox_tools: frozenset, *, idle_exit: int) -> Optional[RemoteKernel]:
     """Start a detached kernel runner on the remote. None on failure (dir removed)."""
     from tools.code_execution_rpc import _execute_checked, _private_dirs_cmd
@@ -246,7 +257,8 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
             logger.warning("remote kernel spawn returned no PID: %r", started)
         else:
             candidate = RemoteKernel(env=env, env_type=env_type, kernel_dir=kernel_dir,
-                                     pid=pid, rpc_token=rpc_token, owner=owner)
+                                     pid=pid, rpc_token=rpc_token, owner=owner,
+                                     idle_timeout=idle_exit)
             if candidate.is_alive():
                 kernel = candidate
             else:
@@ -267,7 +279,7 @@ def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
     return kernel
 
 
-def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
+def _acquire_remote_kernel(env, env_type: str, owner: KernelOwner, task_env_id: str,
                            sandbox_tools: frozenset, *, reset: bool,
                            idle_exit: int) -> Tuple[Optional[RemoteKernel], bool, bool, bool]:
     """Find/respawn the owner's kernel: (kernel|None, reused, state_reset, state_lost); reaps
@@ -275,7 +287,7 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
     key = _kernel_key(owner, env_type, task_env_id, sandbox_tools)
     state_lost = state_reset = False
     with _REGISTRY.lock:
-        expired = _reap_unlocked(idle_exit)
+        expired = _reap_unlocked()
         kernel = _REMOTE_KERNELS.get(key)
     for doomed in expired:
         doomed.kill()

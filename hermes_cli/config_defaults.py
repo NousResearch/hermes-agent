@@ -1971,9 +1971,9 @@ DEFAULT_CONFIG = {
         "mode": "project",
         # Session kernels are always on locally (`kernel_mode` is ignored) and remotely
         # (tools/code_kernel_remote.py; a backend that cannot spawn a kernel fails open to
-        # per-call). One kernel per (session owner, mode, interpreter, cwd, tool-set) keeps state
+        # per-call). One kernel per (profile home, session owner, mode, interpreter, cwd, tool-set) keeps state
         # across calls and turns; subagents get their own. Kernels die with the session, after
-        # kernel_idle_timeout idle seconds, or by LRU eviction past max_session_kernels. A
+        # kernel_idle_timeout idle seconds, or by per-profile LRU eviction past max_session_kernels. A
         # timed-out/interrupted cell kills the kernel; env is frozen at spawn (reset=true after
         # changing passthrough). Tool RPC authority (approval, session, allow-list, call budget) is
         # rebound per cell — that runtime boundary is the cross-cell enforcement.

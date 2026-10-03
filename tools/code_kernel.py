@@ -1,5 +1,6 @@
-"""Session-persistent Python kernels for execute_code: one child per (owner, mode,
-interpreter, cwd, tool-set), one code cell per call, state survives across calls.
+"""Session-persistent Python kernels for execute_code: one child per
+(profile home, session owner, mode, interpreter, cwd, tool-set), one code cell
+per call, state survives across calls.
 
 Constraints, in order: (1) SAME security envelope as per-call (``_build_child_env``
 scrubbing, ``_rpc_server_loop`` token + per-cell tool budget, ANSI strip + secret
@@ -32,6 +33,7 @@ import tempfile
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -302,11 +304,31 @@ class _BoundedBuffer:
         return b"".join(chunks).decode("utf-8", errors="replace")
 
 
+@dataclass(frozen=True)
+class KernelOwner:
+    """Immutable profile/session identity for a persistent execute-code kernel."""
+
+    profile_key: str
+    session_key: str
+
+
+def _owner_for_session(session_key: str) -> KernelOwner:
+    """Bind a raw session owner to the active profile home exactly once."""
+    from hermes_constants import hermes_home_key
+
+    return KernelOwner(hermes_home_key(), session_key)
+
+
 class SessionKernel:
     """One live kernel process plus its RPC server and reader threads."""
 
     def __init__(self, key: Tuple):
-        self.key, self.owner, self.lock = key, key[0], threading.Lock()
+        if not isinstance(key[0], KernelOwner):
+            key = (_owner_for_session(str(key[0])), *key[1:])
+        self.key, self.profile_owner, self.lock = key, key[0], threading.Lock()
+        # Human-readable session label. Registry identity is the immutable
+        # (profile home, session) pair, never this raw session component alone.
+        self.owner = self.profile_owner.session_key
         self.proc: Optional[subprocess.Popen] = None
         self.tmpdir = self.rpc_token = self.sentinel = ""
         self.sock_path: Optional[str] = None
@@ -325,6 +347,7 @@ class SessionKernel:
         self.response_q: "queue.Queue[dict]" = queue.Queue()
         self.raw, self.stderr = _BoundedBuffer(), _BoundedBuffer()
         self.execution_count, self.last_used = 0, time.monotonic()
+        self.idle_timeout = DEFAULT_KERNEL_IDLE_TIMEOUT
         self.cell_authority: Optional[CellAuthority] = None
 
     def alive(self) -> bool:
@@ -368,9 +391,9 @@ class KernelRegistry:
         self.kernels: Dict[Tuple, Any] = {}
         self.lock, self._teardown = threading.Lock(), teardown
 
-    def shutdown(self, owner: Optional[str] = None, *, owner_matches: Optional[Callable[[str], bool]] = None) -> None:
-        """Tear down every kernel, every kernel one owner (key[0]) holds, or every kernel whose owner
-        satisfies ``owner_matches``."""
+    def shutdown(self, owner: Optional[KernelOwner] = None, *,
+                 owner_matches: Optional[Callable[[KernelOwner], bool]] = None) -> None:
+        """Tear down every kernel, one immutable owner, or matching owners."""
         with self.lock:
             doomed = [self.kernels.pop(key) for key in list(self.kernels)
                       if (owner is None and owner_matches is None) or key[0] == owner
@@ -392,7 +415,7 @@ _KERNELS: Dict[Tuple, SessionKernel] = _REGISTRY.kernels
 
 # Bounded lifecycle defaults (config: code_execution.max_session_kernels / kernel_idle_timeout).
 # A long-lived gateway must never accumulate one live child per finished conversation:
-# stable owner id, owner-teardown disposal, idle reaping, max-live bound.
+# stable profile/session owner, owner-teardown disposal, idle reaping, per-profile max-live bound.
 # See #88637.
 DEFAULT_MAX_SESSION_KERNELS = 4
 DEFAULT_KERNEL_IDLE_TIMEOUT = 1800
@@ -412,8 +435,8 @@ def _lifecycle_limits() -> Tuple[int, int]:
 _CHILD_OWNER_QUALIFIER = "::child::"
 
 
-def _resolve_owner(task_id: str) -> str:
-    """The stable identity a session kernel belongs to: the conversation's approval session key
+def _resolve_owner(task_id: str) -> KernelOwner:
+    """The stable identity a kernel belongs to: profile home plus approval session key
     (context-propagated, stable across turns, distinct per session). ``run_agent`` mints a fresh
     task id per turn, so a task-keyed kernel would neither survive the next turn nor be torn down
     with anything; the task id is only the last-resort owner (embeds/tests without a session).
@@ -436,7 +459,7 @@ def _resolve_owner(task_id: str) -> str:
             owner = f"{owner}{_CHILD_OWNER_QUALIFIER}{child_id}"
     except Exception:
         pass
-    return owner
+    return _owner_for_session(owner)
 
 
 def shutdown_all_kernels() -> None:
@@ -451,20 +474,21 @@ def shutdown_kernels_for_owner(owner: str) -> None:
     See #88637.
     """
     if owner:
-        _REGISTRY.shutdown(owner)
+        _REGISTRY.shutdown(_owner_for_session(owner))
 
 
-def delegated_child_owner_matcher(child_session_id: str) -> Callable[[str], bool]:
+def delegated_child_owner_matcher(child_session_id: str) -> Callable[[KernelOwner], bool]:
     """Predicate for the kernels a delegate_task child owns (``_resolve_owner`` qualifies a child's
     owner with its delegation session id). Shared with the remote registry."""
     suffix = f"{_CHILD_OWNER_QUALIFIER}{child_session_id}"
-    return lambda owner: owner.endswith(suffix)
+    profile_key = _owner_for_session("").profile_key
+    return lambda owner: owner.profile_key == profile_key and owner.session_key.endswith(suffix)
 
 
 def shutdown_kernels_for_delegated_child(child_session_id: str) -> None:
     """Dispose a finished child's kernels (local and remote). A child's kernel lives exactly as long as the
     child: pinned against LRU eviction while it runs, torn down here — otherwise finished children's
-    kernels squatted the process-wide cap for ``kernel_idle_timeout`` and evicted LIVE children's kernels,
+    kernels squatted the owning profile's cap for ``kernel_idle_timeout`` and evicted LIVE children's kernels,
     which then lost their state mid-task with no signal but ``reused: false``."""
     if not child_session_id:
         return
@@ -657,22 +681,26 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
     _ensure_background_reaper()
 
 
-def _pop_idle_expired(now: float, idle_timeout: float) -> List[SessionKernel]:
-    """Pop (caller holds ``_REGISTRY.lock``) every kernel idle past *idle_timeout*. Kernels with
-    attached cells are skipped: the last cell out tears them down."""
+def _pop_idle_expired(now: float) -> List[SessionKernel]:
+    """Pop kernels past their owning profile's captured idle timeout.
+
+    Caller holds ``_REGISTRY.lock``. Attached kernels are skipped: the last
+    cell out tears them down.
+    """
     return [_KERNELS.pop(k) for k in list(_KERNELS)
-            if _KERNELS[k].attached == 0 and now - _KERNELS[k].last_used > idle_timeout]
+            if _KERNELS[k].attached == 0
+            and now - _KERNELS[k].last_used > _KERNELS[k].idle_timeout]
 
 
 def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[SessionKernel, bool]:
     """Look up or register the kernel for *key*; returns (kernel, state_reset). Every entry also
-    sweeps idle-expired kernels and enforces the process-wide LRU cap (doomed kernels are popped
+    sweeps idle-expired kernels and enforces the owning profile's LRU cap (doomed kernels are popped
     under the lock, torn down outside it), so a long-lived host stays bounded. ``pinned`` kernels
     (live delegate_task children) are exempt from the cap: their lifetime is the child's, ended by
     ``shutdown_kernels_for_delegated_child``, so the cap has nothing to bound for them."""
     cap, idle_timeout = _lifecycle_limits()
     with _REGISTRY.lock:
-        expired = _pop_idle_expired(time.monotonic(), idle_timeout)
+        expired = _pop_idle_expired(time.monotonic())
         kernel = _KERNELS.get(key)
         state_reset = kernel is not None and (reset or kernel.dead())
         if state_reset:
@@ -683,9 +711,12 @@ def _acquire_kernel(key: Tuple, reset: bool, *, pinned: bool = False) -> Tuple[S
         if kernel is None:
             kernel = _KERNELS[key] = SessionKernel(key)
             kernel.pinned = pinned
+        kernel.idle_timeout = idle_timeout
         kernel.last_used = time.monotonic()
         kernel.attached += 1
-        unpinned = [k for k in _KERNELS if not _KERNELS[k].pinned]
+        profile_key = key[0].profile_key
+        unpinned = [k for k in _KERNELS
+                    if k[0].profile_key == profile_key and not _KERNELS[k].pinned]
         by_age = sorted((k for k in unpinned if k != key and _KERNELS[k].attached == 0),
                         key=lambda k: _KERNELS[k].last_used)
         expired.extend(_KERNELS.pop(k) for k in by_age[: max(0, len(unpinned) - cap)])
@@ -727,9 +758,8 @@ def _sweep_stale_staging_dirs(now: Optional[float] = None) -> int:
 
 def _reap_once() -> None:
     """One background pass: the acquire-path idle criteria, then the stale-dir sweep."""
-    _, idle_timeout = _lifecycle_limits()
     with _REGISTRY.lock:
-        expired = _pop_idle_expired(time.monotonic(), idle_timeout)
+        expired = _pop_idle_expired(time.monotonic())
     for doomed in expired:
         doomed.teardown()
     _sweep_stale_staging_dirs()
@@ -748,7 +778,9 @@ def _ensure_background_reaper() -> None:
 
 def _background_reaper() -> None:
     while True:
-        _, idle_timeout = _lifecycle_limits()
+        with _REGISTRY.lock:
+            idle_timeout = min((kernel.idle_timeout for kernel in _KERNELS.values()),
+                               default=DEFAULT_KERNEL_IDLE_TIMEOUT)
         time.sleep(min(_REAPER_INTERVAL_CEIL,
                        max(_REAPER_INTERVAL_FLOOR, idle_timeout / 6.0)))
         try:
@@ -851,9 +883,8 @@ def execute_in_session_kernel(
     code: str, *, task_id: str, mode: str, child_python: str, child_cwd: str,
     sandbox_tools: frozenset, timeout: int, max_tool_calls: int, reset: bool, is_interrupted,
 ) -> str:
-    """Run one cell in the (owner, mode, python, cwd, tools) session kernel. The owner is the
-    session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
-    key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
+    """Run one cell in the (profile/session owner, mode, python, cwd, tools) kernel."""
+    key = (_resolve_owner(task_id), mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
     exec_start = time.monotonic()
     from agent.delegation_context import is_delegated_child_context
     kernel, state_reset = _acquire_kernel(key, reset, pinned=is_delegated_child_context())

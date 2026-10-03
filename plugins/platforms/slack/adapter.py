@@ -1119,6 +1119,8 @@ class SlackAdapter(BasePlatformAdapter):
         # Slash-command contexts so send() can route the first reply ephemerally. Keyed
         # (team_id, channel_id, user_id), two-part when no team id → {"response_url", "ts"}.
         self._slash_command_contexts: Dict[Tuple[str, ...], Dict[str, Any]] = {}
+        # Session key → future of the newest slash still on its way to handle_message.
+        self._slash_handoff_tails: Dict[str, "asyncio.Future[None]"] = {}
         # Native streaming state per _stream_key: {"ts", "draft_id", "sent", "started", "base"}.
         # ``sent`` is the raw pre-mrkdwn text of the whole segment; the API is append-only so
         # deltas diff against it. ``base`` is where this Slack message starts inside ``sent``
@@ -6076,25 +6078,75 @@ class SlackAdapter(BasePlatformAdapter):
                 "[Slack] Ignoring slash command from DM because Slack DMs are disabled: channel=%s user=%s",
                 channel_id, user_id)
             return
+        # A sender the gateway rejects must not cost Slack lookups first (the message path's rule).
+        # In a channel the runner only drops them; in a DM it answers per unauthorized_dm_behavior
+        # (pairing code or decline), so it still gets the event, without names.
+        rejected = self._early_reject_unauthorized(user_id, channel_id, is_dm)
+        if rejected and not is_dm:
+            return
         source = self.build_source(
             chat_id=channel_id, chat_type="dm" if is_dm else "group", user_id=user_id,
             thread_id=thread_id, scope_id=team_id or None)
+        from gateway.platforms.base import resolve_channel_skills
         event = MessageEvent(
             text=text,
             message_type=(MessageType.COMMAND if text.startswith("/") else MessageType.TEXT),
-            source=source, raw_message=command)
-        # Stash response_url so the first reply for this channel+user goes ephemeral. COMMAND
-        # events only: free-form "/hermes <question>" replies must stay public.
-        response_url = command.get("response_url", "")
-        if response_url and user_id and channel_id and text.startswith("/"):
-            self._stash_slash_context(team_id, channel_id, user_id, response_url)
-        # ContextVar lets send() match the right response_url under
-        # concurrent slashes from multiple users.
-        _slash_user_id_token = _slash_user_id.set(user_id or None)
+            source=source, raw_message=command,
+            channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
+            # Bound skills load only when a session starts; "/hermes <question>" can start one.
+            auto_skill=resolve_channel_skills(self.config.extra, channel_id, None))
+        # A slash turn is a human turn: it re-pins the channel prompt and session context, so it
+        # must carry the same names as a message here or the next message flips them. A command
+        # that stops, unblocks or pauses work starts no turn of its own, and a slow users.info
+        # must not hold /stop or /pause back while the worker keeps running.
+        from hermes_cli.commands import resolve_command
+        cmd = resolve_command(event.get_command() or "")
+        controls_work = cmd is not None and (
+            cmd.busy_policy == "interrupt_then_dispatch" or cmd.name in ("approve", "deny", "pause"))
+        lane = ahead = handed_off = None
+        if not rejected and not controls_work:
+            # Callbacks run concurrently and a cold lookup can finish after a later one's, so a
+            # later slash of the same session waits for the earlier one's handoff (else two /queue
+            # land in the FIFO swapped).
+            lane = self._event_session_key(event)
+            ahead = self._slash_handoff_tails.get(lane)
+            handed_off = asyncio.get_running_loop().create_future()
+            self._slash_handoff_tails[lane] = handed_off
+        slash_user_token = None
         try:
+            if lane is not None:
+                source.chat_name = await self._resolve_channel_name(channel_id, team_id=team_id)
+                source.user_name = await self._resolve_user_name(user_id, chat_id=channel_id, team_id=team_id)
+                if ahead is not None:
+                    await asyncio.wait((ahead,))
+            # Stash response_url so the first reply for this channel+user goes ephemeral. COMMAND
+            # events only: free-form "/hermes <question>" replies must stay public.
+            response_url = command.get("response_url", "")
+            if response_url and user_id and channel_id and text.startswith("/"):
+                self._stash_slash_context(team_id, channel_id, user_id, response_url)
+            # ContextVar lets send() match the right response_url under
+            # concurrent slashes from multiple users.
+            slash_user_token = _slash_user_id.set(user_id or None)
+            # The lane opens only once handle_message returns: the gateway can still suspend
+            # (pre_gateway_dispatch) before it queues this event, and a later /queue that
+            # overtook it there would take the pending slot first.
             await self.handle_message(event)
         finally:
-            _slash_user_id.reset(_slash_user_id_token)
+            if slash_user_token is not None:
+                _slash_user_id.reset(slash_user_token)
+            if ahead is not None and not ahead.done():
+                # Cancelled while waiting: the slash behind this one must still wait for the
+                # one ahead of it, or it reaches the gateway before unfinished earlier work.
+                ahead.add_done_callback(lambda _f: self._release_slash_handoff(lane, handed_off))
+            else:
+                self._release_slash_handoff(lane, handed_off)
+
+    def _release_slash_handoff(self, lane: Optional[str], handed_off: Optional[asyncio.Future]) -> None:
+        if handed_off is None or handed_off.done():
+            return
+        handed_off.set_result(None)
+        if self._slash_handoff_tails.get(lane) is handed_off:
+            del self._slash_handoff_tails[lane]
 
     @staticmethod
     def _slash_command_text(command: dict) -> str:

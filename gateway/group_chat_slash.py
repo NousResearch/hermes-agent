@@ -2,7 +2,8 @@
 
 Authorization comes from ``gateway.group_chat_access``. Every read and control then goes
 through the canonical ``dispatch_group_control`` as the grant's owner, so a chat can never
-reach a room its owner could not open in Desktop.
+reach a room its owner could not open in Desktop. What a group shows and allows when its
+host goes offline is in ``gateway.group_chat_hosts``.
 """
 from __future__ import annotations
 
@@ -40,6 +41,8 @@ _CAPABILITIES = frozenset({'session:read', 'session:submit', 'session:control', 
 PAUSED = 'Group Chats are paused while the gateway starts or stops. Try again in a moment.'
 TOO_FAST = 'Too many Group Chat commands. Wait a minute and try again.'
 ACCESS_CHANGED = 'This chat’s access to Group Chats changed. Send {prefix}group to check.'
+# This computer isn't running the group right now: paused to stay safe, or the host that stopped.
+_HOST_PAUSED = frozenset({'room_host_paused', 'room_authority_conflict'})
 _NAME_ESCAPES = str.maketrans({c: chr(ord(c) + 0xFEE0) for c in r'@`*_[]<>\:#&|~()!/+='})
 
 
@@ -101,6 +104,15 @@ def parse(args: str) -> Command:
         return Command('send', ref, text=text.strip())
     if verb == 'stop' and len(words) == 2:
         return Command('stop', ref)
+    if verb == 'continue' and (len(words) == 2 or (len(words) == 3 and words[2].casefold() == 'confirm')):
+        return Command('continue', ref, choice='confirm' if len(words) == 3 else '')
+    if verb == 'keep':
+        # The computer's name as typed; names can hold spaces ("Mac mini"). "confirm" ends a go-back.
+        name, confirm = words[2:], len(words) > 3 and words[-1].casefold() == 'confirm'
+        return Command('keep', ref, text=' '.join(name[:-1] if confirm else name),
+                       choice='confirm' if confirm else '')
+    if verb == 'ask' and [word.casefold() for word in words[2:]] == ['first']:
+        return Command('ask', ref)
     choice = ' '.join(words[3:]).casefold()
     if verb == 'approve' and len(words) in {4, 5} and choice in {'once', 'deny', 'always', 'always confirm'}:
         return Command('approve', ref, code=words[2].casefold(), choice=choice)
@@ -115,14 +127,21 @@ def approval_code(action: dict) -> str:
     return hashlib.sha256(json.dumps(identity, separators=(',', ':')).encode()).hexdigest()[:6]
 
 
-def help_text(prefix: str) -> str:
+def help_text(prefix: str, *, hosts: bool = False, automatic: bool = False) -> str:
+    """The command list; ``hosts`` adds continue and keep, ``automatic`` ask first, where offered."""
     g = prefix + 'group'
-    return '\n'.join(['Group Chats', f'{g} list [page] — your Group Chats',
-                      f'{g} N — status, approvals and recent messages',
-                      f'{g} N send <message> — post a message as you',
-                      f'{g} N stop — stop the work in progress',
-                      f'{g} N approve <code> once|always|deny — answer an approval',
-                      f'{g} N forget <code> — forget an approval this chat always allows', f'{g} help'])
+    lines = ['Group Chats', f'{g} list [page] — your Group Chats',
+             f'{g} N — status, approvals and recent messages',
+             f'{g} N send <message> — post a message as you',
+             f'{g} N stop — stop the work in progress',
+             f'{g} N approve <code> once|always|deny — answer an approval',
+             f'{g} N forget <code> — forget an approval this chat always allows']
+    if hosts:
+        lines += [f'{g} N continue — continue a paused group on this computer',
+                  f'{g} N keep <computer> — choose the computer that keeps a group continued on two']
+    if automatic:
+        lines.append(f'{g} N ask first — ask before the group moves by itself again')
+    return '\n'.join([*lines, f'{g} help'])
 
 
 def _connect_text(chat, code: str, ttl: int, prefix: str) -> str:
@@ -150,6 +169,14 @@ def _too_fast(runner, key, limit=_RATE_LIMIT) -> bool:
     return False
 
 
+def connection_for(authority, grant):
+    """The owner's own reach, under the messaging chat's transport identity. A shared chat's says so
+    (``messaging:shared:…``), so owner-only gateway actions can refuse it as well."""
+    from gateway.session_contract import Principal
+    return SimpleNamespace(authority=authority, actor=Principal(
+        grant['owner'], authority.profile_id, _CAPABILITIES, f'messaging:{grant["kind"]}:' + grant['grant_id'][:32]))
+
+
 class GroupChatSlashCommandsMixin:
     async def _handle_group_command(self, event):
         try:
@@ -157,15 +184,35 @@ class GroupChatSlashCommandsMixin:
         except Refused as exc:
             return str(exc)
 
+    async def _group_chat_continue_refs(self, room_id):
+        """For the "group is paused" notice: ``[(adapter, chat_id, metadata, n)]``, one per private
+        chat of the room's owner here, where ``/group n continue`` reaches the room."""
+        from gateway.group_chat_hosts import continue_refs
+        return await continue_refs(self, room_id)
+
+    async def _group_chat_notice_watcher(self, interval: float | None = None) -> None:
+        """Supervised: owners hear in their private chats when a group moved or paused by itself."""
+        from gateway.group_chat_notices import WATCH_SECONDS, watch
+        await watch(self, WATCH_SECONDS if interval is None else interval)
+
+    async def _group_chat_notify(self, room_id, kind, data) -> int:
+        """The gateway's own incident for a room, told in its owner's main channel with the choices
+        it offers (``kind`` ``host_offline``, ``data`` ``{host, minutes}``); returns chats told."""
+        from gateway.group_chat_notices import notify
+        return await notify(self, room_id, kind, data)
+
+    async def _group_chat_action(self, platform, chat_id, user_id, data):
+        """An adapter's tap on a group notice button (``hg:…``): ``{'text', 'buttons'}`` to show
+        in place of the message, or None when this tapper may not act on it."""
+        from gateway.group_chat_actions import act
+        return await act(self, platform, chat_id, user_id, data)
+
 
 class _GroupCommand:
     def __init__(self, runner, event, authority, chat, grant, prefix):
         self.runner, self.event, self.authority = runner, event, authority
         self.chat, self.grant, self.prefix = chat, grant, prefix
-        from gateway.session_contract import Principal
-        # The owner's own reach, under the messaging chat's transport identity.
-        self.connection = SimpleNamespace(authority=authority, actor=Principal(
-            grant['owner'], authority.profile_id, _CAPABILITIES, 'messaging:' + grant['grant_id'][:32]))
+        self.connection = connection_for(authority, grant)
 
     @classmethod
     async def start(cls, runner, event):
@@ -224,6 +271,10 @@ class _GroupCommand:
                 raise Refused(PAUSED) from exc
             if method == 'groups.approve' and exc.reason == 'stale_generation':
                 raise Refused(self._gone(ref)) from exc
+            if method == 'groups.send' and exc.reason in _HOST_PAUSED:
+                from gateway.group_chat_hosts import _room
+                group, _, _ = await _room(self, ref, params['room_id'])
+                raise Refused(f'{group} is paused to stay safe; your message wasn’t sent.') from exc
             raise Refused(f'Group {ref} didn’t accept that. Send {self.prefix}group {ref} to see why.') from exc
         except RuntimeError as exc:
             if method == 'groups.approve' and str(exc) == 'room approval is no longer pending':
@@ -254,7 +305,9 @@ class _GroupCommand:
         return room_id
 
     async def _help(self, command):
-        return help_text(self.prefix)
+        from gateway.group_chat_hosts import AUTOMATIC, PREPARE, PROMOTE, STATUS, advertised
+        return help_text(self.prefix, hosts=await advertised(self, STATUS, PREPARE, PROMOTE),
+                         automatic=await advertised(self, AUTOMATIC))
 
     async def _list(self, command):
         rooms, offset = [], 0
@@ -276,7 +329,8 @@ class _GroupCommand:
         lines = [f'Group Chats, page {command.page} of {pages}' if pages > 1 else 'Group Chats', '']
         for ref, room in rows[(command.page - 1) * PAGE_SIZE:command.page * PAGE_SIZE]:
             count = len(room['members'])
-            lines.append(f'{ref}. {safe(room["name"], 72)} · {count} Bot{"" if count == 1 else "s"}')
+            copy = ' · backup copy' if room.get('copy') is True else ''  # hosted on another computer
+            lines.append(f'{ref}. {safe(room["name"], 72)} · {count} Bot{"" if count == 1 else "s"}{copy}')
         g = self.prefix + 'group'
         lines.extend(['', f'Open one: {g} N'])
         if command.page < pages:
@@ -284,6 +338,7 @@ class _GroupCommand:
         return '\n'.join(lines)
 
     async def _show(self, command):
+        from gateway import group_chat_hosts as hosts
         room_id = self._room_id(command.ref)
         try:
             state = await self._call('groups.state', {'room_id': room_id})
@@ -292,24 +347,43 @@ class _GroupCommand:
             log = await self._call('groups.log', {'room_id': room_id, 'since_seq': max(0, latest - RECENT_EVENTS),
                                                   'limit': RECENT_EVENTS}) if latest else probe
         except RuntimeStoreError as exc:
-            raise Refused(f'Group {command.ref} isn’t available right now. '
-                          f'Send {self.prefix}group list to check.') from exc
-        return '\n'.join(self._detail(command.ref, state, log['events']))
+            # A backup copy this gateway can't show as a room: its host is all there is to report.
+            g = f'{self.prefix}group {command.ref}'
+            hosting = await hosts.host_status(self, room_id)
+            host = hosts.host_lines(hosting, group=f'Group {command.ref}', g=g,
+                                    may_act=self.chat.kind == 'private') if hosting is not None else []
+            if not host:
+                raise Refused(f'Group {command.ref} isn’t available right now. '
+                              f'Send {self.prefix}group list to check.') from exc
+            return '\n'.join([f'Group {command.ref}', *host, '', f'Refresh: {g}'])
+        hosting = await hosts.host_status(self, room_id)
+        return '\n'.join(self._detail(command.ref, state, log['events'], hosting))
 
-    def _detail(self, ref, state, events):
+    def _detail(self, ref, state, events, hosting=None):
+        from gateway import group_chat_hosts as hosts
         room, status = state['room'], state.get('driver_status') or {}
+        # A backup copy of a group another computer hosts: readable here, run there.
+        copy = state.get('copy') is True or room.get('copy') is True
         labels = _labels(room)
-        lines = [f'Group {ref} · {safe(room["name"], 72)}', self._status(status)]
+        host = hosts.host_lines(hosting, group=f'“{safe(room["name"], 72)}”', g=f'{self.prefix}group {ref}',
+                                may_act=self.chat.kind == 'private') if hosting is not None else []
+        lines = [f'Group {ref} · {safe(room["name"], 72)}']
+        if not copy:
+            lines.append(self._status(status))
+        elif not host:
+            lines.append('This computer keeps a backup copy of this group.')
+        lines.extend(host)
         roster = [f'{labels[m["member_id"]]} ({safe("@" + (m.get("handle") or m["member_id"]), 33)})'
                   for m in room['members'][:MAX_ROSTER]]
         extra = len(room['members']) - MAX_ROSTER
         lines.append('Bots: ' + ', '.join(roster) + (f' and {extra} more' if extra > 0 else ''))
         for action in _approvals(status)[:MAX_APPROVALS]:
             lines.extend(['', *self._approval_lines(ref, action, labels)])
-        lines.extend(self._remembered_lines(ref, room, labels))
+        if not copy:
+            lines.extend(self._remembered_lines(ref, room, labels))
         previews = [p for p in (self._preview(e, labels) for e in events) if p][-RECENT_MESSAGES:]
         lines.extend(['', 'Recent messages', *(previews or ['No messages yet.'])])
-        lines.extend(['', *self._commands(ref)])
+        lines.extend(['', *self._commands(ref, copy=copy)])
         return lines
 
     @staticmethod
@@ -325,6 +399,13 @@ class _GroupCommand:
             parts.append(f'{approvals} approval{"" if approvals == 1 else "s"} waiting')
         if len(actions) > approvals:
             parts.append(f'{len(actions) - approvals} to retry or discard in Desktop')
+        # Work that needs a Bot or file only its former host has, after the group moved.
+        waiting = {}
+        for task in status.get('tasks') or ():
+            if isinstance(task, dict) and task.get('state') == 'waiting_for_host':
+                host = safe(task.get('host_name'), 48) or 'another computer'
+                waiting[host] = waiting.get(host, 0) + 1
+        parts.extend(f'{count} waiting for {host}' for host, count in waiting.items())
         return ' · '.join(parts)
 
     def _approval_lines(self, ref, action, labels):
@@ -352,8 +433,10 @@ class _GroupCommand:
         lines.append(f'Forget one: {self.prefix}group {ref} forget <code>')
         return lines
 
-    def _commands(self, ref):
+    def _commands(self, ref, copy=False):
         g = f'{self.prefix}group {ref}'
+        if copy:
+            return [f'Refresh: {g}']
         return [f'Send: {g} send <message>', f'Stop: {g} stop', f'Refresh: {g}']
 
     async def _send(self, command):
@@ -432,6 +515,18 @@ class _GroupCommand:
             raise Refused(f'No approval this chat always allows in Group {command.ref} has that code. '
                           f'Send {self.prefix}group {command.ref} to see them.')
         return f'Forgotten. That command will ask for approval again in Group {command.ref}.'
+
+    async def _continue(self, command):
+        from gateway.group_chat_hosts import continue_command
+        return await continue_command(self, command)
+
+    async def _keep(self, command):
+        from gateway.group_chat_hosts import keep_command
+        return await keep_command(self, command)
+
+    async def _ask(self, command):
+        from gateway.group_chat_hosts import ask_command
+        return await ask_command(self, command)
 
     @staticmethod
     def _preview(event, labels):

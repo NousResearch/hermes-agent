@@ -1286,6 +1286,11 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, BasePlatformA
             adapter_self = self  # capture for closure
 
             @self._client.event
+            async def on_interaction(interaction):
+                # Group Chat notice buttons route by custom_id, with no view kept: they survive restarts.
+                await adapter_self._on_group_action_interaction(interaction)
+
+            @self._client.event
             async def on_ready():
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
                 await adapter_self._resolve_allowed_usernames()
@@ -5664,6 +5669,53 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, BasePlatformA
             )
             return {"embed": embed, "view": view}, view
         return await self._send_prompt(chat_id, metadata, _build, fail_log="send_model_picker")
+
+    async def send_group_actions(
+        self, chat_id: str, text: str, buttons: list, metadata: Optional[dict] = None,
+    ) -> SendResult:
+        """A Group Chat notice with its choices as buttons (one click each, not a select menu). Each
+        ``custom_id`` is ``hg:<action>:<token>`` and the view has no timeout; clicks arrive through
+        ``_on_group_action_interaction``, which keeps nothing in memory, so they still work after a
+        restart (``gateway.group_chat_actions``)."""
+        def _build(_channel):
+            return {"content": text[:2000], "view": self._group_action_view(buttons)}, None
+        return await self._send_prompt(chat_id, metadata, _build, fail_log="send_group_actions")
+
+    @staticmethod
+    def _group_action_view(buttons: list):
+        if not buttons:
+            return None
+        view = discord.ui.View(timeout=None)
+        for label, data in buttons:
+            view.add_item(discord.ui.Button(
+                label=label, custom_id=data,
+                style=discord.ButtonStyle.secondary if label == "Cancel" else discord.ButtonStyle.primary))
+        return view
+
+    async def _on_group_action_interaction(self, interaction) -> None:
+        """A click on a Group Chat notice button: the gateway rechecks who may choose, and the
+        message is edited in place into what comes next."""
+        data = getattr(interaction, "data", None)
+        custom_id = str(data.get("custom_id") or "") if isinstance(data, dict) else ""
+        if not custom_id.startswith("hg:"):
+            return
+        if not _component_check_auth(interaction, self._allowed_user_ids, self._allowed_role_ids):
+            await interaction.response.send_message(_UNAUTHORIZED, ephemeral=True)
+            return
+        await interaction.response.defer()  # a choice may take longer than Discord's 3 s to answer
+        act = getattr(self.gateway_runner, "_group_chat_action", None)
+        result = None
+        if act is not None:
+            try:
+                result = await act(self.platform.value, str(interaction.channel_id), str(interaction.user.id),
+                                   custom_id)
+            except Exception:
+                logger.warning("[%s] Group Chat notice choice failed", self.name, exc_info=True)
+        if result is None:
+            await interaction.followup.send(_UNAUTHORIZED, ephemeral=True)
+            return
+        await interaction.edit_original_response(
+            content=result["text"][:2000], view=self._group_action_view(result["buttons"]))
 
     async def send_choice_picker(
         self, chat_id: str, title: str, choices: list, session_key: str, on_choice_selected,

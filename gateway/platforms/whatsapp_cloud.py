@@ -910,7 +910,35 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             await self._reply_best_effort(to, result_text, "[whatsapp_cloud] slash_confirm reply failed")
         return True
 
-    _INTERACTIVE_HANDLERS = {"cl:": _handle_clarify_tap, "appr:": _handle_approval_tap, "sc:": _handle_slash_confirm_tap}
+    async def send_group_actions(
+        self, chat_id: str, text: str, buttons: list, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        """A Group Chat notice with its choices as reply buttons (at most 3, titles of 20 characters).
+        Each id is ``hg:<action>:<token>``, resolved by the gateway when tapped, so a tap still works
+        after a restart (``gateway.group_chat_actions``). Without choices it is a plain message."""
+        if not buttons:
+            return await self.send(chat_id, text, metadata=metadata)
+        replies = [(data, self._truncate_button_label(label)) for label, data in buttons[:3]]
+        interactive = {"type": "button", "body": {"text": self._truncate_body(text)},
+                       "action": {"buttons": self._reply_buttons(*replies)}}
+        return await self._post_message_result(
+            self._outbound_payload(chat_id, "interactive", interactive, _reply_to_from(metadata)),
+            fail_log="[whatsapp_cloud] group notice send failed",
+            reject_log="[whatsapp_cloud] group notice rejected (status=%d): %s")
+
+    async def _handle_group_action_tap(self, to: str, inner: Dict[str, Any], parts: list) -> bool:
+        """A tap under a Group Chat notice. WhatsApp can't edit a sent message, so what comes next
+        (a confirmation, the outcome) arrives as a new one."""
+        act = getattr(self.gateway_runner, "_group_chat_action", None)
+        try:
+            result = await act(self.platform.value, to, to, ":".join(parts)) if act is not None else None
+            if result is not None:
+                await self.send_group_actions(to, result["text"], result["buttons"])
+        except Exception:
+            logger.exception("[whatsapp_cloud] Group Chat notice choice failed")
+        return True  # claimed either way: the button title is not a message to the Bot
+
+    _INTERACTIVE_HANDLERS = {"cl:": _handle_clarify_tap, "appr:": _handle_approval_tap,
+                             "sc:": _handle_slash_confirm_tap, "hg:": _handle_group_action_tap}
 
     async def _collect_inbound_media(self, msg_type_str: str, raw_message: Dict[str, Any], body: str) -> tuple[list[str], list[str], str]:
         """Download inbound media by ``media_id``; returns ``(media_urls, media_types, body)``."""

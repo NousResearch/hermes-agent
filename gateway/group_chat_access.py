@@ -226,8 +226,58 @@ def assign_refs(authority, grant: dict, room_ids: list[str]) -> dict:
     return authority.db._execute_write(write)
 
 
+def ensure_ref(authority, grant: dict, room_id: str) -> int:
+    """This chat's number for one room, given now if it has none; every other room keeps its own."""
+    def write(conn):
+        _epoch(conn, authority.epoch)
+        current = _load(conn, grant['grant_id'])
+        if current is None or current['owner'] != grant['owner']:
+            raise RuntimeStoreError('permission_denied')
+        if room_id not in current['refs']:
+            current = {**current, 'refs': {**current['refs'], room_id: current['next_ref']},
+                       'next_ref': current['next_ref'] + 1}
+            _save(conn, current)
+        return current['refs'][room_id]
+    return authority.db._execute_write(write)
+
+
 def room_for_ref(grant: dict, ref: int) -> str | None:
     return next((room for room, value in grant['refs'].items() if value == ref), None)
+
+
+def chat_target(runner, grant: dict):
+    """``(adapter, metadata)`` to message a granted chat through its own Bot, or None while that Bot
+    isn't connected."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    try:
+        platform = Platform(grant['platform'])
+        adapter = runner._adapters_for_profile(grant['bot']).get(platform)
+    except Exception:
+        return None
+    if adapter is None:
+        return None
+    try:
+        metadata = runner._thread_metadata_for_source(SessionSource(
+            platform=platform, chat_id=grant['chat_id'], chat_type='dm' if grant['kind'] == 'private' else 'group',
+            user_id=grant['user_id'], thread_id=grant['thread_id'], scope_id=grant['scope_id']))
+    except Exception:
+        metadata = None
+    return adapter, metadata
+
+
+def private_grant_holds(runner, authority, grant: dict) -> bool:
+    """For a button in a private chat, which names no sender: the chat still has the owner's private
+    grant, and its person is still on the Bot's DM admin list (what ``resolve_chat`` checks)."""
+    from gateway.slash_access import policy_from_extra
+    with authority.db._read_ctx() as conn:
+        current = _load(conn, grant['grant_id'])
+    target = chat_target(runner, grant)
+    if current is None or current['owner'] != grant['owner'] or current['kind'] != 'private' or target is None:
+        return False
+    extra = getattr(getattr(target[0], 'config', None), 'extra', None)
+    policy = policy_from_extra(extra if isinstance(extra, dict) else {}, 'dm')
+    return policy.enabled and current['user_id'] in policy.admin_user_ids
 
 
 # ---- the owner's CLI, over the authenticated control socket --------------------------------

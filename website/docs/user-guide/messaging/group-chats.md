@@ -29,8 +29,9 @@ group, a channel, a thread, or a direct message that could hold more people) is 
 whole: everyone in it can read what `/group` shows there, and only people on that chat's admin
 list can use it.
 
-Platforms whose direct messages can include several people, such as Slack and Matrix, are
-always treated as shared (their direct messages still use `allow_admin_from`).
+Direct messages that can include several people, such as a Slack group DM or any Matrix
+direct room, are treated as shared (they still use `allow_admin_from`). A one-to-one Slack
+DM is private.
 
 ## Connect a chat
 
@@ -69,6 +70,9 @@ always allow.
 | `/group N approve <code> once\|deny` | Answer one waiting approval; `/group N` shows its code. |
 | `/group N approve <code> always` | Always allow that exact command for that Bot in that Group Chat, from this chat (see below). |
 | `/group N forget <code>` | Stop always allowing a command. |
+| `/group N continue` | When the group's host is offline, continue the group on this computer (see below). |
+| `/group N keep <computer>` | For a group continued on two computers, choose the one that keeps it. After a careful move, go back to the computer it left (confirmed with `... confirm`). |
+| `/group N ask first` | The group asks you before it moves by itself again. |
 | `/group help` | The command list. |
 
 `/group` also works while the chat's own conversation with the Bot is busy.
@@ -90,6 +94,80 @@ Bot's profile, and it ends when you forget it, when you revoke the chat, when th
 Chat is disbanded or moves to another gateway, or when the Bot's setup in the Group Chat
 changes. A command whose folder or connection changes while its approval is waiting is not
 run at all.
+
+## When a group's host goes offline
+
+A Group Chat runs on one computer, its *host*. Your other computers can keep a full copy of
+the group, and the ones you allow in Hermes Desktop can continue it if the host goes offline.
+On a gateway that supports this, `/group N` shows it:
+
+- `Host: Mac mini.` while all is well, or `Host: Mac mini, offline since 14:05 CEST. Paused.`
+  when the host can't be reached. Nothing new runs in a paused group.
+- `Can continue on: Home VPS, MacBook.`, or
+  `No computer can continue this group yet; choose one in Hermes Desktop.`
+  Messaging shows which computers can continue a group; you choose them in Desktop.
+- Whether the group moves by itself:
+  `Keeps running if a computer goes offline: ready (Home VPS takes over).` With only two
+  computers it waits first: `… (Home VPS takes over after about 3 minutes).` Otherwise it says
+  why not right now (`Not automatic right now: MacBook offline.`), not yet
+  (`Not automatic yet: add one more always-on computer in Hermes Desktop.`), or
+  `Moves only when you choose.`
+- In `/group list`, a group another computer hosts is marked *backup copy*. `/group N` shows
+  it, but sending and stopping work happen on its host.
+
+`/group N continue` continues a paused group on **the computer whose Bot you're talking to**.
+It first shows what that involves: which Bots stay unavailable until the group moves back to
+the computer they run on, how much work finished, still runs on other computers or is
+unknown, and which recent messages this computer doesn't have yet. To go ahead, reply
+`/group N continue confirm`, or tap **Continue on …** where your chat shows buttons. Unknown
+work never runs again by itself.
+
+Only continue if the host is really offline. If it's still running somewhere you can't
+reach, both computers may keep working until they reconnect. `/group N` then says the group
+was continued on two computers, and `/group N keep <computer>` chooses the one that keeps
+it; messages from the other are kept and shown separately.
+
+Continuing and keeping belong to the group's owner. They work only in your private chat with
+the Bot, never in a shared chat, which still shows the group's state. A computer that can
+continue a paused group may also message you in that private chat with the command to reply.
+
+When a group moves by itself, the computer it moved to tells you once:
+`“Research” moved to Home VPS because Mac mini went offline. It’s running.` A host that can't
+reach enough of the group's other computers pauses the group so that it never runs in two
+places, and tells you the same way: `“Research” is paused to stay safe: Mac mini can’t reach
+Home VPS.` It resumes as soon as one of them is back; continuing it anyway is only possible in
+Hermes Desktop and the CLI. A message you send to a paused group isn't sent, and the reply says
+so. While the other computers are still deciding which one takes over, `/group N` says that
+too.
+
+A group on just two computers moves more carefully: the other computer takes over only after
+the host has been silent for about 3 minutes. Silence can't prove the host stopped, so you get
+a warning instead, with three choices: **Keep going** on the new host (nothing to do), **Go
+back** to the computer it left (`/group N keep <computer>`, then `... confirm`), or **Ask me
+first next time** (`/group N ask first`). If both computers did run it,
+`“Research” ran on both Mac mini and Home VPS while they couldn’t reach each other (…)`
+says which one is still running the group and asks you to choose one with
+`/group N keep <computer>`; keeping the one still running is keep going, and the other's
+messages are kept separately.
+
+When a group is paused because its host went offline, a computer that can continue it tells
+you too: `“Research” is paused: Mac mini has been offline for 12 min.`, with **Continue on
+Home VPS**.
+
+These messages go to your main channel: your home channel (`/sethome`) when it is your
+private chat with the Bot, otherwise each of your private chats with it. Their choices are
+buttons on Telegram, Discord, Slack and WhatsApp, and they keep working hours later, after a
+restart or other prompts in the chat. Each tap edits the message in place: **Keep going** and
+**Ask me first** take one tap; **Go back**, **Keep** the computer that stopped and
+**Continue on** ask you to confirm with a second tap. On other platforms each choice comes
+with the `/group` command to type. A bare number such as `2` is never taken as a choice, since
+your Bot may have asked a numbered question of its own. Without any private chat, a home
+channel that is a one-to-one chat gets the message without the choices ("Choose in Hermes
+Desktop."), and a shared home channel gets nothing.
+
+On Matrix every direct room counts as shared, so host-loss notices aren't sent there and
+continuing, keeping or asking first isn't possible from Matrix: use Hermes Desktop or
+`hermes groups`.
 
 ## Good to know
 

@@ -116,6 +116,11 @@ def _revoke(args) -> int:
 def groups_command(args) -> int:
     handler = {"allow": _allow, "chats": _chats, "revoke": _revoke}.get(getattr(args, "groups_action", None))
     if handler is None:
-        print("Usage: hermes groups {allow <code> | chats | revoke <chat>}")
+        # The parser's own help, which lists every ``groups`` subcommand, including other changes' ones.
+        parser = getattr(args, "groups_parser", None)
+        if parser is None:
+            print("Run 'hermes groups --help' to see its commands.")
+        else:
+            parser.print_help()
         return 1
     return handler(args)

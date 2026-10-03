@@ -1685,6 +1685,8 @@ class SlackAdapter(BasePlatformAdapter):
         # Block Kit requires unique IDs within an actions block.
         self._app.action(re.compile(r"^hermes_clarify_choice_\d+$"))(self._handle_clarify_action)
         self._app.action("hermes_clarify_other")(self._handle_clarify_action)
+        # Group Chat notice choices: the value carries ``hg:<action>:<token>``, nothing is kept here.
+        self._app.action(re.compile(r"^hermes_group_\d+$"))(self._handle_group_action)
         # Register Block Kit action handlers for the model picker
         # (provider/model static_select + Back/Cancel buttons).
         for _action_id in _MODEL_PICKER_ACTION_IDS:
@@ -4661,9 +4663,9 @@ class SlackAdapter(BasePlatformAdapter):
         msg_event = await self._build_message_event(
             event, text=text, original_text=original_text, command_probe_text=command_probe_text,
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
-            user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, media_urls=media_urls,
-            media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context,
-            reply_expected=self._slack_reply_expected(
+            user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, is_one_to_one=is_one_to_one_dm,
+            media_urls=media_urls, media_types=media_types, media_text_inlined=media_text_inlined,
+            channel_context=channel_context, reply_expected=self._slack_reply_expected(
                 routing_text, bot_uid, channel_id=channel_id, opens_own_session=thread_ts == ts,
                 addressed=is_one_to_one_dm or is_mentioned or is_command_text or force_process))
         # React only when directly addressed; MPIMs are shared, so they need a
@@ -4685,7 +4687,8 @@ class SlackAdapter(BasePlatformAdapter):
         self, event: dict, *, text: str, original_text: str, command_probe_text: str,
         is_command_text: bool, channel_id: str, team_id: str, ts: str, user_id: str,
         thread_ts: Optional[str], is_dm: bool, media_urls: List[str], media_types: List[str],
-        media_text_inlined: List[bool], channel_context: Optional[str], reply_expected: Optional[bool] = None) -> MessageEvent:
+        media_text_inlined: List[bool], channel_context: Optional[str], reply_expected: Optional[bool] = None,
+        is_one_to_one: bool = False) -> MessageEvent:
         """Resolve names, title the DM thread, and build the ``MessageEvent``. Commands are restored
         from canonical input: the parser needs the token at char zero and enrichment (blocks,
         unfurls, file text, history) must never mutate arguments."""
@@ -4710,6 +4713,9 @@ class SlackAdapter(BasePlatformAdapter):
             # Workflow/app posts have user=None; flag them so the SLACK_ALLOW_BOTS bypass can
             # authorize them. Same predicate as the drop gate (api_human_users stay human).
             is_bot=self._event_declares_bot_sender(event))
+        # An IM is always the sender and the Bot alone (an MPIM is not): owner-only /group
+        # commands treat it as a private chat (gateway.group_chat_identity.is_private_source).
+        source.is_one_to_one = is_one_to_one
         from gateway.platforms.base import resolve_channel_skills
         # Remaining ``<@UID>`` are OTHER participants (own mention stripped
         # above); render as ``@DisplayName`` so the agent knows who is addressed.
@@ -5653,6 +5659,44 @@ class SlackAdapter(BasePlatformAdapter):
         self._clarify_resolved[msg_ts] = True
         await self._update_clarify_message(channel_id, msg_ts, question_text, notice)
 
+    def _group_action_blocks(self, text: str, buttons: list) -> list:
+        blocks: list = [{"type": "section", "text": {"type": "plain_text", "text": text[:3000]}}]
+        if buttons:
+            blocks.append({"type": "actions", "elements": [
+                self._button(label, f"hermes_group_{index}", data, style="" if label == "Cancel" else "primary")
+                for index, (label, data) in enumerate(buttons)]})
+        return blocks
+
+    async def send_group_actions(
+        self, chat_id: str, text: str, buttons: list, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+        """A Group Chat notice with its choices as Block Kit buttons; each value is
+        ``hg:<action>:<token>``, resolved by the gateway when clicked (``gateway.group_chat_actions``),
+        so the buttons keep working after a restart."""
+        try:
+            response = await self._post_interactive_blocks(
+                chat_id, text, self._group_action_blocks(text, buttons), metadata, team_scoped=False)
+            return SendResult(success=True, message_id=str((response or {}).get("ts") or ""))
+        except Exception as e:
+            logger.warning("[Slack] send_group_actions failed: %s", e)
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_group_action(self, ack, body, action) -> None:
+        """A click under a Group Chat notice: the gateway rechecks who may choose; the message is
+        updated in place into what comes next."""
+        started = await self._begin_interaction(ack, body, action, "group", team_scoped=False)
+        if started is None:
+            return
+        team_id, _action_id, value, _message, msg_ts, channel_id, _user_name, user_id = started
+        act = getattr(self.gateway_runner, "_group_chat_action", None)
+        try:
+            result = await act(self.platform.value, channel_id, user_id, value) if act is not None else None
+            if result is not None:
+                await self._get_client(channel_id, team_id=team_id).chat_update(
+                    channel=channel_id, ts=msg_ts, text=result["text"],
+                    blocks=self._group_action_blocks(result["text"], result["buttons"]))
+        except Exception:
+            logger.warning("[Slack] Group Chat notice choice failed", exc_info=True)
+
     async def _handle_clarify_action(self, ack, body, action) -> None:
         """Handle a clarify button click (a choice or "Other") from Block Kit."""
         started = await self._begin_interaction(ack, body, action, "clarify", team_scoped=False)
@@ -6037,6 +6081,7 @@ class SlackAdapter(BasePlatformAdapter):
         source = self.build_source(
             chat_id=channel_id, chat_type="dm" if is_dm else "group", user_id=user_id,
             thread_id=thread_id, scope_id=team_id or None)
+        source.is_one_to_one = is_dm  # a D… conversation is an IM: the sender and the Bot alone
         event = MessageEvent(
             text=text,
             message_type=(MessageType.COMMAND if text.startswith("/") else MessageType.TEXT),

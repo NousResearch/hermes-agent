@@ -23,6 +23,18 @@ class Bot:
         self.sent.append((chat_id, content, metadata))
 
 
+class Buttons(Bot):
+    """A Bot whose adapter shows native buttons (Telegram, Discord, Slack, WhatsApp Cloud)."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.offers = []
+
+    async def send_group_actions(self, chat_id, text, buttons, metadata=None):
+        self.offers.append(SimpleNamespace(chat_id=chat_id, text=text, buttons=list(buttons)))
+        return SimpleNamespace(success=True)
+
+
 def runner_for(authority, bot):
     runner = SimpleNamespace(session_authority=authority, _primary_profile_name='default')
     runner._transport_owner = lambda source: (bot, None)

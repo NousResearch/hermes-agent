@@ -3771,6 +3771,7 @@ export interface RollbackDiffResult {
 }
 export interface CronManageParams {
   action?: CronAction
+  job_id?: string | null
   name?: string | null
   include_disabled?: boolean | string | null
   schedule?: string | null
@@ -3780,7 +3781,7 @@ export interface CronManageParams {
   deliver?: string | null
   profile?: string | null
 }
-export type CronAction = 'list' | 'add' | 'remove' | 'pause' | 'resume'
+export type CronAction = 'list' | 'add' | 'get' | 'remove' | 'pause' | 'resume'
 /** Pass-through of ``tools/cronjob_tools.py::cronjob`` JSON: ``list`` → ``jobs``/``count`` (+ ``scoped`` when profile-scoped); ``add`` → the created job's summary + ``job``; ``remove`` → ``removed_job``; ``pause``/``resume`` → ``job``. A tool-level failure lands in ``error``. */
 export interface CronManageResult {
   success?: boolean | null
@@ -3798,7 +3799,7 @@ export interface CronManageResult {
   repeat?: number | string | null
   deliver?: string | null
   next_run_at?: string | null
-  job?: CronJobRow | null
+  job?: CronJobRow | CronJobDetail | null
   message?: string | null
   guidance?: unknown | null
   removed_job?: CronRemovedJob | null
@@ -3839,6 +3840,15 @@ export interface CronJobRow {
   continuity?: boolean | null
   context_from?: string[] | null
   attach_to_session?: boolean | null
+  [key: string]: unknown
+}
+/** Full stored job for an editor, as returned by the HTTP single-job API. */
+export interface CronJobDetail {
+  id: string
+  prompt?: string
+  name?: string
+  schedule?: Record<string, unknown>
+  repeat?: Record<string, unknown> | null
   [key: string]: unknown
 }
 export interface CronRemovedJob {

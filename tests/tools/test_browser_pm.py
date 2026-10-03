@@ -188,9 +188,21 @@ def test_external_chromium_override_survives_pm_composition(browser_store, monke
     publish("chromium")
     override = tmp_path / "user browser"
     override.write_bytes(b"external")
+    override.chmod(0o755)
     monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(override))
     assert install._chromium_installed()
     assert session._agent_browser_command_env(str(tmp_path))["AGENT_BROWSER_EXECUTABLE_PATH"] == str(override)
+
+
+def test_stale_chromium_override_is_removed_from_child_environment(browser_store, monkeypatch, tmp_path):
+    _, _, publish = browser_store
+    managed = publish("chromium")
+    monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(tmp_path / "deleted-chrome"))
+    assert session._agent_browser_command_env(str(tmp_path))["AGENT_BROWSER_EXECUTABLE_PATH"] == str(managed)
+
+    # A missing managed browser must not pass the broken override to agent-browser.
+    monkeypatch.setattr(pm, "installed_package", lambda name: None)
+    assert "AGENT_BROWSER_EXECUTABLE_PATH" not in session._agent_browser_command_env(str(tmp_path))
 
 
 def test_restricted_path_discovers_external_browser_without_execution(browser_store, monkeypatch, tmp_path):
@@ -325,6 +337,7 @@ def test_chromium_acquisition_policy(browser_store, monkeypatch, policy, tmp_pat
     if policy == "override":
         override = tmp_path / "external-chrome"
         override.touch()
+        override.chmod(0o755)
         monkeypatch.setenv("AGENT_BROWSER_EXECUTABLE_PATH", str(override))
         assert install._chromium_installed()
         override.unlink()

@@ -622,7 +622,7 @@ class GatewayInboundMixin:
         self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False
     ) -> None:
         """Merge *event* into the source adapter's pending slot (no-op without an adapter)."""
-        from gateway.platforms.base import merge_pending_message_event
+        from gateway.platforms.base_pending_merge import merge_pending_message_event
         adapter = self._delivery_adapter_for(source)
         if adapter:
             merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)

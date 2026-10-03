@@ -3298,10 +3298,13 @@ def block_task(
 
     An already-``blocked`` card that the failure breaker parked UNTYPED
     (``block_kind IS NULL``, no live run) is classified in place when *kind*
-    is supplied: ``block_kind``/``block_recurrences`` are set and a ``blocked``
-    audit event is appended, while status, failure evidence and the terminal
-    runs stay exactly as the breaker left them. A typed block, a card with a
-    live run, or a kind-less call on a blocked card are still refused.
+    is supplied. Non-dependency kinds retain the parked status while setting
+    ``block_kind``/``block_recurrences`` and appending a ``blocked`` audit
+    event; ``kind='dependency'`` follows the normal dependency route, which
+    may move the card to ``todo`` or re-kind it to sticky ``needs_input``.
+    Failure evidence and terminal runs stay exactly as the breaker left them.
+    A typed block, a card with a live run, or a kind-less call on a blocked
+    card are still refused.
     """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
@@ -3315,12 +3318,38 @@ def block_task(
         # ``block_kind`` and no ``blocked`` event -- the policy is the
         # supervisor's, not the kernel's -- but the transition guard below only
         # matches running/ready, so that policy could never be attached later
-        # (#117363). Classify in place; never re-type or flap status. A caller
-        # asserting run ownership (``expected_run_id``) cannot own a parked
-        # card -- its run is over -- so it is refused like any stale worker.
+        # (#117363). Classify in place; a dependency classification must still
+        # use the normal dependency routing or it leaves a sticky blocked card.
+        # A caller asserting run ownership (``expected_run_id``) cannot own a
+        # parked card -- its run is over -- so it is refused like any stale
+        # worker.
         if cur_row["status"] == "blocked":
             if kind is None or expected_run_id is not None or _row_get(cur_row, "block_kind") is not None:
                 return False
+            if kind == "dependency":
+                if _parents_satisfied(conn, task_id):
+                    kind = "needs_input"
+                    new_status, event_kind, set_sql, params, payload = _route_block(
+                        kind, reason, "blocked", prev_kind=None, prev_recurrences=0,
+                    )
+                    payload["requested_kind"] = "dependency"
+                    payload["rekind_reason"] = "no_open_parent"
+                else:
+                    new_status, event_kind, set_sql, params, payload = _route_block(
+                        kind, reason, "blocked", prev_kind=None, prev_recurrences=0,
+                    )
+                classified = conn.execute(
+                    f"UPDATE tasks SET status = ?, {set_sql} "
+                    "WHERE id = ? AND status = 'blocked' AND block_kind IS NULL "
+                    "AND current_run_id IS NULL",
+                    (new_status, *params, task_id),
+                ).rowcount
+                if classified != 1:
+                    return False
+                _append_event(conn, task_id, event_kind, {
+                    **payload, "classified_in_place": True,
+                })
+                return True
             classified = conn.execute(
                 "UPDATE tasks SET block_kind = ?, block_recurrences = 1 "
                 "WHERE id = ? AND status = 'blocked' AND block_kind IS NULL "

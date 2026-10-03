@@ -4549,14 +4549,13 @@ def _make_exit_diag():
             return
         try:
             from hermes_constants import get_hermes_home as _ghh
-            log_dir = _ghh() / "logs"
-            log_dir.mkdir(parents=True, exist_ok=True)
+            from hermes_logging import append_json_line_rotating
+
             line = {
                 "ts": _dt.now(_tz.utc).isoformat(), "tag": tag, "pid": os.getpid(),
                 "python": sys.version.split()[0], "platform": sys.platform, **extra,
             }
-            with open(log_dir / "gateway-exit-diag.log", "a", encoding="utf-8") as f:
-                f.write(json.dumps(line, default=str) + "\n")
+            append_json_line_rotating(_ghh() / "logs" / "gateway-exit-diag.log", line)
         except Exception:
             pass  # never let the diagnostic itself crash the gateway
 

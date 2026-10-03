@@ -54,7 +54,8 @@ param(
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
     [switch]$SelfTestMarker,
-    [switch]$SelfTestWorkingDirectory
+    [switch]$SelfTestWorkingDirectory,
+    [switch]$SelfTestRelaunch
 )
 
 if ($PSBoundParameters.ContainsKey("Branch") -and $PSBoundParameters.ContainsKey("Channel")) {
@@ -62,7 +63,7 @@ if ($PSBoundParameters.ContainsKey("Branch") -and $PSBoundParameters.ContainsKey
 }
 $targetArgs = if ($Channel) { @("--channel", $Channel.ToLowerInvariant()) } else { @("--branch", $Branch) }
 
-if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
+if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $SelfTestRelaunch -and -not $InstallRoot) {
     # Mandatory in spirit; relaxed in the signature only so the self-test
     # switches can drive the UI / the pipe drain without a checkout.
     throw "-InstallRoot is required"
@@ -647,10 +648,48 @@ function Remove-MarkerIfOwned {
     } catch {}
 }
 
+function Confirm-DesktopWindow([int]$TargetPid, [int]$TimeoutSeconds = 20) {
+    # Launch acceptance for a detached Hermes.exe pid: $true only if the pid
+    # exposes a main window within the bound. A live-but-windowless survivor
+    # is the #102259 frozen main thread (Not Responding, DDE Server Window
+    # only) still holding the single-instance lock — callers must treat it
+    # as a FAILED launch so the hand-off downgrades to manual, never success.
+    # $RelaunchWindowSeconds (default 20) bounds the poll; not documented as a
+    # user knob, overridable so the self-test arm does not sit out the real
+    # bound.
+    if (-not $script:Win32) {
+        # Headless (no user32): focus is impossible, but liveness is still
+        # checkable — a dead pid must never read as a landed relaunch.
+        try { [void](Get-Process -Id $TargetPid -ErrorAction Stop); return $true } catch { return $false }
+    }
+    try { [HermesHandoff.Win32]::AllowSetForegroundWindow($TargetPid) | Out-Null } catch {}
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $hwnd = (Get-Process -Id $TargetPid -ErrorAction Stop).MainWindowHandle
+        } catch {
+            Write-HandoffLog "WARNING: relaunched desktop exited before its window appeared"
+            return $false
+        }
+        if ($hwnd -ne [System.IntPtr]::Zero) {
+            try {
+                [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
+                [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
+            } catch {}
+            Write-HandoffLog "focused relaunched desktop window"
+            return $true
+        }
+        Start-Sleep -Milliseconds 400
+        if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
+    }
+    Write-HandoffLog "WARNING: relaunched desktop (pid $TargetPid) showed no main window within ${TimeoutSeconds}s; treating as failed relaunch (possible frozen main thread holding the single-instance lock)"
+    return $false
+}
+
 function Start-DesktopRelaunch {
-    # Returns $true only when a launch VERIFIABLY happened (WMI accepted and
-    # the pid exists, or the fallback spawn returned a live process). The
-    # finally block downgrades the on-screen/on-disk outcome when it didn't
+    # Returns $true only when a launch VERIFIABLY happened (detached pid
+    # exists AND shows a main window, or the fallback spawn returned a live
+    # process). The finally block downgrades the on-screen/on-disk outcome
     # — the sibling truth contract to posix.sh's launch acceptance.
     if (-not $RelaunchExe) { return $false }
     # electron-builder replaces win-unpacked in place. After a successful
@@ -684,39 +723,14 @@ function Start-DesktopRelaunch {
         if ($r -and $r.ReturnValue -eq 0) {
             Write-HandoffLog "desktop relaunched detached (pid $($r.ProcessId))"
             $spawned = $true
-            # Hand our foreground rights to the new Desktop and focus its
-            # main window once it exists. A WMI-spawned process starts
-            # unfocused, and Windows only lets the CURRENT foreground
-            # owner (us, while the progress window is up / just closed)
-            # delegate that right. Poll briefly for the window: Electron
-            # takes a couple seconds to create it.
-            try {
-                if ($script:Win32) {
-                    [HermesHandoff.Win32]::AllowSetForegroundWindow([int]$r.ProcessId) | Out-Null
-                    $deadline = (Get-Date).AddSeconds(20)
-                    while ((Get-Date) -lt $deadline) {
-                        $hwnd = [System.IntPtr]::Zero
-                        try {
-                            $p = Get-Process -Id $r.ProcessId -ErrorAction Stop
-                            $hwnd = $p.MainWindowHandle
-                        } catch {
-                            # Process died before showing a window — that is a
-                            # failed launch, not merely an unfocused one.
-                            Write-HandoffLog "WARNING: relaunched desktop exited before its window appeared"
-                            $spawned = $false
-                            break
-                        }
-                        if ($hwnd -ne [System.IntPtr]::Zero) {
-                            [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
-                            [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
-                            Write-HandoffLog "focused relaunched desktop window"
-                            break
-                        }
-                        Start-Sleep -Milliseconds 400
-                    }
-                }
-            } catch {
-                Write-HandoffLog "WARNING: could not focus relaunched desktop: $($_.Exception.Message)"
+            # Window-verified acceptance (#102259): a live pid with no main
+            # window is a frozen main thread holding the single-instance
+            # lock, not a landed relaunch. Do NOT keep the spawned verdict:
+            # the explorer rung below retries once and the tethered fallback
+            # after that keeps the old always-launch behavior as last resort.
+            if (-not (Confirm-DesktopWindow ([int]$r.ProcessId) $script:RelaunchWindowSeconds)) {
+                $spawned = $false
+                Write-HandoffLog "WMI relaunch produced a windowless pid; retrying via explorer"
             }
         } else {
             Write-HandoffLog "WARNING: WMI relaunch returned $($r.ReturnValue); falling back"
@@ -743,27 +757,13 @@ function Start-DesktopRelaunch {
                 if ($fresh.Count -gt 0) {
                     Write-HandoffLog "desktop relaunched detached via explorer (pid $($fresh[0].Id))"
                     $spawned = $true
-                    # Same foreground hand-off as the WMI rung: the new process
-                    # starts unfocused and only the current foreground owner
-                    # (us) can delegate that right.
-                    try {
-                        if ($script:Win32) {
-                            [HermesHandoff.Win32]::AllowSetForegroundWindow([int]$fresh[0].Id) | Out-Null
-                            $focusDeadline = (Get-Date).AddSeconds(20)
-                            while ((Get-Date) -lt $focusDeadline) {
-                                $hwnd = [System.IntPtr]::Zero
-                                try { $hwnd = (Get-Process -Id $fresh[0].Id -ErrorAction Stop).MainWindowHandle } catch { break }
-                                if ($hwnd -ne [System.IntPtr]::Zero) {
-                                    [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
-                                    [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
-                                    Write-HandoffLog "focused relaunched desktop window"
-                                    break
-                                }
-                                Start-Sleep -Milliseconds 400
-                            }
-                        }
-                    } catch {
-                        Write-HandoffLog "WARNING: could not focus relaunched desktop: $($_.Exception.Message)"
+                    # Same window-verified acceptance as the WMI rung
+                    # (#102259); also covers a pid that dies mid-poll. A
+                    # windowless survivor here falls through to the tethered
+                    # fallback below rather than being blessed as a relaunch.
+                    if (-not (Confirm-DesktopWindow ([int]$fresh[0].Id) $script:RelaunchWindowSeconds)) {
+                        $spawned = $false
+                        Write-HandoffLog "explorer relaunch produced a windowless pid; falling back to tethered launch"
                     }
                     break
                 }
@@ -780,11 +780,21 @@ function Start-DesktopRelaunch {
     if (-not $spawned) {
         try {
             # Fallback keeps the old behavior (console tie-in and all) --
-            # a tethered Desktop beats no Desktop.
-            $p = Start-Process -FilePath $RelaunchExe -WorkingDirectory (Split-Path -Parent $RelaunchExe) -PassThru
-            Start-Sleep -Milliseconds 1500
-            if ($p -and -not $p.HasExited) { $spawned = $true }
-            elseif ($p) { Write-HandoffLog "WARNING: fallback relaunch exited immediately" }
+            # a tethered Desktop beats no Desktop -- but a frozen relaunch
+            # (#102259) must be SURFACED, never silently blessed: capture the
+            # launcher's output so the failure is diagnosable, and hold the
+            # result to the same window-verified contract as the detached
+            # rungs when user32 allows it.
+            $fallbackOut = Join-Path $LogDir "relaunch-fallback.out.log"
+            $p = Start-Process -FilePath $RelaunchExe -WorkingDirectory (Split-Path -Parent $RelaunchExe) -PassThru -RedirectStandardOutput $fallbackOut -RedirectStandardError (Join-Path $LogDir "relaunch-fallback.err.log")
+            if ($p -and -not $p.HasExited -and (Confirm-DesktopWindow $p.Id $script:RelaunchWindowSeconds)) {
+                $spawned = $true
+                Write-HandoffLog "fallback relaunch window-verified (pid $($p.Id))"
+            } elseif ($p -and -not $p.HasExited) {
+                Write-HandoffLog "WARNING: fallback relaunch (pid $($p.Id)) is alive but windowless after $($script:RelaunchWindowSeconds)s (possible frozen main thread; it may hold the single-instance lock until killed)"
+            } elseif ($p) {
+                Write-HandoffLog "WARNING: fallback relaunch exited immediately (code $($p.ExitCode)); output: $((Get-Content -LiteralPath $fallbackOut -TotalCount 5 -ErrorAction SilentlyContinue) -join ' | ')"
+            }
         } catch {
             Write-HandoffLog "WARNING: desktop relaunch failed: $($_.Exception.Message)"
         }
@@ -814,6 +824,17 @@ if ($env:HERMES_UPDATE_PIPE_DRAIN_SECONDS) {
     $parsedGrace = 0
     if ([int]::TryParse($env:HERMES_UPDATE_PIPE_DRAIN_SECONDS, [ref]$parsedGrace) -and $parsedGrace -ge 0) {
         $script:StepDrainGraceSeconds = $parsedGrace
+    }
+}
+
+# How long the relaunched Desktop gets to expose a main window before the
+# hand-off calls the launch failed (#102259). Overridable so the relaunch
+# self-test does not sit out the real bound; not documented as a user knob.
+$script:RelaunchWindowSeconds = 20
+if ($env:HERMES_UPDATE_RELAUNCH_WINDOW_SECONDS) {
+    $parsedWindow = 0
+    if ([int]::TryParse($env:HERMES_UPDATE_RELAUNCH_WINDOW_SECONDS, [ref]$parsedWindow) -and $parsedWindow -gt 0) {
+        $script:RelaunchWindowSeconds = $parsedWindow
     }
 }
 
@@ -1521,6 +1542,128 @@ exit 3
         exit 1
     }
     Write-Host "PIPE-DRAIN SELF-TEST: PASS $detail"
+    exit 0
+}
+
+# -SelfTestRelaunch: prove the relaunch gate rejects windowless pids ------
+# The #102259 hand-off bug needs no update, no checkout and no Hermes
+# install to reproduce -- only a relaunched process that is alive but never
+# exposes a main window, which is exactly what a console PowerShell child
+# is. The arm drives the REAL Start-DesktopRelaunch against the real
+# process table, so the acceptance contract has an executable proof on
+# Windows instead of a source-grep. Exits before any marker/desktop
+# machinery, same as the other self-test arms; touches nothing but its own
+# temp files and the processes it starts (all cleaned up).
+#
+# Arms (HERMES_SELFTEST_RELAUNCH_WINDOW_SECONDS shrinks the poll to keep the
+# run quick; the contract under test is the verdict, not the 20s bound):
+#
+#   zombie  -- a live, windowless process (the frozen main thread shape).
+#              The WMI rung must NOT bless it: the gate fails, the explorer
+#              rung retries, and the tethered fallback then launches the
+#              stub which exits immediately -- overall verdict $false and
+#              every pid accounted for (killed) at return.
+#   gone    -- a pid that exits before the poll starts (the dead-relaunch
+#              shape): the gate must answer $false on a nonexistent pid.
+#   healthy -- a live process WITH a window. Simulated with the progress
+#              window's own process when possible; otherwise a live
+#              powershell child (windowless) confirms only the liveness
+#              half under headless Win32 absence. The window half needs a
+#              real GUI process, which the CI runner provides via the
+#              stub exe below when HERMES_SELFTEST_RELAUNCH_GUI=1.
+if ($SelfTestRelaunch) {
+    New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
+    $windowSeconds = 3
+    if ($env:HERMES_SELFTEST_RELAUNCH_WINDOW_SECONDS) { $windowSeconds = [int]$env:HERMES_SELFTEST_RELAUNCH_WINDOW_SECONDS }
+    $savedWindow = $script:RelaunchWindowSeconds
+    $script:RelaunchWindowSeconds = $windowSeconds
+    $problems = @()
+    $startedPids = @()
+
+    # Windowless "zombie" fixture: a child PowerShell that sleeps silently.
+    $powershell = Join-Path $PSHOME "powershell.exe"
+    $zombie = Start-Process -FilePath $powershell -ArgumentList "-NoProfile", "-Command", "Start-Sleep -Seconds 60" -WindowStyle Hidden -PassThru
+    $startedPids += $zombie.Id
+
+    # The gate itself: a live pid with NO main window must answer $false.
+    $zombieVerdict = Confirm-DesktopWindow ([int]$zombie.Id) $windowSeconds
+
+    # Dead pid fixture: a pid that is provably gone must answer $false.
+    $dead = Start-Process -FilePath $powershell -ArgumentList "-NoProfile", "-Command", "exit 0" -WindowStyle Hidden -PassThru
+    Start-Sleep -Milliseconds 800
+    $deadVerdict = Confirm-DesktopWindow ([int]$dead.Id) $windowSeconds
+
+    # Live-and-windowed fixture: our own progress window (shown by
+    # Show-ProgressWindow above the try block, same as the real hand-off)
+    # is a real GUI pid the gate must accept.
+    Show-ProgressWindow
+    $healthyVerdict = $null
+    if ($script:Win32 -and $script:Ui) {
+        $healthyVerdict = Confirm-DesktopWindow $PID $windowSeconds
+    } elseif (-not $script:Win32) {
+        # Headless: the liveness half only. A live pid must answer $true
+        # under the no-user32 ceiling (dead pid covered by $deadVerdict).
+        $healthyVerdict = Confirm-DesktopWindow ([int]$zombie.Id) $windowSeconds
+        Write-HandoffLog "SELF-TEST: headless run -- healthy arm degraded to liveness-only"
+    } else {
+        # Win32 present but no progress window could be created: the
+        # windowed half is untestable here, so this arm abstains rather
+        # than fails on an environment artifact.
+        Write-HandoffLog "SELF-TEST: no progress window available -- healthy arm skipped"
+    }
+    Close-ProgressWindow
+
+    # Full-ladder check: Start-DesktopRelaunch against a WinExe sleeper proves
+    # the whole retry chain ends in $false (never a blessed zombie) and no
+    # process leaks. The stub must be windowless BY CONSTRUCTION: an earlier
+    # revision copied console-subsystem powershell.exe, and on some runner
+    # images (observed: windows arm64) a WMI- or explorer-launched console exe
+    # is handed a real conhost window, so the gate correctly accepted it and
+    # the fixture failed on an environment artifact. A /target:winexe assembly
+    # has no console subsystem and never creates a window, on every image.
+    $stubDir = Join-Path $TempDir ("hermes-relaunch-selftest-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $stubDir -Force | Out-Null
+    $stubOut = Join-Path $stubDir "Hermes.exe"
+    $stubCs = Join-Path $stubDir "sleeper.cs"
+    @'
+using System.Threading;
+internal static class HermesRelaunchSleeper {
+    static void Main() { Thread.Sleep(60000); }
+}
+'@ | Set-Content -LiteralPath $stubCs -Encoding ASCII
+    $savedRelaunchExe = $RelaunchExe
+    $spawned = $false
+    try {
+        Add-Type -TypeDefinition (Get-Content -LiteralPath $stubCs -Raw) -OutputAssembly $stubOut -OutputType WindowsApplication -ErrorAction Stop
+        $RelaunchExe = $stubOut
+        # The stub Hermes.exe IS the sleeper: launched detached (WMI rung),
+        # it never shows a window, so the whole ladder must fail.
+        $spawned = Start-DesktopRelaunch
+        if ($spawned) { $problems += "Start-DesktopRelaunch blessed a windowless stub (pid chain unverified)" }
+    } catch {
+        # No compiler on this image: the ladder arm abstains rather than
+        # fails on an environment artifact, same policy as the healthy arm.
+        $spawned = $null
+        Write-HandoffLog "SELF-TEST: could not build windowless stub ($($_.Exception.Message)); ladder arm skipped"
+    } finally {
+        $RelaunchExe = $savedRelaunchExe
+        Get-Process -Name "Hermes" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$stubDir*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500
+        Get-Process -Name "Hermes" -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$stubDir*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stubDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    foreach ($p in $startedPids) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue }
+    if ($zombieVerdict) { $problems += "window gate accepted a live windowless pid (the #102259 zombie)" }
+    if ($deadVerdict) { $problems += "window gate accepted a dead pid" }
+    if ($null -ne $healthyVerdict -and -not $healthyVerdict) { $problems += "window gate rejected a live windowed (or headless-live) pid" }
+
+    $detail = "zombie=$(-not $zombieVerdict) dead=$(-not $deadVerdict) healthy=$($healthyVerdict) ladderOk=$(-not $spawned) windowSeconds=$windowSeconds win32=$script:Win32"
+    if ($problems.Count -gt 0) {
+        Write-Host "RELAUNCH SELF-TEST: FAIL $detail -- $($problems -join '; ')"
+        exit 1
+    }
+    Write-Host "RELAUNCH SELF-TEST: PASS $detail"
     exit 0
 }
 

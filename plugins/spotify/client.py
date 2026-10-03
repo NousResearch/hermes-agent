@@ -133,6 +133,18 @@ def normalize_spotify_id(value: str, expected_type: Optional[str] = None) -> str
     parts = cleaned.split(":")[1:] if cleaned.startswith("spotify:") else []
     if len(parts) < 2 and "open.spotify.com" in cleaned:
         parts = [part for part in urlparse(cleaned).path.split("/") if part]
+        # A share link copied from a localized web player carries a locale
+        # segment ahead of the type: /intl-de/track/<id>, /intl-pt-br/album/<id>.
+        # Reading the path positionally without dropping it takes the locale for
+        # the type, so a typed call raises "Expected a Spotify track, got
+        # intl-de" and an untyped one silently returns "track" as the id.
+        # Spotify's router accepts any intl-* first segment (intl-zzz redirects
+        # to the bare path, an unknown non-intl segment 404s), so match the
+        # prefix rather than a fixed locale shape. Same rule the desktop embed
+        # matcher already uses in apps/desktop/src/components/assistant-ui/
+        # embeds/providers/spotify.ts.
+        if parts and parts[0].startswith("intl-"):
+            parts = parts[1:]
     if len(parts) >= 2:
         _check_type(parts[0], expected_type)
         return parts[1]

@@ -83,7 +83,9 @@ import {
   groupChatMemberBots,
   groupDisbandMetadataPlan,
   groupMemberKey,
+  groupSessionKey,
   groupWorkspaceOwnerKey,
+  hasThreadScopedGroupSession,
   liveGroupChatNames
 } from './group-membership'
 import { groupMentionComponents, groupMentionText } from './group-mention-text'
@@ -104,7 +106,7 @@ import { groupReplyMentionTag, sendToGroupChat, stopGroupThread } from './group-
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
 import { displayName, slugifyProfileName } from './labels'
-import { botRosterMeta, groupTranscriptSpeakerMeta, setBotsWorkspaceOwner } from './routing'
+import { botRosterMeta, groupTranscriptSpeakerMeta, requestForBot, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
 
@@ -116,6 +118,33 @@ const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
 // no scrollbar (#91878). Feature-detected: an older shell without the export
 // keeps the raw Streamdown path.
 const MessageTextContent = typeof sdk === 'undefined' ? undefined : sdk.MessageTextContent
+
+/** Resolve the plumbing session a disband must interrupt for the member
+ *  currently on turn: its thread-scoped session for the thread the in-flight
+ *  marker names (falling back to the run's latest activity thread), else the
+ *  pre-thread bare pointer. Mirrors the resolution stopGroupThread uses, so
+ *  Stop and Disband interrupt the same session for the same room state. */
+function disbandInterruptSession(room: GroupChatRoom, onTurn: GroupMember, fallbackThread: string | null): string | null {
+  const sessions = room.sessions || {}
+  const onTurnKey = groupMemberKey(onTurn)
+  const marker = room.stranded?.[onTurnKey]
+  const thread = (marker && typeof marker === 'object' ? marker.thread : null) || fallbackThread
+  const scoped = sessions[groupSessionKey(thread || 'legacy', onTurn)]
+
+  if (typeof scoped === 'string') {
+    return scoped
+  }
+
+  // A migrated room keeps no bare pointer for this member; an unmigrated one
+  // still answers on it. `true` pointers name no interruptable session.
+  if (hasThreadScopedGroupSession(sessions, onTurnKey)) {
+    return null
+  }
+
+  const bare = sessions[onTurnKey]
+
+  return typeof bare === 'string' ? bare : null
+}
 
 /** Soft-disband a group chat: remove only this group from every local member's
  *  membership list (the metadata syncs cross-machine via ui_meta), drop the
@@ -131,6 +160,15 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
   }
 
   const prior = all[group] || {}
+
+  // Capture WHO is mid-turn before the map rewrite retires the room: the
+  // disband must reach that member's backend turn, not just the drive.
+  const onTurn = prior.running && prior.turn ? prior.turn : null
+
+  const interruptSession = onTurn
+    ? disbandInterruptSession(prior, onTurn, currentGroupActivity(group).at(-1)?.thread || null)
+    : null
+
   const metaBefore = $botMeta.get()
   const cleanup = groupDisbandMetadataPlan(group, members, prior, $lastRoster.get(), metaBefore)
   let metadataPersistence: Promise<unknown> = Promise.resolve()
@@ -177,6 +215,11 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
       sessions: {},
       epoch: (prior.epoch || 0) + 1,
       running: false,
+      // Stamp the disband's epoch as a Stop too: the poll loop abandons an
+      // in-flight turn on `stoppedEpoch > dispatchEpoch` without waiting for
+      // the interrupt RPC to land, and the commit gate drops any reply that
+      // still slips through.
+      stoppedEpoch: (prior.epoch || 0) + 1,
       tombstone: true
     }
   }
@@ -227,6 +270,24 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
     allowEmpty: true,
     deletedRooms: [group]
   })
+
+  // The tombstone's epoch bump stops the DRIVE and the staleness checks drop
+  // any late reply, but the model call already submitted to the member's
+  // gateway keeps grinding to completion — burning quota and firing side
+  // effects into a room the user just discarded. Interrupt it (best-effort:
+  // an unreachable member still leaves the room retired; the poll loop exits
+  // on its staleness check). Fired only after the disband's own sync job is
+  // scheduled so the server-mirror flush never races ahead of the tombstone.
+  if (onTurn && interruptSession) {
+    try {
+      await requestForBot(onTurn, 'session.interrupt', {
+        session_id: interruptSession
+      })
+    } catch {
+      /* best-effort — the epoch stamp above already retired the room */
+    }
+  }
+
   await metadataPersistence
 
   // Persist the cleanup to every exact owner we can prove. saveBotMeta never

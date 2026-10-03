@@ -3465,9 +3465,11 @@ def _finish_compaction_boundary(
     compacted_in_place: bool, session_commit_succeeded: bool, defer_context_engine_notification: bool,
     compression_made_progress: bool, compression_used_fallback: bool, compression_feasibility_skip: bool,
     task_id: str,
-) -> int:
+) -> tuple[int, Optional[tuple]]:
     """Post-commit bookkeeping: notify engines/providers/hooks, re-arm usage tracking.
-    Returns the rough post-compression token estimate (diagnostics only)."""
+    Returns ``(rough post-compression token estimate, pending memory-provider switch)``;
+    the switch is delivered by :func:`compress_context` after the fence is released
+    (see #118120), and is ``None`` when no boundary hook is owed."""
     # old_session_id is bound only on rotation; _boundary_parent is the id the
     # boundary notifications attribute prior state to (old id, or same id in-place).
     _old_sid = old_session_id
@@ -3493,11 +3495,17 @@ def _finish_compaction_boundary(
 
     # Providers refresh cached per-session state; reset=False, conversation goes on.
     # Fires in BOTH modes so buffers don't double-count dropped turns in-place.
-    with _swallow('memory manager on_session_switch (compression): %s'):
-        if (bool(_old_sid) or in_place) and agent._memory_manager:
-            agent._memory_manager.on_session_switch(
-                agent.session_id or "", parent_session_id=_boundary_parent, reset=False, reason="compression"
-            )
+    #
+    # ponytail: captured here, delivered by the CALLER after lease.release()/
+    # finish_commit() — a wedged provider (hindsight daemon-start stall, #118120)
+    # must never run inside the commit fence, or cancel_before_commit cannot land
+    # and the session is uninterruptible. The manager reference is pinned so a
+    # teardown that nulls agent._memory_manager cannot silently drop the switch.
+    # Upgrade path: a bounded per-hook timeout in MemoryManager, which would let
+    # the hook run inline again.
+    _pending_memory_switch: Optional[tuple] = None
+    if (bool(_old_sid) or in_place) and agent._memory_manager:
+        _pending_memory_switch = (agent._memory_manager, agent.session_id or "", _boundary_parent)
 
     # Route via _emit_status so the warning reaches gateway platforms; store it on
     # _compression_warning so a late-bound status_callback can replay it.
@@ -3551,7 +3559,7 @@ def _finish_compaction_boundary(
         else:
             compressor._verify_compaction_cleared_threshold = True
     _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
-    return _compressed_est
+    return _compressed_est, _pending_memory_switch
 
 
 def _candidate_rejected(
@@ -4222,6 +4230,7 @@ def compress_context(
     messages_before_compression = phase.messages_before_compression
     approx_tokens, _pre_msg_count = phase.approx_tokens, phase.pre_msg_count
     _commit_fence_entered = False
+    _pending_memory_switch: Optional[tuple] = None
     try:
         # Capture the verdict before rotation callbacks: lifecycle hooks may reset
         # compressor fields on rebind; record only after the full boundary commits.
@@ -4291,7 +4300,7 @@ def compress_context(
             return messages, commit.refused_prompt
         compressed = commit.compressed
         split_status = commit.split_status
-        _compressed_est = _finish_compaction_boundary(
+        _compressed_est, _pending_memory_switch = _finish_compaction_boundary(
             agent, compressed, new_system_prompt=new_system_prompt, old_session_id=commit.old_session_id,
             in_place=in_place, compacted_in_place=commit.compacted_in_place,
             session_commit_succeeded=commit.session_commit_succeeded,
@@ -4320,6 +4329,18 @@ def compress_context(
         finally:
             if _commit_fence_entered:
                 commit_fence.finish_commit()
+            # Deferred memory-provider boundary hook (#118120): delivered AFTER the
+            # commit fence is released, so a blocking provider can never wedge
+            # ``cancel_before_commit``. Best-effort (debug-logged) exactly as the old
+            # inline call was — but the manager was pinned at the boundary, so a
+            # teardown that nulls ``agent._memory_manager`` still gets the switch.
+            pending_switch, _pending_memory_switch = _pending_memory_switch, None
+            if pending_switch is not None:
+                _switch_manager, _switch_sid, _switch_parent = pending_switch
+                with _swallow("memory manager on_session_switch (compression): %s"):
+                    _switch_manager.on_session_switch(
+                        _switch_sid, parent_session_id=_switch_parent, reset=False, reason="compression"
+                    )
 
 
 def _codex_compaction_cooldown_remaining(agent: Any) -> float:

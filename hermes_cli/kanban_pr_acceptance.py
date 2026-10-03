@@ -17,8 +17,17 @@ _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([
 def validate_contract(value: str | None) -> str:
     if value is None or value == "local-only":
         return "local-only"
+    if isinstance(value, str) and value.casefold() == "owner/repo":
+        raise ValueError(
+            "completion_contract literal placeholder OWNER/REPO is invalid; "
+            "use a real repository name such as <owner>/<repository>"
+        )
     if not isinstance(value, str) or not (_REPO.fullmatch(value) or _PR.fullmatch(value)):
-        raise ValueError("completion_contract must be local-only, OWNER/REPO, or an exact GitHub PR URL")
+        raise ValueError(
+            "completion_contract must be local-only, a real repository name such as "
+            "<owner>/<repository>, or an exact GitHub PR URL; the literal placeholder "
+            "OWNER/REPO is invalid"
+        )
     return value
 
 
@@ -154,7 +163,7 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
 
 def fetch_pr_review_state(pr_url: str) -> dict:
     """``{"review_decision", "state", "merged", "head_sha"}`` for the PR named by
-    ``pr_url`` (``https://github.com/OWNER/REPO/pull/N``), or
+    ``pr_url`` (``https://github.com/<owner>/<repository>/pull/N``), or
     ``{"error": ...}`` on any failure (auth, network, malformed url) --
     never raises, so a dispatcher tick calling this in a loop can't be
     taken down by one bad/unreachable PR.

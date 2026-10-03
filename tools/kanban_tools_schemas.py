@@ -478,7 +478,8 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "work. Defaults to false (classic single-shot worker)."
         )),
         "completion_contract": _prop("string", (
-            "Declare at creation: local-only (default), OWNER/REPO for PR publication, or an exact GitHub PR URL. "
+            "Declare at creation: local-only (default), a real <owner>/<repository> for PR publication, or an exact GitHub PR URL. "
+            "The literal placeholder OWNER/REPO is invalid. "
             "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass metadata.published_pr."
         )),
         "goal_max_turns": _prop("integer", (

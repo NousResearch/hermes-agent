@@ -192,7 +192,7 @@ _SPECS = [
              help="Provider the --model belongs to (passed as --provider <name> to "
                   "the worker). Requires --model."),
         _arg("--completion-contract", metavar="CONTRACT",
-             help="local-only (default), OWNER/REPO for publication, or exact GitHub PR URL; required CI gates done."),
+             help="local-only (default), a real <owner>/<repository> for publication, or exact GitHub PR URL; literal OWNER/REPO is invalid; required CI gates done."),
         _arg("--goal", action="store_true", dest="goal_mode",
              help="Run the worker in a goal loop: after each turn a judge checks the "
                   "response against the card title/body and, if not done, the worker "
@@ -302,8 +302,8 @@ _SPECS = [
     ], help="Edit task fields or recovery fields on an already-completed task"),
     _cmd("rebind-contract", [
         _TASK_ID,
-        _arg("new_contract", help="New completion_contract: local-only, OWNER/REPO, or an "
-             "exact GitHub PR URL. Must be in the same repo as the task's current PR/OWNER-REPO "
+        _arg("new_contract", help="New completion_contract: local-only, a real <owner>/<repository>, or an "
+             "exact GitHub PR URL; literal OWNER/REPO is invalid. Must be in the same repo as the task's current PR/repository "
              "contract, or local-only."),
         _arg("--reason", required=True,
              help="Why the contract is being rebound (recorded on the auditable "

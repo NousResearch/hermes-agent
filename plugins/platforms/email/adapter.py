@@ -299,6 +299,28 @@ def _extract_email_address(raw: str) -> str:
     return addr if "@" in addr else ""  # a bare word (``John``) is not a sender identity
 
 
+def _extract_sender_name(raw: str) -> str:
+    """Display name from a From: value. Same contract as the address parser: parseaddr over the
+    unfolded value, not a first-angle-bracket split (GHSA-rxqh-5572-8m77). A split at the first
+    ``<`` turns ``attacker (real <real@victim.test>) <attacker@evil.test>`` into an attacker-chosen
+    fragment and lets a quoted token (``"real@victim.test" <attacker@evil.test>``) borrow the quoted
+    mailbox as its name; parseaddr yields the display phrase that owns the mailbox it already parsed,
+    with comments stripped and quotes dropped. Empty for values that carry no display phrase.
+
+    parseaddr runs on the *raw* value and only the extracted phrase is RFC 2047-decoded: the decoded
+    text could itself hold a ``<``, and re-parsing it would hand the address back to an attacker-chosen
+    mailbox. Comments are stripped before the bracket tail is dropped because a decoded phrase such as
+    ``attacker (real <real@victim.test>)`` leaves an unbalanced ``(`` fragment after a first-``<`` split."""
+    value = re.sub(r"\r?\n[ \t]+", " ", str(raw or ""))
+    if len(value) > _MAX_FROM_LEN or value.count("(") > 64:
+        return ""  # hostile size/nesting: same ceiling the address parser applies
+    display, _ = parseaddr(value)
+    display = _strip_comments(_decode_header_value(display))
+    if "<" in display:
+        display = display.split("<")[0]  # an encoded phrase must not inject a second, display-only mailbox
+    return display.strip().strip('"')
+
+
 def _strip_comments(text: str) -> str:
     """Remove (possibly nested) ``(comments)``, innermost first, until nothing changes."""
     while (stripped := _COMMENT_RE.sub(" ", text)) != text:
@@ -718,9 +740,7 @@ class EmailAdapter(BasePlatformAdapter):
         if not (sender_addr := _extract_email_address(msg.get("From", ""))):  # never dispatch an empty identity
             logger.debug("[Email] Dropping message with no parseable From address: %r", msg.get("From", ""))
             return None
-        sender_name = _decode_header_value(msg.get("From", ""))
-        if "<" in sender_name:
-            sender_name = sender_name.split("<")[0].strip().strip('"')
+        sender_name = _extract_sender_name(msg.get("From", ""))
         subject = _decode_header_value(msg.get("Subject", "(no subject)"))
         if _is_automated_sender(sender_addr, dict(msg.items())):
             logger.debug("[Email] Skipping automated sender: %s", sender_addr)

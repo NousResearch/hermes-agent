@@ -63,6 +63,11 @@ gateway:
     current_label: "Aktuális: `{model}` ezen: {provider}"
     current_tag: " (aktuális)"
     more_models_suffix: " (+{count} további)"
+    models_header: "**{provider}** - {count} modell:"
+    models_current_marker: "{model} (aktuális)"
+    models_none: "Nem található modell a(z) `{provider}` szolgáltatóhoz. Lehet, hogy nincs beállítva - futtasd a `hermes model` parancsot a hozzáadásához."
+    models_switch_hint: "Váltás a `/model {model}` paranccsal."
+    models_no_providers: "Nem található beállított szolgáltató. Futtasd a `hermes model` parancsot egy hozzáadásához."
     usage_switch_model: "`/model <name>` — modell váltása"
     usage_switch_provider: "`/model <name> --provider <slug>` — szolgáltató váltása"
     usage_persist: "`/model <name> --global` — megőrzés"
@@ -1592,6 +1597,8 @@ slash:
     description: "Aktuális konfiguráció megjelenítése"
   model:
     description: "Modellváltás (munkamenetre érvényes; a --global tartósítja)"
+  models:
+    description: "Elérhető modellek listázása (opcionálisan egy szolgáltatóhoz)"
   codex-runtime:
     description: "A codex app-server futtatókörnyezet be-/kikapcsolása OpenAI/Codex modellekhez"
   personality:

@@ -63,6 +63,11 @@ gateway:
     current_label: "الحالي: `{model}` على {provider}"
     current_tag: " (الحالي)"
     more_models_suffix: " (+{count} آخر)"
+    models_header: "**{provider}** - {count} نموذج:"
+    models_current_marker: "{model} (الحالي)"
+    models_none: "لم يتم العثور على نماذج لـ `{provider}`. قد لا يكون مُهيأ - شغّل `hermes model` لإضافته."
+    models_switch_hint: "بدّل باستخدام `/model {model}`."
+    models_no_providers: "لم يتم العثور على مزودين مُهيأين. شغّل `hermes model` لإضافة واحد."
     usage_switch_model: "`/model <name>` — تبديل النموذج"
     usage_switch_provider: "`/model <name> --provider <slug>` — تبديل المزوّد"
     usage_persist: "`/model <name> --global` — حفظ دائم"
@@ -1575,6 +1580,8 @@ slash:
     description: "عرض الإعدادات الحالية"
   model:
     description: "تبديل النموذج (على مستوى الجلسة؛ --global للتثبيت الدائم)"
+  models:
+    description: "عرض النماذج المتاحة (اختياريًا لمزود واحد)"
   codex-runtime:
     description: "تبديل بيئة تشغيل codex app-server لنماذج OpenAI/Codex"
   personality:

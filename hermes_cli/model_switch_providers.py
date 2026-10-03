@@ -1225,7 +1225,7 @@ def list_authenticated_providers(
     current_base_url = str(current_base_url or "").strip()
     current_model = str(current_model or "").strip()
     user_providers = stringify_provider_map(user_providers)
-    data = fetch_models_dev()
+    data = fetch_models_dev(allow_network=False) if non_blocking_catalogs else fetch_models_dev()
 
     # A single excluded entry like ``copilot`` hides the provider under every key it surfaces
     # as (hermes_id / mdev_id / canonical slug).

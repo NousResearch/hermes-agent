@@ -1,5 +1,5 @@
 """Gateway slash commands that switch or tune the model route:
-/model, /codex-runtime, /reasoning, /fast, /personality.
+/model, /models, /codex-runtime, /reasoning, /fast, /personality.
 
 Split out of ``gateway/slash_commands.py``; bound onto ``GatewayRunner`` through
 ``GatewaySlashCommandsMixin``. Origin internals are imported lazily inside the bodies to avoid
@@ -127,6 +127,9 @@ class _ModelSwitchContext:
 
 
 _TEXT_LISTING_MODELS = 5
+# ``/models`` is an explicit listing request, so it shows a deeper slice than the
+# ``/model`` teaser above (which only previews enough rows to recognise a provider).
+_MODELS_LISTING_MODELS = 25
 
 
 def _model_provider_listing_lines(providers) -> list[str]:
@@ -148,9 +151,110 @@ def _model_provider_listing_lines(providers) -> list[str]:
 
 
 class GatewayModelCommandsMixin:
-    """Model-route slash commands (/model, /codex-runtime, /reasoning, /fast, /personality)."""
+    """Model-route slash commands (/model, /models, /codex-runtime, /reasoning, /fast, /personality)."""
 
-    # ----------------------------------------------------------------- /model
+    # ------------------------------------------------- /model, /models
+
+    async def _models_listing_args(self, event: MessageEvent):
+        """``(ctx, profile_home)`` for a read-only listing: the same context ``/model`` builds,
+        without the switch-side work (no lock, no persistence policy, no snapshot)."""
+        from gateway.run import _hermes_home
+
+        profile_home = None
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            profile_home = self._resolve_profile_home_for_source(event.source)
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        session_key = self._session_key_for_source(source)
+        ctx = _ModelSwitchContext(
+            session_key=session_key,
+            source=source,
+            config_path=(profile_home or _hermes_home) / "config.yaml",
+            persist_global=False,
+        )
+        ctx.read_config()
+        ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+        return ctx, profile_home
+
+    def _models_listing_kwargs(self, ctx: _ModelSwitchContext) -> dict:
+        """The shared lister's kwargs, matching the ``/model`` text read path (#41289/#74003):
+        cache-only catalogs, live probe of the selected custom endpoint only."""
+        return dict(
+            current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,
+            current_model=ctx.current_model, user_providers=ctx.user_provs,
+            custom_providers=ctx.custom_provs, excluded_providers=ctx.excluded_provs,
+            non_blocking_catalogs=True, probe_custom_providers=False, probe_current_custom_provider=True,
+        )
+
+    def _select_models_row(self, providers: list, wanted: str) -> Optional[dict]:
+        """The single row ``/models`` answers about, or None.
+
+        Bare ``/models`` is the CURRENT provider's row; ``/models <provider>`` matches the
+        requested one by slug, by display name, or by any of its configured aliases
+        (``custom_provider_aliases``), so ``lmstudio`` and ``custom:lmstudio`` reach the same row.
+        Matching runs over what the lister returned rather than a canonical provider table, so a
+        provider with no configured credential is simply absent — never guessed at."""
+        from hermes_cli.providers import custom_provider_aliases, normalize_provider
+
+        rows = list(providers or [])
+        target = normalize_provider(str(wanted or "").strip())
+        if not target:
+            return next((r for r in rows if r.get("is_current")), None)
+        for row in rows:
+            candidates = {normalize_provider(str(row.get("slug") or "")),
+                          normalize_provider(str(row.get("name") or ""))}
+            candidates |= {normalize_provider(a)
+                           for a in custom_provider_aliases(str(row.get("name") or ""),
+                                                            str(row.get("slug") or ""))}
+            if target in candidates:
+                return row
+        return None
+
+    def _models_reply_lines(self, row: dict, current_model: str) -> list[str]:
+        """One model per line, the active one marked. Reuses the ``/model`` copy keys so the two
+        listings read alike."""
+        models = [m for m in (row.get("models") or []) if m]
+        label = str(row.get("name") or row.get("slug") or "")
+        lines = [t("gateway.model.models_header", provider=label, count=len(models))]
+        if not models:
+            lines.append(t("gateway.model.models_none", provider=row.get("slug") or label))
+            return lines
+        active = str(current_model or "").strip()
+        for model in models:
+            if model == active:
+                lines.append(f"- {t('gateway.model.models_current_marker', model=model)}")
+            else:
+                lines.append(f"- {model}")
+        lines.append("")
+        lines.append(t("gateway.model.models_switch_hint", model=models[0]))
+        return lines
+
+    async def _handle_models_command(self, event: MessageEvent) -> str:
+        """``/models [provider]`` — list the models available for the current provider, or for the
+        named one. A read-only view over the SAME ``list_authenticated_providers`` the ``/model``
+        picker and text fallback already use, so this surface can never disagree with them and no
+        second catalog path is introduced (#3500)."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        ctx, profile_home = await self._models_listing_args(event)
+        wanted = (event.get_command_args() or "").strip()
+        listing_kwargs = self._models_listing_kwargs(ctx)
+
+        def _list():
+            return list_authenticated_providers(max_models=_MODELS_LISTING_MODELS, **listing_kwargs)
+
+        if profile_home is not None:
+            from gateway.run import _profile_runtime_scope
+            with _profile_runtime_scope(profile_home):
+                providers = await asyncio.to_thread(_list)
+        else:
+            providers = await asyncio.to_thread(_list)
+
+        row = self._select_models_row(providers, wanted)
+        if row is None:
+            if not providers:
+                return t("gateway.model.models_no_providers")
+            return t("gateway.model.models_none", provider=wanted or ctx.current_provider)
+        return "\n".join(self._models_reply_lines(row, ctx.current_model))
 
     async def _perform_model_switch(
         self, ctx: _ModelSwitchContext, raw_input: str, explicit_provider, source

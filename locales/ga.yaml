@@ -63,6 +63,11 @@ gateway:
     current_label: "Reatha: `{model}` ar {provider}"
     current_tag: " (reatha)"
     more_models_suffix: " (+{count} eile)"
+    models_header: "**{provider}** - {count} samhail:"
+    models_current_marker: "{model} (reatha)"
+    models_none: "Níor aimsíodh samhail ar bson de `{provider}`. B'fhéidir nach bhfuil sé cumraithe - rith `hermes model` chun é a chur leis."
+    models_switch_hint: "Athraing le `/model {model}`."
+    models_no_providers: "Níor aimsíodh soláthraití cumraithe. Rith `hermes model` chun ceann a chur leis."
     usage_switch_model: "`/model <name>` — athraigh an tsamhail"
     usage_switch_provider: "`/model <name> --provider <slug>` — athraigh an soláthraí"
     usage_persist: "`/model <name> --global` — coinnigh"
@@ -1575,6 +1580,8 @@ slash:
     description: "Taispeáin an chumraíocht reatha"
   model:
     description: "Athraigh an tsamhail (scóip an tseisiúin; --global chun coinneáil)"
+  models:
+    description: "Liostaigh na samhlailí atá ar fáil (roghnach do sholáthraí amháin)"
   codex-runtime:
     description: "Scoránaigh am rite codex app-server do shamhlacha OpenAI/Codex"
   personality:

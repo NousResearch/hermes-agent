@@ -63,6 +63,11 @@ gateway:
     current_label: "当前：`{model}`（{provider}）"
     current_tag: "（当前）"
     more_models_suffix: "（还有 {count} 个）"
+    models_header: "**{provider}** - {count} 个模型："
+    models_current_marker: "{model}（当前）"
+    models_none: "未找到 `{provider}` 的模型。它可能尚未配置 - 运行 `hermes model` 添加。"
+    models_switch_hint: "使用 `/model {model}` 切换。"
+    models_no_providers: "未找到已配置的提供商。运行 `hermes model` 添加一个。"
     usage_switch_model: "`/model <name>` — 切换模型"
     usage_switch_provider: "`/model <name> --provider <slug>` — 切换提供方"
     usage_persist: "`/model <name> --global` — 永久保存"
@@ -1575,6 +1580,8 @@ slash:
     description: "显示当前配置"
   model:
     description: "切换模型（仅限本会话；--global 持久保存）"
+  models:
+    description: "列出可用模型（可指定提供商）"
   codex-runtime:
     description: "为 OpenAI/Codex 模型开关 codex app-server 运行时"
   personality:

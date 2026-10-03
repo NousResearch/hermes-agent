@@ -63,6 +63,11 @@ gateway:
     current_label: "현재: `{model}` ({provider})"
     current_tag: " (현재)"
     more_models_suffix: " (+{count}개 더 있음)"
+    models_header: "**{provider}** - {count}개 모델:"
+    models_current_marker: "{model} (현재)"
+    models_none: "`{provider}`에 대한 모델을 찾을 수 없습니다. 설정되지 않았을 수 있습니다 - `hermes model`을 실행해 추가하세요."
+    models_switch_hint: "`/model {model}`로 전환합니다."
+    models_no_providers: "설정된 제공자를 찾을 수 없습니다. `hermes model`을 실행해 추가하세요."
     usage_switch_model: "`/model <name>` — 모델 전환"
     usage_switch_provider: "`/model <name> --provider <slug>` — 제공자 전환"
     usage_persist: "`/model <name> --global` — 영구 저장"
@@ -1575,6 +1580,8 @@ slash:
     description: "현재 설정 표시"
   model:
     description: "모델 전환 (세션 범위; --global로 영구 적용)"
+  models:
+    description: "사용 가능한 모델 목록 (제공자 지정 가능)"
   codex-runtime:
     description: "OpenAI/Codex 모델용 codex app-server 런타임 전환"
   personality:

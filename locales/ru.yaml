@@ -63,6 +63,11 @@ gateway:
     current_label: "Текущая: `{model}` на {provider}"
     current_tag: " (текущая)"
     more_models_suffix: " (+ещё {count})"
+    models_header: "**{provider}** - {count} модел.:"
+    models_current_marker: "{model} (текущая)"
+    models_none: "Модели для `{provider}` не найдены. Возможно, провайдер не настроен - выполните `hermes model`, чтобы добавить его."
+    models_switch_hint: "Переключите командой `/model {model}`."
+    models_no_providers: "Настроенные провайдеры не найдены. Выполните `hermes model`, чтобы добавить провайдера."
     usage_switch_model: "`/model <name>` — сменить модель"
     usage_switch_provider: "`/model <name> --provider <slug>` — сменить провайдера"
     usage_persist: "`/model <name> --global` — сохранить навсегда"
@@ -1575,6 +1580,8 @@ slash:
     description: "Показать текущую конфигурацию"
   model:
     description: "Переключить модель (в рамках сеанса; --global — сохранить навсегда)"
+  models:
+    description: "Показать доступные модели (необязательно для одного провайдера)"
   codex-runtime:
     description: "Переключить среду codex app-server для моделей OpenAI/Codex"
   personality:

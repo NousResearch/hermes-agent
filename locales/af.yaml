@@ -63,6 +63,11 @@ gateway:
     current_label: "Huidig: `{model}` op {provider}"
     current_tag: " (huidig)"
     more_models_suffix: " (+{count} meer)"
+    models_header: "**{provider}** - {count} model/le:"
+    models_current_marker: "{model} (huidig)"
+    models_none: "Geen modelle gevind vir `{provider}`. Miskien is nie gekonfigureer nie - voer `hermes model` uit om dit by te voeg."
+    models_switch_hint: "Wissel met `/model {model}`."
+    models_no_providers: "Geen gekonfigureerde verskaffers gevind. Voer `hermes model` uit om een by te voeg."
     usage_switch_model: "`/model <name>` — verander model"
     usage_switch_provider: "`/model <name> --provider <slug>` — verander verskaffer"
     usage_persist: "`/model <name> --global` — stoor permanent"
@@ -1575,6 +1580,8 @@ slash:
     description: "Wys huidige konfigurasie"
   model:
     description: "Verander model (sessie-omvang; --global om permanent te stoor)"
+  models:
+    description: "Lys beskikbare modelle (opsioneel vir een verskaffer)"
   codex-runtime:
     description: "Wissel die codex app-server-looptyd vir OpenAI/Codex-modelle"
   personality:

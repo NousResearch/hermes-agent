@@ -189,6 +189,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("model", "Switch model (session-scoped; --global to persist)", "Configuration",
                args_hint="[model] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
                busy_policy="reject", busy_handler="model", desktop="hidden"),
+    CommandDef("models", "List available models (optionally for one provider)", "Configuration",
+               args_hint="[provider]", busy_policy="reject", busy_handler="model", desktop="hidden"),
     CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
                "Configuration", aliases=("codex_runtime",), args_hint="[auto|codex_app_server]",
                busy_policy="reject", busy_handler="codex-runtime"),

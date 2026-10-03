@@ -63,6 +63,11 @@ gateway:
     current_label: "Aktuell: `{model}` bei {provider}"
     current_tag: " (aktuell)"
     more_models_suffix: " (+{count} weitere)"
+    models_header: "**{provider}** - {count} Modell(e):"
+    models_current_marker: "{model} (aktuell)"
+    models_none: "Keine Modelle für `{provider}` gefunden. Möglicherweise ist der Anbieter nicht konfiguriert - führe `hermes model` aus, um ihn hinzuzufügen."
+    models_switch_hint: "Wechsle mit `/model {model}`."
+    models_no_providers: "Keine konfigurierten Anbieter gefunden. Führe `hermes model` aus, um einen hinzuzufügen."
     usage_switch_model: "`/model <name>` — Modell wechseln"
     usage_switch_provider: "`/model <name> --provider <slug>` — Anbieter wechseln"
     usage_persist: "`/model <name> --global` — dauerhaft speichern"
@@ -1575,6 +1580,8 @@ slash:
     description: "Aktuelle Konfiguration anzeigen"
   model:
     description: "Modell wechseln (sitzungsbezogen; --global zum dauerhaften Speichern)"
+  models:
+    description: "Verfügbare Modelle auflisten (optional für einen Anbieter)"
   codex-runtime:
     description: "codex app-server-Runtime für OpenAI/Codex-Modelle umschalten"
   personality:

@@ -63,6 +63,11 @@ gateway:
     current_label: "Geçerli: `{model}` ({provider})"
     current_tag: " (geçerli)"
     more_models_suffix: " (+{count} tane daha)"
+    models_header: "**{provider}** - {count} model:"
+    models_current_marker: "{model} (geçerli)"
+    models_none: "`{provider}` için model bulunamadı. Yapılandırılmamış olabilir - eklemek için `hermes model` çalıştırın."
+    models_switch_hint: "`/model {model}` ile değiştirin."
+    models_no_providers: "Yapılandırılmış sağlayıcı bulunamadı. Eklemek için `hermes model` çalıştırın."
     usage_switch_model: "`/model <name>` — modeli değiştir"
     usage_switch_provider: "`/model <name> --provider <slug>` — sağlayıcıyı değiştir"
     usage_persist: "`/model <name> --global` — kalıcı kaydet"
@@ -1575,6 +1580,8 @@ slash:
     description: "Geçerli yapılandırmayı göster"
   model:
     description: "Modeli değiştir (oturuma özel; kalıcı yapmak için --global)"
+  models:
+    description: "Kullanılabilir modelleri listele (isteğe bağlı olarak bir sağlayıcı için)"
   codex-runtime:
     description: "OpenAI/Codex modelleri için codex app-server çalışma zamanını aç/kapat"
   personality:

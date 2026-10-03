@@ -63,6 +63,11 @@ gateway:
     current_label: "現在: `{model}` ({provider})"
     current_tag: " (現在)"
     more_models_suffix: " (他 {count} 件)"
+    models_header: "**{provider}** - {count} 個のモデル:"
+    models_current_marker: "{model} (現在)"
+    models_none: "`{provider}` のモデルが見つかりません。設定されていない可能性があります - `hermes model` を実行して追加してください。"
+    models_switch_hint: "`/model {model}` で切り替えられます。"
+    models_no_providers: "設定済みのプロバイダーが見つかりません。`hermes model` を実行して追加してください。"
     usage_switch_model: "`/model <name>` — モデルを切り替え"
     usage_switch_provider: "`/model <name> --provider <slug>` — プロバイダーを切り替え"
     usage_persist: "`/model <name> --global` — 永続化"
@@ -1575,6 +1580,8 @@ slash:
     description: "現在の設定を表示"
   model:
     description: "モデルを切り替え（セッション限定。--global で永続化）"
+  models:
+    description: "利用可能なモデルを一覧表示（プロバイダー指定も可）"
   codex-runtime:
     description: "OpenAI/Codex モデル向けの codex app-server ランタイムを切り替え"
   personality:

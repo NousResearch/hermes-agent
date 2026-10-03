@@ -5842,6 +5842,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         else:
             os.environ["TERMINAL_CWD"] = resolved_cwd
 
+    # Strip any stale delegated-child marker inherited from a parent shell
+    # (#87650): a long-lived gateway process is never a delegated child. Scoped
+    # to gateway startup (not module import) so incidental imports of
+    # gateway.run from tool/CLI code never scrub a legitimate child's marker.
+    os.environ.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
+
     from hermes_cli.resource_limits import apply_nofile_soft_limit
     apply_nofile_soft_limit()
 

@@ -23,6 +23,7 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     _find_skill,
+    _iter_skill_dirs,
     _skill_lock_path,
     skill_manage,
 )
@@ -138,6 +139,92 @@ class TestValidateFilePath:
     def test_other_root_md_still_rejected(self):
         # Only SKILL.md gets the root-level exception, not arbitrary files.
         assert _validate_file_path("README.md") is not None
+
+
+class TestSkillMdFilePathRouting:
+    """The main file's accepted spellings ('SKILL.md', '<skill-name>/SKILL.md') must
+    target the skill ROOT (#40568's "so callers can target the main file") with the
+    same guards the default paths have — not nest a duplicate SKILL.md that skill
+    discovery reads as a second skill, and not bypass structure/delete guards."""
+
+    def test_name_prefixed_skill_md_targets_main_file(self, tmp_path):
+        with _skill_dir(tmp_path):
+            assert _create_skill("my-skill", VALID_SKILL_CONTENT)["success"] is True
+            replacement = VALID_SKILL_CONTENT.replace(
+                "A test skill for unit testing.", "Updated via prefixed spelling.")
+            result = _write_file("my-skill", "my-skill/SKILL.md", replacement)
+            assert result["success"] is True, result.get("error")
+            main = tmp_path / "my-skill" / "SKILL.md"
+            assert "Updated via prefixed spelling." in main.read_text(encoding="utf-8")
+            assert not (tmp_path / "my-skill" / "my-skill").exists()
+            assert sorted(p.name for p in _iter_skill_dirs(tmp_path)) == ["my-skill"]
+
+    def test_foreign_prefix_skill_md_rejected(self, tmp_path):
+        with _skill_dir(tmp_path):
+            assert _create_skill("my-skill", VALID_SKILL_CONTENT)["success"] is True
+            result = _write_file("my-skill", "other/SKILL.md", VALID_SKILL_CONTENT_2)
+            assert result["success"] is False
+            assert "nested SKILL.md" in result["error"]
+            assert not (tmp_path / "my-skill" / "other").exists()
+
+    def test_deep_subdir_skill_md_rejected_not_routed_to_main_file(self, tmp_path):
+        """#120998 follow-up: the accepted main-file set is exactly {'SKILL.md',
+        '<skill>/SKILL.md'}. A 3+-segment spelling under an allowed subdir would pass
+        _validate_file_path and silently REWRITE the main file — here it must be rejected
+        as a nested SKILL.md instead, keeping the rejected/accepted sets contiguous."""
+        with _skill_dir(tmp_path):
+            assert _create_skill("my-skill", VALID_SKILL_CONTENT)["success"] is True
+            for deep in ("references/sub/SKILL.md", "assets/x/y/SKILL.md"):
+                result = _write_file("my-skill", deep, VALID_SKILL_CONTENT_2)
+                assert result["success"] is False, deep
+                assert "nested SKILL.md" in result["error"], deep
+                # the main file was not rewritten through the deep spelling
+                main = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+                assert main == VALID_SKILL_CONTENT, deep
+            # a skill-name-prefixed deep spelling is rejected too (first segment is not
+            # an allowed subdir) — whichever guard fires, the main file stays intact
+            result = _write_file("my-skill", "my-skill/sub/SKILL.md", VALID_SKILL_CONTENT_2)
+            assert result["success"] is False
+            assert not (tmp_path / "my-skill" / "references" / "sub").exists()
+
+    def test_deep_subdir_skill_md_remove_file_rejected_too(self, tmp_path):
+        """The same depth-agnostic hole on the remove path: a deep spelling must be
+        rejected as a nested SKILL.md, not fall through to the main-file delete guard
+        with a misleading hardcoded path in the error."""
+        with _skill_dir(tmp_path):
+            assert _create_skill("my-skill", VALID_SKILL_CONTENT)["success"] is True
+            result = _remove_file("my-skill", "references/sub/SKILL.md")
+            assert result["success"] is False
+            assert "nested SKILL.md" in result["error"]
+            assert (tmp_path / "my-skill" / "SKILL.md").exists()
+
+    def test_write_file_skill_md_requires_frontmatter(self, tmp_path):
+        with _skill_dir(tmp_path):
+            assert _create_skill("my-skill", VALID_SKILL_CONTENT)["success"] is True
+            result = _write_file("my-skill", "SKILL.md", "no frontmatter, just text")
+            assert result["success"] is False
+            assert "frontmatter" in result["error"]
+            main = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+            assert main == VALID_SKILL_CONTENT  # failed rewrite left the file intact
+
+    def test_patch_skill_md_keeps_structure_guard(self, tmp_path):
+        with _skill_dir(tmp_path):
+            assert _create_skill("my-skill", VALID_SKILL_CONTENT)["success"] is True
+            result = _patch_skill(
+                "my-skill", "description: A test skill for unit testing.", "",
+                file_path="SKILL.md")
+            assert result["success"] is False
+            assert "Patch would break SKILL.md structure" in result["error"]
+            main = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+            assert "description:" in main  # guard fired before any write
+
+    def test_remove_file_skill_md_points_to_delete(self, tmp_path):
+        with _skill_dir(tmp_path):
+            assert _create_skill("my-skill", VALID_SKILL_CONTENT)["success"] is True
+            result = _remove_file("my-skill", "SKILL.md")
+            assert result["success"] is False
+            assert "action='delete'" in result["error"]
+            assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -568,6 +655,26 @@ class TestSkillManageDispatcher:
         assert result["success"] is False
         assert "operations[1]" in result["error"]
         assert "rolled back" not in result["error"] and not sibling_created
+
+    def test_deep_skill_md_spelling_cannot_slip_the_clobber_guard(self, tmp_path):
+        """#120998 follow-up: op0 full-rewrites SKILL.md, op1 is a destructive write_file on
+        'references/sub/SKILL.md'. The resolver routes that spelling to the main file, so
+        the clobber key must collide and reject the batch — previously only the literal
+        2-segment spellings were normalized, and this pair applied with op0's work silently
+        discarded."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = json.loads(skill_manage(action="", name="", operations=[
+                {"name": "my-skill", "action": "patch", "content": VALID_SKILL_CONTENT_2},
+                {"name": "my-skill", "action": "write_file",
+                 "file_path": "references/sub/SKILL.md", "file_content": "body"}]))
+            main = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
+
+        assert result["success"] is False
+        # whichever guard fires (clobber collision up front, or the resolver's nested-
+        # SKILL.md refusal at apply), the batch must not apply op1 over op0's file
+        assert "nested SKILL.md" in result["error"] or "already touched" in result["error"]
+        assert main == VALID_SKILL_CONTENT  # neither op applied: batch rejected whole
 
 
 

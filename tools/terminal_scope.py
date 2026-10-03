@@ -168,6 +168,13 @@ def build_profile_terminal_scope(
             image_pinned = image_pinned or "docker_image" in raw_terminal
     scope["TERMINAL_DOCKER_IMAGE_PINNED"] = "1" if image_pinned else "0"
     _resolve_scope_cwd_placeholder(scope)
+    from tools.terminal_workspace import kanban_workspace
+    try:
+        workspace = kanban_workspace()
+    except ValueError as exc:
+        raise TerminalPolicyUnavailable(str(exc)) from exc
+    if workspace:
+        scope["TERMINAL_CWD"] = workspace
     return scope
 
 

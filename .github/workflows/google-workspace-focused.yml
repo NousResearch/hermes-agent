@@ -1,0 +1,40 @@
+name: Google Workspace focused tests
+
+on:
+  pull_request:
+    paths:
+      - "skills/productivity/google-workspace/**"
+      - "tests/skills/test_google_workspace_api.py"
+      - ".github/workflows/google-workspace-focused.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: google-workspace-focused-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused-tests:
+    name: Focused Google Workspace pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact event revision
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: Install focused test dependency
+        run: python -m pip install "pytest==9.1.1"
+
+      - name: Run focused Google Workspace tests
+        run: >-
+          python -m pytest
+          --confcutdir=tests/skills
+          tests/skills/test_google_workspace_api.py
+          -q

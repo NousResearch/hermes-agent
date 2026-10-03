@@ -16,6 +16,11 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     from hermes_cli.update_stage import ensure_panel, publish_stage
 
     ensure_panel(root)
+    # An older updater hands off here instead of update_completion._prepare; both run the
+    # treeless→blobless migration first, before minutes of dependency work (#129514).
+    from hermes_cli.gitlock import migrate_treeless_checkout
+    if migrate_treeless_checkout(root):
+        print("  (migrated the treeless checkout to a blobless partial clone; path-filtered git no longer fetches)")
     publish_stage("Updating Python dependencies (PM)")
     from pm import receipt
     from pm.client import ensure_tools_for_sync, sync_venv, venv_is_current

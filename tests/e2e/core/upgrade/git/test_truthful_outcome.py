@@ -2,7 +2,7 @@
 
 The origin is a real smart-HTTP ``git http-backend``; faults are injected at the HTTP layer, where
 GitHub's own failures happen: 429 rate limiting, 5xx on the ref advertisement or the fetch, a
-connection dropped mid-pack, and a drop during the promisor lazy fetch that a ``--filter=tree:0``
+connection dropped mid-pack, and a drop during the promisor lazy fetch that a ``--filter=blob:none``
 install makes while checking out the new release. One HEAD install is shared by the cells.
 
 Property: a failed transfer is a non-zero exit with no success banner and no success receipt; the
@@ -13,6 +13,7 @@ a pathological amount (a byte bound against a clean update of the same shape, ne
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 
@@ -29,9 +30,22 @@ FAULTS = {
     "502-on-ref-advertisement": lambda: Fault(status=502, path_has="info/refs", times=99),
     "503-on-ls-refs": lambda: Fault(status=503, command="ls-refs", times=99),
     "cut-mid-pack": lambda: Fault(cut_after=150, command="fetch", times=99),
-    # The commits arrive; the trees/blobs the tree:0 checkout then lazy-fetches are cut off.
+    # The commits and trees arrive; the blobs the blobless checkout then lazy-fetches are cut off.
     "cut-mid-checkout-lazy-fetch": lambda: Fault(cut_after=20000, command="fetch", skip=1, times=99),
 }
+
+
+def _release(name: str) -> dict[str, str]:
+    """A one-file release whose blob packs well past a ``cut_after=20000`` cut.
+
+    A blobless checkout lazy-fetches only the release's blobs, so a one-line file arrives whole
+    before the cut and the cell exercises nothing. Hex of a hash chain stays ~64 KB packed.
+    """
+    seed, lines = hashlib.sha256(name.encode()).digest(), []
+    for _ in range(2048):
+        seed = hashlib.sha256(seed).digest()
+        lines.append(seed.hex())
+    return {f"{name}.txt": "\n".join(lines) + "\n"}
 
 
 @pytest.fixture(scope="module")
@@ -58,7 +72,7 @@ def test_transport_failure_is_reported_as_failure(w, fault):
     w.reset_clean()
     w.srv.clear_faults()
     before = w.head()
-    w.publish(f"release: e2e truthful {fault}", {f"e2e-truthful-{fault}.txt": "release\n"})
+    w.publish(f"release: e2e truthful {fault}", _release(f"e2e-truthful-{fault}"))
     armed = w.srv.arm(FAULTS[fault]())
     mark = w.srv.mark()
 
@@ -75,14 +89,14 @@ def test_retry_after_interrupted_fetches_heals_without_refetching_history(w):
     w.reset_clean()
     w.srv.clear_faults()
     # Baseline: a clean update of a one-file release, bytes as the server sent them.
-    clean_target = w.publish("release: e2e truthful baseline", {"e2e-truthful-baseline.txt": "release\n"})
+    clean_target = w.publish("release: e2e truthful baseline", _release("e2e-truthful-baseline"))
     mark = w.srv.mark()
     cp = w.update()
     assert cp.returncode == 0 and w.head() == clean_target, f"baseline update failed:\n{w.diag(cp, mark)}"
     baseline = w.bytes_since(mark)
 
     before = w.head()
-    target = w.publish("release: e2e truthful after cuts", {"e2e-truthful-after-cuts.txt": "release\n"})
+    target = w.publish("release: e2e truthful after cuts", _release("e2e-truthful-after-cuts"))
     # Every checkout lazy fetch is cut mid-pack, after ~20 KB of pack data in whole pkt-lines (so
     # index-pack has started and each cut leaves a dead temp pack); the commits arrive on the first attempt.
     w.srv.arm(Fault(cut_after=20000, command="fetch", skip=1, times=99))

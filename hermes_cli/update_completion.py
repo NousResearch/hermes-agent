@@ -146,6 +146,14 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
 
     refuse_foreign_owned_venv(root)
     arm_completion(root)
+    # First new-code step after the swap, before minutes of dependency work: a
+    # treeless (tree:0) install lazy-fetches one tree per commit on every
+    # path-filtered walk, and a still-running Desktop from before the fix walks the
+    # whole pulled range (#129514: 434 GB of promisor packs, disk full mid-update).
+    # Blobless keeps trees local; a full clone or any other filter is untouched.
+    from hermes_cli.gitlock import migrate_treeless_checkout
+    if migrate_treeless_checkout(root):
+        print("  (migrated the treeless checkout to a blobless partial clone; path-filtered git no longer fetches)")
     with receipt.worker_context(update_id):
         try:
             # This file runs from the new tree, so its lockfile carries the new

@@ -790,8 +790,25 @@ function Stage-Repository {
                 }
             }
             Disable-TreelessGraphWrites $InstallDir
+            # A treeless clone has no trees at all, so every path-filtered walk
+            # (the Desktop bundle-skew probe) lazy-fetches one tree per commit
+            # and strands one promisor pack each (#129514). Migrate to blobless:
+            # trees stay local, file contents still arrive on demand.
+            $partialFilter = Invoke-Native { git -C $InstallDir config --get remote.origin.partialclonefilter }
+            if ("$partialFilter".Trim() -eq 'tree:0') {
+                Invoke-Native { git -C $InstallDir config remote.origin.partialclonefilter blob:none }
+                if ($LASTEXITCODE) { Fail "cannot migrate the partial-clone filter in $InstallDir" }
+                Log "Migrating existing treeless checkout to a blobless partial clone"
+                $migratedTreeless = $true
+            }
         }
-        Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
+        if ($migratedTreeless) {
+            # Re-fetch under the new filter so historical commits carry their
+            # trees locally; changing the config alone leaves tree:0 gaps.
+            Invoke-Logged "Fetching origin/$Branch (blobless migration)" { git -C $InstallDir fetch --refetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
+        } else {
+            Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
+        }
         if ($LASTEXITCODE) { Fail "git fetch failed" }
         $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
         # Park local work BEFORE switching branches: checkout refuses a dirty
@@ -873,13 +890,12 @@ function Stage-Repository {
         try {
             $cloned = $false
             foreach ($attempt in 1..3) {
-                # Treeless: every commit and release tag (runtime identity is the
+                # Blobless: every commit and release tag (runtime identity is the
                 # nearest reachable release; -Commit pins and branch switches
-                # still resolve), trees and blobs fetched on demand, so the
-                # download stays close to a --depth 1 clone.
+                # still resolve), while file contents are fetched on demand.
                 $cloneLabel = "Cloning $RepoUrl ($Branch) into $InstallDir"
                 if ($attempt -gt 1) { $cloneLabel += " (attempt $attempt of 3)" }
-                Invoke-Logged $cloneLabel { git clone @progress --filter=tree:0 --branch $Branch $RepoUrl $tree }
+                Invoke-Logged $cloneLabel { git clone @progress --filter=blob:none --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) { $cloned = $true; break }
                 Remove-Item -LiteralPath $tree -Recurse -Force -ErrorAction SilentlyContinue
                 if ($attempt -lt 3) { Start-Sleep -Seconds ($attempt * 5) }
@@ -888,7 +904,7 @@ function Stage-Repository {
                 # The checkout step is where throttled downloads die: clone the
                 # graph alone, then retry materializing the tree separately.
                 Write-Warn "direct clone failed; trying deferred checkout"
-                Invoke-Logged "Cloning history" { git clone @progress --filter=tree:0 --no-checkout --branch $Branch $RepoUrl $tree }
+                Invoke-Logged "Cloning history" { git clone @progress --filter=blob:none --no-checkout --branch $Branch $RepoUrl $tree }
                 if (-not $LASTEXITCODE) {
                     foreach ($attempt in 1..2) {
                         Invoke-Logged "Checking out files (attempt $attempt of 2)" { git -C $tree reset --hard HEAD }

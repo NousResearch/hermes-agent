@@ -568,6 +568,91 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
     return shallow
 
 
+# A treeless checkout migrates to blobless once: the refetch is bounded by the
+# same generous budget as the lazy-fetch pack fold (a checkout that spent weeks
+# lazy-fetching has tens of GiB of packs; a killed refetch restarts next update).
+TREELESS_REFETCH_TIMEOUT_SECONDS = 20 * 60
+# Set while a migration's refetch hasn't finished, so a killed or failed refetch is
+# retried by the next run even though the filter already reads blob:none.
+_TREELESS_MIGRATION_PENDING_KEY = "hermes.treelessMigrationPending"
+
+
+def _git_config(repo_root: Path, *args: str, **run_kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "config", *args], cwd=str(repo_root), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=30, **run_kwargs,
+    )
+
+
+def migrate_treeless_checkout(repo_root: Path, branch: "str | None" = None, **run_kwargs) -> bool:
+    """Convert a ``tree:0`` install to ``blob:none`` once, refetching trees locally.
+
+    A treeless clone stores no trees at all, so every path-filtered walk (the Desktop
+    bundle-skew probe, a banner ahead-count, ``git log -- <path>``) lazy-fetches one
+    tree per commit from the promisor remote — and each on-demand fetch writes its
+    own promisor pack and schedules maintenance, which is the 434 GB / 179-concurrent-
+    commit-graph-writes storm of #129514. ``blob:none`` keeps trees local (file contents
+    still arrive on demand), so those walks answer without any network.
+
+    Only a checkout whose ``remote.origin.partialclonefilter`` is exactly ``tree:0``
+    migrates: a full clone is untouched (``_partial_clone_filter`` returns None), and a
+    user-chosen filter — including an already-blobless one — is repeated verbatim, the
+    same rule ``fetch_full_commit_graph`` settled in #122353. The one-time ``--refetch``
+    re-downloads the trees of already-known commits (config alone leaves the gaps); the
+    config is flipped first, so a refetch killed mid-way leaves the *filter* blobless
+    and only the tree history short. A pending marker survives until the refetch
+    succeeds, so the next run refetches again and converges.
+
+    ``branch`` defaults to the checked-out branch. Returns whether a migration ran.
+    Never raises: a failed migration leaves the update on the fetch path it always
+    ran, best-effort like every helper here.
+    """
+    try:
+        pending = _git_config(repo_root, "--get", _TREELESS_MIGRATION_PENDING_KEY,
+                              **run_kwargs).stdout.strip() == "true"
+        if not pending and _partial_clone_filter(repo_root, **run_kwargs) != "tree:0":
+            return False
+        if branch is None:
+            branch = subprocess.run(
+                ["git", "symbolic-ref", "--short", "-q", "HEAD"], cwd=str(repo_root),
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=30, **run_kwargs,
+            ).stdout.strip() or "main"
+        disable_tree0_auto_maintenance(repo_root)
+        # Flip before fetching so the promisor config change lands even if the
+        # refetch dies: a blobless clone missing old trees lazy-fetches them once
+        # per walk (bounded, and folded by the update's pack fold), while a
+        # tree:0 clone keeps the per-commit storm.
+        _git_config(repo_root, _TREELESS_MIGRATION_PENDING_KEY, "true", **run_kwargs).check_returncode()
+        _git_config(repo_root, "remote.origin.partialclonefilter", "blob:none", **run_kwargs).check_returncode()
+        logger.info("Migrating treeless checkout %s to a blobless partial clone (one-time tree refetch)",
+                    repo_root)
+        # Plain subprocess, no pipes: this runs in the update's dependency-free bootstrap
+        # interpreter, where bounded_probe_run's psutil-backed spawn is unavailable, and
+        # without captured pipes a lingering helper can't wedge the timeout cleanup.
+        try:
+            code = subprocess.run(
+                ["git", "fetch", "--refetch", "--quiet", "--no-tags", "origin",
+                 f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+                cwd=str(repo_root), env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV},
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=TREELESS_REFETCH_TIMEOUT_SECONDS, creationflags=windows_hide_flags(),
+            ).returncode
+        except (OSError, subprocess.TimeoutExpired):
+            code = None
+        if code == 0:
+            _git_config(repo_root, "--unset", _TREELESS_MIGRATION_PENDING_KEY, **run_kwargs)
+        else:
+            logger.warning("Treeless→blobless refetch in %s did not finish; the next update "
+                           "retries it", repo_root)
+        mark_unmarked_packs_promisor(repo_root)
+        return True
+    except Exception:
+        logger.warning("Treeless→blobless migration failed for %s; the update proceeds as before",
+                       repo_root, exc_info=True)
+        return False
+
+
 # git 2.53+ promisor fetches run index-pack --promisor, whose repack_local_links() BUG()s in
 # pack-objects (should_include_obj) when an object outside the promisor packs leads to a
 # promisor-missing one (#124272). The unmarked packs stay, so fetches keep dying until they are

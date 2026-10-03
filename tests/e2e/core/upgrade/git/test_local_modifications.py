@@ -1,6 +1,6 @@
 """Local modifications through a real ``hermes update``: tracked edits, untracked files, local commits.
 
-One HEAD install (HEAD's ``scripts/install.sh``: a ``--filter=tree:0`` clone over smart HTTP) is
+One HEAD install (HEAD's ``scripts/install.sh``: a ``--filter=blob:none`` clone over smart HTTP) is
 shared by the cells; each cell starts from a clean ``main`` (``World.reset_clean``), makes the
 user's change, publishes one upstream release on top and runs ``hermes update --yes``.
 

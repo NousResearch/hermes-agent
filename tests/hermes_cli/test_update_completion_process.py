@@ -103,15 +103,17 @@ def transition(tmp_path):
         "write_source_stamp = lambda root: event('stamp')\n"
     )
     # The shared completion tail is part of the NEW tree the child runs from, and so are the
-    # modules its imports reach: update_lock (the tail claims the shared update lock) and
-    # _subprocess_compat (it exposes PM's git for the builds) — neither exists in the OLD
-    # tree, and a bare copy of source_completion.py would die on ModuleNotFoundError.
+    # modules its imports reach: update_lock (the tail claims the shared update lock),
+    # _subprocess_compat (it exposes PM's git for the builds) and gitlock (preparation migrates
+    # a treeless checkout first) — none exists in the OLD tree, and a bare copy of
+    # source_completion.py would die on ModuleNotFoundError.
     shutil.copy2(Path(update_completion.__file__).with_name("source_completion.py"),
                  package / "source_completion.py")
     shutil.copy2(Path(update_completion.__file__).with_name("update_lock.py"),
                  package / "update_lock.py")
     shutil.copy2(Path(update_completion.__file__).with_name("_subprocess_compat.py"),
                  package / "_subprocess_compat.py")
+    shutil.copy2(Path(update_completion.__file__).with_name("gitlock.py"), package / "gitlock.py")
     (package / "main.py").write_text("")
     (package / "update_cmd_config.py").write_text("_LAST_SIBLING_SNAPSHOTS = {}\n")
     (package / "update_inventory.py").write_text(

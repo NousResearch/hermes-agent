@@ -183,6 +183,41 @@ To fold by hand (with Hermes closed):
 git -C "$repo" -c gc.writeCommitGraph=false gc --auto
 ```
 
+### The update filled the disk with git packs (434 GB storm)
+
+Installs cloned by an installer older than October 2026 use a **treeless** partial clone
+(`remote.origin.partialclonefilter=tree:0`): the checkout stores commits but *no trees at all*,
+so any path-filtered git command — the Desktop's bundle-skew check, a banner ahead-count —
+lazy-fetches one tree per historical commit from GitHub, and every one of those on-demand
+fetches writes its own pack file and schedules a git maintenance run. Across a long update
+range that loop filled whole disks (2,659 packs / 434 GB, 179 concurrent `git commit-graph`
+processes) and could keep running after a failed update, because the pre-fix Desktop app kept
+re-running its check every couple of minutes.
+
+`hermes update` and the installer now migrate a treeless checkout to a **blobless** clone
+(`blob:none`: trees local, file contents on demand) and re-fetch the tree history once, so
+path-filtered commands answer without any network. The migration runs as soon as an update has
+pulled the new code, before the slow dependency steps, and resumes on the next update if it is
+interrupted. A blobless copy of the whole history is about 120 MiB.
+
+If the storm already filled your disk:
+
+1. Quit Hermes Desktop, then kill any leftover `git rev-list`, `git maintenance` or
+   `git commit-graph` processes — quitting the app does not stop them.
+2. Delete the abandoned transfer temps to get room back:
+   `rm -f "$repo"/.git/objects/pack/tmp_pack_*` (Windows: remove `tmp_pack_*` in
+   `.git\objects\pack`).
+3. Run `hermes update`. It migrates the checkout to blobless, folds the pack pile and finishes
+   the update including the Desktop rebuild, whose version carries the same guard.
+
+Nothing in the working tree, profiles or state is lost. If `hermes update` itself cannot start,
+the same migration by hand is:
+
+```bash
+git -C "$repo" config remote.origin.partialclonefilter blob:none
+git -C "$repo" fetch --refetch origin
+```
+
 ### Updating against a non-default branch: `--branch`
 
 Source installs track `origin/main`. Use

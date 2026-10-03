@@ -1683,7 +1683,7 @@ def _sum_search_files(name, args, content, content_len, line_count):
 def _sum_browser(name, args, content, content_len, line_count):
     url, ref = args.get("url", ""), args.get("ref", "")
     detail = f" {url}" if url else (f" ref={ref}" if ref else "")
-    return f"[{name}]{detail} ({content_len:,} chars)" + _skill_result_failure_suffix(content)
+    return f"[{name}]{detail} ({content_len:,} chars)" + _result_failure_suffix(content)
 
 
 def _sum_web_extract(name, args, content, content_len, line_count):
@@ -1697,7 +1697,7 @@ def _sum_web_extract(name, args, content, content_len, line_count):
         first = "?"
     if isinstance(urls, list) and len(urls) > 1:
         first += f" (+{len(urls) - 1} more)"
-    return f"[web_extract] {first} ({content_len:,} chars)" + _skill_result_failure_suffix(content)
+    return f"[web_extract] {first} ({content_len:,} chars)" + _result_failure_suffix(content)
 
 
 def _sum_delegate_task(name, args, content, content_len, line_count):
@@ -1839,7 +1839,7 @@ def _sum_skill_manage(name, args, content, content_len, line_count):
         action = _str_arg(args, "action", "?")
         op_name = _str_arg(args, "name", "?")
         summary = f"[skill_manage] {action} {op_name}"
-    return f"{summary}{_skill_result_failure_suffix(content)} ({content_len:,} chars)"
+    return f"{summary}{_result_failure_suffix(content)} ({content_len:,} chars)"
 
 
 def _sum_skills_list(name, args, content, content_len, line_count):
@@ -1850,7 +1850,7 @@ def _sum_skills_list(name, args, content, content_len, line_count):
     payload = _json_dict(content)
     count = payload.get("count")
     listed = f" {count} skills" if isinstance(count, int) else ""
-    return f"[skills_list]{scope}{listed}{_skill_result_failure_suffix(content)} ({content_len:,} chars)"
+    return f"[skills_list]{scope}{listed}{_result_failure_suffix(content)} ({content_len:,} chars)"
 
 
 def _failure_suffix(reason: Any, label: str = "FAILED") -> str:
@@ -1859,12 +1859,16 @@ def _failure_suffix(reason: Any, label: str = "FAILED") -> str:
     return f" {label}: {preview}" if preview else f" {label}"
 
 
-def _skill_result_failure_suffix(content: str) -> str:
-    """`` FAILED: <error>`` for a skill-tool payload that reports failure, else ``""``.
-    The skill tools return ``{"success": false, "error": ...}``; without the outcome in the stub a
-    failed batch compresses into the same line as a success and the post-compaction agent chases the
-    stub text as the error (#112710). Bounded to one line so the stub stays a stub."""
-    payload = _json_dict(content)
+def _result_failure_suffix(content: str) -> str:
+    """`` FAILED: <error>`` for any tool payload with a top-level ``error`` / ``success: false``, else ``""``.
+    Without the outcome in the stub a failed call compresses into the same line as a success and the
+    post-compaction agent reports the success or chases the stub text as the error (#112710,
+    #131244). Bounded to one line so the stub stays a stub."""
+    return _payload_failure_suffix(_json_dict(content))
+
+
+def _payload_failure_suffix(payload: dict) -> str:
+    """``_result_failure_suffix`` for an already-parsed payload."""
     error = payload.get("error")
     if not error and payload.get("success") is not False:
         return ""
@@ -1880,9 +1884,10 @@ def _sum_cronjob_manage(name, args, content, content_len, line_count):
     state, including an ``error`` left behind by an earlier run.
     """
     stub = f"[cronjob] {args.get('action', '?')}"
-    suffix = _skill_result_failure_suffix(content)
+    payload = _json_dict(content)
+    suffix = _payload_failure_suffix(payload)
     if not suffix:
-        job = _json_dict(content).get("job")
+        job = payload.get("job")
         job = job if isinstance(job, dict) else {}
         error, skipped = job.get("execution_error"), job.get("execution_skipped")
         if error is not None or (skipped is None and job.get("execution_success") is False):
@@ -1901,16 +1906,16 @@ def _sum_process_manage(name, args, content, content_len, line_count):
     reports no exit code at all, and that is not a failure.
     """
     stub = f"[process] {args.get('action', '?')} session={args.get('session_id', '?')}"
-    suffix = _skill_result_failure_suffix(content)
+    payload = _json_dict(content)
+    suffix = _payload_failure_suffix(payload)
     if not suffix:
-        payload = _json_dict(content)
         exit_code = payload.get("exit_code")
         # A process the agent killed itself exits non-zero by design; that is not a failure.
         if (
             isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0
             and payload.get("completion_reason") != "killed"
         ):
-            suffix = f" FAILED: exit code {exit_code}"
+            suffix = _failure_suffix(f"exit code {exit_code}")
     return stub + suffix
 
 
@@ -1925,7 +1930,7 @@ def _sum_template(template: str, **defaults):
     def summarize(name, args, content, content_len, line_count):
         return (
             template.format_map({**defaults, **args, "content_len": content_len})
-            + _skill_result_failure_suffix(content)
+            + _result_failure_suffix(content)
         )
     return summarize
 
@@ -1950,7 +1955,7 @@ _TOOL_RESULT_SUMMARIZERS = {
     "skill_manage": _sum_skill_manage,
     "vision_analyze": lambda name, args, content, content_len, line_count: (
         f"[vision_analyze] '{_str_arg(args, 'question')[:50]}' ({content_len:,} chars)"
-        + _skill_result_failure_suffix(content)
+        + _result_failure_suffix(content)
     ),
     "memory": _sum_template("[memory] {action} on {target}", action="?", target="?"),
     "todo_list": lambda *a: "[todo] updated task list",
@@ -1982,7 +1987,7 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     if summarizer is not None:
         return summarizer(tool_name, args, content, content_len, line_count)
     first_arg = "".join(f" {k}={str(v)[:40]}" for k, v in list(args.items())[:2])
-    return f"[{tool_name}]{first_arg} ({content_len:,} chars result)" + _skill_result_failure_suffix(content)
+    return f"[{tool_name}]{first_arg} ({content_len:,} chars result)" + _result_failure_suffix(content)
 
 
 def _model_threshold_key_rank(key: str, model: str, provider: str) -> "tuple[int, int] | None":

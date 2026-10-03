@@ -270,6 +270,58 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     for name in _HERMES_BEHAVIORAL_VARS:
         monkeypatch.delenv(name, raising=False)
 
+    # 3. Blank proxy routing so a developer's local proxy cannot reroute test network
+    #    I/O. Two layers both need pinning:
+    #    - the env vars (HTTP_PROXY et al.) also cover subprocesses, which don't see
+    #      the monkeypatch below;
+    #    - urllib.request.getproxies(), which trust-env clients (httpx, requests,
+    #      urllib) call per request and which on macOS ALSO reads the machine's
+    #      System Settings proxy — with a loopback system proxy, every outbound-fetch
+    #      test dials the proxy's private address and the SSRF guard — correctly —
+    #      refuses it. CI has no proxy at either layer. Tests that exercise proxy
+    #      behavior set their own fake proxies later via monkeypatch, after this blank.
+    for name in (
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "FTP_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "ftp_proxy",
+        "NO_PROXY", "no_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    import urllib.request
+
+    # getproxies is pinned to the ENV-ONLY reader: after the blanking above it returns
+    # {} on a clean machine, tests that set their own fake proxy env later still see
+    # them, and the macOS System Settings proxy (which plain getproxies() also reads)
+    # is excluded. trust-env clients bind getproxies by value at import time, so the
+    # attribute patch does not reach them — patch every by-value binding. The list
+    # below is the complete set of modules the pinned venv imports `getproxies` from
+    # urllib.request (verify with `grep -rn "import getproxies" <venv>/lib/python*/site-packages`):
+    #   - httpx._utils, requests.utils: the two clients named above
+    #   - requests.compat: legacy re-export shim of requests.utils
+    #   - aiohttp.helpers: reached by proxies_from_env() via ClientSession(trust_env=...)
+    #     — trust_env defaults to True (gateway/platforms/base.py gateway_trust_env),
+    #     so this is not opt-in
+    #   - anthropic._utils._httpx: anthropic's vendored copy of httpx's proxy utils
+    #   - httpx2._utils: the MCP client stack — mcp 2.0.0 moved its HTTP layer to the
+    #     separately-named httpx2 distribution (mcp/computer-use extras; the repo's
+    #     own tools/mcp_tool.py imports it by name), and it ships the same vendored
+    #     _utils.getproxies binding as httpx
+    #   - botocore.utils: botocore ships with boto3 (bedrock extra) and imports
+    #     getproxies by value the same way
+    monkeypatch.setattr(
+        urllib.request, "getproxies", lambda: urllib.request.getproxies_environment())
+    import importlib
+
+    for module_name in ("httpx._utils", "requests.utils", "requests.compat",
+                        "aiohttp.helpers", "anthropic._utils._httpx",
+                        "httpx2._utils", "botocore.utils"):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue  # optional dependency not installed in this venv
+        if hasattr(module, "getproxies"):
+            monkeypatch.setattr(
+                module, "getproxies", lambda: urllib.request.getproxies_environment())
+
     # Honcho's fallback host/config resolution legitimately reads the user's
     # global ~/.honcho/config.json. Keep HOME stable (subprocess tests depend
     # on it), but pin the host so ordinary tests cannot inherit a developer's
@@ -277,7 +329,7 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     # custom host resolution override/delete this explicitly.
     monkeypatch.setenv("HERMES_HONCHO_HOST", "hermes")
 
-    # 3. Isolate both inputs to profile/root resolution. HERMES_HOME alone
+    # 4. Isolate both inputs to profile/root resolution. HERMES_HOME alone
     #    is insufficient: get_default_hermes_root() resolves the native root
     #    too, to distinguish standard profiles from custom deployments.
     #    Patch only the Hermes default, not HOME/Path.home(). Subprocesses need
@@ -366,7 +418,7 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
             hermes_state_mod, "DEFAULT_DB_PATH", fake_hermes_home / "state.db"
         )
 
-    # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with
+    # 5. Deterministic locale / timezone / hashseed. CI runs in UTC with
     #    C.UTF-8 locale; local dev often doesn't. Pin everything.
     monkeypatch.setenv("TZ", "UTC")
     monkeypatch.setenv("LANG", "C.UTF-8")
@@ -395,7 +447,7 @@ def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     # extras tests override this var in both directions.
     monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
 
-    # 5. Reset plugin singleton so tests don't leak plugins from
+    # 6. Reset plugin singleton so tests don't leak plugins from
     #    ~/.hermes/plugins/ (which, per step 3, is now empty — but the
     #    singleton might still be cached from a previous test).
     try:

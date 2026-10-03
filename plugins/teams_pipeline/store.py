@@ -14,6 +14,7 @@ from tempfile import NamedTemporaryFile
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
+from tools.skill_usage import skill_file_lock
 
 
 DEFAULT_TEAMS_PIPELINE_STORE_FILENAME = "teams_pipeline_store.json"
@@ -32,10 +33,12 @@ def resolve_teams_pipeline_store_path(path: str | Path | None = None) -> Path:
 
 
 class TeamsPipelineStore:
-    """JSON-backed durable store for Teams pipeline state; every write is an atomic temp-file replace."""
+    """JSON-backed state with cross-process read-modify-write transactions."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
+        # Lock a stable sidecar: atomic replacement changes the JSON file's inode.
+        self._lock_path = self.path.with_suffix(self.path.suffix + ".lock")
         self._lock = threading.RLock()
         self._state: Dict[str, Dict[str, Any]] = {bucket: {} for bucket in _BUCKETS}
         self._load()
@@ -43,6 +46,7 @@ class TeamsPipelineStore:
     def _load(self) -> None:
         with self._lock:
             if not self.path.exists():
+                self._state = {bucket: {} for bucket in _BUCKETS}
                 return
             data = json.loads(self.path.read_text(encoding="utf-8-sig") or "{}")
             if not isinstance(data, dict):
@@ -68,7 +72,8 @@ class TeamsPipelineStore:
 
     def _upsert(self, bucket: str, id_field: str, key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Merge ``payload`` over the existing record, stamping ``id_field`` and created/updated timestamps."""
-        with self._lock:
+        with self._lock, skill_file_lock(self._lock_path):
+            self._load()
             existing = self._state[bucket].get(key, {})
             merged = {**existing, **deepcopy(payload)}
             merged[id_field] = key
@@ -88,7 +93,8 @@ class TeamsPipelineStore:
     upsert_sink_record = partialmethod(_upsert, "sink_records", "sink_key")
 
     def delete_subscription(self, subscription_id: str) -> bool:
-        with self._lock:
+        with self._lock, skill_file_lock(self._lock_path):
+            self._load()
             if self._state["subscriptions"].pop(subscription_id, None) is None:
                 return False
             self._persist()
@@ -103,7 +109,8 @@ class TeamsPipelineStore:
 
     def record_notification_receipt(self, receipt_key: str, payload: Optional[Dict[str, Any]] = None, *, received_at: Optional[str] = None) -> bool:
         """Record a receipt once; returns False when the key was already seen (duplicate delivery)."""
-        with self._lock:
+        with self._lock, skill_file_lock(self._lock_path):
+            self._load()
             if receipt_key in self._state["notification_receipts"]:
                 return False
             self._state["notification_receipts"][receipt_key] = {"received_at": received_at or _utc_now_iso(),

@@ -1708,7 +1708,36 @@ class TestSessionTitle:
         session = db.get_session("s1")
         assert session["title"] is None
 
-
+    @pytest.mark.parametrize("holder_has_message,holder_hidden,holder_ended,yields", [
+        (False, False, True, True),    # ended empty visible ghost yields its title (#81888)
+        (False, False, False, False),  # live empty session (/title before its first turn) keeps it
+        (False, True, True, False),    # hidden empty row (fresh canonical Bot Chat) keeps it
+        (True, False, True, False),    # a real conversation keeps it
+    ])
+    def test_title_conflict_yields_only_to_ended_empty_visible_holder(self, db, holder_has_message, holder_hidden,
+                                                                      holder_ended, yields):
+        """A title holder yields only when it is ended, empty, visible and unarchived (#81888);
+        every other holder still conflicts. The ghost stays writable afterwards (no partial
+        unique index to trip on its first append_message)."""
+        db.create_session("ghost", "desktop")
+        db.set_session_title("ghost", "Canada")
+        if holder_has_message:
+            db.append_message("ghost", "user", "m0")
+        db.set_session_hidden("ghost", holder_hidden)
+        if holder_ended:
+            db.end_session("ghost", "user_exit")
+        db.create_session("real", "desktop")
+        db.append_message("real", "user", "Hello")
+        if not yields:
+            with pytest.raises(ValueError, match="already in use"):
+                db.set_session_title("real", "Canada")
+            assert db.get_session("ghost")["title"] == "Canada"
+            return
+        assert db.set_session_title("real", "Canada")
+        assert db.get_session("ghost")["title"] is None
+        assert db.resolve_session_by_title("Canada") == "real"
+        db.append_message("ghost", "user", "late first message")
+        assert db.get_session("ghost")["message_count"] == 1
 
 
 class TestSessionTitleIndexRepair:

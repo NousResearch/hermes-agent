@@ -1,0 +1,26 @@
+name: actual-assistant-engineer
+title: Actual Assistant Engineer
+repo: https://github.com/somewheresy/actual-assistant-engineer
+sha: f0e68b06d098bd62d5343fe60e3665991804b1f3
+subdir: plugin/actual-assistant-engineer
+description: >-
+  Operate Ableton Live from Hermes as an assistant engineer: create and save Sets, build
+  instruments and effect racks, write and arrange MIDI, automate clip and arrangement lanes,
+  sidechain and mix, work inside VST3 plug-ins, and gate on track completeness. Disclosure —
+  local only, no network and no credentials. Talks to Live over an owner-only Unix socket
+  through a bundled Live control surface (installed by `hermes assistant-engineer setup` into Live's User
+  Library). Writes Set files and a parameter cache; runs osascript to click Live's own File
+  menu items and dialog buttons through Accessibility (never keystrokes), `open`, and an
+  offline VST3 host (pedalboard) that loads installed plug-ins.
+maintainer: somewheresy
+tier: community
+category: tools
+docs_url: https://github.com/somewheresy/actual-assistant-engineer/blob/f0e68b06d098bd62d5343fe60e3665991804b1f3/plugin/actual-assistant-engineer/README.md
+version: "0.2.0"
+platforms: [macos]
+requires_hermes: ">=0.21"
+capabilities:
+  provides_tools: [live_set, live_vst, live_arrangement_automation, live_inspect, live_ops, live_browse, live_review, live_analyze]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

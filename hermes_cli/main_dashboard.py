@@ -313,37 +313,81 @@ def _loaded_launchd_backend_jobs(
     return jobs
 
 
+def _pid_holds_tcp_port(pid: int, port: int) -> bool:
+    """True when *pid* is listening on TCP *port* — the pre-kill check for a launchd-owned
+    backend (#121596). ``lsof`` on macOS, ``ss`` on Linux; any probe failure reads as False so
+    the sweep falls back to the normal kill + kickstart path."""
+    if port <= 0:
+        return False
+    if sys.platform == "darwin":
+        try:
+            out = _run_probe(["lsof", "-nP", "-a", "-p", str(pid), f"-iTCP:{port}", "-sTCP:LISTEN"], timeout=10)
+        except _SYSTEMCTL_ERRORS:
+            return False
+        return out.returncode == 0 and bool((out.stdout or "").strip())
+    try:
+        out = _run_probe(["ss", "-ltnp", f"sport = :{port}"], timeout=10)
+    except _SYSTEMCTL_ERRORS:
+        return False
+    return f"pid={pid}," in (out.stdout or "")
+
+
+def _fixed_port_for_dashboard_argv(argv: list[str]) -> int | None:
+    """Fixed TCP port a dashboard/serve *argv* serves (the default 9119 included), ``None`` for
+    ``--port 0`` or a non-backend argv."""
+    parsed = _parse_dashboard_runtime(shlex.join(argv))
+    if parsed is None:
+        return None
+    port = parsed[2]
+    return port if port > 0 else None
+
+
 def _launchd_job_owning_backend(
     pid: int, cmdline: list[str] | None, jobs: list[tuple[str, str, list[str], int | None]],
     ancestors: "list[int] | tuple[int, ...]" = (),
 ) -> tuple[str, str, int | None] | None:
     """``(domain, label, live_pid)`` of the loaded launchd job that owns *pid*: launchd reports *pid*
     (or one of its *ancestors* — a plist may wrap the backend in ``/bin/sh -c …`` without ``exec``)
-    as the job's live process, OR the process runs the job's ``ProgramArguments`` — a detached copy
-    of a supervised backend (an earlier respawn) holds the port the job needs, and respawning it again
-    would only re-create that conflict. ``--no-open`` is ignored on both sides: the respawn path adds
-    it, so an earlier respawn's argv is the plist's plus that flag. None when no loaded job claims
-    the process."""
-    def _norm(argv: list[str]) -> list[str]:
-        return [a for a in argv if a != "--no-open"]
+    as the job's live process, OR the process runs the job's ``ProgramArguments`` shape — a detached
+    copy of a supervised backend (an earlier respawn) holds the port the job needs, and respawning
+    it again would only re-create that conflict. ``--no-open`` is ignored on both sides: the respawn
+    path adds it, so an earlier respawn's argv is the plist's plus that flag. None when no loaded
+    job claims the process."""
+    def _shape(argv: list[str]) -> tuple[str, ...]:
+        # ponytail: launcher-insensitive shape (profile flags + serve tail) is the whole match;
+        # a per-token argv diff (plist interpreter vs ps absolute path) needs no finer ladder.
+        # A plist spells ``python -m hermes_cli.main …`` while ``ps`` shows the absolute venv
+        # python (or the ``hermes`` shim the respawn replayed) — exact-argv equality missed that
+        # detached copy, misclassified it as manual, and every update re-orphaned it onto the job's
+        # fixed port (#121596). Host/port flags stay in the shape, so another endpoint never matches.
+        from hermes_cli.dashboard_procs import _normalize_dashboard_cmdline
+        return _normalize_dashboard_cmdline([a for a in argv if a != "--no-open"])
 
     for domain, label, argv, live_pid in jobs:
         if live_pid is not None and (live_pid == pid or live_pid in ancestors):
             return (domain, label, live_pid)
-        if cmdline is not None and _norm(list(cmdline)) == _norm(argv):
+        if cmdline is not None and _shape(list(cmdline)) == _shape(argv):
             return (domain, label, live_pid)
     return None
 
 
-def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeout: float = 15.0) -> bool:
+def _restart_launchd_job(domain: str, label: str, old_pid: int | None, *, timeout: float = 15.0,
+                         force_kill: bool = False) -> bool:
     """Bring a launchd-supervised backend back after its process was stopped: ``launchctl kickstart
     <domain>/<label>`` (no ``-k`` — a KeepAlive job may already have respawned it, and a kill would
     take that fresh process down), then require launchd to report a live PID other than *old_pid*
     within *timeout*. A kickstart that returns 0 only means "restart requested"; a job that is loaded
-    but never comes back on a fresh PID is a failure the operator must hear about."""
+    but never comes back on a fresh PID is a failure the operator must hear about.
+
+    *force_kill* adds ``-k`` for the #121596 case: the candidate IS the job's current live process
+    and still holds the fixed port, so launchd must kill and replace its own child as one
+    supervised action — a plain kickstart is a no-op while the process is up, and killing the
+    process ourselves first (then kickstarting) was the unsupervised-port race that seeded the
+    token-less impostor every update."""
     from hermes_cli.gateway import _wait_for_launchd_service_pid
     try:
-        if _run_probe(["launchctl", "kickstart", f"{domain}/{label}"], timeout=30).returncode != 0:
+        argv = ["launchctl", "kickstart", *(["-k"] if force_kill else []), f"{domain}/{label}"]
+        if _run_probe(argv, timeout=30).returncode != 0:
             return False
         return _wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=timeout, domain=domain)
     except _SYSTEMCTL_ERRORS:
@@ -397,12 +441,47 @@ def _respawnable_command_for_current_install(argv: list[str]) -> list[str]:
     return list(argv)
 
 
-def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
+def _respawn_env_for_pid(pid: int | None) -> dict[str, str] | None:
+    """Exec-time environment of a killed backend, for the respawn's ``env=`` (#121596).
+
+    An argv-only respawn drops ``HERMES_HOME``/``HERMES_WORKSPACE`` and, crucially,
+    ``HERMES_DASHBOARD_SESSION_TOKEN``: the token-less impostor answers the fixed port,
+    every Desktop authed call 401s, and the supervising launchd job EADDRINUSE-crash-loops
+    until it wins the port back. ``None`` keeps the old argv-only behavior (unreadable
+    environ — foreign user, hardened /proc — must not be guessed)."""
+    if pid is None:
+        return None
+    from hermes_cli.dashboard_procs import _pid_environ
+    env = _pid_environ(pid)
+    if not env:
+        return None
+    # Terminal-geometry keys the victim inherited from a login shell are noise for a
+    # detached respawn; everything HERMES_* rides along untouched.
+    for key in ("LINES", "COLUMNS"):
+        env.pop(key, None)
+    return env
+
+
+def _launchd_job_for_fixed_port(port: int, jobs: list[tuple[str, str, list[str], int | None]]) -> tuple[str, str] | None:
+    """``(domain, label)`` of the loaded launchd job whose plist serves *port* — the port's
+    supervisor. A job whose plist fixes that port will KeepAlive-crash-loop against any
+    detached process holding it (the #121596 impostor), so a respawn onto a supervised
+    port is refused while a token-less respawn on an unsupervised port stays allowed."""
+    for domain, label, argv, _live_pid in jobs:
+        if _fixed_port_for_dashboard_argv(list(argv)) == port:
+            return (domain, label)
+    return None
+
+
+def _respawn_dashboard_processes(commands: list[list[str]], envs: "list[dict[str, str] | None] | None" = None) -> list[list[str]]:
     """Respawn manually-started dashboards after ``hermes update``, detached, logging to
     ``logs/dashboard-restart.log``; returns the argvs that failed to spawn. Callers pre-filter via
     ``_filter_dashboard_respawn_candidates`` (no Desktop ``--port 0`` backends, capped per profile).
+    *envs* carries each command's captured pre-kill environment (``HERMES_HOME``,
+    ``HERMES_WORKSPACE``, ``HERMES_DASHBOARD_SESSION_TOKEN``) — without it a fixed-port respawn
+    holds the port token-less and fights the supervising launchd job (#121596).
 
-    See #78821.
+    See #78821, #121596.
     """
     from hermes_constants import get_hermes_home
     respawned: list[list[str]] = []
@@ -412,16 +491,31 @@ def _respawn_dashboard_processes(commands: list[list[str]]) -> list[list[str]]:
     with contextlib.suppress(OSError):
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    for original in commands:
+    for index, original in enumerate(commands):
         command = _respawnable_command_for_current_install(original)
         # Keep restarted dashboards headless; reopening a browser after a
         # background update is noisy and fails in SSH/headless sessions.
         if "dashboard" in command and "--no-open" not in command:
             command = [*command, "--no-open"]
+        env = envs[index] if envs is not None and index < len(envs) else None
+        # #121596, narrowed: a token-less respawn onto a port a LOADED launchd job's plist
+        # fixes is the impostor by construction — it mints a fresh HERMES_DASHBOARD_SESSION_TOKEN
+        # the Desktop does not know, 401s every authed call, and EADDRINUSE-crash-loops the
+        # supervising job. That is only this PR's conflict case. A token-less victim (started
+        # before tokens existed, or e2e's clean-env dashboard) is NO worse than what was killed,
+        # and refusing it meant the dashboard never came back — so spawn anyway (#40449): the
+        # refusal fires only when the port has a supervisor to fight.
+        port = _fixed_port_for_dashboard_argv(command)
+        launchd_owner = _launchd_job_for_fixed_port(port, _loaded_launchd_backend_jobs()) if port else None
+        if launchd_owner and env is not None and not env.get("HERMES_DASHBOARD_SESSION_TOKEN"):
+            failed.append((original, command,
+                          f"refused: a fixed-port respawn without the captured session token "
+                          f"would 401 the Desktop and fight launchd job {launchd_owner[0]}/{launchd_owner[1]} (#121596)"))
+            continue
         try:
             with open(log_path, "ab") as log_f:
                 proc = subprocess.Popen(
-                    command, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
+                    command, env=env, stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
                     start_new_session=True, close_fds=True)
             spawned.append((original, command, proc))
         except (OSError, ValueError) as exc:

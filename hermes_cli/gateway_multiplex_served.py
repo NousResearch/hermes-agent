@@ -124,3 +124,56 @@ def notify_multiplexer_profiles_changed(profile_name: str, *, timeout: float = 8
         return None
     served = answer.get("served_profiles")
     return [str(p) for p in served] if isinstance(served, list) else None
+
+
+def profile_gateway_homes(profile_home: Path) -> dict[int, Path]:
+    """Verified gateway owners that may hold this tenant's profile handles.
+
+    The host can launch from a named home, and a startup/legacy gateway may not have
+    published its host record yet. A served-profile snapshot is not a drain receipt.
+    """
+    from gateway.host_attach import host_gateway, launched_by_other_tenant
+    from gateway.status import live_gateway_pid_for_home
+    from hermes_constants import get_default_hermes_root
+    from hermes_cli.profiles import _iter_named_profile_dirs
+
+    owners = {}
+    owner = host_gateway()
+    if owner is not None and not launched_by_other_tenant(owner.home, profile_home):
+        owners[owner.pid] = owner.home
+    homes = {Path(profile_home), get_default_hermes_root(home=profile_home)}
+    # A prior failed delete may have tombstoned an old gateway's launch home.
+    homes.update(_iter_named_profile_dirs(live_only=False))
+    for home in homes:
+        pid = live_gateway_pid_for_home(home)
+        if pid is not None:
+            owners.setdefault(pid, home)
+    return owners
+
+
+def require_profile_quiescence(profile_name: str, gateway_homes: dict[int, Path], *,
+                               timeout: float = 8.0) -> None:
+    """Require a completed remote sweep before deleting or moving a tombstoned home."""
+    import asyncio
+    import os
+    from gateway.control_socket import request_unserve_profile
+
+    for pid, home in gateway_homes.items():
+        if pid == os.getpid():
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                raise RuntimeError("Run profile deletion or rename off the gateway event loop.")
+        answer = request_unserve_profile(home, profile_name, quiesce=True, timeout=timeout)
+        if (isinstance(answer, dict) and answer.get("unserved") == profile_name
+                and answer.get("quiesced") is True
+                and not answer.get("pending") and not answer.get("error")):
+            continue
+        detail = (answer.get("error") or "profile shutdown is still pending"
+                  if isinstance(answer, dict) else "gateway control channel did not answer")
+        raise RuntimeError(
+            f"Cannot remove or rename profile '{profile_name}': {detail}. "
+            "The profile directory was kept. Retry once the gateway finishes stopping the profile, "
+            "or stop the gateway first.")

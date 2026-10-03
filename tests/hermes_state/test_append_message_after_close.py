@@ -17,6 +17,7 @@ no mocks of the code under test.
 """
 
 import logging
+import sqlite3
 import threading
 
 import pytest
@@ -123,3 +124,41 @@ class TestAppendAfterClose:
         with pytest.raises(Exception) as excinfo:
             ro.get_messages("s1")
         assert "closed" in str(excinfo.value).lower()
+
+
+class TestDeletedNamedProfileAfterClose:
+    """The self-heal must not bring back a deleted named profile's store (#127811). Its first open is
+    already refused (``_open_writer`` → ``mkdir_under_hermes_home``, #94590); a handle closed by the
+    profile-delete sweep must not reopen a writer that takes writes after the tombstone and holds the
+    file open under the removal."""
+
+    @staticmethod
+    def _named_profile_db(tmp_path):
+        root = tmp_path / "hermes"
+        home = root / "profiles" / "work"
+        home.mkdir(parents=True)
+        (root / "config.yaml").write_text("{}\n", encoding="utf-8")  # <root>/profiles is a profiles root
+        return SessionDB(db_path=home / "state.db"), home
+
+    def test_a_deleted_named_profiles_store_is_not_reopened(self, tmp_path):
+        from hermes_constants import mark_named_profile_deleted
+
+        db, home = self._named_profile_db(tmp_path)
+        db.create_session("s1", "cli")
+        db.close()
+        mark_named_profile_deleted(home)
+
+        with pytest.raises(sqlite3.OperationalError, match="deleted"):
+            db.append_message("s1", "user", content="after the tombstone")
+        assert db._conn is None
+
+    def test_a_live_named_profiles_store_still_reopens(self, tmp_path):
+        """Control: the #94736 self-heal is unchanged for a named profile that was not deleted."""
+        db, _home = self._named_profile_db(tmp_path)
+        try:
+            db.create_session("s1", "cli")
+            db.close()
+            assert db.append_message("s1", "user", content="flushed after teardown") > 0
+            assert db._conn is not None
+        finally:
+            db.close()

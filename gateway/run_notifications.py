@@ -876,9 +876,13 @@ class GatewayNotificationsMixin:
         adapter start; ``profile`` is ``None`` for the launch profile.
         """
         for platform, platform_cfg in self.config.platforms.items():
+            if not platform_cfg.enabled:
+                continue
             yield None, platform, platform_cfg
         for profile, profile_cfg in (getattr(self, "_profile_configs", None) or {}).items():
             for platform, platform_cfg in profile_cfg.platforms.items():
+                if not platform_cfg.enabled:
+                    continue
                 yield profile, platform, platform_cfg
 
     def _served_home_channel_transports(self):
@@ -939,6 +943,7 @@ class GatewayNotificationsMixin:
         return t("gateway.startup.free_tier_line")
 
     _planned_restart_notice_lock: Optional[asyncio.Lock] = None
+    _MAX_PLANNED_RESTART_NOTICE_AGE_SECS: float = 3600.0  # 1 hour
 
     async def _replay_pending_planned_restart_notification(self) -> None:
         """Send the planned-restart online notice to every home channel still owed one; clear
@@ -961,6 +966,18 @@ class GatewayNotificationsMixin:
                 return
             try:
                 data = json.loads(path.read_text(encoding="utf-8-sig"))
+                requested_at = data.get("requested_at")
+                if (
+                    isinstance(requested_at, (int, float))
+                    and time.time() - requested_at > self._MAX_PLANNED_RESTART_NOTICE_AGE_SECS
+                ):
+                    logger.info(
+                        "Ignoring and clearing expired planned-restart notification marker (age=%.0fs > %.0fs)",
+                        time.time() - requested_at,
+                        self._MAX_PLANNED_RESTART_NOTICE_AGE_SECS,
+                    )
+                    path.unlink(missing_ok=True)
+                    return
                 delivered = {tuple(target) for target in data.get("delivered_targets", [])}
                 # Owed targets come from config, not live transports: a removed home or an opt-out
                 # (gateway_restart_notification=false) must not keep the marker alive forever.
@@ -968,7 +985,7 @@ class GatewayNotificationsMixin:
                     _served_notice_target_key(
                         profile, platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
                     for profile, platform, cfg in self._served_home_channel_configs()
-                    if cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
+                    if cfg.enabled and cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
                 }
                 delivered |= await self._send_home_channel_startup_notifications(skip_targets=delivered)
                 if owed <= delivered:

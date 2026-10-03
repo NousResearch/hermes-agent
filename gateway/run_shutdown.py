@@ -2176,6 +2176,11 @@ class GatewayShutdownMixin:
                     },
                     indent=None,
                 )
+        elif not self._restart_requested:
+            # Clean shutdown with no restart requested: discard any leftover planned restart marker
+            # from an earlier boot so it cannot falsely trigger or suppress notices on a future run.
+            with suppress(Exception):
+                _planned_restart_notification_path().unlink(missing_ok=True)
         if self._restart_requested and self._restart_via_service:
             # Exit 75 + ``RestartForceExitStatus=75``: systemd replaces us without a racing helper.
             self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE

@@ -241,3 +241,72 @@ async def test_a_served_profiles_reconnect_replays_the_owed_notice(multiplex_run
     coder.send.assert_awaited_once()
     assert coder.send.await_args.args[:2] == ("coder-home", ONLINE_NOTICE)
     assert not marker.exists(), "the owed target was reached on reconnect: the obligation is discharged"
+
+
+@pytest.mark.asyncio
+async def test_disabled_platform_home_channel_not_owed_restart_notice(multiplex_runner):
+    """A disabled platform with a home_channel must not be owed a notice or pin the marker (#127316)."""
+    runner, marker = multiplex_runner
+    runner.adapters[Platform.DISCORD] = _adapter()
+    runner._profile_adapters["coder"][Platform.TELEGRAM] = _adapter()
+    # Add a disabled platform with a home channel configured (e.g. platforms.weixin.enabled=False).
+    runner.config.platforms[Platform.WEIXIN] = PlatformConfig(
+        enabled=False,
+        gateway_restart_notification=True,
+        home_channel=HomeChannel(platform=Platform.WEIXIN, chat_id="wx-home", name="wx-home"),
+    )
+    # The disabled platform is excluded from served home configs.
+    configs = list(runner._served_home_channel_configs())
+    assert not any(platform is Platform.WEIXIN for _prof, platform, _cfg in configs)
+
+    # Replay delivers Discord and coder Telegram and immediately clears the marker without Weixin pinning it.
+    await runner._replay_pending_planned_restart_notification()
+    runner.adapters[Platform.DISCORD].send.assert_awaited_once()
+    runner._profile_adapters["coder"][Platform.TELEGRAM].send.assert_awaited_once()
+    assert not marker.exists(), "marker must be unlinked because the disabled platform is not owed"
+
+
+@pytest.mark.asyncio
+async def test_stale_planned_restart_marker_is_expired_and_unlinked(multiplex_runner):
+    """A marker older than _MAX_PLANNED_RESTART_NOTICE_AGE_SECS is discarded (#127316)."""
+    import time
+    runner, marker = multiplex_runner
+    launch = _adapter()
+    runner.adapters[Platform.DISCORD] = launch
+
+    # Marker written 2 hours ago.
+    marker.write_text(
+        json.dumps({
+            "requested_at": time.time() - 7200,
+            "delivered_targets": [["discord", "launch-home", None]],
+        }),
+        encoding="utf-8",
+    )
+
+    await runner._replay_pending_planned_restart_notification()
+
+    launch.send.assert_not_called()
+    assert not marker.exists(), "stale marker must be unlinked and discarded"
+
+
+@pytest.mark.asyncio
+async def test_clean_shutdown_without_restart_clears_leftover_marker(tmp_path, monkeypatch):
+    """A normal stop without restart requested removes any lingering restart_pending marker (#127316)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    marker = tmp_path / ".restart_pending.json"
+    marker.write_text("{}", encoding="utf-8")
+    assert marker.exists()
+
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner._restart_requested = False
+    runner._restart_command_source = None
+    runner._restart_via_service = False
+    runner._restart_detached = False
+    runner._exit_reason = None
+    runner._update_runtime_status = Mock()
+
+    ctx = SimpleNamespace(timed_out=False, active_agents={}, elapsed=lambda: 0.1)
+    await runner._stop_persist_exit_state(ctx)
+
+    assert not marker.exists(), "marker must be cleared on clean shutdown without restart"

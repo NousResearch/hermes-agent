@@ -269,6 +269,15 @@ class CompressionFacadeMixin:
         # entrypoints cannot replace the fence of the attempt currently committing.
         active_fence = commit_fence or CompressionCommitFence()
         fence_registration_lock = vars(self).setdefault("_compression_commit_fence_lock", threading.RLock())
+        # Frozen per-attempt runtime snapshot: in-turn callers already have the turn's scope
+        # ambient, but out-of-turn entry points (/compact, gateway /compress) run with none —
+        # and the summarizer must see the session's CURRENT effort/model even when a
+        # fallback or /model switch changed it after turn_context published its snapshot.
+        # Deep-copied (incl. reasoning_config) so a mid-attempt change cannot mutate it.
+        from agent.auxiliary_client import scoped_runtime_main
+        from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
+        compression_runtime = self._current_main_runtime()
+        compression_runtime["cache_scope"] = resolve_prompt_cache_scope_safe(self) or ""
         registration = _CommitFenceRegistration(active_fence)
         try:
             with fence_registration_lock:
@@ -277,13 +286,14 @@ class CompressionFacadeMixin:
                 self._active_compression_commit_fence = active_fence
 
             def _run(fence=None, target_messages=None, same_turn_fallback_recovery=False):
-                return compress_context(
-                    self, target_messages if target_messages is not None else messages, system_message,
-                    approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic, force=force,
-                    bypass_cooldown=bypass_cooldown or same_turn_fallback_recovery,
-                    defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
-                    verbatim_tail=verbatim_tail, trigger=trigger,
-                )
+                with scoped_runtime_main(compression_runtime):
+                    return compress_context(
+                        self, target_messages if target_messages is not None else messages, system_message,
+                        approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic, force=force,
+                        bypass_cooldown=bypass_cooldown or same_turn_fallback_recovery,
+                        defer_context_engine_notification=(defer_context_engine_notification), commit_fence=fence,
+                        verbatim_tail=verbatim_tail, trigger=trigger,
+                    )
 
             # Callers that already own a progress-aware wait (gateway session
             # hygiene) pass commit_fence and must not be double-wrapped.

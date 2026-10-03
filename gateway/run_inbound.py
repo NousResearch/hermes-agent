@@ -1570,6 +1570,22 @@ class GatewayInboundMixin:
         parts = basename.split("_", 2)
         return re.sub(r'[^\w.\- ]', '_', parts[2] if len(parts) >= 3 else basename), to_agent_visible_cache_path(path)
 
+    @staticmethod
+    def _cached_attachment_is_text(path: str) -> bool:
+        """read_file's own byte-layer test on the cached file: no NUL and valid UTF-8 in the first
+        4 KiB. Known binary extensions and PDF (whose prefix can be pure ASCII) stay binary; a PDF
+        is recognised by its ``%PDF-`` header too, since an upload keeps its (maybe extensionless) name."""
+        from tools.binary_extensions import has_binary_extension, is_pdf_path
+        from tools.file_operations import ShellFileOperations
+        if has_binary_extension(path) or is_pdf_path(path):
+            return False
+        try:
+            with open(path, "rb") as fh:
+                sample = fh.read(4096)
+        except OSError:
+            return False
+        return not sample.startswith(b"%PDF-") and not ShellFileOperations._is_likely_binary_bytes(sample)
+
     @classmethod
     def _prepend_inbound_media_file_notes(cls, message_text: str, audio_file_paths: list[str], video_paths: list[str]) -> str:
         """Prepend a path-pointing note per audio-file / video attachment (content is not inlined)."""
@@ -1600,9 +1616,6 @@ class GatewayInboundMixin:
         )
         if not event.media_urls:
             return message_text
-        import mimetypes as _mimetypes
-
-        _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
         inline_flags = getattr(event, "media_text_inlined", None) or []
         for i, path in enumerate(event.media_urls):
             # A document mixed into a PHOTO/VOICE message (message-level type != DOCUMENT) still
@@ -1610,13 +1623,15 @@ class GatewayInboundMixin:
             if any(f(event, i) for f in (_event_media_is_image, _event_media_is_audio, _event_media_is_video)):
                 continue
             mtype = event.media_types[i] if i < len(event.media_types) else ""
-            if mtype in {"", "application/octet-stream"}:
-                _is_text = os.path.splitext(path)[1].lower() in _TEXT_EXTENSIONS
-                mtype = "text/plain" if _is_text else (_mimetypes.guess_type(path)[0] or "application/octet-stream")
+            inline_flag = inline_flags[i] if i < len(inline_flags) else None
+            # The MIME class cannot tell text from binary: platforms and mimetypes file .rs, .sql,
+            # .json, .xml, .php under application/* (or send octet-stream). An adapter that inlined
+            # the content already decoded it as text; otherwise the cached bytes decide.
+            if not mtype.startswith("text/") and (inline_flag or cls._cached_attachment_is_text(path)):
+                mtype = "text/plain"
             # Every accepted file gets a note — a non-text/non-application MIME (font/*, model/*)
             # must still tell the agent the file exists.
             display_name, agent_path = cls._inbound_attachment_display_name(path)
-            inline_flag = inline_flags[i] if i < len(inline_flags) else None
             context_note = _build_document_context_note(
                 display_name, agent_path, mtype, content_inlined=inline_flag is not False,
             )

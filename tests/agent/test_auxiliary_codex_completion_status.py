@@ -74,6 +74,7 @@ def test_compressor_rejects_actual_adapter_partial_summary(monkeypatch):
 _TOOL_CALL = SimpleNamespace(
     type="function_call", status="completed", call_id="call_1", name="inspect", arguments='{"path":"x"}',
 )
+_LEAK_LIKE_ANSWER = 'Summary of work.\nRunning the tests next.\n{"cmd": "pytest -q"}'
 _CODEX_REASONING_ONLY = SimpleNamespace(
     type="reasoning", id="rs_test", encrypted_content=None, summary=[SimpleNamespace(text="still thinking")],
 )
@@ -86,6 +87,8 @@ _CODEX_REASONING_ONLY = SimpleNamespace(
         pytest.param("", "completed", [_message("FINAL")], None, "FINAL", "stop", id="final-answer"),
         pytest.param("", "completed", [_message("COMMENTARY", phase="commentary")], None, None, "length", id="commentary-only"),
         pytest.param("", "completed", [_TOOL_CALL], None, None, "tool_calls", id="tool-call"),
+        pytest.param("", "completed", [_message(_LEAK_LIKE_ANSWER, phase=None)], None, _LEAK_LIKE_ANSWER, "stop",
+                     id="tool-call-like-answer"),
         pytest.param("", "incomplete", [_message("PARTIAL")], "max_output_tokens", "PARTIAL", "length", id="token-cap"),
         pytest.param("", "incomplete", [_TOOL_CALL], "max_output_tokens", None, "tool_calls", id="token-cap-after-tool-call"),
         # Route-sensitive normalization: the issuer comes from the request's route classification.

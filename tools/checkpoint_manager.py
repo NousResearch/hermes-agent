@@ -354,6 +354,34 @@ def _git_env(
     return env
 
 
+# No checkpoint git call may outlive ``_GIT_TIMEOUT * 3`` (<= 180s), so an index lock older than this has no live owner.
+_STALE_INDEX_LOCK_SECONDS = 300
+
+
+def _index_lock_path(index_file: Path) -> Path:
+    return index_file.with_name(index_file.name + ".lock")
+
+
+def _clear_stale_index_lock(index_file: Path) -> None:
+    """Remove ``<index>.lock`` left by a git that died mid-write (killed on timeout by another Hermes
+    process, gateway restart, OOM).  Git never reclaims it, so every later checkpoint of the project
+    would fail with "Unable to create ...lock: File exists" until someone deletes it by hand.  A
+    fresh lock is left alone: it may belong to a live git from another Hermes process.
+
+    ``hermes_cli.gitlock.clear_stale_git_locks`` only sweeps the fixed ``.git/<name>.lock`` set, and
+    the checkpoint store drives git through a custom ``GIT_INDEX_FILE`` outside any repo, so that
+    sweep cannot cover this lock.
+    """
+    lock = _index_lock_path(index_file)
+    try:
+        age = time.time() - lock.stat().st_mtime
+    except OSError:
+        return
+    if age > _STALE_INDEX_LOCK_SECONDS:
+        logger.warning("Removing stale checkpoint index lock %s (%.0fs old, owner is gone)", lock, age)
+        _unlink_quiet(lock)
+
+
 def _run_git(
     args: List[str],
     store: Path,
@@ -416,6 +444,10 @@ def _run_git(
     except subprocess.TimeoutExpired:
         msg = f"git timed out after {timeout}s: {' '.join(cmd)}"
         logger.error(msg, exc_info=True)
+        if index_file is not None:
+            # subprocess.run() SIGKILLed git, so it never released ``<index>.lock``.  The lock is
+            # ours: a git that cannot take it exits at once ("File exists") instead of timing out.
+            _unlink_quiet(_index_lock_path(index_file))
         return False, "", msg
     except FileNotFoundError as exc:
         missing_target = getattr(exc, "filename", None)
@@ -1436,6 +1468,8 @@ class CheckpointManager:
         # Seed the per-project index from the last checkpoint, if any, so the
         # diff/commit machinery sees only changes since then.  On first call,
         # clear the index so ``git add -A`` produces a clean tree.
+        # An orphaned lock would fail every later checkpoint of this project.
+        _clear_stale_index_lock(index_file)
         if index_file.exists():
             # Reset index to current ref tip to avoid accumulating stale paths.
             ok_ref, ref_commit, _ = _run_git(

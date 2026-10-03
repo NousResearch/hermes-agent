@@ -790,6 +790,125 @@ def ensure_matrix_deps() -> bool:
     return True
 
 
+_ROOM_KEY_REQUEST_TIMEOUT = 25.0
+
+
+def _megolm_key_routing(content: Any) -> tuple[Any, Any]:
+    """Return (sender_key, device_id) for an m.room.encrypted content.
+
+    mautrix 0.21 keeps the post-Matrix-1.3-deprecated fields in private
+    ``_sender_key``/``_device_id`` (the public properties warn); older
+    versions expose them as plain attributes. Prefer the private fields
+    so a withheld session does not log a DeprecationWarning per message.
+    """
+    sender_key = getattr(content, "_sender_key", None) or getattr(content, "sender_key", None)
+    device_id = getattr(content, "_device_id", None) or getattr(content, "device_id", None)
+    return sender_key, device_id
+
+
+def _install_key_requesting_dispatcher(client: Any) -> None:
+    """Replace mautrix's DecryptionDispatcher with one that requests missing keys.
+
+    mautrix's OlmMachine never asks for a room key on its own — only the
+    high-level bridge does. The gateway drives the OlmMachine directly, so
+    an event whose Megolm session was never shared (e.g. the sender's
+    client withholds from unverified devices) was dropped with one log
+    line and stayed unreadable forever, even after the sender started
+    sharing (#126392). This dispatcher requests the key in the background
+    and redispatches the event once it arrives.
+    """
+    from mautrix.client import DecryptionDispatcher
+    from mautrix.errors import DecryptionError, SessionNotFound
+    from mautrix.util import background_task
+
+    class _KeyRequestingDecryptionDispatcher(DecryptionDispatcher):
+        """Request a withheld session, then redeliver every waiting event.
+
+        Concurrent events for one session share a single key request:
+        mautrix keys its request waiter by session id, so parallel
+        requests would strand all but the last event.
+        """
+
+        def __init__(self, client: Any) -> None:
+            super().__init__(client)
+            self._pending: Dict[Any, list] = {}
+
+        async def handle(self, evt: Any) -> None:
+            try:
+                decrypted = await self.client.crypto.decrypt_megolm_event(evt)
+            except SessionNotFound as err:
+                sender_key, device_id = _megolm_key_routing(getattr(evt, "content", None))
+                if not sender_key or not device_id:
+                    self.client.crypto_log.warning(
+                        "Matrix: missing session %s for %s from %s - "
+                        "no sender routing, cannot request room key",
+                        err.session_id, evt.event_id, evt.sender,
+                    )
+                    return
+                if err.session_id in self._pending:
+                    self._pending[err.session_id].append(evt)
+                    return
+                self._pending[err.session_id] = [evt]
+                self.client.crypto_log.warning(
+                    "Matrix: missing session %s for %s - requesting room key from %s/%s",
+                    err.session_id, evt.event_id, evt.sender, device_id,
+                )
+                background_task.create(self._request_and_retry(err.session_id))
+                return
+            except DecryptionError as exc:
+                self.client.crypto_log.warning(
+                    "Matrix: failed to decrypt %s: %s", evt.event_id, exc
+                )
+                return
+            self.client.dispatch_event(decrypted, evt.source)
+
+        async def _request_and_retry(self, session_id: Any) -> None:
+            crypto = self.client.crypto
+            try:
+                first = self._pending[session_id][0]
+                sender_key, device_id = _megolm_key_routing(getattr(first, "content", None))
+                got = await crypto.request_room_key(
+                    first.room_id, sender_key, session_id,
+                    # mautrix 0.21.1 prunes the answered device with
+                    # `del from_devices[user_id][device_id]` on the SUCCESS path
+                    # (crypto/key_request.py) while send_to_device merely iterates the
+                    # inner value — so only a device->* MAPPING satisfies both. A list
+                    # ({sender: [device_id]}) indexes a list with a str and raises
+                    # TypeError after the key actually arrived, which the broad except
+                    # below then logs as "request failed" and drops every waiting event.
+                    from_devices={first.sender: {device_id: None}},
+                    timeout=_ROOM_KEY_REQUEST_TIMEOUT,
+                )
+            except Exception as exc:
+                self.client.crypto_log.warning(
+                    "Matrix: room key request for %s failed: %s", session_id, exc
+                )
+                self._pending.pop(session_id, None)
+                return
+            pending = self._pending.pop(session_id, [])
+            if not got:
+                self.client.crypto_log.warning(
+                    "Matrix: no room key for session %s - %s/%s did not share it",
+                    session_id, first.sender, device_id,
+                )
+                return
+            for evt in pending:
+                try:
+                    decrypted = await crypto.decrypt_megolm_event(evt)
+                except DecryptionError as exc:
+                    self.client.crypto_log.warning(
+                        "Matrix: %s still undecryptable after key request: %s",
+                        evt.event_id, exc,
+                    )
+                    continue
+                self.client.dispatch_event(decrypted, evt.source)
+
+    client.remove_dispatcher(DecryptionDispatcher)
+    client.add_dispatcher(_KeyRequestingDecryptionDispatcher)
+    # ponytail: one shared waiter per session, no per-event dedup beyond it;
+    # upgrade to per-sender fan-out if senders routinely omit device_id.
+
+
 class _CryptoStateStore:
     """StateStore shim for OlmMachine (MemoryStateStore lacks is_encrypted/get_encryption_info/
     find_shared_rooms); falls back to a homeserver state query when the store has no info."""
@@ -1274,6 +1393,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.warning("Matrix: share_keys() warning during startup: %s", exc)
             await self._verify_or_bootstrap_cross_signing(olm, client)
             client.crypto = olm
+            _install_key_requesting_dispatcher(client)
             logger.info(
                 "Matrix: E2EE enabled (store: %s%s)", str(self._crypto_db_path),
                 f", device_id={client.device_id}" if client.device_id else "")

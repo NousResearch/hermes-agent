@@ -1,5 +1,6 @@
 """Tests for Matrix platform adapter (mautrix-python backend)."""
 import asyncio
+import copy
 import sys
 import time
 import types
@@ -110,12 +111,26 @@ def _make_fake_mautrix():
         def add_dispatcher(self, dispatcher_type):
             pass
 
+        def remove_dispatcher(self, dispatcher_type):
+            pass
+
     class InternalEventType:
         INVITE = "internal.invite"
 
     mautrix_client.Client = Client
     mautrix_client.InternalEventType = InternalEventType
     mautrix.client = mautrix_client
+
+    class DecryptionDispatcher:
+        event_type = "m.room.encrypted"
+
+        def __init__(self, client):
+            self.client = client
+
+        async def handle(self, evt):  # pragma: no cover - replaced by subclasses
+            raise NotImplementedError
+
+    mautrix_client.DecryptionDispatcher = DecryptionDispatcher
 
     # --- mautrix.client.dispatcher ---
     mautrix_client_dispatcher = types.ModuleType("mautrix.client.dispatcher")
@@ -213,8 +228,35 @@ def _make_fake_mautrix():
 
     mautrix_crypto_store_asyncpg.PgCryptoStore = PgCryptoStore
 
+    # --- mautrix.errors ---
+    mautrix_errors = types.ModuleType("mautrix.errors")
+
+    class DecryptionError(Exception):
+        pass
+
+    class SessionNotFound(DecryptionError):
+        def __init__(self, session_id, sender_key=None):
+            super().__init__(
+                f"Failed to decrypt megolm event: no session with given ID {session_id} found"
+            )
+            self.session_id = session_id
+
+    mautrix_errors.DecryptionError = DecryptionError
+    mautrix_errors.SessionNotFound = SessionNotFound
+
     # --- mautrix.util ---
     mautrix_util = types.ModuleType("mautrix.util")
+
+    # --- mautrix.util.background_task ---
+    mautrix_util_background_task = types.ModuleType("mautrix.util.background_task")
+    mautrix_util_background_task.created = []
+
+    def _background_task_create(coro, **kwargs):
+        mautrix_util_background_task.created.append(coro)
+        return MagicMock(name="background_task")
+
+    mautrix_util_background_task.create = _background_task_create
+    mautrix_util.background_task = mautrix_util_background_task
 
     # --- mautrix.util.async_db ---
     mautrix_util_async_db = types.ModuleType("mautrix.util.async_db")
@@ -242,6 +284,8 @@ def _make_fake_mautrix():
         "mautrix.crypto.store.asyncpg": mautrix_crypto_store_asyncpg,
         "mautrix.util": mautrix_util,
         "mautrix.util.async_db": mautrix_util_async_db,
+        "mautrix.errors": mautrix_errors,
+        "mautrix.util.background_task": mautrix_util_background_task,
     }
 
 
@@ -3243,3 +3287,189 @@ class TestCryptoPickleKeyMigration:
         # start still sees a legacy-key account and retries the migration.
         store.put_account.assert_not_awaited()
         assert "retried on the next start" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Missing inbound room keys (#126392)
+# ---------------------------------------------------------------------------
+
+
+def _make_encrypted_event(event_id="$evt1:example.org"):
+    content = types.SimpleNamespace(
+        ciphertext="ciphertext",
+        session_id="SID42",
+        _sender_key="CURVEKEY42",
+        _device_id="DEV9",
+    )
+    return types.SimpleNamespace(
+        event_id=event_id,
+        room_id="!room:example.org",
+        sender="@alice:example.org",
+        source="sync",
+        content=content,
+    )
+
+
+async def _mautrix_request_room_key(room_id, sender_key, session_id, from_devices, timeout=None):
+    """The released mautrix 0.21.1 ``request_room_key`` success path, reduced to the two
+    operations this caller depends on: ``send_to_device`` iterates the inner value, then the
+    device that answered is pruned with ``del from_devices[user_id][device_id]``. That prune
+    raises TypeError for a list-shaped payload — after the key has actually arrived — which is
+    the failure the caller's broad ``except`` swallowed and logged as "request failed"."""
+    (user_id, devices), = from_devices.items()
+    for _device_id in devices:  # send_to_device iterates the inner value
+        pass
+    # mautrix prunes the caller's dict in place; work on a deep copy so the test can still
+    # assert the payload it was handed (the adapter builds a fresh literal per call anyway).
+    remaining = copy.deepcopy(from_devices)
+    device_id = next(iter(devices))
+    del remaining[user_id][device_id]
+    if len(remaining[user_id]) == 0:
+        del remaining[user_id]
+    return True
+
+
+def _make_key_request_client(decrypted_sentinel=None):
+    from mautrix.errors import SessionNotFound
+
+    client = MagicMock()
+    crypto = MagicMock()
+    crypto.decrypt_megolm_event = AsyncMock(
+        side_effect=[SessionNotFound("SID42"), decrypted_sentinel or {"decrypted": True}]
+    )
+    crypto.request_room_key = AsyncMock(side_effect=_mautrix_request_room_key)
+    client.crypto = crypto
+    return client
+
+
+class TestMatrixMissingRoomKeyRequest:
+    """#126392: a withheld inbound Megolm session must be requested, then redelivered."""
+
+    @pytest.mark.asyncio
+    async def test_missing_session_requests_key_and_redispatches(self):
+        fake_mautrix_mods = _make_fake_mautrix()
+        with patch.dict("sys.modules", fake_mautrix_mods):
+            import plugins.platforms.matrix.adapter as matrix_mod
+
+            client = _make_key_request_client()
+            matrix_mod._install_key_requesting_dispatcher(client)
+
+            disp_cls = client.add_dispatcher.call_args[0][0]
+            disp = disp_cls(client)
+            evt = _make_encrypted_event()
+            await disp.handle(evt)
+            # handle() must not block on the key wait: it parks the retry
+            # in the background and returns.
+            client.crypto.request_room_key.assert_not_awaited()
+            bg = fake_mautrix_mods["mautrix.util.background_task"]
+            assert len(bg.created) == 1
+            await bg.created[0]
+
+            client.crypto.request_room_key.assert_awaited_once_with(
+                "!room:example.org",
+                "CURVEKEY42",
+                "SID42",
+                from_devices={"@alice:example.org": {"DEV9": None}},
+                timeout=matrix_mod._ROOM_KEY_REQUEST_TIMEOUT,
+            )
+            client.dispatch_event.assert_called_once_with({"decrypted": True}, "sync")
+
+    @pytest.mark.asyncio
+    async def test_concurrent_events_share_one_request(self):
+        """17 withheld messages -> 1 key request, every event redelivered."""
+        fake_mautrix_mods = _make_fake_mautrix()
+        with patch.dict("sys.modules", fake_mautrix_mods):
+            import plugins.platforms.matrix.adapter as matrix_mod
+            from mautrix.errors import SessionNotFound
+
+            client = MagicMock()
+            crypto = MagicMock()
+            crypto.decrypt_megolm_event = AsyncMock(
+                side_effect=[
+                    SessionNotFound("SID42"),
+                    SessionNotFound("SID42"),
+                    {"decrypted": 1},
+                    {"decrypted": 2},
+                ]
+            )
+            crypto.request_room_key = AsyncMock(side_effect=_mautrix_request_room_key)
+            client.crypto = crypto
+
+            matrix_mod._install_key_requesting_dispatcher(client)
+            disp = client.add_dispatcher.call_args[0][0](client)
+            await disp.handle(_make_encrypted_event("$e1:example.org"))
+            await disp.handle(_make_encrypted_event("$e2:example.org"))
+            bg = fake_mautrix_mods["mautrix.util.background_task"]
+            assert len(bg.created) == 1
+            await bg.created[0]
+
+            assert crypto.request_room_key.await_count == 1
+            assert client.dispatch_event.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_connect_installs_key_requesting_dispatcher(self):
+        """connect() must wire the dispatcher, or withheld sessions stay lost."""
+        from plugins.platforms.matrix.adapter import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        class FakeWhoamiResponse:
+            def __init__(self, user_id, device_id):
+                self.user_id = user_id
+                self.device_id = device_id
+
+        fake_mautrix_mods = _make_fake_mautrix()
+
+        mock_client = MagicMock()
+        mock_client.mxid = "@bot:example.org"
+        mock_client.device_id = None
+        mock_client.state_store = MagicMock()
+        mock_client.sync_store = MagicMock()
+        mock_client.crypto = None
+        mock_client.whoami = AsyncMock(return_value=FakeWhoamiResponse("@bot:example.org", "DEV123"))
+        mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
+        mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@bot:example.org": {"DEV123": {
+                "keys": {"ed25519:DEV123": "fake_ed25519_key"},
+            }}},
+        })
+        mock_client.api = MagicMock()
+        mock_client.api.token = "syt_test_access_token"
+        mock_client.api.session = MagicMock()
+        mock_client.api.session.close = AsyncMock()
+
+        mock_olm = MagicMock()
+        mock_olm.load = AsyncMock()
+        mock_olm.share_keys = AsyncMock()
+        mock_olm.share_keys_min_trust = None
+        mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
+
+        fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
+        fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
+
+        import plugins.platforms.matrix.adapter as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", fake_mautrix_mods):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        assert await adapter.connect() is True
+
+        added = [c.args[0] for c in mock_client.add_dispatcher.call_args_list]
+        assert any(
+            getattr(a, "event_type", None) == "m.room.encrypted" for a in added
+        ), "connect() must install a key-requesting dispatcher for m.room.encrypted (#126392)"
+
+        await adapter.disconnect()

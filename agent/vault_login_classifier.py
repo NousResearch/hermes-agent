@@ -58,7 +58,13 @@ _RE_USERNAME = re.compile(
 
 
 def _normalize_text(value: str) -> str:
-    value = unicodedata.normalize("NFKD", value).lower()
+    value = unicodedata.normalize("NFKD", value)
+    # split camelCase so "totpPin"/"otpCode" normalize to "totp pin"/"otp code"
+    value = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", value)
+    # drop combining marks BEFORE the alnum collapse: NFKD leaves them as
+    # standalone characters, and the collapse would turn mid-word accents
+    # ("verificação") into a word break ("verificaca o")
+    value = "".join(c for c in value if not unicodedata.combining(c)).lower()
     return re.sub(r"[^a-z0-9]+", " ", value).strip()
 
 

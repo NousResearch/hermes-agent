@@ -472,12 +472,62 @@ class TestSubscriptionIncludedNotes:
         assert len(result.notes) > 0
 
 
+@pytest.mark.parametrize(
+    ("provider", "base_url", "expected_provider", "expected_mode"),
+    [
+        ("copilot", "https://openrouter.ai/api/v1", "openrouter", "official_models_api"),
+        ("nvidia", "https://openrouter.ai/api/v1", "openrouter", "official_models_api"),
+        ("copilot", "https://generativelanguage.googleapis.com/v1beta", "google", "official_docs_snapshot"),
+        ("custom", "https://api.cloudflare.com/client/v4", "custom", "subscription_included"),
+    ],
+)
+def test_explicit_base_url_route_precedes_included_provider_classification(
+    provider, base_url, expected_provider, expected_mode
+):
+    route = resolve_billing_route("model", provider=provider, base_url=base_url)
+
+    assert route.provider == expected_provider
+    assert route.billing_mode == expected_mode
+
+
+def test_metered_openrouter_pricing_is_not_shadowed_by_included_provider(monkeypatch):
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_model_metadata",
+        lambda: {"model": {"pricing": {"prompt": "0.000005", "completion": "0.000020"}}},
+    )
+
+    result = estimate_usage_cost(
+        "model",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000),
+        provider="copilot",
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd == Decimal("25")
+    assert result.source == "provider_models_api"
+
+
+def test_included_provider_without_explicit_base_url_remains_included():
+    route = resolve_billing_route("model", provider="nvidia")
+
+    assert route.billing_mode == "subscription_included"
+
+
+def test_credit_host_still_classifies_as_included_without_higher_precedence_route():
+    route = resolve_billing_route(
+        "model", provider="custom", base_url="https://api.cloudflare.com/client/v4"
+    )
+
+    assert route.billing_mode == "subscription_included"
+
+
 def test_normalize_usage_reads_kimi_top_level_cached_tokens():
     """Kimi/Moonshot's native API reports context-cache hits as a top-level
-    usage.cached_tokens, not OpenAI's nested
-    prompt_tokens_details.cached_tokens and not DeepSeek's
-    prompt_cache_hit_tokens. Neither existing fallback matches that name, so
-    direct Kimi sessions normalized to cache_read_tokens=0 — the hits were
+    ``usage.cached_tokens``, not OpenAI's nested
+    ``prompt_tokens_details.cached_tokens`` and not DeepSeek's
+    ``prompt_cache_hit_tokens``. Neither existing fallback matches that name, so
+    direct Kimi sessions normalized to ``cache_read_tokens=0`` — the hits were
     invisible in accounting and billed at the full input rate (#65722)."""
     usage = SimpleNamespace(
         prompt_tokens=3000,

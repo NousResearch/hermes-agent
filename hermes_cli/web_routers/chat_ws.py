@@ -536,6 +536,16 @@ async def pty_ws(ws: WebSocket) -> None:
     # Keep-alive path: the PTY outlives this socket; reattach by token.
     try:
         await PTY_REGISTRY.close_other_sessions(raw_attach_token, keep_key=attach_token)
+        # An explicit resume must not be fenced out by a PTY this dashboard
+        # itself abandoned under a DIFFERENT token: "New chat" rotates the
+        # attach token, so the orphan escapes the close above (it no longer
+        # starts with this tab's raw token), yet its child still holds the
+        # session lease and would refuse this resume until the TTL reaper
+        # collects it. Release same-profile detached orphans before spawning;
+        # a PTY some live socket is still viewing is a real other window and
+        # is left alone (#131172).
+        if registry_resume:
+            await PTY_REGISTRY.release_detached_in_profile(profile or "", keep_prefix=raw_attach_token)
         session, _created = await PTY_REGISTRY.attach_or_spawn(attach_token, spawn=_spawn)
     except (PtyUnavailableError, FileNotFoundError, OSError, RegistryFull) as exc:
         await _pty_fail(ws, exc)

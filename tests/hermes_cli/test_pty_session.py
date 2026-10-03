@@ -523,4 +523,45 @@ async def test_reap_keeps_live_attached_session():
     await reg.reap_idle(now=time.monotonic() + 10)
     assert "tok" in reg._sessions
     assert b.closed is False
+
+
+@pytest.mark.asyncio
+async def test_release_detached_in_profile_removes_rotated_token_orphans():
+    """#131172: "New chat" rotates the attach token, so the abandoned PTY sits
+    under a different raw token, can never be reattached again, yet holds the
+    session lease until the TTL reaper collects it. An explicit resume in the
+    same profile must release such detached orphans — and only those.
+    """
+    from hermes_cli.pty_session import PtySession
+
+    reg = make_registry()
+    # Chat A's keep-alive PTY, abandoned when its tab minted a new token (both
+    # the fresh-key and the explicit-resume-key form of the orphan).
+    orphan_fresh = PtySession("tok-a\0alpha\0", FakeBridge([b""]), buffer_cap=1024, read_timeout=0.01)
+    orphan_resume = PtySession("tok-a2\0alpha\0sess-a", FakeBridge([b""]), buffer_cap=1024, read_timeout=0.01)
+    # This tab's own detached PTY (reconnect window) shares the NEW raw token.
+    own = PtySession("tok-b\0alpha\0", FakeBridge([b""]), buffer_cap=1024, read_timeout=0.01)
+    # A different live window still views its PTY under a third token.
+    attached = PtySession("tok-c\0alpha\0sess-c", FakeBridge([b""]), buffer_cap=1024, read_timeout=0.01)
+    # Another profile's detached PTY is not this resume's business.
+    other_profile = PtySession("tok-x\0beta\0", FakeBridge([b""]), buffer_cap=1024, read_timeout=0.01)
+    for s in (orphan_fresh, orphan_resume, own, attached, other_profile):
+        await s.start()
+        reg._sessions[s.key] = s
+    # The abandoned PTYs were viewed once and then detached; the third window's
+    # viewer is still live.
+    old_ws = FakeWS()
+    assert await orphan_fresh.attach(old_ws)
+    orphan_fresh.detach(old_ws)
+    await attached.attach(FakeWS())
+
+    released = await reg.release_detached_in_profile("alpha", keep_prefix="tok-b")
+
+    assert released == 2
+    assert orphan_fresh.bridge.closed and orphan_fresh.key not in reg._sessions
+    assert orphan_resume.bridge.closed and orphan_resume.key not in reg._sessions
+    # Own-token detach window, live other window, other profile: all spared.
+    assert reg._sessions[own.key] is own and not own.bridge.closed
+    assert reg._sessions[attached.key] is attached and not attached.bridge.closed
+    assert reg._sessions[other_profile.key] is other_profile
     await reg.close_all()

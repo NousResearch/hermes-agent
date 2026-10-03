@@ -1134,7 +1134,8 @@ def _parse_codex_final_response(
 ) -> Tuple[List[str], List[Any], Any, str]:
     """Normalize Responses output without losing phase or completion state for aux callers."""
     from agent.codex_responses_adapter import (
-        _extract_responses_message_text, _leaked_tool_call_text, _lower_or_none, _normalize_codex_response,
+        _INCOMPLETE_STATUSES, _extract_responses_message_text, _leaked_tool_call_text, _lower_or_none,
+        _normalize_codex_response,
     )
 
     # The shared normalizer reads SDK-style items. Keep support for compatible hosts
@@ -1157,8 +1158,11 @@ def _parse_codex_final_response(
     reason = str(_field(normalized_final.incomplete_details, "reason", "") or "").strip().lower()
     # The main loop's leaked-tool-call recovery clears the text so its continuation can re-elicit a
     # real call; aux has no continuation, so a completed answer quoting such text keeps it.
-    if finish_reason == "incomplete" and status != "incomplete" and not message.tool_calls \
-            and message.codex_message_items is None:
+    # Only a fully completed response qualifies: an unfinished message item is still a partial.
+    if finish_reason == "incomplete" and status == "completed" and not message.tool_calls \
+            and message.codex_message_items is None and not any(
+                _field(item, "type") == "message" and _lower_or_none(_field(item, "status")) in _INCOMPLETE_STATUSES
+                for item in output):
         answer = "\n".join(filter(None, (
             _extract_responses_message_text(item) for item in output
             if _field(item, "type") == "message"

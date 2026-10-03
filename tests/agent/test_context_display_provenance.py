@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from agent.context_breakdown import compute_session_context_breakdown, render_context_breakdown_lines
 from agent.context_compressor import ContextCompressor
-from agent.usage_anchor import capture_usage_anchor
+from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 
 
 def test_context_provenance_follows_the_selected_number():
@@ -15,7 +15,7 @@ def test_context_provenance_follows_the_selected_number():
         for source in ("local_estimate", "provider_usage", "provider_usage_plus_estimate"):
             if source == "provider_usage":
                 comp.update_from_response({"prompt_tokens": 1234, "completion_tokens": 20})
-                agent._usage_anchor = capture_usage_anchor(1234, 20, messages)
+                set_usage_anchor(agent, capture_usage_anchor(1234, 20, messages))
                 messages.append({"role": "assistant", "content": "fixture answer"})
             elif source == "provider_usage_plus_estimate":
                 messages.append({"role": "user", "content": "a new unpriced question"})

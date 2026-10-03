@@ -31,7 +31,7 @@ from gateway.response_filters import (
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
     SessionSource, _session_key_namespace, build_channel_continuity_note,
-    build_session_context,
+    build_session_context, sanitize_model_override,
 )
 from gateway.session_transcript import TranscriptReadError
 from gateway.turn_context import TurnContext
@@ -701,6 +701,7 @@ class GatewayTurnMixin:
                 hs.provider = _hyg_runtime.get("provider") or hs.provider
                 hs.base_url = _hyg_runtime.get("base_url") or hs.base_url
                 hs.api_key = _hyg_runtime.get("api_key") or hs.api_key
+                hs.api_mode = _hyg_runtime.get("api_mode") or ""
 
             if hs.config_context_length is not None:
                 try:
@@ -748,24 +749,34 @@ class GatewayTurnMixin:
         _warn_token_threshold = int(_hyg_context_length * 0.95)
         _msg_count = len(history)
 
-        # Real usage decides: the API-reported prompt count, else the anchor persisted on the session
-        # row (real count + delta of what was appended since, survives gateway restarts), else the
-        # rough estimate (runs 30-50% high, which only fires hygiene early — safe). Do NOT compensate
-        # with a threshold multiplier.
+        # A persisted anchor binds real usage to this route and transcript.
+        # New SessionEntry scalars have no such proof; ignore them when the
+        # anchor is stale. Pre-upgrade readings retain a conservative safety
+        # floor until a committed route change or new turn marks the row.
         from agent.image_token_cost import image_cost_context, learned_image_token_cost
-        _anchored = None
-        # Images in any local delta/estimate are priced at the cost learned from this model's usage.
+        from agent.usage_anchor import persisted_anchor_tokens
+        _session_db = getattr(self, "_session_db", None)
         with image_cost_context(learned_image_token_cost(hs.model, hs.base_url)):
-            if session_entry.last_prompt_tokens <= 0:
-                from agent.usage_anchor import persisted_anchor_tokens
-                _session_db = getattr(self, "_session_db", None)
-                _anchored = persisted_anchor_tokens(
-                    getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
+            _anchored = persisted_anchor_tokens(
+                getattr(_session_db, "_db", _session_db), session_entry.session_id, history,
+                route=hs,
+            )
+            _active_override = (getattr(self, "_session_model_overrides", None) or {}).get(session_key)
+            _temporary_route = bool((getattr(self, "_pending_one_turn_model_restores", None) or {}).get(session_key))
+            if _active_override is not None:
+                _temporary_route = _temporary_route or (
+                    sanitize_model_override(_active_override) != getattr(session_entry, "model_override", None)
                 )
-            if session_entry.last_prompt_tokens > 0:
-                _approx_tokens, _token_source = session_entry.last_prompt_tokens, "actual"
-            elif _anchored is not None:
+            if _anchored is not None:
                 _approx_tokens, _token_source = _anchored, "anchored"
+            elif (not _temporary_route
+                  and getattr(session_entry, "last_prompt_scope_version", None) is None
+                  and session_entry.last_prompt_tokens > 0):
+                # Pre-upgrade rows have no route provenance, but discarding a real
+                # same-route high-water mark can strand an oversized session.
+                # A durable switch clears this reading atomically; a one-turn
+                # or unpersisted in-memory override suppresses it without erasing it.
+                _approx_tokens, _token_source = session_entry.last_prompt_tokens, "legacy_actual"
             else:
                 _approx_tokens, _token_source = estimate_messages_tokens_rough(history), "estimated"
 

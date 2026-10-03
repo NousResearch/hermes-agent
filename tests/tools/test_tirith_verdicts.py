@@ -78,10 +78,14 @@ def test_circuit_dedup_and_success_reset(scan, monkeypatch, caplog):
     (2, [{"rule_id": "lookalike_tld", "value": ".app"}], "allow"),
     (2, [{"rule_id": "lookalike_tld", "value": ".APP"}], "allow"),
     (2, [{"rule_id": "lookalike_tld", "message": "Domain uses '.app' TLD"}], "allow"),
+    (2, [{"rule_id": "lookalike_tld", "value": ".DEV"}], "allow"),
+    (2, [{"rule_id": "lookalike_tld", "value": ".app"}, {"rule_id": "lookalike_tld", "value": ".dev"}], "allow"),
     (2, [{"rule_id": "shortened_url", "value": ".app"}], "warn"),
     (2, [{"rule_id": "lookalike_tld", "value": ".zip"}], "warn"),
     (2, [{"rule_id": "lookalike_tld", "value": ".app"}, {"rule_id": "shortened_url"}], "warn"),
     (1, [{"rule_id": "lookalike_tld", "value": ".app"}], "block"),
+    (2, [{"rule_id": "lookalike_tld", "value": ".dev"}, {"rule_id": "shortened_url"}], "warn"),
+    (1, [{"rule_id": "lookalike_tld", "value": ".dev"}], "block"),
 ])
 def test_app_warning_exception_never_downgrades_block(scan, monkeypatch, code, findings, expected):
     body = json.dumps({"findings": findings, "summary": "finding"})

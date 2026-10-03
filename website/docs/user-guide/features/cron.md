@@ -680,10 +680,12 @@ but the run is recorded on the job as `last_delivery_unverified` and surfaces
 in `hermes cron list`:
 
 ```
-⚠ Delivery UNVERIFIED: adapter acked slack:C0123456 without message_id/raw_response
+⚠ Delivery UNVERIFIED: slack:C0123456 — delivery not confirmed (no message_id/raw_response, or confirmation timed out)
 ```
 
-and in `hermes cron doctor` as `last delivery unverified (...)`. The marker is
+and in `hermes cron doctor` as `last delivery unverified (...)`. A live send
+that has started but outlasts the 60s confirmation wait is also recorded as
+unverified: it is left running rather than resent (a resend would duplicate it). The marker is
 cleared by the next run that delivers with evidence. An empty payload (no text
 and no media) is never handed to an adapter; it fails closed and is reported in
 `last_delivery_error` instead of being logged as delivered.

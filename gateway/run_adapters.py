@@ -27,7 +27,7 @@ from gateway.config import (
 )
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.helpers import carry_inbound_dedup, inbound_dedup_caches
-from gateway.restart import is_global_startup_conflict
+from gateway.restart import is_global_startup_conflict, lock_conflict_with_own_predecessor
 from gateway.run_shutdown import _log_suppressed
 from gateway.session import SessionSource
 from hermes_cli.observability.shared_metrics_gateway import record_platform_connect, record_platform_disconnect
@@ -1474,11 +1474,14 @@ class GatewayAdapterLifecycleMixin:
         regular scheduler would drop them), so park a task and hand off once live."""
         if not getattr(adapter, "fatal_error_retryable", True):
             return
-        if is_global_startup_conflict(getattr(adapter, "fatal_error_code", None)):
+        if is_global_startup_conflict(getattr(adapter, "fatal_error_code", None)) and (
+            not lock_conflict_with_own_predecessor(adapter)
+        ):
             # A live foreign token holder is an ownership conflict, not a blip: park it fatal.
             logger.error(
                 # Park it fatal (like ``duplicate_credential``) instead of retry-storming the token every
-                # backoff (#83183).
+                # backoff (#83183). Our own restart predecessor is exempt: it is draining out, so
+                # the queued reconnect takes the lock over when it lands (#131875).
                 "[MULTIPLEX] Profile '%s': %s credential is held by another "
                 "gateway (%s) — parked, not retried. %s", profile_name, platform.value,
                 adapter.fatal_error_code, adapter.fatal_error_message or "",

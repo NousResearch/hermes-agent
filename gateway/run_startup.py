@@ -24,7 +24,8 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
 from gateway.restart import (
-    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_FATAL_CONFIG_EXIT_CODE, is_global_startup_conflict
+    DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT, GATEWAY_FATAL_CONFIG_EXIT_CODE,
+    is_global_startup_conflict, lock_conflict_with_own_predecessor,
 )
 from gateway.run_shutdown import _log_suppressed, _send_error
 from gateway.shutdown_watchdog import (
@@ -1304,7 +1305,12 @@ class GatewayStartupMixin:
                 continue
             # A live foreign token holder is an ownership conflict, not a blip: retryable only for
             # MID-RUN reconnects; at startup route it non-retryable so the gateway exits 78, not deaf.
-            _retryable = adapter.fatal_error_retryable and not is_global_startup_conflict(adapter.fatal_error_code)
+            # Our OWN predecessor (restart race) is the exception: it is exiting by contract, so the
+            # adapter keeps its retry and the reconnect watcher takes the lock over (#131875).
+            _retryable = adapter.fatal_error_retryable and (
+                not is_global_startup_conflict(adapter.fatal_error_code)
+                or lock_conflict_with_own_predecessor(adapter)
+            )
             self._update_platform_runtime_status(
                 platform.value, platform_state="retrying" if _retryable else "fatal",
                 error_code=adapter.fatal_error_code, error_message=adapter.fatal_error_message,

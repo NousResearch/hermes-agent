@@ -44,6 +44,26 @@ def test_is_global_startup_conflict_matches_lock_code_families(code, expected):
     assert is_global_startup_conflict(code) is expected
 
 
+def test_lock_conflict_with_own_predecessor_reads_adapter_stamp():
+    """The restart-race exemption (#131875) keys off the adapter's own-home stamp and only
+    for lock-family codes: any other fatal keeps the foreign/conflict routing unchanged."""
+    from types import SimpleNamespace
+    from gateway.restart import lock_conflict_with_own_predecessor
+
+    def _adapter(code, own_home):
+        return SimpleNamespace(fatal_error_code=code, _platform_lock_conflict_own_home=own_home)
+
+    assert lock_conflict_with_own_predecessor(_adapter("signal_lock", True)) is True
+    assert lock_conflict_with_own_predecessor(_adapter("lock_conflict", True)) is True
+    # Foreign holder (different home) or an unstamped adapter keeps the fatal routing.
+    assert lock_conflict_with_own_predecessor(_adapter("signal_lock", False)) is False
+    assert lock_conflict_with_own_predecessor(_adapter("signal_lock", None)) is False
+    # A stamp without a lock-family code must never exempt anything.
+    assert lock_conflict_with_own_predecessor(_adapter("telegram_auth_error", True)) is False
+    # Adapters that never touched the platform lock read as foreign (getattr default).
+    assert lock_conflict_with_own_predecessor(SimpleNamespace(fatal_error_code="signal_lock")) is False
+
+
 class _RetryableFailureAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
@@ -590,5 +610,48 @@ async def test_token_lock_plus_retryable_peer_stays_alive(monkeypatch, tmp_path)
         assert state["gateway_state"] == "degraded"
         assert state["platforms"]["telegram"]["state"] == "fatal"
         assert state["platforms"]["discord"]["state"] == "retrying"
+    finally:
+        await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_own_predecessor_token_lock_at_startup_stays_retryable(monkeypatch, tmp_path):
+    """#131875: a supervised restart (launchd ``kickstart -k`` and friends) starts the
+    replacement while the OLD gateway of the SAME home is still draining and holds the
+    platform lock. Routing that as a foreign startup conflict exits 78 — which the launchd
+    wrapper maps to 0 and ``KeepAlive.SuccessfulExit=false`` parks — leaving no gateway at
+    all. The own-home predecessor keeps the adapter retryable: the gateway stays up and the
+    reconnect watcher takes the lock over once the old process lands."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+    # Our own predecessor: a live holder record stamped with THIS home.
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (
+            False,
+            {"pid": 424242, "start_time": 1, "hermes_home": str(tmp_path), "profile": "default"},
+        ),
+    )
+    config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    monkeypatch.setattr(
+        runner, "_create_adapter", lambda platform, platform_config: _ForeignTokenLockAdapter()
+    )
+
+    ok = await runner.start()
+    try:
+        assert ok is True
+        assert runner.should_exit_cleanly is False
+        assert runner.exit_code is None
+        # The lock conflict stays retryable: queued for the reconnect watcher instead of
+        # exit-78 parking.
+        assert set(runner._failed_platforms) == {Platform.TELEGRAM}
+        state = read_runtime_status()
+        assert state["gateway_state"] != "startup_failed"
+        assert state["platforms"]["telegram"]["state"] == "retrying"
+        assert state["platforms"]["telegram"]["error_code"] == "telegram-bot-token_lock"
     finally:
         await runner.stop()

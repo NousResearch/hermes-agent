@@ -4,6 +4,7 @@ Jaccard similarity and HRR vector similarity, trust-weighted (ported from KIK me
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -16,10 +17,15 @@ from . import holographic as hrr
 _FACT_COLUMNS = "fact_id, content, category, tags, trust_score, retrieval_count, helpful_count, created_at, updated_at"
 _ROLE_ENTITY, _ROLE_CONTENT = hrr.ROLE_ENTITY, hrr.ROLE_CONTENT
 _PUNCT = ".,;:!?\"'()[]{}#@<>"
-_FTS_OPERATORS = str.maketrans("", "", '"()*^:-+')
-# Stopwords dropped before FTS5 OR-expansion: short English function words that
-# carry no retrieval signal and force false-negative AND matches.
+# Stopwords dropped before FTS5 OR-expansion. Facts and queries are bilingual;
+# retaining Spanish function words lets prompt boilerplate crowd relevant facts
+# out of the small prefetch candidate window.
 _FTS_STOPWORDS = frozenset("""
+    de la el en y los del se las por un para con no una su al lo como pero sus le ya este si porque esta son entre
+    cuando muy sin sobre también me hasta hay donde quien desde todo nos durante uno les ni contra otros ese eso ante
+    ellos esto mí antes algunos que qué quién unos yo otro otras otra él tanto esa estos mucho quienes nada muchos cual
+    poco ella estar estas algunas algo nosotros mi mis tú te ti tu tus es fue ser está están soy eres somos sois cómo
+    cuál cuáles solo
     a about above after again all am an and any are as at be because been before being between both but by can could
     did do does doing don down during each few for from further had has have having he her here hers herself him himself
     his how i if in into is it its itself just me more most my myself no nor not now of off on once only or other our
@@ -190,11 +196,12 @@ class FactRetriever:
     @staticmethod
     def _sanitize_fts_query(query: str) -> str:
         """Natural-language query -> FTS5-safe OR expression of quoted tokens. FTS5 AND-joins a multi-word
-        MATCH by default, which tanks recall on prose: drop stopwords and <2-char tokens, strip FTS5 operator
-        chars, phrase-quote each survivor. If nothing survives, return the raw query (zero results, not a SQL error)."""
+        MATCH by default, which tanks recall on prose: extract Unicode word tokens so punctuation and paths split
+        cleanly, drop bilingual stopwords and <2-char tokens, then phrase-quote each survivor. If nothing survives,
+        return the raw query (zero results, not a SQL error)."""
         if not query:
             return ""
-        tokens = [f'"{c}"' for c in (raw.strip(_PUNCT).translate(_FTS_OPERATORS) for raw in query.lower().split())
+        tokens = [f'"{c}"' for c in re.findall(r"\w+", query.lower(), flags=re.UNICODE)
                   if len(c) >= 2 and c not in _FTS_STOPWORDS]
         return " OR ".join(tokens) if tokens else query
 

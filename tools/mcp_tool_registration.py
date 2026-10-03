@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional
 from tools.mcp_tool_common import _parse_boolish, _core, _resolve_tool_timeout, mcp_field, mcp_server_enabled
+from tools import mcp_app_host as _app_host
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_handlers as _handlers
 from tools import mcp_tool_schema as _schema
@@ -228,10 +229,12 @@ def _make_tool_filter(name: str, config: dict) -> Callable[[str], bool]:
 
 def _cached_tools(raws: Iterable[Any]) -> List[SimpleNamespace]:
     """Schema-cache rows -> stand-ins for MCP Tool objects; rows that are not dicts or lack a name
-    are dropped. Missing or non-dict ``annotations`` (older cache files) fail closed to write-capable."""
+    are dropped. Missing or non-dict ``annotations`` (older cache files) fail closed to write-capable;
+    ``ui`` returns as ``meta["ui"]`` so the lazy path filters visibility like the live one."""
     return [SimpleNamespace(name=raw["name"], description=raw.get("description") or "",
                             inputSchema=raw["inputSchema"] if isinstance(raw.get("inputSchema"), dict) else {},
-                            annotations=raw["annotations"] if isinstance(raw.get("annotations"), dict) else None)
+                            annotations=raw["annotations"] if isinstance(raw.get("annotations"), dict) else None,
+                            meta={"ui": raw["ui"]} if isinstance(raw.get("ui"), dict) else None)
             for raw in raws if isinstance(raw, dict) and raw.get("name")]
 
 
@@ -252,11 +255,15 @@ class _Candidate:
 def _tool_candidates(name: str, tools: Iterable[Any], should_register: Callable[[str], bool],
                      tool_timeout) -> List[_Candidate]:
     """Native tools (live SDK objects or cache stand-ins) -> candidates. The injection scan runs on
-    BOTH paths: the cache file is user-writable JSON."""
+    BOTH paths: the cache file is user-writable JSON. A tool whose ``_meta.ui.visibility`` lacks
+    ``"model"`` stays out of the agent's list (MCP Apps spec 400); its view still calls it."""
     out: List[_Candidate] = []
     for t in tools:
         if not should_register(t.name):
             logger.debug("MCP server '%s': skipping tool '%s' (filtered by config)", name, t.name)
+            continue
+        if not _app_host.visible_to(t, "model"):
+            logger.debug("MCP server '%s': skipping tool '%s' (MCP App only)", name, t.name)
             continue
         _schema._scan_mcp_description(name, t.name, t.description or "")
         schema = _schema._convert_mcp_schema(name, t)
@@ -382,6 +389,7 @@ def _write_schema_cache(name: str, server: "MCPServerTask", config: dict, should
                 "name": t.name, "description": t.description or "",
                 "inputSchema": schema_obj if isinstance(schema_obj, dict) else {},
                 "annotations": {"readOnlyHint": _annotation_read_only_hint(t)},  # lazy path trust-gates identically
+                **({"ui": ui} if (ui := _app_host.tool_ui(t)) else {}),  # lazy path filters visibility identically
             })
         utility_payload = [{"schema": e["schema"], "handler_key": e["handler_key"]}
                            for e in _select_utility_schemas(name, server, config)]

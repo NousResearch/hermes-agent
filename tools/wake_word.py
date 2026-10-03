@@ -635,8 +635,14 @@ class WakeWordDetector:
                     self.input_device, details.get("hostapi") or "unknown",
                     details.get("default_samplerate") or "unknown", cap.rate, SAMPLE_RATE)
         try:
+            # Let PortAudio choose the host's native callback quantum. A fixed
+            # blocksize makes the JACK blocking-read ring buffer assume a stable
+            # quantum; PipeWire renegotiates that quantum when Bluetooth devices
+            # connect or disconnect, which can leave the ring buffer indices
+            # inconsistent and crash in native code. The detector still asks
+            # for exact engine-sized reads and resamples them below.
             cap.stream = sd.InputStream(device=self.input_device, samplerate=cap.rate, channels=1,
-                                        dtype="int16", blocksize=cap.frame_length)
+                                        dtype="int16", blocksize=0)
             cap.stream.start()
         except Exception as e:
             cap.close()

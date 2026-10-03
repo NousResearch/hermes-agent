@@ -912,14 +912,26 @@ export function useMessageStream({
             // the final may add a trailing delta, so accept high overlap.
             // (mergeFinalAssistantText, via completeMessage, does the real
             // text merge — replaces the interim's text with the full final.)
+            // A sealed interim can hold earlier tool rounds ahead of the reply
+            // it sealed (commentary → tool → reply, with the verify-on-stop
+            // interim sealing the reply). The final names only the response
+            // after the last tool, so compare it against that too — the whole
+            // bubble's text never matches it and the reply painted twice
+            // (#130396).
+            const continuesText = (candidate: string) =>
+              Boolean(
+                candidate &&
+                (finalText === candidate ||
+                  finalText.startsWith(candidate) ||
+                  candidate.startsWith(finalText) ||
+                  hasHighTextOverlap(finalText, candidate))
+              )
+
             const finalContinuesInterim = Boolean(
               existing.interim &&
               finalText &&
-              existingText &&
-              (finalText === existingText ||
-                finalText.startsWith(existingText) ||
-                existingText.startsWith(finalText) ||
-                hasHighTextOverlap(finalText, existingText))
+              (continuesText(existingText) ||
+                continuesText(chatMessageText({ ...existing, parts: currentResponseParts(existing.parts) }).trim()))
             )
 
             // A bare `error` event (e.g. the agent build failing) already

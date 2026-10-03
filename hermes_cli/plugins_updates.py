@@ -130,29 +130,59 @@ def check_local_provenance(prov: Provenance) -> CheckResult:
     return result
 
 
+class _CatalogResolution:
+    """One shared catalog resolution across a whole ``run_checks`` pass.
+
+    ``load_catalog_live`` is not memoized (fetch-or-cache read + parse of every in-tree
+    catalog yaml per call), and ``check_provenanced`` resolved it — plus the live kill
+    list — once per catalog-class plugin: O(installed plugins) resolutions per run, the
+    exact per-candidate cost ``resolved_removed_entries`` exists to eliminate (same class
+    as the #119975 plugins.list fix). Resolved lazily so plugin-free dirs never pay it."""
+
+    def __init__(self) -> None:
+        self._removed: Optional[list] = None
+        self._live: Optional[list] = None
+
+    def removed_entries(self) -> list:
+        if self._removed is None:
+            from hermes_cli.plugin_catalog import resolved_removed_entries
+            self._removed = resolved_removed_entries()
+        return self._removed
+
+    def live_entries(self) -> list:
+        if self._live is None:
+            from hermes_cli.plugin_catalog import load_catalog_live
+            self._live = load_catalog_live()
+        return self._live
+
+
 def check_provenanced(
     prov: Provenance,
     *,
     fetch: Callable[[str], str],
     ls_remote: Callable[[str], str],
+    shared_catalog: Optional[_CatalogResolution] = None,
 ) -> CheckResult:
-    """Check local provenance before contacting its approved update source."""
+    """Check local provenance before contacting its approved update source. *shared_catalog*
+    shares one catalog resolution across the caller's whole run; standalone calls resolve their own."""
     row = prov.row or {}
     catalog_value = row.get("catalog")
     catalog: dict = catalog_value if isinstance(catalog_value, dict) else {}
     catalog_name = catalog.get("name") or row.get("catalog_name")
     if catalog_name:
-        from hermes_cli.plugin_catalog import find_removed, get_live_catalog_entry
+        from hermes_cli.plugin_catalog import match_removed
 
+        resolution = shared_catalog or _CatalogResolution()
         result = CheckResult(name=prov.name, klass="catalog", current=row.get("revision"))
+        removed_entries = resolution.removed_entries()
         removed = None if row.get("allow_removed") is True else (
-            find_removed(str(catalog_name))
-            or find_removed(str(catalog.get("repo") or row.get("source", "")).split("#", 1)[0])
+            match_removed(str(catalog_name), removed_entries)
+            or match_removed(str(catalog.get("repo") or row.get("source", "")).split("#", 1)[0], removed_entries)
         )
         if removed:
             result.reason = f"removed from catalog: {removed.reason}"
             return result
-        entry = get_live_catalog_entry(str(catalog_name))
+        entry = next((e for e in resolution.live_entries() if e.name == catalog_name), None)
         if entry is None:
             result.reason = "catalog entry is unavailable; installed pin retained"
             return result
@@ -423,8 +453,9 @@ def run_checks(
         fetch = default_fetch
     if ls_remote is None:
         ls_remote = default_ls_remote
+    catalog = _CatalogResolution()
     results = [
-        check_provenanced(p, fetch=fetch, ls_remote=ls_remote)
+        check_provenanced(p, fetch=fetch, ls_remote=ls_remote, shared_catalog=catalog)
         for p in plugins_provenance(plugins_dir)
     ]
     if include_pip:

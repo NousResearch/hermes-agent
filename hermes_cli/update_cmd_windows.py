@@ -1231,29 +1231,26 @@ def _relaunch_paused_gateways(token: dict, profiles: dict, unmapped: list) -> tu
 _RELAUNCH_VERIFY_TIMEOUT_S = 30.0
 
 
-def _pending_relaunch_pids(profiles: dict, unmapped: list, pid_exists) -> list[int]:
-    """Old PIDs a restart watcher is still waiting on, sorted; empty when every relaunch can have run.
+class _GatewayRelaunchUnverified(RuntimeError):
+    """The watcher relaunch ran but no stable gateway process appeared in the verify window.
 
-    ``_spawn_gateway_restart_watcher`` respawns the gateway only once the PID it was handed is gone,
-    so while any of them is alive the relaunch has provably not started yet. Pure function of data
-    (``pid_exists`` is injected) so the decision is testable off Windows.
+    Raised only AFTER the update itself completed and the restart watchers were launched, so
+    callers can treat it as "manual follow-up", not "update failed" (#123971): the new code is
+    installed and verified; only the gateway respawn could not be confirmed.
     """
-    candidates = [int(pid) for pid in profiles.values()]
-    candidates += [int(entry["pid"]) for entry in unmapped if entry.get("argv") and entry.get("pid")]
-    return sorted({pid for pid in candidates if pid > 0 and pid_exists(pid)})
 
 
-def _relaunch_verify_timeout_s(profiles: dict, unmapped: list, pid_exists) -> float:
-    """Liveness budget for the post-relaunch poll.
+def _relaunch_verify_timeout_s(profiles: dict, unmapped: list, pid_exists=None) -> float:
+    """Liveness budget for the post-relaunch poll (#107002, #123971).
 
-    The base window assumes the watchers respawn immediately. When an old PID is still alive the
-    watcher is still in its wait loop, so the poll must reach at least the watcher's own deadline —
-    otherwise ``hermes update`` declares "no stable gateway process appeared" for a gateway that was
-    never scheduled to appear inside the window (#107002).
+    Every relaunch on this path goes through ``_spawn_gateway_restart_watcher``: a separate
+    detached child that respawns the gateway only once the old PID is gone, on the watcher's
+    own clock. The updater's PID snapshot cannot observe that child's progress (field data in
+    #123971: the poll expired ~30s before the respawn even though the old PID read dead), so
+    whenever a watcher relaunch is being verified the poll must budget the watcher's full
+    deadline PLUS the base window for the respawn itself.
     """
     from hermes_cli.gateway import GATEWAY_RESTART_WATCHER_TIMEOUT_S
-    if not _pending_relaunch_pids(profiles, unmapped, pid_exists):
-        return _RELAUNCH_VERIFY_TIMEOUT_S
     return float(GATEWAY_RESTART_WATCHER_TIMEOUT_S) + _RELAUNCH_VERIFY_TIMEOUT_S
 
 
@@ -1266,19 +1263,26 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
     with _abort_on_error("Could not load Windows gateway liveness helpers"):
         from gateway.status import _pid_exists
         from hermes_cli import gateway_windows
-    timeout_s = _relaunch_verify_timeout_s(profiles, unmapped, _pid_exists)
+    timeout_s = _relaunch_verify_timeout_s(profiles, unmapped)
     ready_pids = gateway_windows._wait_for_gateway_ready(
         timeout_s=timeout_s, all_profiles=True, pid_filter=_owned_gateway_pids
     )
     if not ready_pids:
-        token["profiles"] = dict(profiles)
-        token["unmapped"] = list(unmapped)
+        # The update itself completed and the watchers were launched; only the respawn could
+        # not be confirmed. Leave no resume obligation behind: an atexit replay would re-run
+        # `gateway run --replace` and kill the fresh gateway the watcher did manage to start
+        # (#123971). The recovery hint must be an action that actually works in this state —
+        # `hermes gateway restart` is a confirmed no-op here (two field reports in #123971).
+        token["resume_needed"] = False
         print(
-            "\n  ⚠ Windows gateway restart could not be verified — no stable gateway process appeared after relaunch.\n"
-            "    (The respawned gateway may have been killed by a parent Job Object during updater teardown, #48820.)\n"
-            "    Recover with: hermes gateway restart"
+            "\n  ⚠ Update complete, but Hermes could not restart every messaging gateway — no stable"
+            " gateway process was verified after relaunch.\n"
+            "    (The respawned gateway may have been killed by a parent Job Object during updater"
+            " teardown, #48820.)\n"
+            "    Recover with: hermes gateway start --all\n"
+            "    (Scheduled-task gateways: schtasks /Run /TN Hermes_Gateway)"
         )
-        raise RuntimeError("Windows gateway relaunch after update was not verified alive")
+        raise _GatewayRelaunchUnverified("Windows gateway relaunch after update was not verified alive")
     with suppress(Exception):
         gateway_windows._write_start_attestation(ready_pids, "post-update relaunch")
 
@@ -1334,6 +1338,13 @@ def _resume_windows_gateways_and_merge_outcome(outcome, _windows_gateway_resume,
     from hermes_cli.update_cmd import _m, _write_gateway_update_exit_code
     try:
         _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+    except _GatewayRelaunchUnverified as _unverified_exc:
+        # Update completed; the respawn miss is a manual follow-up, mirroring the hand-off
+        # script's manualAction pattern (windows.ps1): no "incomplete" flag (that would
+        # sys.exit(1) over a healthy, verified checkout and re-trigger the retry loop),
+        # no exit-code write, and the receipt still records the miss via phase_errors.
+        outcome.phase_errors.append(str(_unverified_exc))
+        print(f"  ⚠ {_unverified_exc}")
     except Exception as _windows_resume_exc:
         outcome.incomplete = True
         outcome.phase_errors.append(str(_windows_resume_exc))

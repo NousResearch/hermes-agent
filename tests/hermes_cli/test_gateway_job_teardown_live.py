@@ -329,4 +329,4 @@ class TestResumeVerificationLive:
             "the updater must not vouch for a gateway that is not alive "
             f"(#48820). Printed:\n{text}"
         )
-        assert "could not be verified" in text
+        assert "no stable gateway process was verified after relaunch" in text

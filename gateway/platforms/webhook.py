@@ -427,6 +427,10 @@ class WebhookAdapter(BasePlatformAdapter):
             self._dynamic_routes_stat = stat_key  # keep the last good snapshot; parse this version once
             return
         try:
+            # Name skipped non-object routes, or a hand-edited route just 404s with no reason logged.
+            junk = sorted(k for k, v in data.items() if not isinstance(v, dict))
+            if junk:
+                logger.warning("[webhook] Dynamic route(s) %s skipped: not a JSON object.", ", ".join(junk))
             self._dynamic_routes = {  # static routes take precedence
                 k: v for k, v in data.items()
                 if isinstance(v, dict) and k not in self._static_routes and self._dynamic_route_allowed(k, v)

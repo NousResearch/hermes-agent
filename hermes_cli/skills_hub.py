@@ -820,7 +820,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     profile's config — ``-p`` swaps HERMES_HOME at process start, so no profile flag here."""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_sync import _read_manifest
-    from tools.skills_tool import _find_all_skills
+    from tools.skills_tool import _find_all_skills, never_resolvable_toolsets
     from agent.skill_utils import get_disabled_skill_names
     from agent.skill_commands import skill_command_collision_note
     c = console or _console
@@ -853,6 +853,11 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
         # Name taken by a built-in: the skill loads but has no /<name> (see agent.skill_commands).
         if note := skill_command_collision_note(name):
             status += f"\n[yellow]{note}[/]"
+        # requires_toolsets naming nothing on this install can never pass the prompt-builder
+        # visibility gate in ANY session (#99877) — a bare "enabled" would be a lie.
+        if bad := never_resolvable_toolsets(skill.get("conditions") or {}):
+            status += ("\n[yellow]gated: unknown toolset "
+                       + ", ".join(f"'{b}'" for b in bad) + "[/]")
         table.add_row(name, skill.get("category", ""), source_display,
                       _trust_cell(trust, source_display), status)
 

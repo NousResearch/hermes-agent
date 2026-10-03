@@ -17,7 +17,8 @@ from hermes_constants import get_hermes_home
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
+    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, extract_skill_conditions,
+    is_skill_support_path as _is_skill_support_path)
 from tools.skills_tool_setup import (  # noqa: F401
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
@@ -181,6 +182,53 @@ def _skill_search_dirs() -> Tuple[list, list, Path]:
     return project_dirs, all_dirs, active_skills_dir
 
 
+def never_resolvable_toolsets(conditions: Dict[str, Any]) -> List[str]:
+    """``requires_toolsets`` names that no session on this install can ever satisfy.
+
+    The visibility gate (``agent.prompt_builder._skill_should_show``) tests exact
+    membership in the SESSION's toolset-name set and stays silent when a name matches
+    nothing — it cannot tell a typo apart from a valid toolset that is merely
+    unavailable on this box. A name no session can produce can never pass the gate in
+    ANY session: the skill is permanently invisible (#99877).
+
+    Resolvable names derive from the install, not from this process's registry
+    snapshot (Enough1122 review): static ``TOOLSETS`` plus the same sources
+    ``hermes_cli.toolset_validation.saved_toolset_resolver`` consults — configured
+    ``mcp_servers`` (and their ``mcp-<name>`` toolset aliases, which register only
+    when the server connects), ``hermes-<platform>`` plugin bundles, and the
+    persisted/discovered plugin toolset keys. Selection-only names are the reverse
+    arm: ``all``/``*``/``no_mcp`` are legal tool-SELECTION arguments but never
+    members of a session's toolset set, so a skill requiring one is invisible in
+    every session.
+
+    Fail-open: if the install's toolset knowledge cannot be consulted, nothing is
+    flagged — a false "gated" annotation is worse than none. Tool names are
+    deliberately not checked: plugin/MCP tools are not statically knowable from a
+    bare CLI process.
+    """
+    raw = (conditions or {}).get("requires_toolsets")
+    # Installed frontmatter may contain malformed YAML scalars. A diagnostic
+    # must not make the whole skill list unavailable while inspecting them.
+    if not isinstance(raw, (str, list)):
+        return []
+    names = [raw] if isinstance(raw, str) else [n for n in raw if isinstance(n, str) and n]
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.toolset_validation import saved_toolset_resolver
+        config = load_config()
+        config = config if isinstance(config, dict) else {}
+        resolver = saved_toolset_resolver(config)
+        configured_mcp = config.get("mcp_servers")
+        mcp_names = {str(k) for k in configured_mcp} if isinstance(configured_mcp, dict) else set()
+        return [
+            n for n in names
+            if n in {"all", "*", "no_mcp"}  # selection-level names, never session members
+            or not (resolver(n) or (n.startswith("mcp-") and n[4:] in mcp_names))
+        ]
+    except Exception:
+        return []
+
+
 def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     """All skills (name, description, category) across project/local/external dirs, first-wins
     by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
@@ -215,7 +263,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                                         if ln and not ln.startswith("#")), description)
                 seen_names.add(name)
                 skills.append({"name": name, "description": _truncate_description(description),
-                               "category": _get_category_from_path(skill_md)})
+                               "category": _get_category_from_path(skill_md),
+                               "conditions": extract_skill_conditions(frontmatter)})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:

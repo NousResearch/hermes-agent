@@ -500,7 +500,7 @@ def _locate_skill(name: str, local_category_name: Optional[str], roots):
     (project > local > create_dir > external, shadowed copies logged), same-tier collision refusal,
     same-root identical-copy ranking, quarantine gate, not-found listing. ``(error_json, skill_dir,
     skill_md)``; skill_md set iff no error."""
-    from agent.skill_utils import TIER_PROJECT, pick_skill_candidate
+    from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX, TIER_PROJECT, pick_skill_candidate
     all_dirs = [d for _t, d in roots]
     if not all_dirs:
         return _fail(
@@ -525,7 +525,7 @@ def _locate_skill(name: str, local_category_name: Optional[str], roots):
         load_names = sorted({_owned_relative(sd, smd, all_dirs) for sd, smd in candidates} - {name})
         logger.warning("Skill name collision for '%s': %d candidates — %s", name, len(candidates), "; ".join(paths))
         return _fail(
-            f"Ambiguous skill name '{name}': "
+            f"{AMBIGUOUS_SKILL_PREFIX}'{name}': "
             + (f"use one of {', '.join(load_names)}. " if load_names else "")
             + f"{len(candidates)} different skills share this name in the same skills directory tier; "
             "refusing to guess.",

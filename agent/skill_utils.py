@@ -420,6 +420,8 @@ def display_skill_create_dir() -> str:
 # skills.external_dirs. Inside ONE tier two different skills sharing a name stay ambiguous — refused,
 # never guessed (59da8ec4e) — while identical copies under one root resolve to the shallowest.
 TIER_PROJECT, TIER_LOCAL, TIER_CREATE_DIR, TIER_EXTERNAL = range(4)
+# Leading words of every same-tier refusal (skill_view error, preload/cron label) — one spelling.
+AMBIGUOUS_SKILL_PREFIX = "Ambiguous skill name "
 _WARNED_SHADOWS: Set[str] = set()
 
 

@@ -54,9 +54,11 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # makes an unload durable across boots. Omitting them left the bypassable approval layer
     # (tools/approval.py, skipped on force=True) as the only cover, while this hard block — documented as
     # "force=True cannot help here" — let them through (#80260).
-    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap|bootout|remove|disable)\b[^\n]*\bhermes[.\-]?gateway)"
-    # Branch C: systemctl ops on a hermes-gateway unit.
-    r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway)"
+    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart|submit|bootstrap|bootout|remove|disable)\b[^\n]*\bhermes[.\-]?gateway(?![\w-]))"
+    # Branch C: systemctl ops on a hermes-gateway unit. Same bare-identity anchoring as
+    # Branch B (a ``hermes-gateway-foo`` unit that is not this install's is a different
+    # service, #124700); suffixed units are decided by the suffixed-label tier.
+    r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\bhermes[.\-]?gateway(?![\w-]))"
     # Branch D: pkill/kill of the gateway process, both token orders. Leading \b keeps "skill" from
     # matching as "kill".
     # `taskkill` / `Stop-Process` are the Windows spellings of the same operation; `\bp?kill\b`
@@ -268,7 +270,24 @@ _PROFILE_FLAG_LIFECYCLE_PATTERN = re.compile(
 _LAUNCHCTL_LIFECYCLE_VERBS_RE = re.compile(
     r"(?i)\blaunchctl\s+(?:kickstart|unload|load|stop|restart|bootout|kill|disable|remove)\b"
 )
-_HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway\b")
+# The gateway's own service label — BARE identity only: end of token or a file extension
+# (``ai.hermes.gateway.plist`` / ``hermes-gateway.service``). A ``-``/word char after means a
+# DIFFERENT service whose label merely contains the substring — ``ai.hermes.gateway-watchdog``
+# is a watchdog, not the gateway — decided by the suffixed tier below (#124700).
+_HERMES_GATEWAY_LABEL_RE = re.compile(r"(?i)\bhermes[.\-]?gateway(?![\w-])")
+# Suffixed labels: ``ai.hermes.gateway-<profile>`` (real spellings from
+# ``hermes_cli.gateway.launchd_gateway_labels_for_install`` / ``get_service_name``) or the
+# legacy ``ai.hermes.gateway-<8hex>`` hash form. A trailing ``.service``/``.plist`` is the
+# systemd/launchd FILE spelling of the same unit — excluded from the captured suffix.
+_SUFFIXED_GATEWAY_LABEL_RE = re.compile(
+    r"(?i)hermes[.\-]?gateway-([A-Za-z0-9_.\-]+?)(?:\.(?:service|plist))?(?![\w.\-])"
+)
+_LEGACY_GATEWAY_HASH_RE = re.compile(r"(?i)^[0-9a-f]{8}$")
+# Service-manager lifecycle verbs, launchctl and systemctl alike, options tolerated: the
+# suffixed-label tier must see suffixed ``systemctl`` units too, matching Branch C.
+_SERVICE_MANAGER_LIFECYCLE_RE = re.compile(
+    r"(?i)\b(?:launchctl|systemctl)\s+(?:-\S+\s+)*(?:kickstart|unload|load|stop|restart|start|submit|bootstrap|bootout|remove|disable|kill)\b"
+)
 
 _SHELL_EXECUTABLES = frozenset({"sh", "bash", "dash", "ksh", "zsh"})
 _SHELL_OPTIONS_WITH_VALUES = frozenset({"-O", "+O", "-o", "+o"})
@@ -385,11 +404,49 @@ def _named_profile_is_current(named: str) -> bool:
 
 # --- direct string scans ----------------------------------------------------------------------
 
+def _install_gateway_label_suffixes() -> Optional[frozenset]:
+    """Suffixes of THIS install's gateway service labels (``ai.hermes.gateway-<name>``),
+    or ``None`` when the set cannot be computed — callers then keep the old
+    (over-matching) behavior, so an enumeration error never widens the guard."""
+    try:
+        from hermes_cli.gateway import launchd_gateway_labels_for_install
+
+        labels = launchd_gateway_labels_for_install()
+        return frozenset(
+            label[len("ai.hermes.gateway-"):]
+            for label in labels
+            if label.startswith("ai.hermes.gateway-")
+        )
+    except Exception:
+        return None
+
+
+def _contains_suffixed_gateway_label(normalized_text: str) -> bool:
+    """Decide ``hermes-gateway-<suffix>`` labels: blocked when the suffix is this
+    install's own profile service (or the legacy 8-hex hash form), ignored when it
+    belongs to a different service that merely contains the substring (#124700)."""
+    suffixes = _install_gateway_label_suffixes()
+    for match in _SUFFIXED_GATEWAY_LABEL_RE.finditer(normalized_text):
+        suffix = match.group(1).strip(".-")
+        if _LEGACY_GATEWAY_HASH_RE.match(suffix):
+            return True
+        if suffixes is None or suffix in suffixes:
+            # Unknown install set or a label of THIS install: fail closed.
+            return True
+    return False
+
+
 def _contains_launchctl_gateway_lifecycle(normalized_text: str) -> bool:
-    """Order-independent companion to Branch B — see the verbs regex comment."""
-    return bool(_LAUNCHCTL_LIFECYCLE_VERBS_RE.search(normalized_text)) and bool(
-        _HERMES_GATEWAY_LABEL_RE.search(normalized_text)
-    )
+    """Order-independent companion to Branches B/C — see the verbs regex comments.
+
+    Uses the combined service-manager verb regex so suffixed ``systemctl`` units reach the
+    suffixed-label tier as well; options between the manager and the verb (``systemctl
+    --no-reload stop …``) are tolerated, matching Branch C."""
+    if not (_SERVICE_MANAGER_LIFECYCLE_RE.search(normalized_text)):
+        return False
+    if _HERMES_GATEWAY_LABEL_RE.search(normalized_text):
+        return True
+    return _contains_suffixed_gateway_label(normalized_text)
 
 
 def contains_gateway_lifecycle_command(text: str) -> bool:
@@ -442,12 +499,23 @@ def contains_gateway_lifecycle_command(text: str) -> bool:
     # Token-aware second pass (#80269): re-run the pattern on shell-tokenized segments where quotes/escapes
     # are resolved, closing splice bypasses like `kick"start"`. Runs after the profile-flag check so both
     # passes apply independently.
+    has_lifecycle_command = bool(
+        _SERVICE_MANAGER_LIFECYCLE_RE.search(normalized)
+        or _GATEWAY_LIFECYCLE_PATTERN.search(normalized)
+    )
     for segment in _iter_command_segments(normalized):
         joined = " ".join(segment)
         if joined and _GATEWAY_LIFECYCLE_PATTERN.search(joined):
             return True
         stripped = _ARGV_LIST_PUNCTUATION.sub(" ", joined)
         if stripped != joined and _GATEWAY_LIFECYCLE_PATTERN.search(stripped):
+            return True
+        # Suffixed-label tier on tokenized text too (#124700): quote-splicing inside a suffixed
+        # label (`ai.hermes."ga"teway-work`) defeats both the raw-text regexes above — the
+        # resolved token carries the label this install owns, so judge it here, per segment.
+        # Keep the label check command-shaped as well: prose, status queries, and other text that
+        # merely mentions the service label must not trip the lifecycle guard.
+        if has_lifecycle_command and _contains_suffixed_gateway_label(joined):
             return True
     # The label may be built in an earlier `;`-segment, so no pass above sees verb + label together.
     # Order-independent launchctl pass (#77083): a shell loop can build the gateway label from a variable

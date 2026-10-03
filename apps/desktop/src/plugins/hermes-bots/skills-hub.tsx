@@ -124,7 +124,12 @@ export function HubSkillsSection({ bot, onInstalled }: HubSkillsSectionProps) {
 
       // Skill identifiers are slugs / owner-name paths — keep anything
       // else out of skills.manage.
-      if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(target)) {
+      const validIdentifier =
+        /^(?:[A-Za-z0-9][A-Za-z0-9._/-]*|clawhub\/@[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*)$/.test(
+          target
+        )
+
+      if (!validIdentifier) {
         return
       }
 

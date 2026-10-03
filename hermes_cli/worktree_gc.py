@@ -330,6 +330,10 @@ def reclaim_worktrees(
             if record.untracked:
                 remove_args.append("--force")  # only after the audited scratch was archived
             remove_result = _git(remove_args, cwd=repo_root, timeout=30)
+            # Plain remove always refuses trees with submodules; --force only after a fresh clean check.
+            if (remove_result.returncode != 0 and not record.untracked
+                    and "submodules" in remove_result.stderr and _dirty_split(record.path) == (False, [])):
+                remove_result = _git([*remove_args, "--force"], cwd=repo_root, timeout=30)
             if remove_result.returncode != 0:
                 actions.append(f"failed to remove {record.name}: {remove_result.stderr.strip()}")
                 continue

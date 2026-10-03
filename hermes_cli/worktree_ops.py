@@ -967,6 +967,11 @@ def _reap_prune_verdicts(repo_root: str, verdicts: list, stale_work_cutoff: floa
                 continue
             remove_result = _git(["worktree", "remove", str(entry)], repo_root, timeout=15,
                                  stdin=subprocess.DEVNULL, env=remove_env)
+            # Plain remove always refuses trees with submodules; --force only after a fresh clean check.
+            if (remove_result.returncode != 0 and "submodules" in remove_result.stderr
+                    and not _worktree_is_dirty(str(entry), repo_root)):
+                remove_result = _git(["worktree", "remove", "--force", str(entry)], repo_root,
+                                     timeout=15, stdin=subprocess.DEVNULL, env=remove_env)
             if remove_result.returncode != 0:
                 logger.debug("Failed to remove worktree %s: %s", entry.name, remove_result.stderr.strip())
                 continue

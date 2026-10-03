@@ -52,7 +52,7 @@ def test_attended_reclaim_preserves_work_added_after_audit(repository, kind):
     assert _git(root, "rev-parse", "--verify", "scratch")
 
 
-@pytest.mark.parametrize("kind", ["edit", "commit", "include-symlink"])
+@pytest.mark.parametrize("kind", ["edit", "commit", "include-symlink", "submodule"])
 def test_startup_reclaim_preserves_work_added_after_classification(repository, kind):
     from hermes_cli.worktree_ops import _classify_prune_candidates, _reap_prune_verdicts
 
@@ -62,6 +62,12 @@ def test_startup_reclaim_preserves_work_added_after_classification(repository, k
         (root / ".worktreeinclude").write_text("node_modules\n", encoding="utf-8")
         (root / ".gitignore").write_text("node_modules/\n.worktrees/\n", encoding="utf-8")
         os.symlink(root / "node_modules", tree / "node_modules")
+    if kind == "submodule":  # plain `worktree remove` always refuses these; clean + merged still reclaims
+        _git(root.parent, "init", "-b", "main", "sub")
+        _git(root.parent / "sub", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "--allow-empty", "-m", "s")
+        _git(tree, "-c", "protocol.file.allow=always", "submodule", "add", str(root.parent / "sub"), "sub")
+        _git(tree, "-c", "commit.gpgsign=false", "commit", "-m", "add submodule")
+        _git(root, "merge", "--ff-only", "scratch")
     verdicts = _classify_prune_candidates(str(root), [(tree, time.time() - 86400, False)])
     assert verdicts[0][3] == "reap"
     added_work = kind in {"edit", "commit"}
@@ -74,5 +80,5 @@ def test_startup_reclaim_preserves_work_added_after_classification(repository, k
     if added_work:
         assert (tree / "README.md").read_text(encoding="utf-8") == "new work after audit\n"
         assert _git(root, "rev-parse", "--verify", "scratch")
-    else:
+    elif kind == "include-symlink":
         assert (root / "node_modules").is_dir()

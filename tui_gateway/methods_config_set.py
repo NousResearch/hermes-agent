@@ -81,7 +81,8 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
         pending_model = str(value)
     pending_provider = (getattr(parsed, "explicit_provider", "") or "").strip()
     if not confirmed:
-        pending_warning = _pending_switch_selection_warning(pending_model, pending_provider)
+        pending_warning = _pending_switch_selection_warning(
+            pending_model, pending_provider, session.get("agent"))
         if pending_warning is not None:
             return _cfgset_model_ok(rid, key, pending_model, pending_warning, pending_warning, deferred=False)
     # display_*: _session_info shows the user's pick while pending, not the live old model.

@@ -281,6 +281,7 @@ import { probeGatewayWebSocket, spawnedBackendProbeOptions } from './gateway-ws-
 import { windowsGitCandidates } from './git-binary-candidates'
 import { registerGitIpc } from './git-ipc'
 import { desktopBackendSpawnEnv, guestOnboardingEnabled } from './guest-onboarding'
+import { showHandoffDialog } from './handoff-dialog'
 import { readAndConsumeHandoffResult } from './handoff-result'
 import {
   assertExistingPathForOpen,
@@ -3114,23 +3115,28 @@ async function waitForUpdateToFinish() {
       // machines with no shim browser and no notifier this dialog is the
       // FIRST time the message is visible — it must not be a log line.
       rememberLog(`[updates] detached update finished with manual action (branch ${result.branch}): ${result.message}`)
-      dialog.showMessageBox({
-        type: 'warning',
-        title: 'Hermes update',
-        message: 'The update finished, but needs one more step',
-        detail: result.message
-      })
+      void showHandoffDialog(
+        mainWindow,
+        {
+          type: 'warning',
+          title: 'Hermes update',
+          message: 'The update finished, but needs one more step',
+          detail: result.message
+        },
+        (parent, options) => dialog.showMessageBox(parent, options)
+      ).catch(error => rememberLog(`[updates] could not show hand-off result: ${error.message}`))
     } else if (result && result.ok) {
       rememberLog(`[updates] detached update finished OK (branch ${result.branch})`)
     } else if (result) {
       rememberLog(`[updates] detached update FAILED (exit ${result.exitCode}): ${result.message}`)
       const handoffLogPath = path.join(HERMES_HOME, 'logs', 'desktop-update-handoff.log')
 
-      // Async so boot is not blocked behind the dialog; the response handlers
-      // reuse the menu's open-updates path (queued until the renderer is ready)
-      // and the same reveal primitive as 'hermes:logs:reveal'.
-      void dialog
-        .showMessageBox({
+      // A parented sheet keeps macOS boot running while the user decides.
+      // Response handlers reuse the menu's queued open-updates path and the
+      // same reveal primitive as 'hermes:logs:reveal'.
+      void showHandoffDialog(
+        mainWindow,
+        {
           type: 'error',
           title: 'Hermes update',
           message: "Hermes couldn't finish updating",
@@ -3141,14 +3147,17 @@ async function waitForUpdateToFinish() {
           defaultId: 0,
           cancelId: 2,
           noLink: true
-        })
-        .then(({ response }) => {
-          if (response === 0) {
+        },
+        (parent, options) => dialog.showMessageBox(parent, options)
+      )
+        .then(answer => {
+          if (answer?.response === 0) {
             sendOpenUpdatesRequested()
-          } else if (response === 1) {
+          } else if (answer?.response === 1) {
             shell.showItemInFolder(handoffLogPath)
           }
         })
+        .catch(error => rememberLog(`[updates] could not show hand-off result: ${error.message}`))
     }
   } catch (err) {
     rememberLog(`[updates] could not read hand-off result: ${err.message}`)

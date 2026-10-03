@@ -1,0 +1,6 @@
+# Build the flake outputs that users install and the checks that validate them.
+# Garnix publishes successful results at https://cache.garnix.io
+builds:
+  include:
+    - packages.*.*
+    - checks.*.*

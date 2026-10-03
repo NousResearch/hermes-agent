@@ -2052,9 +2052,10 @@ def _rederive_repeat_for_schedule_change(
     ``create_job`` derives it from the schedule kind (once -> 1, recurring -> forever); the update
     path must honour the same contract, otherwise a one-shot turned recurring keeps its ``times=1``
     budget and retires after one fire, while a recurring job turned one-shot never completes. An
-    explicit ``repeat`` in the same update wins; a same-kind schedule edit leaves ``repeat`` alone.
+    explicit ``repeat`` in the same update sets the budget; a same-kind schedule edit leaves
+    ``repeat`` alone.
     """
-    if "schedule" not in updates or "repeat" in updates:
+    if "schedule" not in updates:
         return
     new_schedule = updates["schedule"]
     if isinstance(new_schedule, str):
@@ -2064,11 +2065,39 @@ def _rederive_repeat_for_schedule_change(
     new_kind = new_schedule.get("kind")
     if old_kind == new_kind:
         return
+    if new_kind == "once":
+        # A run started before the edit would land after the reset below and spend the new
+        # occurrence, retiring the one-shot without firing it. Refuse, as rearm_oneshot does. A
+        # scheduler-dispatched recurring run holds no claim, so it is visible only to the scheduler
+        # in this process.
+        now = _hermes_now()
+        if (
+            _claim_is_live(job.get("run_claim"), now, _oneshot_run_claim_ttl_seconds())
+            or _claim_is_live(job.get("fire_claim"), now, FIRE_CLAIM_TTL_SECONDS)
+            or _job_running_in_this_process(job["id"])
+        ):
+            raise ValueError(
+                "Cannot turn a job into a one-shot while a run is in progress; retry when it finishes."
+            )
+        # The one-shot is a new occurrence, as in rearm_oneshot: ``completed`` counted the recurring
+        # runs, so it starts at 0 unless the update sets it. Without an explicit ``repeat`` the
+        # budget is 1 whatever the recurring job had; a bounded ``times`` kept, the job would fire
+        # until the old count ran out.
+        if "repeat" in updates:
+            explicit = updates["repeat"]
+            updates["repeat"] = (
+                {"completed": 0, **explicit}
+                if isinstance(explicit, dict)
+                else {"times": explicit, "completed": 0}
+            )
+        else:
+            updates["repeat"] = {**(job.get("repeat") or {}), "times": 1, "completed": 0}
+        return
+    if "repeat" in updates:
+        return
     repeat = dict(job.get("repeat") or {})
     times = repeat.get("times")
-    if new_kind == "once" and times is None:
-        repeat["times"] = 1
-    elif new_kind != "once" and old_kind == "once" and times == 1:
+    if old_kind == "once" and times == 1:
         repeat["times"] = None
     else:
         return

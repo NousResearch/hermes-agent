@@ -496,6 +496,81 @@ class TestJobCRUD:
         assert updated["schedule"]["kind"] == "once"
         assert updated["repeat"]["times"] == 1
 
+    def test_recurring_job_that_already_ran_turned_oneshot_still_fires(self, tmp_cron_dir, monkeypatch):
+        """Its recurring run count must not spend the new one-shot budget: at completed >= times the
+        due scan retires the job without firing it."""
+        job = create_job(prompt="digest", schedule="every 1h")
+        mark_job_run(job["id"], success=True)
+        mark_job_run(job["id"], success=True)
+
+        updated = update_job(job["id"], {"schedule": "in 5m"})
+        assert updated["repeat"] == {"times": 1, "completed": 0}
+
+        later = _hermes_now() + timedelta(minutes=5, seconds=10)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: later)
+        assert job["id"] in {j["id"] for j in get_due_jobs()}
+        assert get_job(job["id"]) is not None
+
+    def test_bounded_recurring_job_turned_oneshot_fires_once(self, tmp_cron_dir):
+        """A recurring ``repeat`` count is not the one-shot's budget: kept, the job would fire
+        again until the old count ran out."""
+        job = create_job(prompt="digest", schedule="every 1h", repeat=5)
+        mark_job_run(job["id"], success=True)
+        mark_job_run(job["id"], success=True)
+
+        updated = update_job(job["id"], {"schedule": "in 5m"})
+        assert updated["schedule"]["kind"] == "once"
+        assert updated["repeat"] == {"times": 1, "completed": 0}
+
+    def test_turning_a_job_oneshot_mid_run_is_refused(self, tmp_cron_dir):
+        """The claimed run would land after the reset and retire the new one-shot unfired."""
+        job = create_job(prompt="digest", schedule="every 1h")
+        mark_job_run(job["id"], success=True)
+        assert claim_job_for_fire(job["id"])
+
+        with pytest.raises(ValueError, match="while a run is in progress"):
+            update_job(job["id"], {"schedule": "in 5m"})
+        unchanged = get_job(job["id"])
+        assert unchanged["schedule"]["kind"] == "interval"
+        assert unchanged["repeat"] == {"times": None, "completed": 1}
+
+        # The claimed run still lands on the recurring job, and the flip then succeeds.
+        owner = next(j for j in load_jobs() if j["id"] == job["id"])["fire_claim"]["by"]
+        assert mark_job_run(job["id"], success=True, expected_fire_owner=owner)
+        assert get_job(job["id"])["repeat"]["completed"] == 2
+        updated = update_job(job["id"], {"schedule": "in 5m"})
+        assert updated["repeat"] == {"times": 1, "completed": 0}
+
+    def test_turning_a_job_oneshot_during_a_scheduler_run_is_refused(self, tmp_cron_dir):
+        """A ticker-dispatched recurring run holds no claim; this process's running set sees it."""
+        from cron.scheduler import release_running_job, try_register_running_job
+
+        job = create_job(prompt="digest", schedule="every 1h")
+        mark_job_run(job["id"], success=True)
+        assert try_register_running_job(job["id"])
+        try:
+            with pytest.raises(ValueError, match="while a run is in progress"):
+                update_job(job["id"], {"schedule": "in 5m"})
+            assert get_job(job["id"])["schedule"]["kind"] == "interval"
+        finally:
+            release_running_job(job["id"])
+        assert update_job(job["id"], {"schedule": "in 5m"})["repeat"] == {"times": 1, "completed": 0}
+
+    @pytest.mark.parametrize("repeat", [1, {"times": 1}])
+    def test_explicit_repeat_on_a_oneshot_flip_starts_from_zero(self, tmp_cron_dir, monkeypatch, repeat):
+        """An explicit ``repeat`` sets the budget, not the count: the recurring runs would retire
+        the new one-shot unfired."""
+        job = create_job(prompt="digest", schedule="every 1h")
+        mark_job_run(job["id"], success=True)
+        mark_job_run(job["id"], success=True)
+
+        updated = update_job(job["id"], {"schedule": "in 5m", "repeat": repeat})
+        assert updated["repeat"] == {"times": 1, "completed": 0}
+
+        later = _hermes_now() + timedelta(minutes=5, seconds=10)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: later)
+        assert job["id"] in {j["id"] for j in get_due_jobs()}
+
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)

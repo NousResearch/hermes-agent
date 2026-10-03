@@ -684,13 +684,23 @@ def recover_after_classification(
     if recovered_with_pool:
         return True, recovered_with_pool
 
-    # Shrink oversized native image parts in-place and retry once.
-    if classified.reason == FailoverReason.image_too_large and not _retry.image_shrink_retry_attempted:
+    # A dropped connection can hide an upload cap without an HTTP rejection.
+    # Try a smaller request once, but do not relabel a possible network outage.
+    from agent.turn_image_recovery import dropped_large_image_upload
+
+    suspect_image_upload = (
+        not _retry.image_shrink_retry_attempted
+        and dropped_large_image_upload(api_error, classified, api_messages)
+    )
+    if not _retry.image_shrink_retry_attempted and (
+        classified.reason == FailoverReason.image_too_large or suspect_image_upload
+    ):
         _retry.image_shrink_retry_attempted = True
         if agent._try_shrink_image_parts_in_messages(
             api_messages, max_dimension=_image_error_max_dimension(api_error) or 8000
         ):
-            _vlines(agent, "📐 Image(s) exceeded provider size limit — shrank and retrying...")
+            _vlines(agent, "📐 Connection dropped with oversized image(s) — shrank and retrying..."
+                    if suspect_image_upload else "📐 Image(s) exceeded provider size limit — shrank and retrying...")
             return True, recovered_with_pool
         logger.info(
             "image-shrink recovery: no data-URL image parts found "

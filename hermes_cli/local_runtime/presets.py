@@ -113,7 +113,8 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     # Router discovery is preset-only: refused files must never autoload with stock fit.
     keys = _args_to_keys(launch_args(
         profile, decision, mtp_capable=is_mtp, uma=budget.uma, mtp_prefill=plan.mtp_prefill,
-        mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3))
+        mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3,
+        ubatch=plan.ubatch))
     keys["model"] = str(gguf)
     if entry is not None and is_mtp:
         # Integrated-MTP targets sample on the backend, and so does the draft (pairing validated

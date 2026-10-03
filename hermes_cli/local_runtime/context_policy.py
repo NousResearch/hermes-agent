@@ -32,6 +32,15 @@ TARGET_WINDOW = 144 * 1024
 # past this constant). Callers add mmproj bytes on top.
 RUNTIME_OVERHEAD_BYTES = int(1.5 * (1 << 30))
 
+# Microbatch ladder, largest first. The logits/compute buffer scales with vocab: at 248K tokens
+# the 2048 posture bills ~1.9 GiB, which prices a 3.3 GiB model above an 8 GiB card's usable
+# budget and pushes `spill_overrides` to send its FFNs to the CPU (15.7 tok/s decode / 63 tok/s
+# prefill, against ~47 / ~900 with the weights resident). `plan_launch` walks this ladder and
+# keeps the largest rung whose bill still lets the weights stay on the card, so the default
+# posture is unchanged wherever it fits.
+_MICROBATCH_LADDER = (2048, 1024, 512)
+_MICROBATCH_DEFAULT = _MICROBATCH_LADDER[0]
+
 
 def ladder(native: int) -> list[int]:
     """64K -> 96K -> 128K -> ... -> native (native always the last rung)."""
@@ -114,6 +123,16 @@ class LaunchPlan:
     decision: WindowDecision | PhysicsRefusal
     mtp_prefill: bool
     overhead_bytes: int
+    ubatch: int = _MICROBATCH_DEFAULT
+
+
+def ub_logits_bytes_at(n_vocab: int, ubatch: int) -> int:
+    """``ub_logits_bytes`` for an arbitrary non-MTP microbatch.
+
+    ``plan_launch`` walks the microbatch ladder and needs the bill for each rung, not just the
+    default posture the public helper reports.
+    """
+    return max(0, int(ubatch)) * max(0, int(n_vocab)) * 4
 
 
 def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: bool = False,
@@ -130,9 +149,23 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
     initial: dict[bool, WindowDecision | PhysicsRefusal] = {}
 
     def candidate(stacked: bool) -> LaunchPlan:
-        overhead = fixed_overhead + ub_logits_bytes(
-            profile.n_vocab, mtp_capable=mtp_capable, mtp_prefill=stacked)
-        decision = initial_window(profile, budget, overhead_bytes=overhead)
+        if mtp_capable:
+            ubatch = 2048 if stacked else 512
+            overhead = fixed_overhead + ub_logits_bytes(
+                profile.n_vocab, mtp_capable=True, mtp_prefill=stacked)
+            decision = initial_window(profile, budget, overhead_bytes=overhead)
+        else:
+            # Walk the microbatch ladder. At a large vocab the default 2048 posture bills a
+            # logits/compute buffer the size of a small model's weights, which prices a model
+            # above the card and spills FFNs to the CPU even though its weights would sit on the
+            # card comfortably (~3x decode cost). Keep the largest rung that stays resident.
+            ubatch = _MICROBATCH_LADDER[-1]
+            overhead = 0
+            for ub in _MICROBATCH_LADDER:
+                overhead = fixed_overhead + ub_logits_bytes_at(profile.n_vocab, ub)
+                decision, ubatch = initial_window(profile, budget, overhead_bytes=overhead), ub
+                if isinstance(decision, PhysicsRefusal) or not decision.spilled:
+                    break
         initial[stacked] = decision
         if isinstance(decision, WindowDecision) and requested_window:
             target = min(requested_window, profile.n_ctx_train or requested_window)
@@ -143,7 +176,7 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
                     window=target, spill_bytes=max(0, need - budget.usable_vram_bytes),
                     kv_on_gpu=ctx_bytes(profile, target) + overhead <= budget.usable_vram_bytes,
                     reasons=[f"grown window restored ({target // 1024}K)"])
-        return LaunchPlan(decision, stacked, overhead)
+        return LaunchPlan(decision, stacked, overhead, ubatch)
 
     lean = candidate(False)
     if not mtp_capable:
@@ -278,10 +311,11 @@ def spill_overrides(profile: ModelProfile, spill_bytes: int | None = None) -> li
 
 def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attention: bool = True,
                 mtp_capable: bool = False, mtp_draft_depth: int = 3, uma: bool = False,
-                mtp_prefill: bool = False) -> list[str]:
+                mtp_prefill: bool = False, ubatch: int = _MICROBATCH_DEFAULT) -> list[str]:
     """Per-model launch flags from a window decision. Explicit -c puts fit into
     spill-weights-and-hold-ctx; q8 KV cache wherever flash attention exists; -ot placement on
-    spilled configs — DISCRETE cards only."""
+    spilled configs — DISCRETE cards only. ``ubatch`` comes from ``plan_launch`` so the posture
+    priced is the posture launched; MTP keeps its own postures."""
     args = ["-c", str(decision.window)]
     if mtp_capable:
         args += ["--spec-type", "draft-mtp", "--spec-draft-n-max", str(mtp_draft_depth),
@@ -289,7 +323,7 @@ def launch_args(profile: ModelProfile, decision: WindowDecision, *, flash_attent
         if mtp_prefill:
             args += ["-b", "4096", "-ub", "2048"]
     else:
-        args += ["-b", "2048", "-ub", "2048"]
+        args += ["-b", str(ubatch), "-ub", str(ubatch)]
     if flash_attention:
         args += ["-ctk", "q8_0", "-ctv", "q8_0", "-fa", "on"]
     if decision.spilled and not uma:

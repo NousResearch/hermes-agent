@@ -2451,6 +2451,16 @@ DEFAULT_CONFIG = {
         # Retries on 5xx / ReadTimeout / ConnectionError (backoff 1.5x attempt s, cap 5s).
         "retries": 2,
     },
+    # xAI Collections Search / RAG via Responses API file_search. Search-only over existing
+    # collections — does not create or upload. Enable in `hermes tools` → xAI Collections Search.
+    "xai_collections_search": {
+        "model": "grok-4.5",
+        # Optional default collection / vector store IDs. The tool call can also pass collection_ids.
+        "collection_ids": [],
+        "max_num_results": 10,
+        "timeout_seconds": 180,
+        "retries": 2,
+    },
     # External secret sources — pull credentials from secret managers at startup instead of storing
     # them in ~/.hermes/.env.
     # Browser credential vault: which login sources browser_vault_list/fill may draw from. The local

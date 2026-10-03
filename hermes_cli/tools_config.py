@@ -75,6 +75,7 @@ CONFIGURABLE_TOOLSETS = [
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text/image/reference)"),
     ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
+    ("xai_collections_search", "🗂️ xAI Collections Search", "xai_collections_search (RAG over existing xAI collections)"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("stt",             "🎙️ Speech-to-Text",           "voice transcription (gateway voice messages + voice mode)"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -108,7 +109,8 @@ def gui_toolset_label(label: str) -> str:
 
 # OFF by default for new installs (still in _HERMES_CORE_TOOLS; the checklist won't pre-select them). x_search
 # auto-enables when xAI creds exist (mirrors HASS_TOKEN → homeassistant); its check_fn still gates the schema.
-_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "a2a", "kanban"}
+# xai_collections_search stays default-off: needs collection IDs plus credentials, and does not create/upload.
+_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "xai_collections_search", "a2a", "kanban"}
 
 # Config-only capabilities: provider setup in `hermes tools` (TOOL_CATEGORIES) but not model toolsets — zero
 # schemas, own switch (``stt.enabled``), never in ``platform_toolsets`` or the per-platform checklist.
@@ -322,6 +324,22 @@ TOOL_CATEGORIES = {
             "SuperGrok OAuth is preferred when both are set (uses your subscription quota instead of API spend)."
         ),
         "icon": "🐦",
+        "providers": [
+            _row("xAI Grok OAuth (SuperGrok / Premium+)", "subscription", "Browser login at accounts.x.ai — no API key required",
+                 post_setup="xai_grok"),
+            _row("xAI API key", "paid", "Direct xAI API billing via XAI_API_KEY",
+                 [_key("XAI_API_KEY", "xAI API key", "https://console.x.ai/")]),
+        ],
+    },
+    "xai_collections_search": {
+        "name": "xAI Collections Search", "setup_title": "Select xAI Credential Source",
+        "setup_note": (
+            "Search existing xAI Collections / vector stores via the Responses API file_search tool. This does "
+            "not create collections or upload files — create them in the xAI console first, then pass "
+            "collection_ids per call or set xai_collections_search.collection_ids in config.yaml. SuperGrok "
+            "OAuth is preferred when both credential sources are set."
+        ),
+        "icon": "🗂️",
         "providers": [
             _row("xAI Grok OAuth (SuperGrok / Premium+)", "subscription", "Browser login at accounts.x.ai — no API key required",
                  post_setup="xai_grok"),

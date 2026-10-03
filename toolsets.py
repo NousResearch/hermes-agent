@@ -86,6 +86,14 @@ TOOLSETS = {
         "X (Twitter) Search.",
         ["x_search"],
     ),
+    "xai_collections_search": _ts(
+        "Search existing xAI Collections / vector stores via the Responses API "
+        "file_search tool (xAI SDK: collections_search). Search-only RAG — does not "
+        "create collections or upload files. Requires xAI credentials and one or more "
+        "collection IDs (per call or xai_collections_search.collection_ids). Off by "
+        "default; enable in `hermes tools` → xAI Collections Search.",
+        ["xai_collections_search"],
+    ),
     "vision": _ts("Image analysis and vision tools", ["vision_analyze"]),
     "video": _ts("Video analysis and understanding tools (opt-in, not in default toolset)", ["video_analyze"]),
     "image_gen": _ts("Creative generation tools (images)", ["image_generate"]),

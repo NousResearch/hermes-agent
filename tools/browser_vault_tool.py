@@ -680,19 +680,21 @@ BROWSER_VAULT_ENTER_CODE_SCHEMA = {
 
 
 def _bot_desktop_browser_session(task_id: Optional[str]) -> bool:
-    from tools.browser_tool import _active_sessions, _last_session_key
+    from tools.browser_tool import _active_sessions, _home_scoped_key, _last_session_key
     from tools.browser_tool_session import _shares_bot_desktop_browser
-    return _shares_bot_desktop_browser(_active_sessions.get(_last_session_key(task_id or "default")) or {})
+    session_key = _last_session_key(task_id or "default")
+    return _shares_bot_desktop_browser(_active_sessions.get(_home_scoped_key(session_key)) or {})
 
 
 def _fenced_page_op(task_id: Optional[str], fn) -> str:
     """Vault operations focus, inspect and fill the page over the supervisor socket, bypassing
     ``_run_browser_command``; they must honour the Bot Desktop lease like every other page access,
     or a human typing a credential on the taken-over screen could be read or written to."""
-    from tools.browser_tool import _active_sessions, _last_session_key
+    from tools.browser_tool import _active_sessions, _home_scoped_key, _last_session_key
     from tools.browser_tool_session import run_fenced
 
-    session = _active_sessions.get(_last_session_key(task_id or "default")) or {}
+    session_key = _last_session_key(task_id or "default")
+    session = _active_sessions.get(_home_scoped_key(session_key)) or {}
     res = run_fenced(session, lambda: {"raw": fn()})
     return res["raw"] if "raw" in res else json.dumps(res)
 

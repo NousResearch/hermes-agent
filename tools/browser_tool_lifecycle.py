@@ -95,7 +95,6 @@ def _emergency_cleanup_all_sessions():
             with _bt._cleanup_lock:
                 _bt._active_sessions.clear()
                 _bt._session_last_activity.clear()
-                _bt._session_owner_homes.clear()
                 _bt._cleanup_failures.clear()
                 _bt._recording_sessions.clear()
     # Lightpanda servers we spawned that fell out of ``_active_sessions``.
@@ -106,17 +105,15 @@ def _emergency_cleanup_all_sessions():
 
 
 @contextlib.contextmanager
-def _session_owner_scope(task_id: str):
-    """Run under the Hermes home + secret scope owning ``task_id``'s session (no-op if unrecorded).
+def _session_owner_scope(scoped_key: Tuple[str, str]):
+    """Run under the Hermes home + secret scope owning ``scoped_key``'s session.
 
     The janitor thread is process-global, so each teardown must re-enter its OWN
     profile's scope rather than inherit the spawning profile's; never falls
-    through to ``os.environ``.
+    through to ``os.environ``. The owning home is the first component of the
+    home-scoped cache key — see #86402, #110032.
     """
-    owner_home = _bt._session_owner_homes.get(task_id)
-    if owner_home is None:
-        yield
-        return
+    owner_home = scoped_key[0]
 
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
@@ -133,15 +130,14 @@ def _session_owner_scope(task_id: str):
         reset_hermes_home_override(home_token)
 
 
-def _forget_session_tracking(task_id: str, *, activity: bool = True, session: bool = False) -> None:
-    """Drop the janitor's bookkeeping (and optionally the session entry) for ``task_id``."""
+def _forget_session_tracking(scoped_key: Tuple[str, str], *, activity: bool = True, session: bool = False) -> None:
+    """Drop the janitor's bookkeeping (and optionally the session entry) for ``scoped_key``."""
     with _bt._cleanup_lock:
         if session:
-            _bt._active_sessions.pop(task_id, None)
+            _bt._active_sessions.pop(scoped_key, None)
         if activity:
-            _bt._session_last_activity.pop(task_id, None)
-        _bt._session_owner_homes.pop(task_id, None)
-        _bt._cleanup_failures.pop(task_id, None)
+            _bt._session_last_activity.pop(scoped_key, None)
+        _bt._cleanup_failures.pop(scoped_key, None)
 
 
 def _cleanup_inactive_browser_sessions():
@@ -156,24 +152,25 @@ def _cleanup_inactive_browser_sessions():
     current_time = time.time()
 
     with _bt._cleanup_lock:
-        sessions_to_cleanup = [task_id for task_id, last_time in list(_bt._session_last_activity.items())
+        sessions_to_cleanup = [scoped_key for scoped_key, last_time in list(_bt._session_last_activity.items())
                                if current_time - last_time > _bt.BROWSER_SESSION_INACTIVITY_TIMEOUT]
 
-    for task_id in sessions_to_cleanup:
-        with _session_owner_scope(task_id):
-            if _human_holds_shared_browser(task_id):
+    for scoped_key in sessions_to_cleanup:
+        task_id = scoped_key[1]
+        with _session_owner_scope(scoped_key):
+            if _human_holds_shared_browser(scoped_key):
                 # A human took the bot's screen (login, 2FA) — the agent is idle BECAUSE they are working.
                 _update_session_activity(task_id)
                 continue
-        elapsed = int(current_time - _bt._session_last_activity.get(task_id, current_time))
+        elapsed = int(current_time - _bt._session_last_activity.get(scoped_key, current_time))
         _bt.logger.info("Cleaning up inactive session for task: %s (inactive for %ss)", task_id, elapsed)
         try:
-            with _session_owner_scope(task_id):
+            with _session_owner_scope(scoped_key):
                 cleanup_browser(task_id)
-            _forget_session_tracking(task_id)
+            _forget_session_tracking(scoped_key)
         except Exception as e:
             with _bt._cleanup_lock:
-                failures = _bt._cleanup_failures[task_id] = _bt._cleanup_failures.get(task_id, 0) + 1
+                failures = _bt._cleanup_failures[scoped_key] = _bt._cleanup_failures.get(scoped_key, 0) + 1
             if failures < _bt.MAX_INACTIVITY_CLEANUP_FAILURES:
                 _bt.logger.warning("Error cleaning up inactive session %s (attempt %d/%d): %s",
                                task_id, failures, _bt.MAX_INACTIVITY_CLEANUP_FAILURES, e)
@@ -181,18 +178,18 @@ def _cleanup_inactive_browser_sessions():
             _bt.logger.error("Browser cleanup failed %d times for inactive session %s; "
                          "force-reaping: %s", failures, task_id, e)
             try:
-                with _session_owner_scope(task_id):
+                with _session_owner_scope(scoped_key):
                     _force_reap_browser_session(task_id)
             except Exception as reap_exc:
                 _bt.logger.error("Force-reap of browser session %s failed: %s", task_id, reap_exc)
             finally:
-                _forget_session_tracking(task_id, activity=False)
+                _forget_session_tracking(scoped_key, activity=False)
 
 
-def _human_holds_shared_browser(task_id: str) -> bool:
+def _human_holds_shared_browser(scoped_key: Tuple[str, str]) -> bool:
     """Lease check for the janitor, under the owner's profile scope (the lease is per profile)."""
     with _bt._cleanup_lock:
-        session_info = _bt._active_sessions.get(task_id)
+        session_info = _bt._active_sessions.get(scoped_key)
     if not session_info:
         return False
     return _session.human_holds_shared_browser(session_info)
@@ -390,7 +387,8 @@ def _reap_orphaned_browser_sessions():
     socket_dirs = []
     # The shared real-profile attach daemon is named, not ``<prefix>_<hex>``; list it explicitly.
     for prefix in ("agent-browser-h_*", "agent-browser-cdp_*", "agent-browser-hermes_*",
-                   f"agent-browser-{_bt._REAL_PROFILE_SESSION}"):
+                   f"agent-browser-{_bt._REAL_PROFILE_SESSION}",
+                   f"agent-browser-{_bt._REAL_PROFILE_SESSION}-*"):
         socket_dirs += glob.glob(os.path.join(tmpdir, prefix))
     if not socket_dirs:
         return
@@ -400,7 +398,11 @@ def _reap_orphaned_browser_sessions():
     # Browsing on the shared real-profile daemon runs through per-task ``rp_*`` sessions
     # (``--cdp``), so its own dir never shows activity; the idle escape hatch would misfire
     # under a live user. Owner liveness alone gates it — a dead owner still gets reaped.
-    tracked_names.add(_bt._REAL_PROFILE_SESSION)
+    tracked_names.update(
+        name for socket_dir in socket_dirs
+        if (name := os.path.basename(socket_dir).removeprefix("agent-browser-"))
+        and (name == _bt._REAL_PROFILE_SESSION or name.startswith(f"{_bt._REAL_PROFILE_SESSION}-"))
+    )
 
     reaped = 0
     for socket_dir in socket_dirs:
@@ -467,14 +469,14 @@ def _stop_browser_cleanup_thread():
 
 
 def _update_session_activity(task_id: str):
-    """Touch the activity timestamp and record the owning Hermes home on first sight (the
-    janitor tears down under the owner's scope). Does NOT reset ``_cleanup_failures``.
+    """Touch the activity timestamp for ``task_id`` under the current home's key (the
+    home is part of every cache key, so the janitor tears each entry down under the
+    OWNING profile's scope). Does NOT reset ``_cleanup_failures``.
 
-    See #86402.
+    See #86402, #110032.
     """
     with _bt._cleanup_lock:
-        _bt._session_last_activity[task_id] = time.time()
-        _bt._session_owner_homes.setdefault(task_id, str(get_hermes_home()))
+        _bt._session_last_activity[_bt._home_scoped_key(task_id)] = time.time()
 
 
 def _kill_process_tree(proc: "subprocess.Popen") -> None:
@@ -582,8 +584,8 @@ def _drop_last_active_binding(task_id: str) -> None:
     sidecar only if it was still the recorded owner (a later click must not resurrect a
     cleaned sidecar while a primary-session binding is preserved)."""
     bare_task_id = _bt._bare_task_id_for_session_key(task_id)
-    if bare_task_id == task_id or _bt._last_active_session_key.get(bare_task_id) == task_id:
-        _bt._last_active_session_key.pop(bare_task_id, None)
+    if bare_task_id == task_id or _bt._last_active_session_key.get(_bt._home_scoped_key(bare_task_id)) == task_id:
+        _bt._last_active_session_key.pop(_bt._home_scoped_key(bare_task_id), None)
 
 
 def cleanup_browser(task_id: Optional[str] = None) -> None:
@@ -595,7 +597,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     session_keys = [task_id]
     sidecar_key = f"{task_id}{_bt._LOCAL_SUFFIX}"
     with _bt._cleanup_lock:
-        if not _bt._is_local_sidecar_key(task_id) and sidecar_key in _bt._active_sessions:
+        if not _bt._is_local_sidecar_key(task_id) and _bt._home_scoped_key(sidecar_key) in _bt._active_sessions:
             session_keys.append(sidecar_key)
     for session_key in session_keys:
         _cleanup_single_browser_session(session_key)
@@ -632,7 +634,7 @@ def _release_session_resources(task_id: str, session_info: Dict[str, Any]) -> No
     must still release the cloud session and the local Chromium.
     """
     bb_session_id = session_info.get("bb_session_id", "unknown")
-    _forget_session_tracking(task_id, session=True)
+    _forget_session_tracking(_bt._home_scoped_key(task_id), session=True)
 
     if bb_session_id:  # cloud only — local sidecars have bb_session_id=None
         provider = _cloud._get_cloud_provider()
@@ -656,10 +658,11 @@ def _force_reap_browser_session(task_id: str) -> None:
     Janitor last resort after repeated cleanup failures (#100738).
     """
     _cdp._stop_cdp_supervisor(task_id)
+    scoped_key = _bt._home_scoped_key(task_id)
     with _bt._cleanup_lock:
-        session_info = _bt._active_sessions.get(task_id)
-        _bt._session_last_activity.pop(task_id, None)
-        _bt._recording_sessions.discard(task_id)
+        session_info = _bt._active_sessions.get(scoped_key)
+        _bt._session_last_activity.pop(scoped_key, None)
+        _bt._recording_sessions.discard(scoped_key)
     if session_info:
         _release_session_resources(task_id, session_info)
     _drop_last_active_binding(task_id)
@@ -682,8 +685,9 @@ def _cleanup_single_browser_session(task_id: str) -> None:
     _bt.logger.debug("Active sessions: %s", list(_bt._active_sessions.keys()))
 
     # Look up but don't remove yet — _run_browser_command needs the entry for ``close``.
+    scoped_key = _bt._home_scoped_key(task_id)
     with _bt._cleanup_lock:
-        session_info = _bt._active_sessions.get(task_id)
+        session_info = _bt._active_sessions.get(scoped_key)
 
     if not session_info:
         _bt.logger.debug("No active session found for task_id: %s", task_id)
@@ -716,9 +720,15 @@ def _cleanup_single_browser_session(task_id: str) -> None:
 def cleanup_all_browsers() -> None:
     """Clean up all active browser sessions (shutdown) and reset cached lookups."""
     with _bt._cleanup_lock:
-        task_ids = list(_bt._active_sessions.keys())
-    for task_id in task_ids:
-        cleanup_browser(task_id)
+        scoped_keys = list(_bt._active_sessions.keys())
+    for scoped_key in scoped_keys:
+        # One profile's broken secret scope must not abort teardown for the rest.
+        try:
+            with _session_owner_scope(scoped_key):
+                cleanup_browser(scoped_key[1])
+        except Exception as e:
+            _bt.logger.warning("Error cleaning up session for task %s during shutdown: %s",
+                               scoped_key[1], e)
 
     try:  # tear down CDP supervisors so background threads exit
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]

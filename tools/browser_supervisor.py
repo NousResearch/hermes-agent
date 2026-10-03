@@ -361,8 +361,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             return False
         logger.warning("CDP supervisor %s: stopped after %s failed reconnect attempts: %s",
                        self.task_id, failures, _redact_cdp_error_text(e))
-        if SUPERVISOR_REGISTRY.get(self.task_id) is self:
-            SUPERVISOR_REGISTRY._pop(self.task_id)
+        SUPERVISOR_REGISTRY.discard(self)
         return True
 
     async def _run(self) -> None:
@@ -491,48 +490,94 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
 
 class _SupervisorRegistry:
-    """Process-global (task_id → supervisor) map with idempotent start/stop (``SUPERVISOR_REGISTRY``)."""
+    """Process-global ((hermes_home_key, task_id) → supervisor) map with idempotent start/stop
+    (``SUPERVISOR_REGISTRY``). The home is part of the key so a multiplexed process never
+    serves one profile's supervisor state to another (#110032); the inner task id is kept
+    for logs and thread names."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._by_task: Dict[str, CDPSupervisor] = {}
+        # A bare key can survive a hot reload from an older build; reads accept it
+        # until that entry is replaced, but every new entry uses the owner tuple.
+        self._by_task: Dict[object, CDPSupervisor] = {}
 
-    def get(self, task_id: str) -> Optional[CDPSupervisor]:
+    @staticmethod
+    def _task_key(task_id: object) -> Tuple[str, str]:
+        if isinstance(task_id, tuple) and len(task_id) == 2:
+            return str(task_id[0]), str(task_id[1])
+        from hermes_constants import hermes_home_key
+
+        return hermes_home_key(), str(task_id)
+
+    def _lookup_locked(self, task_id: object) -> Tuple[object, Optional[CDPSupervisor]]:
+        key = self._task_key(task_id)
+        if key in self._by_task:
+            return key, self._by_task[key]
+        # Compatibility for a single-profile process hot-reloaded from the
+        # former bare-key map. Once a profile scope exists ownership is
+        # ambiguous, so fail closed instead of handing that entry across homes.
+        if isinstance(task_id, str):
+            from hermes_constants import get_hermes_home_override
+
+            if get_hermes_home_override() is None and task_id in self._by_task:
+                return task_id, self._by_task[task_id]
+        return key, None
+
+    def get(self, task_id: object) -> Optional[CDPSupervisor]:
         with self._lock:
-            return self._by_task.get(task_id)
+            return self._lookup_locked(task_id)[1]
 
-    def _pop(self, task_id: str) -> Optional[CDPSupervisor]:
+    def _pop(self, task_id: object) -> Optional[CDPSupervisor]:
         with self._lock:
-            return self._by_task.pop(task_id, None)
+            key, supervisor = self._lookup_locked(task_id)
+            if supervisor is not None:
+                self._by_task.pop(key, None)
+            return supervisor
 
-    def get_or_start(self, task_id: str, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
+    def discard(self, supervisor: CDPSupervisor) -> None:
+        """Unregister ``supervisor`` by identity from its background thread.
+
+        A reconnect worker has no caller profile ContextVar, so recomputing its
+        key from ``task_id`` could remove a sibling profile's supervisor.
+        """
+        with self._lock:
+            for key, current in list(self._by_task.items()):
+                if current is supervisor:
+                    self._by_task.pop(key, None)
+                    return
+
+    def get_or_start(self, task_id: object, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
                      dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0) -> CDPSupervisor:
         """Idempotently ensure a supervisor runs for ``(task_id, cdp_url)``; one bound to a
         different ``cdp_url`` or unhealthy (dead thread / stopped loop) is stopped and replaced."""
+        task_key = self._task_key(task_id)
         with self._lock:
-            existing = self._by_task.get(task_id)
+            existing_key, existing = self._lookup_locked(task_id)
             if existing is not None:
                 thread, loop = existing._thread, existing._loop
                 healthy = thread is not None and thread.is_alive() and loop is not None and loop.is_running()
                 if existing.cdp_url == cdp_url and healthy:
                     return existing
-                self._by_task.pop(task_id, None)
+                self._by_task.pop(existing_key, None)
         if existing is not None:
             existing.stop()
 
-        supervisor = CDPSupervisor(task_id=task_id, cdp_url=cdp_url,
+        # Preserve a safe, unscoped legacy slot when replacing it during a hot
+        # reload; profile-scoped callers never resolve that ambiguous slot.
+        store_key = existing_key if existing is not None and isinstance(existing_key, str) else task_key
+        supervisor = CDPSupervisor(task_id=task_key[1], cdp_url=cdp_url,
                                    dialog_policy=dialog_policy, dialog_timeout_s=dialog_timeout_s)
         supervisor.start(timeout=start_timeout)
         with self._lock:
             # Guard against a concurrent get_or_start from another thread.
-            already = self._by_task.get(task_id)
+            already = self._by_task.get(store_key)
             if already is not None and already.cdp_url == cdp_url:
                 supervisor.stop()
                 return already
-            self._by_task[task_id] = supervisor
+            self._by_task[store_key] = supervisor
         return supervisor
 
-    def stop(self, task_id: str) -> None:
+    def stop(self, task_id: object) -> None:
         supervisor = self._pop(task_id)
         if supervisor is not None:
             supervisor.stop()

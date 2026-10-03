@@ -621,8 +621,9 @@ class TestLightpandaSessionLifecycle:
             "cdp_url": "http://127.0.0.1:1",
             "features": {"local": True, "lightpanda": True},
         }
-        self.bt._active_sessions[key] = info
-        self.bt._session_last_activity[key] = 1.0
+        scoped = self.bt._home_scoped_key(key)
+        self.bt._active_sessions[scoped] = info
+        self.bt._session_last_activity[scoped] = 1.0
         return info
 
     def test_dead_process_is_detected(self, monkeypatch):
@@ -650,7 +651,8 @@ class TestLightpandaSessionLifecycle:
 
         def fake_cleanup(key):
             cleaned.append(key)
-            bt._active_sessions.pop(key, None)
+            bt._active_sessions.pop(bt._home_scoped_key(key), None)
+            bt._session_last_activity.pop(bt._home_scoped_key(key), None)
 
         monkeypatch.setattr("tools.browser_tool_lifecycle._start_browser_cleanup_thread", lambda: None)
         monkeypatch.setattr(
@@ -668,7 +670,7 @@ class TestLightpandaSessionLifecycle:
         info = bt_session._get_session_info("task-1")
         assert cleaned == ["task-1"]
         assert info["session_name"] == "lp_fresh"
-        assert bt._active_sessions["task-1"]["session_name"] == "lp_fresh"
+        assert bt._active_sessions[bt._home_scoped_key("task-1")]["session_name"] == "lp_fresh"
         assert info["session_name"] != stale["session_name"]
         # Browser Use mode hides the browser_* tools that read supervisor
         # state; a Lightpanda session never attaches one.
@@ -685,8 +687,8 @@ class TestLightpandaSessionLifecycle:
             bt_lifecycle.cleanup_browser("task-1")
         run.assert_not_called()
         assert stopped == ["lp_dead"]
-        assert "task-1" not in bt._active_sessions
-        assert "task-1" not in bt._session_last_activity
+        assert bt._home_scoped_key("task-1") not in bt._active_sessions
+        assert bt._home_scoped_key("task-1") not in bt._session_last_activity
 
     def test_emergency_cleanup_stops_all_lightpanda(self, monkeypatch):
         bt = self.bt

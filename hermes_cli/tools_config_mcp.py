@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Set
+from typing import Dict, List, Set
 
 from hermes_cli.cli_output import (
     print_error as _print_error, print_info as _print_info, print_success as _print_success,
@@ -238,9 +238,25 @@ def _known_tool_platforms() -> set[str]:
     return known
 
 
+def toolset_rejections(names: List[str], platform: str) -> Dict[str, str]:
+    """Map each toolset in ``names`` that ``tools enable|disable`` rejects on ``platform`` to its error
+    message. A toolset is rejected when it is unknown or restricted to other platforms."""
+    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_plugin_toolset_keys
+
+    valid_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS} | _get_plugin_toolset_keys()
+    rejections: Dict[str, str] = {}
+    for name in names:
+        if name not in valid_toolsets:
+            rejections[name] = f"Unknown toolset '{name}'"
+        elif not _toolset_allowed_for_platform(name, platform):
+            allowed = ", ".join(sorted(_TOOLSET_PLATFORM_RESTRICTIONS.get(name) or set()))
+            rejections[name] = f"Toolset '{name}' is not available on platform '{platform}' (only: {allowed})"
+    return rejections
+
+
 def tools_disable_enable_command(args):
     """Enable, disable, or list tools for a platform."""
-    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_platform_tools, _get_plugin_toolset_keys, load_config, save_config
+    from hermes_cli.tools_config import _get_platform_tools, load_config, save_config
 
     action = args.tools_action
     platform = getattr(args, "platform", "cli")
@@ -260,17 +276,10 @@ def tools_disable_enable_command(args):
     toolset_targets = [t for t in targets if ":" not in t]
     mcp_targets = [t for t in targets if ":" in t]
 
-    valid_toolsets = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS} | _get_plugin_toolset_keys()
-    unknown_toolsets = [t for t in toolset_targets if t not in valid_toolsets]
-    for name in unknown_toolsets:
-        _print_error(f"Unknown toolset '{name}'")
-    # Reject platform-scoped toolsets on platforms that don't allow them.
-    restricted_targets = [t for t in toolset_targets
-                          if t in valid_toolsets and not _toolset_allowed_for_platform(t, platform)]
-    for name in restricted_targets:
-        allowed = sorted(_TOOLSET_PLATFORM_RESTRICTIONS.get(name) or set())
-        _print_error(f"Toolset '{name}' is not available on platform '{platform}' (only: {', '.join(allowed)})")
-    rejected = set(unknown_toolsets) | set(restricted_targets)
+    rejections = toolset_rejections(toolset_targets, platform)
+    for message in rejections.values():
+        _print_error(message)
+    rejected = set(rejections)
     toolset_targets = [t for t in toolset_targets if t not in rejected]
     if toolset_targets:
         _apply_toolset_change(config, platform, toolset_targets, action)

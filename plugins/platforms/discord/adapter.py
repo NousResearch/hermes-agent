@@ -89,6 +89,29 @@ _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # Discord caps global slash commands at 100/app; exceeding it fails the ENTIRE sync (error 30032).
 _DISCORD_MAX_APP_COMMANDS = 100
+# A slash-command name must be 1-32 chars of lower-case letters, digits, hyphen or underscore;
+# discord.py raises ValueError from Command() itself when it is not, before add_command is reached.
+_DISCORD_COMMAND_ILLEGAL_RE = re.compile(r"[^0-9a-z_-]+")
+
+
+def _discord_command_name(name: str) -> str:
+    """Map a plugin/registry command name onto Discord's slash-command grammar.
+
+    Plugin commands are free-form (``note.add``); Discord rejects anything outside
+    ``[-_a-z0-9]{1,32}`` at ``Command()`` construction. Transliterating here keeps such a command
+    usable instead of dropped, and — because the result is always legal — keeps one hostile name
+    from aborting the registrations that follow it (#123610).
+
+    Mapping is lossy, so distinct names can converge (``note.add`` and ``note add`` both become
+    ``note-add``). Callers must treat the returned name as a key, not as an identity.
+    """
+    mapped = _DISCORD_COMMAND_ILLEGAL_RE.sub("-", str(name or "").strip().lower()).strip("-_")
+    if not mapped:
+        # Nothing survived (a name of only illegal characters): fall back to a legal placeholder
+        # rather than the empty name, which Discord rejects too.
+        mapped = "command"
+    return mapped[:32].rstrip("-_") or "command"
+
 # Native slash commands (registered before COMMAND_REGISTRY/plugins so they survive the 100 cap):
 #   (discord name, description, [(arg, type, default-or-_REQUIRED, arg description,
 #   [(choice label, value), ...] or None)], command-text template, follow-up message)
@@ -4499,14 +4522,27 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # Auto-register COMMAND_REGISTRY + plugin commands not yet on the tree. Native
         # commands above always survive the 100-command cap; reserve one slot for /skill.
         already_registered: set[str] = set()
+        # Source name that claimed each Discord name, so a lossy mapping collision is reported
+        # rather than silently dropping the later command.
+        registered_from: dict[str, str] = {}
         slot_cap = _DISCORD_MAX_APP_COMMANDS - 1
         dropped_over_cap = 0
 
         def _auto_register(name: str, description: str, args_hint: str) -> None:
             nonlocal dropped_over_cap
-            # Discord command names: lowercase, hyphens OK, max 32 chars.
-            discord_name = name.lower()[:32]
+            # Map onto Discord's grammar first: an unmapped name like `note.add` is rejected by
+            # Command() itself, and that ValueError used to escape this function and abort every
+            # later registration in the caller's loop (#123610).
+            discord_name = _discord_command_name(name)
             if discord_name in already_registered:
+                owner = registered_from.get(discord_name)
+                # Same name offered twice is the normal case; a *different* source name mapping
+                # onto an occupied slot is a collision the operator needs to see (#123610).
+                if owner is not None and owner != name:
+                    logger.warning(
+                        "Plugin command /%s maps to /%s, which is already registered from /%s; "
+                        "skipping", name, discord_name, owner,
+                    )
                 return
             if len(already_registered) >= slot_cap:
                 dropped_over_cap += 1
@@ -4515,23 +4551,33 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                       _t_discord("platform.discord.command.auto_args_description", _DISCORD_APP_COMMAND_TEXT_LIMIT, args_hint=args_hint),
                       None),) if args_hint else ())
             template = f"/{name} {{args}}" if args_hint else f"/{name}"
-            auto_cmd = discord.app_commands.Command(
-                name=discord_name,
-                description=_truncate_discord_component_text(
-                    description or t("platform.discord.command.auto_description_fallback", name=name),
-                    _DISCORD_APP_COMMAND_TEXT_LIMIT),
-                callback=self._slash_proxy(name, args, template, None, strip=bool(args_hint), prefix="auto_slash_"),
-            )
+            # Construction belongs inside the guard: it validates the name and can raise, and a
+            # raise here would otherwise take down every command registered after this one. Only
+            # construction and add_command are guarded: a failure in the description/signature
+            # work above is a real bug and must keep propagating.
             try:
+                auto_cmd = discord.app_commands.Command(
+                    name=discord_name,
+                    description=_truncate_discord_component_text(
+                        description or t("platform.discord.command.auto_description_fallback", name=name),
+                        _DISCORD_APP_COMMAND_TEXT_LIMIT),
+                    callback=self._slash_proxy(name, args, template, None, strip=bool(args_hint), prefix="auto_slash_"),
+                )
                 tree.add_command(auto_cmd)
-                already_registered.add(discord_name)
-            except Exception:
-                # e.g. name conflict with a subcommand group.
-                pass
+            except Exception as exc:
+                # e.g. name conflict with a subcommand group, or a name Discord still rejects.
+                # Skip this one command; the rest of the picker must survive.
+                logger.warning("Skipping /%s in the Discord slash picker: %s", discord_name, exc)
+                return
+            already_registered.add(discord_name)
+            registered_from[discord_name] = name
         try:
             from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
             try:
                 already_registered = {cmd.name for cmd in tree.get_commands()}
+                # Pre-existing commands have no known source name; record the Discord name
+                # itself so a later plugin command colliding with one is reported, not silent.
+                registered_from = {name: name for name in already_registered}
             except Exception:
                 pass
             config_overrides = _resolve_config_gates()

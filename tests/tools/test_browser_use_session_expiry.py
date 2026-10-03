@@ -77,6 +77,25 @@ def test_orphan_reaper_recovers_session_name_from_compact_socket_dir(monkeypatch
     reap.assert_called_once_with(str(socket_dir), session_name, {"real-profile"})
 
 
+def test_orphan_reaper_recovers_session_name_from_pid_marker(monkeypatch, tmp_path):
+    session_name = "hermes_12345678-1234-5678-1234-567812345678_ab12cd34"
+    socket_dir = tmp_path / ("agent-browser-" + hashlib.sha256(
+        session_name.encode("utf-8")).hexdigest()[:16])
+    socket_dir.mkdir()
+    (socket_dir / f"{session_name}.pid").write_text("123", encoding="utf-8")
+
+    monkeypatch.setattr(bt_lifecycle._bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
+    monkeypatch.setattr(bt_lifecycle._bt, "_REAL_PROFILE_SESSION", "real-profile")
+    monkeypatch.setattr(bt_lifecycle._bt, "_active_sessions", {})
+    monkeypatch.setattr(bt_lifecycle, "_best_effort", lambda label, fn: None)
+    reap = Mock(return_value=False)
+    monkeypatch.setattr(bt_lifecycle, "_reap_socket_dir", reap)
+
+    bt_lifecycle._reap_orphaned_browser_sessions()
+
+    reap.assert_called_once_with(str(socket_dir), session_name, {"real-profile"})
+
+
 def test_release_session_resources_uses_compact_socket_dir(monkeypatch, tmp_path):
     session_name = "hermes_12345678-1234-5678-1234-567812345678_ab12cd34"
     socket_dir = tmp_path / ("agent-browser-" + hashlib.sha256(

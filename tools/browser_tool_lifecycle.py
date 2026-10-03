@@ -13,7 +13,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from tools.browser_tool_origin import origin as _bt
@@ -205,16 +205,30 @@ def _socket_dir_for_session(session_name: str) -> str:
     return os.path.join(_bt._socket_safe_tmpdir(), f"agent-browser-{session_digest}")
 
 
-def _recover_session_name(socket_dir: str) -> str:
-    """Recover the real session name from its owner marker, with legacy fallback."""
+def _recover_session_name(socket_dir: str, tracked_names: Iterable[str] = ()) -> str:
+    """Recover the real session name from durable markers before using the compact digest.
+
+    The owner marker is best-effort, so a process can leave only ``<session>.pid`` after
+    marker creation fails.  A tracked full name is also authoritative for a live session;
+    both prevent the reaper from treating a compact directory's digest as its session name.
+    """
     try:
         with os.scandir(socket_dir) as entries:
-            for entry in entries:
-                if entry.name.endswith(".owner_pid"):
-                    return entry.name[:-len(".owner_pid")]
+            names = [entry.name for entry in entries]
+            for name in names:
+                if name.endswith(".owner_pid"):
+                    return name[:-len(".owner_pid")]
+            pid_names = [name[:-len(".pid")] for name in names if name.endswith(".pid")]
+            if pid_names:
+                return pid_names[0]
     except OSError:
         pass
-    return os.path.basename(socket_dir).removeprefix("agent-browser-")
+
+    directory_name = os.path.basename(socket_dir).removeprefix("agent-browser-")
+    for session_name in tracked_names:
+        if session_name and _socket_dir_for_session(session_name) == socket_dir:
+            return session_name
+    return directory_name
 
 
 def _write_owner_pid(socket_dir: str, session_name: str) -> None:
@@ -419,7 +433,7 @@ def _reap_orphaned_browser_sessions():
 
     reaped = 0
     for socket_dir in socket_dirs:
-        session_name = _recover_session_name(socket_dir)
+        session_name = _recover_session_name(socket_dir, tracked_names)
         if session_name and _reap_socket_dir(socket_dir, session_name, tracked_names):
             reaped += 1
 

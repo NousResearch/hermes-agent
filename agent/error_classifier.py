@@ -1078,6 +1078,20 @@ def _status_429(c: _Ctx) -> Verdict:
     return _V_RATE_LIMIT
 
 
+def _status_413(c: _Ctx) -> Verdict:
+    """Disambiguate genuine payload limits from Groq token-rate limits.
+
+    Groq can report its input-tokens-per-minute ceiling as HTTP 413 with
+    ``code=rate_limit_exceeded``.  Treating that response as a payload error
+    enters the compression loop and eventually terminates with "Cannot
+    compress further".  Preserve normal payload recovery for every other 413,
+    but route explicit rate-limit bodies through the existing fallback path.
+    """
+    if c.code == "rate_limit_exceeded" or any(p in c.msg for p in _RATE_LIMIT_PATTERNS):
+        return _V_RATE_LIMIT
+    return _V_PAYLOAD_TOO_LARGE
+
+
 def _status_5xx(c: _Ctx) -> Verdict:
     # Request-validation errors as 5xx (codex.nekos.me) fail fast instead of
     # retry-flooding — unless the parameter was injected server-side.
@@ -1216,7 +1230,7 @@ def _classify_image_tool_422(c: _Ctx) -> Verdict:
 # read window). Unlisted 4xx → format_error, 5xx → server_error.
 _STATUS_HANDLERS: Dict[int, Callable[[_Ctx], Verdict]] = {
     400: _classify_400, 401: lambda c: _V_AUTH_ROTATE, 402: lambda c: _classify_402(c.msg, dict),
-    403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
+    403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: _status_413,
     422: lambda c: _classify_image_tool_422(c),
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
     503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,

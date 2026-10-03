@@ -207,6 +207,27 @@ describe('useMessageStream interim text sealing', () => {
     expect(getState().interimBoundaryPending).toBe(true)
   })
 
+  it('settles after a late tool boundary onto the streamed bubble instead of the empty tool bubble', async () => {
+    mountStream()
+    await start()
+    await delta('The streamed answer')
+
+    // A tool/thinking interleave can leave an empty assistant segment after
+    // the text-bearing stream. Completion belongs to the text-bearing segment.
+    await act(() =>
+      stream.handleEvent({
+        payload: { name: 'shell', tool_id: 'tool-1' },
+        session_id: SID,
+        type: 'tool.start'
+      })
+    )
+    await complete('The streamed answer, finished.')
+
+    const texts = assistantMessages()
+    expect(texts.filter(text => text.includes('The streamed answer'))).toHaveLength(1)
+    expect(texts).toContain('The streamed answer, finished.')
+  })
+
   it('settles an identical final onto a non-previewed interim (tool-call turn) instead of duplicating (#63679)', async () => {
     mountStream()
     await start()

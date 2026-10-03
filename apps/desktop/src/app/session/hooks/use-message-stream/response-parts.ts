@@ -8,7 +8,8 @@ export function currentResponseParts(parts: ChatMessagePart[]): ChatMessagePart[
 }
 
 export function mergeCurrentResponseText(parts: ChatMessagePart[], text: string, timestamp: number): ChatMessagePart[] {
-  const boundary = parts.findLastIndex(part => part.type === 'tool-call') + 1
-
-  return [...parts.slice(0, boundary), ...mergeFinalAssistantText(parts.slice(boundary), text, timestamp)]
+  // Finals can be cumulative across a tool boundary. Let mergeFinalAssistantText
+  // see the retained prefix so it can strip that prefix before replacing the
+  // latest response instead of appending the cumulative text a second time.
+  return mergeFinalAssistantText(parts, text, timestamp)
 }

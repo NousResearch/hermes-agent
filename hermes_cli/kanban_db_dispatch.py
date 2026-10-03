@@ -2886,6 +2886,13 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
+    # Each worker gets its own systemd scope. Export the same host-wide budget
+    # used by dispatch so process_registry can divide the physical-RAM share
+    # across all workers that may coexist, rather than granting every worker
+    # half the host.
+    worker_concurrency = resolve_max_in_progress(configured_max_in_progress())
+    if worker_concurrency is not None:
+        env["HERMES_KANBAN_MAX_IN_PROGRESS"] = str(worker_concurrency)
     env["HERMES_KANBAN_WORKSPACE"] = workspace
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.

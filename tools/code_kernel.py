@@ -83,7 +83,16 @@ import sys
 import threading
 import traceback
 
-_SENTINEL = os.environ["HERMES_KERNEL_SENTINEL"]
+_SENTINEL = os.environ.get("HERMES_KERNEL_SENTINEL")
+if _SENTINEL is None:
+    # _spawn always exports this on child_env; arriving without it means the
+    # spawn environment was stripped downstream or the file was invoked
+    # directly. Refuse loudly so the surfaced stderr names the real defect
+    # instead of a bare KeyError.
+    sys.stderr.write(
+        "hermes_kernel_runner: HERMES_KERNEL_SENTINEL is not exported; "
+        "refusing to start without the kernel launch environment\\n")
+    raise SystemExit(78)  # EX_CONFIG: misconfigured spawn, not a code bug
 _CAPTURE_LIMIT = {capture_limit}
 _SPILL_DIR = os.environ.get("HERMES_KERNEL_SPILL_DIR", "")
 _SPILL_CAP = {spill_cap}

@@ -42,6 +42,12 @@
     "globals": "17.7.0",
     "typescript-eslint": "8.64.0"
   },
+  "allowScripts": {
+    "agent-browser@0.26.0": true,
+    "esbuild@0.28.1": true,
+    "fsevents@2.3.3": true,
+    "unicode-animations@1.0.3": true
+  },
   "overrides": {
     "@electron/osx-sign": {
       "isbinaryfile": "5.0.7"

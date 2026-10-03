@@ -37,6 +37,132 @@ export const queueItemFromSlash = (displayCommand: string, expandedCommand: stri
   return queueItem(slashArgument(expandedCommand), display)
 }
 
+const QUEUE_LIST_VERBS = new Set(['list', 'ls', 'show'])
+const QUEUE_INDEX_VERBS = new Set(['edit', 'set', 'rm', 'remove', 'delete', 'del', 'pop', 'move'])
+
+const queueIndex = (token: string): number | null => (/^\d+$/.test(token) ? Number(token) : null)
+
+const queueUsage = (verb: string): string => {
+  if (verb === 'move') {
+    return 'usage: /queue move <from> <to>'
+  }
+
+  return verb === 'edit' || verb === 'set' ? 'usage: /queue edit <n> <prompt>' : 'usage: /queue rm <n>'
+}
+
+const queuePreview = (text: string) => `${text.replace(/\n/g, ' ').slice(0, 80)}${text.length > 80 ? '…' : ''}`
+
+const listQueuedPrompts = (queue: QueueItem[]): string =>
+  queue.length
+    ? `Queued prompts (${queue.length}):\n${queue.map((item, i) => `  ${i + 1}. ${queuePreview(item.display)}`).join('\n')}`
+    : 'Queue is empty.'
+
+/**
+ * `/queue` management verbs, mirroring the classic CLI's `_cmd_queue` routing so
+ * the same input means the same thing on every surface: a bare `/queue` lists,
+ * `list`/`clear` manage only when they stand alone, and `edit N …`/`rm N`/
+ * `move A B` manage only when a number leads the rest — so `clear the logs` and
+ * `edit the config` stay queued prompts. Mutates `queue` in place and returns
+ * the notice to show, or undefined when the input should take the normal
+ * enqueue path.
+ */
+export const applyQueueCommand = (
+  displayCommand: string,
+  expandedCommand: string,
+  queue: QueueItem[]
+): string | undefined => {
+  const payload = slashArgument(expandedCommand).trim()
+  const displayPayload = slashArgument(displayCommand).trim()
+
+  if (!payload) {
+    return listQueuedPrompts(queue)
+  }
+
+  const head = payload.split(/\s+/, 1)[0] ?? ''
+  const verb = head.toLowerCase()
+  const rest = payload.slice(head.length).trim()
+
+  if (verb === 'add') {
+    return rest ? undefined : 'usage: /queue add <prompt>'
+  }
+
+  if (QUEUE_LIST_VERBS.has(verb) && !rest) {
+    return listQueuedPrompts(queue)
+  }
+
+  if (verb === 'clear' && !rest) {
+    const count = queue.length
+    queue.splice(0, queue.length)
+
+    return `Cleared ${count} queued ${count === 1 ? 'prompt' : 'prompts'}.`
+  }
+
+  if (!QUEUE_INDEX_VERBS.has(verb)) {
+    return undefined
+  }
+
+  const bits = rest.split(/\s+/)
+  const index = queueIndex(bits[0] ?? '')
+  const outOfRange = (n: number) => n < 1 || n > queue.length
+
+  if (verb === 'move') {
+    if (index === null) {
+      return rest ? undefined : queueUsage(verb)
+    }
+
+    const dst = bits.length === 2 ? queueIndex(bits[1]!) : null
+
+    if (dst === null) {
+      return queueUsage(verb)
+    }
+
+    if (outOfRange(index) || outOfRange(dst)) {
+      return `Move out of range — queue has ${queue.length} queued ${queue.length === 1 ? 'prompt' : 'prompts'}.`
+    }
+
+    queue.splice(dst - 1, 0, ...queue.splice(index - 1, 1))
+
+    return `Moved #${index} → #${dst}.`
+  }
+
+  if (index === null) {
+    return rest ? undefined : queueUsage(verb)
+  }
+
+  if (verb === 'edit' || verb === 'set') {
+    const text = rest.slice(bits[0]!.length).trim()
+
+    if (!text) {
+      return queueUsage(verb)
+    }
+
+    if (outOfRange(index)) {
+      return `No queued prompt #${index} — queue has ${queue.length}.`
+    }
+
+    // The replacement keeps the display/expanded split: when the argument
+    // carried a collapsed paste the transcript should show the label, not the
+    // expanded payload.
+    const display = displayPayload === payload ? text : displayPayload.replace(/^\S+\s+\S+\s*/, '') || text
+
+    queue[index - 1] = queueItem(text, display)
+
+    return `Updated #${index}: "${queuePreview(text)}"`
+  }
+
+  if (bits.length !== 1) {
+    return queueUsage(verb)
+  }
+
+  if (outOfRange(index)) {
+    return `No queued prompt #${index} — queue has ${queue.length}.`
+  }
+
+  const [removed] = queue.splice(index - 1, 1)
+
+  return `Removed #${index}: "${queuePreview(removed!.display)}"`
+}
+
 export const prepareSubmission = (display: string, tokens: ComposerToken[]) => ({
   display,
   text: expandTokens(tokens)(display)
@@ -274,14 +400,21 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
         const parsed = parseSlashCommand(full)
 
-        const queued =
-          parsed.name === 'queue' || parsed.name === 'q' ? queueItemFromSlash(slash.display, slash.command) : undefined
+        const isQueueCommand = parsed.name === 'queue' || parsed.name === 'q'
 
-        if (queued) {
-          // Handled here, before the slash handler, so it is counted here.
+        if (isQueueCommand) {
+          // Handled here, before the slash handler, so it is counted here —
+          // including the management verbs, which never reach the gateway.
           reportSlashCommand(gw, parsed.name, getUiState().sid)
-          composerActions.enqueue(queued.text, queued.display)
-          sys(`queued: "${queued.display.slice(0, 50)}${queued.display.length > 50 ? '…' : ''}"`)
+          const queued = queueItemFromSlash(slash.display, slash.command)
+          const notice = applyQueueCommand(slash.display, slash.command, composerRefs.queueRef.current)
+
+          if (notice !== undefined) {
+            sys(notice)
+          } else {
+            composerActions.enqueue(queued!.text, queued!.display)
+            sys(`queued: "${queued!.display.slice(0, 50)}${queued!.display.length > 50 ? '…' : ''}"`)
+          }
         } else {
           slashRef.current(slash.command)
         }

@@ -18,6 +18,7 @@ import json
 import pytest
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.event import MessageType
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
 from gateway.relay.ws_transport import PassthroughForward, _passthrough_from_wire
@@ -225,6 +226,51 @@ async def test_application_command_subcommand_nesting_renders_names_then_values(
     assert ev.is_command() is True
     assert ev.get_command() == "skill"
     assert ev.get_command_args() == "run deploy"
+
+
+def test_context_menu_interaction_preserves_resolved_target(adapter):
+    event = adapter._discord_interaction_to_event(
+        _interaction_forward(
+            {
+                "id": "i-context",
+                "type": 2,
+                "channel_id": "c6",
+                "guild_id": "g6",
+                "data": {
+                    "name": "summarize",
+                    "target_id": "m77",
+                    "resolved": {"messages": {"m77": {"content": "the msg"}}},
+                },
+                "member": {"user": {"id": "u6", "username": "ben"}},
+            }
+        )
+    )
+    assert event is not None
+    assert event.text == "/summarize target=m77 content=the msg"
+    assert event.is_command() is True
+
+
+def test_modal_submit_renders_component_values(adapter):
+    event = adapter._discord_interaction_to_event(
+        _interaction_forward(
+            {
+                "id": "i-modal",
+                "type": 5,
+                "channel_id": "c7",
+                "guild_id": "g7",
+                "data": {
+                    "components": [
+                        {"components": [{"custom_id": "name", "value": "Ada"}]},
+                        {"components": [{"custom_id": "note", "value": "hello world"}]},
+                    ]
+                },
+                "member": {"user": {"id": "u7", "username": "ben"}},
+            }
+        )
+    )
+    assert event is not None
+    assert event.text == "name=Ada note=hello world"
+    assert event.message_type == MessageType.TEXT
 
 
 @pytest.mark.asyncio

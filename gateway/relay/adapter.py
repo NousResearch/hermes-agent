@@ -1210,7 +1210,7 @@ class RelayAdapter(BasePlatformAdapter):
             # A component press whose custom_id is a Hermes prompt token
             # (hp1:<prompt_id>:<option_id>) becomes a STRUCTURED prompt answer;
             # foreign custom_ids keep the best-effort TEXT shape.
-            decoded = self._decode_prompt_token(text)
+            decoded = self._decode_prompt_token(str(data.get("custom_id") or ""))
             if decoded:
                 prompt_id, option_id = decoded
                 msg = payload.get("message") or {}

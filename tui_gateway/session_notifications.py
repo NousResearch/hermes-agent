@@ -729,7 +729,7 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     emitted = session.setdefault("_notification_emitted", set())
     handle = lambda events, deferred: _notif_handle_ready(  # noqa: E731
         sid, session, events, emitted, process_registry, format_process_notification, deferred)
-    last_kanban_poll = last_loop_poll = last_bot_poll = 0.0
+    last_kanban_poll = last_loop_poll = last_bot_poll = last_quota_resume_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
         # Completions whose owner process died after this one started (#97202); throttled per profile home.
@@ -746,6 +746,13 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
                     fire(sid, session)
                 except Exception as tick_exc:
                     _notif_log_failure(f"{what} poll failed", tick_exc)
+        # Provider quota window reopened: finish the turn its usage limit killed.
+        if now - last_quota_resume_poll >= _QUOTA_RESUME_POLL_SECONDS:
+            last_quota_resume_poll = now
+            try:
+                _maybe_fire_quota_resume(sid, session)
+            except Exception as quota_exc:
+                _notif_log_failure("quota resume poll failed", quota_exc)
         if now - last_kanban_poll >= _KANBAN_POLL_SECONDS:
             last_kanban_poll = now
             _notif_poll_kanban(sid, session)

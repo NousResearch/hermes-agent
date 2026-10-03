@@ -161,6 +161,16 @@ describe('useComposerTrigger — slash anywhere in the prompt', () => {
 })
 
 describe('useComposerTrigger — free-text slash arguments', () => {
+  it('marks a bare free-text command before its first argument space', () => {
+    const editor = mountEditor('/title')
+    const { hook } = mountTrigger(editor, [item('/title', 'Commands')])
+
+    act(() => hook.result.current.refreshTrigger())
+
+    expect(hook.result.current.slashFreeTextArgStage).toBe(false)
+    expect(hook.result.current.slashFreeTextCommand).toBe(true)
+  })
+
   it('keeps a picked /goal command as editable text while retaining subcommand completion', () => {
     const editor = mountEditor('/go')
     const goal = item('/goal', 'Commands')

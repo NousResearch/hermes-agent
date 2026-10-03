@@ -125,7 +125,7 @@ class MessageEvent:
     def _replies_to_message(self) -> bool:
         return bool(self.reply_to_message_id or self.reply_to_text)
 
-    def _reply_context(self) -> tuple:
+    def reply_context(self) -> tuple:
         return (self.reply_to_message_id, self.reply_to_text, self.reply_to_author_id,
                 self.reply_to_author_name, bool(self.reply_to_is_own_message))
 
@@ -133,14 +133,14 @@ class MessageEvent:
         """True when both events reply to a message and their reply contexts differ. A merged
         event has room for only one reply context."""
         return (self._replies_to_message() and other._replies_to_message()
-                and self._reply_context() != other._reply_context())
+                and self.reply_context() != other.reply_context())
 
     def absorb_reply_context(self, other: "MessageEvent") -> None:
         """One turn now answers *other* too: take its reply context if this event has none."""
         if self._replies_to_message() or not other._replies_to_message():
             return
         (self.reply_to_message_id, self.reply_to_text, self.reply_to_author_id,
-         self.reply_to_author_name, self.reply_to_is_own_message) = other._reply_context()
+         self.reply_to_author_name, self.reply_to_is_own_message) = other.reply_context()
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

@@ -92,22 +92,8 @@ class TelegramTextBatchingMixin:
             lambda ev: logger.info("[Telegram] Flushing text batch %s (%d chars)", key, len(ev.text or "")))
 
     @staticmethod
-    def _text_batch_reply_context(event: MessageEvent) -> tuple:
-        """Return every reply field whose meaning would spread across a batch."""
-        return (
-            event.reply_to_message_id,
-            event.reply_to_text,
-            event.reply_to_author_id,
-            event.reply_to_author_name,
-            bool(event.reply_to_is_own_message),
-        )
-
-    @classmethod
-    def _text_batch_has_reply_context(cls, event: MessageEvent) -> bool:
-        return any(
-            value not in (None, "", False)
-            for value in cls._text_batch_reply_context(event)
-        )
+    def _text_batch_has_reply_context(event: MessageEvent) -> bool:
+        return any(value not in (None, "", False) for value in event.reply_context())
 
     def _text_batch_context_compatible(
         self: TelegramAdapter,
@@ -120,9 +106,7 @@ class TelegramTextBatchingMixin:
         of a client-split long message. A following metadata-free chunk can
         inherit that first chunk's reply context.
         """
-        if self._text_batch_reply_context(existing) == self._text_batch_reply_context(
-            incoming
-        ):
+        if existing.reply_context() == incoming.reply_context():
             return True
 
         existing_last_len = getattr(

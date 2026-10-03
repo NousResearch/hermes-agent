@@ -195,6 +195,12 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Option
     chrome_argv = [real_binary, f"--user-data-dir={copy_dir}", *_REAL_PROFILE_CHROME_FLAGS]
     _session._ensure_screen_for_headed_chromium()
     browser_env = _bt._build_browser_env()  # carries the Bot Desktop DISPLAY when one is running
+    # A root / Docker / AppArmor-userns host cannot start Chromium with its sandbox enabled
+    # ("Running as root without --no-sandbox is not supported" -> immediate exit). This lane
+    # builds argv directly, so agent-browser's own _apply_chromium_sandbox_args never runs:
+    # mirror that bypass here or every real-profile launch dies at startup.
+    if _session._needs_chromium_sandbox_bypass():
+        chrome_argv += ["--no-sandbox", "--disable-dev-shm-usage"]
     _has_display = bool(browser_env.get("DISPLAY") or browser_env.get("WAYLAND_DISPLAY"))
     if not (_cloud._is_headed_mode() and (_has_display or not sys.platform.startswith("linux"))):
         chrome_argv.append("--headless=new")

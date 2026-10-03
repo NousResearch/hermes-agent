@@ -9,7 +9,9 @@ publication belong to PM, not this CLI entry point.
 
 from __future__ import annotations
 
+import ast
 import json
+import re
 import subprocess
 import sys
 import textwrap
@@ -189,5 +191,7 @@ def test_relaunch_resolves_bare_launcher_via_path(monkeypatch, tmp_path):
         ["python", "-m", "hermes_cli.main", "gateway", "status"], None,
     )
 
-    assert str(launcher) in command[-1]
+    match = re.search(r"run_path\((.+?), run_name", command[-1])
+    assert match is not None
+    assert ast.literal_eval(match.group(1)) == str(launcher)
     assert "runpy.run_path" in command[-1]

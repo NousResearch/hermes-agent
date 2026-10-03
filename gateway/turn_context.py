@@ -28,6 +28,10 @@ class TurnContext:
     tool_progress_enabled: bool = False
     progress_queue: Any = None
     log_queue: Any = None
+    # Raw model commentary segments for the Telegram plan-aware progress card
+    # (#124600); created only for Telegram turns, drained by the long-running
+    # notifier. None everywhere else (legacy heartbeat path unchanged).
+    telegram_progress_queue: Any = None
     # mutable single-element containers (shared with the outer body)
     last_progress_msg: list = field(default_factory=lambda: [None])
     last_tool: list = field(default_factory=lambda: [None])

@@ -980,6 +980,10 @@ class TurnRunner:
         def interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
+            _progress_tee = getattr(ctx, "telegram_progress_queue", None)
+            if _progress_tee is not None and str(text or "").strip():
+                with suppress(Exception):
+                    _progress_tee.put_nowait(text)
             if stts is not None:
                 # Flush accepted deltas; completed commentary is a separate speech segment.
                 stts.on_delta(None)

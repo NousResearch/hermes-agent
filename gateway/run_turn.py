@@ -3096,6 +3096,7 @@ class GatewayTurnMixin:
             run_generation=run_generation, _cleanup_progress=_cleanup_progress,
             _run_still_current=self._run_still_current_fn(session_key, run_generation),
             progress_queue=queue.Queue() if disp.needs_progress_queue else None,
+            telegram_progress_queue=queue.Queue() if source.platform == Platform.TELEGRAM else None,
             _voice_ack_guild=_voice_ack_guild, _voice_ack_loop=asyncio.get_running_loop(),
             **{name: getattr(disp, name) for name in self._DISPLAY_TO_TURN_CTX}, **turn_params,
         )
@@ -4211,6 +4212,11 @@ class GatewayTurnMixin:
         _notify_adapter = self._delivery_adapter_for(source)
         if not _notify_adapter:
             return
+        if source.platform == Platform.TELEGRAM and getattr(turn_ctx, "telegram_progress_queue", None) is not None:
+            await self._run_telegram_progress_card(
+                turn_ctx, _executor_task_holder, _notify_adapter, _status_thread_metadata,
+            )
+            return
         _heartbeat_msg_id: Optional[str] = None
         while True:
             await asyncio.sleep(_NOTIFY_INTERVAL)
@@ -4265,6 +4271,84 @@ class GatewayTurnMixin:
                             turn_ctx._cleanup_msg_ids.append(_heartbeat_msg_id)
             except Exception as _ne:
                 logger.debug("Long-running notification error: %s", _ne)
+
+    async def _run_telegram_progress_card(
+        self, turn_ctx: TurnContext, _executor_task_holder: list,
+        _notify_adapter: Any, _status_thread_metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        """Single plan-aware progress card for Telegram long-running turns (#124600).
+
+        Sends on the first clean commentary segment (no tick wait) and edits the same
+        card in place: new commentary renders as ``Now:`` under the pinned ``Plan:``
+        block, edits are floored (``HERMES_TELEGRAM_PROGRESS_EDIT_FLOOR``, default 60s),
+        and the elapsed header refreshes on fallback silence (``HERMES_TELEGRAM_PROGRESS_FALLBACK``,
+        default 300s). Stays silent without clean commentary. Stops once this run no
+        longer owns the session slot or the executor finished. After acting, the loop
+        coalesces on the edit floor (nothing new can be due before it elapses)."""
+        from gateway.run import _float_env, _interim_metadata, _non_conversational_metadata
+        from gateway.telegram_progress_card import (
+            EDIT_FLOOR_SECONDS,
+            FALLBACK_REFRESH_SECONDS,
+            TelegramProgressCard,
+        )
+        source, session_key, agent_holder = turn_ctx.source, turn_ctx.session_key, turn_ctx.agent_holder
+        _progress_queue = getattr(turn_ctx, "telegram_progress_queue", None)
+        if _progress_queue is None:
+            return
+        _poll = min(max(_float_env("HERMES_TELEGRAM_PROGRESS_POLL", 5.0), 0.005), 60.0)
+        _card = TelegramProgressCard(
+            edit_floor=_float_env("HERMES_TELEGRAM_PROGRESS_EDIT_FLOOR", EDIT_FLOOR_SECONDS),
+            fallback=_float_env("HERMES_TELEGRAM_PROGRESS_FALLBACK", FALLBACK_REFRESH_SECONDS),
+        )
+        _card_msg_id: Optional[str] = None
+        while True:
+            await asyncio.sleep(_poll)
+            try:
+                _drained = 0
+                while _drained < 100:
+                    try:
+                        _seg = _progress_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    _drained += 1
+                    with suppress(Exception):
+                        _card.observe(_seg, now=time.time())
+            except Exception as _de:
+                logger.debug("Telegram progress-card drain error: %s", _de)
+            _now = time.time()
+            _text = _card.render(now=_now)
+            if _text is not None and (_card.should_send(_now) or _card.due_for_refresh(_now)):
+                if not self._should_emit_long_running_notification(
+                    session_key, agent_holder[0], _executor_task_holder[0]
+                ):
+                    break
+                try:
+                    _card_res = None
+                    if _card_msg_id is not None:
+                        try:
+                            _card_res = await _notify_adapter.edit_message(source.chat_id, _card_msg_id, _text)
+                        except Exception as _ee:
+                            logger.debug("Progress-card edit failed: %s", _ee)
+                            _card_res = None
+                    if not (_card_res and getattr(_card_res, "success", False)):
+                        _card_res = await _notify_adapter.send(
+                            source.chat_id, _text,
+                            metadata=_interim_metadata(_non_conversational_metadata(_status_thread_metadata, platform=source.platform)),
+                        )
+                    if getattr(_card_res, "success", False) and getattr(_card_res, "message_id", None):
+                        _card_msg_id = str(_card_res.message_id)
+                        _card.mark_sent(_card_msg_id, now=time.time())
+                        if turn_ctx._cleanup_progress and _card_msg_id not in turn_ctx._cleanup_msg_ids:
+                            turn_ctx._cleanup_msg_ids.append(_card_msg_id)
+                except Exception as _ne:
+                    logger.debug("Telegram progress-card notification error: %s", _ne)
+                # Coalesce on the edit floor: nothing new can be due before it elapses.
+                await asyncio.sleep(max(0.0, _card.edit_floor))
+                continue
+            if not self._should_emit_long_running_notification(
+                session_key, agent_holder[0], _executor_task_holder[0]
+            ):
+                break
 
     async def _run_agent_inner(
         self, message: str, context_prompt: str, history: List[Dict[str, Any]],

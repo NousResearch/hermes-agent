@@ -1069,6 +1069,13 @@ class TestLinkedDotEntryIntegration:
         self._run(link_home / cwd_rel, f"echo EVIL > {chain}/real")
         assert (chain / "real").read_text().strip() == "ORIGINAL"
 
+    def test_symlink_chain_through_the_cwd_warns_that_the_cwd_is_read_only(self, sandbox_root, link_home, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
+            BubblewrapEnvironment(cwd=str(link_home / "chain"), timeout=10).cleanup()
+        assert any("is read-only inside the sandbox" in r.getMessage() for r in caplog.records)
+
     def test_symlink_chain_is_fixed_at_construction(self, sandbox_root, link_home):
         env = BubblewrapEnvironment(cwd=str(link_home), timeout=30)
         try:

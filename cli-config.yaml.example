@@ -451,6 +451,8 @@ terminal:
 #   bubblewrap_memory_mb: 256      # RLIMIT_AS per process in MB, 0 disables. Raise for pip, node, cargo.
 #   bubblewrap_cpu_seconds: 30     # RLIMIT_CPU per process, 0 disables. Raise for long builds.
 #   bubblewrap_max_procs: 256      # Processes a command may add (RLIMIT_NPROC), 0 disables.
+#   bubblewrap_home_allow: []      # More dot entries of HOME to show read-only: [".zz-tool", ".config/nvim"]
+#   bubblewrap_hide: []            # More paths to hide: ["~/Documents/keys"]
 
 # -----------------------------------------------------------------------------
 # OPTION 3: SSH remote execution

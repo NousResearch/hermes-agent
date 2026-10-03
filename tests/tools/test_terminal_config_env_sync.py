@@ -155,6 +155,8 @@ BUBBLEWRAP_KEYS = {
     "bubblewrap_memory_mb": "TERMINAL_BUBBLEWRAP_MEMORY_MB",
     "bubblewrap_cpu_seconds": "TERMINAL_BUBBLEWRAP_CPU_SECONDS",
     "bubblewrap_max_procs": "TERMINAL_BUBBLEWRAP_MAX_PROCS",
+    "bubblewrap_home_allow": "TERMINAL_BUBBLEWRAP_HOME_ALLOW",
+    "bubblewrap_hide": "TERMINAL_BUBBLEWRAP_HIDE",
 }
 
 
@@ -166,7 +168,8 @@ def test_bubblewrap_defaults_feed_the_backend_loader():
     from tools.environments import bubblewrap
 
     assert {bubblewrap.ENV_PROFILE, bubblewrap.ENV_BINDS, bubblewrap.ENV_MEMORY_MB,
-            bubblewrap.ENV_CPU_SECONDS, bubblewrap.ENV_MAX_PROCS} == set(BUBBLEWRAP_KEYS.values())
+            bubblewrap.ENV_CPU_SECONDS, bubblewrap.ENV_MAX_PROCS,
+            bubblewrap.ENV_HOME_ALLOW, bubblewrap.ENV_HIDE} == set(BUBBLEWRAP_KEYS.values())
 
     env = {
         TERMINAL_CONFIG_ENV_MAP[key]: _terminal_env_value(DEFAULT_CONFIG["terminal"][key])

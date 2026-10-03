@@ -31,6 +31,7 @@ from tools.environments.bubblewrap import (
     masked_inside,
     HOST_SOCKET_VARS,
     build_bwrap_args,
+    load_bubblewrap_config,
 )
 from tools.environments.local import LocalEnvironment
 
@@ -1176,6 +1177,96 @@ class TestAbsentDeniedPathGuard:
         cargo.mkdir()
         with _no_session():
             BubblewrapEnvironment(cwd=str(cargo), timeout=10, config=BubblewrapConfig(profile="restricted")).cleanup()
+
+
+class TestHomeAllowAndHideKeys:
+    """terminal.bubblewrap_home_allow widens what shows under HOME and
+    terminal.bubblewrap_hide narrows it; both are read once, at construction."""
+
+    @pytest.fixture
+    def fake_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "homes" / "home"
+        home.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        return home
+
+    def test_loader_reads_both_keys_as_json_lists(self):
+        config = load_bubblewrap_config({
+            "TERMINAL_BUBBLEWRAP_HOME_ALLOW": '[".zz-extra", ".config/zz-app"]',
+            "TERMINAL_BUBBLEWRAP_HIDE": '["~/Documents/keys"]',
+        })
+        assert config.home_allow == (".zz-extra", ".config/zz-app")
+        assert config.hide == ("~/Documents/keys",)
+        assert load_bubblewrap_config({}).home_allow == ()
+        assert load_bubblewrap_config({}).hide == ()
+        assert load_bubblewrap_config({"TERMINAL_BUBBLEWRAP_HIDE": "[]", "TERMINAL_BUBBLEWRAP_HOME_ALLOW": " "}).hide == ()
+
+    @pytest.mark.parametrize("name", ["TERMINAL_BUBBLEWRAP_HOME_ALLOW", "TERMINAL_BUBBLEWRAP_HIDE"])
+    @pytest.mark.parametrize("value", ["not json", '{"a": 1}', "[1, 2]", '"one string"'])
+    def test_loader_rejects_a_malformed_value_and_names_the_variable(self, name, value):
+        with pytest.raises(ValueError, match=name):
+            load_bubblewrap_config({name: value})
+
+    def test_allow_items_make_their_entries_visible(self, sandbox_root, work_dir, fake_home):
+        (fake_home / ".zz-extra").mkdir()
+        (fake_home / ".config" / "zz-app").mkdir(parents=True)
+        (fake_home / ".zz-other").mkdir()
+        config = BubblewrapConfig(home_allow=(".zz-extra", ".config/zz-app"))
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
+        try:
+            mounts = _mounts(env._wrap_popen_args(["bash"]))
+            assert ("--ro-bind-try", str(fake_home / ".zz-extra"), str(fake_home / ".zz-extra")) in mounts
+            assert ("--ro-bind-try", str(fake_home / ".config/zz-app"), str(fake_home / ".config/zz-app")) in mounts
+            assert str(fake_home / ".zz-other") not in {m[-1] for m in mounts}
+        finally:
+            env.cleanup()
+
+    def test_allow_item_for_a_credential_store_is_ignored(self, sandbox_root, work_dir, fake_home, caplog):
+        (fake_home / ".config" / "gh").mkdir(parents=True)
+        (fake_home / ".aws").mkdir()
+        config = BubblewrapConfig(home_allow=(".aws", ".config/gh"))
+        with caplog.at_level(logging.WARNING), _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
+        try:
+            dests = {m[-1] for m in _mounts(env._wrap_popen_args(["bash"]))}
+            assert str(fake_home / ".aws") not in dests
+            assert str(fake_home / ".config" / "gh") not in dests
+            assert len([r for r in caplog.records if "bubblewrap_home_allow" in r.getMessage()]) == 2
+        finally:
+            env.cleanup()
+
+    def test_hide_items_join_the_hidden_set(self, sandbox_root, work_dir, fake_home):
+        keys = fake_home / "Documents" / "keys"
+        keys.mkdir(parents=True)
+        secrets = fake_home / "Secrets"
+        secrets.mkdir()
+        config = BubblewrapConfig(hide=("~/Documents/keys", str(secrets)))
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
+        try:
+            mounts = _mounts(env._wrap_popen_args(["bash"]))
+            assert ("--tmpfs", str(keys)) in mounts
+            assert str(secrets) not in {m[-1] for m in mounts}
+            assert ("--ro-bind-try", str(fake_home / "Documents"), str(fake_home / "Documents")) in mounts
+        finally:
+            env.cleanup()
+
+    @pytest.mark.parametrize("item", ["/", "~", "relative/../.."])
+    def test_hide_item_that_would_hide_home_or_more_is_ignored(self, sandbox_root, work_dir, fake_home, caplog, item):
+        with caplog.at_level(logging.WARNING), _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(hide=(item,)))
+        try:
+            assert len([r for r in caplog.records if "bubblewrap_hide" in r.getMessage()]) == 1
+            assert env._hidden_paths == bubblewrap.sensitive_paths(str(fake_home), env._hermes_home)
+        finally:
+            env.cleanup()
+
+    def test_cwd_under_a_hidden_item_is_refused(self, sandbox_root, fake_home):
+        keys = fake_home / "Documents" / "keys"
+        keys.mkdir(parents=True)
+        with _no_session(), pytest.raises(ValueError, match="terminal.cwd"):
+            BubblewrapEnvironment(cwd=str(keys), timeout=10, config=BubblewrapConfig(hide=(str(keys),)))
 
 
 class TestMaskedCwdRecovery:

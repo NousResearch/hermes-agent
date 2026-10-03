@@ -2020,6 +2020,8 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
         "bubblewrap_memory_mb": "TERMINAL_BUBBLEWRAP_MEMORY_MB",
         "bubblewrap_cpu_seconds": "TERMINAL_BUBBLEWRAP_CPU_SECONDS",
         "bubblewrap_max_procs": "TERMINAL_BUBBLEWRAP_MAX_PROCS",
+        "bubblewrap_home_allow": "TERMINAL_BUBBLEWRAP_HOME_ALLOW",
+        "bubblewrap_hide": "TERMINAL_BUBBLEWRAP_HIDE",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
         "persistent_shell": "TERMINAL_PERSISTENT_SHELL"}
     for _cfg_key, _env_var in _terminal_env_map.items():

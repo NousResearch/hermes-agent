@@ -910,3 +910,19 @@ class TestHomeDefaultDenyIntegration:
         finally:
             env.cleanup()
         assert (config_dir / "zz-new").read_text() == "ok"
+
+    def test_hide_key_hides_a_non_dot_path_and_allow_key_shows_a_dot_entry(self, sandbox_root, deny_home):
+        _write(deny_home / "Documents" / "keys" / "id")
+        _write(deny_home / "Documents" / "notes.txt", VISIBLE)
+        _write(deny_home / ".zz-extra" / "x", VISIBLE)
+        _write(deny_home / ".config" / "zz-app" / "x", VISIBLE)
+        config = BubblewrapConfig(hide=("~/Documents/keys",), home_allow=(".zz-extra", ".config/zz-app", ".config/gh"))
+        env = self._env(deny_home / "proj", config=config)
+        try:
+            assert MARKER not in env.execute(f"cat {deny_home}/Documents/keys/id 2>&1")["output"]
+            assert env.execute(f"cat {deny_home}/Documents/notes.txt")["output"].strip() == VISIBLE
+            assert env.execute(f"cat {deny_home}/.zz-extra/x")["output"].strip() == VISIBLE
+            assert env.execute(f"cat {deny_home}/.config/zz-app/x")["output"].strip() == VISIBLE
+            assert MARKER not in env.execute(f"cat {deny_home}/.config/gh/hosts.yml 2>&1")["output"]
+        finally:
+            env.cleanup()

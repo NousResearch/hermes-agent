@@ -2119,6 +2119,7 @@ TERMINAL_CONFIG_ENV_MAP = {
             "docker_persist_across_processes", "docker_shared_container_key",
             "docker_orphan_reaper", "bubblewrap_profile", "bubblewrap_binds",
             "bubblewrap_memory_mb", "bubblewrap_cpu_seconds", "bubblewrap_max_procs",
+            "bubblewrap_home_allow", "bubblewrap_hide",
             "sandbox_dir", "persistent_shell")}}
 
 

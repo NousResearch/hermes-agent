@@ -23,6 +23,8 @@ def _clean_env_board(monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
 
 
 def test_explicit_board_trumps_kanban_db_env(monkeypatch, tmp_path):
@@ -172,3 +174,97 @@ def test_cli_board_flag_trumps_worker_env_pin_end_to_end(monkeypatch, tmp_path):
         f"--board must not fall through to the worker's env-pinned board, "
         f"but found the task there too: {own_rows!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Fenced callers keep the pinned path (side-effect screen on PR#131913).
+#
+# The env pins are the dispatcher's worker isolation (5ec6baa: "workers
+# physically cannot see other boards"), and kanban_path_is_fenced checks the
+# PINNED path / fenced root. Explicit board intent therefore only outranks the
+# pin where no fence applies: a dispatched worker (HERMES_KANBAN_TASK) or a
+# delegated child / descendant (HERMES_DELEGATED_CHILD_CONTEXT) passing
+# board=<other> must still resolve through the pin, or it would both see and
+# write a board outside the dispatcher's fence. Machine flows that enumerate
+# boards (gateway notifier / watcher / dispatcher ticks) are fenced the same
+# way via kanban_db.pin_first_board_resolution() — the enumerated slug is not
+# caller intent.
+# ---------------------------------------------------------------------------
+
+def test_dispatched_worker_board_arg_stays_pinned(monkeypatch, tmp_path):
+    """A dispatched worker (HERMES_KANBAN_TASK, the dispatcher's own injection)
+    cannot resolve its way to another board: each env pin wins over board= for
+    its own resolver."""
+    pinned = tmp_path / "worker-pinned.db"
+    pinned_workspaces = tmp_path / "worker-pinned-workspaces"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+    monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", str(pinned_workspaces))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_3f1c63a5")
+    assert kb.kanban_db_path(board="other-board") == pinned
+    assert kb.workspaces_root(board="other-board") == pinned_workspaces
+
+
+def test_delegated_child_board_arg_stays_pinned(monkeypatch, tmp_path):
+    """A delegated child / spawned descendant (HERMES_DELEGATED_CHILD_CONTEXT
+    marker) passing an explicit board= resolves through the pin, so
+    kanban_path_is_fenced still catches the resolved path."""
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER, kanban_path_is_fenced
+
+    pinned = tmp_path / "worker-pinned.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+    monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, str(tmp_path))  # fenced root
+    path = kb.kanban_db_path(board="other-board")
+    assert path == pinned
+    assert kanban_path_is_fenced(path), (
+        "the explicit board escaped the dispatcher's pin-based fence"
+    )
+
+
+def test_pin_first_board_resolution_maps_every_slug_to_the_pin(monkeypatch, tmp_path):
+    """Machine flows (gateway notifier/watcher/dispatcher ticks) enumerate board
+    slugs; inside pin_first_board_resolution() every slug must map to the
+    pinned DB, and with no pin set the context must change nothing."""
+    pinned = tmp_path / "pinned.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+    with kb.pin_first_board_resolution():
+        assert kb.kanban_db_path(board="default") == pinned
+        assert kb.kanban_db_path(board="sycode-trading") == pinned
+        assert kb.kanban_db_path(board=None) == pinned
+    # Outside the machine-flow context the explicit board wins again.
+    assert "sycode-trading" in str(kb.kanban_db_path(board="sycode-trading"))
+
+
+def test_pin_first_board_resolution_without_pin_keeps_explicit_board(monkeypatch, tmp_path):
+    """pin_first_board_resolution() is a no-op when no pin is set: multi-board
+    notifier/dispatcher ticks on an unpinned box must keep resolving each slug
+    to its own physical DB."""
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    with kb.pin_first_board_resolution():
+        assert "sycode-trading" in str(kb.kanban_db_path(board="sycode-trading"))
+
+
+def test_notifier_seam_connect_lands_on_pinned_db(monkeypatch, tmp_path):
+    """Integration seam (the screen's repro shape): with HERMES_KANBAN_DB
+    pinned, the notifier's per-slug connect(board=slug) inside the machine-flow
+    context must open the pinned DB — the writes the worker made via
+    connect() (no board) live there."""
+    from hermes_cli import kanban_db_connect as kbc
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    pinned = tmp_path / "board.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned))
+    kb.init_db()
+    with kbc.connect() as conn:  # what the dispatcher/notifier box writes
+        kb.create_task(conn, title="pinned task", assignee="worker")
+    # The notifier polls every enumerated slug; before the fix this opened
+    # each slug's own (empty) DB and found nothing.
+    with kb.pin_first_board_resolution():
+        for slug in ("default", "some-other-board"):
+            with kbc.connect(board=slug) as conn:
+                rows = conn.execute("SELECT title FROM tasks").fetchall()
+            assert any(r[0] == "pinned task" for r in rows), (
+                f"per-slug connect lost the pinned DB for board={slug!r}"
+            )

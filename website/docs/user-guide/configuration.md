@@ -1016,6 +1016,7 @@ compression:
   proactive_prune_tokens: 0                         # Opt-in tokens trigger for the no-LLM tool-result prune (0 = off; see below)
   proactive_prune_min_result_chars: 8000            # Prune's summarize pass only touches tool results larger than this (clamped >= 200)
   proactive_prune_min_reclaim_tokens: 4096          # Prune only commits when it reclaims at least this many tokens (0 = commit any)
+  summary_instructions: ""                          # Optional summarizer outcome instructions. Empty = default Hermes structured compact template (Goal / Session Log sections and Be CONCRETE sentence). When set, replaces that entire batch template and the micro merge-structure prose. Inserted verbatim.
 
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
@@ -1058,6 +1059,15 @@ The value is the **first rung** of an escalating ladder, not a fixed interval: c
 `idle_compact_after_seconds` is an **opt-in, time-based** trigger that complements the size-based `threshold`. Default `0` (disabled). When set above 0, a session that resumes after at least that many seconds of inactivity compacts its accumulated history up front, before the first reply — so a long-lived thread (e.g. a Telegram conversation you come back to hours later) doesn't re-read its full stale context on every subsequent turn. It never fires when the context is already at or below the post-compression target (`threshold × target_ratio`), and it honors the same failure-cooldown, anti-thrash, and per-session lock guards as every automatic compaction. Example: `idle_compact_after_seconds: 1800` compacts after 30 minutes idle.
 
 `proactive_prune_tokens` enables a deterministic, no-LLM prune of old tool-result payloads that runs independently of `threshold`. On large-window models the `threshold` compaction (≈50% of the window) rarely fires, so bulky tool outputs (terminal dumps, file reads, web extracts) ride along in history and get re-sent on every subsequent turn. When re-sent history exceeds `proactive_prune_tokens` (default `0` = off; try `48000` to enable), the prune dedupes identical results and summarizes older oversized tool results, protecting the most recent `protect_last_n` messages and never calling the model. Tool-call arguments are execution records and are never rewritten by pruning; the summary model has a separate bounded serializer for copies included in its prompt. The pressure pass likewise demotes tool-result bodies only. During full semantic compaction the carried head/tail rows keep those tool-result demotions (so an oversized tail can still compress), while tool-call arguments stay byte-exact. The opt-in proactive prune still commits eligible tool-result-body demotions, so `proactive_prune_min_reclaim_tokens` (default `4096`) keeps those cache-breaking commits episodic; `proactive_prune_min_result_chars` (default `8000`, clamped to ≥ 200) sets the size below which a tool result is left untouched. This runs only under the built-in `compressor` engine; other context engines inherit a no-op.
+
+`summary_instructions` (default `""`) replaces the batch summarizer's structured compact template (Goal / Session Log sections and the default `Be CONCRETE ...` sentence) with the configured string, and replaces the micro-compact merge-structure paragraph with the same string. Empty, whitespace-only, `null`, and non-string values keep the current Hermes text. The value is inserted verbatim: braces are not interpolated. Example:
+
+```yaml
+compression:
+  summary_instructions: |
+    Preserve ticket IDs, file paths, and exact error text.
+    Omit promotional offers and prices.
+```
 
 :::tip Gateway hot-reload of compression and context length
 As of recent releases, editing `model.context_length` or any `compression.*` key in `config.yaml` on a running gateway takes effect on the next message — no gateway restart, no `/reset`, no session rotation required. The cached-agent signature includes these keys, so the gateway transparently rebuilds the agent when it sees a change. API keys and tool/skill config still require the usual reload paths.

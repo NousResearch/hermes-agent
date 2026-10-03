@@ -78,7 +78,7 @@ Every installed skill is automatically available as a slash command:
 # In the CLI or any messaging platform:
 /gif-search funny cats
 /axolotl help me fine-tune Llama 3 on my dataset
-/github-pr-workflow create a PR for the auth refactor
+/github create a PR for the auth refactor
 /songsee analyze the frequency spread of this mix
 
 # Just the skill name loads it and lets the agent ask what you need:
@@ -92,14 +92,14 @@ at the start — every leading `/skill` token (up to 5) is loaded, and the rest
 becomes your instruction:
 
 ```bash
-/github-pr-workflow /test-driven-development fix issue #123 and open a PR
+/github /test-driven-development fix issue #123 and open a PR
 ```
 
 Parsing stops at the first token that isn't an installed skill, so arguments
 that happen to start with `/` (like file paths) are never swallowed:
 
 ```bash
-/ocr-and-documents ~/.hermes/cache/scratch/scan.pdf extract the tables   # loads one skill; ~/.hermes/cache/scratch/scan.pdf is the argument
+/pdf ~/.hermes/cache/scratch/scan.pdf extract the tables   # loads one skill; ~/.hermes/cache/scratch/scan.pdf is the argument
 ```
 
 For combinations you use repeatedly, prefer a [skill bundle](#skill-bundles) —
@@ -508,9 +508,8 @@ Skill bundles are tiny YAML files that group several skills under a single slash
 ```bash
 # Create a bundle for backend feature work
 hermes bundles create backend-dev \
-  --skill github-code-review \
+  --skill github \
   --skill test-driven-development \
-  --skill github-pr-workflow \
   -d "Backend feature work — review, test, PR workflow"
 ```
 
@@ -530,9 +529,8 @@ Bundles live in **`~/.hermes/skill-bundles/<slug>.yaml`** and look like this:
 name: backend-dev
 description: Backend feature work — review, test, PR workflow.
 skills:
-  - github-code-review
+  - github
   - test-driven-development
-  - github-pr-workflow
 instruction: |
   Always start by writing failing tests, then implement.
   Open the PR through the standard workflow with co-author tags.

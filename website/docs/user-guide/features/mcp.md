@@ -303,7 +303,7 @@ GitHub is deliberately **not** in the catalog: its hosted MCP requires each
 client to bring its own OAuth app (generic dynamic client registration is
 rejected), and Hermes's bundled `github/*` skills driving the `gh` CLI are a
 more capable integration. On Desktop, GitHub mentions instead offer the
-`github-auth` skill when `gh` isn't signed in yet.
+`github` skill when `gh` isn't signed in yet.
 
 ## Two kinds of MCP servers
 

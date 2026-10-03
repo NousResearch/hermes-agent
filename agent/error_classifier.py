@@ -548,9 +548,10 @@ def is_reasoning_required_rejection(error_msg: str) -> bool:
 def is_reasoning_field_rejection(error_msg: str) -> bool:
     """Provider 400 rejecting a reasoning wire control by name (``reasoning_effort``, ``reasoning``,
     ``thinking``/``think``): the field token plus either a generic unsupported marker ("Unrecognized
-    request argument supplied: reasoning_effort", #112781) or a standalone "unsupported" next to the
-    field in either word order ("unsupported reasoning_effort"; "reasoning_effort 'none' unsupported;
-    use minimal|low|medium|high|xhigh", #114460). The route default is the right answer for such a
+    request argument supplied: reasoning_effort", #112781) or a standalone "unsupported"/"unexpected"
+    next to the field in either word order ("unsupported reasoning_effort"; "reasoning_effort 'none'
+    unsupported; use minimal|low|medium|high|xhigh", #114460; "Unexpected reasoning effort high.
+    Supported types are ...", #129002). The route default is the right answer for such a
     model, so both the main loop and the auxiliary ladder retry once without the disable. A body
     whose structured ``param``/code names the reasoning field (``'param': 'reasoning.effort'``,
     ``invalid_reasoning_effort``, #100536) is a rejection whatever the message says — even none.
@@ -566,7 +567,7 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
     if token is None:
         return False
     near = msg[max(0, token.start() - 32):token.end() + 32]
-    return "unsupported" in near or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
+    return "unsupported" in near or "unexpected" in near or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
 
 
 def _billing_hints(error_msg: str) -> Verdict:

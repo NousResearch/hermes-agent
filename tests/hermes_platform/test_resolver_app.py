@@ -8,6 +8,7 @@ import socket
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -122,6 +123,29 @@ def test_non_loopback_or_malformed_endpoint_is_unavailable_and_never_contacted(t
     pr = r.probe(r.locate(), effort=Effort.NETWORK)
     assert pr.endpoint.state is CheckState.UNAVAILABLE
     assert pr.answering.state is CheckState.NOT_CHECKED
+
+
+def test_ipv6_loopback_endpoint_is_a_dialable_url(tmp_path, monkeypatch):
+    """A runtime file advertising http://[::1]:PORT is accepted as loopback, so the rebuilt URL
+    must keep the brackets: the MCP client parses it, and the NETWORK probe dials ::1."""
+    exe = tmp_path / "thing"
+    exe.write_text("", encoding="utf-8")
+    r = _resolver(tmp_path, exe, _server_json(tmp_path, url="http://[::1]:8765"))
+    endpoint = r.endpoint()
+    assert endpoint is not None
+    parts = urlsplit(endpoint.url)
+    assert (parts.hostname, parts.port, parts.path) == ("::1", 8765, "/mcp")
+
+    dialed = []
+
+    def refuse(address, *args, **kwargs):
+        dialed.append(address)
+        raise ConnectionRefusedError
+
+    monkeypatch.setattr(socket, "create_connection", refuse)
+    pr = r.probe(r.locate(), effort=Effort.NETWORK)
+    assert dialed == [("::1", 8765)]
+    assert pr.answering.state is CheckState.ABSENT
 
 
 def test_dead_pid_is_absent_and_skips_network(tmp_path, monkeypatch):

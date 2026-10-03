@@ -29,7 +29,7 @@ PresenceKind = Literal["executable", "bundle"]
 VersionKind = Literal["pe_resource", "plist", "uninstall_registry", "none"]
 LivenessKind = Literal["server_json", "none"]
 
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})  # urlsplit().hostname drops IPv6 brackets
 
 
 @dataclass(frozen=True)
@@ -283,7 +283,8 @@ def _endpoint_observation(raw_url: str, fixed_path: str) -> Observation[str]:
         return Observation(CheckState.UNAVAILABLE, detail="endpoint must be loopback")
     if port is None or not (1 <= port <= 65535):
         return Observation(CheckState.UNAVAILABLE, detail="endpoint needs a numeric port")
-    return Observation(CheckState.PRESENT, f"http://{hostname}:{port}{fixed_path}")
+    host = f"[{hostname}]" if ":" in hostname else hostname  # an IPv6 literal needs its brackets back
+    return Observation(CheckState.PRESENT, f"http://{host}:{port}{fixed_path}")
 
 
 def _mcp_initialize(session: _Session, endpoint: str, deadline_s: float) -> Observation[bool]:

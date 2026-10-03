@@ -73,7 +73,8 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:  # noq
     from agent.context_engine import ContextEngine
     name = engine_dir.name
     is_bundled = engine_dir.parent == _CONTEXT_ENGINE_PLUGINS_DIR
-    module_name = f"plugins.context_engine.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
+    module_name = (f"plugins.context_engine.{name}" if is_bundled
+                   else _loader.user_module_name(_USER_NAMESPACE, name, engine_dir))
     mod = _loader.load_plugin_module(
         module_name, engine_dir, parents=("plugins", "plugins.context_engine"), logger=logger,
         synthetic_namespace=None if is_bundled else _USER_NAMESPACE)

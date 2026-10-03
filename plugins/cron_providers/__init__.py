@@ -77,7 +77,8 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["CronScheduler"]:  #
     from cron.scheduler_provider import CronScheduler
     name = provider_dir.name
     is_bundled = _CRON_PLUGINS_DIR in provider_dir.parents or provider_dir.parent == _CRON_PLUGINS_DIR
-    module_name = f"plugins.cron_providers.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
+    module_name = (f"plugins.cron_providers.{name}" if is_bundled
+                   else _loader.user_module_name(_USER_NAMESPACE, name, provider_dir))
     mod = _loader.load_plugin_module(
         module_name, provider_dir, parents=("plugins", "plugins.cron_providers"), logger=logger,
         synthetic_namespace=None if is_bundled else _USER_NAMESPACE)

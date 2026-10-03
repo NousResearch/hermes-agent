@@ -6,6 +6,7 @@ or an ABC-subclass fallback."""
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.machinery
 import importlib.util
 import logging
@@ -25,6 +26,15 @@ def register_synthetic_package(name: str, search_locations: List[str]) -> None:
     spec = importlib.machinery.ModuleSpec(name, None, is_package=True)
     spec.submodule_search_locations = search_locations
     sys.modules[name] = importlib.util.module_from_spec(spec)
+
+
+def user_module_name(namespace: str, name: str, plugin_dir: Path) -> str:
+    """Module name for a user-installed plugin, unique per source directory: one process can serve
+    several profiles, each with its own ``$HERMES_HOME/plugins/<name>/``, and ``load_plugin_module``
+    reuses ``sys.modules`` by name, so a bare ``<namespace>.<name>`` hands every profile the first
+    profile's code (package tree and relative imports included)."""
+    digest = hashlib.sha256(str(plugin_dir.resolve()).encode()).hexdigest()[:16]
+    return f"{namespace}.{name}__source_{digest}"
 
 
 def user_plugins_dir() -> Optional[Path]:

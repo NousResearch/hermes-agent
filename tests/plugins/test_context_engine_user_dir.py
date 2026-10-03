@@ -42,3 +42,28 @@ def test_user_installed_engine_is_selected_by_name(tmp_path: Path, monkeypatch, 
         engine = _select_context_engine({"context": {"engine": "ctx_demo"}})
     assert engine is not None and engine.name == "ctx_demo"
     assert "not found" not in caplog.text
+
+
+def test_each_profile_loads_its_own_copy_of_a_user_engine(tmp_path: Path, monkeypatch):
+    """One process serving two profiles (multiplex / Desktop backend): profile B's
+    ``plugins/<name>/`` must not resolve to profile A's already-imported module (A -> B -> A)."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from plugins.context_engine import load_context_engine
+
+    homes = {}
+    for tag in ("A", "B"):
+        engine_dir = tmp_path / tag / "plugins" / "ctx_per_home"
+        engine_dir.mkdir(parents=True)
+        (engine_dir / "__init__.py").write_text(_ENGINE_SRC.replace("class Demo(ContextEngine):",
+                                                                   f"class Demo(ContextEngine):\n    TAG = {tag!r}"))
+        homes[tag] = tmp_path / tag
+    monkeypatch.setenv("HERMES_HOME", str(homes["A"]))
+
+    loaded = []
+    for tag in ("A", "B", "A"):
+        token = set_hermes_home_override(str(homes[tag]))
+        try:
+            loaded.append(type(load_context_engine("ctx_per_home")).TAG)
+        finally:
+            reset_hermes_home_override(token)
+    assert loaded == ["A", "B", "A"]

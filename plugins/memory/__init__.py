@@ -9,7 +9,6 @@ must never shadow a shipped provider. Changing this order is a breaking change.
 
 from __future__ import annotations
 
-import hashlib
 import importlib.metadata
 import importlib.util
 import logging
@@ -82,9 +81,7 @@ def _module_name(provider_dir: Path, name: str) -> str:
     """``plugins.memory.<name>`` for bundled providers, else under the synthetic user namespace."""
     if _is_bundled(provider_dir):
         return f"plugins.memory.{name}"
-    # Separate package trees, including relative imports, across homes/sources.
-    digest = hashlib.sha256(str(provider_dir.resolve()).encode()).hexdigest()[:16]
-    return f"{_USER_NAMESPACE}.{name}__source_{digest}"
+    return _loader.user_module_name(_USER_NAMESPACE, name, provider_dir)
 
 
 def _external_source_dirs() -> List[Path]:

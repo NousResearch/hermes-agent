@@ -145,3 +145,6 @@ def test_double_dash_sets_control_word_goal_and_announces_the_replace():
     result = _dispatch(mgr, '-- pause the nightly cron')
     assert goals.load_goal(mgr.session_id).goal == 'pause the nightly cron'
     assert 'was: original objective' in result.output
+    mgr.clear()
+    fresh = goals.GoalManager(session_id=mgr.session_id)  # gateway/TUI reload per command
+    assert 'replaced' not in _dispatch(fresh, 'fresh objective').output

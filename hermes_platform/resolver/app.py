@@ -1,8 +1,8 @@
 """Desktop-application resolver over an `AppDef` (parsed from an MCP manifest's `app:` block).
 
 `locate` stats the executable or bundle. `inspect` reads the version source in-process.
-`probe` re-reads the vendor's runtime file on every call; the bearer token in it never
-leaves this module.
+`probe` re-reads the vendor's runtime file on every call; its bearer token is only ever
+attached to endpoint URLs that re-verify as plain loopback http.
 """
 
 from __future__ import annotations
@@ -29,7 +29,14 @@ PresenceKind = Literal["executable", "bundle"]
 VersionKind = Literal["pe_resource", "plist", "uninstall_registry", "none"]
 LivenessKind = Literal["server_json", "none"]
 
-_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "[::1]"})
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _is_plain_loopback_http(parts) -> bool:
+    """One predicate for the runtime-url check and the composed-URL/dial-time re-checks:
+    plain http, loopback host, no userinfo. Callers keep their own port rules and details."""
+    return (parts.scheme == "http" and parts.hostname in _LOOPBACK_HOSTS
+            and not parts.username and not parts.password)
 
 
 @dataclass(frozen=True)
@@ -236,16 +243,18 @@ def _read_server_json(path: str, d: AppDef) -> _Session | None:
     pid = data.get(d.liveness_pid_key)
     url = data.get(d.liveness_url_key)
     token = data.get(d.liveness_token_key)
+    # bool is an int subclass (pid:true would probe PID 1) and os.kill overflows past int32.
+    valid_pid = isinstance(pid, int) and not isinstance(pid, bool) and 0 < pid <= 0x7FFFFFFF
     return _Session(
-        pid=pid if isinstance(pid, int) else None,
+        pid=pid if valid_pid else None,
         url=url if isinstance(url, str) else "",
         token=token if isinstance(token, str) else "",
     )
 
 
 def _pid_alive(pid: int | None) -> Observation[bool]:
-    if pid is None or pid <= 0:
-        return Observation(CheckState.UNAVAILABLE, detail="no pid in runtime file")
+    if pid is None or isinstance(pid, bool) or not (0 < pid <= 0x7FFFFFFF):
+        return Observation(CheckState.UNAVAILABLE, detail="no valid pid in runtime file")
     if sys.platform == "win32":
         import ctypes
         from ctypes import wintypes
@@ -269,7 +278,8 @@ def _pid_alive(pid: int | None) -> Observation[bool]:
 
 
 def _endpoint_observation(raw_url: str, fixed_path: str) -> Observation[str]:
-    """Accept only a loopback http URL with a numeric port and no userinfo; the path is ours."""
+    """Accept only a loopback http URL with a numeric port and no userinfo; ``fixed_path`` is
+    manifest text, so the composed URL is re-parsed and re-verified before returning."""
     if not raw_url:
         return Observation(CheckState.UNAVAILABLE, detail="no url in runtime file")
     try:
@@ -279,18 +289,39 @@ def _endpoint_observation(raw_url: str, fixed_path: str) -> Observation[str]:
         return Observation(CheckState.UNAVAILABLE, detail="malformed endpoint")
     if parts.scheme != "http" or username or password:
         return Observation(CheckState.UNAVAILABLE, detail="endpoint must be plain http without userinfo")
-    if hostname not in _LOOPBACK_HOSTS:
+    if not _is_plain_loopback_http(parts):
         return Observation(CheckState.UNAVAILABLE, detail="endpoint must be loopback")
     if port is None or not (1 <= port <= 65535):
         return Observation(CheckState.UNAVAILABLE, detail="endpoint needs a numeric port")
-    return Observation(CheckState.PRESENT, f"http://{hostname}:{port}{fixed_path}")
+    # IPv6 literals need brackets in URL authority or the composed URL is unparseable.
+    host_fmt = f"[{hostname}]" if ":" in hostname else hostname
+    composed = f"http://{host_fmt}:{port}{fixed_path}"
+    try:
+        rejoined = urlsplit(composed)
+        _ = rejoined.port
+    except ValueError:
+        return Observation(CheckState.UNAVAILABLE, detail="malformed endpoint path")
+    # fixed_path is manifest text: a crafted tail (e.g. '@host/') would rewrite the authority and
+    # send the runtime file's bearer token to a manifest-chosen host. Re-verify the whole URL.
+    if not _is_plain_loopback_http(rejoined) or rejoined.port != port:
+        return Observation(CheckState.UNAVAILABLE, detail="endpoint path must stay on loopback")
+    return Observation(CheckState.PRESENT, composed)
 
 
 def _mcp_initialize(session: _Session, endpoint: str, deadline_s: float) -> Observation[bool]:
     """One MCP `initialize` POST under one absolute deadline covering connect, headers, and body."""
     import http.client
 
-    parts = urlsplit(endpoint)
+    try:
+        parts = urlsplit(endpoint)
+        port = parts.port
+    except ValueError:
+        return Observation(CheckState.UNAVAILABLE, detail="malformed endpoint")
+    if port is None or not (1 <= port <= 65535) or not _is_plain_loopback_http(parts):
+        # Belt under _endpoint_observation: the caller-side path tail is manifest text, so the
+        # re-parsed URL must still name a loopback host:port before any connection -- the bearer
+        # token rides on this request.
+        return Observation(CheckState.UNAVAILABLE, detail="endpoint is not a loopback http URL")
     body = json.dumps({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
         "params": {"protocolVersion": "2025-06-18", "capabilities": {},
@@ -307,17 +338,21 @@ def _mcp_initialize(session: _Session, endpoint: str, deadline_s: float) -> Obse
             raise TimeoutError
         return left
 
-    conn = http.client.HTTPConnection(parts.hostname or "127.0.0.1", parts.port or 80, timeout=remaining())
+    conn = None
     try:
+        conn = http.client.HTTPConnection(parts.hostname or "127.0.0.1", port, timeout=remaining())
         conn.request("POST", parts.path or "/", body=body, headers=headers)
         conn.sock.settimeout(remaining())
         status = conn.getresponse().status
     except TimeoutError:
         return Observation(CheckState.ABSENT, False, f"no answer within {deadline_s:g} s")
-    except (OSError, http.client.HTTPException):
+    except (OSError, http.client.HTTPException, ValueError):
+        # ValueError covers a non-ASCII path (conn.request -> UnicodeEncodeError) from a
+        # directly-constructed AppDef, which never passed the declaration charset check.
         return Observation(CheckState.ABSENT, False, "connection refused or timed out")
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
     if status in (200, 401, 403):
         return Observation(CheckState.PRESENT, True, f"http {status}")
     return Observation(CheckState.ABSENT, False, f"http {status}")

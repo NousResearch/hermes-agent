@@ -69,6 +69,65 @@ def test_invalid_blocks_name_the_rule(raw_app, raw_requires, message):
         parse_declaration("thing-mcp", raw_app, raw_requires, where=WHERE)
 
 
+def _win_liveness(liveness: dict) -> dict:
+    """One win32 app block with the given liveness override (host app itself is valid)."""
+    return {"win32": {
+        "presence": "executable", "location": "C:/x/y.exe",
+        "version": {"kind": "uninstall_registry", "display_name_prefix": "Thing"},
+        "liveness": liveness,
+    }}
+
+
+@pytest.mark.parametrize("epath", [
+    "@attacker.example/",  # userinfo hijack: the re-parsed hostname is the attacker's
+    "mcp",                 # missing leading slash
+    "http://evil.test/x",  # absolute URI
+    "/mcp?token=1",        # query smuggling
+    "/mcp#frag",
+    "/mcp x",
+    "/mcp\tx",
+    " /mcp",
+    "/a/../../b",   # '..' segments: cannot move authority but rejected like liveness.path
+    "/..",
+])
+def test_endpoint_path_must_be_a_plain_path(epath):
+    live = {"kind": "server_json", "path": "%LOCALAPPDATA%/Thing/server.json", "endpoint_path": epath}
+    with pytest.raises(DeclarationError, match="endpoint_path"):
+        parse_declaration("thing-mcp", _win_liveness(live), None, where=WHERE)
+
+
+def test_endpoint_path_empty_falls_back_to_default():
+    live = {"kind": "server_json", "path": "%LOCALAPPDATA%/Thing/server.json", "endpoint_path": ""}
+    decl = parse_declaration("thing-mcp", _win_liveness(live), None, where=WHERE)
+    assert decl.app_for("win32").endpoint_path == "/mcp"
+
+
+@pytest.mark.parametrize("epath", ["/mcp", "/rpc/v1", "/a/b-c_d.e~f"])
+def test_endpoint_path_plain_paths_accepted(epath):
+    live = {"kind": "server_json", "path": "%LOCALAPPDATA%/Thing/server.json", "endpoint_path": epath}
+    decl = parse_declaration("thing-mcp", _win_liveness(live), None, where=WHERE)
+    assert decl.app_for("win32").endpoint_path == epath
+
+
+@pytest.mark.parametrize("path, match", [
+    ("../secrets/server.json", "liveness.path"),
+    ("relative/server.json", "liveness.path"),
+    ("http://evil.test/server.json", "liveness.path"),
+])
+def test_liveness_path_is_rooted_like_location(path, match):
+    live = {"kind": "server_json", "path": path}
+    with pytest.raises(DeclarationError, match=match):
+        parse_declaration("thing-mcp", _win_liveness(live), None, where=WHERE)
+
+
+@pytest.mark.parametrize("key_field", ["pid_key", "url_key", "token_key"])
+def test_liveness_key_names_must_be_identifiers(key_field):
+    live = {"kind": "server_json", "path": "%LOCALAPPDATA%/Thing/server.json",
+            key_field: "a b\"c"}
+    with pytest.raises(DeclarationError, match=key_field):
+        parse_declaration("thing-mcp", _win_liveness(live), None, where=WHERE)
+
+
 def test_availability_no_requirements_does_no_io():
     decl = parse_declaration("thing-mcp", None, None, where=WHERE)
     result = availability(decl, os_family="freebsd")

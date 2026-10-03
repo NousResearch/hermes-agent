@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from hermes_platform import declaration
+from hermes_platform.declaration import KEY_NAME_RE, location_is_rooted
 from hermes_platform.host import facts
 from hermes_platform.resolver.app import AppDef, AppResolver
 from hermes_platform.resolver.availability import Availability, availability
@@ -75,13 +76,22 @@ def parse_liveness(raw: Any) -> Liveness:
     if set(raw) - {"kind", "path", "fields"}:
         raise ValueError("server_json liveness has unknown fields")
     path = raw.get("path")
-    fields = {"url": "http", "token": "token", "pid": "pid", **(raw.get("fields") or {})}
+    fields_raw = raw.get("fields")
+    if fields_raw is not None and not isinstance(fields_raw, dict):
+        raise ValueError("server_json liveness fields must be an object")
+    fields = {"url": "http", "token": "token", "pid": "pid", **(fields_raw or {})}
     if not isinstance(path, str) or not path.strip():
         raise ValueError("server_json liveness requires a non-empty path")
+    if not location_is_rooted(path.strip(), facts.os_family()):
+        raise ValueError(
+            "server_json liveness path must be absolute or start with ~ / %VAR% / $VAR,"
+            " without '..' or a URL scheme")
     if set(fields) != {"url", "token", "pid"}:
         raise ValueError("server_json liveness fields may only override url, token, and pid")
     if any(not isinstance(value, str) or not value.strip() for value in fields.values()):
         raise ValueError("server_json liveness field names must be non-empty strings")
+    if any(not KEY_NAME_RE.fullmatch(value.strip()) for value in fields.values()):
+        raise ValueError("server_json liveness field names must be simple key names")
     return Liveness(
         "server_json",
         path=path.strip(),

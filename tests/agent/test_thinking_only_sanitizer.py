@@ -177,6 +177,31 @@ class TestDropThinkingOnlyAndMergeUsers:
         assert [m["role"] for m in out] == ["system", "user"]
         assert out[-1]["role"] != "assistant"
 
+    def test_keeps_only_user_continuation_nudge_for_tool_followup(self):
+        nudge = "_CODEX_INCOMPLETE_NUDGE"
+        msgs = [
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1"}]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool result"},
+            {"role": "user", "content": nudge},
+        ]
+
+        out = AIAgent._drop_thinking_only_and_merge_users(msgs, drop_nudge_marker=nudge)
+
+        assert [m["role"] for m in out] == ["assistant", "tool", "user"]
+        assert out[-1]["content"] == nudge
+
+    def test_drops_continuation_nudge_when_a_real_user_turn_remains(self):
+        nudge = "_CODEX_INCOMPLETE_NUDGE"
+        msgs = [
+            {"role": "user", "content": "real request"},
+            {"role": "assistant", "content": "working"},
+            {"role": "user", "content": nudge},
+        ]
+
+        out = AIAgent._drop_thinking_only_and_merge_users(msgs, drop_nudge_marker=nudge)
+
+        assert [m["content"] for m in out] == ["real request", "working"]
+
     def test_system_messages_ignored_by_pass(self):
         msgs = [
             {"role": "system", "content": "sys prompt"},

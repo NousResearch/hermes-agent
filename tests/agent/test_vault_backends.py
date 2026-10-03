@@ -231,3 +231,22 @@ def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     backend = OnePasswordLoginBackend({"enabled": True})
 
     assert backend._env(None)["OP_CONFIG_DIR"] == "/tmp/op-config"
+
+
+def test_onepassword_service_account_resolves_with_listed_vault():
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    items = json.dumps([{
+        "id": "login-id", "title": "Example",
+        "urls": [{"href": "https://example.com"}],
+        "vault": {"name": "Automation"},
+    }])
+    with patch("agent.secret_scope.get_secret", return_value="service-token"):
+        backend = OnePasswordLoginBackend({"enabled": True})
+    with patch.object(backend, "_run", side_effect=[items, "secret\n", "123456"]) as run:
+        backend.list_items()
+        assert backend.resolve_password("op:login-id") == "secret"
+        assert backend.resolve_otp("op:login-id") == "123456"
+    assert run.call_args_list[1].args == ("item", "get", "login-id", "--vault", "Automation",
+                                          "--fields", "label=password", "--reveal")
+    assert run.call_args_list[2].args == ("item", "get", "login-id", "--vault", "Automation", "--otp")

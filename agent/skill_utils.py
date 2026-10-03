@@ -787,7 +787,10 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     active_org = read_active_org_id(skills_dir)
     org_root = os.path.join(skills_dir_str, ORG_MIRROR_DIR_NAME)
     matches: list[str] = []
-    for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
+    # A single dangling junction (Windows) must not kill EVERY skill lookup on
+    # the profile (#121698): skip unreadable entries instead of raising.
+    for root, dirs, files in os.walk(skills_dir_str, followlinks=True,
+                                     onerror=lambda _exc: None):
         has_skill_md = "SKILL.md" in files
         if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
             dirs.remove(ORG_MIRROR_DIR_NAME)

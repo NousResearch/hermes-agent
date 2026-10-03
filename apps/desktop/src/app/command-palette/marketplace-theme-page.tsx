@@ -47,7 +47,7 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
 
   // Already installed → just re-activate it; never re-download what we have.
   const select = (item: DesktopMarketplaceSearchItem) => {
-    const owned = installs.get(item.extensionId)
+    const owned = installs.get(item.extensionId)?.[0]
 
     if (owned) {
       triggerHaptic('crisp')

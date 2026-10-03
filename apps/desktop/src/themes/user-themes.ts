@@ -106,18 +106,26 @@ export function marketplaceIdOf(theme: DesktopTheme): string | null {
 }
 
 /**
- * Reactive `extensionId → installed theme` map, so the install UIs can mark
+ * Reactive `extensionId → installed themes` map, so the install UIs can mark
  * Marketplace rows you already have (and re-activate them without re-downloading)
  * from one memoized source instead of re-deriving the set on every render.
+ * The first entry is the stable re-activation target; multi-variant installs
+ * store their initially activated variant first.
  */
 export const $marketplaceInstalls = computed($userThemes, themes => {
-  const map = new Map<string, DesktopTheme>()
+  const map = new Map<string, DesktopTheme[]>()
 
   for (const theme of Object.values(themes)) {
     const id = marketplaceIdOf(theme)
 
     if (id) {
-      map.set(id, theme)
+      const installed = map.get(id)
+
+      if (installed) {
+        installed.push(theme)
+      } else {
+        map.set(id, [theme])
+      }
     }
   }
 

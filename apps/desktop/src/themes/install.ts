@@ -70,8 +70,51 @@ export function buildThemeFromMarketplace(result: DesktopMarketplaceThemeResult)
 }
 
 /**
- * Download a Marketplace extension and install the theme family it contributes
- * (see `buildThemeFromMarketplace`). Returns the single installed theme.
+ * When an extension contributes 3+ themes (e.g., Catppuccin with 4 flavors),
+ * install each as its own independent theme so users can pick the specific
+ * variant they want (Mocha, Macchiato, etc.) rather than folding them all
+ * into one family that forces the light/dark toggle to switch variants.
+ *
+ * Returns the first dark variant (most users installing a dark theme want the
+ * fullest dark), falling back to the first light variant, then the first entry.
+ */
+function installMultiVariantThemes(result: DesktopMarketplaceThemeResult): DesktopTheme {
+  const variants = result.themes.map(file => {
+    const raw = parseVscodeTheme(file.contents)
+    const label = file.label || raw.name || result.displayName
+    const { mode, theme } = convertVscodeColorTheme(raw, { label, source: result.extensionId })
+
+    // Keep both color slots: an absent darkColors makes light mode synthesize a
+    // different palette. The terminal must likewise retain this exact variant.
+    return { mode, theme: { ...theme, ...(theme.terminal ? { darkTerminal: theme.terminal } : {}) } }
+  })
+
+  const primary = variants.find(variant => variant.mode === 'dark') ?? variants[0]
+
+  // Store the activation target first so either Marketplace selector reselects
+  // the same variant, even when an extension contributes its light theme first.
+  installUserTheme(primary.theme)
+
+  for (const variant of variants) {
+    if (variant !== primary) {
+      installUserTheme(variant.theme)
+    }
+  }
+
+  return primary.theme
+}
+
+/**
+ * Download a Marketplace extension and install the theme(s) it contributes.
+ *
+ * - 1–2 themes (common 1-light-1-dark pair, e.g. Solarized, GitHub):
+ *   fold into a single family with `colors` / `darkColors` so the light/dark
+ *   toggle switches between the real variants.  `buildThemeFromMarketplace`
+ *   handles this.
+ * - 3+ themes (multi-variant like Catppuccin's 4 flavors): install each as
+ *   its own independent picker entry via `installMultiVariantThemes`.
+ *
+ * Returns the single theme to activate.
  */
 export async function installVscodeThemeFromMarketplace(id: string): Promise<DesktopTheme> {
   const trimmed = id.trim()
@@ -87,6 +130,10 @@ export async function installVscodeThemeFromMarketplace(id: string): Promise<Des
   }
 
   const result = await api.fetchMarketplace(trimmed)
+
+  if (result.themes.length >= 3) {
+    return installMultiVariantThemes(result)
+  }
 
   return installUserTheme(buildThemeFromMarketplace(result))
 }

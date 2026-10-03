@@ -42,7 +42,9 @@ class GroupRunFreezeError(RuntimeError):
 
 class GroupRunFrozen(GroupRunFreezeError):
     code = "group_work_frozen"
-    status = 409
+    # Not 409: a group's home reads a conflicting admission as possibly accepted work.
+    # A frozen scope proves the turn was never admitted here and never will be.
+    status = 403
     message = "This participant's group work is permanently frozen."
 
 

@@ -165,7 +165,7 @@ async def test_canonical_exact_approval_refuses_once_after_freeze_but_denies(can
                 adapter._run_idempotency_store.freeze_room_scope(participation(payload), 'freeze-approval')
             refused = await client.post(f'/v1/runs/{run_id}/approval', headers=headers,
                                         json={**body, 'choice': 'once'})
-            assert refused.status == 409, await refused.text()
+            assert refused.status == 403, await refused.text()
             assert (await refused.json())['error']['code'] == 'group_work_frozen'
             if not owner_stops:
                 assert not pending.event.is_set()

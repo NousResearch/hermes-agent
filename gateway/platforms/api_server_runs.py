@@ -1351,7 +1351,7 @@ async def _handle_run_approval(self, request: "web.Request", *, _api_server) -> 
         with gate as allowed_control:
             if allowed_control is not True:
                 return _json_error(_openai_error, "The owner stopped this participant's group work.",
-                                   code="group_work_frozen", status=409)
+                                   code=GroupRunFrozen.code, status=GroupRunFrozen.status)
             resolved = resolve_gateway_approval(
                 approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
     except (GroupRunFreezeError, RoomFenceError) as exc:

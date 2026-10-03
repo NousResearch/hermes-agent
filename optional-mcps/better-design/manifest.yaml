@@ -1,0 +1,39 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: better-design
+description: >-
+  Design harness for coding agents: design systems, UI and UX principles,
+  icons, and UI review.
+source: https://better-design.com/mcp/install
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint and PKCE S256); Hermes's MCP client +
+# mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://better-design.com/api/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - better design
+    - better-design
+  hosts:
+    - better-design.com
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Better Design
+  (or run `hermes mcp login better-design`). Approve access, then restart
+  the session so tools load.
+
+  Try:
+    Build a landing page for a budgeting app. Find a design system that
+    fits, show me the options, and use the one I pick.

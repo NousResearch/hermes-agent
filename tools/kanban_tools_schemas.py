@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from hermes_constants import VALID_REASONING_EFFORTS
+
 _DESC_TASK_ID_DEFAULT = (
     "Task id. If omitted, defaults to HERMES_KANBAN_TASK from the env — the "
     "task the dispatcher spawned you to work on. That default only exists for "
@@ -527,6 +529,15 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "the profile's provider and will fail if it belongs "
                 "to a different one. Requires 'model'."
         )),
+        "reasoning_effort": {
+            "type": "string",
+            "enum": ["", "none", *VALID_REASONING_EFFORTS],
+            "description": (
+                "Pin the dispatched worker's reasoning effort for this "
+                "task. Use 'none' to disable reasoning. Omit or pass an "
+                "empty value to inherit the assignee profile default."
+            ),
+        },
     },
     ["title", "assignee"],
 )

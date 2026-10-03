@@ -370,6 +370,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
             max_retries=max_retries, model_override=getattr(args, "model_override", None),
             provider_override=getattr(args, "provider_override", None),
+            reasoning_effort=getattr(args, "reasoning_effort", None),
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
@@ -515,6 +516,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
     if task.model_override:
         _prov = f" (provider: {task.provider_override})" if task.provider_override else ""
         field("model", f"{task.model_override}{_prov}")
+    if task.reasoning_effort:
+        field("effort", task.reasoning_effort)
     # Effective retry threshold (task > config > default) explains auto-blocks.
     if task.max_retries is not None:
         print(f"  max-retries: {task.max_retries} (task)")
@@ -582,18 +585,32 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
     if model is not None and model.lower() in {"none", "-", "null", ""}:
         model = None
     provider = getattr(args, "provider", None)
+    effort = getattr(args, "reasoning_effort", None)
+    # An omitted model keeps the historical clear behavior unless --effort is given.
+    touch_model = args.model is not None or effort is None
+    if provider and not touch_model:
+        return _err("kanban: --provider requires a model", 2)
     try:
         with kbc.connect_closing() as conn:
-            ok = kb.set_model_override(conn, args.task_id, model, provider=provider)
+            if touch_model and not kb.set_model_override(conn, args.task_id, model, provider=provider):
+                return _err(f"no such task: {args.task_id}")
+            if effort is not None and not kb.set_reasoning_effort(
+                conn, args.task_id, None if effort == "clear" else effort
+            ):
+                return _err(f"no such task: {args.task_id}")
     except (ValueError, RuntimeError) as exc:
         return _err(f"kanban: {exc}", 2)
-    if not ok:
-        return _err(f"no such task: {args.task_id}")
-    if model:
-        label = f"{provider}:{model}" if provider else model
-        print(f"Set model override on {args.task_id}: {label} (applies on next dispatch)")
-    else:
-        print(f"Cleared model override on {args.task_id} (worker uses its profile default)")
+    if touch_model:
+        if model:
+            label = f"{provider}:{model}" if provider else model
+            print(f"Set model override on {args.task_id}: {label} (applies on next dispatch)")
+        else:
+            print(f"Cleared model override on {args.task_id} (worker uses its profile default)")
+    if effort is not None:
+        if effort == "clear":
+            print(f"Cleared reasoning effort on {args.task_id} (worker uses its profile's setting)")
+        else:
+            print(f"Set reasoning effort on {args.task_id}: {effort} (applies on next dispatch)")
     return 0
 
 

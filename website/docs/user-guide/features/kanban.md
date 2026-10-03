@@ -702,6 +702,19 @@ model:
 
 For the occasional quality-sensitive card, pin just that task back to a stronger model with the [per-task model override](#per-task-model-override) (`--model`/`--provider` at create time, `hermes kanban set-model` later, or the dashboard's model dropdown) — no profile edits needed.
 
+### Per-task reasoning effort
+
+Pin how hard a task's worker thinks, independently of the model override and the assignee profile's `agent.reasoning_effort`:
+
+```bash
+hermes kanban create "hard refactor" --assignee coder --effort xhigh
+hermes kanban set-model t_abcd --effort xhigh
+hermes kanban set-model t_abcd --effort none     # thinking OFF (a real level)
+hermes kanban set-model t_abcd --effort clear    # inherit the profile's setting
+```
+
+Levels: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`. The dispatcher passes the abstract level as `--reasoning` and the runtime maps it for the provider. `set-model <id> --effort xhigh` leaves the model override untouched; clearing the model with `set-model <id> none` leaves effort untouched. Bare `set-model <id>` still clears the model, not the effort.
+
 ### Lifecycle plugin hooks
 
 Board transitions fire [plugin hooks](./hooks.md#plugin-hooks): `kanban_task_claimed`, `kanban_task_completed`, and `kanban_task_blocked`, each carrying `task_id` and `profile_name`. Hooks fire **after** the board DB change commits, so callbacks always see durable state. Note the process split: `kanban_task_claimed` fires in the **dispatcher** process, while `kanban_task_completed`/`kanban_task_blocked` fire in the **worker** process — register the hook in the dispatcher profile to observe every transition centrally.

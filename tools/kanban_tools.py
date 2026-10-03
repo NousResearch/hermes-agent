@@ -1112,6 +1112,11 @@ def _handle_create(args: dict, **kw) -> str:
         _parse_bool_arg(args, "goal_mode"))
     model_override, provider_override = args.get("model"), args.get("provider")
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
+    from hermes_cli.kanban_db import normalize_reasoning_effort
+    try:
+        reasoning_effort = normalize_reasoning_effort(args.get("reasoning_effort"))
+    except ValueError as exc:
+        _check(False, str(exc))
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
         from gateway.session_context import get_session_env
@@ -1143,6 +1148,7 @@ def _handle_create(args: dict, **kw) -> str:
             idempotency_key=args.get("idempotency_key"),
             max_runtime_seconds=_opt_int(args.get("max_runtime_seconds")), skills=skills,
             model_override=model_override, provider_override=provider_override,
+            reasoning_effort=reasoning_effort,
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),

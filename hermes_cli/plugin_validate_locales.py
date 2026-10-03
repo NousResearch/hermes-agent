@@ -93,11 +93,15 @@ def _check_locale_file(report, lang_id: str, surface: str, path: Path) -> None:
     if not isinstance(document, dict):
         report.add(label, False, f"{path.name} must be a mapping, got {type(document).__name__}")
         return
-    bad_leaves = non_text_leaves(document)
-    if bad_leaves:
-        report.add(label, False, f"{path.name} has non-text value(s) at: {', '.join(sorted(bad_leaves))}")
+    try:
+        bad_leaves = non_text_leaves(document)
+        if bad_leaves:
+            report.add(label, False, f"{path.name} has non-text value(s) at: {', '.join(sorted(bad_leaves))}")
+            return
+        flat = flatten(document)
+    except (ValueError, RecursionError) as exc:  # cyclic anchors, or nesting past Python's recursion limit
+        report.add(label, False, f"{path.name} failed to flatten: {exc}")
         return
-    flat = flatten(document)
     reference = reference_keys(surface)
     if reference is None:
         report.add(label, True, f"{path.name}: {len(flat)} key(s); no {surface} key reference available, key check skipped")

@@ -1,6 +1,11 @@
 // updater/updater.test.ts — resolution precedence + wire-shape contracts
 // for the strategy layer. Pure DI: no Electron, no payload.
 
+import { execFileSync } from 'node:child_process'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import { buildStampPayload } from '../../scripts/write-build-stamp.mjs'
@@ -64,5 +69,25 @@ describe('buildManualUpdateCommand', () => {
 
   it('branch-pinned for non-main checkouts', () => {
     expect(buildManualUpdateCommand('ethie/pm')).toBe('hermes update --branch ethie/pm')
+  })
+
+  it.skipIf(process.platform === 'win32')('preserves a quoted Git branch in the manual command', () => {
+    const root = mkdtempSync(join(tmpdir(), 'manual-update-'))
+    const branch = "team/o'brien"
+
+    try {
+      const launcher = join(root, 'hermes')
+      writeFileSync(launcher, '#!/bin/sh\nprintf \'%s\\n\' "$@"\n')
+      chmodSync(launcher, 0o755)
+
+      const argv = execFileSync('/bin/sh', ['-c', buildManualUpdateCommand(branch)], {
+        env: { PATH: `${root}:/usr/bin:/bin` },
+        encoding: 'utf8'
+      }).trim().split('\n')
+
+      expect(argv).toEqual(['update', '--branch', branch])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

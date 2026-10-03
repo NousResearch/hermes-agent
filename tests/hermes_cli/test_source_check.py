@@ -118,7 +118,7 @@ def test_target_worktree_owns_admission_and_fork_comparison(installation, monkey
     (linked / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self"}))
     cache = home / "shared-cache.json"
     target = "a" * 40
-    responses["/repos/fixture/fork/commits/feature%2Fgui"] = (200, target)
+    responses["/repos/fixture/fork/commits/heads%2Ffeature%2Fgui"] = (200, target)
     responses[f"/repos/fixture/fork/compare/{head}...{target}"] = (200, {"ahead_by": 3, "commits": []})
     commands = []
     original = subprocess.run
@@ -135,7 +135,7 @@ def test_target_worktree_owns_admission_and_fork_comparison(installation, monkey
     assert status["behind"] == 3
     assert status["hermesRoot"] == str(linked)
     assert check_for_updates(install_root=root, home=home, cache_path=cache)["supported"] is False
-    assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/commits/feature%2Fgui",
+    assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/commits/heads%2Ffeature%2Fgui",
                         f"/repos/fixture/fork/compare/{head}...{target}"]
     assert all(not any(arg in {"fetch", "checkout", "reset", "update-ref", "stash"} for arg in cmd) for cmd in commands)
     assert git("rev-parse", "HEAD", cwd=linked) == head
@@ -151,14 +151,14 @@ def test_counts_are_honest_without_fetch(installation, tip_kind, compare, expect
     from hermes_cli.source_check import check_for_updates
     root, linked, home, base, head, responses, requests, git = installation
     target = {"head": head, "base": base, "unknown": "a" * 40}[tip_kind]
-    responses["/repos/fixture/fork/commits/main"] = (200, "\ufeff" + target)
+    responses["/repos/fixture/fork/commits/heads%2Fmain"] = (200, "\ufeff" + target)
     if compare is not None:
         responses[f"/repos/fixture/fork/compare/{head}...{target}"] = (200, "\ufeff" + json.dumps(compare))
     status = check_for_updates(install_root=root, home=home)
     assert status["behind"] == expected
     assert status["updateAvailable"] is (expected != 0)
     if tip_kind != "unknown":
-        assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/commits/main"]
+        assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/commits/heads%2Fmain"]
 
 
 def test_cache_force_expiry_and_passive_opt_out(installation, monkeypatch):
@@ -166,7 +166,7 @@ def test_cache_force_expiry_and_passive_opt_out(installation, monkeypatch):
     root, linked, home, base, head, responses, requests, git = installation
     clock = [1000000.0]
     monkeypatch.setattr(source_check.time, "time", lambda: clock[0])
-    url = "/repos/fixture/fork/commits/main"
+    url = "/repos/fixture/fork/commits/heads%2Fmain"
     responses[url] = (200, head)
     check = lambda **kw: source_check.check_for_updates(install_root=root, home=home, **kw)
     assert check()["behind"] == 0
@@ -230,7 +230,7 @@ def test_dynamic_source_channel_preserves_branch_precedence(installation, select
         git("checkout", "--detach", cwd=linked)
     expected = {"explicit": "explicit-choice", "configured": "desktop-choice",
                 "current": "feature/gui", "detached": "channel-default"}[selection]
-    branch_path = f"/repos/fixture/fork/commits/{expected.replace('/', '%2F')}"
+    branch_path = f"/repos/fixture/fork/commits/heads%2F{expected.replace('/', '%2F')}"
     responses[branch_path] = (200, head)
 
     status = check_for_updates(install_root=linked, home=home, channel=name,
@@ -273,7 +273,7 @@ def test_channel_failure_never_probes_or_heals_a_branch(installation, name, fail
             "windowsExecutableName": "Fixture",
         }
     responses[channel_path] = (code, body)
-    responses["/repos/fixture/fork/commits/main"] = (200, head)
+    responses["/repos/fixture/fork/commits/heads%2Fmain"] = (200, head)
     branch_file = home / "desktop-update.json"
     branch_file.write_text(json.dumps({"branch": "deleted"}))
     status = check_for_updates(install_root=linked, home=home, channel=name,
@@ -293,7 +293,7 @@ def test_unpublished_main_record_follows_the_branch(installation):
 
     root, linked, home, base, head, responses, requests, git = installation
     responses[MAIN_CHANNEL] = (404, source_channel("main", "fixture/fork"))
-    branch_path = "/repos/fixture/fork/commits/desktop-choice"
+    branch_path = "/repos/fixture/fork/commits/heads%2Fdesktop-choice"
     responses[branch_path] = (200, head)
     branch_file = home / "desktop-update.json"
     branch_file.write_text(json.dumps({"branch": "desktop-choice"}))
@@ -312,12 +312,12 @@ def test_running_revision_is_not_applied_to_an_explicit_target(installation, mon
     root, linked, home, base, head, responses, requests, git = installation
     monkeypatch.setenv("HERMES_REVISION", "e" * 40)
     monkeypatch.setenv("HERMES_INSTALL_ROOT", str(root))
-    responses["/repos/fixture/fork/commits/feature%2Fgui"] = (200, head)
+    responses["/repos/fixture/fork/commits/heads%2Ffeature%2Fgui"] = (200, head)
     assert check_for_updates(install_root=linked, home=home)["currentSha"] == head
     # Default invocation retains the Nix revision probe even without a Git checkout.
     monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: home)
     responses[MAIN_CHANNEL] = (200, source_channel("main", "NousResearch/hermes-agent"))
-    responses["/repos/NousResearch/hermes-agent/commits/main"] = (200, "e" * 40)
+    responses["/repos/NousResearch/hermes-agent/commits/heads%2Fmain"] = (200, "e" * 40)
     assert check_for_updates(home=home)["behind"] == 0
 
 
@@ -419,7 +419,7 @@ def test_deleted_remote_branch_heals_only_when_its_commits_are_in_main(installat
 def test_inherited_git_target_cannot_redirect_an_explicit_install(installation, monkeypatch):
     from hermes_cli.source_check import check_for_updates
     root, linked, home, base, head, responses, requests, git = installation
-    responses["/repos/fixture/fork/commits/feature%2Fgui"] = (200, head)
+    responses["/repos/fixture/fork/commits/heads%2Ffeature%2Fgui"] = (200, head)
     monkeypatch.setenv("GIT_DIR", str(root / ".git"))
     monkeypatch.setenv("GIT_WORK_TREE", str(root))
     status = check_for_updates(install_root=linked, home=home)
@@ -433,10 +433,10 @@ def test_source_admission_is_stamp_owned_not_path_owned(installation, mechanism)
     root, linked, home, base, head, responses, requests, git = installation
     if mechanism:
         (linked / "install-stamp.json").write_text(json.dumps({"updateMechanism": mechanism, "distribution": "nix" if mechanism == "external" else "source"}))
-    responses["/repos/fixture/fork/commits/feature%2Fgui"] = (200, head)
+    responses["/repos/fixture/fork/commits/heads%2Ffeature%2Fgui"] = (200, head)
     status = check_for_updates(install_root=linked, home=home)
     assert status["supported"] is (mechanism in ("self", None))
-    assert requests == ([MAIN_CHANNEL, "/repos/fixture/fork/commits/feature%2Fgui"]
+    assert requests == ([MAIN_CHANNEL, "/repos/fixture/fork/commits/heads%2Ffeature%2Fgui"]
                         if status["supported"] else [])
     empty = home / "no-source"
     empty.mkdir()
@@ -472,7 +472,7 @@ def test_malformed_optional_changelog_and_cache_do_not_hide_the_update(installat
     from hermes_cli.source_check import check_for_updates
     root, linked, home, base, head, responses, requests, git = installation
     cache = home / "cache.json"
-    responses["/repos/fixture/fork/commits/main"] = (200, "a" * 40)
+    responses["/repos/fixture/fork/commits/heads%2Fmain"] = (200, "a" * 40)
     responses[f"/repos/fixture/fork/compare/{head}...{'a' * 40}"] = (200, {
         "ahead_by": 2, "commits": [{"sha": "b" * 40, "commit": 42}],
     })
@@ -483,12 +483,13 @@ def test_malformed_optional_changelog_and_cache_do_not_hide_the_update(installat
     data["status"] = None
     cache.write_text(json.dumps(data))
     assert check_for_updates(install_root=root, home=home, cache_path=cache)["behind"] == 2
-    assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/commits/main",
+    assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/commits/heads%2Fmain",
                         f"/repos/fixture/fork/compare/{head}...{'a' * 40}"] * 2
 
 
 @pytest.mark.parametrize("repository,heals", [("NousResearch/hermes-agent", True), ("fixture/fork", False)])
-def test_official_ssh_healing_uses_public_https_without_retargeting_forks(installation, monkeypatch, repository, heals):
+@pytest.mark.parametrize("api_status", [200, 503])
+def test_official_ssh_healing_uses_public_https_without_retargeting_forks(installation, monkeypatch, repository, heals, api_status):
     from hermes_cli.source_check import check_for_updates
     root, linked, home, base, head, responses, requests, git = installation
     git("remote", "set-url", "origin", f"git@github.com:{repository}.git")
@@ -496,7 +497,7 @@ def test_official_ssh_healing_uses_public_https_without_retargeting_forks(instal
     monkeypatch.setenv("GIT_SSH_COMMAND", "false")
     branch_file = home / "desktop-update.json"
     branch_file.write_text(json.dumps({"branch": "deleted"}))
-    responses[f"/repos/{repository}/commits/main"] = (200, head)
+    responses[f"/repos/{repository}/commits/heads%2Fmain"] = (api_status, head if api_status == 200 else {})
     status = check_for_updates(install_root=linked, home=home, branch_config_path=branch_file)
     assert status["branch"] == ("main" if heals else "deleted")
     assert json.loads(branch_file.read_text())["branch"] == status["branch"]
@@ -511,10 +512,38 @@ def github_authorizations(installation, path):
     return [auth for seen, auth in zip(installation[6], installation.authorizations) if seen == path]
 
 
+def test_branch_probe_does_not_follow_a_same_named_tag(installation, monkeypatch):
+    from hermes_cli.source_check import check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    remote = home / "remote.git"
+    git("tag", "deleted", base)
+    git("clone", "--bare", str(root), str(remote))
+    branch_file = home / "desktop-update.json"
+    branch_file.write_text(json.dumps({"branch": "deleted"}))
+    # GitHub accepts an unqualified ref as either a branch or a tag. Only
+    # the tag survives here; the actual Git advertisement has no such head.
+    responses["/repos/fixture/fork/commits/deleted"] = (200, base)
+    responses["/repos/fixture/fork/commits/heads%2Fmain"] = (200, head)
+    original = subprocess.run
+
+    def local_advertisement(args, **kwargs):
+        if "ls-remote" in args:
+            args = [args[0], "-c", f"url.{remote.as_uri()}.insteadOf=https://github.com/fixture/fork.git", *args[1:]]
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", local_advertisement)
+    status = check_for_updates(install_root=linked, home=home, branch_config_path=branch_file)
+    assert status["branch"] == "main", status
+    assert status["targetSha"] == head
+    assert json.loads(branch_file.read_text())["branch"] == "main"
+    assert "/repos/fixture/fork/commits/heads%2Fdeleted" in requests
+
+
 def test_github_calls_carry_the_configured_token_and_retry_anonymously_on_401(installation, monkeypatch):
     from hermes_cli.source_check import check_for_updates
     root, linked, home, base, head, responses, requests, git = installation
-    url = "/repos/fixture/fork/commits/main"
+    url = "/repos/fixture/fork/commits/heads%2Fmain"
     responses[url] = (200, head)
     monkeypatch.setenv("GITHUB_TOKEN", "  ghp_fixture  ")
     assert check_for_updates(install_root=root, home=home)["behind"] == 0
@@ -529,7 +558,7 @@ def test_github_calls_carry_the_configured_token_and_retry_anonymously_on_401(in
 def test_branch_tip_failure_names_the_cause(installation):
     from hermes_cli.source_check import check_for_updates
     root, linked, home, base, head, responses, requests, git = installation
-    url = "/repos/fixture/fork/commits/main"
+    url = "/repos/fixture/fork/commits/heads%2Fmain"
     responses[url] = (403, {})
     installation.response_headers[url] = {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "4102444800"}
     status = check_for_updates(install_root=root, home=home)
@@ -542,3 +571,42 @@ def test_branch_tip_failure_names_the_cause(installation):
     status = check_for_updates(install_root=root, home=home, force=True)
     assert status["error"] == "fetch-failed"
     assert "HTTP 503" in status["message"]
+
+
+@pytest.mark.parametrize("origin,repository", [
+    ("git@github.com:NousResearch/hermes-agent.git", "NousResearch/hermes-agent"),
+    ("https://github.com/fixture/fork.git", "fixture/fork"),
+])
+def test_main_api_outage_recovers_from_read_only_git_advertisement(installation, monkeypatch, origin, repository):
+    from hermes_cli.source_check import check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    remote = home / "remote.git"
+    git("clone", "--bare", str(root), str(remote))
+    git("commit", "--allow-empty", "-m", "upstream update")
+    target = git("rev-parse", "HEAD")
+    git("push", str(remote), "main")
+    git("reset", "--hard", head)
+    git("remote", "set-url", "origin", origin)
+    monkeypatch.setenv("GIT_SSH_COMMAND", "false")
+    original = subprocess.run
+
+    def local_advertisement(args, **kwargs):
+        if "ls-remote" in args:
+            args = [args[0], "-c", f"url.{remote.as_uri()}.insteadOf=https://github.com/{repository}.git", *args[1:]]
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", local_advertisement)
+    responses[MAIN_CHANNEL] = (200, source_channel("main", repository))
+    api = f"/repos/{repository}/commits/heads%2Fmain"
+    responses[api] = (503, {})
+
+    status = check_for_updates(install_root=root, home=home, force=True)
+
+    assert "error" not in status
+    assert status["targetSha"] == target
+    assert status["updateAvailable"] is True
+    assert status["behind"] == -1  # An unavailable compare API does not hide the update.
+    assert api in requests
+    assert git("rev-parse", "HEAD") == head
+    assert git("remote", "get-url", "origin") == origin

@@ -1,12 +1,12 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { I18nProvider, type Locale, TRANSLATIONS, type Translations } from '@/i18n'
 import { en } from '@/i18n/en'
-import type { UpdateApplyState } from '@/store/updates'
+import { $updateApply, $updateChecking, $updateStatus, checkUpdates, type UpdateApplyState } from '@/store/updates'
 
-import { deriveUpdateStatus, VersionHero } from './update-status'
+import { deriveUpdateStatus, UpdateStatusCard, VersionHero } from './update-status'
 
 // VersionHero is the shared About/overlay hero. Its module imports the real
 // updates store graph; mock it shallowly — these tests exercise the hero's
@@ -115,6 +115,51 @@ describe('deriveUpdateStatus', () => {
     })
 
     expect(view.line).toBe(en.updates.latestBodyBackend)
+  })
+
+  it('checking replaces previous conclusions while an active install keeps ownership', () => {
+    for (const status of [
+      { supported: true, behind: 0 },
+      { supported: true, behind: 4, updateAvailable: true },
+      { supported: true, error: 'check-failed', message: 'offline' }
+    ]) {
+      const view = derive(status, IDLE_APPLY, true)
+
+      expect(view.line).toBe(en.updates.checking)
+      expect(view.error).toBeUndefined()
+      expect(view.updateAvailable).toBe(false)
+      expect(derive(status, { ...IDLE_APPLY, applying: true, stage: 'update' }, true).line).toBe(
+        en.updates.installing
+      )
+    }
+  })
+})
+
+describe('UpdateStatusCard check feedback', () => {
+  afterEach(() => {
+    cleanup()
+    $updateApply.set(IDLE_APPLY)
+    $updateChecking.set(false)
+    $updateStatus.set(null)
+    vi.clearAllMocks()
+  })
+
+  it('renders one last-checked age after a manual refresh', async () => {
+    $updateApply.set(IDLE_APPLY)
+    $updateStatus.set({ supported: true, behind: 0, fetchedAt: Date.now() })
+    vi.mocked(checkUpdates).mockResolvedValue($updateStatus.get())
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <UpdateStatusCard target="client" />
+      </I18nProvider>
+    )
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: en.updates.checkNow }))
+    })
+    expect(checkUpdates).toHaveBeenCalledWith({ force: true })
+    expect(screen.getByText(en.updates.lastChecked(en.updates.justNow))).toBeTruthy()
+    expect(screen.queryByText(en.updates.lastChecked(en.updates.justNow) + en.updates.justNowSuffix)).toBeNull()
   })
 })
 

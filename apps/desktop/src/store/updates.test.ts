@@ -187,6 +187,63 @@ describe('gateway version refresh', () => {
   })
 })
 
+describe('concurrent update checks', () => {
+  it('awaits a client forced refresh during a passive check', async () => {
+    let finish!: (value: DesktopUpdateStatus) => void
+
+    const check = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise(resolve => {
+        finish = resolve
+      }))
+      .mockResolvedValueOnce(status({ behind: 7 }))
+
+    const previous = window.hermesDesktop
+    window.hermesDesktop = { ...previous, updates: { ...previous?.updates, check } } as typeof previous
+
+    try {
+      const passive = checkUpdates()
+      const manual = checkUpdates({ force: true })
+      const simultaneousManual = checkUpdates({ force: true })
+      finish(status({ behind: 0 }))
+      await passive
+      expect((await manual)?.behind).toBe(7)
+      expect((await simultaneousManual)?.behind).toBe(7)
+      expect(check.mock.calls).toEqual([[{ force: false }], [{ force: true }]])
+    } finally {
+      window.hermesDesktop = previous
+    }
+  })
+
+  it('awaits a backend forced refresh during a passive check', async () => {
+    setRemote(true)
+    let finish!: (value: unknown) => void
+
+    const response = (behind: number) => ({
+      can_apply: true,
+      behind,
+      update_available: behind > 0,
+      current_version: '1.0'
+    })
+
+    checkHermesUpdateSpy.mockReset()
+    checkHermesUpdateSpy
+      .mockImplementationOnce(() => new Promise(resolve => {
+        finish = resolve
+      }))
+      .mockResolvedValueOnce(response(7))
+
+    const passive = checkBackendUpdates()
+    const manual = checkBackendUpdates({ force: true })
+    const simultaneousManual = checkBackendUpdates({ force: true })
+    finish(response(0))
+    await passive
+    expect((await manual)?.behind).toBe(7)
+    expect((await simultaneousManual)?.behind).toBe(7)
+    expect(checkHermesUpdateSpy.mock.calls).toEqual([[false], [true]])
+  })
+})
+
 describe('maybeNotifyUpdateAvailable', () => {
   beforeEach(() => {
     storage.clear()

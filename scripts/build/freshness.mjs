@@ -30,6 +30,15 @@ const tuiInputs = [
   'scripts/build/tui.mjs', 'scripts/build/frontend-common.mjs', 'scripts/build/freshness.mjs',
 ]
 
+// The dashboard consumes prepared icons, not Python metadata or other products'
+// recipes. Keep its whole workspace: Vite loads .env files and Tailwind scans
+// text outside src. Shared sources include tests checked by its TypeScript build.
+const webInputs = [
+  'web', 'apps/shared',
+  'tsconfig.json', 'package.json', 'package-lock.json', '.npmrc', 'pm/lock.json',
+  'scripts/build/web.mjs', 'scripts/build/frontend-common.mjs', 'scripts/build/freshness.mjs',
+]
+
 function treeHash(root, inputs, skip, contents = () => true) {
   const hash = createHash('sha256')
   function visit(name) {
@@ -51,7 +60,7 @@ function treeHash(root, inputs, skip, contents = () => true) {
 export function sourceHash(source, product) {
   const workspace = workspaces[product]
   if (!workspace) throw new Error(`Unknown frontend product: ${product}`)
-  return treeHash(source, product === 'tui' ? tuiInputs : [
+  return treeHash(source, product === 'tui' ? tuiInputs : product === 'web' ? webInputs : [
     workspace, 'apps/shared', 'package.json', 'package-lock.json', '.npmrc', 'pm/lock.json',
     'scripts/build',
     'scripts/generate-icons.mjs', 'scripts/generate_icons.py',

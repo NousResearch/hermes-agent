@@ -10,6 +10,8 @@ The API server exposes hermes-agent as an OpenAI-compatible HTTP endpoint. Any f
 
 Your agent handles requests with its full toolset (terminal, file operations, web search, memory, skills) and returns the final response. When streaming, tool progress indicators appear inline so frontends can show what the agent is doing.
 
+Request bodies are limited to 10 MB; larger POST/PUT/PATCH requests return `413 body_too_large`. Native session chat does not apply a separate silent text-length cap inside an accepted request.
+
 :::tip One backend covers models + tools
 Hermes itself needs a configured provider and tool backends for the API server to be useful. A [Nous Portal](./tool-gateway.md) subscription handles both — 300+ models plus web/image/TTS/browser via the Tool Gateway. Run `hermes setup --portal` once before starting the API server and frontends like Open WebUI or LobeChat get a fully tool-equipped backend.
 :::

@@ -79,6 +79,64 @@ def test_uv_bionic_row_matches_supplier(lock):
     """The uv bionic row is an explicit pin of the termux-main pool .deb;
     the row and Uv.fetch_url(bionic arm) must agree."""
     _assert_pinned_bionic_row(lock, "uv", r"/u/uv/uv_(?P<ver>[0-9.]+)_aarch64\.deb$")
+
+
+def test_uv_bionic_pin_is_independent_of_desktop_build_version(lock):
+    """Astral ships no bionic artifact: the bionic row is a manual termux-main
+    pin, never derived from the lock version (which tracks astral tags).
+    Otherwise `pm update` pins a uv_<astral-version> pool URL termux never
+    shipped and the Termux update fails installing managed uv (#124823)."""
+    from pm.registry import get_package
+
+    uv = get_package("uv")
+    package = lock["packages"]["uv"]
+    assert uv.fetch_url(package["version"], "linux-arm64-bionic") == package["artifacts"]["linux-arm64-bionic"]["url"]
+    assert uv.deb_package == "uv"
+
+
+def test_bionic_pin_follows_a_pool_repair(tmp_path, monkeypatch):
+    """`pm update --termux` repoints a bionic row whose archive the pool has
+    retired (pm/termux_libs.py::repair). fetch_url must read the repaired row
+    instead of a compiled-in copy of the old URL, or the two authorities drift
+    and the equality assertions above start failing on a repaired tree."""
+    from pm import paths
+    from pm.lock import Lockfile
+    from pm.registry import get_package
+
+    lock_path = tmp_path / "lock.json"
+    lock = Lockfile(lock_path)
+    lock.set_pin("uv", "0.12.3", {
+        "linux-arm64-bionic": {
+            "url": "https://packages.termux.dev/apt/termux-main/pool/main/u/uv/uv_0.12.19_aarch64.deb",
+            "sha256": "0" * 64,
+        },
+    })
+    lock.save()
+    monkeypatch.setattr(paths, "lockfile_path", lambda: lock_path)
+    uv = get_package("uv")
+    assert uv.fetch_url("0.12.3", "linux-arm64-bionic").endswith("uv_0.12.19_aarch64.deb")
+    # No row yet (a fresh `pm lock --bump`): the package definition is the pin.
+    lock_path.unlink()
+    assert uv.fetch_url("0.12.3", "linux-arm64-bionic").endswith("uv_0.12.15_aarch64.deb")
+
+
+def test_uv_bionic_has_no_auto_update_source(lock):
+    """The bionic arm must stay out of the shared-version intersection so
+    `pm update` retains the manual row instead of re-pinning it to whatever
+    astral just released."""
+    from pm.registry import get_package
+    from pm.update import resolve_best
+
+    uv = get_package("uv")
+    assert uv.latest_versions("linux-arm64-bionic", locked=lock["packages"]["uv"]["version"]) == []
+    decision = resolve_best(
+        "uv",
+        {"linux-x64": ["0.12.4", "0.12.3"], "linux-arm64-bionic": []},
+        "0.12.3",
+        uv.version_style,
+    )
+    assert decision.version == "0.12.4"
+    assert "linux-arm64-bionic" not in decision.per_target
 @pytest.mark.parametrize("name,main,on_path", [
     ("python", None, True), ("uv", "bin/uv", False), ("node", "bin/node", True),
 ])

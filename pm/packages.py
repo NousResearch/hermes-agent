@@ -185,6 +185,27 @@ class _BionicDebArm:
             return DebPackage.verify(self, entry, target)
         return BinaryPackage.verify(self, entry, target)
 
+    def bionic_url(self, fallback: str) -> str:
+        """The bionic pin, read from the lock row when there is one.
+
+        Two authorities existed: the row in pm/lock.json, which
+        ``pm update --termux`` repoints whenever the termux pool retires an
+        archive (pm/termux_libs.py::repair), and a compiled-in copy of the
+        same URL here. After a repair the copy handed back the retired URL,
+        and every test that compares fetch_url() against the row failed on a
+        repaired tree (#124823 review). The row is the machine interface
+        (pm/lock.py), so it wins; *fallback* is what a tree without a row
+        pins, i.e. what `pm lock --bump` writes the row from.
+        """
+        from pm.lock import Lockfile
+        from pm.paths import lockfile_path
+
+        row = Lockfile(lockfile_path()).pinned_artifacts(self.name).get("linux-arm64-bionic")
+        if isinstance(row, list):
+            row = row[0] if row else None
+        url = row.get("url") if isinstance(row, dict) else None
+        return str(url) if url else fallback
+
 
 @register
 class Uv(_BionicDebArm, BinaryPackage, DebPackage):
@@ -206,14 +227,28 @@ class Uv(_BionicDebArm, BinaryPackage, DebPackage):
 
     deb_package = "uv"
 
+    # termux-main (official termux repo) uv .deb, built from source --
+    # astral ships no bionic artifact. It follows termux's own build
+    # cadence, not astral's release tags, so the bionic row is a manual
+    # pin, never derived from the lock version, and pm update leaves it
+    # alone (no bionic resolver; `pm update --termux` repairs pool-rot).
+    # Used only for a tree with no bionic row yet (a `pm lock --bump`).
+    _BIONIC_URL = (
+        "https://packages.termux.dev/apt/termux-main/pool/main/u/uv/"
+        "uv_0.12.15_aarch64.deb"
+    )
+
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
-            return f"https://packages.termux.dev/apt/termux-main/pool/main/u/uv/uv_{version}_aarch64.deb"
+            return self.bionic_url(self._BIONIC_URL)
         triple = _RUST_TRIPLE[target]
         ext = "zip" if target.startswith("win32") else "tar.gz"
         return f"https://github.com/astral-sh/uv/releases/download/{version}/uv-{triple}.{ext}"
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
+        # Bionic remains a manual pin from a separate supplier.
+        if target == "linux-arm64-bionic":
+            return []
         return github_release_tags("astral-sh/uv")
 
 
@@ -237,7 +272,8 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
     # termux-main (official termux repo) python deb. It lags python-build-
     # standalone by one patch (3.14.6-1 vs 3.14.7), so the bionic row is a
     # manual pin -- never derived from the node version, and pm update leaves
-    # it alone (no bionic resolver).
+    # it alone (no bionic resolver). Used only for a tree with no bionic row
+    # yet (a `pm lock --bump`); the lock row wins once there is one.
     deb_package = "python"
     _BIONIC_URL = (
         "https://packages.termux.dev/apt/termux-main/pool/main/p/python/"
@@ -261,7 +297,7 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
 
     def fetch_url(self, version: str, target: str) -> str:
         if target == "linux-arm64-bionic":
-            return self._BIONIC_URL
+            return self.bionic_url(self._BIONIC_URL)
         # lock version is "<python>+<release tag>", e.g. "3.14.7+20260901"
         pyver, _, tag = version.partition("+")
         if not tag:

@@ -64,23 +64,88 @@ async def _api_json(method: str, path: str, timeout: float, payload: Any = None)
             return await resp.json()
 
 
-# ── async helpers (called from sync handlers via _run_async) ─────────────────
-def _filter_and_summarize(states: list, domain: Optional[str] = None, area: Optional[str] = None) -> Dict:
-    """Filter raw HA states by domain/area (area matches friendly_name or area attr) and compact them."""
+def _stem_match(a: str, b: str) -> bool:
+    """Loose match for noun declension (e.g. Polish pracownia/pracowni/pracownię/...):
+    two words match if they share a long-enough common prefix, so a search
+    term typed in one grammatical case still matches names stored in another
+    case. Plain substring matching fails on real data: area="pracownia"
+    (nominative, 9 chars) can never be a substring of a friendly_name ending
+    in "...w pracowni" (locative, 8 chars) -- the search term is literally
+    longer than the word it should match. Confirmed live: a real sensor
+    ("Ogrzewanie Temperatura w pracowni") was invisible to area filtering
+    because of exactly this mismatch, forcing the model into unfiltered
+    1000+ entity dumps it couldn't reason over -- which is what led it to
+    confabulate readings instead of finding the real sensor."""
+    n = min(len(a), len(b), 6)
+    return n >= 4 and a[:n] == b[:n]
+
+
+def _fuzzy_contains(haystack: str, needle: str) -> bool:
+    """True if needle appears in haystack, either as an exact substring
+    (fast path, handles English names and exact matches) or word-by-word via
+    _stem_match (handles declension mismatches in inflected languages)."""
+    if not needle:
+        return False
+    if needle in haystack:
+        return True
+    needle_words = needle.split()
+    haystack_words = haystack.split()
+    if not needle_words or not haystack_words:
+        return False
+    return all(
+        any(_stem_match(nw, hw) for hw in haystack_words)
+        for nw in needle_words
+    )
+
+
+# Soft cap for unfiltered listings. Real HA instances can have 2000+
+# entities; dumping all of them (as raw JSON, unfiltered) into a small
+# local model's context is how it ends up guessing/confabulating instead of
+# reasoning over the real data. When no domain/area filter narrows the
+# result, truncate and nudge the model toward filtering instead.
+_UNFILTERED_CAP = 150
+
+
+def _filter_and_summarize(
+    states: list,
+    domain: Optional[str] = None,
+    area: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Filter raw HA states by domain/area and return a compact summary."""
     if domain:
         states = [s for s in states if s.get("entity_id", "").startswith(f"{domain}.")]
     if area:
         area_lower = area.lower()
         states = [
             s for s in states
-            if area_lower in (s.get("attributes", {}).get("friendly_name", "") or "").lower()
-            or area_lower in (s.get("attributes", {}).get("area", "") or "").lower()]
-    entities = [
-        {
-            "entity_id": s["entity_id"], "state": s["state"],
-            "friendly_name": s.get("attributes", {}).get("friendly_name", "")}
-        for s in states]
-    return {"count": len(entities), "entities": entities}
+            if _fuzzy_contains((s.get("attributes", {}).get("friendly_name", "") or "").lower(), area_lower)
+            or _fuzzy_contains((s.get("attributes", {}).get("area", "") or "").lower(), area_lower)
+        ]
+
+    entities = []
+    for s in states:
+        entities.append({
+            "entity_id": s["entity_id"],
+            "state": s["state"],
+            "friendly_name": s.get("attributes", {}).get("friendly_name", ""),
+        })
+
+    total = len(entities)
+    truncated = False
+    if not domain and not area and total > _UNFILTERED_CAP:
+        entities = entities[:_UNFILTERED_CAP]
+        truncated = True
+
+    result = {"count": total, "entities": entities}
+    if truncated:
+        result["truncated"] = True
+        result["note"] = (
+            f"Showing {_UNFILTERED_CAP} of {total} entities -- the unfiltered list is too "
+            "large to review reliably. Use the domain (e.g. 'sensor', 'light') or area "
+            "(e.g. a room name) parameter on the next ha_list_entities call to narrow the "
+            "result instead of guessing from a partial list."
+        )
+    return result
 
 
 async def _async_list_entities(domain: Optional[str] = None, area: Optional[str] = None) -> Dict[str, Any]:

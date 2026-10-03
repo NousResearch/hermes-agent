@@ -18,7 +18,7 @@ from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
 from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
-    _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block,
+    _MCP_HARD_RESULT_CAP_CHARS, _base_mime, _cache_mcp_audio_block, _cache_mcp_image_block,
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
     _truncate_mcp_text_result)
 from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
@@ -514,7 +514,78 @@ def _content_dual_emits_structured(result, structured) -> bool:
     return False
 
 
-def _render_call_tool_result(result, server_name: str) -> str:
+_MCP_INLINE_IMAGE_MAX = 4  # most images inlined from one tool result
+_MCP_INLINE_IMAGE_MAX_B64 = 12_000_000  # ~9 MB of pixels; past this the MEDIA: path stands alone
+_MCP_MULTIMODAL_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
+
+
+def _route_takes_multimodal_tool_results() -> bool:
+    """True when the active main model can consume an image INSIDE a tool result.
+
+    Reuses the shared capture gate rather than adding a second predicate: it already fails CLOSED
+    toward text when provider/model metadata is missing, which is what is wanted here -- a
+    multimodal tool result sent to a text-only route is a hard 400/404 at the provider boundary.
+    Any failure keeps the MEDIA: tag, so a broken config degrades instead of breaking the call."""
+    try:
+        from agent.auxiliary_client import _read_main_model, _read_main_provider
+        from hermes_cli.config import load_config
+        from hermes_constants import hermes_home_key
+        from tools.computer_use.vision_routing import should_route_capture_to_aux_vision
+
+        provider, model = _read_main_provider() or "", _read_main_model() or ""
+        key = (hermes_home_key(), str(provider), str(model))
+        if (cached := _MCP_MULTIMODAL_ROUTE_CACHE.get(key)) is not None:
+            return cached
+        # Aux routing means "this route cannot read the image itself" -- invert it.
+        decision = not bool(should_route_capture_to_aux_vision(provider, model, load_config()))
+        _MCP_MULTIMODAL_ROUTE_CACHE[key] = decision
+        return decision
+    except Exception:
+        logger.debug("MCP multimodal route check failed; keeping MEDIA: tags", exc_info=True)
+        return False
+
+
+def _mcp_inline_image_parts(result) -> List[Dict[str, Any]]:
+    """OpenAI-shaped image_url parts for a result's ImageContent blocks.
+
+    Empty when there are none, the payload is malformed, or the inline budget is spent: an MCP
+    server may return many large images, and each one rides the cached prefix for the rest of the
+    conversation. The MEDIA: path stays in the text half, so nothing is lost by declining."""
+    parts: List[Dict[str, Any]] = []
+    budget = _MCP_INLINE_IMAGE_MAX_B64
+    for block in (getattr(result, "content", None) or []):
+        if len(parts) >= _MCP_INLINE_IMAGE_MAX:
+            break
+        data = getattr(block, "data", None)
+        mime = _base_mime(mcp_field(block, "mime_type", "mimeType"))
+        if not data or not mime.startswith("image/"):
+            continue
+        if len(data) > budget:
+            logger.debug("MCP image block exceeds the inline budget; the MEDIA: path stands alone")
+            break
+        budget -= len(data)
+        parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+    return parts
+
+
+def _render_call_tool_result(result, server_name: str):
+    """``CallToolResult`` -> handler payload: the JSON string, or the multimodal envelope when the
+    result carries images AND the route can read them (registry._normalize_handler_result accepts
+    the envelope from any tool). The text half keeps the MEDIA: paths, so sharing and later
+    full-resolution reads still work; the image half is what the model actually sees. Errors stay
+    text -- an error payload has nothing to show."""
+    text = _render_call_tool_result_text(result, server_name)
+    if mcp_field(result, "is_error", "isError", False):
+        return text
+    images = _mcp_inline_image_parts(result)
+    if not images or not _route_takes_multimodal_tool_results():
+        return text
+    return {"_multimodal": True,
+            "content": [{"type": "text", "text": text}, *images],
+            "text_summary": text}
+
+
+def _render_call_tool_result_text(result, server_name: str) -> str:
     """Pure: ``CallToolResult`` -> handler JSON. ``content`` and ``structuredContent`` are both
     forwarded, except that a ``structuredContent`` whose JSON also sits verbatim in a text block
     (the spec's backwards-compat dual-emit; compared as parsed JSON) is dropped, because that copy
@@ -553,10 +624,11 @@ def _render_call_tool_result(result, server_name: str) -> str:
 
 
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
-    """Sync registry handler (``handler(args_dict, **kwargs) -> str``) calling an MCP tool via the background loop."""
+    """Sync registry handler (``handler(args_dict, **kwargs) -> str | dict``) calling an MCP tool via the
+    background loop. A dict is the multimodal envelope -- see ``_render_call_tool_result``."""
     op = f"tools/call {tool_name}"
 
-    def _handler(args: dict, **kwargs) -> str:
+    def _handler(args: dict, **kwargs) -> Any:
         # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
         error = _trust_gate_check(server_name, tool_name) or _check_circuit_breaker(server_name)
         if error is not None:

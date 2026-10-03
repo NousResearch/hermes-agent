@@ -29,6 +29,9 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
+# Empty by default: unset, the mistralai SDK keeps its own endpoint, so an
+# absent override behaves exactly as before.
+MISTRAL_STT_BASE_URL = os.getenv("STT_MISTRAL_BASE_URL", "")
 ELEVENLABS_STT_BASE_URL = os.getenv("ELEVENLABS_STT_BASE_URL", "https://api.elevenlabs.io/v1")
 # DeepInfra STT base URL is resolved via hermes_cli.models.deepinfra_base_url (shared).
 

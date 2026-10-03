@@ -60,7 +60,9 @@ def transition(tmp_path):
         "        f.write(json.dumps(dict(name=name, pid=os.getpid(), python=sys.executable, **values)) + '\\n')\n"
     )
     selected = tmp_path / "selected-python"
-    venv.EnvBuilder(with_pip=False).create(selected)
+    # A copied interpreter cannot start on macOS (dyld wants lib/libpython3.*.dylib
+    # beside it); a symlinked stub starts through the real distribution.
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(selected)
     selected_python = selected / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     (pm_package / "environments.py").write_text(
         "import os, sys\n"
@@ -418,7 +420,7 @@ def test_bootstrap_does_not_initialize_old_site_packages(transition, tmp_path, m
     root, git, old, new, request = transition
     shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
     obsolete = tmp_path / "obsolete-python"
-    venv.EnvBuilder(with_pip=False).create(obsolete)
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(obsolete)
     site = obsolete / ("Lib/site-packages" if os.name == "nt" else
                        f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
     trap = tmp_path / "old-site-loaded"

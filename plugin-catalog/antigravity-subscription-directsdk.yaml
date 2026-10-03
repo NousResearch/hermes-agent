@@ -1,18 +1,13 @@
 name: antigravity-subscription-directsdk
 repo: https://github.com/soyelmismo/hermes-antigravity-subscription
-sha: d6c8ea5fe45da38abf2e26f30156123a1a3caab6
-description: >-
-  Run Hermes on an Antigravity / Gemini subscription via the official agy CLI (DirectSDK path).
-  Streams tokens progressively, maps thinking effort, runs from a private temp directory, and
-  aborts reported native tool steps. Disclosure — routes inference through Google's official agy
-  CLI using your Antigravity/Gemini subscription; a symlink to your antigravity-oauth-token is
-  placed in a per-session private temp HOME; usage counts against that subscription.
+sha: 3d691dadfdd515083237337c4a9747389a18ca4a
+description: "Run Hermes on an Antigravity / Gemini subscription via the official agy CLI (DirectSDK path). Streams tokens progressively, maps thinking effort, bounds context to 200k tokens with tool output pruning, and aborts native tool steps. Disclosure — routes inference through Google's official agy CLI under your subscription (usage counts against it); links (symlink, else hardlink/copy) the antigravity-oauth-token into a per-session private temp HOME deleted on close; probes OS keyring presence (Linux Secret Service, macOS Keychain, Windows Credential Manager) without reading secrets; on macOS symlinks ~/Library/Keychains for CLI session reuse; never writes to vendor credential stores."
 maintainer: soyelmismo
 tier: community
 category: models
 requires_hermes: ">=0.21.0"
 docs_url: https://github.com/soyelmismo/hermes-antigravity-subscription#readme
-version: "1.0.1"
+version: "1.0.6"
 readme: true
 platforms:
   - linux

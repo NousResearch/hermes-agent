@@ -10,14 +10,16 @@ import {
   extendRefreshPageToOverlap,
   graftRefreshedTailOntoBackfill,
   mergeOlderTranscriptPage,
-  transcriptBackfillAvailable
+  transcriptBackfillAvailable,
+  unhideOpeningUserRows
 } from './transcript-backfill'
 
 vi.mock('@/hermes', () => ({
-  getOlderSessionMessages: vi.fn()
+  getOlderSessionMessages: vi.fn(),
+  getSessionMessages: vi.fn()
 }))
 
-const { getOlderSessionMessages } = await import('@/hermes')
+const { getOlderSessionMessages, getSessionMessages } = await import('@/hermes')
 
 const chat = (id: string, rowId?: number): ChatMessage => ({
   id,
@@ -240,6 +242,50 @@ describe('graftRefreshedTailOntoBackfill', () => {
   })
 })
 
+describe('messagesIfTranscriptBehind retention tips (#123909)', () => {
+  it('treats a retention-trimmed store ending on the page tip as current', () => {
+    // Retention released the head: the store holds fewer messages than the
+    // latest page renders, but its last durable row IS the page's own tip.
+    // The count comparison refused every send on that shape.
+    const trimmed = [chat('old-a', 110), chat('old-b', 111), chat('tip-user', 118), chat('tip-reply', 119)]
+
+    const page = [
+      chat('old-a', 110),
+      chat('old-b', 111),
+      chat('mid-turn', 115),
+      chat('tip-user', 118),
+      chat('tip-reply', 119)
+    ]
+
+    expect(page.length).toBeGreaterThan(trimmed.length)
+
+    expect(messagesIfTranscriptBehind(trimmed, page)).toBeNull()
+  })
+
+  it('skips unpersisted tail rows when establishing the local tip', () => {
+    // The guard runs on a baseline that may still end on a live row past the
+    // last durable one; the durable tip decides, not the stream bubble.
+    const local = [chat('durable-reply', 119), chat('live-stream')]
+    const page = [chat('older', 118), chat('durable-reply', 119)]
+
+    expect(messagesIfTranscriptBehind(local, page)).toBeNull()
+  })
+
+  it("still refuses when a peer window's newer row changes the tip (#65047)", () => {
+    const local = [chat('a', 118), chat('b', 119)]
+    const page = [...local, chat('peer-turn', 120)]
+
+    expect(messagesIfTranscriptBehind(local, page)).toBe(page)
+  })
+
+  it('falls back to counts when neither side carries a durable row id', () => {
+    const local = [chat('a'), chat('b')]
+    const page = [chat('a'), chat('b'), chat('c')]
+
+    expect(messagesIfTranscriptBehind(local, page)).toBe(page)
+  })
+})
+
 describe('extendRefreshPageToOverlap', () => {
   it('reads older pages until a long refresh shares a durable row with the rendered transcript', async () => {
     const previous = [chat('earlier', 1), chat('prompt', 2), chat('reply', 3)]
@@ -261,6 +307,8 @@ describe('backfillOlderTranscriptPage', () => {
     $transcriptTailBySessionId.set({})
     _resetTranscriptBackfillForTests()
     vi.mocked(getOlderSessionMessages).mockReset()
+    vi.mocked(getSessionMessages).mockReset()
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-1' } as never)
   })
 
   afterEach(() => {
@@ -292,7 +340,8 @@ describe('backfillOlderTranscriptPage', () => {
 
     expect(applied).toBe(true)
     expect(getOlderSessionMessages).toHaveBeenCalledWith('stored-1', undefined, 120)
-    expect(applyOlderPage).toHaveBeenCalledTimes(1)
+    // The exhausted tail also fetches the origin page (see the #96875 tests
+    // below), so assert the older page landed as the FIRST apply.
     expect(applyOlderPage.mock.calls[0][0].map((m: ChatMessage) => m.rowId)).toEqual([1, 2])
     // A short older page means the transcript is now fully loaded.
     expect(transcriptBackfillAvailable('stored-1')).toBe(false)
@@ -529,5 +578,153 @@ describe('backfillOlderTranscriptPage', () => {
 
     expect(applied).toBe(false)
     expect(transcriptBackfillAvailable('stored-1')).toBe(true)
+  })
+
+  // #96875: paging can reach the true top while the opening USER turn is still
+  // missing — compaction projection stamps the durable opening row
+  // display_kind=hidden (hydration drops it) or the last `latest` page begins
+  // at the first assistant row. Once the tail bookkeeping reports the session
+  // fully loaded, the oldest display rows must be fetched once and the opening
+  // user turn prepended so "Show earlier" lands on the greeting.
+  it('fetches the oldest page once paging is exhausted and prepends the opening user turn', async () => {
+    truncatedTail()
+    // The last older page: full paging history ends at the first assistant row.
+    vi.mocked(getOlderSessionMessages).mockResolvedValue({
+      messages: [{ ...row(10, 'first-assistant'), role: 'assistant' as const }],
+      pagination: { limit: 120, offset: 120, order: 'latest', returned: 1 },
+      session_id: 'stored-1'
+    } as never)
+    // The oldest page (order=oldest, offset 0) holds the greeting, hidden.
+    vi.mocked(getSessionMessages).mockResolvedValue({
+      messages: [
+        {
+          id: 1,
+          role: 'user' as const,
+          content: 'opening greeting',
+          display_kind: 'hidden',
+          timestamp: 1
+        },
+        { ...row(10, 'first-assistant'), role: 'assistant' as const }
+      ],
+      pagination: { limit: 20, offset: 0, order: 'oldest', returned: 2 },
+      session_id: 'stored-1'
+    } as never)
+
+    const applyOlderPage = vi.fn()
+
+    await backfillOlderTranscriptPage({
+      storedSessionId: 'stored-1',
+      isCurrent: () => true,
+      applyOlderPage
+    })
+
+    expect(getSessionMessages).toHaveBeenCalledWith('stored-1', undefined, {
+      includeCompacted: true,
+      limit: 20,
+      offset: 0,
+      order: 'oldest'
+    })
+    // First call: the regular older page. Second call: the origin page.
+    expect(applyOlderPage).toHaveBeenCalledTimes(2)
+    const originPage = applyOlderPage.mock.calls[1][0] as ChatMessage[]
+    expect(originPage[0].role).toBe('user')
+    expect(originPage[0].parts[0]).toMatchObject({ type: 'text', text: 'opening greeting' })
+  })
+
+  it('does not fetch the oldest page while older pages remain', async () => {
+    truncatedTail()
+    vi.mocked(getOlderSessionMessages).mockResolvedValue({
+      messages: Array.from({ length: 120 }, (_, index) => row(index, `older${index}`)),
+      pagination: { limit: 120, offset: 120, order: 'latest', returned: 120 },
+      session_id: 'stored-1'
+    } as never)
+
+    await backfillOlderTranscriptPage({
+      storedSessionId: 'stored-1',
+      isCurrent: () => true,
+      applyOlderPage: vi.fn()
+    })
+
+    expect(getSessionMessages).not.toHaveBeenCalled()
+  })
+
+  it('skips the origin prepend when the user switched sessions mid-flight', async () => {
+    truncatedTail()
+    vi.mocked(getOlderSessionMessages).mockResolvedValue({
+      messages: [row(10, 'first-assistant')],
+      pagination: { limit: 120, offset: 120, order: 'latest', returned: 1 },
+      session_id: 'stored-1'
+    } as never)
+
+    const applyOlderPage = vi.fn()
+
+    await backfillOlderTranscriptPage({
+      storedSessionId: 'stored-1',
+      isCurrent: () => false,
+      applyOlderPage
+    })
+
+    // The stale-response guard discards before any apply; no origin fetch ran.
+    expect(applyOlderPage).not.toHaveBeenCalled()
+  })
+
+  it('keeps the already-applied older page when the origin fetch fails', async () => {
+    truncatedTail()
+    vi.mocked(getOlderSessionMessages).mockResolvedValue({
+      messages: [row(10, 'first-assistant')],
+      pagination: { limit: 120, offset: 120, order: 'latest', returned: 1 },
+      session_id: 'stored-1'
+    } as never)
+    vi.mocked(getSessionMessages).mockRejectedValue(new Error('network down'))
+
+    const applyOlderPage = vi.fn()
+
+    const applied = await backfillOlderTranscriptPage({
+      storedSessionId: 'stored-1',
+      isCurrent: () => true,
+      applyOlderPage
+    })
+
+    expect(applied).toBe(true)
+    expect(applyOlderPage).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('unhideOpeningUserRows', () => {
+  it('clears hidden on the opening user row so hydration keeps the greeting', () => {
+    const messages = unhideOpeningUserRows([
+      {
+        id: 1,
+        role: 'user',
+        content: 'hello there',
+        display_kind: 'hidden',
+        timestamp: 1
+      }
+    ])
+
+    expect(messages[0].display_kind).toBeUndefined()
+    expect(messages[0].display_content).toBe('hello there')
+  })
+
+  it('leaves a visible opening user row untouched', () => {
+    const messages = unhideOpeningUserRows([row(1, 'plain greeting')])
+
+    expect(messages[0].display_kind).toBeUndefined()
+    expect(messages[0].display_content).toBeUndefined()
+  })
+
+  it('leaves hidden rows after the opening user turn alone', () => {
+    const messages = unhideOpeningUserRows([
+      row(1, 'greeting'),
+      { id: 2, role: 'user', content: 'scaffolding', display_kind: 'hidden', timestamp: 2 }
+    ])
+
+    expect(messages[1].display_kind).toBe('hidden')
+  })
+
+  it('leaves a hidden opening row without content hidden', () => {
+    const messages = unhideOpeningUserRows([{ id: 1, role: 'user', content: '', display_kind: 'hidden', timestamp: 1 }])
+
+    expect(messages[0].display_kind).toBe('hidden')
   })
 })

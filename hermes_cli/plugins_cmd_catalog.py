@@ -237,7 +237,7 @@ def _refuse_unsupported_catalog_platform(entry: PluginCatalogEntry) -> None:
 
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
                           allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True,
-                          before_swap=None) -> tuple:
+                          assume_deps_consent: bool = False, before_swap=None) -> tuple:
     """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance recorded on the
     install-metadata record at the sha ACTUALLY checked out (a ``--ref`` install is not at the reviewed
     pin, so ``update_available`` must say so). Returns the core's ``(target, manifest, installed_name)``."""
@@ -247,7 +247,8 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
     _refuse_unsupported_catalog_platform(entry)
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
-        reviewed_pin=entry.sha, python_deps=python_deps, allow_removed=allow_removed, before_swap=before_swap,
+        reviewed_pin=entry.sha, python_deps=python_deps, assume_deps_consent=assume_deps_consent,
+        allow_removed=allow_removed, before_swap=before_swap,
         catalog={"name": entry.name, "repo": entry.repo, "tier": entry.tier, "pin": entry.sha})
     return target, manifest, installed_name
 
@@ -851,9 +852,34 @@ def catalog_pins() -> Dict[str, str]:
         return {}
 
 
+def catalog_titles() -> Dict[str, str]:
+    """``{catalog_name: title}`` for entries that carry one — the Plugins hub server-sentence display
+    name. One resolution for a whole listing: callers that annotate every installed plugin must not
+    pay a live-catalog fetch per candidate (see ``resolved_removed_entries``); empty on failure."""
+    try:
+        return {e.name: e.title for e in load_catalog_live() if e.title}
+    except Exception:
+        return {}
+
+
 def catalog_versions() -> Dict[str, str]:
     """``{catalog_name: version_label}`` for entries that carry one; empty on failure (best effort)."""
     try:
         return {e.name: e.version for e in load_catalog_live() if e.version}
     except Exception:
         return {}
+
+
+def catalog_rows_maps() -> tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
+    """The pins/versions/titles maps from ONE live-catalog resolution. Listing callers (``_plugin_rows``)
+    need all three; taking them via :func:`catalog_pins`/:func:`catalog_versions`/:func:`catalog_titles`
+    would pay the whole ``load_catalog_live()`` pass — git probe, ~300 catalog YAMLs, prefer-in-tree
+    merges — three times per inventory request (#125683). Best effort like the per-map helpers: an
+    empty triple on failure."""
+    try:
+        entries = load_catalog_live()
+    except Exception:
+        return {}, {}, {}
+    return ({e.name: e.sha for e in entries},
+            {e.name: e.version for e in entries if e.version},
+            {e.name: e.title for e in entries if e.title})

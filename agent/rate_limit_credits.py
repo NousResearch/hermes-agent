@@ -133,6 +133,7 @@ class RateLimitCreditsMixin:
             return
         try:
             from agent.credits_tracker import (
+                _remember_shown_band,
                 evaluate_credits_notices, is_free_tier_model, new_credits_latch, rewarm_pricing_before_depleted_notice,
             )
             latch = getattr(self, "_credits_latch", None)
@@ -147,6 +148,12 @@ class RateLimitCreditsMixin:
                 self._emit_notice_clear(key)
             for notice in to_show:
                 self._emit_notice(notice)
+            # Record the band this session last showed so a desktop reap/resume rebuild
+            # (fresh agent + fresh latch, SAME session_id) restores it instead of
+            # re-announcing the unchanged band as a fresh crossing (#101578). Both the
+            # live-header path and the cold-start seed route through here, so this is the
+            # single chokepoint.
+            _remember_shown_band(getattr(self, "session_id", None), latch.get("usage_band"))
         except Exception:
             logger.warning("credits notice evaluation/emit failed", exc_info=True)
 

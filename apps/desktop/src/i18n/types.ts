@@ -8,7 +8,14 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
+/** The locales compiled into the app (`TRANSLATIONS`). */
+export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
+
+/** Any language id the app can render: a bundled locale, or one a plugin /
+ *  the backend registered at runtime (`registerAppLocale`). Lowercase
+ *  BCP-47-ish (`pl`, `pt-br`). Resolve strings through the registry, never
+ *  by indexing `TRANSLATIONS` directly. */
+export type Locale = string
 
 /** One error-card entry: a short title and one plain sentence. Either may
  *  take the failing provider's display name (falls back to "the AI service"). */
@@ -59,74 +66,49 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
+  sharedMetrics: {
+    consentTitle: string
+    consentBody: string
+    whatIsCollected: string
+    collectedIntro: string
+    collectedActivity: string
+    collectedModels: string
+    collectedNames: string
+    collectedMilestones: string
+    collectedReliability: string
+    collectedUsage: string
+    collectedMachine: string
+    installId: string
+    consentWindow: string
+    readDocs: string
+    share: string
+    local: string
+    off: string
+    changeLater: string
+    saveFailed: string
+    collectLabel: string
+    collectDesc: string
+    sendLabel: string
+    sendDesc: string
+    unavailable: string
+    stripBody: string
+    stripChoices: { share: string; local: string; off: string }
+    stripDetails: string
+  }
   externalOpenFailed: {
     title: string
     message: string
     copyUrl: string
     close: string
+    missing: {
+      title: string
+      message: string
+    }
   }
   intro: {
     stock: Record<string, string[]>
     custom: (label: string) => string[]
-  }
-  catalog: {
-    add: string
-    added: string
-    discover: string
-    featured: string
-    explorePlugins: string
-    exploreSkills: string
-    mostStarred: string
-    newest: string
-    recentlyUpdated: string
-    alphabetical: string
-    sortBy: string
-    seeAll: string
-    related: string
-    tags: string
-    screenshots: string
-    listView: string
-    cardView: string
-    installTitle: (name: string) => string
-    installDescription: string
-    installTo: string
-    thisComputer: string
-    installing: string
-    installComplete: (name: string) => string
-    destinationChanged: string
-    installed: string
-    searchSkills: string
-    searchPlugins: string
-    allSources: string
-    allCategories: string
-    about: string
-    author: string
-    source: string
-    category: string
-    version: string
-    platforms: string
-    requires: string
-    tools: string
-    hooks: string
-    middleware: string
-    commands: string
-    license: string
-    addedDate: string
-    updatedDate: string
-    repository: string
-    documentation: string
-    noResults: string
-    tryAnother: string
-    clearFilters: string
-    filters: string
-    loadFailed: string
-    retry: string
-    more: string
-    pinned: string
-    snapshotHint: string
-    installHint: string
-    results: (count: number) => string
-    back: string
   }
   connectors: {
     title: string
@@ -933,6 +915,8 @@ export interface Translations {
       hideThreadTimelineDesc: string
       reasoningCollapsedTitle: string
       reasoningCollapsedDesc: string
+      chatTextScaleTitle: string
+      chatTextScaleDesc: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
       sessionDensityTitle: string
@@ -988,6 +972,8 @@ export interface Translations {
       textDirection: { auto: string; rtl: string; ltr: string }
       introSplashTitle: string
       introSplashDesc: string
+      modelPricingTitle: string
+      modelPricingDesc: string
       reactionsTitle: string
       reactionsDesc: string
       tipsTitle: string
@@ -1510,6 +1496,8 @@ export interface Translations {
       provider: string
       model: string
       applying: string
+      mainAppliedTitle: string
+      mainAppliedMessage: (model: string) => string
       defaultsLabel: string
       reasoning: string
       reasoningOff: string
@@ -1521,6 +1509,7 @@ export interface Translations {
       restartFailed: string
       auxiliaryTitle: string
       resetAllToMain: string
+      staleAuxDismiss: string
       auxiliaryDesc: string
       setToMain: string
       change: string
@@ -2034,6 +2023,17 @@ export interface Translations {
     }
   }
 
+  skillDeepLink: {
+    installTitle: (name: string) => string
+    installDescription: string
+    installTo: string
+    thisComputer: string
+    installing: string
+    installComplete: (name: string) => string
+    destinationChanged: string
+    installed: string
+    source: string
+  }
   skills: {
     tabSkills: string
     tabToolsets: string
@@ -2117,6 +2117,7 @@ export interface Translations {
       serverStates: {
         connected: string
         app_not_running: string
+        hermes_not_connected: string
         endpoint_unavailable: string
         no_interactive_session: string
         version_too_old: string
@@ -2366,7 +2367,6 @@ export interface Translations {
     mcpServers: string
     archivedChats: string
     sections: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
-    sectionDescriptions: Record<'maintenance' | 'sessions' | 'system' | 'usage', string>
     nav: Record<'newChat' | 'settings' | 'capabilities' | 'messaging' | 'projects' | 'artifacts', { title: string; detail: string }>
     sectionEntries: Record<'sessions' | 'system' | 'usage', { title: string; detail: string }>
     providerNavigate: string
@@ -2384,6 +2384,7 @@ export interface Translations {
     hermesActiveSessions: (version: string, count: number) => string
     restartGateway: string
     openBrowser: string
+    toggleBrowser: string
     gatewayRestartFailed: string
     sharedGatewayRestartTitle: string
     sharedGatewayRestartDescription: (bots: string) => string
@@ -2467,6 +2468,7 @@ export interface Translations {
 
   messaging: {
     search: string
+    statusFilter: Record<'all' | 'bad' | 'good' | 'muted' | 'warn', string>
     loading: string
     loadFailed: string
     states: Record<string, string>
@@ -2722,6 +2724,7 @@ export interface Translations {
     skillsLabel: string
     notSet: string
     soulDesc: string
+    soulMissing: string
     soulOptional: string
     soulPlaceholder: (mode: string) => string
     soulPlaceholderCloned: string
@@ -3083,6 +3086,7 @@ export interface Translations {
       reveal: string
       copyPath: string
       removeFromSidebar: string
+      createdInPreviousContext: string
       createFailed: string
       staleBackend: string
       deleteConfirm: string
@@ -3153,6 +3157,7 @@ export interface Translations {
       backgroundRunning: string
       draftSession: string
       handoffOrigin: (platform: string) => string
+      continuationOrigin: string
       ownedByProfile: (profile: string) => string
       renamed: string
       renameFailed: string
@@ -3252,6 +3257,8 @@ export interface Translations {
     restoredDraftNotice: string
     restoredDraftUndo: string
     queueEdit: string
+    queueExpand: string
+    queueCollapse: string
     queueSendNext: string
     queueSend: string
     queueSteer: string
@@ -3262,6 +3269,9 @@ export interface Translations {
     queueStuckBody: string
     queueDroppedTitle: string
     queueDroppedBody: string
+    terminalSelectionMissingTitle: string
+    terminalSelectionMissingBody: string
+    queuedTerminalSelectionExpiredBody: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string
@@ -3339,6 +3349,7 @@ export interface Translations {
     goalWaiting: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
+    previousTodos: (done: number, total: number) => string
     running: string
     stop: string
     dismiss: string
@@ -3460,6 +3471,7 @@ export interface Translations {
       scopeUncommitted: string
       scopeBranch: string
       scopeLastTurn: string
+      readOnlyScope: string
       commit: string
       commitAndPush: string
       commitPlaceholder: (shortcut: string) => string
@@ -3508,6 +3520,7 @@ export interface Translations {
     updateNow: string
     maybeLater: string
     moreChanges: (count: number) => string
+    copyFullLog: string
     manualTitle: string
     manualUnavailableTitle: string
     manualBody: string
@@ -3864,6 +3877,10 @@ export interface Translations {
     addProvider: string
     addCustomModel: string
     removeCustomModel: string
+    resetToDefaults: string
+    resetConfirm: string
+    resetDescription: string
+    resetAction: string
   }
 
   shell: {
@@ -3876,7 +3893,14 @@ export interface Translations {
       editModels: string
       followDefault: string
       refreshModels: string
+      favorites: string
+      addFavorite: string
+      removeFavorite: string
+      favoriteShortcut: string
       fast: string
+      free: string
+      cacheRead: string
+      priceTitle: (input: string, output: string, cache: string) => string
     }
     modelOptions: {
       noOptions: string
@@ -3985,6 +4009,7 @@ export interface Translations {
       openStarmap: string
       turnRunning: string
       contextUsage: string
+      compressions: (count: number) => string
       systemResources: {
         title: string
         loading: string
@@ -4064,6 +4089,9 @@ export interface Translations {
     terminalHide: string
     terminalsAria: string
     terminalNew: string
+    terminalReadOnly: string
+    terminalReadOnlyHelp: string
+    terminalOpenInteractive: string
     terminalCloseOthers: string
     terminalCloseAll: string
     addToChat: string
@@ -4071,9 +4099,14 @@ export interface Translations {
 
   preview: {
     tab: string
+    pin: string
+    unpin: string
     closePane: string
     loading: string
     unavailable: string
+    missingTarget: string
+    missingTitle: string
+    missingBody: (label: string) => string
     opening: string
     hide: string
     openPreview: string
@@ -4099,6 +4132,7 @@ export interface Translations {
     editing: string
     unsavedChanges: string
     saveFailed: (message: string) => string
+    saveScopeChanged: string
     diskChangedTitle: string
     diskChangedBody: string
     overwrite: string
@@ -4189,6 +4223,7 @@ export interface Translations {
     hideTabStrip: string
     showStripTab: (title: string) => string
     hideStripTab: (title: string) => string
+    zoneMenuLabel: (title: string) => string
     lastTabKeptTitle: string
     lastTabKeptBody: string
     toggleStripTab: (title: string) => string
@@ -4277,6 +4312,7 @@ export interface Translations {
       branchNewChat: string
       react: string
       dismissError: string
+      responseStopped: string
       /** Layer titles for the structured error card (agent/error_surface.py).
        *  `generic` is the fallback when the backend sent no descriptor. */
       errorLayers: {
@@ -4351,6 +4387,8 @@ export interface Translations {
       preparingAudio: string
       stopReading: string
       readAloud: string
+      copyFullResponse: string
+      readAloudFullResponseHint: string
       editMessage: string
       expandMessage: string
       scrollToBottom: string
@@ -4393,13 +4431,12 @@ export interface Translations {
       placeholder: string
       skip: string
       skipped: string
-      continueLabel: string
+      noAnswer: string
       confirmAndContinueLabel: string
-      answeredBadge: string
+      singleSelectHint: string
+      multiSelectHint: string
       questionProgress: (answered: number, total: number) => string
-      lateAnswer: (question: string, choice: string) => string
-      lateAnswerTip: string
-      lateAnswerHint: string
+      notDelivered: string
     }
     catalogInstall: {
       preparing: string
@@ -4555,6 +4592,8 @@ export interface Translations {
     staleSessionBody: string
     providerCredentialRequired: string
     emptySlashCommand: string
+    slashCommandIgnoredTitle: string
+    slashCommandIgnoredBody: string
     desktopCommands: string
     skillCommandsAvailable: (count: number) => string
     warningLine: (message: string) => string
@@ -4615,6 +4654,9 @@ export interface Translations {
     openImage: string
     downloadImage: string
     savingImage: string
+    zoomIn: string
+    zoomOut: string
+    resetZoom: string
     imagePreviewFailed: string
     imageAttach: string
     imageWriteFailed: string
@@ -4660,6 +4702,11 @@ export interface Translations {
   ui: {
     search: {
       clear: string
+    }
+    logs: {
+      bottom: string
+      search: string
+      top: string
     }
     pagination: {
       label: string

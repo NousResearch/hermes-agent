@@ -271,7 +271,7 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     so a file tool that runs before any terminal command still gets the configured backend."""
     from tools.terminal_tool_config import _is_container_backend, coerce_ssh_remote_cwd
     from tools.terminal_tool import (
-        _create_configured_env, _get_env_config, _is_unusable_container_cwd,
+        _create_configured_env, _get_env_config, _is_mounted_host_cwd, _is_unusable_container_cwd,
         _resolve_task_host_cwd, _select_image, get_session_cwd, resolve_task_overrides)
 
     config = _get_env_config()
@@ -291,18 +291,20 @@ def _create_terminal_env_for_file_ops(raw_task_id: str, task_id: str):
     # reaches ``docker run -w <host-path>`` and the container starts in a directory that doesn't exist
     # inside the sandbox, so search_files and friends silently return empty results (#54447). Sanitize it
     # back to the already-validated config["cwd"] so the override can't bypass the guard.
-    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd):
-        if cwd != config["cwd"]:
+    host_cwd = _resolve_task_host_cwd(config, raw_task_id)
+    if _is_container_backend(env_type) and _is_unusable_container_cwd(cwd, mounted_host=host_cwd):
+        fallback = "/workspace" if _is_mounted_host_cwd(cwd, host_cwd) else config["cwd"]
+        if cwd != fallback:
             logger.info(
                 "Ignoring host/relative cwd override %r for %s backend "
                 "(won't exist in sandbox). Using %r instead.",
-                cwd, env_type, config["cwd"])
-        cwd = config["cwd"]
+                cwd, env_type, fallback)
+        cwd = fallback
     logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
     terminal_env = _create_configured_env(
         config, env_type, image=_select_image(env_type, overrides, config), cwd=cwd,
         timeout=config["timeout"], task_id=task_id,
-        host_cwd=_resolve_task_host_cwd(config, raw_task_id),
+        host_cwd=host_cwd,
         local_config={"persistent": config.get("local_persistent", False)} if env_type == "local" else None,
     )
     return env_type, terminal_env
@@ -1324,22 +1326,27 @@ def _handle_write_file(args, **kw):
             f"write_file: 'content' must be a string, got "
             f"{type(args['content']).__name__}."
         )
-    return write_file_tool(
+    from hermes_cli.observability.shared_metrics_harness import record_file_edit
+
+    return record_file_edit("write_file", "whole_file", lambda: write_file_tool(
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
-    )
+    ))
 
 
 def _handle_patch(args, **kw):
+    from hermes_cli.observability.shared_metrics_harness import record_file_edit
+
     tid = kw.get("task_id") or "default"
-    return patch_tool(
-        mode=args.get("mode", "replace"), path=args.get("path"),
+    mode = args.get("mode", "replace")
+    return record_file_edit("patch", mode, lambda: patch_tool(
+        mode=mode, path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
         session_id=kw.get("session_id"),
-    )
+    ))
 
 
 def _handle_search_files(args, **kw):
@@ -1406,31 +1413,3 @@ def _patch_schema_overrides():
 
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000, dynamic_schema_overrides=_patch_schema_overrides)
 registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from pathlib import PurePosixPath  # noqa: F401,E402
-import posixpath  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'has_opaque_document_extension': ('tools.binary_extensions', 'has_opaque_document_extension'),
-    'is_pdf_path': ('tools.binary_extensions', 'is_pdf_path'),
-    'notify_other_tool_call': ('tools.file_tools_read_tracking', 'notify_other_tool_call'),
-    'reset_file_dedup': ('tools.file_tools_read_tracking', 'reset_file_dedup'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

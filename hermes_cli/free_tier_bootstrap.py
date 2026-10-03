@@ -34,7 +34,7 @@ class SetupRecord:
 
     provider_configured: bool      # some provider can carry inference (free tier included)
     inference_provider: str        # ``resolve_provider("auto")``'s answer, "" when nothing resolves
-    free_tier: bool                # the identity that exists is the free tier AND the tier is on
+    free_tier_account: bool        # the identity that exists is the free tier AND the tier is on
     has_identity: bool             # a Nous identity (free tier or account) is on disk
     other_providers: bool          # the inventory found something usable BESIDES the free tier
     error: str = ""                # why the mint did not happen, when it did not; "" otherwise
@@ -44,11 +44,16 @@ class SetupRecord:
     failure: Dict[str, Any] = field(default_factory=dict)
     finished_at: float = field(default_factory=time.time)
 
+    @property
+    def free_tier_route(self) -> bool:
+        return self.free_tier_account and self.inference_provider == "nous"
+
     def as_payload(self) -> Dict[str, Any]:
         # The broadcast carries the failure block flat, the same shape ``setup.status`` spreads,
         # so a client keys on ``error_code`` identically whichever surface it read.
         payload = asdict(self)
         payload.update(payload.pop("failure"))
+        payload["free_tier_route"] = self.free_tier_route
         return payload
 
     def failure_fields(self) -> Dict[str, Any]:
@@ -173,8 +178,7 @@ def _build_record(*, other: bool, force: bool) -> SetupRecord:
     state: Optional[Dict[str, Any]] = anon_auth.current_nous_state()
     if anon_auth.guest_enabled():
         try:
-            # ``other`` decides whether the mint may also claim ``active_provider`` (NS-845 Q1.3).
-            state = anon_auth.ensure_portal_identity(explicit=True, carries_inference=not other, force=force)
+            state = anon_auth.ensure_portal_identity(explicit=True, force=force)
         except Exception as exc:
             error = str(exc)
             logger.info("Nous free tier not set up at boot: %s", exc)
@@ -183,11 +187,11 @@ def _build_record(*, other: bool, force: bool) -> SetupRecord:
             # cooldown still runs: the record carries that verdict either way.
             failure = anon_auth.last_mint_failure() or {}
             error = error or str(failure.get("error") or "")
-    free_tier = bool(state) and anon_auth.is_guest_state(state) and anon_auth.guest_enabled()
+    free_tier_account = bool(state) and anon_auth.is_guest_state(state) and anon_auth.guest_enabled()
     return SetupRecord(
-        provider_configured=other or free_tier or (bool(state) and not anon_auth.is_guest_state(state)),
+        provider_configured=other or free_tier_account or (bool(state) and not anon_auth.is_guest_state(state)),
         inference_provider=_resolve_inference(),
-        free_tier=free_tier,
+        free_tier_account=free_tier_account,
         has_identity=bool(state),
         other_providers=other,
         error=error,

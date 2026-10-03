@@ -1,7 +1,10 @@
 import { skillInvocationText } from '@hermes/shared'
 
+import { splitLeadingAttachmentRefs } from '@/components/assistant-ui/reference-kinds'
 import { extractImageRefs } from '@/lib/embedded-images'
+import { parseErrorSurface } from '@/lib/error-surface'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
+import { isTodoToolName } from '@/lib/todos'
 import type { MessageReaction, SessionMessage } from '@/types/hermes'
 
 import {
@@ -9,6 +12,7 @@ import {
   chatMessageText,
   dedupeRepeatedTextInParts,
   reasoningPart,
+  reasoningTextFromDetails,
   renderMediaTags,
   textPart
 } from './parts'
@@ -23,6 +27,10 @@ import {
 import type { ChatMessage, ChatMessagePart } from './types'
 
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
+// A background-process heartbeat wake persisted by a backend older than the
+// one that types those rows `display_kind=hidden`. It is model scaffolding,
+// not something the user wrote, so it never paints as a bubble.
+const LEGACY_HEARTBEAT_ROW_RE = /^\[Background process \S+ heartbeat #\d+ /
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
 
@@ -136,8 +144,16 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   return [missing.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
-function transcriptContent(displayKind: SessionMessage['display_kind'], content: string): string | null {
-  return displayKind === 'hidden' ? null : content
+function transcriptContent(
+  displayKind: SessionMessage['display_kind'],
+  role: SessionMessage['role'],
+  content: string
+): string | null {
+  if (displayKind === 'hidden') {
+    return null
+  }
+
+  return role === 'user' && LEGACY_HEARTBEAT_ROW_RE.test(content.trim()) ? null : content
 }
 
 /**
@@ -175,6 +191,23 @@ function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): nul
   return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
 }
 
+// `agent/conversation_loop.py::_failed_turn_display_metadata`: the failed turn's error card,
+// kept on its boundary row so a reopened session shows it after the live frame is gone.
+function failedTurnError(
+  metadata: SessionMessage['display_metadata']
+): null | Pick<ChatMessage, 'error' | 'errorSurface'> {
+  const parsed = parseDisplayMetadata(metadata)
+  const errorSurface = parseErrorSurface(parsed?.error_surface)
+
+  if (!errorSurface) {
+    return null
+  }
+
+  const error = typeof parsed?.error === 'string' && parsed.error.trim() ? parsed.error : errorSurface.code
+
+  return { error, errorSurface }
+}
+
 function timelineTaskCount(metadata: SessionMessage['display_metadata']): number | undefined {
   const count = parseDisplayMetadata(metadata)?.task_count
 
@@ -185,6 +218,10 @@ function timelineDisplayText(metadata: SessionMessage['display_metadata']): stri
   const text = parseDisplayMetadata(metadata)?.display_text
 
   return typeof text === 'string' && text.trim() ? text : undefined
+}
+
+function messageInterrupted(metadata: SessionMessage['display_metadata']): boolean {
+  return parseDisplayMetadata(metadata)?.interrupted === true
 }
 
 function messageReactions(metadata: SessionMessage['display_metadata']): MessageReaction[] {
@@ -274,6 +311,37 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   // (see ChatMessage.serverRowSpan).
   let pendingToolRows = 0
   let activeAssistantIndex: null | number = null
+  // Todo history is stateful. Only a result from the nearest prior assistant
+  // call in this turn may update it; a display-only orphan can still render.
+  let nearestAssistant: null | SessionMessage = null
+
+  const pairedTodoResult = (toolMessage: SessionMessage): boolean => {
+    const id = toolMessage.tool_call_id
+
+    if (!id || !Array.isArray(nearestAssistant?.tool_calls)) {
+      return false
+    }
+
+    return nearestAssistant.tool_calls.some((call, index) => {
+      const part = toolPartFromStoredCall(call, index)
+
+      if (part.type !== 'tool-call' || part.toolCallId !== id) {
+        return false
+      }
+
+      if (isTodoToolName(part.toolName)) {
+        return true
+      }
+
+      const args = part.args as { calls?: unknown }
+
+      return (
+        part.toolName === 'tool_call' &&
+        Array.isArray(args?.calls) &&
+        args.calls.some(inner => inner && typeof inner === 'object' && isTodoToolName(inner.name))
+      )
+    })
+  }
 
   const clearPendingTools = () => {
     pendingToolParts = []
@@ -336,7 +404,21 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
   }
 
   messages.forEach((message, index) => {
+    if (message.role === 'assistant') {
+      nearestAssistant = message
+    } else if (message.role === 'user' || message.role === 'system') {
+      nearestAssistant = null
+    }
+
     if (message.role === 'tool') {
+      if (isTodoToolName(message.tool_name) && !pairedTodoResult(message)) {
+        pendingToolParts = [...pendingToolParts, storedToolMessagePart(message, index)]
+        pendingToolTimestamp ??= message.timestamp
+        pendingToolRows += 1
+
+        return
+      }
+
       const updatedPendingToolParts = applyStoredToolResultToParts(pendingToolParts, message)
 
       if (updatedPendingToolParts) {
@@ -364,6 +446,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     const rawDisplayContent = transcriptContent(
       message.display_kind,
+      message.role,
       timelineDisplayContent(message, displayContentForMessage(message.role, content))
     )
 
@@ -375,10 +458,13 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // thumbnail pushes any caption text below the clamp's visible area — so
     // pull image refs out into `attachmentRefs` (same shape the local
     // optimistic composer already uses) and render them via the dedicated
-    // attachments row below the bubble instead.
+    // attachments row below the bubble instead. The leading `@file:` block
+    // (attached files, large pastes) moves there too, for the same parity.
     const imageRefExtraction = displayRole === 'user' && rawDisplayContent ? extractImageRefs(rawDisplayContent) : null
-    const displayContent = imageRefExtraction ? imageRefExtraction.cleanedText : rawDisplayContent
-    const extractedAttachmentRefs = imageRefExtraction?.refs.length ? imageRefExtraction.refs : undefined
+    const fileRefExtraction = imageRefExtraction ? splitLeadingAttachmentRefs(imageRefExtraction.cleanedText) : null
+    const displayContent = fileRefExtraction ? fileRefExtraction.text : rawDisplayContent
+    const liftedRefs = [...(fileRefExtraction?.refs ?? []), ...(imageRefExtraction?.refs ?? [])]
+    const extractedAttachmentRefs = liftedRefs.length ? liftedRefs : undefined
 
     const parts: ChatMessagePart[] = []
     const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
@@ -391,9 +477,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const commentary = codexText?.commentary ?? []
 
     const rawReasoning =
-      message.reasoning ||
-      message.reasoning_content ||
-      (typeof message.reasoning_details === 'string' ? message.reasoning_details : '')
+      message.reasoning || message.reasoning_content || reasoningTextFromDetails(message.reasoning_details)
 
     const reasoning = message.display_reasoning !== undefined ? message.display_reasoning : rawReasoning
 
@@ -493,6 +577,21 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       flushPendingTools(index)
     }
 
+    const failure = message.display_kind === 'failed_turn' ? failedTurnError(message.display_metadata) : null
+
+    if (failure) {
+      // Stands for no backend row of its own; the boundary row below counts itself.
+      result.push({
+        id: `${message.timestamp || Date.now()}-${index}-failed-turn-error`,
+        role: 'assistant',
+        parts: [],
+        pending: false,
+        serverRowSpan: 0,
+        ...failure,
+        ...(message.timestamp ? { timestamp: message.timestamp } : {})
+      })
+    }
+
     const reactions = messageReactions(message.display_metadata)
     // Gateway resume names the durable row id `row_id`; the REST transcript
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
@@ -511,6 +610,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
+      ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
     })
 
@@ -526,7 +626,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
   return withUniqueToolCallIds(
     withoutGeneratedImageEchoes.filter(
-      m => chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text') || m.attachmentRefs?.length
+      m =>
+        chatMessageText(m).trim() || m.parts.some(part => part.type !== 'text') || m.attachmentRefs?.length || m.error
     )
   )
 }

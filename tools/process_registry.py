@@ -542,6 +542,8 @@ class ProcessSession:
     detached: bool = False                      # Recovered from checkpoint (no pipe)
     pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
     systemd_unit: str = ""                      # transient scope unit name when spawned under systemd-run
+    wsl_chain: bool = False                     # spawned via wsl[.exe]: the host PID is the short-lived
+                                                # launcher; Linux-side workers outlive it (#120546)
     handoff_note: str = ""                      # why a subagent handed this process to its parent (rides the notice)
     persist_on_release: bool = False           # opt out of agent-lifecycle cleanup (release()/turn-abandon kill
                                                 # sweeps), per terminal(background=true, persist_on_release=true) (#41225)
@@ -610,7 +612,7 @@ _WATCHER_ROUTE_KEYS = ("platform", "chat_id", "user_id", "user_name", "thread_id
 # Session fields persisted verbatim in the crash-recovery checkpoint (plus
 # ``session_id``; ``command`` is redacted and ``owner_task_id`` defaulted on write).
 _CHECKPOINT_FIELDS = (
-    "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
+    "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "wsl_chain", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
@@ -622,6 +624,41 @@ _CHECKPOINT_DEFAULTS = {
 }
 
 
+_WSL_LAUNCHER_NAMES = frozenset({"wsl", "wsl.exe"})
+
+_WSL_CHAIN_NOTE = (
+    "Spawned via a wsl[.exe] launcher: the recorded host PID is the short-lived "
+    "launcher, not the Linux-side workers. Inspect them with `wsl -e ps` / "
+    "`wsl --list --running` from the host."
+)
+
+
+def _is_wsl_launcher_command(command: str) -> bool:
+    """True when *command* routes through a ``wsl[.exe]`` launcher chain (#120546).
+
+    The host PID recorded for such a spawn belongs to the short-lived launcher;
+    grandchildren inside the VM outlive it, so the entry must say so instead of
+    letting host-side hunting fail silently.
+    """
+    if not isinstance(command, str) or not command.strip():
+        return False
+    candidates = []
+    try:
+        candidates.append((shlex.split(command, posix=True) or [""])[0])
+    except ValueError:
+        pass
+    # POSIX shlex eats Windows backslashes (``C:\...\wsl.exe``), so also try
+    # the naive first token where path separators survive.
+    words = command.strip().split()
+    if words:
+        candidates.append(words[0])
+    for first in candidates:
+        base = os.path.basename(first.replace("\\", "/")).strip("'\"").lower()
+        if base in _WSL_LAUNCHER_NAMES:
+            return True
+    return False
+
+
 class ProcessRegistry(ProcessCheckpointMixin):
     """In-memory registry of running and finished background processes.
     Thread-safe: accessed from executor threads (terminal_tool, process handlers),
@@ -630,6 +667,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
     _SHELL_NOISE_SUBSTRINGS = (
         "no job control in this shell", "cannot set terminal process group",
         "tcsetattr: Inappropriate ioctl for device")
+
+    # Class default so registries built via __new__ (tests) still restore on first drain.
+    _completions_restored = False
 
     def __init__(self):
         self._running: Dict[str, ProcessSession] = {}
@@ -641,12 +681,11 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # process_loop and the gateway drain it after each agent turn to trigger new turns.
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
-        # Rehydrate durable delegation completions once, at registry startup.
-        try:
-            from tools.async_delegation import restore_undelivered_completions
-            restore_undelivered_completions(self.completion_queue)
-        except Exception as exc:
-            logger.warning("Could not restore async delegation completions: %s", exc)
+        # Durable delegation completions are rehydrated by restore_completions(), NOT here: the
+        # module-level singleton runs __init__ on `import model_tools`, and the replay opens
+        # (creates, migrates) the launch profile's state.db (#123265). Importing the module is
+        # side-effect free and keeps its import-order contract for later completion writers.
+        import tools.async_delegation  # noqa: F401
         # Completions the agent already consumed via wait()/read_log() (output in
         # hand): drain loops AND gateway/tui watchers skip them.
         self._completion_consumed: set = set()
@@ -700,14 +739,19 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 self._emit_heartbeat(session, now)
 
     def _emit_heartbeat(self, session: ProcessSession, now: float) -> None:
+        """Queue a heartbeat carrying the output since the last one. A tick with nothing new is
+        skipped outright: every queued event costs the owner a full model turn, and "still running,
+        no output" is already visible on the process surfaces (status stack, /agents dock)."""
+        session._heartbeat_last = now
         with session._lock:
             delta = session.total_output_chars - session._heartbeat_total_at_last
             output = session.output_buffer[-delta:] if delta > 0 else ""
             session._heartbeat_total_at_last = session.total_output_chars
+        if not output:
+            return
         if len(output) > HEARTBEAT_OUTPUT_CHARS:
             cut = len(output) - HEARTBEAT_OUTPUT_CHARS
             output = f"...({cut} earlier characters omitted)\n" + output[-HEARTBEAT_OUTPUT_CHARS:]
-        session._heartbeat_last = now
         session._heartbeat_seq += 1
         notification = {
             **self._watch_event_base(session),
@@ -1195,6 +1239,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             id=f"proc_{uuid.uuid4().hex[:12]}", command=command, task_id=task_id,
             owner_task_id=owner_task_id, session_key=session_key, cwd=cwd,
             parent_session_id=get_session_env("HERMES_SESSION_ID", ""),
+            wsl_chain=_is_wsl_launcher_command(command),
             started_at=time.time(), **extra)
 
     @staticmethod
@@ -1900,6 +1945,28 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # ownership, so leave them for the owner.
         return not (is_async_delegation and evt.get("restored"))
 
+    def restore_completions(self) -> int:
+        """Rehydrate durable delegation completions from the LAUNCH profile's ledger, once per
+        process. Called by the first consumer that drains the queue (CLI/TUI drain, gateway boot,
+        TUI poller) so a mere ``import model_tools`` never touches state.db (#123265). The replay
+        always runs in the launch scope: the TUI poller / prompt_turn drain call this under the
+        session's profile binding, and a once-per-process replay taken under a secondary's scope
+        would leave the launch ledger unreplayed for the life of the process. Secondaries are
+        replayed by the gateway's ``_restore_secondary_completion_ledgers``."""
+        if self._completions_restored:
+            return 0
+        self._completions_restored = True
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        token = set_hermes_home_override(None)
+        try:
+            from tools.async_delegation import restore_undelivered_completions
+            return restore_undelivered_completions(self.completion_queue)
+        except Exception as exc:
+            logger.warning("Could not restore async delegation completions: %s", exc)
+            return 0
+        finally:
+            reset_hermes_home_override(token)
+
     def drain_notifications(
         self, session_key: str = "", owns_event=None, *, skip_poll_observed: bool = True,
     ) -> "list[tuple[dict, str]]":
@@ -1911,6 +1978,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         compression-chain-aware check) consumes ONLY on True, ``session_key`` uses plain
         equality; non-owned events are re-queued for their owner. No filter consumes
         everything (legacy single-session) except restored delegation payloads (fail-closed)."""
+        self.restore_completions()
         results: "list[tuple[dict, str]]" = []
         requeue: "list[dict]" = []
         # delegation.surface_child_process_notifications, read at most once per drain
@@ -2444,6 +2512,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # these are the long-lived background processes a user may have forgotten about (#29177).
             if task_id and session_key and s.owner_task_id != task_id and s.session_key == session_key:
                 entry["session_scoped"] = True
+            if s.wsl_chain:
+                entry["wsl_chain"] = True
+                entry["wsl_note"] = _WSL_CHAIN_NOTE
             # Trigger metadata for goal-loop judges (a watcher may never exit).
             if s.watch_patterns and not s._watch_disabled:
                 entry.update(watch_patterns=list(s.watch_patterns), watch_hit=s._watch_hits > 0)
@@ -2473,8 +2544,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
             return any(not s.exited and predicate(s) for s in self._running.values())
 
     def has_active_processes(self, task_id: str) -> bool:
-        """Whether any process for ``task_id`` is still running."""
-        return self._any_running(lambda s: s.task_id == task_id)
+        """Whether any process for ``task_id`` is still running. Ownership is
+        ``owner_task_id`` (the raw spawning id) like the other task-scoped queries:
+        ``task_id`` on a session is the collapsed container key, shared across
+        turns and delegate children, so a container-key match alone would miss a
+        delegate child's own background work (#120546)."""
+        return self._any_running(lambda s: s.owner_task_id == task_id)
 
     def running_owned_by(self, owner_task_id: str) -> List[ProcessSession]:
         """Running processes whose RAW spawning owner is ``owner_task_id``."""
@@ -2784,12 +2859,3 @@ registry.register(
     handler=_handle_process,
     emoji="⚙️",
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_max_age_hours (#29177)
-# ---- END PLUGIN-COMPAT ----

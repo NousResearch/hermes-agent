@@ -280,10 +280,11 @@ export const isBareErrorText = (text: string, error: null | string | undefined):
   return !t || t === `Error: ${error ?? ''}`.trim() || t === (error ?? '').trim()
 }
 
-// ── Withdrawn password / secret prompts ───────────────────────────────────
+// ── Withdrawn password / secret / approval prompts ────────────────────────
 
 // server-request method → catalog leaf under userMessages.promptTimeout.
 const PROMPT_TIMEOUT_KEY: Record<string, keyof Translations['userMessages']['promptTimeout']> = {
+  approval: 'approval',
   secret: 'secret',
   sudo: 'sudo',
   'vault.code': 'vaultCode',

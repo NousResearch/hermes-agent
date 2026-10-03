@@ -2,6 +2,7 @@ import json
 import os
 import socket
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -1810,3 +1811,151 @@ class TestOpenVikingEnvWriter:
         assert env.read_text(encoding="utf-8").splitlines() == [
             "A=1", "OPENAI_API_KEY=new", "B=2",
         ]
+
+
+# ---------------------------------------------------------------------------
+# Write isolation — non-primary agent contexts skip every write path
+# (MemoryProvider contract: cron/flush/subagent prompts carry task instructions,
+# not durable user facts; mirrors supermemory's _write_enabled gate / #68393)
+# ---------------------------------------------------------------------------
+
+_NON_PRIMARY_CONTEXTS = ["cron", "flush", "subagent"]
+
+
+def _initialized_provider(monkeypatch, *, agent_context: str | None = None, hermes_home=None):
+    """initialize() against a healthy test-double server (no autostart, no network)."""
+    _clear_openviking_env(monkeypatch)
+    monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://127.0.0.1:1934")
+
+    class HealthyClient:
+        """Plain test double: no ``health_payload`` attr, so ``health()`` alone decides."""
+
+        def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+            assert endpoint == "http://127.0.0.1:1934"
+            self.calls: list[tuple[str, str]] = []
+
+        def health(self):
+            return True
+
+        def get(self, path, **kwargs):
+            self.calls.append(("get", path))
+            return {}
+
+        def post(self, path, payload=None, **kwargs):
+            self.calls.append(("post", path))
+            return {}
+
+    monkeypatch.setattr(openviking_module, "_VikingClient", HealthyClient)
+    monkeypatch.setattr(
+        openviking_module,
+        "_start_local_openviking_server",
+        MagicMock(side_effect=AssertionError("healthy endpoint must not autostart")),
+    )
+
+    provider = OpenVikingMemoryProvider()
+    kwargs = {"platform": "cli"}
+    if agent_context is not None:
+        kwargs["agent_context"] = agent_context
+    if hermes_home is not None:
+        kwargs["hermes_home"] = str(hermes_home)
+    provider.initialize("sid-1", **kwargs)
+    assert provider._client is not None, (
+        "test-double client should have passed the health check"
+    )
+    return provider
+
+
+@pytest.mark.parametrize("context", _NON_PRIMARY_CONTEXTS)
+def test_non_primary_contexts_skip_every_write_path(monkeypatch, context):
+    provider = _initialized_provider(monkeypatch, agent_context=context)
+
+    assert provider._write_enabled is False
+    provider._client = MagicMock()
+    ensure = MagicMock(return_value=True)
+    monkeypatch.setattr(provider, "_ensure_client", ensure)
+
+    provider.sync_turn("user text", "assistant text")
+    provider.on_session_end([{"role": "user", "content": "hi"}])
+    provider.on_session_switch("sid-2", parent_session_id="sid-1")
+    provider.on_memory_write("add", "user", "remember this")
+
+    # Nothing reached the server, and the gates returned before the shared
+    # client/connection paths were even consulted.
+    assert provider._client.mock_calls == []
+    ensure.assert_not_called()
+    # No session rotation and no worker threads either — these contexts leave no trace.
+    assert provider._session_id == "sid-1"
+    assert not provider._inflight_writers
+    assert not provider._memory_write_threads
+    assert not provider._deferred_commit_threads
+
+
+def test_primary_context_keeps_every_write_path_enabled(monkeypatch):
+    provider = _initialized_provider(monkeypatch, agent_context="primary")
+
+    assert provider._write_enabled is True
+    provider._client = MagicMock()
+    ensure = MagicMock(return_value=True)
+    monkeypatch.setattr(provider, "_ensure_client", ensure)
+
+    provider.sync_turn("user text", "assistant text")
+    provider.on_memory_write("add", "user", "remember this")
+
+    ensure.assert_called()
+    workers = [w for group in provider._inflight_writers.values() for w in group]
+    workers += list(provider._memory_write_threads)
+    for worker in workers:
+        worker.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# Recovery isolation — a non-primary context must not commit what a dead
+# primary run left pending (startup recovery POSTs a session commit, i.e. a write)
+# ---------------------------------------------------------------------------
+
+
+def _seed_pending_marker(hermes_home, sid: str, owner_run_id: str = "dead-run-id"):
+    """Write the marker ``_mark_session_pending()`` leaves for a crashed run's session."""
+    directory = Path(hermes_home) / "openviking" / "pending_sessions"
+    directory.mkdir(parents=True, exist_ok=True)
+    marker = directory / f"{sid}.json"
+    marker.write_text(
+        json.dumps({"session_id": sid, "owner_run_id": owner_run_id}),
+        encoding="utf-8",
+    )
+    return marker
+
+
+@pytest.mark.parametrize("context", _NON_PRIMARY_CONTEXTS)
+def test_non_primary_contexts_leave_pending_sessions_for_primary_runs(monkeypatch, tmp_path, context):
+    """Startup recovery commits an orphaned session — a write — so non-primary
+    contexts must not claim it; the marker stays for the next primary run."""
+    hermes_home = tmp_path / "recovery-home"
+    marker = _seed_pending_marker(hermes_home, "sid-pending")
+
+    provider = _initialized_provider(monkeypatch, agent_context=context, hermes_home=hermes_home)
+    client = provider._client
+    assert client is not None
+
+    for worker in list(provider._deferred_commit_threads):
+        worker.join(timeout=5.0)
+
+    assert ("post", "/api/v1/sessions/sid-pending/commit") not in client.calls  # type: ignore[attr-defined]
+    assert not provider._deferred_commit_threads
+    assert marker.exists(), "recovery marker must survive for the next primary run"
+
+
+def test_primary_context_still_recovers_pending_sessions(monkeypatch, tmp_path):
+    """Control: a primary run claims and commits what a dead run left pending."""
+    hermes_home = tmp_path / "recovery-home"
+    marker = _seed_pending_marker(hermes_home, "sid-pending")
+
+    provider = _initialized_provider(monkeypatch, agent_context="primary", hermes_home=hermes_home)
+    client = provider._client
+    assert client is not None
+
+    for worker in list(provider._deferred_commit_threads):
+        worker.join(timeout=5.0)
+
+    assert ("post", "/api/v1/sessions/sid-pending/commit") in client.calls  # type: ignore[attr-defined]
+    assert not marker.exists()

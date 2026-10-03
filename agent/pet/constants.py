@@ -86,6 +86,25 @@ def state_aliases_for(state: "PetState | str") -> tuple[str, ...]:
     return STATE_ALIASES.get(value) or (value,)
 
 
+def infer_frame_size(width: int, height: int) -> tuple[int, int]:
+    """Frame size for a spritesheet, derived from the standard petdex grid.
+
+    Sheets ship as an 8-col x 9-row (current) or 9-col x 8-row (legacy) atlas;
+    accepting the first grid whose cells divide evenly lets higher-resolution
+    (e.g. 2x) atlases render without a manifest change.
+    """
+    try:
+        w, h = int(width), int(height)
+    except (TypeError, ValueError):
+        return FRAME_W, FRAME_H
+    for cols, rows in ((8, 9), (9, 8)):
+        if w % cols == 0 and h % rows == 0:
+            fw, fh = w // cols, h // rows
+            if 32 <= fw <= 2048 and 32 <= fh <= 2048:
+                return fw, fh
+    return FRAME_W, FRAME_H
+
+
 def state_rows_for_grid(row_count: int | None) -> list[str]:
     """Return the row taxonomy for a spritesheet with *row_count* rows."""
     try:

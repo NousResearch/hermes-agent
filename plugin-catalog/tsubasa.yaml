@@ -1,0 +1,16 @@
+name: tsubasa
+repo: https://github.com/PalmAndWand/tsubasa-integrations
+sha: ce52a9cdfae352a339ddf3ff219c6ec06f552bc3
+subdir: providers/hermes
+description: Tsubasa OpenAI-compatible provider. Sends prompts and TSUBASA_API_KEY to api.tsubasa.sh.
+maintainer: PalmAndWand
+tier: community
+category: models
+docs_url: https://github.com/PalmAndWand/tsubasa-integrations#readme
+readme: false
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - TSUBASA_API_KEY

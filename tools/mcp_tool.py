@@ -146,10 +146,16 @@ def _ensure_mcp_sdk() -> bool:
     global _JSONRPC_METHOD_NOT_FOUND
     if not _MCP_AVAILABLE:
         return False
-    if _MCP_SDK_IMPORT_ATTEMPTED or ClientSession is not None:
+    # Fast path only after the lock holder finished (or tests pre-installed a
+    # mock ClientSession). Do not treat a live ClientSession as "import done"
+    # outside the lock: the first _import_sdk_names binds it while HTTP/SSE
+    # flags are still at their pre-import defaults (#124357).
+    if _MCP_SDK_IMPORT_ATTEMPTED:
         return _MCP_AVAILABLE
     with _MCP_SDK_IMPORT_LOCK:
-        if _MCP_SDK_IMPORT_ATTEMPTED or ClientSession is not None:
+        if _MCP_SDK_IMPORT_ATTEMPTED:
+            return _MCP_AVAILABLE
+        if ClientSession is not None:
             return _MCP_AVAILABLE
         if (_import_sdk_names("mcp", ("ClientSession", "StdioServerParameters"))
                 and _import_sdk_names("mcp.client.stdio", ("stdio_client",))):

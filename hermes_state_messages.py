@@ -1026,6 +1026,8 @@ class SessionMessagesMixin:
         rows fresh ids; consumers that reference durable row ids re-resolve by content (see 3e8ab0610).
         """
         from hermes_state import SessionCompressionInProgressError
+        from hermes_state_sessions import _MODEL_CONFIG_ROW_MISSING
+
         def _do(conn):
             if lock_holder is not None:
                 lock_row = conn.execute(_COMPRESSION_LOCK_ROW_SQL, (session_id,)).fetchone()
@@ -1036,6 +1038,10 @@ class SessionMessagesMixin:
             # on_missing="raise": never commit against a vanished session row (caller keeps the original).
             patched_model_config = self._merge_model_config_json(
                 conn, session_id, model_config_patch, on_missing="raise") if patch else None
+            # A corrupt config refuses only the metadata write, not the transcript commit.
+            if patched_model_config is _MODEL_CONFIG_ROW_MISSING:
+                patch = False
+                patched_model_config = None
             proved = self._proved_coverage(conn, session_id, covered_ids, unresolved_held)
             if proved is not None:
                 return self._archive_named_rows(

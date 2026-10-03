@@ -117,6 +117,42 @@ def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
 
 _ANCHORLESS_WARNED: set[tuple] = set()
 
+_ZERO_SUB_BOARD_WARNED: set[str] = set()
+
+
+def _warn_zero_sub_board_once(slug: str, live: int, notifier_profiles: list) -> bool:
+    """A board with work in flight and zero subscribers is a silent dead-end
+    for ``blocked`` cards: notifications are opt-in per task, and
+    ``auto_subscribe_on_create`` can never fire for agent-created cards
+    (workers/cron/CLI run without ``HERMES_SESSION_PLATFORM`` /
+    ``HERMES_SESSION_CHAT_ID``), so an agent-driven estate reaches only this
+    state. At DEBUG it produced zero lines in six hours while six cards sat
+    blocked, while the *less* dangerous "dispatcher stuck" condition is a
+    reachable WARNING (#124389).
+
+    WARNING-level, once per board per zero-subscription episode: keying on
+    the slug alone stops both oscillation (5->6->5) and a backlog climbing
+    5,6,7,8... from re-announcing on every tick. ``_board_has_subs`` re-arms
+    the memo (discards the slug) the moment the probe is non-zero, so a later
+    episode — the last sub evicted by send-failure drop, stale-sub GC, or
+    archive — warns afresh instead of being silenced by an add-only
+    (slug, live) key.
+
+    Returns True when a warning was emitted this call, False when the board
+    is already in the warned state.
+    """
+    if slug in _ZERO_SUB_BOARD_WARNED:
+        return False
+    _ZERO_SUB_BOARD_WARNED.add(slug)
+    logger.warning(
+        "kanban notifier: board %s has no subscriptions owned by %s and %d "
+        "non-terminal task(s) — blocked cards will reach nobody; subscribe "
+        "with `hermes kanban notify-subscribe` (or set "
+        "kanban.notify_default_platform / notify_default_chat_id)",
+        slug, notifier_profiles, live,
+    )
+    return True
+
 
 def _warn_anchorless_thread_sub_once(sub: dict, platform: str) -> None:
     """A thread-shaped subscription without ``parent_chat_id`` cannot match a channel-level
@@ -285,8 +321,28 @@ class _Collector:
                          "for board %s (%s); falling back to writable open", slug, exc)
             return True
         if count == 0:
-            logger.debug("kanban notifier: board %s has no subscriptions owned by %s; skipping open",
-                         slug, sorted(self.notifier_profiles))
+            # Zero subscribers on a board with live work means blocked cards
+            # reach nobody — see _warn_zero_sub_board_once (#124389). A probe
+            # failure here must not change the gate.
+            try:
+                live = _kbn().count_live_tasks(board=slug)
+            except Exception:
+                live = 0
+            if live:
+                _warn_zero_sub_board_once(slug, live, sorted(self.notifier_profiles))
+            else:
+                logger.debug(
+                    "kanban notifier: board %s has no subscriptions owned by %s; "
+                    "skipping open", slug, sorted(self.notifier_profiles),
+                )
+        else:
+            # Subscribers exist again: re-arm the once-memo so a later
+            # zero-sub episode (last sub evicted by send-failure drop,
+            # stale-sub GC, or archive) warns afresh instead of being silenced
+            # by an earlier (slug, live) key. Idempotent; the set holds at
+            # most one entry per board in the warned state, so growth is
+            # bounded by the board count.
+            _ZERO_SUB_BOARD_WARNED.discard(slug)
         return count != 0
 
     def _gc_stale_subs(self, conn: Any, slug: str) -> None:

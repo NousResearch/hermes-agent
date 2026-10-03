@@ -173,6 +173,44 @@ def test_status_model_route_reads_the_routed_profile_config(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_status_command_routes_config_lookup_through_serving_profile(monkeypatch, tmp_path):
+    """The command boundary must use the serving profile, not only the route helper."""
+    from gateway import run as gateway_run
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-routed",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner.config.multiplex_profiles = True
+    routed_home = tmp_path / "profiles" / "telegram"
+    runner._resolve_profile_home_for_source = lambda _source: routed_home
+    runner._resolve_route_context = AsyncMock(return_value=None)
+
+    launch_config = {"model": {"default": "launch-model", "provider": "launch-provider"}}
+    routed_config = {"model": {"default": "routed-model", "provider": "routed-provider"}}
+    seen = []
+
+    def load_gateway_config(*, config_path=None):
+        seen.append(config_path)
+        return routed_config if config_path == routed_home / "config.yaml" else launch_config
+
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", load_gateway_config)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_gateway_model", lambda config: config["model"]["default"]
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `routed-model` (routed-provider)" in result
+    assert seen == [routed_home / "config.yaml"]
+
+
+@pytest.mark.asyncio
 async def test_status_command_uses_most_recent_persisted_model_route(tmp_path):
     """Persisted status uses the latest coherent route, not the lifetime-dominant route."""
     session_entry = SessionEntry(

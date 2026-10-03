@@ -2,6 +2,7 @@ from hermes_state import AsyncSessionDB
 """Tests for gateway /usage command — agent cache lookup and output fields."""
 
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -192,6 +193,45 @@ class TestUsageAccountSection:
 
         assert any(c["args"] == ("openai-codex",) for c in calls)
         assert "📈 **Account limits**" in result and "Weekly: 91% remaining" in result
+
+    @pytest.mark.asyncio
+    async def test_usage_command_uses_serving_profile_config_without_history(self, monkeypatch, tmp_path):
+        runner = _make_runner(SK)
+        runner.config = SimpleNamespace(multiplex_profiles=True)
+        routed_home = tmp_path / "profiles" / "telegram"
+        runner._resolve_profile_home_for_source = lambda _source: routed_home
+        runner._session_db = AsyncSessionDB(MagicMock())
+        runner._session_db._db.get_session.return_value = {}
+        runner._session_db._db.get_recent_session_model_route.return_value = None
+        runner.session_store.get_or_create_session.return_value = MagicMock(session_id="sess-fresh")
+        runner.session_store.load_transcript.return_value = []
+
+        calls = []
+
+        async def _fake_to_thread(fn, *args, **kwargs):
+            calls.append({"fn": fn, "args": args, "kwargs": kwargs})
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+        monkeypatch.setattr(
+            "gateway.run._load_gateway_config",
+            lambda *, config_path=None: {"model": {"provider": "nous"}}
+            if config_path == routed_home / "config.yaml" else {"model": {"provider": "openai-codex"}},
+        )
+        monkeypatch.setattr(
+            "gateway.slash_commands_status.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: object(),
+        )
+        monkeypatch.setattr(
+            "gateway.slash_commands_status.render_account_usage_lines",
+            lambda snapshot, markdown=False: ["📈 **Account limits**", "Provider: nous"],
+        )
+        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda markdown=False: [])
+
+        result = await runner._handle_usage_command(MagicMock())
+
+        assert any(c["args"] == ("nous",) for c in calls)
+        assert "Provider: nous" in result
 
     @pytest.mark.asyncio
     async def test_usage_command_prefers_recent_persisted_route(self, monkeypatch):

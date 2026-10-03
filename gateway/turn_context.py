@@ -16,6 +16,9 @@ class TurnContext:
     # read-only turn identity / wiring
     source: Any = None
     reply_expected: Optional[bool] = None
+    # Stamped on the originating MessageEvent, so unlike the session store's resume_pending it
+    # cannot flip between scheduling the turn and running it (#120963).
+    internal: bool = False
     # Scheduled heartbeats are proactive work, not replies to the source message that
     # registered the watch.  Their routine delivery surfaces stay quiet.
     scheduled_heartbeat: bool = False

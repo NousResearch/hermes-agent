@@ -287,7 +287,7 @@ def finish_text_response(
         ))
 
     final_msg = agent._build_assistant_message(assistant_message, finish_reason)
-    if _promoted:
+    if _promoted and not markup_leak:
         # Replay sidecar only: ``content`` stays empty so the row is never mistaken for a
         # real reply; ``build_api_messages`` substitutes ``api_content`` on the wire.
         final_msg["api_content"] = final_response

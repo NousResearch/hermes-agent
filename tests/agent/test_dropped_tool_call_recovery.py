@@ -108,7 +108,10 @@ class TestDroppedToolCallRecovery:
         """Tool-call markup stranded in promoted reasoning is a dropped call."""
         from tests.agent.test_run_agent import _mock_response
 
-        leaked = "<tool_call><function=write_file><parameter=arguments>{}</parameter>"
+        # Keep the malformed shape that survives think-block stripping. A complete
+        # <tool_call> block is intentionally stripped before this guard and would not
+        # exercise the dropped-call recovery path.
+        leaked = "<tool>\n<parameter=name>write_file</parameter>"
         response = SimpleNamespace(
             id="chatcmpl-reasoning-leak",
             model="test/model",
@@ -136,6 +139,9 @@ class TestDroppedToolCallRecovery:
         assert loop_agent.client.chat.completions.create.call_count == 2
         assert "<tool_call>" not in result["final_response"]
         assert "Recovered." in result["final_response"]
+        second_call = loop_agent.client.chat.completions.create.call_args_list[1]
+        msgs = second_call.kwargs.get("messages") or second_call.args[0].get("messages")
+        assert leaked not in str(msgs)
 
     def test_clean_stop_text_turn_is_unaffected(self, loop_agent):
         """A genuine finish_reason=stop text response must exit normally — the

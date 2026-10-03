@@ -77,11 +77,18 @@ def _hold_typing():
 
 
 @pytest.mark.parametrize(
-    "platform", [Platform.DISCORD, Platform.SLACK, "irc", None]
+    "platform", [Platform.SLACK, "irc", None]
 )
 def test_output_path_is_mp3_for_non_opus_platforms(platform):
     path = build_auto_tts_output_path(platform)
     assert path.endswith(".mp3"), path
+
+
+def test_output_path_is_ogg_for_discord():
+    """Discord delivers native voice bubbles only for Ogg/Opus (#123680): the output
+    path must be .ogg so the container repair guarantees real Opus bytes."""
+    path = build_auto_tts_output_path(Platform.DISCORD)
+    assert path.endswith(".ogg"), path
 
 
 # ---------------------------------------------------------------------------

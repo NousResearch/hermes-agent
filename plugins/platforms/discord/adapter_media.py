@@ -301,14 +301,25 @@ class DiscordMediaMixin:
                 return await self._forum_post_file(
                     channel, content=(caption or "").strip(), file=forum_file,
                 )
-            # Try sending as a native voice message via raw API (flags=8192).
+            # Native voice messages require real Ogg/Opus bytes (#123680): Discord renders
+            # the bubble but never plays an MP3 uploaded as voice-message.ogg. Route by
+            # what the file actually is — an unparseable/foreign container goes out as a
+            # regular file attachment (playable) instead of a silent broken bubble.
             try:
                 import base64
+                from mutagen.oggopus import OggOpus
+                duration_secs = OggOpus(audio_path).info.length
+            except Exception:
+                file = discord.File(io.BytesIO(file_data), filename=filename)
                 try:
-                    from mutagen.oggopus import OggOpus
-                    duration_secs = OggOpus(audio_path).info.length
-                except Exception:
-                    duration_secs = max(1.0, len(file_data) / 2000.0)
+                    msg = await channel.send(file=file, reference=reference)
+                except Exception as send_err:
+                    if reference is not None and self._is_reply_reference_rejected(send_err):
+                        msg = await channel.send(file=file, reference=None)
+                    else:
+                        raise
+                return SendResult(success=True, message_id=str(msg.id))
+            try:
                 payload_data = {
                     "flags": 8192,
                     "attachments": [{

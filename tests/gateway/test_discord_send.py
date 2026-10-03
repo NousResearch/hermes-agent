@@ -525,3 +525,66 @@ async def test_send_multiple_images_skips_oversized_local_file(tmp_path, monkeyp
     assert send.await_count == 1
     kwargs = send.await_args.kwargs
     assert not kwargs.get("files") and "big.png" in kwargs["content"]
+
+
+# ---------------------------------------------------------------------------
+# Voice bubble requires real Ogg/Opus (#123680)
+# ---------------------------------------------------------------------------
+
+def _fake_oggopus(monkeypatch, *, parses: bool):
+    """Fake the mutagen OggOpus probe the voice path uses to sniff the container."""
+    import types
+
+    mod = types.ModuleType("mutagen")
+    oggopus = types.ModuleType("mutagen.oggopus")
+
+    class _FakeOggOpus:
+        def __init__(self, path):
+            if not parses:
+                raise Exception("not Ogg/Opus")
+
+        class info:  # noqa: N801 - mirrors the mutagen shape
+            length = 1.5
+
+    oggopus.OggOpus = _FakeOggOpus
+    mod.oggopus = oggopus
+    monkeypatch.setitem(sys.modules, "mutagen", mod)
+    monkeypatch.setitem(sys.modules, "mutagen.oggopus", oggopus)
+
+
+@pytest.mark.asyncio
+async def test_voice_bubble_requires_real_ogg(tmp_path, monkeypatch):
+    """#123680: MP3 bytes in a .ogg path must NOT go out as voice-message.ogg — the
+    bubble renders but never plays. A non-Ogg/Opus payload goes out as a regular
+    file attachment (playable) with its real filename."""
+    audio = tmp_path / "voice-message.mp3"
+    audio.write_bytes(b"mp3-bytes")
+    _fake_oggopus(monkeypatch, parses=False)
+    send = AsyncMock(return_value=SimpleNamespace(id=31))
+    http = SimpleNamespace(request=AsyncMock(side_effect=AssertionError("raw voice upload must not run")))
+    adapter = _preflight_adapter(SimpleNamespace(id=555, guild=None, send=send))
+    adapter._client.http = http
+
+    result = await adapter.send_voice("555", str(audio))
+
+    assert result.success is True and result.message_id == "31"
+    http.request.assert_not_awaited()
+    kwargs = send.await_args.kwargs
+    assert kwargs.get("file") is not None
+
+
+@pytest.mark.asyncio
+async def test_real_ogg_rides_the_voice_path(tmp_path, monkeypatch):
+    """A real Ogg/Opus file keeps the native voice bubble (flags=8192)."""
+    audio = tmp_path / "voice-message.ogg"
+    audio.write_bytes(b"OggS-opus-bytes")
+    _fake_oggopus(monkeypatch, parses=True)
+    msg_data = {"id": "77"}
+    http = SimpleNamespace(request=AsyncMock(return_value=msg_data))
+    adapter = _preflight_adapter(SimpleNamespace(id=555, guild=None))
+    adapter._client.http = http
+
+    result = await adapter.send_voice("555", str(audio))
+
+    assert result.success is True and result.message_id == "77"
+    http.request.assert_awaited_once()

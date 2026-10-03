@@ -1249,6 +1249,7 @@ def _build_gateway_agent_history(
 
     Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in."""
     from hermes_time import get_timezone as _get_msg_tz
+    from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER
     from gateway.message_timestamps import (
         render_user_content_with_timestamp as _render_msg_ts,
         strip_leading_message_timestamps as _strip_msg_ts,
@@ -1293,7 +1294,13 @@ def _build_gateway_agent_history(
             # Keep user timestamps for the stale-dangerous-confirmation stripper in agent/replay_cleanup.py.
             entry = _build_replay_entry(role, content, msg, preserve_timestamp=(role == "user"))
             # Compaction sent summaries unstamped; stamping them on replay breaks the cached prefix.
-            if inject_timestamps and role == "user" and isinstance(content, str) and not msg.get("_compressed_summary"):
+            if (
+                inject_timestamps
+                and role == "user"
+                and isinstance(content, str)
+                and not msg.get("_compressed_summary")
+                and _INFLIGHT_TASK_REPLAY_HEADER not in content
+            ):
                 rendered = _render_msg_ts(content, replay_timestamp, tz=_msg_tz)
                 # Preserve only a sidecar matching the complete rendered message,
                 # optionally followed by the normal context separator. Cleanup

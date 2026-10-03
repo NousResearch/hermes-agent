@@ -70,6 +70,19 @@ def test_compaction_summary_replays_without_timestamp():
     assert history[0]["content"] == summary["content"]
 
 
+def test_inflight_task_restatement_replays_without_timestamp():
+    from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER
+    from gateway.run import _build_gateway_agent_history
+
+    message = {
+        "role": "user",
+        "content": f"{_INFLIGHT_TASK_REPLAY_HEADER}\nfinish the deployment",
+        "timestamp": _epoch(2026, 4, 28, 13, 40, 53),
+    }
+    history, _ = _build_gateway_agent_history([message], inject_timestamps=True)
+    assert history[0]["content"] == message["content"]
+
+
 def test_regular_user_message_still_replays_with_timestamp():
     from gateway.run import _build_gateway_agent_history
 

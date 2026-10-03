@@ -238,7 +238,12 @@ def strip_stale_dangerous_confirmations(
             age, expiry_seconds, (msg.get("content") or "")[:80],
         )
         redacted = dict(msg)
-        redacted["content"] = _EXPIRED_CONFIRMATION_SENTINEL
+        redacted["content"] = re.sub(
+            "|".join(re.escape(pattern) for pattern in _DANGEROUS_CONFIRMATION_PATTERNS),
+            _EXPIRED_CONFIRMATION_SENTINEL,
+            str(msg.get("content") or ""),
+            flags=re.IGNORECASE,
+        )
         # The api_content sidecar carries the exact bytes sent — the confirmation itself; replaying it would undo the redaction.
         drop_stale_api_content(redacted)
         cleaned.append(redacted)

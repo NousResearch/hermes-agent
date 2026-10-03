@@ -9,6 +9,7 @@ because the dangling tool-call tail was replayed on every resume).
 from agent.replay_cleanup import (
     strip_dangling_tool_call_tail,
     sanitize_replay_history,
+    strip_stale_dangerous_confirmations,
 )
 
 
@@ -82,6 +83,18 @@ def test_sanitize_replay_history_combines_both():
     ]
     assert out[2]["effect_disposition"] == "unknown"
     assert out[-1] == _user("second")
+
+
+def test_confirmation_expiry_preserves_mixed_summary_context():
+    content = "Reference: the docs mention confirm reboot. Live request: inspect the logs."
+    out = strip_stale_dangerous_confirmations(
+        [{"role": "user", "content": content, "timestamp": 1_000.0}],
+        now=1_120.0,
+    )
+    assert "Reference:" in out[0]["content"]
+    assert "Live request: inspect the logs." in out[0]["content"]
+    assert "confirm reboot" not in out[0]["content"]
+    assert "EXPIRED" in out[0]["content"]
 
 
 def test_sanitize_replay_history_noop_on_clean_history():

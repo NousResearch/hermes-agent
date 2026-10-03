@@ -113,3 +113,61 @@ def test_uninstall_args_namespace_mode_mapping():
     full = uninstall._UninstallArgs(mode="full")
     assert full.gui is False and full.full is True and full.yes is True
 
+
+def _make_desktop_build(checkout: Path) -> Path:
+    """Create the `hermes desktop` build output inside *checkout* (a source install root)."""
+    desktop = checkout / "apps" / "desktop"
+    (desktop / "dist").mkdir(parents=True)
+    (desktop / "dist" / "index.html").write_text("<html>")
+    (desktop / "release" / "linux-unpacked").mkdir(parents=True)
+    (desktop / "node_modules").mkdir(parents=True)
+    (checkout / "node_modules").mkdir(parents=True)
+    return desktop
+
+
+def test_custom_path_checkout_artifacts_are_discovered_and_removed(tmp_path, monkeypatch):
+    """A git checkout outside $HERMES_HOME owns the artifacts its desktop build wrote.
+
+    Reporting only the install.sh layout let `hermes uninstall --gui` claim success while the
+    build output the next `hermes update` keys off stayed on disk — so the app was rebuilt.
+    """
+    hermes_home = tmp_path / ".hermes"
+    _make_agent(hermes_home)
+    checkout = tmp_path / "Hermes-Agent"  # `hermes --version`'s install directory
+    desktop = _make_desktop_build(checkout)
+    monkeypatch.setattr(gu, "packaged_gui_app_paths", lambda: [])
+    monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
+
+    summary = gu.gui_install_summary(hermes_home, project_root=checkout)
+    assert summary["gui_installed"] is True
+    assert str(desktop / "dist") in summary["source_built_artifacts"]
+    assert str(desktop / "release") in summary["source_built_artifacts"]
+
+    removed = gu.uninstall_gui(hermes_home, project_root=checkout, remove_userdata=False)
+
+    assert not (desktop / "dist").exists()
+    assert not (desktop / "release").exists()
+    assert not (desktop / "node_modules").exists()
+    # The workspace-root node_modules is shared with the TUI/dashboard workspaces, so it is kept
+    # (matching `uninstall --gui`'s behaviour on the install.sh layout).
+    assert (checkout / "node_modules").exists()
+    assert desktop / "dist" in removed and desktop / "release" in removed
+    # The agent beside the checkout is never part of a GUI uninstall.
+    assert (hermes_home / "hermes-agent" / "hermes_cli").is_dir()
+
+
+def test_standard_layout_root_is_not_listed_twice(tmp_path):
+    """`$HERMES_HOME/hermes-agent` is the standard layout; both roots resolving there is one set."""
+    hermes_home = tmp_path / ".hermes"
+
+    artifacts = gu.source_built_gui_artifacts(hermes_home, project_root=hermes_home / "hermes-agent")
+
+    assert len(artifacts) == len(set(artifacts))
+
+
+def test_default_project_root_is_the_running_checkout(tmp_path):
+    """With no caller-supplied root, discovery keys off the checkout this code runs from."""
+    artifacts = gu.source_built_gui_artifacts(tmp_path / ".hermes")
+
+    assert gu._running_checkout_root() / "apps" / "desktop" / "release" in artifacts
+

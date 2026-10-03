@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ntpath
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Mapping
@@ -65,6 +66,44 @@ def _staged_bash() -> str | None:
 _WINDOWS_BASH_STUB_DIRS = ("system32", "windowsapps")
 
 
+def is_windows_app_alias(path: str | os.PathLike) -> bool:
+    """Whether *path* lives under a WindowsApps App Execution Alias directory.
+
+    Pure and host-independent: case-insensitive check for a ``windowsapps``
+    path component (equivalently, ``windowsapps`` in the normalized path).
+    Covers both ``\\`` and ``/`` separators so POSIX test hosts can classify
+    Windows paths. See #129102.
+    """
+    try:
+        raw = os.fspath(path)
+    except Exception:
+        return False
+    if not isinstance(raw, str) or not raw:
+        return False
+    return "windowsapps" in raw.lower().replace("/", "\\")
+
+
+def is_windows_python_store_alias(path: str | os.PathLike) -> bool:
+    """Whether *path* is a ``python``/``python3`` Microsoft Store launcher stub.
+
+    The Store Python ships ``python.exe`` only, so ``python3.exe`` under
+    WindowsApps is always a stub; ``python.exe`` there is a stub when no real
+    Store Python is installed (running it prints "Python was not found..."
+    and exits 9009). Matches versioned ``python3.x.exe`` spellings too.
+    See #129102.
+    """
+    if not is_windows_app_alias(path):
+        return False
+    try:
+        raw = os.fspath(path)
+    except Exception:
+        return False
+    if not isinstance(raw, str) or not raw:
+        return False
+    base = raw.lower().replace("/", "\\").rsplit("\\", 1)[-1]
+    return re.fullmatch(r"pythonw?(\d+(\.\d+)*)?\.exe", base) is not None
+
+
 def windows_bash_candidates(on_path: str | None, env: Mapping[str, str]) -> list[str]:
     """Ordered bash.exe candidates for a Windows host, as pure data: the
     explicit override and Git for Windows roots first, then ``on_path``
@@ -85,7 +124,7 @@ def windows_bash_candidates(on_path: str | None, env: Mapping[str, str]) -> list
                            ntpath.join(root, "usr", "bin", "bash.exe")))
     if on_path:
         norm = ntpath.normpath(on_path).lower()
-        if not any(stub in norm for stub in _WINDOWS_BASH_STUB_DIRS):
+        if "system32" not in norm and not is_windows_app_alias(on_path):
             candidates.append(on_path)
     return list(dict.fromkeys(candidates))
 

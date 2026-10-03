@@ -675,23 +675,98 @@ def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
         current = current.parent
 
 
+def _worktree_pending_marker(target: Path) -> Path:
+    # Outside the checkout: Git may remove a failed target, and tracked files
+    # must never overwrite the publication fence.
+    return target.with_name(f".{target.name}.kanban-creating")
+
+
+def _check_worktree_published(target: Path) -> None:
+    marker = _worktree_pending_marker(target)
+    if os.path.lexists(marker):
+        raise RuntimeError(
+            f"Kanban worktree creation is unfinished at {target}; refusing reuse. "
+            f"After stopping its creator and repairing/removing the checkout, "
+            f"remove {marker} to retry."
+        )
+
+
+def _worktree_registered(repo_root: Path, target: Path) -> bool:
+    result = _git(repo_root, "worktree", "list", "--porcelain", "-z", timeout=30)
+    if result.returncode:
+        raise RuntimeError(f"Cannot inspect worktree registrations: {result.stderr}")
+    return any(
+        os.path.normcase(_path_key(Path(field.removeprefix("worktree ")).resolve(strict=False)))
+        == os.path.normcase(_path_key(target.resolve(strict=False)))
+        for field in result.stdout.split("\0") if field.startswith("worktree ")
+    )
+
+
+def _rollback_worktree_add(repo_root: Path, target: Path, identity: os.stat_result) -> None:
+    """Remove only the new directory reserved by this creation attempt."""
+    if os.path.lexists(target):
+        current = target.lstat()
+        if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino):
+            raise RuntimeError("worktree target was replaced; leaving it untouched")
+        if _worktree_registered(repo_root, target):
+            # Interrupted Git can leave its initialization lock behind. Never
+            # prune other registrations or delete a possibly pre-existing branch.
+            _git(repo_root, "worktree", "unlock", str(target), timeout=30)
+            result = _git(repo_root, "worktree", "remove", "--force", str(target), timeout=60)
+            if result.returncode:
+                raise RuntimeError(result.stderr or "worktree removal failed")
+        else:
+            target.rmdir()  # only an empty, unregistered directory is disposable
+    if os.path.lexists(target) or _worktree_registered(repo_root, target):
+        raise RuntimeError("partial worktree or registration remains")
+
+
 def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
-    """Materialize ``target`` as a linked git worktree under ``repo_root``."""
-    target = target.expanduser()
+    """Materialize ``target``; publish only after Git finishes checkout."""
+    target = target.expanduser().resolve(strict=False)
     repo_common = _git_common_dir(repo_root)
     if target.exists() and repo_common is not None and _path_key(_git_common_dir(target)) == _path_key(repo_common):
+        _check_worktree_published(target)
         return
     target.parent.mkdir(parents=True, exist_ok=True)
-    if _git_branch_exists(repo_root, branch_name):
-        args = ["worktree", "add", str(target), branch_name]
-    else:
-        args = ["worktree", "add", "-b", branch_name, str(target), "HEAD"]
-    result = _git(repo_root, *args, timeout=60)
-    if result.returncode != 0:
-        stderr = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(
-            f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
-        )
+    marker = _worktree_pending_marker(target)
+    try:
+        with marker.open("x", encoding="utf-8") as pending:
+            pending.write(f"{repo_root}\n{target}\n{branch_name}\n")
+            pending.flush()
+            os.fsync(pending.fileno())
+    except FileExistsError:
+        _check_worktree_published(target)
+        raise
+    identity = None
+    try:
+        # A missing directory can still have a live/locked Git registration.
+        if _worktree_registered(repo_root, target):
+            raise RuntimeError(f"Worktree registration already exists for {target}")
+        if not os.path.lexists(target):
+            target.mkdir()  # exclusive reservation; never own a raced-in directory
+            identity = target.lstat()
+        if _git_branch_exists(repo_root, branch_name):
+            args = ["worktree", "add", str(target), branch_name]
+        else:
+            args = ["worktree", "add", "-b", branch_name, str(target), "HEAD"]
+        result = _git(repo_root, *args, timeout=60)
+        if result.returncode != 0:
+            stderr = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(
+                f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
+            )
+    except Exception:
+        if identity is not None:
+            try:
+                _rollback_worktree_add(repo_root, target, identity)
+                marker.unlink()
+            except Exception as cleanup_error:
+                _kb._log.warning("Incomplete worktree fenced at %s: %s", target, cleanup_error)
+        # An unowned/pre-existing target is never removed. Keep the fence on
+        # uncertainty, including cleanup failure, rather than bless it on retry.
+        raise
+    marker.unlink()
 
 
 def _anchored_worktree(repo_root: Path, task_id: str, branch_name: str) -> tuple[Path, str]:
@@ -741,6 +816,7 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     requested_resolved = requested.resolve(strict=False)
 
     if requested.exists() and _is_linked_worktree_checkout(requested):
+        _check_worktree_published(requested_resolved)
         actual_branch = _git_current_branch(requested)
         if actual_branch == branch_name:
             return requested_resolved, actual_branch

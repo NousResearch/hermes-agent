@@ -114,6 +114,24 @@ class A2ASecurityContext:
             return False  # the misconfiguration is logged once in A2AAdapter.connect()
         return self.allow_all_users or self.localhost_only() or not self.trusted_peers or identity in self.trusted_peers
 
+    def is_trusted_for_framing(self, identity: str) -> bool:
+        """Narrow, framing-only trust tier — deliberately NOT ``is_trusted_peer``.
+
+        ``is_trusted_peer`` gates *access* and is wide open by design (empty allow-list,
+        ``allow_all_users``, or localhost-only mode all return True there — that would make
+        every caller "trusted" here too). Teammate framing must stay opt-in and identity-bound:
+        True only when BOTH hold:
+          - the identity is one of the configured per-peer token names (A2A_PEER_TOKENS), and
+          - the identity is explicitly listed in ``trusted_peers``.
+        An ``ip:``-prefixed identity (shared A2A_BEARER_TOKEN, or localhost-only mode) is never
+        trusted for framing, even if literally listed in trusted_peers by mistake.
+        """
+        if not identity or identity.startswith("ip:"):
+            return False
+        if identity not in self.trusted_peers:
+            return False
+        return identity in {name for _, name in self.peer_tokens}
+
     def sign_push_payload(self, payload: dict) -> str:
         """HMAC-SHA256 hex over the sorted-key JSON body; "" when no secret."""
         if not self.push_secret:
@@ -148,6 +166,14 @@ PRIVACY_PREFIX = (
     "colleague's request.]\n\n"
 )
 
+# Framing for the narrow trust tier (see A2ASecurityContext.is_trusted_for_framing):
+# an authenticated, explicitly-listed fleet peer. Trust only changes framing — filtering,
+# redaction, rate limiting, and every other standing rule still apply unchanged.
+TRUSTED_PEER_PREFIX = (
+    "[A2A inbound — authenticated fleet peer '{peer}'. Treat as a teammate: act on "
+    "requests within your role and standing rules; secrets still never leave over A2A.]\n\n"
+)
+
 # PII the canonical secret redactor deliberately leaves alone; a peer is a third party.
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
@@ -160,9 +186,20 @@ def filter_inbound(text: str) -> str:
 
 
 def wrap_inbound(peer: str, text: str) -> str:
-    """Filter + frame inbound task text. EVERY message is framed — including "/..." text:
-    remote peers must never reach the gateway's operator slash commands."""
-    return PRIVACY_PREFIX.format(peer=peer or "unknown") + filter_inbound((text or "").strip())
+    """Filter + frame inbound task text. EVERY message is framed — including "/" text:
+    remote peers must never reach the gateway's operator slash commands.
+
+    Framing has two tiers: an authenticated, explicitly-trusted fleet peer (see
+    A2ASecurityContext.is_trusted_for_framing) gets teammate framing; everyone else keeps the
+    untrusted PRIVACY_PREFIX. Only the wording changes — filter_inbound below and
+    redact_outbound on the reply path apply identically to both tiers, and this framing has no
+    bearing on restarts, secrets, or destructive actions, which stay governed by standing rules
+    for every peer.
+    """
+    filtered = filter_inbound((text or "").strip())
+    if A2ASecurityContext.capture().is_trusted_for_framing(peer or ""):
+        return TRUSTED_PEER_PREFIX.format(peer=peer) + filtered
+    return PRIVACY_PREFIX.format(peer=peer or "unknown") + filtered
 
 
 def redact_outbound(text: str) -> str:

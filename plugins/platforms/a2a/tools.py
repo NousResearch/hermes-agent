@@ -1,6 +1,9 @@
 """A2A client tools (``a2a`` toolset): a2a_discover/call/list/history/orchestrate talk to *other*
-agents. Peers come from config.yaml ``a2a_agents: {name: {url, auth: {type: bearer, token}, timeout,
-capabilities}}``. Stdlib urllib; wire format is A2A v1.0 ``SendMessage`` (v0.3 replies still parse)."""
+agents. Peers come from config.yaml ``a2a_agents: {name: {url, auth: {type: bearer, token OR
+token_env}, timeout, capabilities}}`` -- ``token_env`` names a secret resolved at call time
+(profile-scoped ``get_secret``/env, see ``_auth_header``) so the literal value never has to live
+in config.yaml; ``token`` remains for back-compat and wins if both are set. Stdlib urllib; wire
+format is A2A v1.0 ``SendMessage`` (v0.3 replies still parse)."""
 
 from __future__ import annotations
 
@@ -46,7 +49,17 @@ def _resolve_peer(agent: str) -> Optional[dict]:
 
 
 def _auth_header(auth: dict) -> dict:
-    return {"Authorization": f"Bearer {auth['token']}"} if auth and auth.get("type") == "bearer" and auth.get("token") else {}
+    """Bearer header for an outbound peer. ``auth.token`` is a literal (kept for back-compat);
+    ``auth.token_env`` names a secret to resolve at call time via the profile-scoped
+    ``get_secret``/env lookup (``security._startup_env``) so config.yaml never has to hold the
+    literal value. A literal ``token`` wins if both are set (explicit beats indirection)."""
+    if not auth or auth.get("type") != "bearer":
+        return {}
+    token = auth.get("token") or ""
+    token_env = auth.get("token_env")
+    if not token and token_env:
+        token = security._startup_env(str(token_env))
+    return {"Authorization": f"Bearer {token}"} if token else {}
 
 
 def _http_json(url: str, headers: dict, timeout: int, method: str, data: Optional[bytes] = None) -> dict:

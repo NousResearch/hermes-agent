@@ -5,6 +5,7 @@ origins for platforms with no connected adapter must not become active
 send_message targets."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from gateway.channel_directory import build_channel_directory
@@ -23,7 +24,7 @@ def test_does_not_resurrect_disconnected_platforms_from_session_history(tmp_path
     with patch("gateway.channel_directory._build_from_sessions", side_effect=fake_build_from_sessions), \
          patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
         # Only telegram is connected; no discord/slack/whatsapp adapters.
-        directory = asyncio.run(build_channel_directory({Platform.TELEGRAM: object()}))
+        directory = asyncio.run(build_channel_directory({Platform.TELEGRAM: SimpleNamespace()}))
 
     plats = directory["platforms"]
     assert "telegram" in plats

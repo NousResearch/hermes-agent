@@ -1051,6 +1051,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients: Dict[str, Any] = {}
         self._team_bot_user_ids: Dict[str, str] = {}
         self._team_bot_names: Dict[str, str] = {}
+        self._team_names: Dict[str, str] = {}
         # User/channel IDs are workspace-local: name/is_bot caches key by (team_id, id) so
         # multi-workspace processes never reuse another tenant's names (is_bot catches peer-agent
         # posts lacking bot_id/bot_message markers; DM channel IDs are per-user, hence bounded).
@@ -1764,6 +1765,7 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients[team_id] = client
         self._team_bot_user_ids[team_id] = bot_user_id
         self._team_bot_names[team_id] = bot_name
+        self._team_names[team_id] = team_name
         if self._bot_user_id is None:
             self._bot_user_id = bot_user_id
         if self._bot_display_name is None:
@@ -1814,6 +1816,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Reset so a reconnect with dropped/rotated tokens carries no stale identities.
             self._bot_user_id = self._bot_display_name = None
             self._team_clients, self._team_bot_user_ids, self._team_bot_names = {}, {}, {}
+            self._team_names = {}
             self._app = AsyncApp(
                 token=bot_tokens[0], client=self._new_web_client(bot_tokens[0], proxy_url),
                 before_authorize=_slack_per_request_proxy_middleware(proxy_url))
@@ -4709,6 +4712,7 @@ class SlackAdapter(BasePlatformAdapter):
             user_name=user_name,
             thread_id=thread_ts,
             scope_id=str(team_id) if team_id else None,
+            guild_name=self._team_names.get(team_id),
             message_id=ts,
             # Workflow/app posts have user=None; flag them so the SLACK_ALLOW_BOTS bypass can
             # authorize them. Same predicate as the drop gate (api_human_users stay human).

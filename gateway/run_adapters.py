@@ -98,6 +98,8 @@ class GatewayAdapterLifecycleMixin:
         """Call adapter.disconnect() defensively (bounded, never raises, tolerates partial-init state):
         after a failed connect() partial resources (ClientSession, poll tasks, subprocesses) leak."""
         timeout = self._adapter_disconnect_timeout_secs()
+        from gateway.channel_names import clear_adapter_directory
+        clear_adapter_directory(adapter)
         label = platform.value if platform is not None else "adapter"
         with _log_suppressed(logging.DEBUG, "Defensive %s disconnect after failed connect raised: %s", label):
             if not await self._await_adapter_cleanup_with_timeout(adapter.disconnect(), timeout):
@@ -115,6 +117,8 @@ class GatewayAdapterLifecycleMixin:
         network state is half-dead (e.g. a wedged Feishu/Lark WebSocket thread waiting on I/O). See #14128.
         """
         timeout = self._adapter_disconnect_timeout_secs()
+        from gateway.channel_names import clear_adapter_directory
+        clear_adapter_directory(adapter)
         suffix = f" (profile: {profile})" if profile else ""
         started_at = time.monotonic()
         try:
@@ -1312,6 +1316,10 @@ class GatewayAdapterLifecycleMixin:
                     claimed[claim] = profile_name
             connected += 1
             logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
+        if connected:
+            from gateway.channel_directory import build_channel_directory
+            with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                await build_channel_directory(profile_map)
         return connected
 
     def _wire_adapter_handlers(
@@ -1448,6 +1456,12 @@ class GatewayAdapterLifecycleMixin:
                         if platform not in profile_map:
                             profile_map[platform] = adapter
                             self._sync_voice_mode_state_to_adapter(adapter)
+                            from gateway.channel_directory import build_profile_channel_directory
+                            self._spawn_supervised(
+                                lambda: build_profile_channel_directory(
+                                    dict(profile_map), self._routed_profile_home(profile_name)),
+                                f"channel-directory:{profile_name}", restart=False,
+                            )
                             logger.info("✓ %s reconnected (profile: %s)", platform.value, profile_name)
                             await self._redeliver_failed_obligations_for_platform(
                                 platform, profile=profile_name

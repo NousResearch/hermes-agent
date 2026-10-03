@@ -27,6 +27,7 @@ def test_build_discord_filters_hidden_channels(monkeypatch):
     from gateway import channel_directory as cd
 
     guild = SimpleNamespace(
+        id=42,
         name="TestGuild",
         text_channels=[
             _channel(name="general", cid=1),

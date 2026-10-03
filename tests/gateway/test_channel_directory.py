@@ -107,7 +107,7 @@ class TestBuildChannelDirectoryOffload:
 
         with patch("gateway.channel_directory._build_discord", side_effect=fake_build_discord), \
              patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
-            asyncio.run(build_channel_directory({Platform.DISCORD: object()}))
+            asyncio.run(build_channel_directory({Platform.DISCORD: SimpleNamespace()}))
 
         assert builder_threads
         assert all(tid != loop_thread for tid in builder_threads)
@@ -128,7 +128,7 @@ class TestBuildChannelDirectoryOffload:
         with patch("gateway.channel_directory.atomic_json_write", side_effect=fake_write), \
              patch("gateway.channel_directory._build_discord", return_value=[]), \
              patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
-            asyncio.run(build_channel_directory({Platform.DISCORD: object()}))
+            asyncio.run(build_channel_directory({Platform.DISCORD: SimpleNamespace()}))
 
         assert write_threads
         assert all(tid != loop_thread for tid in write_threads)

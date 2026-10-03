@@ -80,9 +80,12 @@ def _apply_channel_aliases(platforms: Dict[str, Any]) -> None:
             chat_id, friendly = str(chat_id), friendly.strip()
             matches = [e for e in entries if isinstance(e, dict) and e.get("id") == chat_id]
             for e in matches:
+                if not e.get("thread_id"):
+                    e.setdefault("chat_name", e.get("name"))
                 e["name"] = friendly
+                e["alias"] = friendly
             if not matches:
-                entries.append({"id": chat_id, "name": friendly, "thread_id": None,
+                entries.append({"id": chat_id, "name": friendly, "alias": friendly, "thread_id": None,
                                 "type": "group" if chat_id.endswith("@g.us") else "dm"})
 
 
@@ -132,6 +135,11 @@ def _report_slack_failure(team_id: str, error_code: Optional[str], detail: str) 
 async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     """Build the directory from connected adapters + session data and persist it."""
     from gateway.config import Platform
+    adapters = dict(adapters)
+    generations = {}
+    for platform, adapter in adapters.items():
+        generation = getattr(adapter, "_routing_directory_generation", 0) + 1
+        adapter._routing_directory_generation = generations[platform] = generation
     platforms: Dict[str, List[Dict[str, str]]] = {}
     for platform, adapter in adapters.items():
         try:
@@ -163,12 +171,35 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         for entry in platform_registry.plugin_entries():
             await _discover(entry.name)
     _apply_channel_aliases(platforms)
+    from gateway.channel_names import publish_adapter_directory
+    for platform, adapter in adapters.items():
+        if adapter._routing_directory_generation == generations[platform]:
+            publish_adapter_directory(adapter, platforms.get(platform.value, []), platform=platform.value)
     directory = {"updated_at": datetime.now().isoformat(), "platforms": platforms}
     try:
         await asyncio.to_thread(atomic_json_write, _directory_path(), directory)
     except Exception as e:
         logger.warning("Channel directory: failed to write: %s", e)
     return directory
+
+
+async def build_profile_channel_directory(adapters, profile_home) -> Dict[str, Any]:
+    """Keep aliases and historical labels in the receiving bot's home, even on reconnect."""
+    from gateway.run import _profile_runtime_scope
+
+    with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+        return await build_channel_directory(adapters)
+
+
+async def build_gateway_channel_directories(runner) -> Dict[str, Any]:
+    """Refresh each receiving bot under its owning home's scope, including hot-served profiles."""
+    from hermes_constants import get_process_hermes_home
+    from hermes_cli.profiles import get_profile_dir
+    primary = await build_profile_channel_directory(runner.adapters, get_process_hermes_home())
+    for name, adapters in list((getattr(runner, "_profile_adapters", None) or {}).items()):
+        if adapters:
+            await build_profile_channel_directory(dict(adapters), get_profile_dir(name))
+    return primary
 
 
 def _build_discord(adapter) -> List[Dict[str, str]]:
@@ -191,7 +222,18 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
                 # Obfuscated placeholders (no VIEW_CHANNEL) can never be posted to. #90154
                 if is_discord_channel_obfuscated(ch):
                     continue
-                channels.append({"id": str(ch.id), "name": ch.name, "guild": guild.name, "type": ch_type})
+                channels.append({"id": str(ch.id), "chat_id": str(ch.id), "name": ch.name,
+                                 "chat_name": ch.name, "guild": guild.name,
+                                 "scope_id": str(guild.id), "type": ch_type})
+        for thread in getattr(guild, "threads", None) or []:
+            if is_discord_channel_obfuscated(thread):
+                continue
+            parent = getattr(thread, "parent", None)
+            channels.append({"id": str(thread.id), "chat_id": str(thread.id), "thread_id": str(thread.id),
+                             "name": thread.name, "chat_name": thread.name, "thread_name": thread.name,
+                             "parent_chat_id": str(thread.parent_id) if thread.parent_id else None,
+                             "parent_chat_name": getattr(parent, "name", None),
+                             "guild": guild.name, "scope_id": str(guild.id), "type": "thread"})
     # DM-capable users aren't reachable via guild enumeration; they come from sessions.
     channels.extend(_build_from_sessions("discord"))
     return channels
@@ -214,12 +256,16 @@ def _normalize_adapter_channels(raw_channels: Any) -> List[Dict[str, Any]]:
             continue
         channel_id = str(raw.get("id") or "").strip()
         name = str(raw.get("name") or channel_id).strip()
-        if not channel_id or not name or channel_id in seen_ids:
+        identity = (raw.get("scope_id") or raw.get("guild_id"), raw.get("chat_id") or channel_id, raw.get("thread_id"))
+        if not channel_id or not name or identity in seen_ids:
             continue
         entry: Dict[str, Any] = {"id": channel_id, "name": name, "type": str(raw.get("type") or "dm")}
-        entry.update({key: str(raw[key]) for key in ("thread_id", "guild") if raw.get(key)})
+        entry.update({key: str(raw[key]) for key in (
+            "thread_id", "guild", "scope_id", "guild_id", "chat_id", "chat_name", "thread_name",
+            "parent_chat_id", "parent_chat_name",
+        ) if raw.get(key)})
         channels.append(entry)
-        seen_ids.add(channel_id)
+        seen_ids.add(identity)
     return channels
 
 
@@ -247,10 +293,11 @@ async def _slack_team_channels(team_id: str, client, seen_ids: set) -> List[Dict
                 break
             for ch in response.get("channels", []):
                 cid, name = ch.get("id"), ch.get("name")
-                if not cid or not name or cid in seen_ids:
+                if not cid or not name or (team_id, cid) in seen_ids:
                     continue
-                seen_ids.add(cid)
-                channels.append({"id": cid, "name": name, "type": "private" if ch.get("is_private") else "channel"})
+                seen_ids.add((team_id, cid))
+                channels.append({"id": cid, "chat_id": cid, "name": name, "chat_name": name,
+                                 "scope_id": team_id, "type": "private" if ch.get("is_private") else "channel"})
             cursor = (response.get("response_metadata") or {}).get("next_cursor")
             if not cursor:
                 break
@@ -285,6 +332,7 @@ async def _slack_resolve_raw_names(client, channels: List[Dict[str, Any]]) -> No
                     resolved_type = "dm"
             for entry in entries if resolved_name else ():
                 entry["name"] = resolved_name
+                entry["chat_name"] = resolved_name
                 if resolved_type:
                     entry["type"] = resolved_type
         except Exception as e:
@@ -301,19 +349,29 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
     channels: List[Dict[str, Any]] = []
     seen_ids: set = set()
     for team_id, client in team_clients.items():
-        channels.extend(await _slack_team_channels(team_id, client, seen_ids))
+        own = await _slack_team_channels(team_id, client, seen_ids)
+        for entry in own:
+            if guild_name := (getattr(adapter, "_team_names", None) or {}).get(team_id):
+                entry["guild"] = guild_name
+        channels.extend(own)
     # Merge session-history DM/group entries, naming raw-ID entries from the
     # API-discovered channels where the base conversation ID is known.
-    api_name_lookup = {ch["id"]: ch["name"] for ch in channels}
+    api_name_lookup = {(ch.get("scope_id"), ch["id"]): ch["name"] for ch in channels}
     for entry in await asyncio.to_thread(_build_from_sessions, "slack"):
         eid = entry.get("id")
-        if not isinstance(eid, str) or eid in seen_ids:
+        identity = (entry.get("scope_id"), eid)
+        if not isinstance(eid, str) or identity in seen_ids:
             continue
-        if _slack_has_raw_name(entry) and _slack_base_id(eid) in api_name_lookup:
-            entry["name"] = api_name_lookup[_slack_base_id(eid)]
+        base_key = (entry.get("scope_id"), entry.get("chat_id") or eid)
+        if _slack_has_raw_name(entry) and base_key in api_name_lookup:
+            entry["name"] = api_name_lookup[base_key]
+            entry["chat_name"] = api_name_lookup[base_key]
         channels.append(entry)
-        seen_ids.add(eid)
-    await _slack_resolve_raw_names(next(iter(team_clients.values())), channels)
+        seen_ids.add(identity)
+    for team_id, client in team_clients.items():
+        own = [entry for entry in channels if entry.get("scope_id") == team_id
+               or (not entry.get("scope_id") and len(team_clients) == 1)]
+        await _slack_resolve_raw_names(client, own)
     return channels
 
 
@@ -333,12 +391,18 @@ def _entries_from_origins(platform_name: str, source: str, origins_fn) -> List[D
         seen_ids = set()
         for origin, chat_type in origins_fn():
             entry_id = _session_entry_id(origin)
-            if not entry_id or entry_id in seen_ids:
+            scope = origin.get("scope_id") or origin.get("guild_id")
+            identity = (scope, entry_id)
+            if not entry_id or identity in seen_ids:
                 continue
-            seen_ids.add(entry_id)
+            seen_ids.add(identity)
             entries.append({
                 "id": entry_id, "name": _session_entry_name(origin),
                 "type": chat_type, "thread_id": origin.get("thread_id"),
+                "chat_id": str(origin["chat_id"]), "scope_id": scope,
+                "chat_name": origin.get("channel_name") or (origin.get("chat_name") if chat_type != "thread" else None),
+                "thread_name": origin.get("thread_name"), "guild": origin.get("guild_name") or "",
+                "parent_chat_id": origin.get("parent_chat_id"), "parent_chat_name": origin.get("parent_chat_name"),
             })
     except Exception as e:
         logger.debug("Channel directory: %s for %s: %s", source, platform_name, e)

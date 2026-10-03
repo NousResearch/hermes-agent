@@ -1749,9 +1749,11 @@ def test_every_tmpfs_spec_names_exactly_one_of_exec_noexec(monkeypatch):
     """Every --tmpfs mount spec must state its exec intent explicitly.
 
     Moby prepends ``noexec,nosuid,nodev`` to each --tmpfs option list and only
-    a later explicit ``exec`` overrides ``noexec``; Podman defaults ``noexec``
-    to false. A spec naming neither token is silently noexec on Docker Engine
-    and exec on Podman — one config, two behaviours across engines."""
+    a later explicit ``exec`` overrides ``noexec`` — so a spec naming neither
+    token is silently noexec on Docker Engine, whatever it may do elsewhere.
+    ``/run``, ``/workspace``, ``/home`` and ``/root`` already name their token;
+    a mount that stays silent about it inherits the engine default instead of
+    its documented intent."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = _mock_subprocess_run(monkeypatch)
 

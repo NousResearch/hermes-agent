@@ -16,6 +16,42 @@ from hermes_cli.config import (
 
 class TestGetCustomProviderContextLength:
 
+    def test_provider_identity_disambiguates_shared_route_and_model(self):
+        custom = [
+            {
+                "base_url": "https://shared.invalid/v1",
+                "models": {"same-model": {"context_length": 128_000}},
+            },
+            {
+                "provider_key": "first-route",
+                "name": "First Route",
+                "base_url": "https://shared.invalid/v1",
+                "models": {"same-model": {"context_length": 500_000}},
+            },
+            {
+                "provider_key": "second-route",
+                "name": "Second Route",
+                "base_url": "https://shared.invalid/v1",
+                "models": {"same-model": {"context_length": 1_050_000}},
+            },
+        ]
+
+        assert get_custom_provider_context_length(
+            "same-model",
+            "https://shared.invalid/v1",
+            custom,
+            provider="custom:second-route",
+        ) == 1_050_000
+        assert get_custom_provider_context_length(
+            "same-model",
+            "https://shared.invalid/v1",
+            custom,
+            provider="custom:missing-route",
+        ) == 128_000
+        assert get_custom_provider_context_length(
+            "same-model", "https://shared.invalid/v1", custom
+        ) == 128_000
+
     def test_trailing_slash_insensitive(self):
         custom = [
             {
@@ -126,6 +162,57 @@ class TestGetModelContextLengthHonorsOverride:
     custom_providers override at step 0b — before any probe, cache hit,
     or models.dev lookup can override it.
     """
+
+    def test_provider_scope_selects_matching_shared_route(self):
+        from agent.model_metadata import get_model_context_length
+
+        custom = [
+            {
+                "provider_key": "first-route",
+                "name": "First Route",
+                "base_url": "https://shared.invalid/v1",
+                "models": {"same-model": {"context_length": 500_000}},
+            },
+            {
+                "provider_key": "second-route",
+                "name": "Second Route",
+                "base_url": "https://shared.invalid/v1",
+                "models": {"same-model": {"context_length": 1_050_000}},
+            },
+        ]
+
+        assert get_model_context_length(
+            "same-model",
+            base_url="https://shared.invalid/v1",
+            provider="custom:second-route",
+            custom_providers=custom,
+        ) == 1_050_000
+
+    def test_named_custom_runtime_uses_requested_provider_identity(self):
+        from agent.model_metadata import get_model_context_length
+
+        custom = [
+            {
+                "provider_key": "first-route",
+                "name": "First Route",
+                "base_url": "https://shared.invalid/v1",
+                "models": {"same-model": {"context_length": 500_000}},
+            },
+            {
+                "provider_key": "second-route",
+                "name": "Second Route",
+                "base_url": "https://shared.invalid/v1",
+                "models": {"same-model": {"context_length": 1_050_000}},
+            },
+        ]
+
+        assert get_model_context_length(
+            "same-model",
+            base_url="https://shared.invalid/v1",
+            provider="custom",
+            requested_provider="custom:second-route",
+            custom_providers=custom,
+        ) == 1_050_000
 
     def _mock_all_probes(self):
         """Context manager that disables every downstream resolution step."""

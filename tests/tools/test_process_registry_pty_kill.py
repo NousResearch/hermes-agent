@@ -27,6 +27,8 @@ _POSIX_PTY = pytest.mark.skipif(
 # signal). Before the fix the kill could only return once it had, so the kill deadline is shorter.
 _ESCAPEE_LIFETIME_S = 8
 _KILL_DEADLINE_S = 5
+# The scoped kill reaps the escapee at once; the bound only matters when the scope is missing.
+_SCOPED_ESCAPEE_LIFETIME_S = 30
 
 
 def _wait_for(predicate, timeout):
@@ -48,13 +50,15 @@ def _pid_alive(pid):
     return True
 
 
-def _spawn_with_escapee(registry, tmp_path, escapee_lifetime):
+def _spawn_with_escapee(registry, tmp_path, escapee_lifetime, late_output=""):
     pidfile = tmp_path / "escapee.pid"
+    # ``late_output`` is printed by the escapee to the PTY after the test has killed the session.
+    late = f"sleep 2; echo {late_output}; " if late_output else ""
     # The escapee's pid is read as the PPID of a grandchild, not as ``$$``: on the
     # scoped path ``systemd-run --scope`` (systemd >= 254) expands the command line
     # itself and turns ``$$`` into a literal ``$`` before the shell sees it.
     session = registry.spawn_local(
-        f"setsid sh -c 'sh -c \"echo \\$PPID\" > {pidfile}; exec sleep {escapee_lifetime}' & sleep 120",
+        f"setsid sh -c 'sh -c \"echo \\$PPID\" > {pidfile}; {late}exec sleep {escapee_lifetime}' & sleep 120",
         cwd=str(tmp_path), use_pty=True)
     assert _wait_for(lambda: pidfile.exists() and pidfile.read_text().strip(), 5)
     return session, int(pidfile.read_text())
@@ -70,6 +74,17 @@ def _kill_within_deadline(registry, session):
     return result
 
 
+def _terminate_owned(session):
+    """Failure-path cleanup: stop the PTY child this test spawned (never the reparented escapee)."""
+    if session.systemd_unit:
+        module._stop_systemd_unit(session.systemd_unit)
+    if not session.exited and session._pty is not None:
+        try:
+            session._pty.terminate(force=True)
+        except Exception:
+            pass
+
+
 @_POSIX_PTY
 def test_kill_returns_while_escaped_descendant_holds_the_pty(tmp_path, monkeypatch):
     pytest.importorskip("ptyprocess")
@@ -77,18 +92,21 @@ def test_kill_returns_while_escaped_descendant_holds_the_pty(tmp_path, monkeypat
     monkeypatch.setattr(module, "_is_supervised_gateway_process", lambda: False)
     monkeypatch.setattr(module, "_is_supervised_backend_host", lambda: False, raising=False)
     registry = ProcessRegistry()
-    session, _ = _spawn_with_escapee(registry, tmp_path, _ESCAPEE_LIFETIME_S)
+    session, _ = _spawn_with_escapee(
+        registry, tmp_path, _ESCAPEE_LIFETIME_S, late_output="LATE-ESCAPEE-OUTPUT")
 
     result = _kill_within_deadline(registry, session)
     assert result["status"] == "killed"
     assert session.id in registry._finished
 
-    # Once the escapee exits, the reader's read ends and it closes the PTY itself, so the
-    # master FD is still released.
+    # The reader stays alive past the kill and closes the PTY itself once its read ends (here
+    # after it drains the escapee's late output), so the master FD is still released.
     reader = session._reader_thread
     assert reader is not None
-    assert _wait_for(lambda: not reader.is_alive(), _ESCAPEE_LIFETIME_S + 5)
+    assert _wait_for(lambda: not reader.is_alive(), _ESCAPEE_LIFETIME_S + 7)
     assert session._pty.closed
+    # What the escapee printed after the kill was drained, not added to the killed session.
+    assert "LATE-ESCAPEE-OUTPUT" not in session.output_buffer
 
 
 @pytest.mark.parametrize("marked, supervised, scoped", [
@@ -121,7 +139,7 @@ def test_scoped_backend_kill_reaps_an_escaped_descendant(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "_backend_host", True, raising=False)
     monkeypatch.setattr("gateway.restart.is_supervised_gateway_launch", lambda *a, **k: True)
     registry = ProcessRegistry()
-    session, escapee = _spawn_with_escapee(registry, tmp_path, 120)
+    session, escapee = _spawn_with_escapee(registry, tmp_path, _SCOPED_ESCAPEE_LIFETIME_S)
     try:
         assert session.systemd_unit.startswith("hermes-worker-")
         result = _kill_within_deadline(registry, session)
@@ -129,5 +147,30 @@ def test_scoped_backend_kill_reaps_an_escaped_descendant(tmp_path, monkeypatch):
         # Stopping the scope reaps the whole cgroup, the escapee included.
         assert _wait_for(lambda: not _pid_alive(escapee), 10), "escaped descendant survived the kill"
     finally:
-        if session.systemd_unit:
-            module._stop_systemd_unit(session.systemd_unit)
+        _terminate_owned(session)
+
+
+def test_start_server_marks_the_process_as_backend_host(monkeypatch):
+    # The scope gate is only as good as the startup wiring: the real dashboard / serve entry
+    # point must mark the process before it serves anything.
+    pytest.importorskip("uvicorn")
+    from hermes_cli import web_server
+
+    class _StopBoot(Exception):
+        pass
+
+    seen = []
+
+    def _auth_gate(*_args, **_kwargs):
+        seen.append(module._backend_host)
+        raise _StopBoot
+
+    monkeypatch.setattr(module, "_backend_host", False, raising=False)
+    monkeypatch.setattr("hermes_cli.resource_limits.apply_nofile_soft_limit", lambda: None)
+    monkeypatch.setattr("hermes_cli.nous_auth_keepalive.start_nous_auth_keepalive", lambda: None)
+    monkeypatch.setattr(web_server, "_configure_auth_gate", _auth_gate)
+
+    with pytest.raises(_StopBoot):
+        web_server.start_server(open_browser=False, headless=True)
+
+    assert seen == [True], "start_server reached its auth gate without marking the backend host"

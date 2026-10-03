@@ -123,6 +123,10 @@ def test_ws_client_thread_and_its_loop_callbacks_carry_the_adapter_profile_scope
             _ws_thread_loop=None, _ws_reconnect_nonce=None, _ws_reconnect_interval=None,
             _ws_ping_interval=None, _ws_ping_timeout=None, _ws_client=None, _ws_future=None,
             _prepare_client=lambda: "feishu-domain", _hydrate_bot_identity=AsyncMock(),
+            # The real connect publishes the tool-client binding at its
+            # successful end; this test exercises scope propagation, not the
+            # binding registry, so stub the publication step out.
+            _publish_tool_clients=lambda: None,
         )
         # The WS thread runs on the adapter-owned pool, never the loop default executor.
         stub._get_sdk_executor = fa.FeishuAdapter._get_sdk_executor.__get__(stub)

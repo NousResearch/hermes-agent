@@ -17,6 +17,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import textwrap
 import time
 import uuid
 from datetime import datetime, timezone
@@ -798,6 +800,289 @@ def _spawn_detached(script_path: Path | None = None, home: Path | None = None) -
         proc = _popen("0", windows_detach_flags_without_breakaway())
         _LAST_SPAWN_BREAKAWAY_FALLBACK["fallback"] = True
     return proc.pid
+
+
+# ── Transient post-update restart handoff (#127089) ──
+
+_TRANSIENT_TASK_PREFIX = "Hermes_GW_Restart_"
+_TRANSIENT_TASK_DESCRIPTION = "Hermes transient post-update gateway restart (auto-deletes)"
+
+
+def _transient_task_name() -> str:
+    """Unique triggerless task name for one post-update restart handoff."""
+    return f"{_TRANSIENT_TASK_PREFIX}{os.getpid()}_{uuid.uuid4().hex[:8]}"
+
+
+def _build_transient_task_xml(task_name: str, command: str, arguments: str, user: str | None) -> str:
+    """Triggerless on-demand task XML for the restart handoff.
+
+    No ``<Triggers>`` entry: the task fires only via ``schtasks /Run`` from
+    the updater, then the launcher deletes it (a sudden teardown must not
+    orphan a hidden triggerless task). ``Hidden=true`` keeps it out of the
+    Task Scheduler UI. Pure so it is testable off-Windows.
+    """
+    user_principal = f"\n      <UserId>{escape(user)}</UserId>" if user else ""
+    return f"""<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>{escape(_TRANSIENT_TASK_DESCRIPTION)}</Description>
+    <URI>\\{escape(task_name)}</URI>
+  </RegistrationInfo>
+  <Triggers />
+  <Principals>
+    <Principal id="Author">{user_principal}
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>true</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{escape(command)}</Command>
+      <Arguments>{escape(arguments)}</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+"""
+
+
+def _build_transient_task_launcher(
+    *,
+    task_name: str,
+    temp_dir: str,
+    old_pid: int,
+    gateway_cmd: list[str],
+    respawn_cwd: str,
+    respawn_env_overlay: dict[str, str],
+    watcher_env: dict[str, str] | None,
+    project_root: str,
+    watcher_timeout_s: float,
+) -> str:
+    """Python launcher run by the transient task: wait for ``old_pid``, respawn.
+
+    Stdlib-only at runtime (the updater's interpreter may be the bare store
+    Python without the dependency environment). The launcher deletes its own
+    scheduled task both at start and in ``finally`` so a kill during the wait
+    cannot orphan a hidden triggerless task, routes the respawned gateway's
+    stdio to ``logs/gateway-stdio.log`` with the canonical
+    ``_HERMES_GATEWAY_BREAKAWAY`` stamp, and removes ``temp_dir`` in
+    ``finally``. Pure string rendering so it is testable off-Windows; the
+    caller embeds values as JSON literals, except ``watcher_env`` which uses
+    a Python-safe nullable literal (``None`` when unset — ``json.dumps(None)``
+    would render ``null`` and raise ``NameError`` at runtime, #127089).
+    """
+    return textwrap.dedent(
+        """
+        import os
+        import shutil
+        import subprocess
+        import sys
+        import time
+        sys.path.insert(0, {project_root_literal})
+        from hermes_cli._subprocess_compat import (
+            _WINDOWS_GATEWAY_BREAKAWAY_ENV, pid_exists_stdlib, windows_detach_flags,
+            windows_detach_flags_without_breakaway,
+        )
+        # _WINDOWS_GATEWAY_BREAKAWAY_ENV is "_HERMES_GATEWAY_BREAKAWAY": canonical
+        # breakaway stamp shared with gateway_windows._spawn_detached.
+
+        _TASK_NAME = {task_name_literal}
+        _TEMP_DIR = {temp_dir_literal}
+        _OLD_PID = {old_pid_literal}
+        _GATEWAY_CMD = {gateway_cmd_literal}
+        _RESPAWN_CWD = {respawn_cwd_literal}
+        _RESPAWN_OVERLAY = {respawn_env_literal}
+        _WATCHER_ENV = {watcher_env_literal}
+        _TIMEOUT = {timeout_literal}
+
+        def _delete_task():
+            try:
+                subprocess.run(
+                    ["schtasks", "/Delete", "/F", "/TN", _TASK_NAME],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL, timeout=15, check=False,
+                )
+            except Exception:
+                pass
+
+        def _cleanup_temp():
+            try:
+                shutil.rmtree(_TEMP_DIR, ignore_errors=True)
+            except Exception:
+                pass
+
+        # Delete early: a kill during the wait below must not orphan a hidden triggerless task.
+        _delete_task()
+        try:
+            _deadline = time.monotonic() + float(_TIMEOUT)
+            while time.monotonic() < _deadline:
+                if not pid_exists_stdlib(int(_OLD_PID)):
+                    break
+                time.sleep(0.2)
+            _stdio_target = subprocess.DEVNULL
+            _stdio_fh = None
+            try:
+                from hermes_constants import get_hermes_home
+                from pathlib import Path
+                _log_dir = Path(get_hermes_home()) / "logs"
+                _log_dir.mkdir(parents=True, exist_ok=True)
+                _stdio_fh = open(_log_dir / "gateway-stdio.log", "ab", buffering=0)
+                _stdio_target = _stdio_fh
+                try:
+                    _stdio_fh.write(
+                        ("transient task %s respawning gateway after pid %s\\n" % (_TASK_NAME, _OLD_PID)).encode(
+                            "utf-8", errors="replace"
+                        )
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            _popen_kwargs = {{"stdout": _stdio_target, "stderr": _stdio_target}}
+            if _RESPAWN_CWD:
+                _popen_kwargs["cwd"] = _RESPAWN_CWD
+            if _WATCHER_ENV is not None:
+                _base_env = {{**_WATCHER_ENV, **_RESPAWN_OVERLAY}}
+            else:
+                _base_env = {{**os.environ, **_RESPAWN_OVERLAY}}
+            try:
+                if sys.platform == "win32":
+                    try:
+                        _popen_kwargs["creationflags"] = windows_detach_flags()
+                        # Scheduler-launched: already outside the parent Job Object, so stamp
+                        # breakaway "1" (escaped) like the canonical detached spawn.
+                        _popen_kwargs["env"] = {{**_base_env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "1"}}
+                        subprocess.Popen(_GATEWAY_CMD, **_popen_kwargs)
+                    except OSError:
+                        _popen_kwargs["creationflags"] = windows_detach_flags_without_breakaway()
+                        _popen_kwargs["env"] = {{**_base_env, _WINDOWS_GATEWAY_BREAKAWAY_ENV: "0"}}
+                        subprocess.Popen(_GATEWAY_CMD, **_popen_kwargs)
+                else:
+                    if _RESPAWN_OVERLAY:
+                        _popen_kwargs["env"] = _base_env
+                    _popen_kwargs["start_new_session"] = True
+                    subprocess.Popen(_GATEWAY_CMD, **_popen_kwargs)
+            finally:
+                if _stdio_fh is not None:
+                    try:
+                        _stdio_fh.close()
+                    except OSError:
+                        pass
+        finally:
+            _delete_task()
+            _cleanup_temp()
+        """
+    ).strip().format(
+        project_root_literal=json.dumps(project_root),
+        task_name_literal=json.dumps(task_name),
+        temp_dir_literal=json.dumps(temp_dir),
+        old_pid_literal=json.dumps(int(old_pid)),
+        gateway_cmd_literal=json.dumps(list(gateway_cmd)),
+        respawn_cwd_literal=json.dumps(respawn_cwd),
+        respawn_env_literal=json.dumps(dict(respawn_env_overlay or {})),
+        # Nullable: ``json.dumps(None)`` is ``null`` (NameError in Python);
+        # a named profile passes ``watcher_env=None`` (host=False), so render
+        # the Python-safe ``None`` literal instead.
+        watcher_env_literal="None" if watcher_env is None else json.dumps(watcher_env),
+        timeout_literal=json.dumps(float(watcher_timeout_s)),
+    )
+
+
+def _spawn_gateway_via_transient_task(
+    old_pid: int,
+    run_argv: list[str],
+    *,
+    respawn_cwd: str = "",
+    respawn_env_overlay: dict[str, str] | None = None,
+    watcher_env: dict[str, str] | None = None,
+    watcher_timeout_s: float | None = None,
+) -> bool:
+    """Hand the post-update respawn to Task Scheduler so it escapes the parent Job Object.
+
+    Creates a triggerless transient task that runs a self-cleaning launcher:
+    the launcher waits for ``old_pid`` to exit, respawns ``run_argv`` with the
+    canonical ``gateway-stdio.log`` + ``_HERMES_GATEWAY_BREAKAWAY`` diagnostics,
+    then deletes its own task (``schtasks /Delete /F /TN ...``) and removes its
+    temp directory. Task Scheduler launches outside any Job Object, so the
+    respawned gateway survives the updater's Job teardown (#127089).
+
+    Raises on any failure (``schtasks /Create`` or ``/Run`` denied, no
+    interactive logon token in SSH/service sessions, timeout): the caller MUST
+    fall back to the existing breakaway -> non-breakaway Popen chain rather
+    than failing the restart. Never returns False on success; returns True
+    once ``schtasks /Run`` is accepted. An accepted submission is not a proven
+    surviving handoff — survival is proven only by the later liveness poll
+    (``_wait_for_gateway_ready``); the in-job Popen fallback after a rejected
+    handoff is best-effort and may not survive kill-on-close jobs if breakaway
+    is denied.
+    """
+    _assert_windows()
+    if old_pid <= 0 or not run_argv:
+        raise ValueError("old_pid and run_argv are required")
+    import contextlib
+
+    # Late-bind facade names so facade monkeypatches stay effective.
+    from hermes_cli.gateway import GATEWAY_RESTART_WATCHER_TIMEOUT_S, PROJECT_ROOT
+
+    timeout = float(watcher_timeout_s) if watcher_timeout_s is not None else float(GATEWAY_RESTART_WATCHER_TIMEOUT_S)
+    overlay = dict(respawn_env_overlay or {})
+    task_name = _transient_task_name()
+    temp_dir = tempfile.mkdtemp(prefix="hermes-gw-restart-")
+    launcher_path = Path(temp_dir) / "restart_launcher.py"
+    xml_path = Path(temp_dir) / "transient.task.xml"
+    try:
+        launcher_src = _build_transient_task_launcher(
+            task_name=task_name,
+            temp_dir=temp_dir,
+            old_pid=int(old_pid),
+            gateway_cmd=list(run_argv),
+            respawn_cwd=respawn_cwd,
+            respawn_env_overlay=overlay,
+            watcher_env=dict(watcher_env) if watcher_env is not None else None,
+            project_root=str(PROJECT_ROOT),
+            watcher_timeout_s=timeout,
+        )
+        launcher_path.write_text(launcher_src, encoding="utf-8")
+        user = _resolve_task_user()
+        xml_path.write_text(
+            _build_transient_task_xml(task_name, sys.executable, f'"{launcher_path}"', user),
+            encoding="utf-16",
+        )
+        code, out, err = _exec_schtasks(["/Create", "/F", "/TN", task_name, "/XML", str(xml_path)])
+        try:
+            xml_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if code != 0:
+            detail = (err or out or "").strip() or f"exit {code}"
+            raise RuntimeError(f"schtasks /Create failed (code {code}): {detail}")
+        code, out, err = _exec_schtasks(["/Run", "/TN", task_name])
+        if code != 0:
+            detail = (err or out or "").strip() or f"exit {code}"
+            with contextlib.suppress(Exception):
+                _exec_schtasks(["/Delete", "/F", "/TN", task_name])
+            raise RuntimeError(f"schtasks /Run failed (code {code}): {detail}")
+        # Success: the launcher owns its temp dir (self-deletes) and its task
+        # (self-deletes); the XML staging is already removed above.
+        return True
+    except Exception:
+        with contextlib.suppress(Exception):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
 
 
 def _stdin_is_interactive(*, isatty: bool, console_mode_ok: bool | None) -> bool:

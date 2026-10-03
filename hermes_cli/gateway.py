@@ -1080,6 +1080,67 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
             respawn_cwd = ""
             respawn_env_overlay = {}
 
+    # Windows Job Object handoff (#127089): when the updater itself sits inside a
+    # Job Object, CREATE_BREAKAWAY_FROM_JOB can be denied and the plain-Popen
+    # fallback stays in the same job — the respawned gateway then dies with the
+    # parent teardown. Hand the respawn to a transient Task Scheduler task
+    # (launched outside any Job Object); on ANY failure fall back to the
+    # existing breakaway -> non-breakaway Popen chain rather than failing.
+    if sys.platform == "win32":
+        try:
+            from hermes_cli._subprocess_compat import process_is_in_job
+
+            _in_job = process_is_in_job()
+        except Exception:
+            _in_job = False
+        if _in_job:
+            try:
+                _handoff_watcher_env = (
+                    _host_gateway_watcher_env()
+                    if (_restart_argv_is_host_gateway(run_argv) if host is None else host)
+                    else None
+                )
+            except Exception:
+                _handoff_watcher_env = None
+            try:
+                from hermes_cli.gateway_windows import _spawn_gateway_via_transient_task
+
+                if _spawn_gateway_via_transient_task(
+                    old_pid,
+                    list(run_argv),
+                    respawn_cwd=respawn_cwd,
+                    respawn_env_overlay=dict(respawn_env_overlay),
+                    watcher_env=_handoff_watcher_env,
+                ):
+                    # Accepted submission, not a proven surviving handoff:
+                    # survival is proven only by the later liveness poll
+                    # (_verify_relaunched_gateways_alive / _wait_for_gateway_ready).
+                    logger.debug(
+                        "transient task handoff accepted (schtasks /Run); "
+                        "survival to be verified by liveness poll"
+                    )
+                    return True
+            except Exception as exc:
+                try:
+                    from hermes_constants import get_hermes_home
+
+                    _log_path = Path(get_hermes_home()) / "logs" / "gateway-stdio.log"
+                    _log_path.parent.mkdir(parents=True, exist_ok=True)
+                    with open(_log_path, "ab") as _fh:
+                        _fh.write(
+                            f"transient task handoff failed ({exc}); falling back to breakaway watcher "
+                            f"(best-effort fallback: may not survive kill-on-close jobs if breakaway is denied)\n".encode(
+                                "utf-8", errors="replace"
+                            )
+                        )
+                except Exception:
+                    pass
+                logger.warning(
+                    "transient task handoff failed, falling back to best-effort breakaway watcher "
+                    "(may not survive kill-on-close jobs if breakaway is denied): %s",
+                    exc,
+                )
+
     # cwd/env overlay are embedded as JSON literals in the watcher source (no extra argv plumbing).
     watcher = textwrap.dedent(
         """
@@ -1095,6 +1156,8 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
             _WINDOWS_GATEWAY_BREAKAWAY_ENV, pid_exists_stdlib, windows_detach_flags,
             windows_detach_flags_without_breakaway,
         )
+        # _WINDOWS_GATEWAY_BREAKAWAY_ENV is "_HERMES_GATEWAY_BREAKAWAY": canonical
+        # breakaway stamp shared with gateway_windows._spawn_detached.
 
         pid = int(sys.argv[1])
         cmd = sys.argv[2:]

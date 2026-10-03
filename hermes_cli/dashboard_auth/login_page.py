@@ -12,6 +12,7 @@ href to walk the OAuth flow.
 from __future__ import annotations
 
 import html
+import json
 from urllib.parse import quote, urlencode
 
 from hermes_cli.dashboard_auth import list_session_providers
@@ -439,12 +440,14 @@ _PASSWORD_FORM_SCRIPT = """\
 """
 
 
-def render_login_html(*, next_path: str = "") -> str:
+def render_login_html(*, next_path: str = "", base_path: str = "") -> str:
     """Return the full HTML for ``GET /login``.
 
     ``next_path`` is threaded into each provider button/form so the OAuth round
-    trip carries it end-to-end. The caller validates it same-origin; it is
-    HTML-escaped here as defence in depth.
+    trip carries it end-to-end. ``base_path`` is the normalised forwarded
+    prefix, so server-rendered controls stay inside a reverse-proxy mount. The
+    caller validates both; values are HTML/JavaScript-escaped here as defence
+    in depth.
     """
     providers = list_session_providers()
     if not providers:
@@ -455,15 +458,25 @@ def render_login_html(*, next_path: str = "") -> str:
     buttons = [
         _render_password_form(p, next_path) if getattr(p, "supports_password", False) else
         f'      <a class="provider-btn" '
-        f'href="/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
+        f'href="{base_path}/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
         f'Sign in with {html.escape(p.display_name)}</a>'
         for p in providers
     ]
     needs_password_script = any(getattr(p, "supports_password", False) for p in providers)
-    return _LOGIN_HTML_TEMPLATE.format(
+    password_script = _PASSWORD_FORM_SCRIPT
+    if needs_password_script:
+        password_script = password_script.replace(
+            "'/auth/password-login'", json.dumps(f"{base_path}/auth/password-login"),
+        ).replace(
+            "|| '/'", f"|| {json.dumps(f'{base_path}/')}",
+        )
+    rendered = _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
-        password_script=_PASSWORD_FORM_SCRIPT if needs_password_script else "",
+        password_script=password_script if needs_password_script else "",
     )
+    if base_path:
+        rendered = rendered.replace("url('/fonts/", f"url('{base_path}/fonts/")
+    return rendered
 
 
 def render_native_provider_choice_html(

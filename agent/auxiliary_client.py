@@ -1129,26 +1129,60 @@ def _scoped_key_env(name: str) -> str:
 
 
 # Codex Responses → chat.completions adapter, so aux consumers need no changes.
-def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any]:
-    """Split a completed Responses object into (text_parts, tool_calls, usage) in chat.completions shape."""
-    text_parts: List[str] = []
-    tool_calls_raw: List[Any] = []
-    for item in (getattr(final, "output", None) or []):
-        item_type = _field(item, "type")
-        if item_type == "message":
-            for part in (_field(item, "content") or []):
-                part_type = _field(part, "type")
-                if part_type in {"output_text", "text"}:
-                    text_parts.append(_field(part, "text", ""))
-                elif part_type == "refusal":
-                    # A refusal part carries the model's explanation; dropping it turns a
-                    # refusal-only turn into an empty response that gets retried.
-                    text_parts.append(_field(part, "refusal", ""))
-        elif item_type == "function_call":
-            tool_calls_raw.append(SimpleNamespace(
-                id=_field(item, "call_id", ""), type="function",
-                function=SimpleNamespace(
-                    name=_field(item, "name", ""), arguments=_field(item, "arguments", "{}"))))
+def _parse_codex_final_response(
+    final: Any, *, issuer_kind: Optional[str] = None, issuer_model: Optional[str] = None,
+) -> Tuple[List[str], List[Any], Any, str]:
+    """Normalize Responses output without losing phase or completion state for aux callers."""
+    from agent.codex_responses_adapter import (
+        _INCOMPLETE_STATUSES, _SERVER_SIDE_TOOL_CALL_TYPES, _extract_responses_message_text, _leaked_tool_call_text,
+        _lower_or_none, _normalize_codex_response,
+    )
+
+    # The shared normalizer reads SDK-style items. Keep support for compatible hosts
+    # returning dict items, and the aux adapter's legacy empty completed response.
+    output = [
+        SimpleNamespace(**item) if isinstance(item, dict) else item
+        for item in (getattr(final, "output", None) or [])
+    ]
+    normalized_final = SimpleNamespace(
+        output=output or [SimpleNamespace(type="message", content=[])],
+        output_text=getattr(final, "output_text", None),
+        status=getattr(final, "status", None),
+        incomplete_details=getattr(final, "incomplete_details", None),
+        error=getattr(final, "error", None),
+    )
+    message, finish_reason = _normalize_codex_response(
+        normalized_final, issuer_kind=issuer_kind, issuer_model=issuer_model,
+    )
+    status = _lower_or_none(normalized_final.status)
+    reason = str(_field(normalized_final.incomplete_details, "reason", "") or "").strip().lower()
+    # The main loop's leaked-tool-call recovery clears the text so its continuation can re-elicit a
+    # real call; aux has no continuation, so a completed answer quoting such text keeps it.
+    # Only a fully completed response qualifies: any unfinished (non-server-side) item is still a partial.
+    if finish_reason == "incomplete" and status == "completed" and not message.tool_calls \
+            and message.codex_message_items is None and not any(
+                _field(item, "type") not in _SERVER_SIDE_TOOL_CALL_TYPES
+                and _lower_or_none(_field(item, "status")) in _INCOMPLETE_STATUSES
+                for item in output):
+        # Same gate as the normalizer: commentary/analysis is never the answer, nor is output_text alongside it.
+        narration = {"commentary", "analysis"}
+        phases = {_lower_or_none(_field(item, "phase")) for item in output if _field(item, "type") == "message"}
+        answer = "\n".join(filter(None, (
+            _extract_responses_message_text(item) for item in output
+            if _field(item, "type") == "message" and _lower_or_none(_field(item, "phase")) not in narration
+        ))).strip() or ("" if phases & narration else (normalized_final.output_text or "").strip())
+        if answer and _leaked_tool_call_text(answer):
+            message.content, finish_reason = answer, "stop"
+    # Aux consumers speak Chat Completions: "length" activates their existing
+    # partial-summary rejection/fallback, whereas Codex's "incomplete" does not.
+    # A final_answer phase cannot override the provider's incomplete status, but completed
+    # tool calls stay "tool_calls" so dispatchers (e.g. MCP sampling) still run them.
+    if finish_reason != "tool_calls" and (
+        finish_reason == "incomplete" or (status == "incomplete" and reason != "content_filter")
+    ):
+        finish_reason = "length"
+    text_parts = [message.content] if message.content else []
+    tool_calls_raw = message.tool_calls
     usage = None
     resp_usage = getattr(final, "usage", None)
     if resp_usage:
@@ -1157,7 +1191,7 @@ def _parse_codex_final_response(final: Any) -> Tuple[List[str], List[Any], Any]:
         usage = SimpleNamespace(
             prompt_tokens=_u("input_tokens"), completion_tokens=_u("output_tokens"),
             total_tokens=_u("total_tokens"))
-    return text_parts, tool_calls_raw, usage
+    return text_parts, tool_calls_raw, usage, finish_reason
 
 
 def _attempt_stream_socket(stream: Any) -> Any:
@@ -1502,9 +1536,10 @@ class _CodexCompletionsAdapter:
         # instead of agent/transports/codex.py's build_kwargs, so they need the same guard applied
         # independently. See #32716.
         # Aux requests run their own model; stamp/filter reasoning provenance against it, not the main agent's.
+        issuer_kind = _classify_responses_issuer(base_url=host, **route._asdict())
         input_items = _chat_messages_to_responses_input(
             replay_messages, is_github_responses=is_copilot,
-            current_issuer_kind=_classify_responses_issuer(base_url=host, **route._asdict()),
+            current_issuer_kind=issuer_kind,
             current_issuer_model=wire_model, native_compaction_eligible=False,
         )
         resp_kwargs: Dict[str, Any] = {
@@ -1548,6 +1583,8 @@ class _CodexCompletionsAdapter:
             resp_kwargs["tools"] = wire_tools
         if wire_aliases:
             resp_kwargs["_wire_aliases"] = wire_aliases
+        # Response normalization is route-sensitive too (popped in ``create()``, never sent).
+        resp_kwargs["_issuer_kind"] = issuer_kind
         # Stable prompt-cache routing: key is content-addressed from the static prefix
         # (instructions + tool schemas) so it survives across turns, scoped by the owning
         # conversation (rotation-stable logical scope, else the physical session id). Skip the
@@ -1591,6 +1628,8 @@ class _CodexCompletionsAdapter:
         # ``response.completed.response.output``, which Codex returns as ``null`` (SDK crash).
         resp_kwargs, model, timeout = self._build_responses_kwargs(kwargs)
         wire_aliases = resp_kwargs.pop("_wire_aliases", None) or {}
+        issuer_kind = resp_kwargs.pop("_issuer_kind", None)
+        issuer_model = str(resp_kwargs.get("model") or model)
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
         guard = _CodexStreamGuard(self._client, total_timeout, no_progress_timeout=kwargs.get("no_progress_timeout"))
         try:
@@ -1612,13 +1651,15 @@ class _CodexCompletionsAdapter:
                     final = event_stream
                 else:
                     final = _consume_codex_event_stream(
-                        event_stream, model=str(resp_kwargs.get("model") or model), on_event=guard.on_event
+                        event_stream, model=issuer_model, on_event=guard.on_event
                     )
             finally:
                 guard.release_stream(event_stream)
             if final is None:
                 raise RuntimeError("Codex auxiliary Responses stream did not return a final response")
-            text_parts, tool_calls_raw, usage = _parse_codex_final_response(final)
+            text_parts, tool_calls_raw, usage, finish_reason = _parse_codex_final_response(
+                final, issuer_kind=issuer_kind, issuer_model=issuer_model,
+            )
             # Undo only the aliases THIS request emitted, before the call reaches Hermes dispatch.
             for tc in tool_calls_raw or ():
                 if tc.function.name in wire_aliases:
@@ -1635,9 +1676,7 @@ class _CodexCompletionsAdapter:
             role="assistant", content="".join(text_parts).strip() or None,
             tool_calls=tool_calls_raw or None,
         )
-        choice = SimpleNamespace(
-            index=0, message=message, finish_reason="stop" if not tool_calls_raw else "tool_calls"
-        )
+        choice = SimpleNamespace(index=0, message=message, finish_reason=finish_reason)
         return SimpleNamespace(choices=[choice], model=model, usage=usage)
 
 

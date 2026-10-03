@@ -451,6 +451,17 @@ _SPECS = [
              "class is reported and left untouched (fail-closed). Exits 0 when the DB is healthy "
              "or was repaired, non-zero when it is still corrupt."
          )),
+    _cmd("delegation-status", [
+        _arg("delegation_id", metavar="<delegation-id>", help="The delegation_id to look up"),
+        _arg("--json", action="store_true", help="Emit the full row as JSON (default: human-readable summary)"),
+    ], help="Read a background delegation's durable state from state.db",
+       description=(
+           "Reads the async_delegations table in state.db directly, "
+           "bypassing any in-memory or LLM self-report. Use this to "
+           "mechanically verify what actually happened to a background "
+           "delegation, independently of what the child subagent claims.\n\n"
+           "Exit codes: 0=found, 1=not found, 2=error."
+       )),
 ]
 
 

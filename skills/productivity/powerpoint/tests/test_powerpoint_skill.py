@@ -128,6 +128,16 @@ def test_create_43_size(workdir):
     assert outline["slide_size_inches"] == [10.0, 7.5]
 
 
+def test_create_blank_slide_keeps_explicit_title(workdir):
+    spec_path = workdir / "blank_title.json"
+    write_json(spec_path, {"slides": [
+        {"layout": "blank", "title": "Visible title"}]})
+    out = workdir / "blank_title.pptx"
+    run("pptx_create.py", str(spec_path), str(out))
+    outline = run("pptx_read.py", str(out))
+    assert "Visible title" in outline["slides"][0]["texts"]
+
+
 def test_notes_mode(deck):
     result = run("pptx_read.py", deck, "--notes")
     assert result["notes"][1] == "Keep this under two minutes."
@@ -183,6 +193,18 @@ def test_template_add_slides(workdir):
     outline = run("pptx_read.py", str(out))
     assert outline["slide_count"] == 3
     assert "Appended" in outline["slides"][2]["texts"]
+
+
+def test_template_add_blank_slide_keeps_explicit_title(workdir):
+    template = workdir / "template.pptx"
+    add_spec = workdir / "add_blank.json"
+    write_json(add_spec, {"slides": [
+        {"layout": 6, "title": "Blank layout title"}]})
+    out = workdir / "appended_blank.pptx"
+    run("pptx_from_template.py", str(template), str(out),
+        "--add-slides", str(add_spec))
+    outline = run("pptx_read.py", str(out))
+    assert "Blank layout title" in outline["slides"][-1]["texts"]
 
 
 def test_edit_replace_text(deck, workdir):

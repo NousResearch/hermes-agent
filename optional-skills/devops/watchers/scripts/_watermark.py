@@ -6,7 +6,9 @@ runs, so the next run only emits items we haven't seen before.
 Contract:
 - First run: record all IDs from the fetched batch, emit nothing.
 - Subsequent runs: emit items whose ID isn't in the stored set.
-- Bounded: keep at most `max_seen` IDs (default 500).
+- Bounded: keep at most `max_seen` IDs (default 500), evicting the
+  oldest stored IDs first (FIFO by insertion order — seeing an ID again
+  does not move it back to the newest end).
 - Atomic: write to a .tmp file and rename, so a crashed script can't
   leave a half-written state file that permanently breaks dedup.
 
@@ -80,7 +82,13 @@ class Watermark:
         batch (so save() persists the full new watermark).  On first run,
         records every id but returns an empty list (baseline, no replay).
         """
-        existing = set(str(x) for x in self._data.get("seen_ids", []))
+        # `stored` keeps insertion order so the truncation below drops the
+        # oldest IDs. Rebuilding it from a set would order it by string hash,
+        # which PYTHONHASHSEED randomizes per process, so each run would evict
+        # an arbitrary slice and re-emit whichever of those are still on the
+        # feed. `existing` stays a set for O(1) membership.
+        stored = list(dict.fromkeys(str(x) for x in self._data.get("seen_ids", [])))
+        existing = set(stored)
         was_first_run = self.is_first_run
 
         new_items: List[Dict[str, Any]] = []
@@ -97,7 +105,7 @@ class Watermark:
                 continue  # record but don't emit
             new_items.append(item)
 
-        combined = list(existing) + [i for i in batch_ids if i not in existing]
+        combined = stored + [i for i in batch_ids if i not in existing]
         if len(combined) > self.max_seen:
             combined = combined[-self.max_seen:]
         self._data["seen_ids"] = combined

@@ -239,12 +239,14 @@ test('the hand-off counts as started only when a real script process takes the m
   const home = tmpHome('handoff-taken')
   await claimBridgeMarker(home, { startedAt: 5 })
   const file = markerPath(home)
+
   // A real "script": waits, then claims the marker in its own name.
   const script = spawn(
     process.execPath,
     ['-e', `setTimeout(() => { require('fs').writeFileSync(${JSON.stringify(file)}, process.pid + '\\n5\\n'); setInterval(() => {}, 1000) }, 300)`],
     { stdio: 'ignore' }
   )
+
   children.push(script)
 
   const taken = await waitForHandoffClaim(home, process.pid, { timeoutMs: 10_000, pollMs: 50 })

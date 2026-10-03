@@ -1,7 +1,10 @@
-import { defineLocale } from './define-locale'
+import { mergeTranslations } from '@hermes/shared/i18n'
 
-/** Persian desktop copy. Untranslated specialist panels inherit English. */
-export const fa = defineLocale({
+import { defineLocale, type TranslationOverrides } from './define-locale'
+import { faGeneratedOverrides } from './fa-generated'
+
+/** Human-reviewed Persian overrides for strings in the generated full catalog. */
+const faManualOverrides: TranslationOverrides = {
   externalOpenFailed: {
     title: 'باز کردن این پیوند ممکن نشد',
     message: 'مرورگری برای باز کردن این نشانی ثبت نشده است. پیوند را کپی کنید و دستی بازش کنید.',
@@ -1924,4 +1927,6 @@ export const fa = defineLocale({
       toggle: open => `${open ? 'نمایش' : 'پنهان‌کردن'} نوار کناری`
     }
   }
-})
+}
+
+export const fa = defineLocale(mergeTranslations(faGeneratedOverrides, faManualOverrides))

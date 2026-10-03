@@ -165,6 +165,11 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
     for field in ("name", "description"):
         if field not in parsed:
             return f"Frontmatter must include '{field}' field."
+    # Presence alone is not enough: a blank / scalar-null name (`name:` with no
+    # value) satisfies the `in` check but produces a nameless skill downstream.
+    name_val = parsed["name"]
+    if name_val is None or not str(name_val).strip():
+        return "Frontmatter 'name' field must not be empty."
     desc = str(parsed["description"])
     if len(desc) > MAX_DESCRIPTION_LENGTH:
         return f"Description exceeds {MAX_DESCRIPTION_LENGTH} characters."

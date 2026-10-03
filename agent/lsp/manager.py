@@ -588,6 +588,15 @@ class LSPService:
                 eventlog.log_active(srv.server_id, root)
             spawning.set_result(client)
             return client
+        except BaseException as exc:
+            # ponytail: single shared guard; waiters park on spawn_future
+            # so it must never be left unsettled, and the pair must
+            # negative-cache instead of re-paying the spawn cost.
+            if not spawn_future.done():
+                spawn_future.set_exception(exc)
+            self._broken.add(key)
+            eventlog.log_spawn_failed(srv.server_id, per_server_root, exc)
+            raise
         finally:
             with self._state_lock:
                 self._spawning.pop(key, None)

@@ -2718,3 +2718,37 @@ class TestAsyncHookOnCallerLoop:
             results = asyncio.run(mgr.ainvoke_hook("pre_gateway_dispatch", event="e", gateway="g"))
         assert results == [{"seen": "e"}, {"seen_async": "e"}]
         assert "async plugin blew up" in caplog.text
+
+
+def test_plugin_toolset_keeps_builtin_metadata_when_plugin_extends_it(monkeypatch):
+    import hermes_cli.plugins as plugins
+
+    class Entry:
+        def __init__(self, name, toolset):
+            self.name = name
+            self.toolset = toolset
+
+    class Registry:
+        def get_entry(self, name):
+            return Entry(name, "desktop_ui")
+
+    class Manifest:
+        description = "Plugin-owned description that must not leak"
+
+    class Loaded:
+        manifest = Manifest()
+        tools_registered = ["plugin_tool"]
+
+    class Manager:
+        _plugin_tool_names = {"plugin_tool"}
+        _plugins = {"example": Loaded()}
+
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: Manager())
+    monkeypatch.setattr("tools.registry.registry", Registry())
+
+    rows = plugins.get_plugin_toolsets()
+    assert rows == [(
+        "desktop_ui",
+        "Desktop Ui",
+        "Desktop GUI affordances — in-app terminal/browser panes, pane focus, reactions (GUI sessions only)",
+    )]

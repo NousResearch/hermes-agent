@@ -1093,3 +1093,18 @@ class TestLightpandaPostSetup:
         # Not in the forced-setup gate: a missing binary must not nag every
         # user who toggles the browser toolset.
         assert "lightpanda" not in _POST_SETUP_INSTALLED
+
+
+def test_effective_configurable_toolsets_excludes_client_surface_plugin_rows(monkeypatch):
+    import hermes_cli.plugins as plugins
+    from hermes_cli.tools_config import _get_effective_configurable_toolsets
+
+    monkeypatch.setattr(plugins, "discover_plugins", lambda: None)
+    monkeypatch.setattr(
+        plugins, "get_plugin_toolsets",
+        lambda: [("desktop_ui", "plugin label", "plugin description"), ("custom", "Custom", "custom")],
+    )
+
+    rows = _get_effective_configurable_toolsets()
+    assert "desktop_ui" not in {key for key, _, _ in rows}
+    assert "custom" in {key for key, _, _ in rows}

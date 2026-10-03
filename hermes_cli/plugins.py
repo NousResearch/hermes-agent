@@ -2323,9 +2323,19 @@ def get_plugin_toolsets() -> List[tuple]:
             entry = registry.get_entry(tool_name)
             if entry and entry.toolset in toolset_tools:
                 toolset_plugin.setdefault(entry.toolset, loaded)
+    from toolsets import TOOLSETS
+
     result = []
     for ts_key in sorted(toolset_tools):
         plugin = toolset_plugin.get(ts_key)
-        desc = (plugin.manifest.description if plugin else "") or ", ".join(sorted(toolset_tools[ts_key]))
-        result.append((ts_key, f"🔌 {ts_key.replace('_', ' ').title()}", desc))
+        core_definition = TOOLSETS.get(ts_key)
+        if core_definition:
+            # A plugin may extend a built-in toolset, but it does not own the
+            # built-in surface or its description.
+            label = ts_key.replace("_", " ").title()
+            desc = core_definition["description"]
+        else:
+            desc = (plugin.manifest.description if plugin else "") or ", ".join(sorted(toolset_tools[ts_key]))
+            label = f"🔌 {ts_key.replace('_', ' ').title()}"
+        result.append((ts_key, label, desc))
     return result

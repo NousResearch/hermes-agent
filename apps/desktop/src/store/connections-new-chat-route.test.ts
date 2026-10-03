@@ -159,6 +159,42 @@ it('does not overwrite a newer draft when remembering a committed switch settles
   expect(resolveNewChatOwnerRoute()).toEqual(route)
 })
 
+it('keeps a newer agent draft started while an ordinary switch is still bookkeeping', async () => {
+  const withOther: DesktopConnectionsRegistry = {
+    ...registry,
+    connections: [
+      ...registry.connections,
+      { id: 'other', kind: 'remote', label: 'Other', tokenSet: true, tokenPreview: null }
+    ]
+  }
+
+  setConnectionsRegistry(withOther)
+  const remembered = deferred<{ ok: boolean; registry: DesktopConnectionsRegistry }>()
+  Object.assign(window.hermesDesktop!, {
+    connections: {
+      setLastUsed: vi.fn().mockReturnValueOnce(remembered.promise).mockResolvedValue({ ok: true, registry: withOther })
+    }
+  })
+  const first = selectConnection('local')
+  await vi.waitFor(() => expect(window.hermesDesktop!.connections!.setLastUsed).toHaveBeenCalled())
+  // The newer draft's source is still dialing, so local stays in the foreground.
+  const dial = deferred<HermesConnection>()
+  getConnectionFor.mockImplementation(async ({ connectionId, profile }) =>
+    connectionId === 'other' ? dial.promise : descriptor(connectionId, profile)
+  )
+  newSessionInAgent({ connectionId: 'other', profile: 'default' })
+  remembered.resolve({ ok: true, registry: withOther })
+  await first
+  const foreground = activeGatewayConnectionId()
+  const owner = resolveNewChatOwnerRoute()
+  // Settle the held dial before asserting so a failure can't wedge the mutex.
+  dial.resolve(descriptor('other'))
+  await ensureGatewayAgent('other', 'default')
+  expect(foreground).toBe('local')
+  expect(owner).toEqual({ connectionId: 'other', profile: 'default' })
+  expect(resolveNewChatOwnerRoute()).toEqual({ connectionId: 'other', profile: 'default' })
+})
+
 it('does not let a superseded dial clear a newer explicit draft', async () => {
   const dial = deferred<HermesConnection>()
   getConnectionFor.mockImplementationOnce(() => dial.promise)

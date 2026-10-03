@@ -15,7 +15,8 @@ from plugins.teams_pipeline.meetings import (
 from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
 from plugins.teams_pipeline.store import TeamsPipelineStore, resolve_teams_pipeline_store_path
 from plugins.teams_pipeline.subscriptions import (
-    build_graph_client, maintain_graph_subscriptions, sync_graph_subscription_record, utc_timestamp)
+    build_graph_client, expected_client_state, is_managed_subscription,
+    maintain_graph_subscriptions, sync_graph_subscription_record, utc_timestamp)
 from tools.microsoft_graph_auth import MicrosoftGraphConfigError, MicrosoftGraphTokenProvider
 
 
@@ -203,8 +204,12 @@ def _cmd_fetch(args) -> None:
 def _cmd_subscriptions(args) -> None:
     store = _open_store(args)
     subscriptions = asyncio.run(build_graph_client().collect_paginated("/subscriptions"))
+    managed_client_state = expected_client_state()
     for sub in subscriptions:
         try:
+            # Inventory visibility alone must not grant maintenance ownership.
+            if not is_managed_subscription(store, sub, expected_client_state_value=managed_client_state):
+                continue
             sync_graph_subscription_record(store, sub, status="active")
         except Exception:
             continue

@@ -246,6 +246,9 @@ class _ResponsesStream:
         self._batch_buf: List[str] = []
         self._batch_timer: Optional[asyncio.Task] = None
         self._batch_lock = asyncio.Lock()
+        # One delivery rewriter for the whole turn (it holds the tail of a tag that is still
+        # arriving); None when file delivery is off, so the stream is untouched.
+        self._media_rewriter = adapter._file_delivery_stream_rewriter()
 
     async def write_event(self, event_type: str, data: Dict[str, Any]) -> None:
         if "sequence_number" not in data:
@@ -285,6 +288,12 @@ class _ResponsesStream:
         cancel paths), so GET /v1/responses/{id} and ``previous_response_id`` chaining survive."""
         if not self.store or self.terminal_snapshot_persisted:
             return
+        if self._media_rewriter is not None:
+            # The dying stream's held tail is real text (typically the tag itself); resolve it into
+            # the snapshot rather than persisting a response that silently lost its last line.
+            held = self._media_rewriter.flush()
+            if held:
+                self.final_text_parts.append(held)
         text = "".join(self.final_text_parts) or self.final_response_text
         items = list(self.emitted_items)
         history = self._history_with_user()
@@ -312,12 +321,22 @@ class _ResponsesStream:
                      "role": "assistant", "content": []}})
 
     async def emit_text_delta(self, delta_text: str) -> None:
+        """Rewrite MEDIA: tags before they are emitted, so the visible stream and the terminal text
+        agree — a client that renders deltas would otherwise show the raw server path, and resolving
+        only in the terminal payload would leave the link invisible to it."""
+        rewritten = (self._media_rewriter.feed(delta_text)
+                     if self._media_rewriter is not None else delta_text)
+        if delta_text and not rewritten:
+            return  # held back: it may still be a tag whose path has not finished arriving
+        await self._write_text_delta(rewritten)
+
+    async def _write_text_delta(self, text: str) -> None:
         await self.close_reasoning_item()
         await self._open_message_item()
-        self.final_text_parts.append(delta_text)
+        self.final_text_parts.append(text)
         await self.write_event("response.output_text.delta", {
             "type": "response.output_text.delta", "item_id": self.message_item_id,
-            "output_index": self.message_output_index, "content_index": 0, "delta": delta_text,
+            "output_index": self.message_output_index, "content_index": 0, "delta": text,
             "logprobs": []})
 
     async def emit_reasoning_delta(self, delta_text: str) -> None:
@@ -494,6 +513,10 @@ class _ResponsesStream:
 
     async def close_message_item(self) -> None:
         await self.close_reasoning_item()
+        if self._media_rewriter is not None:
+            tail = self._media_rewriter.flush()
+            if tail:
+                await self._write_text_delta(tail)
         self.final_response_text = (
             self.transformed_final or "".join(self.final_text_parts) or self.final_response_text)
         if not self.message_opened:
@@ -639,7 +662,7 @@ class OpenAICompatRoutesMixin:
             ThreadSafeAsyncQueue, _api_request_profile, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_chat_content, _normalize_multimodal_content,
-            _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
+            _openai_error, _redact_api_error_text)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -798,7 +821,7 @@ class OpenAICompatRoutesMixin:
             return err
         result, usage = outcome
         presentation_muted = result.get("_notification_presentation_suppressed") is True
-        final_response = _resolve_media_to_data_urls(result.get("final_response") or "")
+        final_response = self._resolve_media_tags(result.get("final_response") or "")
         completed, is_partial, is_failed, err_msg = _result_flags(result)
         if err_msg:
             err_msg = _redact_api_error_text(err_msg)
@@ -892,6 +915,10 @@ class OpenAICompatRoutesMixin:
         from gateway.platforms.api_server import (
             _abandon_agent_task, _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame)
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
+        # File delivery must ride the deltas: a streaming frontend renders ``delta.content`` and the
+        # terminal text is never re-sent, so a link resolved only in the final payload would never
+        # reach the user. None when the transport is off (deltas then pass through untouched).
+        media_rewriter = self._file_delivery_stream_rewriter()
 
         def _chunk(delta: Dict[str, Any], finish_reason=None, **extra) -> Dict[str, Any]:
             return {"id": completion_id, "object": "chat.completion.chunk", "created": created,
@@ -917,9 +944,17 @@ class OpenAICompatRoutesMixin:
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__approval__":
                     await response.write(_sse_frame(delta[1], event="approval.request"))
                 else:
-                    if delta:
+                    text = (media_rewriter.feed(delta)
+                            if media_rewriter is not None and isinstance(delta, str) else delta)
+                    if text:
                         content_sent = True
-                    await response.write(_sse_frame(_chunk({"content": delta})))
+                        await response.write(_sse_frame(_chunk({"content": text})))
+            # Whatever the rewriter still holds is a tag that only end-of-stream terminated.
+            if media_rewriter is not None:
+                tail = media_rewriter.flush()
+                if tail:
+                    content_sent = True
+                    await response.write(_sse_frame(_chunk({"content": tail})))
             # The agent can fail after the queue drains (task raises / result flagged failed or
             # partial): surface a non-"stop" finish_reason like the non-streaming path.
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -1037,7 +1072,7 @@ class OpenAICompatRoutesMixin:
             ThreadSafeAsyncQueue, _auto_truncate_response_history, _coerce_request_bool,
             _content_has_visible_payload, _error_response, _invalid_request,
             _multimodal_validation_error, _normalize_multimodal_content, _redact_api_error_text,
-            _resolve_media_to_data_urls, _responses_usage_payload)
+            _responses_usage_payload)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -1179,7 +1214,7 @@ class OpenAICompatRoutesMixin:
         if err is not None:
             return err
         result, usage = outcome
-        final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
+        final_response = self._resolve_media_tags(result.get("final_response", ""))
         if not final_response:
             final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
         response_id = f"resp_{uuid.uuid4().hex[:28]}"

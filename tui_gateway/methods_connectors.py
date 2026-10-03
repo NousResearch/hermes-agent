@@ -224,18 +224,26 @@ def _connector_rpc(rid, params, action):
                 return _ok(rid, {"available": False, "connectors": []}) if action == "status" else closed
             return _account_connector_list(rid) if action == "status" else _account_connector_connect(rid, request)
 
-    runtime_token = _current_runtime_session_record.set(session)
-    try:
-        profile_home = session.get("profile_home")
-        with _session_profile_runtime_scope({"profile_home": profile_home or str(_hermes_home)}):
-            tokens = _set_session_context(session["session_key"], cwd=_session_cwd(session), ui_session_id=request.owner.session_id)
-            try:
-                result = _session_connector_rpc(rid, request, session, action)
-            finally:
-                _clear_session_context(tokens)
+    profile_home = session.get("profile_home")
+    with _session_rpc_scope(session, request.owner.session_id):
+        result = _session_connector_rpc(rid, request, session, action)
         if not _connector_owner_matches(request.owner.session_id, session, profile_home):
             return _connector_rpc_error(rid, 4001, ConnectorErrorReason.not_owner, "session ownership changed")
         return result
+
+
+@contextlib.contextmanager
+def _session_rpc_scope(session, ui_session_id):
+    """Run a session-owned RPC as the session's own turn would: its runtime record (so an approval
+    reaches the session that owns it), its profile scope and its session context."""
+    runtime_token = _current_runtime_session_record.set(session)
+    try:
+        with _session_profile_runtime_scope({"profile_home": session.get("profile_home") or str(_hermes_home)}):
+            tokens = _set_session_context(session["session_key"], cwd=_session_cwd(session), ui_session_id=ui_session_id)
+            try:
+                yield
+            finally:
+                _clear_session_context(tokens)
     finally:
         _current_runtime_session_record.reset(runtime_token)
 

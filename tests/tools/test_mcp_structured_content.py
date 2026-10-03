@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.agent.test_tool_call_incremental_persistence import _attach_real_session_db, _make_agent, _mock_tool_call
 from tools import mcp_tool
 from tools import mcp_tool_content as _mcp_content
 from tools import mcp_tool_handlers as _mcp_handlers
@@ -347,3 +348,45 @@ class TestDroppedBlockNotice:
         data = json.loads(handler({}))
         assert data["structuredContent"] == payload
         assert "[MCP content dropped" in data["result"]
+
+class TestMcpAppViewRecord:
+    """MCP Apps: a model call of a tool whose live definition declares ``_meta.ui.resourceUri``
+    leaves its view record on the durable tool row — the server and tool it ran on, the arguments
+    sent and the raw ``CallToolResult`` with ``isError`` kept — while a tool without a UI leaves none."""
+
+    def test_handler_and_commit_leave_the_view_record_on_the_row(self, _patch_mcp_server, tmp_path):
+        from mcp.types import CallToolResult, TextContent, Tool
+
+        from tools.mcp_tool_schema import mcp_prefixed_tool_name
+        from tools.registry import registry
+
+        mcp_tool._servers["test-server"]._tools = [
+            Tool(name="view", inputSchema={"type": "object"},
+                 _meta={"ui": {"resourceUri": "ui://test-server/view.html"}}),
+            Tool(name="plain", inputSchema={"type": "object"})]
+        _patch_mcp_server.call_tool = AsyncMock(
+            return_value=CallToolResult(content=[TextContent(type="text", text="no such city")], isError=True))
+        names = {tool: mcp_prefixed_tool_name("test-server", tool) for tool in ("view", "plain")}
+        agent = _make_agent()
+        agent.valid_tool_names = set(names.values())
+        db = _attach_real_session_db(agent, tmp_path / "state.db", "sid")
+        calls = [_mock_tool_call(names["view"], '{"city": "Atlantis"}', "call-view"),
+                 _mock_tool_call(names["plain"], "{}", "call-plain")]
+        messages = [{"role": "user", "content": "weather?"}, {"role": "assistant", "content": "", "tool_calls": [
+            {"id": c.id, "type": "function", "function": {"name": c.function.name, "arguments": c.function.arguments}}
+            for c in calls]}]
+        agent._flush_messages_to_session_db(messages)
+        for tool, name in names.items():
+            registry.register(name=name, toolset="mcp-test-server", handler=_mcp_handlers._make_tool_handler(
+                "test-server", tool, 30.0), schema={"name": name, "description": "", "parameters": {"type": "object"}})
+        try:
+            agent._execute_tool_calls_sequential(SimpleNamespace(content="", tool_calls=calls), messages, "task-1")
+        finally:
+            for name in names.values():
+                registry.deregister(name)
+
+        assert db.get_tool_call("sid", "call-view")["mcp_app"] == {
+            "server": "test-server", "tool": "view", "arguments": {"city": "Atlantis"},
+            "result": {"content": [{"type": "text", "text": "no such city"}], "isError": True}}
+        plain = db.get_tool_call("sid", "call-plain")
+        assert plain is not None and "mcp_app" not in plain

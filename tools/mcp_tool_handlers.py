@@ -16,6 +16,7 @@ from hermes_platform import declaration
 from tools.registry import invalidate_check_fn_cache, tool_error
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
+from tools import mcp_app_host as _app_host
 from tools import mcp_tool_loop as _loop
 from tools.mcp_tool_content import (
     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block,
@@ -552,42 +553,75 @@ def _render_call_tool_result(result, server_name: str) -> str:
         return json.dumps({"result": text_result}, ensure_ascii=False)
 
 
+def call_mcp_tool(server_name: str, tool_name: str, args: dict, tool_timeout: float,
+                  render: Callable[[Any, str], Any], *, record_outcome: bool = False) -> Any:
+    """``tools/call`` on the MCP loop, for the model's registry handler and for an MCP App view
+    (``tui_gateway/methods_mcp_apps.py``): ``render(result, server_name)`` maps the raw
+    ``CallToolResult``; failures are ``tool_error`` strings. ``record_outcome`` (the model's
+    rendered result) feeds the breaker. A model call of a view tool also fills its view record
+    (``tools/mcp_app_host.py``)."""
+    op = f"tools/call {tool_name}"
+    # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
+    error = _trust_gate_check(server_name, tool_name) or _check_circuit_breaker(server_name)
+    if error is not None:
+        return error
+    server, error = _acquire_call_server(server_name, tool_timeout)
+    if server is None:
+        return error
+    # Only a tool annotated readOnlyHint=True is replayed after session expiry; a 401 is always
+    # pre-dispatch so the auth recoverer keeps its retry for every tool.
+    read_only = _tool_is_read_only(server_name, tool_name)
+    view = _app_host.open_record(server_name, server, tool_name, args)
+
+    async def _call():
+        async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
+            server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
+            try:
+                result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
+            finally:
+                server._pending_call_context = None
+        if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
+            server._mark_session_proven()
+        _app_host.record_result(view, result)
+        return render(result, server_name)
+
+    def _on_failure(exc):
+        _core._bump_server_error(server_name)
+        logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
+    session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
+    return _dispatch(
+        server_name, server, op, _call, tool_timeout,
+        (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
+        _on_failure, record_outcome=record_outcome)
+
+
 def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     """Sync registry handler (``handler(args_dict, **kwargs) -> str``) calling an MCP tool via the background loop."""
-    op = f"tools/call {tool_name}"
-
     def _handler(args: dict, **kwargs) -> str:
-        # Security boundary: untrusted-server write tools need approval before ANY transport work (incl. lazy spawn).
-        error = _trust_gate_check(server_name, tool_name) or _check_circuit_breaker(server_name)
-        if error is not None:
-            return error
-        server, error = _acquire_call_server(server_name, tool_timeout)
-        if server is None:
-            return error
-        # Only a tool annotated readOnlyHint=True is replayed after session expiry; a 401 is always
-        # pre-dispatch so the auth recoverer keeps its retry for every tool.
-        read_only = _tool_is_read_only(server_name, tool_name)
-
-        async def _call():
-            async with server._rpc_lock, _track_inflight_rpc(server, server_name, op, retry_safe=read_only):
-                server._pending_call_context = contextvars.copy_context()  # for the elicitation callback
-                try:
-                    result = await _call_tool_racing_stdio_death(server, server_name, tool_name, args)
-                finally:
-                    server._pending_call_context = None
-            if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
-                server._mark_session_proven()
-            return _render_call_tool_result(result, server_name)
-
-        def _on_failure(exc):
-            _core._bump_server_error(server_name)
-            logger.error("MCP tool %s/%s call failed: %s", server_name, tool_name, exc)
-        session_expired = partial(_handle_session_expired_and_retry, call_may_have_side_effects=not read_only)
-        return _dispatch(
-            server_name, server, op, _call, tool_timeout,
-            (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
-            _on_failure, record_outcome=True)
+        return call_mcp_tool(server_name, tool_name, args, tool_timeout, _render_call_tool_result,
+                             record_outcome=True)
     return _handler
+
+
+def _call_utility(server_name: str, tool_timeout: float, op: str, log_label: str, rpc, args: dict,
+                  finish: Callable[[Any], Any], required: Optional[str] = None) -> Any:
+    """One utility RPC: ``rpc(session, args, server_name)`` awaited under ``_rpc_lock``, its raw
+    result mapped by *finish*; failures are ``tool_error`` strings."""
+    from tools import mcp_tool_discovery as _discovery  # lazy: import cycle
+    server = _discovery._get_connected_server_for_call(server_name)
+    if not server or not server.session:
+        return tool_error(f"MCP server '{server_name}' is not connected")
+    if required and not args.get(required):
+        return tool_error(f"Missing required parameter '{required}'")
+
+    async def _call():
+        async with server._rpc_lock:
+            result = await rpc(server.session, args, server_name)
+        return finish(result)
+    return _dispatch(
+        server_name, server, op, _call, tool_timeout,
+        (_handle_auth_error_and_retry, _handle_session_expired_and_retry),
+        lambda exc: logger.error("MCP %s/%s failed: %s", server_name, log_label, exc))
 
 
 def _make_utility_handler(op: str, log_label: str, rpc, render, required: Optional[str] = None):
@@ -596,23 +630,22 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
     payload, ``required`` validated before any transport work."""
     def _factory(server_name: str, tool_timeout: float):
         def _handler(args: dict, **kwargs) -> str:
-            from tools import mcp_tool_discovery as _discovery  # lazy: import cycle
-            server = _discovery._get_connected_server_for_call(server_name)
-            if not server or not server.session:
-                return tool_error(f"MCP server '{server_name}' is not connected")
-            if required and not args.get(required):
-                return tool_error(f"Missing required parameter '{required}'")
-
-            async def _call():
-                async with server._rpc_lock:
-                    result = await rpc(server.session, args, server_name)
-                return json.dumps(render(result, server_name), ensure_ascii=False)
-            return _dispatch(
-                server_name, server, op, _call, tool_timeout,
-                (_handle_auth_error_and_retry, _handle_session_expired_and_retry),
-                lambda exc: logger.error("MCP %s/%s failed: %s", server_name, log_label, exc))
+            return _call_utility(server_name, tool_timeout, op, log_label, rpc, args,
+                                 lambda result: json.dumps(render(result, server_name), ensure_ascii=False),
+                                 required)
         return _handler
     return _factory
+
+
+def _read_resource_rpc(session, args, server_name):
+    return session.read_resource(args["uri"])
+
+
+def read_mcp_resource(server_name: str, uri: str, tool_timeout: float) -> Any:
+    """``resources/read`` returning the SDK ``ReadResourceResult`` unchanged (an MCP App view's
+    own read, MCP Apps spec 391); failures are ``tool_error`` strings."""
+    return _call_utility(server_name, tool_timeout, "resources/read", "read_resource", _read_resource_rpc,
+                         {"uri": uri}, lambda result: result)
 
 
 def _pick(obj, *specs) -> dict:
@@ -675,8 +708,7 @@ _make_list_resources_handler = _make_utility_handler(
     "resources/list", "list_resources",
     lambda session, args, sn: _core._paginate_full_list(session.list_resources, "resources", sn), _render_resource_list)
 _make_read_resource_handler = _make_utility_handler(
-    "resources/read", "read_resource",
-    lambda session, args, sn: session.read_resource(args["uri"]), _render_read_resource, required="uri")
+    "resources/read", "read_resource", _read_resource_rpc, _render_read_resource, required="uri")
 _make_list_prompts_handler = _make_utility_handler(
     "prompts/list", "list_prompts",
     lambda session, args, sn: _core._paginate_full_list(session.list_prompts, "prompts", sn), _render_prompt_list)

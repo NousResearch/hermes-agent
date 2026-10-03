@@ -13,7 +13,9 @@ next provider request carried back to the model (the tool result the model saw):
   information-free ``params._meta: {}`` (#120923);
 * image results: a cacheable PNG reaches the model as a ``MEDIA:`` file that exists; formats the
   cache cannot store (SVG, AVIF, TIFF, HEIC, malformed base64) must degrade visibly, never vanish
-  (#120227).
+  (#120227);
+* MCP Apps: ``initialize`` advertises the ``io.modelcontextprotocol/ui`` extension, and a tool whose
+  ``_meta.ui.visibility`` lacks ``"model"`` never reaches the model's tool list.
 
 ``tests/e2e/core/parity/test_mcp_lifecycle.py`` owns process lifecycle (death mid-call, reaping);
 this file owns what crosses the wire.
@@ -34,6 +36,7 @@ from tests.e2e.core.mcp_plugins._helpers import (
     KnownSymptom,
     build_home,
     calls_received,
+    inbound,
     payload,
     provider,
     run_chat_q,
@@ -184,3 +187,17 @@ def test_uncacheable_image_is_reported_to_the_model(images: dict[str, Any], fmt:
     with known_gate(KNOWN, request.node.name, raises=KnownSymptom):
         symptom("image" in rest.lower(),
                 f"{fmt} image block vanished: the model got no sign the tool returned an image: {block}")
+
+
+# MCP Apps ------------------------------------------------------------------------------------------
+
+
+def test_handshake_advertises_mcp_apps_and_hides_app_only_tools(tmp_path: Path) -> None:
+    from mcp.server.apps import APP_MIME_TYPE, EXTENSION_ID
+
+    obs = _run(tmp_path, [], extra={"tools": {"tool_search": {"enabled": "off"}}})
+    init = next(m for m in inbound(obs["log"]) if isinstance(m, dict) and m.get("method") == "initialize")
+    ui = (init["params"]["capabilities"].get("extensions") or {}).get(EXTENSION_ID) or {}
+    assert APP_MIME_TYPE in (ui.get("mimeTypes") or []), init["params"]["capabilities"]
+    assert tool_name(SERVER, "view_probe") in obs["offered"], sorted(obs["offered"])
+    assert tool_name(SERVER, "app_only_probe") not in obs["offered"], sorted(obs["offered"])

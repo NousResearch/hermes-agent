@@ -12,12 +12,14 @@ duplicate/not-found error envelopes.
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 import tui_gateway.server as server
+from tests.tools.test_mcp_structured_content import _fake_run_on_mcp_loop
 
 
 @pytest.fixture
@@ -522,3 +524,144 @@ def test_test_resolves_env_refs_from_requested_profile_secret_scope(hermes_root,
     assert result["ok"] is True
     assert resolved["Authorization"] == "Bearer work-token"
     assert os.environ["ALPHA_ONLY_TOKEN"] == "default-process-token"
+
+
+# MCP Apps host (mcp.app.*) -------------------------------------------------------------------------
+
+_VIEW_URI = "ui://srv/view.html"
+
+
+@pytest.fixture
+def mcp_app(tmp_path, monkeypatch):
+    """A live session owned by ``transport`` in its own profile home (its agent writes rows as
+    ``agent-sid`` into that home's real state.db), and two MCP servers connected for that
+    profile: ``srv`` (the view's) and ``other``. ``key`` maps a server name to its connection key."""
+    from collections import OrderedDict
+    from unittest.mock import MagicMock, patch
+
+    from mcp.types import Tool
+
+    from hermes_state import SessionDB
+    import tools.mcp_tool as mcp_tool
+    from tools import mcp_app_host
+    from tools.mcp_tool_scope import _server_key
+
+    def tool(name, **ui):
+        return Tool(name=name, inputSchema={"type": "object"}, _meta={"ui": {"resourceUri": _VIEW_URI, **ui}})
+
+    def mcp_server(tools, **extra):
+        return SimpleNamespace(session=MagicMock(), _rpc_lock=None, tool_timeout=30.0, _tools=tools, **extra)
+
+    srv = mcp_server([tool("view"), tool("refresh", visibility=["app"]), tool("model_only", visibility=["model"]),
+                      tool("hidden")], _config={"tools": {"exclude": ["hidden"]}})
+    other = mcp_server([tool("elsewhere")], _config={})
+    home = tmp_path / "profile"
+    home.mkdir()
+    db = SessionDB(db_path=home / "state.db")
+    db.create_session(session_id="agent-sid", source="tui", model="test/model")
+    transport = SimpleNamespace(write=lambda frame: True)
+    session = {"session_key": "owner-key", "agent": SimpleNamespace(session_id="agent-sid"), "transport": transport,
+               "profile_home": str(home), "history": [], "history_lock": threading.Lock(), "history_version": 0}
+    monkeypatch.setitem(server._sessions, "ui-sid", session)
+    monkeypatch.setattr(mcp_app_host, "_records", OrderedDict())
+    with server._session_profile_runtime_scope(session, hydrate_secrets=False):
+        key = {name: _server_key(name) for name in ("srv", "other")}
+    with patch.dict(mcp_tool._servers, {key["srv"]: srv, key["other"]: other}), \
+         patch("tools.mcp_tool_loop._run_on_mcp_loop", side_effect=_fake_run_on_mcp_loop):
+        yield SimpleNamespace(transport=transport, db=db, srv=srv, other=other, key=key)
+
+
+def _app_rpc(transport, method, **params):
+    """One ``mcp.app.*`` request over the contract-checked dispatch, from *transport*."""
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    token = bind_transport(transport)
+    try:
+        return server.handle_request({"id": 1, "method": method, "params": {"session_id": "ui-sid", **params}})
+    finally:
+        reset_transport(token)
+
+
+def _view_row(db, call_id, record):
+    """The committed tool row of a view call (as ``_commit_tool_result`` leaves it)."""
+    db.append_message("agent-sid", "assistant", "", tool_calls=[
+        {"id": call_id, "type": "function", "function": {"name": "mcp__srv__view", "arguments": "{}"}}])
+    db.append_message("agent-sid", "tool", "{}", tool_name="mcp__srv__view", tool_call_id=call_id,
+                      display_metadata={"mcp_app": record})
+
+
+def test_mcp_app_view_follows_the_call_from_running_to_its_row(mcp_app):
+    from tools import mcp_app_host
+    from tools.approval_context import reset_current_observability_context, set_current_observability_context
+
+    tokens = set_current_observability_context(session_id="agent-sid", tool_call_id="call-running")
+    try:
+        mcp_app_host.open_record("srv", mcp_app.srv, "view", {"city": "Paris"})
+    finally:
+        reset_current_observability_context(tokens)
+    failed = {"content": [{"type": "text", "text": "no such city"}], "isError": True}
+    _view_row(mcp_app.db, "call-done", {"server": "srv", "tool": "view", "arguments": {"city": "Oslo"}, "result": failed})
+    _view_row(mcp_app.db, "call-cut", {"server": "srv", "tool": "view", "arguments": {"city": "Rome"}})
+
+    running = _result(_app_rpc(mcp_app.transport, "mcp.app.view", tool_call_id="call-running"))
+    assert (running["status"], running["arguments"], running["result"]) == ("running", {"city": "Paris"}, None)
+    assert running["tool"]["name"] == "view" and running["tool"]["_meta"]["ui"]["resourceUri"] == _VIEW_URI
+    done = _result(_app_rpc(mcp_app.transport, "mcp.app.view", tool_call_id="call-done"))
+    assert (done["status"], done["arguments"], done["result"]) == ("result", {"city": "Oslo"}, failed)
+    cut = _result(_app_rpc(mcp_app.transport, "mcp.app.view", tool_call_id="call-cut"))
+    assert (cut["status"], cut["arguments"], cut["result"]) == ("cancelled", {"city": "Rome"}, None)
+    assert _app_rpc(mcp_app.transport, "mcp.app.view", tool_call_id="call-none")["error"]["code"] == 4064
+    stranger = SimpleNamespace(write=lambda frame: True)
+    assert _app_rpc(stranger, "mcp.app.view", tool_call_id="call-done")["error"]["code"] == 4001
+
+
+def test_mcp_app_call_tool_reaches_only_app_tools_of_the_calls_server(mcp_app, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from mcp.types import CallToolResult, TextContent
+
+    import tools.mcp_tool as mcp_tool
+
+    _view_row(mcp_app.db, "call-done", {"server": "srv", "tool": "view", "arguments": {}})
+    call_tool = mcp_app.srv.session.call_tool = AsyncMock(return_value=CallToolResult(
+        content=[TextContent(type="text", text="refreshed")], structuredContent={"temp": 21}))
+    mcp_app.other.session.call_tool = AsyncMock()
+
+    refreshed = _result(_app_rpc(mcp_app.transport, "mcp.app.call_tool", tool_call_id="call-done",
+                                 name="refresh", arguments={"n": 1}))
+    assert refreshed == {"content": [{"type": "text", "text": "refreshed"}], "structuredContent": {"temp": 21}}
+    call_tool.assert_awaited_once_with("refresh", arguments={"n": 1})
+    for name, code in (("model_only", 4030), ("hidden", 4030), ("elsewhere", 4064)):
+        reply = _app_rpc(mcp_app.transport, "mcp.app.call_tool", tool_call_id="call-done", name=name)
+        assert reply["error"]["code"] == code, (name, reply)
+    assert call_tool.await_count == 1 and mcp_app.other.session.call_tool.await_count == 0
+
+    # A ``trust: untrusted`` server asks the session that owns the call; a denial sends nothing.
+    asked, answers = [], ["decline", "accept"]
+
+    def consent(message, description, **kwargs):
+        from tools.approval_context import get_current_session_key
+        asked.append(get_current_session_key())
+        return answers.pop(0)
+
+    monkeypatch.setitem(mcp_tool._server_trust_levels, mcp_app.key["srv"], "untrusted")
+    monkeypatch.setattr("tools.approval_prompt.request_elicitation_consent", consent)
+    denied = _app_rpc(mcp_app.transport, "mcp.app.call_tool", tool_call_id="call-done", name="refresh")
+    assert "error" in denied and call_tool.await_count == 1
+    _result(_app_rpc(mcp_app.transport, "mcp.app.call_tool", tool_call_id="call-done", name="refresh"))
+    assert asked == ["owner-key", "owner-key"] and call_tool.await_count == 2
+
+
+def test_mcp_app_read_resource_returns_the_sdk_result_unchanged(mcp_app):
+    from unittest.mock import AsyncMock
+
+    from mcp.server.apps import APP_MIME_TYPE
+    from mcp.types import ReadResourceResult
+
+    _view_row(mcp_app.db, "call-done", {"server": "srv", "tool": "view", "arguments": {}})
+    sent = {"contents": [{"uri": _VIEW_URI, "mimeType": APP_MIME_TYPE, "text": "<!doctype html>",
+                          "_meta": {"ui": {"prefersBorder": True, "csp": {"connectDomains": ["https://api.example"]}}}}]}
+    read = mcp_app.srv.session.read_resource = AsyncMock(return_value=ReadResourceResult.model_validate(sent))
+
+    assert _result(_app_rpc(mcp_app.transport, "mcp.app.read_resource", tool_call_id="call-done", uri=_VIEW_URI)) == sent
+    read.assert_awaited_once_with(_VIEW_URI)

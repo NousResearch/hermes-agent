@@ -2684,7 +2684,8 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
                 }
             ],
         },
-        {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
+        {"role": "tool", "content": "{}", "tool_call_id": "call_1",
+         "display_metadata": {"mcp_app": {"server": "srv", "tool": "search_files", "arguments": {}}}},
         {"role": "assistant", "content": "first answer"},
         {"role": "user", "content": "second prompt"},
     ]
@@ -21748,6 +21749,67 @@ def test_prompt_submit_passes_persist_user_message_to_agent(monkeypatch):
         assert captured.get("persist_user_message") == "hi"
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_mcp_app_model_context_reaches_the_next_turn_once_wrapped(monkeypatch):
+    """MCP Apps ``ui/update-model-context``: the view's LAST update (spec 1101) reaches the next
+    user turn's model input once, wrapped as untrusted MCP output; the user's own text stays as
+    typed, and a turn the user did not send (a wake-up) leaves the context waiting."""
+    from collections import OrderedDict
+
+    from mcp.types import Tool
+
+    from tools import mcp_app_host
+    from tools.approval_context import reset_current_observability_context, set_current_observability_context
+
+    captured = []
+
+    class _Agent:
+        session_id = "agent-sid"
+
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **kwargs):
+            captured.append((prompt, kwargs.get("persist_user_message")))
+            return {"final_response": "reply", "messages": [{"role": "assistant", "content": "reply"}]}
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **_thread_options):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(mcp_app_host, "_records", OrderedDict())
+    view = Tool(name="view", inputSchema={"type": "object"}, _meta={"ui": {"resourceUri": "ui://srv/view.html"}})
+    tokens = set_current_observability_context(session_id="agent-sid", tool_call_id="call-1")
+    try:
+        mcp_app_host.open_record("srv", types.SimpleNamespace(_tools=[view]), "view", {})
+    finally:
+        reset_current_observability_context(tokens)
+    transport = types.SimpleNamespace(write=lambda frame: True)
+    server._sessions["sid"] = _session(agent=_Agent(), transport=transport)
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        for context in ("superseded selection " * 3, "the user picked Oslo on the map " * 2):
+            reply = _dispatch_sync({"id": "u", "method": "mcp.app.update_model_context", "params": {
+                "session_id": "sid", "tool_call_id": "call-1", "content": [{"type": "text", "text": context}]}},
+                transport)
+            assert reply.get("result") == {}, reply
+        server._run_prompt_submit("wake", "sid", server._sessions["sid"], "wake-up")
+        for text in ("hi", "again"):
+            resp = server.handle_request(
+                {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid", "text": text}})
+            assert resp.get("result"), resp
+    finally:
+        server._sessions.pop("sid", None)
+
+    (wake, _), (first, persisted), (second, _) = captured
+    assert wake == "wake-up"
+    assert persisted == "hi" and first.endswith("\n\nhi") and second == "again"
+    assert "the user picked Oslo" in first and "superseded selection" not in first
+    assert '<untrusted_tool_result source="mcp__srv__view">' in first
 
 
 

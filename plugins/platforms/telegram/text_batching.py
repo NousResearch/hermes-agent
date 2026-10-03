@@ -26,20 +26,24 @@ class TelegramTextBatchingMixin:
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="text-enqueue")
             return
-        key = self._text_batch_key(event)
-        existing = self._pending_text_batches.get(key)
-        if existing is not None and not self._text_batch_context_compatible(existing, event):
-            prior_task = self._pending_text_batch_tasks.pop(key, None)
-            if prior_task and not prior_task.done():
-                prior_task.cancel()
-            self._pending_text_batches.pop(key, None)
-            logger.info(
-                "[Telegram] Flushing text batch %s before incompatible reply context",
-                key,
-            )
-            self._hold_inbound_event(existing, where="text-reply-context-boundary")
         super()._enqueue_text_event(event)
         self._accept_update()
+
+    def _text_batch_boundary(self: TelegramAdapter, key: str, existing: MessageEvent | None,
+                             event: MessageEvent) -> MessageEvent | None:
+        """Flush ``existing`` first when ``event`` carries an incompatible reply context."""
+        if existing is None or self._text_batch_context_compatible(existing, event):
+            return existing
+        prior_task = self._pending_text_batch_tasks.pop(key, None)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batches.pop(key, None)
+        logger.info(
+            "[Telegram] Flushing text batch %s before incompatible reply context",
+            key,
+        )
+        self._hold_inbound_event(existing, where="text-reply-context-boundary")
+        return None
 
 
     async def _flush_buffered(self: TelegramAdapter, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None) -> None:

@@ -419,7 +419,6 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
     return _should_bypass_proxy(hostname, no_proxy_value=no_proxy_value)
 
 
-import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
@@ -2518,7 +2517,7 @@ class BasePlatformAdapter(BaseTextDebounceMixin, ABC):
         if self._drop_unresolved(event):
             return
         key = self._text_batch_key(event)
-        existing = self._pending_text_batches.get(key)
+        existing = self._text_batch_boundary(key, self._pending_text_batches.get(key), event)
         if existing is None:
             existing = self._pending_text_batches[key] = event
         else:
@@ -2533,6 +2532,12 @@ class BasePlatformAdapter(BaseTextDebounceMixin, ABC):
         if prior_task and not prior_task.done():
             prior_task.cancel()
         self._pending_text_batch_tasks[key] = asyncio.create_task(self._flush_text_batch(key))
+
+    def _text_batch_boundary(self, key: str, existing: Optional["MessageEvent"],
+                             event: "MessageEvent") -> Optional["MessageEvent"]:
+        """Return the batch ``event`` may join, or None to start a new one (adapters that split
+        batches on a boundary override this; ``key`` is already computed)."""
+        return existing
 
     def _text_batch_delay_for(self, pending: Optional["MessageEvent"]) -> float:
         """Quiet period before ``pending`` is dispatched; near-split chunks wait longer."""

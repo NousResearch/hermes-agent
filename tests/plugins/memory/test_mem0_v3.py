@@ -122,6 +122,39 @@ class TestMem0V3Internal:
         assert call[2]["agent_id"] == "hermes"
         assert call[2]["infer"] is True
 
+    def test_sync_turn_keeps_a_turn_that_arrives_while_the_previous_extraction_runs(self, monkeypatch):
+        """A turn synced while the previous turn's extraction outlives sync_turn's bounded wait
+        (OSS: a local LLM call) is still written, after the earlier one, never dropped."""
+        release = threading.Event()
+
+        class FirstAddBlocks(FakeBackend):
+            def add(self, messages, **kwargs):
+                if messages[0]["content"] == "turn one":
+                    release.wait(10)
+                return super().add(messages, **kwargs)
+
+        backend = FirstAddBlocks()
+        provider = self._make_provider(monkeypatch, backend)
+        provider.sync_turn("turn one", "reply one", session_id="s1")
+        first = provider._sync_thread
+
+        class OutlivesTheWait:
+            """The first extraction: still running when sync_turn's bounded join gives up."""
+
+            def is_alive(self):
+                return first.is_alive()
+
+            def join(self, timeout=None):
+                if timeout is None:
+                    first.join()
+
+        provider._sync_thread = OutlivesTheWait()
+        provider.sync_turn("turn two", "reply two", session_id="s1")
+        release.set()
+        provider._sync_thread.join(timeout=5)
+        first.join(timeout=5)
+        assert [c[1][0]["content"] for c in backend.captured if c[0] == "add"] == ["turn one", "turn two"]
+
 
 class TestSyncTurnTruncation:
     """sync_turn must cap messages before ingestion so small-context embedding

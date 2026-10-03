@@ -7,7 +7,7 @@ import json
 import os
 import urllib.request
 
-from hermes_cli.debug_redaction import redact_debug_support_error, redact_debug_support_text
+from hermes_cli.debug_redaction import redact_debug_support_text
 
 # Overridable via env so the feature can be pointed at staging / a local dev NAS instance.
 NAS_BASE = os.environ.get("HERMES_DIAGNOSTICS_BASE_URL", "https://portal.nousresearch.com")
@@ -57,9 +57,6 @@ def put_bundle(upload_url: str, data: bytes, content_type: str = "application/gz
 
 def share_to_nous(report_bundle: bytes) -> dict:
     """Mint a presigned PUT URL (with the exact ``sizeBytes`` NAS signs), then PUT *report_bundle*."""
-    try:
-        info = request_upload_url(content_type="application/gzip", size_bytes=len(report_bundle))
-        put_bundle(info["uploadUrl"], report_bundle, content_type="application/gzip")
-        return info
-    except Exception as exc:
-        raise RuntimeError(redact_debug_support_error(exc)) from exc
+    info = request_upload_url(content_type="application/gzip", size_bytes=len(report_bundle))
+    put_bundle(info["uploadUrl"], report_bundle, content_type="application/gzip")
+    return info

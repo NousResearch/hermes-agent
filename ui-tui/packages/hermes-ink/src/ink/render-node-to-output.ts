@@ -243,7 +243,12 @@ const OSC = '\u001B]'
 const BEL = '\u0007'
 
 function wrapWithOsc8Link(text: string, url: string): string {
-  return `${OSC}8;;${url}${BEL}${text}${OSC}8;;${BEL}`
+  // OSC 8 URIs are terminal control-sequence payloads. A model-authored URL
+  // must not inject BEL, ST, or another C1 command into the terminal stream.
+  // eslint-disable-next-line no-control-regex
+  const safeUrl = url.replace(/[\x00-\x1f\x7f-\x9f]/g, '')
+
+  return `${OSC}8;;${safeUrl}${BEL}${text}${OSC}8;;${BEL}`
 }
 
 /**

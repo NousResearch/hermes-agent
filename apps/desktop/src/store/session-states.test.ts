@@ -1780,3 +1780,127 @@ describe('rekeySessionTile (#98622 — pane identity across compression tip rota
     expect($sessionTiles.get()).toEqual([{ storedSessionId: 'tip-old' }])
   })
 })
+
+describe('session tile ownership buckets', () => {
+  // The persisted key is module-private, so read whichever localStorage entry
+  // carries the tile buckets — the write is what these tests are about.
+  const storedTiles = (): Record<string, Array<{ storedSessionId: string }>> => {
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const key = window.localStorage.key(i) ?? ''
+
+      if (!key.includes('sessionTiles')) {
+        continue
+      }
+
+      const raw = window.localStorage.getItem(key)
+
+      return raw ? (JSON.parse(raw) as Record<string, Array<{ storedSessionId: string }>>) : {}
+    }
+
+    return {}
+  }
+
+  // The tile buckets are module-private and other suites leave persisted entries
+  // behind, so each test re-imports a FRESH session-states module (empty
+  // tilesByProfile + empty storage) — the same isolation the browser gets
+  // between app launches.
+  type SessionStates = typeof SessionStatesModule
+  let mod: SessionStates
+  let activeGatewayProfile: { set: (name: string) => void }
+
+  beforeEach(async () => {
+    window.localStorage.clear()
+    vi.resetModules()
+    mod = await import('@/store/session-states')
+    const profile = await import('@/store/profile')
+    activeGatewayProfile = profile.$activeGatewayProfile
+    activeGatewayProfile.set('default')
+    mod.$sessionTiles.set([])
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    $activeGatewayProfile.set('default')
+    $layoutTree.set(null)
+    $selectedStoredSessionId.set(null)
+    $sessionTiles.set([])
+  })
+
+  const openOwnedTile = (id: string, owner: string) =>
+    mod.openSessionTile(id, 'right', undefined, undefined, {
+      ownerRoute: { connectionId: 'local', mode: 'local' as const, profile: owner },
+      workspaceMode: 'sessions' as const
+    })
+
+  it('files a tile under its OWNING profile, not the profile visible at write time', () => {
+    // A nova tab opened while `quill` was on screen used to be filed in quill's
+    // bucket and stay there, so it resurfaced under quill on every later switch
+    // — the "random old tabs come back" report. The row already carried its
+    // owner; the bucket is what ignored it.
+    activeGatewayProfile.set('quill')
+    openOwnedTile('nova-session', 'nova')
+
+    expect(storedTiles()).toHaveProperty('nova')
+    expect(storedTiles()).not.toHaveProperty('quill')
+  })
+
+  it('keeps each profile in its own bucket across a profile swap', () => {
+    activeGatewayProfile.set('nova')
+    openOwnedTile('nova-session', 'nova')
+
+    activeGatewayProfile.set('quill')
+    openOwnedTile('quill-session', 'quill')
+
+    expect(Object.keys(storedTiles()).sort()).toEqual(['nova', 'quill'])
+  })
+
+  it('brings a foreign-owner tile back when its own profile becomes visible', () => {
+    // The symptom: beta's tile filed under the visible scope is gone from the
+    // pane the moment the user switches to beta, because beta's bucket never
+    // held it (and the next reload keeps it under alpha).
+    activeGatewayProfile.set('alpha')
+    openOwnedTile('alpha-1', 'alpha')
+    openOwnedTile('beta-1', 'beta')
+
+    expect(storedTiles().alpha.map(tile => tile.storedSessionId)).toEqual(['alpha-1'])
+    expect(storedTiles().beta.map(tile => tile.storedSessionId)).toEqual(['beta-1'])
+
+    activeGatewayProfile.set('beta')
+
+    expect(mod.$sessionTiles.get().map(tile => tile.storedSessionId)).toEqual(['beta-1'])
+  })
+
+  it('buckets an owner-less tile by the visible profile', () => {
+    // A draft or a legacy row has no owner to go on; the visible bucket is the
+    // only honest answer, and guessing an owner would strand the tab.
+    activeGatewayProfile.set('quill')
+    mod.openSessionTile('ownerless-session')
+
+    expect(storedTiles()).toHaveProperty('quill')
+  })
+
+  it("keeps another profile's bucket when the visible profile's last tile closes", () => {
+    // "Visible set is empty" is not "nothing is open anywhere": the other
+    // profile's row is exactly the persisted-but-invisible tile a write must
+    // preserve.
+    activeGatewayProfile.set('nova')
+    openOwnedTile('nova-session', 'nova')
+
+    activeGatewayProfile.set('quill')
+    openOwnedTile('quill-session', 'quill')
+    mod.closeSessionTile('quill-session')
+
+    expect(storedTiles()).not.toHaveProperty('quill')
+    expect(storedTiles().nova).toHaveLength(1)
+  })
+
+  it('empties the profile in view when its own last tile closes', () => {
+    // The reason the empty set has to clear anything at all: Close All must not
+    // leave tiles behind for the next profile swap to restore.
+    activeGatewayProfile.set('nova')
+    openOwnedTile('nova-a', 'nova')
+    mod.closeSessionTile('nova-a')
+
+    expect(storedTiles()).not.toHaveProperty('nova')
+  })
+})

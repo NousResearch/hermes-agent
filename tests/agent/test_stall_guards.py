@@ -485,3 +485,33 @@ def test_promoted_reasoning_detector_ignores_thai_stated_answers():
         "พรุ่งนี้จะฝนตกทั่วประเทศ",  # "tomorrow it will rain" — not a first-person action verb
     ):
         assert not promoted_reasoning_announces_action(text), text
+
+
+def test_promoted_reasoning_detector_catches_imperative_plan_tails():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    # Bare imperative plan fragments with no first-person marker — the verbatim shapes from the
+    # #121070 deepseek-flash session. None match the narrow visible-content detector.
+    for tail in (
+        "Next: read PortHackCubeSequence before replying",
+        "next: send the request",
+        "Planning done. Then run the tests",
+        "send",
+        "Read the file",
+    ):
+        assert not trailing_continue_intent(tail), tail
+        assert promoted_reasoning_announces_action(tail), tail
+
+
+def test_promoted_reasoning_detector_ignores_terminated_imperatives_and_answers():
+    from agent.agent_runtime_helpers import promoted_reasoning_announces_action
+
+    for text in (
+        "The answer is 42.",
+        "Run the tests.",  # terminated: advice-shaped, still promotes (conservative boundary)
+        "structured reasoning answer",
+        "The options considered. Next: the deployment finished",  # status, not an action verb
+        "",
+        None,
+    ):
+        assert not promoted_reasoning_announces_action(text), text

@@ -175,3 +175,35 @@ def test_genuine_reasoning_only_answer_with_tools_still_promotes_on_first_call(l
         ])
         assert result["api_calls"] == 1
         assert result["final_response"] == answer
+
+
+# ── imperative plan-tail stall (#121070) ─────────────────────────────────────────────
+
+IMPERATIVE_TAILS = [
+    "Next: read PortHackCubeSequence before replying",
+    "send",
+]
+
+
+@pytest.mark.parametrize("tail", IMPERATIVE_TAILS)
+def test_imperative_plan_tail_reasoning_only_stop_runs_continuation_not_completion(loop_agent, tail):
+    """Tools offered, zero tool calls, and the promoted reasoning ENDS on a bare imperative plan
+    fragment ("Next: read ...", "send") with no first-person marker — the verbatim shapes from the
+    #121070 deepseek-flash session. This is a stalled model, not an answer: the stall-guard
+    continuation must run (bounded by the same cap) instead of returning the fragment as a
+    'complete' final response."""
+    from tests.agent.test_run_agent import _mock_response
+
+    loop_agent.valid_tool_names = {"terminal", "read_file"}
+    loop_agent._stall_guards = True
+
+    result = _run(loop_agent, [
+        _mock_response(content="", finish_reason="stop", reasoning_content=tail),
+        _mock_response(content="Done; file read.", finish_reason="stop"),
+    ])
+
+    assert result["api_calls"] == 2
+    assert result["final_response"] == "Done; file read."
+    interim = [m for m in result["messages"] if m.get("role") == "assistant"][0]
+    assert not interim.get("content")
+    assert interim["api_content"] == tail  # interim row keeps the sidecar shape

@@ -87,6 +87,84 @@ def test_stale_external_handoff_is_recovered_unknown(monkeypatch, tmp_path):
     assert recovered["handoff_pending"] == 0
 
 
+def test_failed_delivery_on_a_successful_run_keeps_its_reason(monkeypatch, tmp_path):
+    """The shape of every observed failed delivery: the job finished fine and only the notice did
+    not leave. ``error`` stays NULL (the job did not fail) but the reason must survive — it used to
+    be nulled because ``detail`` was suppressed whenever ``success`` was true."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("undelivered-job", source="builtin")
+    executions.mark_execution_running(record["id"])
+
+    reason = "bot-chat delivery to profile 'default' failed (exit 1): ↻ Resumed session"
+    finished = executions.finish_execution(
+        record["id"], success=True, delivery_outcome="failed", delivery_error=reason)
+
+    assert finished["status"] == "completed"
+    assert finished["error"] is None
+    assert finished["delivery_outcome"] == "failed"
+    assert finished["delivery_error"] == reason
+    assert executions.get_execution(record["id"])["delivery_error"] == reason
+
+
+def test_delivered_run_records_no_delivery_reason(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("delivered-job", source="builtin")
+    executions.mark_execution_running(record["id"])
+
+    finished = executions.finish_execution(
+        record["id"], success=True, delivery_outcome="delivered")
+
+    assert finished["status"] == "completed"
+    assert finished["error"] is None
+    assert finished["delivery_error"] is None
+
+
+def test_oversized_delivery_reason_is_truncated(monkeypatch, tmp_path):
+    executions = _point_ledger(monkeypatch, tmp_path)
+    record = executions.create_execution("chatty-adapter", source="builtin")
+    executions.mark_execution_running(record["id"])
+
+    finished = executions.finish_execution(
+        record["id"], success=True, delivery_outcome="failed",
+        delivery_error="x" * (executions.MAX_DELIVERY_ERROR_CHARS + 500))
+
+    stored = finished["delivery_error"]
+    assert stored.startswith("x" * executions.MAX_DELIVERY_ERROR_CHARS)
+    assert stored.endswith("… [truncated]")
+
+
+def test_ledger_predating_delivery_error_column_still_works(monkeypatch, tmp_path):
+    """AC-4: an ``executions.db`` written before this change has no ``delivery_error`` column.
+    Opening it must migrate in place, keep the existing rows and accept a new reason."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    db_path = executions.EXECUTIONS_FILE
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = sqlite3.connect(db_path)
+    legacy.execute(
+        """CREATE TABLE executions (
+             id TEXT PRIMARY KEY, job_id TEXT NOT NULL, source TEXT NOT NULL,
+             process_id TEXT NOT NULL, pid INTEGER NOT NULL, process_started_at INTEGER,
+             status TEXT NOT NULL CHECK(status IN
+               ('claimed','running','completed','failed','unknown')),
+             claimed_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, error TEXT
+           )"""
+    )
+    legacy.execute(
+        "INSERT INTO executions (id, job_id, source, process_id, pid, status, claimed_at) "
+        "VALUES ('old-row', 'old-job', 'builtin', 'old-gateway', 1, 'completed', '2026-01-01')"
+    )
+    legacy.commit()
+    legacy.close()
+
+    record = executions.create_execution("post-upgrade-job", source="builtin")
+    executions.mark_execution_running(record["id"])
+    finished = executions.finish_execution(
+        record["id"], success=True, delivery_outcome="failed", delivery_error="adapter exited 1")
+
+    assert finished["delivery_error"] == "adapter exited 1"
+    assert executions.get_execution("old-row")["delivery_error"] is None
+
+
 def test_recovery_does_not_overwrite_concurrent_worker_adoption(monkeypatch, tmp_path):
     executions = _point_ledger(monkeypatch, tmp_path)
     record = executions.create_execution("adoption-race", source="builtin")
@@ -219,6 +297,23 @@ def test_cron_runs_cli_prints_execution_history(monkeypatch, tmp_path, capsys):
     assert row["id"] in output
     assert "failed" in output
     assert "boom" in output
+
+
+def test_cron_runs_cli_prints_the_delivery_reason(monkeypatch, tmp_path, capsys):
+    """A human must be able to read why a result never arrived, and see it is not a job error."""
+    executions = _point_ledger(monkeypatch, tmp_path)
+    row = executions.create_execution("undelivered-cli-job", source="builtin")
+    executions.finish_execution(
+        row["id"], success=True, delivery_outcome="failed",
+        delivery_error="bot-chat delivery to profile 'default' failed (exit 1)")
+    from hermes_cli.cron import cron_runs
+
+    cron_runs("undelivered-cli-job", limit=10)
+
+    output = capsys.readouterr().out
+    assert "completed" in output
+    assert "delivery:" in output
+    assert "bot-chat delivery to profile 'default' failed (exit 1)" in output
 
 
 def test_quick_backup_includes_execution_ledger():

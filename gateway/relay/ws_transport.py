@@ -227,6 +227,23 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
 
     reply_to = raw.get("reply_to") or {}
     prompt_response = raw.get("prompt_response")
+    # Normalise reply_to.author: the legacy relay contract sends a plain string;
+    # the extended contract sends {id, name}.  Accept both without breaking either side.
+    _reply_author = reply_to.get("author")
+    _reply_author_name: Optional[str] = None
+    _reply_author_id: Optional[str] = None
+    if isinstance(_reply_author, dict):
+        _reply_author_name = _reply_author.get("name")
+        _reply_author_id = _reply_author.get("id")
+    elif isinstance(_reply_author, str):
+        _reply_author_name = _reply_author
+    # Extended reply_to fields — None / empty when the connector does not send them
+    # (backward-compatible: old connectors never emit these keys).
+    _reply_channel_id = reply_to.get("channel_id") or None
+    _reply_origin_channel_id = reply_to.get("origin_channel_id") or None
+    _reply_attachments = reply_to.get("attachments") or []
+    if not isinstance(_reply_attachments, list):
+        _reply_attachments = []
     return MessageEvent(
         text=text,
         message_type=msg_type,
@@ -234,8 +251,12 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         message_id=raw.get("message_id"),
         reply_to_message_id=raw.get("reply_to_message_id"),
         reply_to_text=reply_to.get("text"),
-        reply_to_author_name=reply_to.get("author"),
+        reply_to_author_id=_reply_author_id,
+        reply_to_author_name=_reply_author_name,
         reply_to_is_own_message=bool(reply_to.get("is_own", False)),
+        reply_to_channel_id=_reply_channel_id,
+        reply_to_origin_channel_id=_reply_origin_channel_id,
+        reply_to_attachments=_reply_attachments,
         media_urls=raw.get("media_urls") or [],
         # Parallel to media_urls; run.py's per-attachment classifiers consult
         # media_types[i] FIRST (routes a relayed image/document/voice like native).

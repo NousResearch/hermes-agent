@@ -17,6 +17,7 @@ import threading
 import time
 from contextlib import suppress
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.i18n import t
@@ -63,6 +64,11 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
 # Slack click handler shows on a dead entry).
 def _clarify_expired_notice() -> str:
     return t("gateway.clarify.expired")
+
+
+# ``[Image attached at: <path>]`` handles written into a user turn's text part by
+# ``agent.image_routing.build_native_content_parts``. Used to recover images a resumed turn lost.
+_RESUME_IMAGE_HANDLE_RE = re.compile(r"^\[Image attached at: (.+?)\]\s*$", re.MULTILINE)
 
 
 class _ExecApprovalDeclined(RuntimeError):
@@ -1645,6 +1651,9 @@ class TurnRunner:
             ctx.message, persist_override = _prepare_resume_pending_message(
                 resume_reason, ctx.message, interactive=self._resume_note_interactive(),
             )
+            # The interrupted turn consumed its image paths and the resume turn is text-only;
+            # re-arm the still-readable ones so they ride THIS turn too.
+            self._rearm_resume_images_from_history(ctx.session_key, agent_history)
         elif agent_history and agent_history[-1].get("role") == "tool" and interruption_is_fresh:
             persist_override = ctx.message
             ctx.message = (
@@ -1661,6 +1670,34 @@ class TurnRunner:
         if isinstance(ctx.message, str) and not ctx.message.strip() and resume_pending:
             ctx.message = build_resume_recovery_note(resume_reason, "", interactive=self._resume_note_interactive())
         return persist_override, ctx.persist_user_timestamp
+
+    def _rearm_resume_images_from_history(self, session_key: Optional[str], agent_history) -> None:
+        """Re-attach the images an interrupted turn had embedded, so the resume turn can still see them.
+
+        ``native_image_paths`` is consume-once: the interrupted turn emptied it, and
+        ``build_resume_recovery_note`` builds a text-only turn, so the pixels are gone while the
+        transcript keeps both the ``[Image attached at: …]`` handle and any ``vision_analyze``
+        ``already_in_context`` result — the model then reports it can see an image that is not in the
+        request at all. Only still-readable paths are re-armed; the normal consume path re-embeds them.
+        """
+        if not session_key or not agent_history:
+            return
+        recovered: List[str] = []
+        for msg in reversed(agent_history):
+            content = msg.get("content")
+            if not isinstance(content, str) or "Image attached at:" not in content:
+                continue
+            for raw in _RESUME_IMAGE_HANDLE_RE.findall(content):
+                raw = raw.strip()
+                if raw and raw not in recovered and Path(raw).is_file():
+                    recovered.append(raw)
+        if not recovered:
+            return
+        state = self._runner._session_state(session_key)
+        if state is None or state.persistent.native_image_paths:
+            return
+        state.persistent.native_image_paths = recovered
+        logger.info("Resume: re-armed %d image(s) dropped by the interrupted turn", len(recovered))
 
     def _native_image_run_message(self):
         """Wrap the user turn as an OpenAI-style multimodal content list when

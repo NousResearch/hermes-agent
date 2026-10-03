@@ -632,7 +632,10 @@ class GatewayInboundMixin:
     ) -> Tuple[bool, Optional[str]]:
         """Slash-command / photo-burst handling on the busy fast-path → ``(handled, result)``. Each
         command's mid-run behavior is declared on its CommandDef (busy_policy / busy_handler)."""
-        from hermes_cli.commands import resolve_command as _resolve_cmd_inner
+        from hermes_cli.commands import (
+            is_gateway_known_command,
+            resolve_command as _resolve_cmd_inner,
+        )
         _evt_cmd = event.get_command()
         _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
@@ -650,6 +653,24 @@ class GatewayInboundMixin:
             # Any recognized slash command dispatches per its declared busy_policy (dispatch /
             # interrupt_then_dispatch / reject). Unrecognized commands and plain text fall through.
             return True, await self._dispatch_busy_slash_command(event, _cmd_def_inner, _quick_key, source)
+
+        # Plugin-registered slash commands (``PluginContext.register_command``) are NOT in the core
+        # ``COMMAND_REGISTRY``, so the lookup above returns None for them and they used to fall
+        # through as "unrecognized" — straight into the queue / steer / interrupt paths below.
+        # There the slash-command safety net DISCARDS command text, so the command vanished with no
+        # reply, no error, no handler log and no retry — indistinguishable from a command that does
+        # nothing. They need no agent state, so dispatch them here exactly as a
+        # ``busy_policy="dispatch"`` core command is dispatched. Access control mirrors the cold
+        # path's early gate, which counts plugin commands as gateway-known and gates them too.
+        if _evt_cmd and is_gateway_known_command(_evt_cmd):
+            _denied = self._check_slash_access(source, _evt_cmd.replace("_", "-"))
+            if _denied is not None:
+                return True, _denied
+            _plugin_handled, _plugin_result = await self._hm_dispatch_plugin_command(
+                event, source, _evt_cmd
+            )
+            if _plugin_handled:
+                return True, _plugin_result
 
         # Telegram photo bursts arrive as near-simultaneous updates — never interrupt for a
         # photo-only follow-up; adapter-level batching absorbs them.
@@ -1082,6 +1103,46 @@ class GatewayInboundMixin:
         except Exception as e:
             return t("gateway.quick_command.error", error=e)
 
+    async def _hm_dispatch_plugin_command(
+        self, event: "MessageEvent", source: SessionSource, command: str
+    ) -> Tuple[bool, Optional[str]]:
+        """Run a plugin-registered slash command → ``(handled, result)``.
+
+        ``PluginContext.register_command`` commands live outside ``COMMAND_REGISTRY``, so
+        ``resolve_command`` never returns them. Both the cold dispatch sink and the busy fast-path
+        (a turn already in flight) reach them through here; the busy path used to drop them.
+
+        ``handled=False`` means no plugin claims the name, so the caller keeps falling through.
+        """
+        if not command:
+            return False, None
+        try:
+            from hermes_cli.plugins import get_plugin_command_handler
+            # Underscores normalize to hyphens so Telegram's underscored autocomplete form
+            # matches plugin commands registered with hyphens.
+            plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
+            if plugin_handler:
+                # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
+                # sits before it, so a handler reading get_session_env() would see an empty or a
+                # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,
+                # so session_key is derived from source. Sync handlers run on the gateway pool
+                # (contextvars carried), never the loop thread: blocking I/O there starves the
+                # liveness watchdog and the process exits 75 mid-handler (#105279).
+                _plugin_context = build_session_context(source, self.config)
+                _plugin_context.session_key = self._session_key_for_source(source)
+                user_args = event.get_command_args().strip()
+                with self._session_env_scope(_plugin_context):
+                    if asyncio.iscoroutinefunction(plugin_handler):
+                        result = await plugin_handler(user_args)
+                    else:
+                        result = await self._run_in_executor_with_context(plugin_handler, user_args)
+                        if asyncio.iscoroutine(result):
+                            result = await result
+                return True, str(result) if result else None
+        except Exception as e:
+            logger.warning("Plugin command dispatch failed: %s", e)
+        return False, None
+
     async def _hm_dispatch_quick_and_plugin_commands(
         self, event: "MessageEvent", source: SessionSource, command: Optional[str]
     ) -> Tuple[bool, Optional[str], Optional[str]]:
@@ -1114,32 +1175,12 @@ class GatewayInboundMixin:
                 return True, t("gateway.quick_command.no_target", command=command), command
             command = new_command  # Fall through to normal command dispatch below
 
-        # Plugin-registered slash commands. Underscores normalize to hyphens so Telegram's
-        # underscored autocomplete form matches plugin commands registered with hyphens.
-        if command:
-            try:
-                from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
-                if plugin_handler:
-                    # The agent-turn path binds HERMES_SESSION_* via _set_session_env; this dispatch
-                    # sits before it, so a handler reading get_session_env() would see an empty or a
-                    # foreign (cron agent's os.environ) session (#108698). No session_entry exists yet,
-                    # so session_key is derived from source. Sync handlers run on the gateway pool
-                    # (contextvars carried), never the loop thread: blocking I/O there starves the
-                    # liveness watchdog and the process exits 75 mid-handler (#105279).
-                    _plugin_context = build_session_context(source, self.config)
-                    _plugin_context.session_key = self._session_key_for_source(source)
-                    user_args = event.get_command_args().strip()
-                    with self._session_env_scope(_plugin_context):
-                        if asyncio.iscoroutinefunction(plugin_handler):
-                            result = await plugin_handler(user_args)
-                        else:
-                            result = await self._run_in_executor_with_context(plugin_handler, user_args)
-                            if asyncio.iscoroutine(result):
-                                result = await result
-                    return True, str(result) if result else None, command
-            except Exception as e:
-                logger.warning("Plugin command dispatch failed: %s", e)
+        # Plugin-registered slash commands — shared with the busy fast-path.
+        _plugin_handled, _plugin_result = await self._hm_dispatch_plugin_command(
+            event, source, command or ""
+        )
+        if _plugin_handled:
+            return True, _plugin_result, command
         return False, None, command
 
     def _hm_bundle_slash_rewrite(

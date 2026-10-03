@@ -429,6 +429,16 @@ def _probe_single_server(
     from tools.mcp_tool_common import _parse_boolish
 
     config = _resolve_mcp_server_config(config)
+    # Same rule as runtime registration (_load_mcp_config): an unset ${VAR} is never sent to the
+    # server verbatim. The probe names the variable instead of letting the server choke on it.
+    from tools.mcp_tool_config import _strip_unresolved_placeholders
+    resolved, offending = _strip_unresolved_placeholders(name, config)
+    if resolved is None:
+        raise ValueError(
+            f"unset environment variable(s) {', '.join(offending)} — set them in ~/.hermes/.env "
+            "or remove the ${VAR} reference from the server config"
+        )
+    config = resolved
     if connect_timeout is None:
         try:
             connect_timeout = max(1.0, float(config.get("connect_timeout", 30)))

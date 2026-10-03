@@ -40,6 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setManagementProfile("");
+  delete (window as { __HERMES_BASE_PATH__?: string }).__HERMES_BASE_PATH__;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -204,6 +205,28 @@ describe("management profile scope", () => {
       expect(fetchMock.mock.calls[0][0]).toBe(expected);
     },
   );
+});
+
+describe("injected base path", () => {
+  it("prefixes authedFetch and the logout redirect with HERMES_BASE_PATH", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("window", {
+      __HERMES_BASE_PATH__: "/dash",
+      __HERMES_SESSION_TOKEN__: "t",
+      __HERMES_AUTH_REQUIRED__: false,
+      location: { assign },
+    });
+    vi.resetModules();
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const mod = await import("./api");
+    await mod.authedFetch("/api/x");
+    expect(fetchMock.mock.calls[0][0]).toBe("/dash/api/x");
+
+    await mod.api.logout();
+    expect(assign).toHaveBeenCalledWith("/dash/login");
+  });
 });
 
 describe("api OAuth helpers", () => {

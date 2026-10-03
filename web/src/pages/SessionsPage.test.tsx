@@ -20,10 +20,12 @@ const apiMocks = vi.hoisted(() => ({
   getProfiles: vi.fn(),
   getActiveProfile: vi.fn(),
   getSessionStats: vi.fn(),
+  authedFetch: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
   api: apiMocks,
+  authedFetch: apiMocks.authedFetch,
   // ProfileProvider mirrors its selection into the api module.
   setManagementProfile: vi.fn(),
   getManagementProfile: vi.fn(() => ""),
@@ -183,5 +185,23 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
     await act(async () => click(confirm ?? null));
 
     expect(apiMocks.deleteSession).toHaveBeenCalledWith("sid-worker", "worker");
+  });
+});
+
+describe("SessionsPage export uses the authenticated transport", () => {
+  it("routes session export through authedFetch so the injected base path is applied", async () => {
+    await renderSessionsPage([
+      { id: "sid-guanli", profile: "guanli", source: "cli", model: null, title: "Managed", started_at: 1,
+        ended_at: null, last_active: 1, is_active: false, message_count: 2, tool_call_count: 0,
+        input_tokens: 1, output_tokens: 1, preview: "hi" },
+    ]);
+    apiMocks.authedFetch.mockResolvedValue({ ok: false, status: 500 });
+
+    await act(async () => click(button("Export session")));
+    await waitFor(() => apiMocks.authedFetch.mock.calls.length > 0);
+
+    // A raw fetch() here would skip authedFetch's BASE prefix and drop the
+    // reverse-proxy path on a prefixed deployment.
+    expect(apiMocks.authedFetch).toHaveBeenCalledWith("/api/sessions/x/export");
   });
 });

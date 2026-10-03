@@ -24,6 +24,7 @@ import type {
   DesktopVersionInfo,
   UpdaterMechanismClient
 } from '@/global'
+import { runDebugShare, type DebugShareResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup, formatFullChangelogText } from '@/lib/commit-changelog'
 import { AlertCircle, Check, Copy, Terminal } from '@/lib/icons'
@@ -115,8 +116,6 @@ export function UpdatesOverlay() {
 
   return (
     <Dialog onOpenChange={handleClose} open={open}>
-      {/* This dialog has no inputs, so Radix's default autofocus would land on
-          the close button and trigger its tooltip immediately on open. */}
       <DialogContent
         bodyClassName="overflow-hidden p-0 gap-0"
         className="max-w-sm"
@@ -221,10 +220,6 @@ function IdleView({
 
   const details = version ? <VersionDetails version={version} /> : null
 
-  // App-installer check-unknown (OS checker unavailable): NOT "no updates"
-  // and NOT a generic error — the OS also installs updates automatically on
-  // restart (it re-reads the .appinstaller feed on every launch), so the
-  // honest view names that path. Only this mechanism gets it.
   if (status.mechanism === 'app-installer' && status.error && !status.updateAvailable) {
     return (
       <div className="grid gap-4 px-6 pb-6 pt-1 pr-8">
@@ -247,10 +242,6 @@ function IdleView({
     )
   }
 
-  // Everything that is NOT the install pitch — unsupported, check error, and
-  // already-latest — is exactly the About page's state: render the shared
-  // hero + status card so the two surfaces cannot drift. The card owns the
-  // check/retry actions (its "Check now" covers the old Try-again button).
   if (!status.supported || status.error || !updateAvailable) {
     return (
       <div className="grid gap-4 px-6 pb-6 pt-1 pr-8">
@@ -281,11 +272,6 @@ function IdleView({
   const shownItems = totalItems(groups)
   const remaining = Math.max(0, behind - shownItems)
 
-  // Name what's being updated. In remote mode the overlay acts on the connected
-  // backend, not the local client — say so. When there are no commit rows to
-  // show (e.g. pip/non-git backend), degrade to honest "no release notes" copy
-  // instead of generic filler. On a release-feed channel (stable), name the
-  // release tag instead of commit vocabulary.
   const { title, body } = resolveUpdateCopy({
     target,
     shownItems,
@@ -301,7 +287,6 @@ function IdleView({
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
         <BrandMark className="size-16" />
-
         <DialogTitle className="text-center text-xl">{title}</DialogTitle>
         <DialogDescription className="text-center text-sm">{body}</DialogDescription>
       </div>
@@ -345,7 +330,6 @@ function IdleView({
       </div>
 
       {remaining > 0 && <p className="text-center text-xs text-muted-foreground">{u.moreChanges(remaining)}</p>}
-
       <SyncStatusCard />
     </div>
   )
@@ -378,20 +362,16 @@ function ManualView({
     })
   }
 
-  // No command (e.g. the Linux sandbox-blocked relaunch): render the explanatory
-  // message + a Done button, not a copy-a-command box.
   if (!command) {
     return (
       <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
         <div className="flex flex-col items-center gap-3 text-center">
           <Terminal className="size-8 text-primary" />
-
           <DialogTitle className="text-center text-xl">
             {isBackend ? u.manualUnavailableTitle : u.manualTitle}
           </DialogTitle>
           <DialogDescription className="text-center text-sm">{message || u.manualPickedUp}</DialogDescription>
         </div>
-
         <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
           {u.done}
         </Button>
@@ -403,7 +383,6 @@ function ManualView({
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
         <Terminal className="size-8 text-primary" />
-
         <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
         <DialogDescription className="text-center text-sm">
           {guidance ?? (isBackend ? u.manualBodyBackend : u.manualBody)}
@@ -446,10 +425,6 @@ function ManualView({
   )
 }
 
-// Linux GUI/backend skew (#45205): backend updated, but the running desktop app
-// package (AppImage/.deb/.rpm) was NOT changed. Closeable terminal state that
-// tells the user to update/reinstall the desktop app — never claims the GUI was
-// updated.
 function GuiSkewView({ message, onDone }: { message?: string; onDone: () => void }) {
   const { t } = useI18n()
   const u = t.updates
@@ -458,13 +433,11 @@ function GuiSkewView({ message, onDone }: { message?: string; onDone: () => void
     <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
         <AlertCircle className="size-8 text-amber-500" />
-
         <DialogTitle className="text-center text-xl">{u.guiSkewTitle}</DialogTitle>
         <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
           {message || u.guiSkewBody}
         </DialogDescription>
       </div>
-
       <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
         {u.done}
       </Button>
@@ -485,12 +458,9 @@ function ApplyingView({
   const u = t.updates
   const label = u.stages[apply.stage as DesktopUpdateStage] ?? u.stages.idle
   const isWindowsPackage = statusMechanism === 'app-installer' || statusMechanism === 'microsoft-store'
-
   const body = isWindowsPackage ? u.applyingBodyAppInstaller : isBackend ? u.applyingBodyBackend : u.applyingBody
-
   const currentMessage = apply.message.trim()
   const recentLog = apply.log.slice(-4)
-
   const percent =
     typeof apply.percent === 'number' && Number.isFinite(apply.percent)
       ? Math.max(2, Math.min(100, Math.round(apply.percent)))
@@ -500,22 +470,18 @@ function ApplyingView({
     <div className="grid gap-5 px-6 pb-6 pt-7">
       <div className="flex flex-col items-center gap-3 text-center">
         <Loader className="size-16" label={label} type="lemniscate-bloom" />
-
         <DialogTitle className="text-center text-xl">{label}</DialogTitle>
         <DialogDescription className="text-center text-sm">{body}</DialogDescription>
-
         {currentMessage ? (
           <p className="max-w-lg break-words text-center text-xs leading-5 text-muted-foreground">{currentMessage}</p>
         ) : null}
       </div>
-
       <Progress
         aria-label={label}
         indeterminate={percent === null}
         size="lg"
         value={percent === null ? 0 : percent / 100}
       />
-
       {recentLog.length > 1 ? (
         <div className="max-h-24 overflow-hidden rounded-md border border-border/70 bg-muted/35 px-3 py-2 text-left font-mono text-[11px] leading-4 text-muted-foreground">
           {recentLog.map((entry, index) => (
@@ -525,7 +491,6 @@ function ApplyingView({
           ))}
         </div>
       ) : null}
-
       <p className="text-center text-xs text-muted-foreground">{u.applyingClose}</p>
     </div>
   )
@@ -534,6 +499,28 @@ function ApplyingView({
 function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss: () => void; onRetry: () => void }) {
   const { t } = useI18n()
   const u = t.updates
+  const maintenance = t.commandCenter.maintenance
+  const [share, setShare] = useState<DebugShareResponse | null>(null)
+  const [sharing, setSharing] = useState(false)
+  const [shareError, setShareError] = useState<string | null>(null)
+
+  const handleDebugShare = async () => {
+    setSharing(true)
+    setShare(null)
+    setShareError(null)
+
+    try {
+      const result = await runDebugShare()
+      setShare(result)
+      if (!result.ok || Object.keys(result.failures).length > 0) {
+        setShareError(maintenance.debugShareFailed)
+      }
+    } catch (error) {
+      setShareError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSharing(false)
+    }
+  }
 
   return (
     <ErrorState
@@ -548,6 +535,53 @@ function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss
       <Button className="font-semibold" onClick={onRetry} size="lg">
         {u.tryAgain}
       </Button>
+      <div className="grid gap-2">
+        <Button disabled={sharing} onClick={() => void handleDebugShare()} size="lg" variant="secondary">
+          {sharing ? <Loader className="size-4" label={maintenance.debugShareRunning} /> : null}
+          {sharing ? maintenance.debugShareRunning : maintenance.debugShare}
+        </Button>
+        <p className="text-center text-xs leading-4 text-muted-foreground">{maintenance.debugShareDesc}</p>
+      </div>
+      {shareError ? (
+        <div
+          className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+          role="alert"
+        >
+          {maintenance.debugShareFailed}: {shareError}
+        </div>
+      ) : null}
+      {share && Object.keys(share.urls).length > 0 ? (
+        <div
+          aria-live="polite"
+          className="grid gap-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 text-left"
+        >
+          <div className="mb-1 text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+            {maintenance.debugShareLinks}
+          </div>
+          <div className="max-h-36 overflow-y-auto">
+            {Object.entries(share.urls).map(([label, url]) => (
+              <div className="flex min-w-0 items-center gap-2 py-1" key={label}>
+                <span className="w-20 shrink-0 truncate text-xs text-muted-foreground">{label}</span>
+                <code className="min-w-0 flex-1 truncate font-mono text-xs" title={url}>
+                  {url}
+                </code>
+                <CopyButton
+                  appearance="icon"
+                  buttonSize="icon-xs"
+                  haptic={false}
+                  label={maintenance.copyLink}
+                  text={url}
+                />
+              </div>
+            ))}
+          </div>
+          {Object.keys(share.failures).length > 0 ? (
+            <p className="mt-1 text-xs text-muted-foreground" role="status">
+              {maintenance.debugShareFailed}: {Object.keys(share.failures).join(', ')}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       <Button onClick={onDismiss} variant="text">
         {u.notNow}
       </Button>
@@ -570,11 +604,9 @@ function CenteredStatus({
     <div className="grid gap-4 px-6 pb-6 pt-8 pr-8">
       <div className="flex flex-col items-center gap-3 text-center">
         {icon}
-
         <DialogTitle className="text-center text-lg">{title}</DialogTitle>
         {body && <DialogDescription className="text-center text-sm">{body}</DialogDescription>}
       </div>
-
       {action && <div className="flex justify-center">{action}</div>}
     </div>
   )

@@ -787,15 +787,34 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     active_org = read_active_org_id(skills_dir)
     org_root = os.path.join(skills_dir_str, ORG_MIRROR_DIR_NAME)
     matches: list[str] = []
+    visited_roots: set[str] = set()
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
+        real_root = os.path.realpath(root)
+        # A skill symlink may point at a checkout (or another profile's copy).
+        # Walk each underlying directory only once, using lexical walk order as
+        # the deterministic precedence rule.
+        if real_root in visited_roots:
+            dirs[:] = []
+            continue
+        visited_roots.add(real_root)
+        if real_root != os.path.realpath(skills_dir_str) and (
+            os.path.isfile(os.path.join(real_root, ".git"))
+            or os.path.isdir(os.path.join(real_root, ".git"))
+        ):
+            dirs[:] = []
+            continue
         has_skill_md = "SKILL.md" in files
         if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
             dirs.remove(ORG_MIRROR_DIR_NAME)
         elif root == org_root:
             dirs[:] = [d for d in dirs if d == active_org]
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
+        dirs[:] = sorted(d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS))
         if filename in files:
             matches.append(os.path.join(root, filename))
+    # Distinct roots may legitimately share a leaf name: personal/org namespaces and
+    # category paths must both reach the resolver so it can report ambiguity instead of
+    # silently choosing one entry. Symlinked duplicate roots were already removed by
+    # ``visited_roots`` above.
     yield from map(Path, sorted(matches))
 
 

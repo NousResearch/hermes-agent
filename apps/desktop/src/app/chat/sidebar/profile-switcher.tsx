@@ -103,6 +103,7 @@ import { sessionDotClassName } from '../session-status-dot'
 import { ConnectionGlyph } from './connection-glyph'
 import { FleetGatewayMenuGroup } from './fleet-gateway-menu-group'
 import { buildRestGroups, countRestAgents, type FleetAgent, type FleetGroup, fleetRouteKey } from './fleet-rail'
+import { $gatewayGroupHidden } from './gateway-group-preferences'
 import { useLocalDeviceSwitch } from './local-device-switch'
 import { ProfileLaunchContextMenu, ProfileLaunchMenuSection } from './profile-launch-menu'
 import { ProfileRemoteOverrideDialog } from './profile-remote-override-dialog'
@@ -228,11 +229,17 @@ export function ProfileRail() {
   useFleetRoster(multipleConnections)
 
   const connections = registry?.connections
+  // Gateways the user hid in Settings → Gateways. A Set so membership stays
+  // O(1) per connection and the identity of the hidden list is stable while
+  // the value is, which keeps this memo from repainting the strip per roster
+  // tick.
+  const hiddenGatewayIds = useStore($gatewayGroupHidden)
+  const hidden = useMemo(() => new Set(hiddenGatewayIds), [hiddenGatewayIds])
 
   const restGroups = useMemo(
     () =>
-      multipleConnections ? buildRestGroups({ activeConnectionId, connections: connections ?? [], order, roster }) : [],
-    [activeConnectionId, connections, multipleConnections, order, roster]
+      multipleConnections ? buildRestGroups({ activeConnectionId, connections: connections ?? [], hidden, order, roster }) : [],
+    [activeConnectionId, connections, hidden, multipleConnections, order, roster]
   )
 
   // Fleet mode needs something to show beside the active gateway. Two

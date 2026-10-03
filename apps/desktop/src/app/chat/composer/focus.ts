@@ -17,6 +17,7 @@ import { dataUrlToBlob } from '@/lib/preview-annotate/pack'
 
 import { $floatingComposerOwner } from './floating-state'
 import type { InlineRefInput } from './inline-refs'
+import type { DroppedFile } from '../hooks/use-composer-actions'
 import { RICH_INPUT_SLOT } from './rich-editor'
 
 /** Composer routing key. The main chat is `'main'`, the edit composer
@@ -56,10 +57,16 @@ interface AttachImagesDetail {
   target: ComposerTarget
 }
 
+interface AttachFilesDetail {
+  candidates: DroppedFile[]
+  target: ComposerTarget
+}
+
 const FOCUS_EVENT = 'hermes:composer-focus'
 const INSERT_EVENT = 'hermes:composer-insert'
 const INSERT_REPLY_EVENT = 'hermes:composer-insert-reply'
 const ATTACH_IMAGES_EVENT = 'hermes:composer-attach-images'
+const ATTACH_FILES_EVENT = 'hermes:composer-attach-files'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 const SUBMIT_EVENT = 'hermes:composer-submit'
 const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
@@ -383,6 +390,20 @@ export const requestComposerAttachImages = (
 
 export const onComposerAttachImagesRequest = (handler: (detail: AttachImagesDetail) => void) =>
   subscribe<AttachImagesDetail>(ATTACH_IMAGES_EVENT, handler)
+
+/** Attach native files to a composer through the same pipeline as an OS drop.
+ * Paths must be extracted while the clipboard event is still live. */
+export const requestComposerAttachFiles = (
+  candidates: DroppedFile[],
+  { target = 'active' }: { target?: ComposerTarget | 'active' } = {}
+) => {
+  if (candidates.length) {
+    dispatch<AttachFilesDetail>(ATTACH_FILES_EVENT, { candidates, target: resolve(target) })
+  }
+}
+
+export const onComposerAttachFilesRequest = (handler: (detail: AttachFilesDetail) => void) =>
+  subscribe<AttachFilesDetail>(ATTACH_FILES_EVENT, handler)
 
 /** Insert typed ref chips (carrying a display label) into a composer — the
  * structured cousin of {@link requestComposerInsert}, used for session links. */

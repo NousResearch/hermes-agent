@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { onComposerAttachImagesRequest, onComposerFocusRequest, onComposerInsertRequest } from './focus'
+import {
+  onComposerAttachFilesRequest,
+  onComposerAttachImagesRequest,
+  onComposerFocusRequest,
+  onComposerInsertRequest
+} from './focus'
 import { handleWindowPaste, routeClipboardToComposer } from './paste-to-focus'
 
 /** Minimal DataTransfer stand-in: text/plain + optional image file items. */
@@ -13,6 +18,7 @@ function clipboard({ files = [] as File[], text = '' } = {}): DataTransfer {
 }
 
 const image = (name = 'shot.png') => new File([new Uint8Array(8192)], name, { type: 'image/png' })
+const documentFile = (name = 'brief.pdf') => new File(['Hermes'], name, { type: 'application/pdf' })
 
 /** The bus defers dispatch a macrotask; flush it. */
 const flushBus = () => new Promise(resolve => setTimeout(resolve, 1))
@@ -83,6 +89,23 @@ describe('routeClipboardToComposer', () => {
 
     expect(attached).toHaveLength(1)
     expect(inserts).toEqual(['look at this'])
+  })
+
+  it('routes OS file-manager files through the attachment pipeline', async () => {
+    const attached: string[][] = []
+    const offAttach = onComposerAttachFilesRequest(({ candidates }) => attached.push(candidates.map(candidate => candidate.path)))
+    const previousDesktop = window.hermesDesktop
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { getPathForFile: () => '/Users/hermes/Desktop/brief.pdf' }
+    })
+
+    expect(routeClipboardToComposer(clipboard({ files: [documentFile()] }))).toBe(true)
+    await flushBus()
+    offAttach()
+    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: previousDesktop })
+
+    expect(attached).toEqual([['/Users/hermes/Desktop/brief.pdf']])
   })
 
   it('reports an empty clipboard as unhandled', () => {

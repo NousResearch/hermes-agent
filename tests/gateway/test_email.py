@@ -1050,6 +1050,85 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertEqual(send_call["From"], "hermes@test.com")
 
 
+    @staticmethod
+    def _run_standalone():
+        import asyncio
+        from types import SimpleNamespace
+        from plugins.platforms.email.adapter import _standalone_send
+        pconfig = SimpleNamespace(token=None, api_key=None,
+                                  extra={"address": "hermes@test.com", "smtp_host": "smtp.test.com"})
+        env = {"EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
+               "EMAIL_SMTP_HOST": "smtp.test.com", "EMAIL_SMTP_PORT": "587"}
+        with patch.dict(os.environ, env):
+            return asyncio.run(_standalone_send(pconfig, "user@test.com", "Hello"))
+
+    def test_standalone_releases_connection_when_login_fails(self):
+        """A failed login must still quit the SMTP connection instead of leaking it."""
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_server.login.side_effect = Exception("auth failed")
+            mock_smtp.return_value = mock_server
+
+            result = self._run_standalone()
+
+            self.assertFalse(result.get("success"))
+            mock_server.send_message.assert_not_called()
+            mock_server.quit.assert_called_once()
+
+    def test_standalone_falls_back_to_close_when_quit_fails(self):
+        """A failing quit() after a delivered message closes the socket and still reports success."""
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_server.quit.side_effect = Exception("connection reset")
+            mock_smtp.return_value = mock_server
+
+            result = self._run_standalone()
+
+            self.assertTrue(result["success"])
+            mock_server.send_message.assert_called_once()
+            mock_server.close.assert_called_once()
+
+    def test_standalone_releases_connection_when_send_fails(self):
+        """A failed send_message() must still quit the connection and surface the original error."""
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_server.send_message.side_effect = Exception("recipient refused")
+            mock_smtp.return_value = mock_server
+
+            result = self._run_standalone()
+
+            self.assertFalse(result.get("success"))
+            self.assertIn("recipient refused", str(result))
+            mock_server.quit.assert_called_once()
+
+    def test_standalone_cleanup_failure_does_not_undo_delivered_send(self):
+        """If quit() and close() both fail after delivery, the send still reports success (no duplicate retry)."""
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_server.quit.side_effect = Exception("connection reset")
+            mock_server.close.side_effect = OSError("bad fd")
+            mock_smtp.return_value = mock_server
+
+            result = self._run_standalone()
+
+            self.assertTrue(result["success"])
+            mock_server.send_message.assert_called_once()
+
+    def test_standalone_cleanup_failure_does_not_mask_send_error(self):
+        """If send_message() and quit() both fail, the reported error is still the send error."""
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_server.send_message.side_effect = Exception("recipient refused")
+            mock_server.quit.side_effect = Exception("connection reset")
+            mock_smtp.return_value = mock_server
+
+            result = self._run_standalone()
+
+            self.assertFalse(result.get("success"))
+            self.assertIn("recipient refused", str(result))
+            self.assertNotIn("connection reset", str(result))
+            mock_server.close.assert_called_once()
+
 class TestSmtpConnectionCleanup(unittest.TestCase):
     """Verify SMTP connections are closed even when send_message raises."""
 

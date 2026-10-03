@@ -30,9 +30,8 @@ For a managed source installation:
 hermes update
 ```
 
-The default source channel tracks `main`. Configured stable and canary channels
-track their published release commits. The update prepares dependencies through
-PM and reports configuration changes and process-restart results.
+Source installs track `main`, the only valid source channel. The update
+prepares dependencies through PM and reports configuration changes and process-restart results.
 
 ### Bundled desktop updates
 
@@ -74,46 +73,6 @@ when another live installation uses the same profile; this is advisory, not a
 lock. Desktop post-update notices are scoped to the application, so launching
 canary cannot consume stable's pending notice. The `hermes://` URL scheme remains
 shared; the application that most recently registered it handles links.
-
-### Source channels and install identity
-
-```bash
-hermes update --install-id
-hermes update --set-channel stable
-hermes update --channel stable --check
-# Or track published canary commits in this source installation:
-hermes update --set-channel canary
-hermes update
-```
-
-`--install-id` prints the installation identity and path. `--set-channel`
-changes only that installation's configuration, then exits without applying an
-update. `--channel` is a one-run override. An explicit `--branch` takes precedence
-for a source checkout.
-
-Channel names are registered in the release archive on Cloudflare R2, not in a
-fixed list shipped with Hermes. The `main` record selects source-branch delivery;
-published-build channels select an exact Git commit. Custom preview channels use
-the same source commands, for example `hermes update --set-channel pm-preview`.
-The publisher must have created that channel before an update can resolve it.
-An unavailable or invalid record reports an error rather than falling back to
-`main` or another release. Switching a source channel does not install a desktop
-package.
-Per-install subscriptions live under `update.installs` in configuration, so one
-checkout's choice does not change another installation's channel. The source-built
-desktop uses that same selection for checks and update handoffs; it does not
-replace a selected release channel with its default branch.
-
-For branch-tracking source installs, the desktop keeps the current named branch
-unless an explicit desktop branch override exists. A detached checkout uses the
-default branch. Older checkouts without source-channel probing predate release
-channels, so the desktop updates them from `main` over git; that update brings in
-the probing.
-
-Packaged desktop feed channels derive from their build tag and package owner.
-Changing a source channel is not an MSIX or Store channel switch. Canary builds
-can advance stored data formats; switching back is not a schema rollback.
-Back up data before changing release channels.
 
 :::tip
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
@@ -212,9 +171,9 @@ git -C $repo rev-list --objects --missing=error --all | Out-Null; $LASTEXITCODE 
 The installer's checkout is a partial clone: git downloads trees and blobs on demand, and each
 on-demand download is written as its own small pack. `hermes update` and `hermes update --check`
 fold them back together with `git gc --auto` (git's own `gc.autoPackLimit`, 50 by default), so a
-healthy checkout pays a no-op. They also set `maintenance.auto`, `gc.writeCommitGraph` and
-`fetch.writeCommitGraph` to `false` in that checkout, because a commit-graph write over commits the
-graph has not seen yet downloads every one of their trees. Leave those settings alone, and leave
+healthy checkout pays a no-op. They also set `maintenance.commit-graph.enabled`,
+`gc.writeCommitGraph` and `fetch.writeCommitGraph` to `false` in that checkout, because a
+commit-graph write over commits the graph has not seen yet downloads every one of their trees. Leave those settings alone, and leave
 `gc.auto` at its default: `gc.auto=0` stops the fold. The first fold on a checkout that has
 piled up thousands of packs is a full repack and can take several minutes; the update says so
 before it starts, and if the fold runs past 20 minutes it stops and prints the command below.
@@ -226,7 +185,7 @@ git -C "$repo" -c gc.writeCommitGraph=false gc --auto
 
 ### Updating against a non-default branch: `--branch`
 
-On the default source channel, `hermes update` tracks `origin/main`. Use
+Source installs track `origin/main`. Use
 `--branch NAME` for a one-run branch override:
 
 ```bash
@@ -283,7 +242,7 @@ You can pass `--keep-stash` to a terminal `hermes update` too if you want the sa
 
 ### Preview-only: `hermes update --check`
 
-`hermes update --check` compares the checkout with its source-channel target
+`hermes update --check` compares the checkout with `origin/main`
 without applying code, installing dependencies, or restarting gateways. The
 comparison can fetch Git metadata; it is not a promise of zero filesystem writes.
 Package-owned installs report their external update method.

@@ -285,6 +285,54 @@ def test_fold_does_not_lazy_fetch_the_trees_of_commits_a_bloom_graph_has_not_see
     assert len(_packs(clone)) == 1
 
 
+def test_maintenance_keys_leave_gits_own_fold_running(tmp_path: Path) -> None:
+    """Between updates, git's post-lazy-fetch auto maintenance is what folds packs (git <= 2.53).
+
+    The keys stop the commit-graph write without switching that fold off: ``maintenance.auto=false``
+    let the packs pile up until the next ``hermes update``. Compared against a stock-config clone
+    because newer git (2.55) does not fold lazy-fetch packs on its own at all.
+    """
+    def lazy_packs(name: str, keys: bool) -> int:
+        (tmp_path / name).mkdir()
+        _seed, _up, clone = _blobless_clone(tmp_path / name, 3)
+        for key, value in (("gc.autoPackLimit", "2"), ("gc.autoDetach", "false"), ("maintenance.autoDetach", "false")):
+            _run_git("config", key, value, cwd=clone)  # git's own auto gc, in the foreground
+        if keys:
+            # what the first cut persisted: all three keys together, none of the new one
+            for key in ("maintenance.auto", "gc.writeCommitGraph", "fetch.writeCommitGraph"):
+                _run_git("config", key, "false", cwd=clone)
+            disable_tree0_auto_maintenance(clone)
+        for path in ("d0/f.txt", "d1/f.txt", "d2/f.txt"):
+            _run_git("cat-file", "-p", _run_git("rev-parse", f"HEAD:{path}", cwd=clone), cwd=clone)
+        return len(_packs(clone))
+
+    assert lazy_packs("keys", keys=True) <= lazy_packs("stock", keys=False)
+
+
+def test_an_operators_own_maintenance_auto_false_is_never_erased(repo: Path) -> None:
+    _run_git("config", "maintenance.auto", "false", cwd=repo)
+
+    disable_tree0_auto_maintenance(repo)
+    disable_tree0_auto_maintenance(repo)
+
+    assert _run_git("config", "--local", "--get", "maintenance.auto", cwd=repo) == "false"
+
+
+def test_a_checkout_the_first_cut_configured_folds_on_update(partial_clone: Path) -> None:
+    """73c17151f61 persisted ``gc.auto=0`` (beside ``maintenance.auto=false`` and
+    ``fetch.writeCommitGraph=false``); left in place, ``gc --auto`` is a no-op and no fold ever runs."""
+    for key, value in (("gc.auto", "0"), ("fetch.writeCommitGraph", "false")):
+        _run_git("config", key, value, cwd=partial_clone)
+    assert len(_packs(partial_clone)) > 2
+
+    consolidate_lazy_fetch_packs(partial_clone)
+
+    assert len(_packs(partial_clone)) == 1
+    left = subprocess.run(["git", "config", "--local", "--get-regexp", r"^(maintenance\.auto|gc\.auto)$"],
+                          cwd=partial_clone, capture_output=True, text=True).stdout
+    assert left == ""
+
+
 def test_non_partial_checkout_is_left_alone(repo: Path) -> None:
     assert consolidate_lazy_fetch_packs(repo) == 0
     keys = subprocess.run(["git", "config", "--local", "--get-regexp", "maintenance|writecommitgraph"], cwd=repo,

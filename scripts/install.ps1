@@ -737,7 +737,7 @@ function Stage-Prerequisites {
 # data that lazy-fetches the trees of every unseen commit, in a loop (#127711).
 # gc.auto stays on: `hermes update` folds lazy-fetch packs with `gc --auto`.
 function Disable-TreelessGraphWrites([string]$Dir) {
-    foreach ($key in 'maintenance.auto', 'gc.writeCommitGraph', 'fetch.writeCommitGraph') {
+    foreach ($key in 'maintenance.commit-graph.enabled', 'gc.writeCommitGraph', 'fetch.writeCommitGraph') {
         Invoke-Native { git -C $Dir config $key false } | Out-Null
         if ($LASTEXITCODE) { Write-Warn "could not set $key in $Dir" }
     }

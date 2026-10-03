@@ -2399,7 +2399,10 @@ def _(rid, params: dict) -> dict:
             except Exception as exc:
                 return _err(rid, 5019, f"compute-host interrupt failed: {exc}")
             return _ok(rid, {"status": "interrupted", "turn_isolation": True})
-        session, err = _sess(params, rid)
+        # Never wait on the deferred agent build: Stop would wait on the very build it cancels, stall the
+        # reader thread it runs inline on, and set the cancel flag only once the turn is already starting
+        # (or never, when the wait times out). ``_wait_agent_for_prompt`` honours the flag before any turn.
+        session, err = _sess_building(params, rid)
         if err:
             return err
         _interrupt_session_turn(sid, session)

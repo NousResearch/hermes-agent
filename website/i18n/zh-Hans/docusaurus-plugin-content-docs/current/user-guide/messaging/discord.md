@@ -332,6 +332,7 @@ discord:
   no_thread_channels: []          # 机器人不创建线程直接响应的频道 ID
   history_backfill: true          # 在提及时前置最近的频道滚动历史（默认：true）
   history_backfill_limit: 50      # 向后扫描的最大消息数（默认：50）
+  max_split_messages: 8           # 一条回复最多拆成几条消息（0 = 不限制）
   missed_message_backfill:        # 重新处理断线期间遗漏的消息（需主动启用）
     enabled: false
     channels: []                  # 留空时使用 free_response_channels
@@ -494,6 +495,19 @@ discord:
 ```
 
 > **注意：** 机器人处理*过程中*到达的消息（在触发和响应之间）不会被捕获。这是一个可接受的简化——用户可以重新发送或再次标记。
+
+#### `discord.max_split_messages`
+
+**类型：** 整数 — **默认值：** `8`
+
+Discord 拒绝超过 2,000 字符的单条消息。Hermes 会把更长的回复拆成多条消息。此值是一条回复最多可以发出的消息数。最后一个名额是一条截断提示；完整文本仍留在会话日志中。
+
+`0` 会发出每一个分片，从而把整段回复送到 Discord。失控的回复可能会刷屏（曾有一次发出 31 条消息）。需要更长的回答时调高这个数字；仅在可以接受刷屏时设为 `0`。
+
+```yaml
+discord:
+  max_split_messages: 0    # 投递完整回复；默认 8
+```
 
 #### `discord.history_backfill_limit`
 

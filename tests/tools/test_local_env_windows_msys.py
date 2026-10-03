@@ -45,6 +45,7 @@ from tools.environments.local import (
     _prepend_git_bash_dirs,
     _quote_bash_path,
     _resolve_safe_cwd,
+    _rewrite_native_paths_for_bash,
     _sanitize_subprocess_env,
     _windows_to_msys_path,
     hermes_subprocess_env,
@@ -86,6 +87,41 @@ class TestWindowsToMsysPath:
     def test_does_not_translate_non_drive_path(self):
         assert _windows_to_msys_path("/tmp/foo") == "/tmp/foo"
         assert _windows_to_msys_path(r"\\server\share") == r"\\server\share"
+
+
+# ---------------------------------------------------------------------------
+# _rewrite_native_paths_for_bash — git-bash eval must not eat \U
+# ---------------------------------------------------------------------------
+
+class TestRewriteNativePathsForBash:
+    def test_bare_drive_path_uses_forward_slashes(self):
+        cmd = r"cd C:\Users\example\AppData\Local\hermes\scripts"
+        assert _rewrite_native_paths_for_bash(cmd) == (
+            "cd C:/Users/example/AppData/Local/hermes/scripts"
+        )
+
+    def test_quoted_path_with_spaces(self):
+        cmd = r'python "C:\Users\example\My Documents\script.py"'
+        assert _rewrite_native_paths_for_bash(cmd) == (
+            'python "C:/Users/example/My Documents/script.py"'
+        )
+
+    def test_already_forward_slash_unchanged(self):
+        cmd = "python C:/Users/example/script.py"
+        assert _rewrite_native_paths_for_bash(cmd) == cmd
+
+    def test_no_backslash_noop(self):
+        assert _rewrite_native_paths_for_bash("ls $HOME") == "ls $HOME"
+
+    def test_unc_and_posix_escapes_untouched(self):
+        cmd = r"echo hello\nworld && net use \\server\share"
+        assert _rewrite_native_paths_for_bash(cmd) == cmd
+
+    def test_bare_python_script_path(self):
+        cmd = r"C:\Users\example\AppData\Local\hermes\scripts\example_script.py"
+        rewritten = _rewrite_native_paths_for_bash(cmd)
+        assert "\\" not in rewritten
+        assert rewritten.startswith("C:/Users/example/")
 
 
 # ---------------------------------------------------------------------------

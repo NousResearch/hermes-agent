@@ -31,6 +31,9 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Reason prefix for a complete census in which no profile routes this platform to the current one.
+NO_HOST_ROUTE_PREFIX = "no profile has an enabled"
+
 
 @dataclass(frozen=True)
 class SharedBotHost:
@@ -115,7 +118,9 @@ def own_credential_present(platform, config) -> bool:
 
 def resolve_shared_bot_host(platform_name: str, platform, config) -> tuple[Optional[SharedBotHost], str]:
     """``(host, "")`` when the current profile may send through a host profile's bot, else
-    ``(None, reason)`` with a one-line, secret-free reason."""
+    ``(None, reason)`` with a one-line, secret-free reason. A reason of exactly
+    :data:`NO_HOST_ROUTE_PREFIX`-prefixed text means the census was complete and nothing routes
+    here; every other refusal is an eligible-but-unprovable host (ambiguous, unreadable, no token)."""
     from gateway.config import PLATFORM_TOKEN_ENV_NAMES, PlatformConfig
     from hermes_cli.profiles import get_active_profile_name
     from hermes_constants import get_hermes_home
@@ -128,20 +133,28 @@ def resolve_shared_bot_host(platform_name: str, platform, config) -> tuple[Optio
     current_home = get_hermes_home()
     current_name = get_active_profile_name()
 
-    candidates = []
+    candidates, unreadable = [], []
     for name, home in _candidate_homes(current_home):
         try:
             raw = _raw_config(home)
             if _host_routes(raw, platform_name, current_home):
                 candidates.append((name, home, raw))
         except Exception:
+            # An unreadable/malformed profile may hold a competing route: uniqueness is unproven.
             logger.debug("profile_routes unreadable for %s", home, exc_info=True)
-    if not candidates:
-        return None, (f"no profile has an enabled gateway.profile_routes {platform_name} entry for "
+            unreadable.append(name)
+    if not candidates and not unreadable:
+        return None, (f"{NO_HOST_ROUTE_PREFIX} gateway.profile_routes {platform_name} entry for "
                       f"profile '{current_name}' with bot_profile unset")
-    if len(candidates) > 1:
+    if len(candidates) > 1 or unreadable:
+        # Only a live gateway verified to serve this profile establishes authority independently
+        # of the (incomplete or ambiguous) config census.
         live = [c for c in candidates if _live_gateway_serves(c[1], current_name)]
         if len(live) != 1:
+            if unreadable:
+                return None, (f"host bot is unproven: config of profile(s) {', '.join(sorted(unreadable))} "
+                              f"could not be read, so a competing {platform_name} route to "
+                              f"'{current_name}' cannot be ruled out, and no single live gateway serves it")
             names = ", ".join(sorted(c[0] for c in candidates))
             return None, (f"host bot is ambiguous: profiles {names} all route {platform_name} to "
                           f"'{current_name}' and {len(live) or 'none'} of them is a live gateway serving it")

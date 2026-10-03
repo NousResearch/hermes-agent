@@ -90,11 +90,17 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     return entry.response
 
 
-def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
-    """Unblock the waiter on ``clarify_id``; False if already resolved/expired/unknown."""
+def resolve_gateway_clarify(
+    clarify_id: str, response: str, *, session_key: Optional[str] = None,
+) -> bool:
+    """Resolve only for the caller's owning session; an ID alone is not authority.
+
+    Adapters pass the key retained from ``send_clarify``, never copied from
+    the registered entry. Missing/mismatched keys and spent IDs return False.
+    """
     with _lock:
         entry = _entries.get(clarify_id)
-        if entry is None or entry.event.is_set():
+        if not session_key or entry is None or entry.session_key != session_key or entry.event.is_set():
             return False
         entry.response = str(response) if response is not None else ""
         entry.event.set()
@@ -218,7 +224,7 @@ def attempt_text_response_for_session(session_key: str, response: str) -> str:
     coerced, reason = _coerce_text_response_detailed(entry, response)
     if coerced is None:
         return TEXT_REJECTED_SELECTION if reason == "invalid_selection" else TEXT_REJECTED_PROSE
-    if resolve_gateway_clarify(entry.clarify_id, coerced):
+    if resolve_gateway_clarify(entry.clarify_id, coerced, session_key=session_key):
         return TEXT_RESOLVED
     return TEXT_NO_PENDING  # lost a race with a button/callback resolution — no work left
 

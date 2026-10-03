@@ -28,6 +28,39 @@ class TestClarifyPrimitive:
     def setup_method(self):
         _clear_clarify_state()
 
+    def test_resolution_requires_the_exact_owning_session(self, tmp_path):
+        """An exposed ID grants no authority across profiles, platforms, chats or threads (#87780)."""
+        from dataclasses import replace
+        from gateway.config import Platform
+        from gateway.run import _profile_runtime_scope
+        from gateway.session import SessionSource, build_session_key
+        from hermes_constants import get_hermes_home
+        from tools import clarify_gateway as cm
+
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", thread_id="7")
+        homes = [tmp_path / name for name in ("alpha", "beta")]
+        for home in homes:
+            home.mkdir()
+        with _profile_runtime_scope(homes[0]):
+            owner = build_session_key(source, profile=get_hermes_home().name)
+            entry = cm.register("owned-id", owner, "Pick", ["A", "B"])
+        with _profile_runtime_scope(homes[1]):
+            foreign = build_session_key(source, profile=get_hermes_home().name)
+            assert cm.resolve_gateway_clarify("owned-id", "forged") is False
+            for key in (None, "", foreign, *(
+                build_session_key(other, profile="alpha") for other in (
+                    replace(source, platform=Platform.SLACK),
+                    replace(source, chat_id="43"), replace(source, thread_id="8"),
+                )
+            )):
+                assert cm.resolve_gateway_clarify("owned-id", "forged", session_key=key) is False
+                assert entry.response is None and not entry.event.is_set()
+        with _profile_runtime_scope(homes[0]):
+            assert cm.resolve_gateway_clarify("owned-id", "B", session_key=owner) is True
+            assert cm.resolve_gateway_clarify("owned-id", "late", session_key=owner) is False
+            assert cm.wait_for_response("owned-id", timeout=0) == "B"
+            assert cm.resolve_gateway_clarify("owned-id", "late", session_key=owner) is False
+
     def test_button_choice_resolves_wait(self):
         """resolve_gateway_clarify unblocks wait_for_response with the chosen string."""
         from tools import clarify_gateway as cm
@@ -36,7 +69,7 @@ class TestClarifyPrimitive:
 
         def resolver():
             time.sleep(0.05)
-            cm.resolve_gateway_clarify("id1", "B")
+            cm.resolve_gateway_clarify("id1", "B", session_key="sk1")
 
         threading.Thread(target=resolver).start()
         result = cm.wait_for_response("id1", timeout=10.0)
@@ -48,8 +81,8 @@ class TestClarifyPrimitive:
 
         entry = cm.register("id-race", "sk-race", "Pick one", ["A", "B"])
 
-        assert cm.resolve_gateway_clarify("id-race", "A") is True
-        assert cm.resolve_gateway_clarify("id-race", "") is False
+        assert cm.resolve_gateway_clarify("id-race", "A", session_key="sk-race") is True
+        assert cm.resolve_gateway_clarify("id-race", "", session_key="sk-race") is False
         assert entry.response == "A"
 
     def test_open_ended_auto_awaits_text(self):
@@ -113,7 +146,7 @@ class TestClarifyPrimitive:
             fut = pool.submit(waiter)
             time.sleep(0.05)
             # Button wins the race first...
-            assert cm.resolve_gateway_clarify("id-race", "B") is True
+            assert cm.resolve_gateway_clarify("id-race", "B", session_key="sk-race") is True
             # ...then session cleanup runs before the waiter wakes.
             cancelled = cm.clear_session("sk-race")
             assert cancelled == 0
@@ -261,7 +294,7 @@ class TestUnlimitedWait:
         assert t.is_alive()
 
         # Once resolved, the unlimited wait returns the real answer.
-        cm.resolve_gateway_clarify("u1", "B")
+        cm.resolve_gateway_clarify("u1", "B", session_key="sk")
         t.join(timeout=5.0)
         assert not t.is_alive()
         assert result_box["r"] == "B"

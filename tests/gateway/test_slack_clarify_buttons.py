@@ -258,6 +258,7 @@ class TestSlackClarifyOtherFlow:
         _attach_auth_runner(adapter)
         cm.register("cidO", "sk-other", "Pick", ["x", "y"])
         adapter._clarify_resolved["4.4"] = False
+        adapter._clarify_messages["cidO"] = ("C1", "4.4", "❓ Pick", "sk-other")
 
         mock_client = adapter._team_clients["T1"]
         mock_client.chat_update = AsyncMock()

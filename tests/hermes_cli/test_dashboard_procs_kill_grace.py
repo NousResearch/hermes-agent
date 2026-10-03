@@ -35,21 +35,33 @@ _IGNORING_CHILD = textwrap.dedent(
     """
 )
 
+# The parent polls exists() on these pid files: publish atomically (tmp + os.replace) or a
+# torn read between create and write yields int("").
+_PUBLISH_PID = textwrap.dedent(
+    """
+    def _publish_pid(path):
+        p = pathlib.Path(path)
+        t = p.with_suffix(".tmp")
+        t.write_text(str(os.getpid()))
+        os.replace(t, p)
+    """
+)
+
 # A wedged hosted TUI: ignores SIGTERM and the SIGHUP its PTY master's close delivers.
-_WEDGED_DESCENDANT = textwrap.dedent(
+_WEDGED_DESCENDANT = _PUBLISH_PID + textwrap.dedent(
     """
     import os, pathlib, signal, sys, time
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
-    pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))
+    _publish_pid(sys.argv[1])
     time.sleep(300)
     """
 )
 
-_DETACHED_BOT = textwrap.dedent(
+_DETACHED_BOT = _PUBLISH_PID + textwrap.dedent(
     """
     import os, pathlib, sys, time
-    pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))
+    _publish_pid(sys.argv[1])
     time.sleep(300)
     """
 )

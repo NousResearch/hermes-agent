@@ -89,7 +89,10 @@ def main():
                 "-c",
                 "import os, pathlib, signal, time; "
                 "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-                "pathlib.Path(os.environ['MOCK_LSP_CHILD_PID']).write_text(str(os.getpid())); "
+                # tmp + os.replace: the test polls exists(); a plain write_text creates the file
+                # empty first and a torn read gives int('') (CI run 35857532727).
+                "p = pathlib.Path(os.environ['MOCK_LSP_CHILD_PID']); "
+                "t = p.with_suffix('.tmp'); t.write_text(str(os.getpid())); os.replace(t, p); "
                 "time.sleep(60)",
             ],
             env=os.environ,

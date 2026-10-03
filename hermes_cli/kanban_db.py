@@ -3213,12 +3213,37 @@ def edit_task(
     body: Optional[str] = None, priority: Optional[int] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
     metadata: Optional[dict] = None, board: Optional[str] = None,
+    completion_contract: Optional[str] = None,
 ) -> bool:
-    """Edit task fields, optionally backfilling a completed task's result."""
+    """Edit task fields, optionally backfilling a completed task's result.
+
+    ``completion_contract`` re-gates the card (``local-only`` relaxes a PR
+    demand so no-PR closures can complete honestly); None leaves the gate.
+    Re-gating is an operator action: a dispatcher-owned Kanban worker run is
+    refused, its own card included (see :func:`owned_kanban_task`).
+    """
+    if completion_contract is not None:
+        from agent.delegation_context import owned_kanban_task
+
+        # The gate is the operator's leash on a run, so the run being gated
+        # never moves it: refusing every dispatcher-owned worker here covers
+        # both doors (its own card and a sibling's) and the window
+        # _claim_is_live cannot see — a worker that blocked has no live claim
+        # while its process lives, so its own card's gate would be open to it.
+        owner = owned_kanban_task()
+        if owner:
+            raise ValueError(
+                "completion_contract is an operator setting, and this process is the Kanban "
+                f"worker run for {owner}. Let the run end (or `hermes kanban reclaim {owner}`) "
+                "and re-gate from an operator shell."
+            )
+        from hermes_cli.kanban_pr_acceptance import validate_contract
+        completion_contract = validate_contract(completion_contract)
     changed_fields = [
         field for field, value in (("title", title), ("body", body), ("priority", priority))
         if value is not None
     ]
+    changed_contract: Optional[tuple[Optional[str], str]] = None
     with write_txn(conn):
         status = _task_status(conn, task_id)
         if status is None or (result is not None and status != "done"):
@@ -3229,6 +3254,24 @@ def edit_task(
             if value is not None:
                 assignments.append(f"{field} = ?")
                 params.append(value)
+        if completion_contract is not None:
+            # A terminal card's gate can never fire again; re-gating it only
+            # fabricates audit history.
+            if status in ("done", "archived"):
+                return False
+            trow = conn.execute(
+                "SELECT status, claim_lock, worker_pid, worker_started_at, completion_contract"
+                " FROM tasks WHERE id = ?", (task_id,),
+            ).fetchone()
+            # Same fence as complete_task: never re-gate a live worker's run
+            # from under it; see _claim_is_live for what "live" means.
+            if _claim_is_live(trow):
+                raise LiveClaimError(task_id)
+            if trow["completion_contract"] != completion_contract:
+                assignments.append("completion_contract = ?")
+                params.append(completion_contract)
+                changed_fields.append("completion_contract")
+                changed_contract = (trow["completion_contract"], completion_contract)
         if result is not None:
             assignments.append("result = ?")
             params.append(result)
@@ -3244,7 +3287,11 @@ def edit_task(
         if result is None:
             non_priority_fields = [field for field in changed_fields if field != "priority"]
             if non_priority_fields:
-                _append_event(conn, task_id, "edited", {"fields": non_priority_fields})
+                payload: dict = {"fields": non_priority_fields}
+                if changed_contract is not None:
+                    payload["completion_contract_old"] = changed_contract[0]
+                    payload["completion_contract_new"] = changed_contract[1]
+                _append_event(conn, task_id, "edited", payload)
         else:
             handoff_summary = summary if summary is not None else result
             changed_fields.append("summary")

@@ -3573,6 +3573,19 @@ class TestExcludeSources:
         assert "s3" in ids
         assert "s2" not in ids
 
+    def test_list_sessions_rich_pages_tied_started_at_by_id(self, db):
+        t0 = 1_700_000_000.0
+        for sid in ("a", "b", "c"):
+            db.create_session(sid, "cli")
+            db._conn.execute(
+                "UPDATE sessions SET started_at=? WHERE id=?", (t0, sid)
+            )
+        db._conn.commit()
+        page0 = [s["id"] for s in db.list_sessions_rich(source="cli", limit=2, offset=0)]
+        page1 = [s["id"] for s in db.list_sessions_rich(source="cli", limit=2, offset=2)]
+        assert page0 == ["c", "b"]
+        assert page1 == ["a"]
+
 
 
 

@@ -27,7 +27,9 @@ logger = logging.getLogger("hermes_cli.plugins")
 # abandon without join — joining reintroduced a shutdown hang). Unlisted hooks run synchronously.
 # Intentionally unbounded: on_session_finalize/reset (last-chance flush — abandon can lose state);
 # subagent_start (observer); pre_gateway_dispatch (policy gate — neither fail mode is acceptable);
-# pre/post_approval_* (approval UX has its own timeout); kanban_* (own heartbeat/stale reclaim).
+# pre/post_approval_* (approval UX has its own timeout); kanban_* and pre_kanban_* (own heartbeat/stale
+# reclaim — and the pre-decision hooks run under the dispatch lock, where an abandoned worker thread
+# could still mutate shared state; the "stay fast" contract is theirs).
 # The goal is to stop a hung Python plugin callback from wedging the conversation loop (#76821) without
 # joining the worker (avoids the #6622 ThreadPoolExecutor shutdown hang). Hooks not listed below run
 # synchronously to completion. (on_session_start/end stay bounded — they sit on the common session-boundary

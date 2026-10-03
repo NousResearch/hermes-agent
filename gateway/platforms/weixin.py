@@ -10,6 +10,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
+from weakref import WeakValueDictionary
 
 logger = logging.getLogger(__name__)
 WEIXIN_COPY_LINE_WIDTH = 120
@@ -690,6 +691,9 @@ _DIRECT_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
 
 class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
+    # iLink delivers a picture and its follow-up caption as separate messages.
+    _TEXT_BATCH_DEFAULT_DELAY_S = 2.0
+    _TEXT_BATCH_DEFAULT_SPLIT_DELAY_S = 2.0
     ALLOW_ALL_ENV_PREFIX = "WEIXIN"
     supports_code_blocks = True  # Weixin renders fenced code blocks
     splits_long_messages = True  # send() chunks via _split_text()
@@ -705,6 +709,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._typing_cache = TypingTicketCache()
         self._poll_session = self._send_session = None  # type: Optional[aiohttp.ClientSession]
         self._poll_task: Optional[asyncio.Task] = None
+        self._inbound_tasks: set[asyncio.Task] = set()
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
         self._account_id = _extra_or_secret(extra, "account_id")
         self._token = str(config.token or extra.get("token") or _wx_secret("WEIXIN_TOKEN", "")).strip()
@@ -726,8 +731,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._allow_from = self._coerce_list(_wx_secret("WEIXIN_ALLOWED_USERS", "") if allow_from is None else allow_from)
         self._group_allow_from = self._coerce_list(_wx_secret("WEIXIN_GROUP_ALLOWED_USERS", "") if group_allow_from is None else group_allow_from)
         self._split_multiline_messages = _coerce_bool(_extra_or_secret(extra, "split_multiline_messages", ""), default=False)
-        # Text debounce batching (Telegram pattern): iLink delivers messages individually, so rapid bursts would each
-        # trigger a separate agent run. Telegram cadence and ceilings (#44883); ``0`` dispatches immediately.
+        # Use the shared batch timer for both text and pictures. Locks live only while a peer has
+        # inbound work, and keep CDN download completion order from reordering that peer's messages.
+        self._inbound_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
         self._configure_text_batch_delays()
         persisted = load_weixin_account(hermes_home, self._account_id) if self._account_id and not self._token else None
         if persisted:
@@ -778,13 +784,20 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def disconnect(self) -> None:
         _LIVE_ADAPTERS.pop(self._token, None)
         self._running = False
+        await cancel_task(self._poll_task)
+        self._poll_task = None
+        # Stop download/lock waiters before clearing batches: their finally blocks can re-arm a
+        # paused caption timer. Closing transport sessions first would leave late deliveries.
+        inbound = list(self._inbound_tasks)
+        for task in inbound:
+            task.cancel()
+        await asyncio.gather(*inbound, return_exceptions=True)
+        self._inbound_tasks.clear()
         for task in self._pending_text_batch_tasks.values():
             if not task.done():
                 task.cancel()
         self._pending_text_batches.clear()
         self._pending_text_batch_tasks.clear()
-        await cancel_task(self._poll_task)
-        self._poll_task = None
         for attr in ("_poll_session", "_send_session"):
             session = getattr(self, attr)
             if session and not session.closed:
@@ -828,7 +841,9 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 # Dispatch before persisting: the off-loop write is an await, and a disconnect that
                 # cancels it must not leave the advanced cursor on disk with this batch undelivered.
                 for message in response.get("msgs") or []:
-                    asyncio.create_task(self._process_message_safe(message))
+                    task = asyncio.create_task(self._process_message_safe(message))
+                    self._inbound_tasks.add(task)
+                    task.add_done_callback(self._inbound_tasks.discard)
                 # atomic_json_write fsyncs + renames: persist off the loop, and only when the cursor
                 # moved (an empty long-poll echoes the same buffer back every cycle).
                 if response.get("get_updates_buf") and str(response["get_updates_buf"]) != sync_buf:
@@ -886,27 +901,63 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 return
         elif not self._is_dm_intake_allowed(sender_id):
             return
-        context_token = str(message.get("context_token") or "").strip()
-        if context_token:
-            await self._token_store.set(self._account_id, sender_id, context_token)
-        if self._poll_session and self._token and not self._typing_cache.get(sender_id):
-            asyncio.create_task(self._fetch_typing_ticket(self._poll_session, sender_id, context_token or None, "getConfig failed"))
-        media_paths, media_types = [], []  # type: List[str], List[str]
+        source = self.build_source(chat_id=effective_chat_id, chat_type=chat_type, user_id=sender_id, user_name=sender_id)
+        event = MessageEvent(text=text, message_type=MessageType.TEXT, source=source,
+                             raw_message=message, message_id=message_id or None, timestamp=datetime.now())
+        if self._drop_unresolved(event):
+            return
+        items = []
         for item in item_list:
             ref_item = (item.get("ref_msg") or {}).get("message_item")
-            for candidate in (item, ref_item) if isinstance(ref_item, dict) else (item,):
-                await self._collect_media(candidate, media_paths, media_types)
-        if not text and not media_paths:
-            return
-        source = self.build_source(chat_id=effective_chat_id, chat_type=chat_type, user_id=sender_id, user_name=sender_id)
-        event = MessageEvent(
-            text=text, message_type=_message_type_from_media(media_types, text), source=source, raw_message=message,
-            message_id=message_id or None, media_urls=media_paths, media_types=media_types, timestamp=datetime.now())
-        logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
-        if event.message_type == MessageType.TEXT:
-            self._enqueue_text_event(event)
+            items.extend((item, ref_item) if isinstance(ref_item, dict) else (item,))
+        key = self._text_batch_key(event)
+        # Approval/control replies must reach the gateway even while a CDN download is pending.
+        if event.is_command() and not any(item.get("type") in _INBOUND_MEDIA for item in items):
+            await self._prepare_inbound_event(message, event, items, key, control=True)
         else:
-            await self.handle_message(event)
+            lock = self._inbound_locks.setdefault(key, asyncio.Lock())
+            async with lock:
+                await self._prepare_inbound_event(message, event, items, key)
+
+    async def _prepare_inbound_event(self, message, event, items, key, *, control=False) -> None:
+        # A preceding caption's timer must not expire while its picture is downloading.
+        if not control and key in self._pending_text_batches:
+            prior = self._pending_text_batch_tasks.pop(key, None)
+            if prior and not prior.done():
+                prior.cancel()
+        try:
+            sender_id = event.source.user_id
+            context_token = str(message.get("context_token") or "").strip()
+            if context_token:
+                await self._token_store.set(self._account_id, sender_id, context_token)
+            if self._poll_session and self._token and not self._typing_cache.get(sender_id):
+                asyncio.create_task(self._fetch_typing_ticket(self._poll_session, sender_id, context_token or None, "getConfig failed"))
+            for item in items:
+                await self._collect_media(item, event.media_urls, event.media_types)
+            if not event.text and not event.media_urls:
+                return
+            event.message_type = _message_type_from_media(event.media_types, event.text)
+            logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id),
+                        event.source.chat_type, len(event.media_urls))
+            if not control and event.message_type in {MessageType.TEXT, MessageType.PHOTO}:
+                event._weixin_batch_started = time.monotonic()
+                self._enqueue_text_event(event)
+            else:
+                if not control:
+                    await self._flush_text_batch_now(key)
+                await self.handle_message(event)
+        finally:
+            # A failed/empty media download must not strand an earlier buffered caption.
+            if not control and key in self._pending_text_batches and key not in self._pending_text_batch_tasks:
+                self._pending_text_batch_tasks[key] = asyncio.create_task(self._flush_text_batch(key))
+
+    def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
+        delay = super()._text_batch_delay_for(pending)
+        started = getattr(pending, "_weixin_batch_started", None)
+        # Continuous input still gets dispatched; a new chunk cannot extend collection forever.
+        if started is not None:
+            delay = min(delay, max(0.0, self._TEXT_BATCH_MAX_SPLIT_DELAY_S - (time.monotonic() - started)))
+        return delay
 
     async def _collect_media(self, item: Dict[str, Any], media_paths: List[str], media_types: List[str]) -> None:
         spec = _INBOUND_MEDIA.get(item.get("type"))

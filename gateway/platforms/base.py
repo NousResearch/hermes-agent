@@ -2576,16 +2576,10 @@ class BasePlatformAdapter(ABC):
         if self._drop_unresolved(event):
             return
         key = self._text_batch_key(event)
-        existing = self._pending_text_batches.get(key)
-        if existing is None:
-            existing = self._pending_text_batches[key] = event
-        else:
-            if event.text:
-                existing.text = _append_text(existing.text, event.text)
-            if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
-            existing.absorb_reply_expected(event)
+        # Mixed bursts must retain PHOTO type as well as attachments; otherwise a later caption
+        # can take the busy-session text/steer path without its images.
+        merge_pending_message_event(self._pending_text_batches, key, event, merge_text=True)
+        existing = self._pending_text_batches[key]
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
         if prior_task and not prior_task.done():

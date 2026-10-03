@@ -126,8 +126,14 @@ Set these in `config.yaml` under `platforms.weixin.extra`:
 | `allow_from` | `[]` | User IDs allowed for DMs (when dm_policy=allowlist) |
 | `group_allow_from` | `[]` | Group IDs allowed (when group_policy=allowlist) |
 | `split_multiline_messages` | `false` | When `true`, split multi-line replies into multiple chat messages (legacy behavior). When `false`, keep multi-line replies as one message unless they exceed the length limit. |
-| `text_batch_delay_seconds` | `0.3` | Quiet period (seconds, max `2.0`) before a buffered burst of rapid text messages is flushed as one combined request. iLink delivers messages individually, so this debounce avoids one agent invocation per fragment. Set `0` to dispatch each message immediately. |
-| `text_batch_split_delay_seconds` | `1.0` | Extended flush delay (max `4.0`; never below `text_batch_delay_seconds`) used when the latest fragment is near the split threshold (long messages iLink may have chunked). |
+| `text_batch_delay_seconds` | `2.0` | Quiet period (seconds, max `2.0`) for collecting consecutive text and pictures into one request. This keeps a picture with its follow-up explanation, including while Hermes is busy. Set `0` to dispatch without the collection delay. |
+| `text_batch_split_delay_seconds` | `2.0` | Quiet period for a near-limit text fragment (max `4.0`; never below `text_batch_delay_seconds`). Continuous input cannot extend a batch's collection window beyond `4.0` seconds. Media download time is additional. |
+
+Pictures and text from one session retain arrival order even when a CDN download is slow. Other
+sessions can continue independently, and slash commands bypass collection and pending downloads.
+Voice, video, and document messages end the preceding text/picture batch and remain separate requests.
+Messages arriving after a batch has been dispatched belong to the next batch; use a caption in the
+same message when its association with a particular picture must be explicit.
 
 ## Access Policies
 

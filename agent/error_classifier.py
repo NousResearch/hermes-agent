@@ -508,10 +508,12 @@ UNSUPPORTED_PARAM_MARKERS = (
 # Reasoning wire-field names (the profile reasoning controls minus ``verbosity``), longest first.
 # Standalone only: never a model-id segment ("The model kimi-k2-thinking is not supported when
 # using this account" is route gating for the provider-fallback rung) nor the adjective in
-# "... not supported with reasoning models".
+# "... not supported with reasoning models". CJK has no \w boundary — 思考 stays glued to the
+# preceding CJK word char, so its alternative must sit outside the lookbehind (Z.ai #129173).
 _REASONING_FIELD_TOKEN = re.compile(
     r"(?<![\w\-/])(?:reasoning_effort|thinking_config|thinking_budget|enable_thinking|thinkingconfig"
     r"|thinkingbudget|reasoning|thinking|think)(?![\w\-/])(?!\s+models?\b)"
+    r"|思考(?!\s+models?\b)"
 )
 
 # Structured rejection of a reasoning field, read from the stringified body: OpenAI-style
@@ -528,6 +530,10 @@ _REASONING_PARAM_REJECTION = re.compile(
 _REASONING_REQUIRED_MARKERS = (
     "mandatory", "cannot be disabled", "can't be disabled", "must be enabled", "is required",
     "always enabled", "cannot be turned off",
+    # Z.ai / BigModel answers in Chinese: "该模型始终思考，不支持关闭思考；请使用 low、high 或 max"
+    # ("this model always thinks, turning thinking off is not supported; use low, high or max") —
+    # the floor-retry instruction itself, in wording the English markers never matched (#129173).
+    "始终思考", "不支持关闭",
 )
 
 
@@ -1161,10 +1167,12 @@ def _classify_400(c: _Ctx) -> Verdict:
     ):
         return _V_INVALID_ENCRYPTED
     # Route rejecting a reasoning disable: a reasoning-mandatory route (GLM-5.3 on Nous Portal /
-    # OpenRouter) or a chat-only relay that does not accept ``reasoning_effort: none`` at all
-    # (#114460). Deterministic for the request shape, but the only bad field is the disable — the
-    # loop drops it and retries once. Must precede request-validation, which would abort as format_error.
-    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg):
+    # OpenRouter, or Z.ai's Chinese wording — the markers, not the pattern, catch it, #129173) or a
+    # chat-only relay that does not accept ``reasoning_effort: none`` at all (#114460). Deterministic
+    # for the request shape, but the only bad field is the disable — the loop drops it and retries
+    # once. Must precede request-validation, which would abort as format_error.
+    if (_REASONING_MANDATORY_PATTERN in msg or is_reasoning_required_rejection(msg)
+            or is_reasoning_field_rejection(msg)):
         return _V_REASONING_MANDATORY
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.

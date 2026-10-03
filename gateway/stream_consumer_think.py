@@ -9,17 +9,17 @@ from __future__ import annotations
 
 import logging
 
-from agent.think_scrubber import THINK_CLOSE_TAGS, THINK_OPEN_TAGS
-from agent.think_scrubber import StreamingThinkScrubber as _Scrubber
+from agent.think_scrubber import (
+    _CLOSE_TAG_RE,
+    _OPEN_TAG_RE,
+    StreamingThinkScrubber as _Scrubber,
+)
 
 logger = logging.getLogger("gateway.stream_consumer")
 
 
 class StreamThinkFilterMixin:
     """Progressive <think>-tag suppression over streamed deltas."""
-
-    _OPEN_THINK_TAGS = THINK_OPEN_TAGS
-    _CLOSE_THINK_TAGS = THINK_CLOSE_TAGS
 
     def _at_block_boundary(self, buf: str, idx: int) -> bool:
         """Tag at ``idx`` starts a block: start of text, or newline + optional whitespace.
@@ -35,19 +35,12 @@ class StreamThinkFilterMixin:
             return acc_boundary and preceding.strip() == ""
         return preceding[last_nl + 1:].strip() == ""
 
-    def _earliest_open_tag(self, buf: str, lower_buf: str) -> "tuple[int, int]":
+    def _earliest_open_tag(self, buf: str) -> "tuple[int, int]":
         """(index, length) of the earliest block-boundary opening tag, or (-1, 0)."""
-        best_idx, best_len = -1, 0
-        for tag in self._OPEN_THINK_TAGS:
-            tag_lower = tag.lower()
-            search_start = 0
-            while (idx := lower_buf.find(tag_lower, search_start)) != -1:
-                if self._at_block_boundary(buf, idx):
-                    if best_idx == -1 or idx < best_idx:
-                        best_idx, best_len = idx, len(tag)
-                    break  # first boundary hit for this tag is enough
-                search_start = idx + 1
-        return best_idx, best_len
+        for m in _OPEN_TAG_RE.finditer(buf):
+            if self._at_block_boundary(buf, m.start()):
+                return m.start(), m.end() - m.start()
+        return -1, 0
 
     def _filter_and_accumulate(self, text: str) -> None:
         """Append a delta to the buffer, discarding think blocks.
@@ -59,30 +52,34 @@ class StreamThinkFilterMixin:
         self._think_buffer = ""
 
         while buf:
-            # Case-insensitive: models emit <Think>, <THINKING>, …
-            lower_buf = buf.lower()
             if self._in_think_block:
-                best_idx, best_len = _Scrubber._find_first_tag(buf, self._CLOSE_THINK_TAGS)
-                if best_len:
+                close_m = _CLOSE_TAG_RE.search(buf)
+                if close_m is not None:
                     self._in_think_block = False
-                    buf = buf[best_idx + best_len:]
+                    buf = buf[close_m.end():]
                 else:
                     # Hold a tail that could be a partial close tag; discard the rest.
-                    max_tag = max(len(t) for t in self._CLOSE_THINK_TAGS)
-                    self._think_buffer = buf[-max_tag:] if len(buf) > max_tag else buf
+                    self._think_buffer = _Scrubber._partial_tag_tail(buf, closing=True)
                     return
             else:
-                best_idx, best_len = self._earliest_open_tag(buf, lower_buf)
+                # Priority 1: a closed pair anywhere (matching the scrubber — inline pairs are
+                # almost certainly leaked reasoning). Priority 2: an open tag at a block boundary.
+                pair = _Scrubber._find_earliest_closed_pair(buf)
+                best_idx, best_len = self._earliest_open_tag(buf)
+                if pair is not None and (best_idx == -1 or pair[0] <= best_idx):
+                    self._append_accumulated(buf[:pair[0]])
+                    buf = buf[pair[1]:]
+                    continue
                 if best_len:
                     self._append_accumulated(buf[:best_idx])
                     self._in_think_block = True
                     buf = buf[best_idx + best_len:]
                 else:
                     # Hold back a partial open tag at the tail.
-                    held_back = _Scrubber._max_partial_suffix(buf, self._OPEN_THINK_TAGS)
+                    held_back = _Scrubber._partial_tag_tail(buf, closing=False)
                     if held_back:
-                        self._append_accumulated(buf[:-held_back])
-                        self._think_buffer = buf[-held_back:]
+                        self._append_accumulated(buf[:-len(held_back)])
+                        self._think_buffer = held_back
                     else:
                         # An orphan </think> (thinking-mode toggle dropped the open, or
                         # incomplete upstream stripping) is noise.

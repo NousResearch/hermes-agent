@@ -6,6 +6,7 @@ documents raise :class:`ExtractionError`; callers fall back to text/binary handl
 from __future__ import annotations
 
 import contextlib
+import datetime
 import functools
 import importlib
 import itertools
@@ -494,6 +495,65 @@ def _xlsx_string_text(item: ET.Element, s: str) -> str:
         for child in item if child.tag in {f"{s}t", f"{s}r"})
 
 
+# Built-in number formats that show a date or a time (ECMA-376 Part 1, 18.8.30).
+_XLSX_BUILTIN_DATE_FORMATS = {14: "date", 15: "date", 16: "date", 17: "date", 18: "time",
+                              19: "time", 20: "time", 21: "time", 22: "datetime",
+                              45: "time", 46: "elapsed", 47: "time"}
+# Quoted text, escaped characters and [...] sections (colors, locales) are not date tokens.
+_XLSX_FORMAT_LITERALS = re.compile(r'"[^"]*"|\\.|\[[^\]]*\]')
+_XLSX_ELAPSED = re.compile(r"\[(?:h+|m+|s+)\]", re.IGNORECASE)
+_XLSX_MAX_SERIAL = 2958466  # 9999-12-31 is the last date a workbook can hold
+
+
+def _xlsx_format_kind(code: str) -> str:
+    """How a number format shows a value: "date", "time", "datetime", "elapsed" or ""."""
+    if _XLSX_ELAPSED.search(code):
+        return "elapsed"
+    tokens = _XLSX_FORMAT_LITERALS.sub("", code).lower()
+    has_date = "y" in tokens or "d" in tokens
+    has_time = "h" in tokens or "s" in tokens
+    if has_date:
+        return "datetime" if has_time else "date"
+    return "time" if has_time else ""
+
+
+def _xlsx_date_styles(styles: ET.Element, s: str) -> dict[int, str]:
+    """Display kind per cell style index (a cell's ``s`` attribute), for date/time styles."""
+    custom = {fmt.get("numFmtId", ""): fmt.get("formatCode", "") for fmt in styles.iter(f"{s}numFmt")}
+    kinds: dict[int, str] = {}
+    cell_xfs = styles.find(f"{s}cellXfs")
+    for index, xf in enumerate(cell_xfs if cell_xfs is not None else ()):
+        fmt_id = xf.get("numFmtId", "0")
+        if fmt_id in custom:
+            kind = _xlsx_format_kind(custom[fmt_id])
+        else:
+            kind = _XLSX_BUILTIN_DATE_FORMATS.get(int(fmt_id) if fmt_id.isdigit() else -1, "")
+        if kind:
+            kinds[index] = kind
+    return kinds
+
+
+def _xlsx_date_text(value: str, kind: str, date1904: bool) -> str:
+    """A date/time serial as ISO text in the form its style shows, or ``value`` unchanged."""
+    try:
+        serial = float(value)
+    except ValueError:
+        return value
+    if not 0 <= serial < _XLSX_MAX_SERIAL:
+        return value
+    seconds = round(serial * 86400)
+    if kind == "elapsed":
+        return f"{seconds // 3600}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
+    if date1904:
+        base = datetime.datetime(1904, 1, 1)
+    else:  # the 1900 system counts a 1900-02-29 that never existed, as serial 60
+        base = datetime.datetime(1899, 12, 31 if serial < 60 else 30)
+    moment = base + datetime.timedelta(seconds=seconds)
+    if kind == "time":
+        return moment.strftime("%H:%M:%S")
+    return moment.strftime("%Y-%m-%d" if kind == "date" else "%Y-%m-%d %H:%M:%S")
+
+
 def _extract_xlsx(path: str) -> str:
     s, r, pr = f"{{{_NS_S}}}", f"{{{_NS_REL}}}", f"{{{_NS_PKG_REL}}}"
     with _open_zip(path, "XLSX") as zf:
@@ -503,14 +563,18 @@ def _extract_xlsx(path: str) -> str:
         rels_root = _zip_xml(zf, "xl/_rels/workbook.xml.rels", optional=True)
         rels = {rel.get("Id", ""): rel.get("Target", "")
                 for rel in rels_root.iter(f"{pr}Relationship") if rel.get("Id")}
+        date_styles = _xlsx_date_styles(_zip_xml(zf, "xl/styles.xml", optional=True), s)
+        workbook = _zip_xml(zf, "xl/workbook.xml")
+        workbook_pr = workbook.find(f"{s}workbookPr")
+        date1904 = workbook_pr is not None and workbook_pr.get("date1904", "") in {"1", "true"}
         out: list[str] = []
-        for sheet in _zip_xml(zf, "xl/workbook.xml").iter(f"{s}sheet"):
+        for sheet in workbook.iter(f"{s}sheet"):
             target = rels.get(sheet.get(f"{r}id", ""), "").lstrip("/")
             part = posixpath.normpath(target if target.startswith("xl/") else f"xl/{target}")
             if sheet.get("state", "visible") in {"hidden", "veryHidden"} or part not in names:
                 continue
             with contextlib.suppress(ET.ParseError):
-                rows = _sheet_rows(zf.read(part), shared)
+                rows = _sheet_rows(zf.read(part), shared, date_styles, date1904)
                 out += [f"# ── Sheet: {sheet.get('name', 'Sheet')} ──",
                         *(["\t".join(row) for row in rows] or ["(empty)"]), ""]
     return _joined(out, "XLSX has no visible sheets with content")
@@ -523,7 +587,8 @@ def _col_index(ref: str) -> int:
     return max(idx - 1, 0)
 
 
-def _sheet_rows(xml_bytes: bytes, shared: list[str]) -> list[list[str]]:
+def _sheet_rows(xml_bytes: bytes, shared: list[str], date_styles: Optional[dict[int, str]] = None,
+                date1904: bool = False) -> list[list[str]]:
     root = ET.fromstring(xml_bytes)
     s = f"{{{_NS_S}}}"
     rows: list[list[str]] = []
@@ -533,7 +598,7 @@ def _sheet_rows(xml_bytes: bytes, shared: list[str]) -> list[list[str]]:
         for cell in row.iter(f"{s}c"):
             col = _col_index(cell.get("r", "")) if cell.get("r") else max_col + 1
             if col < _MAX_XLSX_COLS:
-                cells[col] = _cell_value(cell, shared, s)
+                cells[col] = _cell_value(cell, shared, s, date_styles or {}, date1904)
                 max_col = max(max_col, col)
         rows.append([cells.get(i, "") for i in range(max_col + 1)])
     while rows and not any(value.strip() for value in rows[-1]):
@@ -541,9 +606,15 @@ def _sheet_rows(xml_bytes: bytes, shared: list[str]) -> list[list[str]]:
     return rows
 
 
-def _cell_value(cell: ET.Element, shared: list[str], s: str) -> str:
+def _cell_value(cell: ET.Element, shared: list[str], s: str,
+                date_styles: Optional[dict[int, str]] = None, date1904: bool = False) -> str:
     value = cell.findtext(f"{s}v") or ""
     typ = cell.get("t", "")
+    style = cell.get("s", "0")
+    kind = (date_styles or {}).get(int(style) if style.isdigit() else -1, "")
+    if kind and typ in {"", "n"} and value:
+        # A date is stored as a serial number and shown through its number format.
+        return _xlsx_date_text(value, kind, date1904)
     if typ == "s":
         try:
             return shared[int(value)]

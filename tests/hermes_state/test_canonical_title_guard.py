@@ -94,6 +94,30 @@ def test_auto_archive_sweep_skips_the_canonical_chat(db):
     assert db.get_session(forever)["title"] == SessionDB.CANONICAL_BOT_CHAT_TITLE
 
 
+def test_canonical_chat_keeps_its_guards_after_compression_rotates_it(db):
+    """Compression moves the registry title onto the published segment, so that row must be
+    hidden too, or the rename guard and the idle-sweep exemption stop matching it (#98979)."""
+    import time
+    from types import SimpleNamespace
+
+    from agent.conversation_compression import _carry_session_state_to_child
+
+    stale = time.time() - 10 * 86400
+    forever = _make_canonical(db)
+    db.publish_compression_child(parent_session_id=forever, child_session_id="forever-2", source="desktop",
+                                 messages=[{"role": "user", "content": "[summary]", "timestamp": stale}],
+                                 require_compression_lease=False)
+    _carry_session_state_to_child(SimpleNamespace(session_id="forever-2", _session_db=db), forever,
+                                  SessionDB.CANONICAL_BOT_CHAT_TITLE)
+    assert db.resolve_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE) == "forever-2"
+
+    db._write_sql("UPDATE sessions SET started_at = ?, last_activity_at = ?", (stale, stale))
+    assert db.archive_stale_sessions(3) == 0
+    with pytest.raises(ValueError, match="canonical Bot Chat"):
+        db.set_session_title("forever-2", "My cool chat")
+    assert db.resolve_session_by_title(SessionDB.CANONICAL_BOT_CHAT_TITLE) == "forever-2"
+
+
 def test_auto_titler_still_cannot_touch_the_canonical_row(db):
     # Pre-existing provenance contract, re-pinned here: user-authority title
     # outranks derived/llm, so the turn-start auto-titler can never displace

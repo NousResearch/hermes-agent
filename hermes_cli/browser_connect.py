@@ -750,6 +750,11 @@ def _debug_candidate_paths(system: str):
 
 def get_chrome_debug_candidates(system: str) -> list[str]:
     candidates: dict[str, str] = {}  # normalized -> first path seen (dedupe, keep order)
+    # Match the explicit automation binary without changing real-profile identity
+    # detection or falling back to PM's browser when no override was requested.
+    override = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
+    if override and os.path.isfile(override):
+        candidates[os.path.normcase(os.path.normpath(override))] = override
     for path in filter(None, _debug_candidate_paths(system)):
         normalized = os.path.normcase(os.path.normpath(path))
         if normalized not in candidates and os.path.isfile(path):

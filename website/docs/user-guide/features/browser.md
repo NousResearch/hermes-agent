@@ -529,6 +529,8 @@ In the CLI, use:
 
 If a browser isn't already running with remote debugging, Hermes will attempt to auto-launch a supported Chromium-family browser with `--remote-debugging-port=9222`. Detection includes Brave, Brave Origin/Nightly, Google Chrome, Chromium, and Microsoft Edge, with common Linux install paths and binary names such as `brave-origin`, `brave-origin-nightly`, `/opt/brave.com/brave-origin/brave-origin`, `/opt/brave.com/brave-origin-nightly/brave-origin`, `/opt/brave-bin/brave`, and `/snap/bin/brave`.
 
+If your launch environment already sets `AGENT_BROWSER_EXECUTABLE_PATH` to a Chromium-family executable (for example, Helium), `/browser connect` tries that file first. The manual launch hint uses the same selection. Missing paths and directories are ignored in favor of detected browsers. This still launches with Hermes's dedicated debug profile; it does not enable real-profile support for an otherwise unsupported browser.
+
 :::tip
 To start a Chromium-family browser manually with CDP enabled, use a dedicated user-data-dir so the debug port actually comes up even if the browser is already running with your normal profile:
 

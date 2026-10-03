@@ -196,7 +196,8 @@ def _truncate_input_text_parts(content: List[Dict[str, Any]], budget: int) -> Li
         if cost > budget:
             # Use the same estimator as retention: four characters per token is
             # not a safe head bound for CJK or multibyte non-ASCII text.
-            lo, hi = 0, len(text)
+            # Every char costs >= 1/4 token, so no prefix past budget*4 fits.
+            lo, hi = 0, min(len(text), budget * 4)
             while lo < hi:
                 mid = (lo + hi + 1) // 2
                 if _approx_tokens(text[:mid]) <= budget:

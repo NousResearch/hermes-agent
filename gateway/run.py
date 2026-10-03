@@ -3291,6 +3291,14 @@ def _reconnect_needs_attention(info: dict, now: float) -> bool:
     return (now - queued_at) >= threshold
 
 
+# NEEDS_ATTENTION requires this many FAILED reconnect attempts on top of the elapsed-time
+# threshold: elapsed time alone escalates a single post-resume pass that never retried (#126825).
+_RECONNECT_ATTENTION_MIN_FAILED_ATTEMPTS = 3
+# The reconnect watcher wakes about every 10 s; a pass gap beyond this means the host was
+# suspended and ``time.monotonic()`` kept advancing — that gap must not count as failure (#126825).
+_RECONNECT_WATCH_SUSPEND_GAP_SECS = 60.0
+
+
 # "No session DB pinned": lets ``_session_db`` distinguish "resolve from profile scope" from a
 # deliberate ``runner._session_db = None`` (disables DB commands). Mirrors gateway.session._DB_UNPINNED.
 _SESSION_DB_UNPINNED = object()

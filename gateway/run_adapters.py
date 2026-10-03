@@ -719,12 +719,17 @@ class GatewayAdapterLifecycleMixin:
             return True
 
         await asyncio.sleep(10)  # initial delay — let startup finish
+        prev_pass_at: Optional[float] = None
         while self._running:
             if not self._failed_platforms:
+                prev_pass_at = None
                 if not await _idle(30, until_queued=True):
                     return
                 continue
             now = time.monotonic()
+            if prev_pass_at is not None:
+                self._compensate_reconnect_suspend_gap(now - prev_pass_at)
+            prev_pass_at = now
             for platform in list(self._failed_platforms.keys()):
                 if not self._running:
                     return
@@ -732,15 +737,30 @@ class GatewayAdapterLifecycleMixin:
             if not await _idle(10):  # re-check every 10 seconds
                 return
 
+    def _compensate_reconnect_suspend_gap(self, gap: float) -> None:
+        """Shift queued clocks forward after a watcher pass gap far above the ~10 s cadence: the
+        host was suspended and ``time.monotonic()`` advanced anyway, so the gap must not count as
+        continuous failure (#126825). ``next_retry`` is left alone so the first post-resume pass
+        retries immediately."""
+        from gateway.run import _RECONNECT_WATCH_SUSPEND_GAP_SECS
+        if gap <= _RECONNECT_WATCH_SUSPEND_GAP_SECS:
+            return
+        for info in self._failed_platforms.values():
+            queued_at = info.get("queued_at")
+            if queued_at is not None:
+                info["queued_at"] = queued_at + gap
+
     def _flag_reconnect_needs_attention(
         self, platform, info: dict, now: float, *, status_key: Optional[str] = None
     ) -> None:
         """Flag NEEDS_ATTENTION (once) past the threshold — a signal, NOT a circuit breaker. The threshold
         is the bound profile's ``agent.reconnect_attention_after``: secondaries call this inside their
         ``_profile_runtime_scope`` with their ``<profile>:<platform>`` status key."""
-        from gateway.run import _reconnect_needs_attention
+        from gateway.run import _RECONNECT_ATTENTION_MIN_FAILED_ATTEMPTS, _reconnect_needs_attention
         if info.get("attention_flagged") or not _reconnect_needs_attention(info, now):
             return
+        if info.get("attempts", 0) < _RECONNECT_ATTENTION_MIN_FAILED_ATTEMPTS:
+            return  # elapsed time alone must not escalate without failed attempts (#126825)
         info["attention_flagged"] = True
         queued_for = now - info.get("queued_at", now)
         logger.warning(

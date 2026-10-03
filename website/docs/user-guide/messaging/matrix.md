@@ -20,10 +20,10 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 
 | Context | Behavior |
 |---------|----------|
-| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a DM. Any room with 2 or fewer joined members is treated as a DM this way too, even if it has an explicit name — Matrix clients auto-name 1:1 chats, so name alone isn't a reliable signal. |
-| **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. A deliberately-created 2-person room is still classified as a DM (see above) and silently bypasses `MATRIX_ALLOWED_ROOMS`, `MATRIX_REQUIRE_MENTION`, and `MATRIX_FREE_RESPONSE_ROOMS` — add a third member if you need it to behave like a regular room. |
+| **DMs** | Hermes treats a room as a private bot chat when exactly two users have joined: the bot and one other user. It responds to every message from an authorised user without an `@mention`, and each chat has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a private bot chat. The room name and `m.direct` metadata do not change this classification. |
+| **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. A room with more than two joined users, or whose joined membership cannot be determined, follows room rules. Only private bot chats bypass `MATRIX_ALLOWED_ROOMS` and the room mention settings. |
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
-| **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for DM messages — this is distinct from `MATRIX_DM_MENTION_THREADS`, which only starts a thread when the bot is `@mentioned` in a DM. Rooms with 2 or fewer joined members are DM-classified (see above) and follow `MATRIX_DM_AUTO_THREAD`, not `MATRIX_AUTO_THREAD`. |
+| **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. Set `MATRIX_DM_AUTO_THREAD=true` (default false) to also auto-create threads for private bot chats. This is distinct from `MATRIX_DM_MENTION_THREADS`, which starts a thread when the bot is `@mentioned` in a private bot chat. These two-person chats follow `MATRIX_DM_AUTO_THREAD`. |
 | **Commands** | Hermes accepts normal `/commands` when your Matrix client sends them. If your client reserves `/` for local commands, use `!commands` instead; Hermes normalizes known `!command` aliases to `/command`. |
 | **Interactive controls** | Dangerous-command approval and `/model` selection can use Matrix reactions. Approval reactions can be limited to the user who requested the action. |
 | **Thinking and tool activity** | Matrix uses threaded, editable thinking/tool-activity panes when gateway progress is enabled, so updates do not flood the main room timeline. |
@@ -103,7 +103,31 @@ matrix:
   auto_thread: true               # Auto-create threads for responses (default: true)
   dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
   max_message_length: 16000       # Outbound chunk size in chars (default: 16000, max: 65535)
+  room_backfill_limit: 20         # Earlier room events to scan on a mention (0 disables)
+  thread_backfill_limit: 20       # Earlier thread events to scan (0 disables)
 ```
+
+In shared rooms and threads that require a mention, an admitted @mention includes the
+messages that did not mention the bot since its previous turn there. The scan stops at
+the bot's own last reply or the last admitted mention, whichever is later, and each
+limit bounds the number of events scanned. The bot's status notices, such as restart
+notices and progress updates, are not replies: the scan continues past them, and
+neither catch-up nor thread history includes them. The previous turn can belong to an
+earlier session. In the main timeline, catch-up after `/new` starts after the bot's
+reply to `/new`, so the conversation that the reset discarded stays out of the new
+session. Thread messages stay within their thread; room catch-up excludes thread
+replies. The first message of a new thread session includes the thread root and up to
+`thread_backfill_limit` earlier thread messages instead. That history does not stop at
+the bot's own messages, because the new session has no transcript that contains them.
+In a thread, the first message after `/new` starts a new thread session, so it gets
+that history, including the messages from before `/new`. Free-response rooms and rooms
+with `require_mention: false` start a turn for every message, so they have no catch-up.
+Threads that the bot already takes part in also start a turn for every message unless
+`thread_require_mention` is `true`. With that setting, those threads require a mention
+and get catch-up as well. Set either limit to `0` to disable that source of earlier
+messages. Catch-up and thread history also list recent reactions to the included
+messages. Redacted reactions are excluded. Ordinary reactions do not start an agent
+turn.
 
 Or via environment variables:
 
@@ -162,6 +186,13 @@ named session from another Matrix room unless you explicitly use
 share the lane. With `group_sessions_per_user: true` (default), Alice and Bob get
 separate Project B sessions. With `group_sessions_per_user: false`, the room has
 one shared Project B transcript.
+
+During a live Matrix turn, the agent can use `matrix_read` to inspect the
+current room's name, topic, alias, join rule, history visibility, encryption,
+joined members, power levels, and pinned messages. Member and pin results are
+bounded by the tool's `limit` argument. Pinned messages use the bot's Matrix
+client and report individual fetch or decryption errors. The tool applies the
+same room and sender access rules as Matrix history reads.
 
 This guide walks you through the full setup process — from creating your bot account to sending your first message.
 
@@ -410,9 +441,22 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-Hermes does not expose Matrix-specific agent tools (such as room creation, invites, or redaction) — the agent interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.
+Hermes has one Matrix-specific agent tool, `matrix_read`, in the `matrix_read` toolset. It reads recent messages in the current room, one thread, or one event, and returns at most 50 events. It also reads the current room's state, joined members, permissions and pins. Each call checks that the room is joined and allowed and that the user who sent the current message passes the Matrix user policy. Encrypted events are decrypted with the gateway's Matrix session. Each message in the result lists its reactions with their sender and target event.
 
-If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms (DMs are exempt).
+The agent can also list joined rooms and joined Spaces, or search the homeserver's
+user directory. Discovery applies the configured room and requester policy
+and never joins rooms. It lists a room or Space only if the requesting user
+has joined it. The directory search runs as the bot account. Hermes returns
+only the matching users who share at least one joined room with the
+requester, so the results do not reveal which other users the bot can see.
+Each discovery request examines at most 50 of the bot's joined rooms, and
+results report truncation and errors.
+
+The `matrix_read` toolset is enabled for Matrix sessions. Turn it off in the Matrix checklist of `hermes tools`, or run `hermes tools disable matrix_read --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before this toolset existed does not include it; run `hermes tools enable matrix_read --platform matrix` to add it.
+
+Hermes has no agent tools for room creation, invites or redaction. The agent otherwise interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.
+
+If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms and in private bot chats with exactly two joined users, including the bot.
 
 Reaction controls use:
 
@@ -513,9 +557,9 @@ MATRIX_HOME_ROOM=!abc123def456:matrix.example.org
 
 ## Room allowlist (`allowed_rooms`)
 
-Restrict the bot to a fixed set of Matrix rooms. When set, the bot **only** responds in rooms whose ID appears in the list — messages from any other room are silently ignored, even if the bot is mentioned.
+Restrict the bot to a fixed set of Matrix rooms. When set, the bot responds in listed rooms and private bot chats. It ignores messages from other rooms, even if the bot is mentioned.
 
-**DMs (direct chat rooms) are exempt** from this filter, so authorized users can always reach the bot one-on-one.
+**Private bot chats are exempt** from this filter when exactly two users have joined, including the bot. Other rooms require an allowlist entry, even if a Matrix client marks them as direct.
 
 ```yaml
 matrix:

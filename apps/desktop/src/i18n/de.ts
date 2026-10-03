@@ -4335,6 +4335,8 @@ export const deOverrides = {
     editingQueuedInComposer: 'Bearbeitet eingereihten Turn im Composer',
     restoredDraftNotice: 'Ihre nicht gesendete Nachricht wurde wiederhergestellt',
     restoredDraftUndo: 'Rückgängig',
+    salvagedEditNotice: 'Ihr bearbeiteter Text wurde behalten',
+    salvagedEditUndo: 'Zurücksetzen',
     queueEdit: 'Bearbeiten',
     queueExpand: 'Ausklappen',
     queueCollapse: 'Einklappen',

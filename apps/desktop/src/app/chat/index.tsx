@@ -25,7 +25,7 @@ import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-s
 import { currentModelCapabilities, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
-import { migrateSessionDraft } from '@/store/composer'
+import { migrateSalvagedEdit, migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
 import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
@@ -603,6 +603,11 @@ const ChatViewContent = memo(function ChatViewContent({
 
     migrateSessionDraft(selectedSessionId, queueSessionKey)
     migrateQueuedPrompts(selectedSessionId, queueSessionKey)
+    // The pending queued-edit recovery moves with the same handoff (#88621
+    // review R6) — otherwise its record strands under a key no composer will
+    // resolve again. migrateSalvagedEdit independently guards the
+    // same-conversation rule, and no-ops when nothing is pending.
+    migrateSalvagedEdit(selectedSessionId, queueSessionKey)
   }, [queueSessionKey, selectedSessionId, sessions])
 
   // Transcript-side stops (the streaming message's hover Stop, the runtime's

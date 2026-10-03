@@ -4328,6 +4328,8 @@ export const esOverrides = {
     editingQueuedInComposer: 'Editando turno en cola en el compositor',
     restoredDraftNotice: 'Se restauró tu mensaje sin enviar',
     restoredDraftUndo: 'Deshacer',
+    salvagedEditNotice: 'Se conservó tu texto editado',
+    salvagedEditUndo: 'Recuperarlo',
     queueEdit: 'Editar',
     queueExpand: 'Expandir',
     queueCollapse: 'Contraer',

@@ -79,6 +79,16 @@ export function completionRequestForInput(
   }
 }
 
+export type CompletionRequest = NonNullable<ReturnType<typeof completionRequestForInput>>
+
+/** Every completion RPC carries the session id: project-local skills follow the
+ * session's repo, and path completion roots at the session's cwd. Without it
+ * the gateway falls through to the process TERMINAL_CWD, which is $HOME when
+ * `terminal.cwd` is a placeholder. */
+export function completionParams(request: CompletionRequest, sid: string | null | undefined) {
+  return sid ? { ...request.params, session_id: sid } : request.params
+}
+
 export function useCompletion(input: string, blocked: boolean, gw: GatewayClient) {
   const [completions, setCompletions] = useState<CompletionItem[]>([])
   const [compIdx, setCompIdx] = useState(0)
@@ -118,12 +128,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
         return
       }
 
-      // Skill completions are per session: project-local skills follow the
-      // session's repo, so the gateway must know which session is asking.
-      const sid = getUiState().sid
-
-      const params =
-        request.method === 'complete.slash' && sid ? { ...request.params, session_id: sid } : request.params
+      const params = completionParams(request, getUiState().sid)
 
       gw.request<CompletionResponse>(request.method, params)
         .then(raw => {

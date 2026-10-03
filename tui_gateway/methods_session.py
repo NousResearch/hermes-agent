@@ -358,6 +358,45 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     from .methods_session_model_guard import model_override_conflict
     if conflict := model_override_conflict(params, _profile_build_scope(profile_home)):
         return _err(rid, -32602, conflict.pop("message"), conflict)
+    # Idempotency: a client retrying a create whose first response was lost
+    # should get back the SAME session, not a fresh one (which would leave a
+    # duplicate child). The caller supplies a stable key per logical create.
+    idem_key = _str_param(params, "idempotency_key") or None
+    if idem_key is not None:
+        with _sessions_lock:
+            # Drop expired entries while we're here.
+            now_for_gc = time.time()
+            expired = [k for k, (_, ts) in _idempotency_keys.items() if now_for_gc - ts > _IDEMPOTENCY_KEY_TTL]
+            for k in expired:
+                _idempotency_keys.pop(k, None)
+            existing = _idempotency_keys.get(idem_key)
+            if existing is not None:
+                existing_sid, _ = existing
+                session = _sessions.get(existing_sid)
+                if session is not None:
+                    # Refresh the TTL so back-to-back retries don't age out mid-flight.
+                    _idempotency_keys[idem_key] = (existing_sid, now_for_gc)
+                    history = session["history"]
+                    override = session.get("model_override") or {}
+                    # Same result shape as the fresh-create path below: branch_stored
+                    # (copy_parent_history) answers messages_omitted and NEVER puts the
+                    # copied transcript on the wire — its result contract forbids
+                    # ``messages``, and serializing the parent's history through the
+                    # renderer is exactly what the method exists to avoid.
+                    return _ok(rid, {
+                        "session_id": existing_sid, "stored_session_id": session["session_key"],
+                        "message_count": len(history),
+                        **({"messages_omitted": True} if copy_parent_history
+                           else {"messages": _history_to_messages(history, profile_home=session.get("profile_home"))}),
+                        "info": {"model": override.get("model") if override else _session_default_model(session),
+                                 **({"provider": override["provider"]} if override.get("provider") else {}),
+                                 "tools": {}, "skills": {}, "cwd": session["cwd"], "branch": git_probe.branch(session["cwd"]),
+                                 "project": _project_info_for_cwd(session["cwd"]), "lazy": True,
+                                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+                                 "profile_name": _response_profile_name(profile)}})
+                # The session was closed between the original create and the retry —
+                # fall through and create a fresh one under the same key.
+                _idempotency_keys.pop(idem_key, None)
     (sid, source), key = _new_runtime_ids(params), _new_session_key()
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
@@ -418,6 +457,8 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "transport": current_transport() or _stdio_transport,
             "auth_user_id": _transport_auth_user_id(current_transport())}
         _register_session_cwd(_sessions[sid])
+        if idem_key is not None:
+            _idempotency_keys[idem_key] = (sid, now)
     if session_model_override:
         # A composer pick rides in as this override and beats model.default for the whole session;
         # name both so agent.log alone explains which model a new chat runs, and why (#107410).
@@ -2007,7 +2048,7 @@ def _save_via_compute_host(rid, params: dict) -> dict:
         ack = _send_compute_host_control(str(params.get("session_id") or ""), route_name="session.save", wait=True)
     except Exception as exc:
         return _err(rid, 5011, f"compute-host session save failed: {exc}")
-    if (resp := _compute_host_ack_error(rid, ack, 5011, "compute-host session save failed")) is not None:
+    if (resp := _compute_host_ack_error(rid, ack, ack.get("code") or 5011, "compute-host session save failed")) is not None:
         return resp
     if not isinstance(result := ack.get("result"), dict):
         return _err(rid, 5011, "compute-host session save returned an invalid response")
@@ -2126,32 +2167,31 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict, session: dict) -> dict:
     if _session_uses_compute_host(session):
         return _save_via_compute_host(rid, params)
-    agent = session["agent"]
-    # Classic CLI /save: under the profile home, with the system prompt (dashboard parity). The SESSION's
-    # profile: this handler runs unscoped, so get_hermes_home() alone names the launch profile.
-    home = session.get("profile_home")
-    saved_dir = (Path(home) if home else get_hermes_home()) / "sessions" / "saved"
+    from hermes_cli.session_export import load_save_snapshot, render_session_for_save
+    from hermes_state import SessionExportTooLargeError
+    # As CLI/messaging /save json, under the SESSION's profile config + home (runs unscoped); a failed read falls back.
     try:
-        saved_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as e:
-        return _err(rid, 5011, f"failed to create save directory {saved_dir}: {e}")
-    path = saved_dir / f"hermes_conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    with session["history_lock"]:
-        messages = list(session.get("history", []))
-    # Prefer the agent's session_start (classic CLI export); else the gateway created_at.
-    started = getattr(agent, "session_start", None)
-    if not isinstance(started, datetime):
-        created_at = session.get("created_at")
-        started = datetime.fromtimestamp(created_at) if isinstance(created_at, (int, float)) else None
+        with _session_profile_runtime_scope(session, hydrate_secrets=False), _session_db(session) as db:
+            data = db and load_save_snapshot(db, _submit_row_target_key(session), "json")
+    except SessionExportTooLargeError as e:
+        return _err(rid, 4131, str(e))
+    except Exception:
+        logger.warning("session.save: stored-session read failed; saving the in-memory history", exc_info=True)
+        data = None
+    path = Path(session.get("profile_home") or get_hermes_home()) / "sessions/saved" / f"hermes_conversation_{datetime.now():%Y%m%d_%H%M%S}.json"
+    if not data:  # No stored row: the in-memory history as an importable snapshot (CLI fallback shape).
+        started = getattr(agent := session["agent"], "session_start", None)
+        started = started.timestamp() if isinstance(started, datetime) else session.get("created_at")
+        with session["history_lock"]:
+            data = {"id": _submit_row_target_key(session), "model": getattr(agent, "model", ""),
+                    "started_at": started if isinstance(started, (int, float)) else None,
+                    "system_prompt": getattr(agent, "_cached_system_prompt", "") or "",
+                    "messages": list(session.get("history", []))}
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"model": getattr(agent, "model", ""),
-                       "session_id": getattr(agent, "session_id", None) or session.get("session_key") or "",
-                       "session_start": started.isoformat() if started else "",
-                       "system_prompt": getattr(agent, "_cached_system_prompt", "") or "",
-                       "messages": messages}, f, indent=2, ensure_ascii=False)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(render_session_for_save(data, "json"), encoding="utf-8")
     except Exception as e:
-        return _err(rid, 5011, str(e))
+        return _err(rid, 5011, f"failed to save {path}: {e}")
     return _ok(rid, {"file": str(path)})
 
 
@@ -2190,6 +2230,10 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
         if new_sid in _sessions:
             _sessions[new_sid]["active_session_lease"] = None  # claimed lazily on the first turn
             _sessions[new_sid]["auth_user_id"] = parent_user_id
+            # The parent's STORED key: the idempotent-hit reply for a retried
+            # session.branch answers the same ``parent`` as the fresh path, and
+            # later readers (lineage, retry) get the linkage from the runtime.
+            _sessions[new_sid]["parent_session_id"] = session.get("session_key")
         return agent
     finally:
         if branch_owns_db and branch_db is not None:
@@ -2223,6 +2267,21 @@ def _branch_source_history(db, session: dict, old_key: str) -> list:
 
 
 def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = False) -> dict:
+    # Idempotency (#65410, same registry as session.create): a client retrying a
+    # branch whose first response was lost gets the SAME child, not a duplicate.
+    idem_key = _str_param(params, "idempotency_key") or None
+    if idem_key is not None:
+        with _sessions_lock:
+            now_gc = time.time()
+            existing_sid, ts = _idempotency_keys.get(idem_key, (None, 0.0))
+            if existing_sid is not None and existing_sid in _sessions:
+                if now_gc - ts <= _IDEMPOTENCY_KEY_TTL:
+                    # Refresh the TTL so back-to-back retries don't age out mid-flight.
+                    _idempotency_keys[idem_key] = (existing_sid, now_gc)
+                    return _ok(rid, _branch_idempotent_hit(existing_sid, _sessions[existing_sid], omit_messages))
+                _idempotency_keys.pop(idem_key, None)
+            # Stale key (child closed) or first attempt: fall through to a fresh
+            # branch, which re-registers the key below.
     # Write into the parent's profile-scoped state.db; the launch handle would orphan rows.
     with _session_db(session) as db:
         if db is None:
@@ -2248,6 +2307,13 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
         agent = _build_branch_agent(session, new_sid, new_key, history, source)
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
+    if idem_key is not None:
+        with _sessions_lock:
+            _idempotency_keys[idem_key] = (new_sid, time.time())
+            # The fresh reply's title, so an idempotent hit answers the SAME one
+            # without a DB round-trip.
+            if new_sid in _sessions:
+                _sessions[new_sid]["branch_title"] = title
     response = {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
                 "message_count": len(history), "info": _session_info(agent, _sessions.get(new_sid))}
     if omit_messages:
@@ -2255,6 +2321,30 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
     else:
         response["messages"] = _history_to_messages(history, profile_home=session.get("profile_home"))
     return _ok(rid, response)
+
+
+def _branch_idempotent_hit(existing_sid: str, session: dict, omit_messages: bool) -> dict:
+    """The SAME result shape a fresh ``_branch_live`` returns for the existing child."""
+    history = session.get("history") or []
+    key = session.get("session_key") or ""
+    response = {"session_id": existing_sid, "stored_session_id": key,
+                "title": session.get("branch_title") or _branch_title_for(session),
+                "parent": session.get("parent_session_id"), "message_count": len(history),
+                "info": _fallback_session_info(session)}
+    if omit_messages:
+        response["messages_omitted"] = True
+    else:
+        response["messages"] = _history_to_messages(history, profile_home=session.get("profile_home"))
+    return response
+
+
+def _branch_title_for(session: dict) -> str:
+    """The child's persisted title from its stored row, best-effort."""
+    with contextlib.suppress(Exception):
+        with _session_db(session) as db:
+            if db is not None:
+                return db.get_session_title(session.get("session_key") or "") or ""
+    return ""
 
 
 @_session_method("session.branch", live=True)

@@ -659,11 +659,9 @@ export function mergeSessionPage(
   // root so a mid-turn refresh can't drop a touchSessionActivity bump.
   const prevByLineage = new Map(previous.map(session => [lineageIdentity(session), session]))
 
-
   const merged = incoming
     .filter(session => !session.is_internal_child)
     .map(session => {
-
       const prev = prevById.get(identity(session)) ?? prevByLineage.get(lineageIdentity(session))
       // User-send stamps last_active before the DB flushes the user row
       // (last_active = MAX(messages.timestamp)). Keep the fresher of the two.
@@ -1640,7 +1638,17 @@ export const setBusy = (next: Updater<boolean>) => updateAtom($busy, next)
 export const setAwaitingResponse = (next: Updater<boolean>) => updateAtom($awaitingResponse, next)
 
 export const setCurrentModel = (next: Updater<string>) => {
+  const previous = $currentModel.get()
   updateAtom($currentModel, next)
+
+  if ($currentModel.get() !== previous) {
+    // The wire level belongs to one (provider, model, effort) triple, and a
+    // different model clamps a different set. Carrying the old route's stamp
+    // makes the pill present a stale escalation as a confirmed one, so drop it
+    // and let the next `session.info` re-stamp.
+    $currentReasoningEffortWire.set('')
+  }
+
   const key = composerSelectionKey(COMPOSER_MODEL_KEY)
 
   if (key !== null) {
@@ -1649,7 +1657,13 @@ export const setCurrentModel = (next: Updater<string>) => {
 }
 
 export const setCurrentProvider = (next: Updater<string>) => {
+  const previous = $currentProvider.get()
   updateAtom($currentProvider, next)
+
+  if ($currentProvider.get() !== previous) {
+    $currentReasoningEffortWire.set('')
+  }
+
   const key = composerSelectionKey(COMPOSER_PROVIDER_KEY)
 
   if (key !== null) {

@@ -3009,11 +3009,17 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
 
 def _build_wsl_interop_paths(path_entries: list[str]) -> list[str]:
     """WSL Windows-interop PATH entries for generated units: systemd services don't inherit the
-    Windows PATH (``/mnt/c/WINDOWS/System32``…), so ``powershell.exe``/``cmd.exe`` break unless persisted."""
+    Windows PATH (``/mnt/c/WINDOWS/System32``…), so ``powershell.exe``/``cmd.exe`` break unless persisted.
+
+    Only the which()-resolved tool dirs and the hardcoded System32 family belong here. The
+    shell PATH is deliberately NOT scraped: WSL appends every Windows PATH entry (Desktop app,
+    git, node dirs under ``/mnt/``) ahead of the interop defaults, and persisting those into the
+    unit makes the gateway open 9p (Plan 9 interop) connections to each of them at start — enough
+    to exhaust the 9p server connection limit (#73163). Interop tools don't need them."""
     if not is_wsl():
         return []
 
-    candidates = [entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry.startswith("/mnt/")]
+    candidates: list[str] = []
     for executable in ("powershell.exe", "cmd.exe", "explorer.exe", "wsl.exe"):
         resolved = shutil.which(executable)
         if resolved:
@@ -5493,6 +5499,39 @@ def _restart_all_as_host(owner, system: bool) -> None:
     run_gateway(verbose=0, replace=True)
 
 
+def _refuse_restart_of_service_managed_gateway(pid: int | None) -> None:
+    """Refuse the manual restart fallback when systemd owns the gateway under ANY unit name.
+
+    Canonical-unit checks miss pre-convention installs (``hermes.service``), so the fallback's
+    stop + in-process ``run_gateway`` SIGKILLed a live service-managed gateway and spawned an
+    unsupervised orphan in the caller's cgroup while the unit flapped against the stolen lock
+    (#126474). Reuses the dashboard's MainPID-verified lookup: a bare ``.service`` cgroup alone
+    (the caller itself started under some unit) never proves ownership.
+    """
+    if not pid or pid <= 1:
+        return
+    from hermes_cli import main_dashboard as _dash
+
+    unit = _dash._get_systemd_service_for_pid(pid)
+    if unit is None:
+        return
+    scope = _dash._extract_scope_from_cgroup(_dash._get_pid_cgroup_path(pid) or "")
+    user_cmd, system_cmd = f"systemctl --user restart {unit}", f"sudo systemctl restart {unit}"
+    cmds = {"user": [user_cmd], "system": [system_cmd]}.get(scope, [user_cmd, system_cmd])
+    _print_lines(
+        "",
+        f"✗ Gateway (PID {pid}) is managed by systemd unit {unit}.",
+        "  `hermes gateway restart` cannot restart it from here: the fallback would",
+        "  kill a live gateway and spawn an unsupervised replacement in this shell's",
+        "  cgroup while the unit keeps failing against the stolen lock.",
+        "  Restart it through its unit instead:",
+        *(f"    {c}" for c in cmds),
+        "  (Pre-convention `hermes.service` installs: `hermes gateway migrate-legacy`",
+        "  removes the legacy unit so the canonical one can own the gateway.)",
+    )
+    sys.exit(1)
+
+
 def _cmd_restart(args):
     _refuse_from_inside_gateway("restart", "restart loops")
     from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
@@ -5568,6 +5607,7 @@ def _cmd_restart(args):
     if supervised_pid and gateway_declares_external_supervisor(supervised_pid):
         restart_externally_supervised_gateway(supervised_pid)
         return
+    _refuse_restart_of_service_managed_gateway(supervised_pid)
 
     if stop_profile_gateway():
         print("✓ Stopped gateway for this profile")

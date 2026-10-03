@@ -87,6 +87,7 @@ import {
   validateCronEditor
 } from './cron-job-model'
 import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from './job-state'
+import { openCronRun, reconcileCronRunVerdicts } from './open-cron-run'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -915,6 +916,9 @@ function CronJobRuns({
     const load = () =>
       getCronJobRuns(jobId)
         .then(result => {
+          // A fresh poll re-evaluates every run already opened (#88443).
+          reconcileCronRunVerdicts(result)
+
           if (!cancelled) {
             setRuns(result)
           }
@@ -979,10 +983,12 @@ function CronJobRuns({
                 </span>
               </div>
             ) : (
+              // One click to the run's transcript; a run the scheduler never
+              // closed opens view-only (see `openCronRun`, #88443).
               <button
                 className="row-hover flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
                 key={run.id}
-                onClick={() => onOpenSession?.(run.id, run)}
+                onClick={onOpenSession ? () => openCronRun(run, onOpenSession) : undefined}
                 type="button"
               >
                 <span className="truncate text-foreground/85">

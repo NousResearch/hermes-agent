@@ -24,13 +24,16 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { $backgroundStatusBySession, type ComposerStatusItem } from '@/store/composer-status'
 import {
   activeGatewayConnectionId,
   requestGatewayForAgent,
   requestGatewayForProfile,
   retainGatewayForAgent
 } from '@/store/gateway'
+import { $goalsBySession, type SessionGoal } from '@/store/goals'
 import { $pinnedSessionIds } from '@/store/layout'
+import { $notifications, dismissNotification } from '@/store/notifications'
 import {
   $activeGatewayProfile,
   $newChatConnectionId,
@@ -100,7 +103,8 @@ import {
   sessionTileOwnerRoute
 } from '@/store/session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
-import { $retainedTodosBySession, clearSessionTodos } from '@/store/todos'
+import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
+import { $retainedTodosBySession, $todosBySession, clearSessionTodos } from '@/store/todos'
 import { loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
@@ -550,6 +554,86 @@ describe('connection-qualified session deletion', () => {
     // The live state the interrupt clobbered is restored, and the row survives.
     expect(updateSessionState.mock.results.at(-1)?.value).toMatchObject({ interrupted: false, needsInput: true })
     expect($sessions.get().some(session => session.id === 'background-session')).toBe(true)
+  })
+
+  describe('subagent, todo, goal, and background cleanup', () => {
+    // Stored id, foreground runtime, and the stored→runtime mapping are all
+    // distinct: these live stores key on the event's runtime session_id.
+    const doomedIds = ['stored-doomed', 'runtime-active', 'runtime-mapped']
+
+    const seedLiveState = () => {
+      const subagents: Record<string, SubagentProgress[]> = {}
+      const todos: Record<string, { content: string; id: string; status: 'pending' }[]> = {}
+      const goals: Record<string, SessionGoal> = {}
+      const background: Record<string, ComposerStatusItem[]> = {}
+
+      for (const sid of [...doomedIds, 'runtime-other']) {
+        subagents[sid] = [{ id: `sub-${sid}` } as SubagentProgress]
+        todos[sid] = [{ content: 'todo', id: `todo-${sid}`, status: 'pending' }]
+        goals[sid] = { status: 'active', title: 'goal', updatedAt: 1 }
+        // Finished (not running) so resetSessionBackground has nothing to kill.
+        background[sid] = [{ id: `proc-${sid}`, state: 'done', title: 'proc', type: 'background' }]
+      }
+
+      $subagentsBySession.set(subagents)
+      $todosBySession.set(todos)
+      $goalsBySession.set(goals)
+      $backgroundStatusBySession.set(background)
+    }
+
+    const renderDeleting = async () => {
+      let actions: HarnessHandle | null = null
+
+      setSessions([storedSession({ id: 'stored-doomed' })])
+      render(
+        <Harness
+          activeSessionId="runtime-active"
+          onReady={value => {
+            actions = value
+          }}
+          requestGateway={vi.fn().mockResolvedValue({})}
+          runtimeIdByStoredSessionIdRef={{ current: new Map([['stored-doomed', 'runtime-mapped']]) }}
+          selectedStoredSessionId="stored-doomed"
+        />
+      )
+      await waitFor(() => expect(actions).not.toBeNull())
+
+      await act(async () => {
+        await actions?.removeSession('stored-doomed')
+      })
+    }
+
+    afterEach(() => {
+      $subagentsBySession.set({})
+      $todosBySession.set({})
+      $goalsBySession.set({})
+      $backgroundStatusBySession.set({})
+    })
+
+    it('clears subagents, todos, goals, and background status under the stored and every runtime id once the delete lands', async () => {
+      seedLiveState()
+      vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+
+      await renderDeleting()
+
+      expect(Object.keys($subagentsBySession.get())).toEqual(['runtime-other'])
+      expect(Object.keys($todosBySession.get())).toEqual(['runtime-other'])
+      expect(Object.keys($goalsBySession.get())).toEqual(['runtime-other'])
+      expect(Object.keys($backgroundStatusBySession.get())).toEqual(['runtime-other'])
+    })
+
+    it('keeps subagents, todos, goals, and background status when the delete RPC fails and the row is restored', async () => {
+      seedLiveState()
+      vi.mocked(deleteSession).mockRejectedValue(new Error('delete failed'))
+
+      await renderDeleting()
+
+      expect($sessions.get().some(session => session.id === 'stored-doomed')).toBe(true)
+      expect(Object.keys($subagentsBySession.get()).sort()).toEqual([...doomedIds, 'runtime-other'].sort())
+      expect(Object.keys($todosBySession.get()).sort()).toEqual([...doomedIds, 'runtime-other'].sort())
+      expect(Object.keys($goalsBySession.get()).sort()).toEqual([...doomedIds, 'runtime-other'].sort())
+      expect(Object.keys($backgroundStatusBySession.get()).sort()).toEqual([...doomedIds, 'runtime-other'].sort())
+    })
   })
 })
 
@@ -3301,9 +3385,11 @@ describe('branchStoredSession desktop source tagging', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('session.branch', {
       session_id: 'live-parent',
-      count: 2
+      count: 2,
+      // Stable per-attempt key (#65410): present but opaque to this test.
+      idempotency_key: expect.any(String)
     })
-    expect(branchParams).toEqual({ session_id: 'live-parent', count: 2 })
+    expect(branchParams).toMatchObject({ session_id: 'live-parent', count: 2, idempotency_key: expect.any(String) })
   })
 
   it('branches a compacted live chat without hydrating its transcript in the renderer', async () => {
@@ -3347,7 +3433,7 @@ describe('branchStoredSession desktop source tagging', () => {
     await expect(branchCurrentSession!()).resolves.toBe(true)
 
     expect(getAllSessionMessages).not.toHaveBeenCalled()
-    expect(branchParams).toEqual({ session_id: 'live-parent' })
+    expect(branchParams).toMatchObject({ session_id: 'live-parent', idempotency_key: expect.any(String) })
   })
 
   it('aborts if the active runtime changes while the branch transcript is hydrating', async () => {
@@ -3425,7 +3511,8 @@ describe('branchStoredSession desktop source tagging', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('session.branch', {
       session_id: 'tile-runtime',
-      count: 2
+      count: 2,
+      idempotency_key: expect.any(String)
     })
   })
 
@@ -6930,5 +7017,163 @@ describe('createBackendSessionForSend creatingSessionRef hold (#66057)', () => {
     expect(creatingSessionRef.current).toBe(false)
     expect(navigate).toHaveBeenCalledTimes(2)
     expect(navigate).toHaveBeenLastCalledWith('/stored-new', { replace: true })
+  })
+})
+
+// ── Branch failure recovery ──────────────────────────────────────────────────
+// When session.create fails (backend restart / WS drop mid-RPC), forkBranch's
+// catch surfaces a persistent error notification with a Retry action so the
+// user can re-attempt without re-doing the whole branch flow.
+describe('branchStoredSession failure retry', () => {
+  afterEach(() => {
+    cleanup()
+    setSessions([])
+    $notifications.get().forEach(n => dismissNotification(n.id))
+    $notifications.set([])
+    vi.restoreAllMocks()
+  })
+
+  it('surfaces a retry action when session.create fails, and retry succeeds', async () => {
+    let createCallCount = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create' || method === 'session.branch_stored') {
+        createCallCount += 1
+
+        if (createCallCount === 1) {
+          throw new Error('backend restarted mid-RPC')
+        }
+
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1 })])
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    // First attempt fails — forkBranch catches and returns false.
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(false)
+    expect(createCallCount).toBe(1)
+
+    // A persistent error notification with a Retry action was surfaced.
+    await waitFor(() => {
+      const errorNotifications = $notifications.get().filter(n => n.kind === 'error')
+
+      expect(errorNotifications).toHaveLength(1)
+      expect(errorNotifications[0].action).toBeDefined()
+      expect(errorNotifications[0].action?.label).toMatch(/retry/i)
+    })
+
+    // Click retry — re-invokes forkBranch with the same args, succeeds this time.
+    const retryAction = $notifications.get().find(n => n.kind === 'error')?.action
+
+    expect(retryAction).toBeDefined()
+    await act(async () => {
+      retryAction!.onClick()
+    })
+
+    // The retry issued a second session.create and succeeded.
+    await waitFor(() => expect(createCallCount).toBe(2))
+  })
+
+  // Regression for hermes-sweeper review on PR #65411: a retry after a lost
+  // response must reuse the SAME idempotency key, otherwise the backend
+  // spawns a duplicate child session.
+  it('passes the same idempotency_key on retry as on the first attempt', async () => {
+    const seenKeys: string[] = []
+    let createCallCount = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create' || method === 'session.branch_stored') {
+        createCallCount += 1
+        seenKeys.push(String(params?.idempotency_key ?? ''))
+
+        if (createCallCount === 1) {
+          throw new Error('response lost in transit')
+        }
+
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1 })])
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    // First attempt fails (response lost).
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(false)
+    expect(createCallCount).toBe(1)
+    expect(seenKeys).toHaveLength(1)
+    expect(seenKeys[0]).toMatch(/^branch-/)
+
+    // Click retry — should reuse the same key.
+    const retryAction = $notifications.get().find(n => n.kind === 'error')?.action
+
+    expect(retryAction).toBeDefined()
+    await act(async () => {
+      retryAction!.onClick()
+    })
+
+    await waitFor(() => expect(createCallCount).toBe(2))
+    expect(seenKeys).toHaveLength(2)
+    // Both attempts carried the same idempotency key — backend can dedupe.
+    expect(seenKeys[1]).toBe(seenKeys[0])
+  })
+
+  // Regression for hermes-sweeper review on PR #65411: the notification must
+  // go through notifyError's readableError normalization (wrapper stripping,
+  // detail extraction, long-message fallback), not raw err.message.
+  it('uses readableError normalization for the failure notification', async () => {
+    // Long raw message that should be replaced by the fallback via
+    // summarizeErrorMessage (>180 chars → fallback).
+    const longRawMessage = 'x'.repeat(200)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create' || method === 'session.branch_stored') {
+        throw new Error(longRawMessage)
+      }
+
+      return {} as never
+    })
+
+    setSessions([storedSession({ id: 'stored-parent', message_count: 1 })])
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let branchStoredSession: ((storedSessionId: string) => Promise<boolean>) | null = null
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent')).resolves.toBe(false)
+
+    await waitFor(() => {
+      const errorNotifications = $notifications.get().filter(n => n.kind === 'error')
+
+      expect(errorNotifications).toHaveLength(1)
+      // readableError's summarizeErrorMessage replaced the 200-char raw message
+      // with the short fallback title. Pre-fix, the raw 200-char string would
+      // have been passed straight through as message.
+      expect(errorNotifications[0].message).not.toBe(longRawMessage)
+      expect(errorNotifications[0].message.length).toBeLessThan(180)
+    })
   })
 })

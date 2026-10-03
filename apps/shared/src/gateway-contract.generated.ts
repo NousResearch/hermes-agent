@@ -1891,10 +1891,11 @@ export interface ProfilesListParams {
   profile?: string | null
   include_sessions?: boolean | string | null
 }
-/** ``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself. */
+/** ``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself; ``install_id`` (as on ``/api/status``) names the machine that answered. */
 export interface ProfilesListResult {
   profiles?: ProfileRow[]
   bot_mode_protocol?: boolean
+  install_id?: string
 }
 /** One roster row; the session fields are present only with ``include_sessions``. */
 export interface ProfileRow {
@@ -2948,6 +2949,7 @@ export interface SessionCreateParams {
   hidden?: boolean
   room_plumbing?: boolean
   follow_profile_config?: boolean
+  idempotency_key?: string | null
 }
 /** One create-time transcript row (``session_history._coerce_seed_history``); ``text`` is the legacy alias of ``content``; only ``display_kind: "hidden"`` is accepted from the wire. Clients forward stored rows verbatim (``_row_id``, ``timestamp``, …) and the coercer drops what it does not use, so the row stays open. */
 export interface SeedMessage {
@@ -2999,6 +3001,7 @@ export interface SessionBranchStoredParams {
   cols?: number | null
   source?: string | null
   cwd?: string | null
+  idempotency_key?: string | null
 }
 export interface SessionBranchStoredResult {
   session_id: string
@@ -3262,6 +3265,7 @@ export interface SessionBranchParams {
   profile?: string | null
   name?: string | null
   count?: number | null
+  idempotency_key?: string | null
 }
 export interface SessionBranchResult {
   session_id: string
@@ -3276,6 +3280,7 @@ export interface SessionBranchWholeParams {
   session_id: string
   profile?: string | null
   name?: string | null
+  idempotency_key?: string | null
 }
 export interface SessionBranchWholeResult {
   session_id: string
@@ -3816,7 +3821,7 @@ export interface CronJobRow {
   last_run_at?: string | null
   last_status?: string | null
   last_delivery_error?: string | null
-  last_delivery_unverified?: boolean | null
+  last_delivery_unverified?: string[] | null
   last_fire_error?: string | null
   last_error?: string | null
   enabled?: boolean
@@ -3844,14 +3849,16 @@ export interface CronRemovedJob {
 export interface BrowserManageParams {
   action?: BrowserAction
   url?: string | null
+  enabled?: boolean | null
   session_id?: string | null
   profile?: string | null
 }
-export type BrowserAction = 'status' | 'connect' | 'disconnect'
+export type BrowserAction = 'status' | 'connect' | 'disconnect' | 'use'
 export interface BrowserManageResult {
   connected: boolean
   url?: string | null
   messages?: string[] | null
+  browser_use?: boolean | null
 }
 /** Handlers that look a live session up with ``_sessions.get(params.get("session_id"))``: an absent / unknown id falls back to the launch profile's config, so it is never required. */
 export interface _SessionScoped {
@@ -4275,7 +4282,7 @@ export interface PluginServerRow {
   state: PluginServerState
   sentence: string
 }
-export type PluginServerState = 'connected' | 'app_not_running' | 'hermes_not_connected' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unknown'
+export type PluginServerState = 'connected' | 'app_not_running' | 'hermes_not_connected' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unsupported_gpu' | 'unknown'
 /** One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env`` names the ``.env`` variable and ``has_value`` whether it is set. */
 export interface PluginSettingField {
   key: string
@@ -4905,7 +4912,7 @@ export interface RpcMethods {
   'browser.controller.register': { params: BrowserControllerRegisterParams; result: BrowserControllerRegisterResult }
   /** Deliver one command result to the broker; accepted is false for unknown or settled command ids. */
   'browser.controller.result': { params: BrowserControllerResultParams; result: BrowserControllerResultResult }
-  /** Inspect, attach to, or drop the CDP browser the tools use; ``messages`` narrate a connect. */
+  /** Inspect, attach to, or drop the CDP browser the tools use, or switch Browser Use mode (``use``, applies to new sessions); ``messages`` narrate a connect. */
   'browser.manage': { params: BrowserManageParams; result: BrowserManageResult }
   /** Lock one answer of a batch clarify request (editable until every question is locked). */
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }

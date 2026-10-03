@@ -44,7 +44,14 @@ import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './c
 import { registryConnectionKind } from './connection-registry-state'
 import { recordDislike } from './desktop-metrics'
 import { dialedGatewayModeFor } from './gateway'
-import { dropPreviewTabsForProfile, migratePreviewTabsForProfile, setPreviewScope } from './preview'
+import {
+  adoptPendingRuntimeTabs,
+  dropPreviewTabsForProfile,
+  migratePreviewTabsForProfile,
+  rekeyPreviewTabsSession,
+  setPreviewScope
+} from './preview'
+import { forgetPendingRuntimeTabs } from './preview-ownership'
 import { dropPreviewArtifactsForProfile, migratePreviewArtifactsForProfile } from './preview-status'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import { clearAllProviderWaits, clearSessionProviderWait } from './provider-wait'
@@ -73,7 +80,7 @@ import {
   setTurnStartedAt
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
-import { $focusedSessionIsTile, $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
+import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   isSessionOwnerRoute,
@@ -461,7 +468,7 @@ function clearEventSilence(runtimeId: string) {
   }
 }
 
-function isLiveTurnAwaitingEvents(state: ClientSessionState | undefined): boolean {
+export function isLiveTurnAwaitingEvents(state: ClientSessionState | undefined): boolean {
   return Boolean(state && (state.busy || state.awaitingResponse || state.turnLive) && !state.needsInput)
 }
 
@@ -816,9 +823,17 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     // a background tile's conversation rotates too, and its pane would
     // otherwise keep the stale id forever (duplicate/differently-titled tabs).
     rekeySessionTile(previous.storedSessionId, next.storedSessionId, runtimeId)
+    // The conversation's preview tabs follow it onto the new tip (#73890).
+    rekeyPreviewTabsSession(previous.storedSessionId, next.storedSessionId)
 
     clearSettled(previous.storedSessionId)
     setSessionStalled(previous.storedSessionId, false)
+  }
+
+  // THIS runtime's stored id binding: the preview tabs it opened before then
+  // are now its session's (#73890).
+  if (!previous?.storedSessionId && next.storedSessionId) {
+    adoptPendingRuntimeTabs(runtimeId, next.storedSessionId)
   }
 
   // Every busy publish is stream activity: clear the quiet hint and restart
@@ -1033,6 +1048,8 @@ export function dropSessionState(runtimeId: string) {
   clearSessionProviderWait(runtimeId)
   sessionScopeByRuntimeId.delete(runtimeId)
   sessionOwnerByRuntimeId.delete(runtimeId)
+  // A runtime that never bound a stored id never will now (#73890).
+  forgetPendingRuntimeTabs(runtimeId)
 
   const current = $sessionStates.get()
   setSessionStalled(current[runtimeId]?.storedSessionId, false)
@@ -1068,6 +1085,7 @@ export function clearAllSessionStates() {
   clearAllProviderWaits()
   sessionScopeByRuntimeId.clear()
   sessionOwnerByRuntimeId.clear()
+  forgetPendingRuntimeTabs()
   $stalledSessionIds.set([])
   $sessionStates.set({})
 }
@@ -1907,7 +1925,14 @@ setSessionOwnerResolver(knownOwnerForSession)
  *  showed one agent's previews in every agent's chat. `bot-row.tsx` documents
  *  the same trap for the roster highlight and resolves it the same way. */
 function railScopeForActiveSession(): string {
-  const owner = knownOwnerForSession($activeSessionId.get() ?? undefined)
+  return previewScopeForRuntime($activeSessionId.get() ?? undefined)
+}
+
+/** The preview-rail profile a runtime's chat belongs to — the bucket whose
+ *  pins its agent may use. Same resolution as the rail's own scope, so the
+ *  primary's runtime always lands on the bucket in view. */
+export function previewScopeForRuntime(runtimeId: string | undefined): string {
+  const owner = knownOwnerForSession(runtimeId)
   const profile = typeof owner === 'string' ? owner : owner?.profile
 
   return normalizeProfileKey(profile || $activeGatewayProfile.get())
@@ -3037,17 +3062,11 @@ export function reopenLastClosedTile(): void {
 
 // ---------------------------------------------------------------------------
 // The FOCUSED session — one derivation, not another hand-maintained
-// "$activeSession" sibling. session-focus resolves the interacted content zone,
-// retaining it while the Sessions sidebar owns keyboard focus. Its active
-// pane names the session: a `session-tile:<storedId>` pane IS that session,
-// anything else falls back to the route-driven primary. Chrome that should
-// follow the user between tiles (titlebar session title, statusbar context /
-// timer / model) reads these instead of the primary-only atoms.
+// "$activeSession" sibling: `$focusedStoredSessionId` (session-focus.ts).
+// Chrome that should follow the user between tiles (titlebar session title,
+// statusbar context / timer / model) reads it and the derivations below
+// instead of the primary-only atoms.
 // ---------------------------------------------------------------------------
-
-// Re-exported from session-focus.ts so existing consumers keep their import
-// path; the definitions live there (see the note on that module).
-export { $focusedSessionIsTile, $focusedStoredSessionId }
 
 /** Every session currently OPEN as a surface: the primary's selection plus
  *  every tile's stored id. The sidebar highlights all of them (the focused one

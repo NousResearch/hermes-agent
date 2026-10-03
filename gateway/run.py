@@ -37,6 +37,7 @@ from agent.conversation_compression import (
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
+from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields
@@ -1156,6 +1157,12 @@ def _build_replay_entry(
     # flushes skip rows already in state.db (#121462/#123462).
     if msg.get("_db_persisted"):
         entry["_db_persisted"] = True
+    # A merged user dict lost that stamp; this one is what ties it to its durable rows at compaction.
+    # The other counts the rows the repair dropped behind a dict or folded into an assistant turn,
+    # which this view cannot name either; the last names them for the commit.
+    for stamp in (MERGED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS, RETIRED_DURABLE_ROWS):
+        if msg.get(stamp):
+            entry[stamp] = msg[stamp]
     return entry
 
 
@@ -4636,6 +4643,7 @@ def _housekeeping_media_caches() -> None:
     from tools.environments.local import cleanup_terminal_temp_cache
     from tools.bot_mode_dm import cleanup_bot_dm_cache
     from tools.bot_relay import cleanup_bot_relay_artifacts
+    from agent.provider_media import MEDIA_CACHE_MAX_AGE_HOURS
 
     for cache_name, cleanup_fn in (
         ("Image", cleanup_image_cache), ("Document", cleanup_document_cache),
@@ -4644,7 +4652,7 @@ def _housekeeping_media_caches() -> None:
         ("Terminal temp", cleanup_terminal_temp_cache), ("Bot DM", cleanup_bot_dm_cache),
         ("Bot relay", cleanup_bot_relay_artifacts)):
         def _one(name=cache_name, fn=cleanup_fn):
-            removed = fn(max_age_hours=24)
+            removed = fn(max_age_hours=MEDIA_CACHE_MAX_AGE_HOURS)
             if removed:
                 logger.info("%s cache cleanup: removed %d stale file(s)", name, removed)
         _housekeeping_chore(f"{cache_name} cache cleanup", _one)
@@ -5455,15 +5463,17 @@ def _claim_host_gateway_role(force: bool = False) -> None:
     if profile_is_standalone(get_hermes_home()):
         # Recheck after losing the atomic lock: the pre-lock served set may be stale.
         live_owner = host_gateway(wait_for_channel=ATTACH_CHANNEL_WAIT_S)
-        if live_owner is not None:
-            decision = standalone_attach_decision(get_hermes_home(), live_owner)
-            if decision is not None:
-                if decision.outcome == START:
-                    return
-                from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
-                print(decision.message)
-                raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
-        _refuse_second_host_gateway(owner)
+        # The rendezvous record proves lock ownership, but the owner's control channel may
+        # still be unavailable. Standalone discovery also checks each profile's liveness
+        # channel, so it can prove that this profile is unserved even when the host probe
+        # cannot construct a HostGateway yet.
+        decision = standalone_attach_decision(get_hermes_home(), live_owner)
+        if decision is not None:
+            if decision.outcome == START:
+                return
+            from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+            print(decision.message)
+            raise SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
     if _owner_is_standalone():
         # COMPOSITION with #118236: `host_attach.decide` sent us here with START precisely because
         # the owner is another profile's STANDALONE gateway and will never serve us. Refusing now

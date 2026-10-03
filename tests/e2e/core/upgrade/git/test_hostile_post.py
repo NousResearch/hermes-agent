@@ -22,7 +22,14 @@ release and breaks something that runs AFTER the checkout moved, for real:
     update was spawned is SIGSTOPped then SIGKILLed (that is the whole update tree, including a
     completion child in its own session or reparented to the namespace init).
 (d) a sticky profile (``hermes profile use e2epost``) must not move update.log / receipts off the
-    root hermes home.
+    root hermes home, and ``hermes logs update`` under that profile reads the root's update.log.
+(e) the dependency sync fails after the tree moved (contract amendment A6): the release's
+    ``pm.client.ensure_tools_for_sync`` raises while ``$HOME/.e2e-break-deps-sync`` exists; it runs in
+    the completion bootstrap from the NEW tree, after the checkout moved. Exit 0, a ``dependencies``
+    follow-up, the tail obligation armed; the next update completes it.
+(f) Ctrl-C after the commit point: SIGINT (what a terminal's Ctrl-C delivers to the foreground
+    ``hermes update``; the completion child runs in its own session) while the slow web build runs.
+    The user must read that the new code is in place and the rest is owed, never a failure.
 
 What is asserted is what the user sees: the exit code, ``⚠`` lines, the receipt at
 ``<root>/logs/update_receipts/latest.json`` (``outcome``, ``followups``), the
@@ -59,7 +66,11 @@ BREAK_WEB = ".e2e-break-web-build"
 SLOW_WEB = ".e2e-slow-web-build"
 WEB_STARTED = ".e2e-web-build-started"
 BREAK_GATEWAY = ".e2e-break-gateway-boot"
-TOGGLES = (BREAK_WEB, SLOW_WEB, WEB_STARTED, BREAK_GATEWAY)
+BREAK_DEPS = ".e2e-break-deps-sync"
+TOGGLES = (BREAK_WEB, SLOW_WEB, WEB_STARTED, BREAK_GATEWAY, BREAK_DEPS)
+DEPS_FAULT_TEXT = "e2e: dependency sync fails on purpose"
+DEPS_OWED = "dependencies not installed yet"  # update_completion._settle_after_commit
+INTERRUPTED_AFTER_COMMIT = "Interrupted after the code was updated"  # update_receipt
 WEB_FAULT_TEXT = "e2e: the web build fails on purpose"
 GATEWAY_FAULT_TEXT = "e2e: gateway boot refused on purpose"
 OWED_RESTART = "did not restart running gateways"  # update_cmd_fleet._warn_pending_fleet_restart
@@ -67,6 +78,7 @@ PROFILE = "e2epost"
 UPDATE_TIMEOUT = 1500
 _WEB_MARK = "// e2e (test_hostile_post): hostile build toggles"
 _GATEWAY_MARK = "# e2e (test_hostile_post): hostile gateway boot toggle"
+_DEPS_MARK = "# e2e (test_hostile_post): hostile dependency sync toggle"
 
 _HOSTILE_WEB = f"""{_WEB_MARK}, keyed on files in $HOME.
 import {{ existsSync as e2eExists, writeFileSync as e2eWrite }} from 'node:fs'
@@ -88,6 +100,11 @@ _HOSTILE_GATEWAY = f"""    {_GATEWAY_MARK}
     if __import__("os").path.exists(__import__("os").path.join(__import__("os").path.expanduser("~"), "{BREAK_GATEWAY}")):
         print("{GATEWAY_FAULT_TEXT} ({BREAK_GATEWAY})", file=__import__("sys").stderr, flush=True)
         raise SystemExit(1)
+"""
+
+_HOSTILE_DEPS = f"""    {_DEPS_MARK}
+    if __import__("os").path.exists(__import__("os").path.join(__import__("os").path.expanduser("~"), "{BREAK_DEPS}")):
+        raise RuntimeError("{DEPS_FAULT_TEXT} ({BREAK_DEPS})")
 """
 
 
@@ -243,6 +260,19 @@ def _publish_gateway_fault_release(w: G.World, tag: str) -> str:
         text = text[:m.end()] + _HOSTILE_GATEWAY + text[m.end():]
     return w.publish(f"release: e2e hostile post gateway {tag}", {
         "hermes_cli/gateway.py": text,
+        f"docs/e2e-hostile-post-{tag}.txt": f"release {tag}\n",
+    })
+
+
+def _publish_deps_fault_release(w: G.World, tag: str) -> str:
+    """A release whose dependency preparation (``ensure_tools_for_sync``) fails while the toggle exists."""
+    text = _head_file(w, "pm/client.py")
+    if _DEPS_MARK not in text:
+        m = re.search(r"^def ensure_tools_for_sync\(\) -> None:\n    \"\"\".*?\"\"\"\n", text, re.S | re.M)
+        assert m, "premise: pm/client.py has no ensure_tools_for_sync() with a docstring to inject after"
+        text = text[:m.end()] + _HOSTILE_DEPS + text[m.end():]
+    return w.publish(f"release: e2e hostile post deps {tag}", {
+        "pm/client.py": text,
         f"docs/e2e-hostile-post-{tag}.txt": f"release {tag}\n",
     })
 
@@ -518,16 +548,115 @@ def test_sticky_profile_update_logs_and_receipts_land_in_the_root_home(w):
                       previous_update_id=prev.get("update_id")) + w.diag(cp)
         assert w.head() == target, f"premise: the release never committed:\n{diag}"
         assert cp.returncode == 0, f"the sticky-profile update failed:\n{diag}"
-        # Only the UPDATE receipt is this lane's: pm's own sync receipts (pm_*sync*.json, its
-        # latest.json with kind "sync") still follow the process home — pm/ is out of scope here.
-        update_files = sorted(n for n in prof_after - prof_before if n.startswith("update_"))
-        prof_latest = _read_json(prof_receipts / "latest.json")
-        assert not update_files, f"the update wrote update receipts into the profile home {prof_receipts}:\n{diag}"
-        # pm's sync receipt carries the update's correlation id, so "kind" tells them apart.
-        assert prof_latest.get("kind", "sync") == "sync", \
-            f"the profile home's latest.json is this update's receipt:\n{diag}"
+        # Neither the update's receipts nor pm's sync receipts (same dir, ``kind`` field) follow
+        # the sticky profile: one root dir is what the Desktop and `hermes pm status` read.
+        assert not sorted(prof_after - prof_before), \
+            f"the update wrote receipts into the profile home {prof_receipts}:\n{diag}"
         assert log1 > log0, f"the root update.log did not grow:\n{diag}"
         assert rec.get("update_id") != prev.get("update_id") and rec.get("outcome") == "success", \
             f"root latest.json is not this run's success:\n{diag}"
+        # The readers follow the writers: `hermes logs update` under the profile shows the root log.
+        logs_cp = w.sb.cli("logs", "update", "-n", "400", timeout=300)
+        assert logs_cp.returncode == 0 and "hermes update started" in G.output(logs_cp), \
+            f"`hermes logs update` under the sticky profile does not show the root update.log:\n{H.describe(logs_cp)}\n{diag}"
     finally:
         w.sb.cli("profile", "use", "default", timeout=300)
+
+
+def test_dependency_sync_failure_after_commit_is_a_followup_not_a_failed_update(w):
+    w.reset_clean()
+    _clear_toggles(w)
+    target = _publish_deps_fault_release(w, "e")
+    _toggle(w, BREAK_DEPS, True)
+    try:
+        cp = w.update("--no-gateway-restart")
+    finally:
+        _toggle(w, BREAK_DEPS, False)
+    out = G.output(cp)
+    rec = w.receipt()
+    diag = _facts(w, cp) + w.diag(cp)
+
+    assert w.head() == target, f"premise: the release never committed, so this is no post-commit cell:\n{diag}"
+    assert DEPS_FAULT_TEXT in out, f"premise: the hostile dependency sync never ran:\n{diag}"
+    assert cp.returncode == 0, f"the code committed, yet a failed dependency sync failed `hermes update`:\n{diag}"
+    assert any(DEPS_OWED in line for line in _warn_lines(out)), \
+        f"no ⚠ line says the dependencies are not installed yet:\n{diag}"
+    assert rec.get("outcome") == "success", f"receipt outcome is not success after the commit:\n{diag}"
+    assert "dependencies" in _followup_steps(rec), f"receipt followups do not name `dependencies`:\n{diag}"
+    assert _pending_markers(w), f"the failed dependency sync disarmed the source-completion obligation:\n{diag}"
+
+    # The fault clears; the next plain update completes the owed dependencies and tail.
+    cp = w.update("--no-gateway-restart")
+    rec = w.receipt()
+    diag = _facts(w, cp) + w.diag(cp)
+    assert cp.returncode == 0 and w.head() == target, f"the completing update failed:\n{diag}"
+    assert not _followups(rec), f"the completing update still reports followups:\n{diag}"
+    assert not _pending_markers(w), f"the completing update left the completion obligation armed:\n{diag}"
+
+
+def _foreground_group(host: NamespaceHost, upd: int) -> list[int]:
+    """What a terminal's Ctrl-C reaches: the update and its descendants, minus the completion child's
+    subtree (it runs in its own session, so the terminal's SIGINT never reaches it)."""
+    procs = {p["pid"]: p for p in host.procs() if p["state"] not in ("Z", "X")}
+    group, frontier = [], [upd]
+    while frontier:
+        pid = frontier.pop()
+        if pid not in procs or "update_completion.py" in " ".join(procs[pid]["cmdline"]):
+            continue
+        group.append(pid)
+        frontier += [p for p, row in procs.items() if row["ppid"] == pid]
+    return group
+
+
+def test_ctrl_c_after_commit_reports_the_new_code_not_a_failed_update(w):
+    w.reset_clean()
+    _clear_toggles(w)
+    prev = w.receipt()
+    target = _publish_web_release(w, "f")
+    started = w.sb.home / WEB_STARTED
+    _toggle(w, SLOW_WEB, True)
+    try:
+        with _namespace(w) as host:
+            spawn_log = w.sb.root / "update-f.log"  # sandbox-writable
+            upd = host.spawn([w.sb.hermes, "update", "--yes", "--branch", "main", "--no-gateway-restart"],
+                             log=spawn_log)
+
+            def _slow_build_running():
+                if started.is_file():
+                    return True
+                if not host.alive(upd):
+                    raise AssertionError(f"premise: the update exited before the slow web build started:\n"
+                                         f"{_read(spawn_log)[-6000:]}\n{w.diag()}")
+                return False
+
+            H.wait_for(_slow_build_running, timeout=1200, interval=1.0, what="the slow web build to start")
+            interrupted = _foreground_group(host, upd)
+            for pid in interrupted:
+                host.kill(pid, signal.SIGINT)
+            exited = True
+            try:
+                H.wait_for(lambda: not host.alive(upd), timeout=120, interval=0.5, what="the interrupted update to exit")
+            except AssertionError:
+                exited = False
+            out = _read(spawn_log)
+            rec = w.receipt()
+            diag = (_facts(w, sigint=interrupted, update_exited=exited, previous_update_id=prev.get("update_id"))
+                    + w.diag() + "\n--- sandbox ---\n" + host.ps_text()
+                    + "\n--- interrupted update output ---\n" + out[-6000:])
+    finally:
+        _toggle(w, SLOW_WEB, False)
+        started.unlink(missing_ok=True)
+
+    assert w.head() == target, f"premise: the SIGINT landed before the release committed:\n{diag}"
+    assert exited, f"the update did not exit after Ctrl-C:\n{diag}"
+    assert INTERRUPTED_AFTER_COMMIT in out, \
+        f"after Ctrl-C the user is not told the new code is in place and the rest is owed:\n{diag}"
+    assert rec.get("update_id") != prev.get("update_id") and rec.get("outcome") == "interrupted", \
+        f"latest.json is not this run's `interrupted` record (a `failed` one reads as the previous version):\n{diag}"
+    assert _pending_markers(w), f"the interrupt disarmed the source-completion obligation:\n{diag}"
+
+    cp = w.update("--no-gateway-restart")
+    rec = w.receipt()
+    diag = _facts(w, cp) + w.diag(cp)
+    assert cp.returncode == 0 and rec.get("outcome") == "success", f"the update after Ctrl-C failed:\n{diag}"
+    assert not _pending_markers(w), f"the update after Ctrl-C left the completion obligation armed:\n{diag}"

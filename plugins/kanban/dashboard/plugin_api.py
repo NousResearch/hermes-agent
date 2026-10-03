@@ -294,9 +294,12 @@ def get_board(
             workflow_template_id=workflow_template_id, current_step_key=current_step_key)
         # Link / comment / progress rollups are each one aggregate query rather than N per-task lookups.
         link_counts: dict[str, dict[str, int]] = {}
-        for row in conn.execute("SELECT parent_id, child_id FROM task_links").fetchall():
+        link_ids: dict[str, dict[str, list[str]]] = {}
+        for row in conn.execute("SELECT parent_id, child_id FROM task_links ORDER BY parent_id, child_id").fetchall():
             link_counts.setdefault(row["parent_id"], {"parents": 0, "children": 0})["children"] += 1
             link_counts.setdefault(row["child_id"], {"parents": 0, "children": 0})["parents"] += 1
+            link_ids.setdefault(row["parent_id"], {"parents": [], "children": []})["children"].append(row["child_id"])
+            link_ids.setdefault(row["child_id"], {"parents": [], "children": []})["parents"].append(row["parent_id"])
         comment_counts: dict[str, int] = {
             r["task_id"]: r["n"] for r in conn.execute("SELECT task_id, COUNT(*) AS n FROM task_comments GROUP BY task_id")}
         progress: dict[str, dict[str, int]] = {}  # per parent: children done / total, rendered as "N/M"
@@ -307,6 +310,12 @@ def get_board(
             p["done"] += row["cstatus"] == "done"
         diagnostics_per_task = _compute_task_diagnostics(conn, task_ids=None)
         latest_event_id = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM task_events").fetchone()["m"]
+        # Each task's own newest event, so a client following a few cards re-reads only the ones that moved.
+        task_latest: dict[str, int] = {
+            r["task_id"]: r["m"] for r in conn.execute("SELECT task_id, MAX(id) AS m FROM task_events GROUP BY task_id")}
+        # The newest block event of each card waiting on a person: why it waits, and who said so.
+        waiting = [t.id for t in tasks if t.status in ("blocked", "triage") or (t.status == "todo" and t.block_kind)]
+        block_events = kanban_db.latest_block_events(conn, waiting)
         columns: dict[str, list[dict]] = {c: [] for c in BOARD_COLUMNS}
         if include_archived:
             columns["archived"] = []
@@ -321,6 +330,12 @@ def get_board(
             d = _task_dict(t, latest_summary=(full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None),
                            current_run_started_at=run_start_map.get(t.id))
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
+            d["links"] = link_ids.get(t.id, {"parents": [], "children": []})
+            d["latest_event_id"] = int(task_latest.get(t.id, 0))
+            event = block_events.get(t.id)
+            d["block_reason"] = event["reason"] if event else None
+            d["block_event"] = ({"id": event["event_id"], "kind": event["kind"], "actor": event["actor"],
+                                 "at": event["created_at"]} if event else None)
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
             _attach_diagnostics(d, diagnostics_per_task.get(t.id))

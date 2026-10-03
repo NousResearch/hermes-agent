@@ -447,6 +447,25 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     if target == seen:
         return
     superseded_pin = None
+    if not session.get("model_override"):
+        # Background deliveries reuse the live Bot Chat session instead of the resume path.
+        # Rehydrate a still-valid composer pin before adopting the profile default.
+        db, key = getattr(agent, "_session_db", None), session.get("session_key") or ""
+        if db and key:
+            row = db.get_session(key) or {}
+            from tui_gateway.server import _row_follows_profile, _stored_session_runtime_overrides
+            if _row_follows_profile(row):
+                composer_profile = _parse_model_config(row.get("model_config"), quiet=True).get(
+                    "composer_override_profile"
+                )
+                if isinstance(composer_profile, dict) and (
+                    str(composer_profile.get("model") or "").strip(),
+                    str(composer_profile.get("provider") or "").strip(),
+                ) == target:
+                    restored = _stored_session_runtime_overrides(row).get("model_override")
+                    if restored:
+                        session["model_override"] = restored
+                        session["composer_override_profile"] = composer_profile
     if session.get("model_override"):
         composer_profile = session.get("composer_override_profile")
         pinned_profile = (

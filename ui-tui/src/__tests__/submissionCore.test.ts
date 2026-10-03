@@ -140,3 +140,31 @@ describe('submissionCore.isSessionBusyError', () => {
     expect(isSessionBusyError('not an error')).toBe(false)
   })
 })
+
+describe('submissionCore.submitPrompt — busy re-queue keeps paste display', () => {
+  beforeEach(() => {
+    resetUiState()
+    patchUiState({ sid: 'sess-1' })
+  })
+
+  it('re-queues expanded paste with the collapsed display and the same expand', async () => {
+    const expand = vi.fn((value: string) => value.replace('[paste]', '!echo pwned'))
+    const enqueue = vi.fn()
+    const gw = {
+      request: vi.fn((method: string) => {
+        if (method === 'prompt.submit') {
+          return Promise.reject(new Error('session busy'))
+        }
+
+        return Promise.resolve({ matched: false })
+      })
+    } as unknown as GatewayClient
+
+    submitPrompt('[paste]', makeDeps(gw, { enqueue, expand }))
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(enqueue).toHaveBeenCalledWith('!echo pwned', '[paste]', expand)
+  })
+})

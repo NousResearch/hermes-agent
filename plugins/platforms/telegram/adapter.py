@@ -5723,22 +5723,30 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # 1) Protect fenced code blocks (``` ... ```)
         #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
-        #    The fence must open and close on its own line (0-3 spaces of
-        #    indent allowed).  Anchoring to line starts keeps *inline* triple
-        #    backticks (e.g. "the syntax is ```x``` inline") from being
-        #    swallowed and mangled into broken MarkdownV2 <pre> entities.
-        #    The trailing ``\r?`` on the close lets CRLF-terminated fences
-        #    (Windows-authored content) match too, so they aren't left
-        #    unprotected with their backticks escaped into literals.
+        #    A fence still opens on its own line — the opening ``` must be the
+        #    first triple-backtick run on that line and must end it — but the
+        #    line may carry arbitrary leading whitespace (list/blockquote-
+        #    nested code indents fences by 4+ spaces) or lead-in prose
+        #    ("Here is the code: ```"), both of which the line-start-only
+        #    anchor silently downgraded from <pre> to escaped literal text.
+        #    Requiring the rest of the opening line to be backtick-free is
+        #    what keeps *inline* triple backticks (e.g. "the syntax is
+        #    ```x``` inline") out of the match: a closing run can never sit
+        #    on the same line as the opener, and the tempered prefix cannot
+        #    skip past an earlier run to a later one.  The closing fence must
+        #    sit on its own line (any indent), with optional trailing
+        #    whitespace and an optional ``\r`` so CRLF-terminated fences
+        #    (Windows-authored content) match too.
         def _protect_fenced(m):
-            opening = m.group(1)  # opening fence line, incl. trailing newline
-            body = m.group(2)     # code body (may be empty)
-            closing = m.group(3)  # closing fence (with its indent)
+            prefix = m.group(1)   # lead-in text / indent before the opening fence
+            opening = m.group(2)  # opening ``` (with optional language) and newline
+            body = m.group(3)     # code body (may be empty)
+            closing = m.group(4)   # closing fence (with its indent)
             body = body.replace('\\', '\\\\').replace('`', '\\`')
-            return _ph(opening + body + closing)
+            return prefix + _ph(opening + body + closing)
 
         text = re.sub(
-            r'(?m)^([ ]{0,3}`{3}[^\n]*\n)([\s\S]*?)(^[ ]{0,3}`{3})[ \t]*\r?$',
+            r'(?m)^((?:(?!```)[^\n])*)(```[^`\n]*\n)([\s\S]*?)(^[ \t]*```)[ \t]*\r?$',
             _protect_fenced,
             text,
         )

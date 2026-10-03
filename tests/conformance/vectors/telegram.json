@@ -224,7 +224,7 @@
       "category": "scar",
       "expect": "semantic",
       "input": "`C:\\Users\\ben\\file.txt` and ```\npath = \"a\\\\b\"\n```",
-      "native_output": "`C:\\\\Users\\\\ben\\\\file.txt` and \\`\\``\npath = \"a\\\\\\\\b\"\n`\\`\\`"
+      "native_output": "`C:\\\\Users\\\\ben\\\\file.txt` and ```\npath = \"a\\\\\\\\b\"\n```"
     },
     {
       "id": "backtick-in-fence",

@@ -164,6 +164,45 @@ class TestFormatMessageCodeBlocks:
         assert "code" in result
         assert "\\`" not in result
 
+    def test_midline_opened_fence_stays_protected(self, adapter):
+        r"""A fence opened after lead-in prose on the same line ("Here is the
+        code: ```") is a real <pre> block on main and must stay one: the
+        line-start-only anchor downgraded it to escaped literal prose."""
+        text = "Here is the code: ```python\nprint('hi')\n```"
+        result = adapter.format_message(text)
+        assert "```python\nprint('hi')\n```" in result
+        assert "\\`" not in result
+
+    def test_list_nested_indented_fence_stays_protected(self, adapter):
+        r"""Fences indented by 4+ spaces (code nested in lists/blockquotes) are
+        real <pre> blocks on main and must stay one regardless of indent."""
+        text = "- item:\n    ```\n    code\n    ```"
+        result = adapter.format_message(text)
+        assert "    ```\n    code\n    ```" in result
+        assert "\\`" not in result
+
+    def test_midline_fence_after_inline_code_lead_in(self, adapter):
+        r"""An inline code span in the lead-in must not stop the fence opened
+        later on the same line from being protected."""
+        text = "use `foo` then: ```python\nx\n```"
+        result = adapter.format_message(text)
+        assert "```python\nx\n```" in result
+        assert "`foo`" in result
+        assert "\\`" not in result
+
+    def test_inline_pair_then_real_fence_both_handled(self, adapter):
+        r"""An inline triple-backtick pair on one line must not swallow a real
+        line-start fence that follows it (the pre-anchored regex over-matched
+        from the inline pair; the old unanchored regex matched from it too)."""
+        text = "the syntax is ```like this``` inline\n```python\nx\n```"
+        result = adapter.format_message(text)
+        # The real fence is protected verbatim...
+        assert "```python\nx\n```" in result
+        # ...the inline pair is escaped as literal text (no raw ``` for it)...
+        assert "like this" in result
+        # ...and exactly the one real block's two fences remain.
+        assert result.count("```") == 2
+
 
 @pytest.mark.asyncio
 async def test_final_send_does_not_retrigger_typing(adapter):

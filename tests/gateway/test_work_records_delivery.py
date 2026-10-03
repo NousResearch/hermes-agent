@@ -445,8 +445,8 @@ def test_an_unavailable_participant_never_blocks_a_healthy_one_or_holds_the_home
     append(source, "hello")
     admit(source, member_id="member-0")
 
-    def copy_history(client, *, grant, **body):
-        return replicas.ingest_page(targets[client.base_url][0], **body)
+    def copy_history(client, *, grant, custody=None, **body):
+        return replicas.ingest_page(targets[client.base_url][0], custody_report=custody, **body)
 
     monkeypatch.setattr(PeerRunsHTTPClient, "replicate_page", copy_history)
     pub = publisher.HostedRoomReplicationPublisher(source)

@@ -36,7 +36,8 @@ def http_routes(adapter):
         body, error = await adapter._read_json_body((request if request.get("verified_room_grant") else request.clone(client_max_size=MAX_REPLICA_HTTP_BYTES)))
         if error is not None:
             return error
-        if set(body) != {"room_id", "room_name", "members", "page"}:
+        if not {"room_id", "room_name", "members", "page"} <= set(body) <= {
+                "room_id", "room_name", "members", "page", "custody"}:
             return failure("Invalid Group Chat history page.", "invalid_room_replica", 400)
         try:
             result = await asyncio.to_thread(

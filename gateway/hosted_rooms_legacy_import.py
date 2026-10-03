@@ -26,8 +26,8 @@ MARKER_TABLE = "hosted_room_legacy_imports"
 # history is classified again here, and an unmarked transition is quarantined.
 # A canonical default-profile home keeps its rooms in this same root state.db; its copy-delivery
 # checkpoints and copy-retirement obligations belong to that home, never to the legacy store.
-# Canonical participants likewise keep enrollment/retirement beside their admission authority in
-# state.db. These new canonical tables must never be copied into the legacy shared-state.db.
+# Canonical participants likewise keep enrollment/retirement and custody beside their admission
+# authority in state.db. These new canonical tables must never be copied into the legacy shared-state.db.
 _SKIP_TABLES = frozenset({
     "hosted_room_driver_leases", "hosted_room_event_budget",
     "hosted_room_policy_cursors", "hosted_room_policy_threads", "hosted_room_policy_events",
@@ -36,7 +36,9 @@ _SKIP_TABLES = frozenset({
     "hosted_room_verified_transitions", "hosted_room_verified_transition_uses", "hosted_room_branch_transitions",
     "hosted_room_replication_publishers", "hosted_room_replication_targets",
     "hosted_room_replica_retirement_home", "hosted_room_replica_retirement_enrollments",
-    "hosted_room_replica_retirements",
+    "hosted_room_replica_retirements", "hosted_room_identity_pins", "hosted_room_custodians",
+    "hosted_room_custody_watermarks", "hosted_room_custody_reports", "hosted_room_custody_chain",
+    "hosted_room_custody_consent", "hosted_room_custody_routes",
 })
 # Current shipped durable schemas only, parents first. Source-owned DDL is never executed.
 _TABLE_ORDER = (

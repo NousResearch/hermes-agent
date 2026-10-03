@@ -524,14 +524,15 @@ def _event_row(room_id: str, event: dict[str, Any]) -> tuple[Any, ...]:
 
 def ingest_page(
     db_path: DbPath, *, room_id: Any, room_name: Any, members: Any, page: Any, now: float | None = None,
-    _authorize: Callable[[sqlite3.Connection], None] | None = None,
+    _authorize: Callable[[sqlite3.Connection], None] | None = None, custody_report: Any = None,
 ) -> dict[str, Any]:
     """Persist one verbatim ``read_events()`` page idempotently.
 
     Refuses sequence gaps, overlap that differs from stored history, authority changes without a
     verified lineage, and events after a terminal ``room.disbanded``. ``_authorize`` admits a
     room-grant sender inside the writer (``hosted_room_replica_ingress``); such a sender may be
-    ahead of its page, so the stored name follows the page's own rename events.
+    ahead of its page, so the stored name follows the page's own rename events. The result carries
+    the copy's durable custody watermark; ``custody_report`` is the authority's protection report.
     """
     room_id = _room_id(room_id)
     room_name = _validate_room_name(room_name)
@@ -619,9 +620,11 @@ def ingest_page(
             conn.execute("""UPDATE hosted_room_replicas SET last_seq=?, latest_seq=?, event_bytes=event_bytes+?,
                     updated_at=?, disbanded_at=?, name=? WHERE room_id=?""",
                 (new_last, latest_seq, added_bytes, now, terminal_at, name, room_id))
+        from gateway.hosted_room_custody import after_ingest_locked
+        watermark = after_ingest_locked(conn, room_id, new_events, report=custody_report)
     return {
         "room_id": room_id, "stored_seq": new_last, "ingested": len(new_events), "authority": authority,
-        "caught_up": new_last >= latest_seq}
+        "caught_up": new_last >= latest_seq, "watermark": watermark}
 
 
 def _reserve_replica_bytes(conn: sqlite3.Connection, added_bytes: int) -> None:
@@ -675,6 +678,59 @@ def copy_state(db_path: DbPath, *, room_id: Any) -> dict[str, Any]:
         if state["safety_status"] == "passive":
             state["safety_status"] = "retired"
     return state
+
+
+def list_copies(db_path: DbPath) -> list[dict[str, Any]]:
+    """Copies of other gateways' Group Chats held here, most recently updated first; retired ones excluded."""
+    from gateway.hosted_room_replica_retirement import RETIREMENT_TABLE
+    from gateway.hosted_rooms import MAX_ROOM_LIST_LIMIT
+    from gateway.hosted_rooms_common import table_exists
+    with _replica_transaction(db_path) as conn:
+        retired = {str(row[0]) for row in conn.execute(f"SELECT room_id FROM {RETIREMENT_TABLE}")} \
+            if table_exists(conn, RETIREMENT_TABLE) else set()
+        rows = conn.execute(f"""SELECT * FROM hosted_room_replicas WHERE {_replica_header_bounds_sql()}
+                ORDER BY updated_at DESC, room_id LIMIT ?""", (MAX_ROOM_LIST_LIMIT,)).fetchall()
+    return [copy_room(row) for row in rows if row["room_id"] not in retired]
+
+
+def read_copy_room(db_path: DbPath, *, room_id: Any) -> dict[str, Any]:
+    """One copy held here, in the shape of a hosted room record (``copy_room``)."""
+    room_id = _room_id(room_id)
+    with _replica_transaction(db_path) as conn:
+        row = _load_replica_header_locked(conn, room_id)
+    if row is None:
+        raise ReplicaNotFoundError("replica not found")
+    return copy_room(row)
+
+
+def copy_room(row: sqlite3.Row) -> dict[str, Any]:
+    """A copy in the shape of a hosted room record, marked ``copy``: it has no revision of its own."""
+    return {
+        "room_id": row["room_id"], "name": row["name"], "members": json.loads(row["members_json"]),
+        "authority_gateway_id": row["authority_gateway_id"], "authority_epoch": int(row["authority_epoch"]),
+        "revision": 0, "created_at": float(row["created_at"]), "updated_at": float(row["updated_at"]),
+        "latest_seq": int(row["last_seq"]), "copy": True,
+        **({"safety_status": "quarantined", "safety_reason": str(row["quarantine_reason"])}
+           if row["quarantine_reason"] is not None else {}),
+        **({"disbanded_at": float(row["disbanded_at"])} if row["disbanded_at"] is not None else {})}
+
+
+def read_copy_events(db_path: DbPath, *, room_id: Any, since_seq: Any = 0, limit: Any = 100) -> dict[str, Any]:
+    """A copy held here as a replay page, read-only, bounded like ``read_events``; its authority is the copy's."""
+    from gateway.hosted_rooms import _bounded_page, _event_from_row, _page_rows
+    room_id = _room_id(room_id)
+    since_seq = _non_negative_int(since_seq, message="since_seq must be a non-negative integer")
+    limit = _positive_int(limit, high=MAX_LOG_LIMIT, message=f"limit must be between 1 and {MAX_LOG_LIMIT}")
+    with _replica_transaction(db_path) as conn:
+        row = _load_replica_locked(conn, room_id)
+        if row is None:
+            raise ReplicaNotFoundError("replica not found")
+        latest_seq = int(row["last_seq"])
+        if since_seq > latest_seq:
+            raise ReplicaError("since_seq is ahead of the stored copy")
+        rows = _page_rows(conn, "hosted_room_replica_events", room_id, since_seq, limit)
+        authority = {"gateway_id": str(row["authority_gateway_id"]), "epoch": int(row["authority_epoch"])}
+    return _bounded_page([_event_from_row(event) for event in rows], since_seq, latest_seq, authority)
 
 
 def _replica_result(row: sqlite3.Row | None, reservation: sqlite3.Row | None) -> dict[str, Any]:

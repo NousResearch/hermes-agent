@@ -24,6 +24,11 @@ GROUP_METHODS = {
     'groups.replication.prepare': 'session:control',
     'groups.replication.enroll': 'session:operator',
     'groups.replication.revoke': 'session:operator',
+    'groups.custody.status': 'session:read',
+    'groups.custody.designate': 'session:control',
+    'groups.custody.add': 'session:control',
+    'groups.custody.remove': 'session:control',
+    'groups.custody.allow': 'session:operator',
     'groups.peer.register': 'session:control',
     'groups.peer.invite': 'session:operator',
     'groups.peer.revoke': 'session:operator',
@@ -46,13 +51,19 @@ _FIELDS = {
                        'choice', 'request_id'},
     'groups.peer.register': {'room_id', 'member_id', 'target_url', 'target_profile', 'grant', 'catalog'},
     'groups.peer.invite': {'room_id', 'home_install_id', 'authority_gateway_id', 'authority_epoch',
-                           'member_id', 'ttl_seconds', 'status_ttl_seconds', 'replication', 'work_records', 'passive_only'},
+                           'member_id', 'ttl_seconds', 'status_ttl_seconds', 'replication', 'work_records', 'passive_only',
+                           'successor', 'custody_only'},
     'groups.peer.revoke': {'grant'},
     'groups.replica_state': {'room_id'},
     'groups.replication.prepare': {'room_id', 'target_install_id', 'endpoint', 'enrollment_id',
                                    'replace_enrollment_id'},
     'groups.replication.enroll': {'enrollment', 'expected_enrollment_id', 'expected_state'},
     'groups.replication.revoke': {'room_id', 'enrollment_id'},
+    'groups.custody.status': {'room_id'},
+    'groups.custody.designate': {'room_id', 'install_id', 'successor'},
+    'groups.custody.add': {'room_id', 'target_url', 'catalog', 'grant', 'successor'},
+    'groups.custody.remove': {'room_id', 'install_id'},
+    'groups.custody.allow': {'room_id', 'successor'},
     'profiles.list': {'include_sessions'},
 }
 
@@ -102,6 +113,7 @@ async def dispatch_group_control(connection, method, params):
 
 def _group(authority, actor, home, method, params):
     from gateway import hosted_rooms as rooms
+    from gateway.hosted_room_custody import custody_status
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()
     service = getattr(authority, 'hosted_room_service', None)
@@ -114,6 +126,11 @@ def _group(authority, actor, home, method, params):
             service = None
 
     execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
+    from gateway import session_group_replication as replication
+    if method in replication.COPY_READ_METHODS and isinstance(params.get('room_id'), str) and replication.is_copy(
+            db_path, params['room_id']):
+        # A copy of another gateway's room: read-only, shown to the operator or the room's recorded owner.
+        return replication.read_copy(authority, actor, method, params)
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
@@ -140,6 +157,11 @@ def _group(authority, actor, home, method, params):
             raise RuntimeStoreError('runtime_coordination_required')
         from gateway.session_group_replication import prepare
         return prepare(service, params)
+    if method in replication.CUSTODY_METHODS:
+        replication.refuse_shared_chat(actor)
+        if service is None:
+            raise RuntimeStoreError('runtime_coordination_required')
+        return replication.custody_control(service, method, params)
 
     def capabilities():
         from gateway.session_group_peers import room_link
@@ -152,6 +174,8 @@ def _group(authority, actor, home, method, params):
     def listing():
         limit, offset = params.get('limit', rooms.MAX_ROOM_LIST_LIMIT), params.get('offset', 0)
         result = rooms.list_rooms(db_path, **params)
+        # Copies held here follow this gateway's own rooms, once its own listing is exhausted.
+        copies = replication.copy_listing(authority, actor) if len(result) < limit else []
         next_offset = offset + limit if len(result) == limit else None
         if getattr(authority, 'hosted_room_service', None) is not None:
             visible = []
@@ -166,7 +190,7 @@ def _group(authority, actor, home, method, params):
                 else:
                     visible.append(room)
             result = visible
-        return {'rooms': result, 'next_offset': next_offset}
+        return {'rooms': result + copies, 'next_offset': next_offset}
 
     def create():
         if service is not None:
@@ -233,6 +257,7 @@ def _group(authority, actor, home, method, params):
         'groups.log': lambda: rooms.read_events(db_path, **params),
         'groups.rename': lambda: {'room': rooms.rename_room(db_path, **params)},
         'groups.disband': disband,
+        'groups.custody.status': lambda: custody_status(db_path, params.get('room_id')),
     }
     return handlers[method]()
 

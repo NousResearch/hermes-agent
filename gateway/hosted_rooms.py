@@ -56,8 +56,8 @@ _EVENT_KINDS_BY_ACTOR = {
         "member.unavailable", "room.activity", "room.stop_requested", "turn.deferred", "turn.reassigned",
         "turn.cancelled", "turn.failed", "turn.settled", "turn.started"}),
     "system": frozenset({
-        "authority.claimed", "authority.lost", "authority.transition", "room.created", "room.disbanded",
-        "room.members_changed", "room.renamed"})}
+        "authority.claimed", "authority.lost", "authority.transition", "custody.configured", "room.created",
+        "room.disbanded", "room.members_changed", "room.renamed", "task.admitted"})}
 _OPTIONAL_ACTOR_FIELDS = (
     ("display_name", MAX_ACTOR_LABEL_CHARS), ("profile", MAX_ACTOR_ID_CHARS), ("connection_id", MAX_ACTOR_ID_CHARS))
 _ACTOR_FIELDS = frozenset({"kind", "id", *(field for field, _ in _OPTIONAL_ACTOR_FIELDS)})
@@ -1340,24 +1340,35 @@ def read_events(
         authority = {"gateway_id": str(room["authority_gateway_id"]), "epoch": int(room["authority_epoch"])}
         if since_seq > latest_seq:
             raise HostedRoomError("since_seq is ahead of the hosted room log")
-        rows = conn.execute(
-            f"""WITH candidates AS (
-                   SELECT {_EVENT_COLUMNS},
-                          SUM(
-                              LENGTH(CAST(event_id AS BLOB)) +
-                              LENGTH(CAST(kind AS BLOB)) +
-                              LENGTH(CAST(actor_json AS BLOB)) +
-                              LENGTH(CAST(payload_json AS BLOB))
-                          ) OVER (ORDER BY seq ASC) AS cumulative_bytes
-                     FROM hosted_room_events
-                    WHERE room_id=? AND seq>?
-                    ORDER BY seq ASC LIMIT ?
-               )
-               SELECT {_EVENT_COLUMNS}
-                 FROM candidates
-                WHERE cumulative_bytes<=?
-                ORDER BY seq ASC""", (room_id, since_seq, limit, MAX_LOG_PAGE_BYTES)).fetchall()
-    events = [_event_from_row(row) for row in rows]
+        rows = _page_rows(conn, "hosted_room_events", room_id, since_seq, limit)
+    return _bounded_page([_event_from_row(row) for row in rows], since_seq, latest_seq, authority)
+
+
+def _page_rows(conn: sqlite3.Connection, table: str, room_id: str, since_seq: int, limit: int) -> list[sqlite3.Row]:
+    """The next events after ``since_seq`` that fit the page byte budget, from ``table``."""
+    return conn.execute(
+        f"""WITH candidates AS (
+               SELECT {_EVENT_COLUMNS},
+                      SUM(
+                          LENGTH(CAST(event_id AS BLOB)) +
+                          LENGTH(CAST(kind AS BLOB)) +
+                          LENGTH(CAST(actor_json AS BLOB)) +
+                          LENGTH(CAST(payload_json AS BLOB))
+                      ) OVER (ORDER BY seq ASC) AS cumulative_bytes
+                 FROM {table}
+                WHERE room_id=? AND seq>?
+                ORDER BY seq ASC LIMIT ?
+           )
+           SELECT {_EVENT_COLUMNS}
+             FROM candidates
+            WHERE cumulative_bytes<=?
+            ORDER BY seq ASC""", (room_id, since_seq, limit, MAX_LOG_PAGE_BYTES)).fetchall()
+
+
+def _bounded_page(
+    events: list[dict[str, Any]], since_seq: int, latest_seq: int, authority: dict[str, Any],
+) -> dict[str, Any]:
+    """A replay page whose serialized form fits ``MAX_LOG_PAGE_BYTES``."""
     def build_page(page_events: list[dict[str, Any]]) -> dict[str, Any]:
         cursor = page_events[-1]["seq"] if page_events else since_seq
         return {"events": page_events, "cursor": cursor, "latest_seq": latest_seq, "has_more": cursor < latest_seq,

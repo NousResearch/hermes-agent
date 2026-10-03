@@ -72,6 +72,11 @@ class Room(Result):
     #: takeover; ``safety_reason`` names it. Such a room stays readable and refuses new events.
     safety_status: str | None = None
     safety_reason: str | None = None
+    #: ``true`` for a copy of another gateway's Group Chat held here: read-only, never driven
+    #: (``revision`` is 0), shown to this installation's operator or the room's recorded owner.
+    copy: bool | None = None
+    #: A copy's custody summary (``groups.state``): ``{configuration_seq, at_risk_after_seq, custodians}``.
+    custody: dict[str, JsonValue] | None = None
 
 
 class RoomAuthority(Result):
@@ -527,6 +532,10 @@ class GroupsPeerInviteParams(ProfileParams):
     replication: bool | None = None
     work_records: bool | None = None
     passive_only: bool | None = None
+    # The operator's consent that the room owner may continue the group on this installation.
+    successor: bool | None = None
+    # A copy-only grant for an installation without a Bot in the room (no ``member_id``).
+    custody_only: bool | None = None
 
 
 class GroupsPeerInviteResult(Result):
@@ -622,6 +631,120 @@ method('groups.replication.enroll', params=GroupsReplicationEnrollParams, result
        doc='The participant operator enrolls retirement of one exact passive copy.')
 method('groups.replication.revoke', params=GroupsReplicationRevokeParams, result=GroupsReplicationRevokeResult,
        doc='The participant operator withdraws one copy-retirement enrollment.')
+
+
+# ── custody ───────────────────────────────────────────────────────────────────────────────────
+
+
+class CustodyWatermark(Result):
+    epoch: int
+    seq: int
+    event_hash: str
+
+
+class CustodyCustodian(Result):
+    """One entry of a ``custody.configured`` event."""
+
+    install_id: str
+    public_key: str
+    endpoint: str | None = None
+    #: ``authority`` (the current host), ``custodian`` (a member installation) or ``custodian_only``.
+    role: str
+    #: May continue the group: its operator allowed it and the room owner designated it.
+    successor: bool
+    name: str | None = None
+    operator_name: str | None = None
+
+
+class CustodyConfiguration(Result):
+    configuration_seq: int
+    custodians: list[CustodyCustodian]
+    owner_name: str | None = None
+
+
+class CustodyCustodianStatus(Result):
+    install_id: str
+    role: str | None = None
+    #: ``active``, ``opted_out``, ``unsupported`` (an older Hermes: never counted) or ``withdrawn``.
+    state: str
+    name: str | None = None
+    operator_name: str | None = None
+    successor: bool
+    allowed: bool | None = None
+    designated: bool | None = None
+    opted_out: bool
+    watermark: CustodyWatermark | None = None
+    acknowledged_at: float | None = None
+    divergent: bool
+
+
+class GroupsCustodyStatusParams(RoomParams):
+    pass
+
+
+class GroupsCustodyStatusResult(Result):
+    room_id: str
+    #: ``authority`` on the room's host, ``custodian`` on an installation holding a copy.
+    role: str
+    custodians: list[CustodyCustodianStatus]
+    #: The highest seq an eligible successor durably holds; later events are at risk.
+    at_risk_after_seq: int
+    configuration_seq: int
+    configuration: CustodyConfiguration
+    watermark: CustodyWatermark | None = None
+
+
+class GroupsCustodyDesignateParams(RoomParams):
+    install_id: str
+    successor: bool
+
+
+class GroupsCustodyDesignateResult(Result):
+    room_id: str
+    install_id: str
+    successor: bool
+    configuration_seq: int
+
+
+class GroupsCustodyAddParams(RoomParams):
+    target_url: str
+    catalog: dict[str, JsonValue]  # a RoomLinkCatalog mapping
+    grant: str  # minted with ``groups.peer.invite`` and ``custody_only: true``
+    successor: bool | None = None
+
+
+class GroupsCustodyChangeResult(Result):
+    room_id: str
+    install_id: str
+    configuration_seq: int
+
+
+class GroupsCustodyRemoveParams(RoomParams):
+    install_id: str
+
+
+class GroupsCustodyAllowParams(RoomParams):
+    successor: bool
+
+
+class GroupsCustodyAllowResult(Result):
+    room_id: str
+    install_id: str
+    allowed: bool
+    #: The host recorded the same choice (from its report beside the next page).
+    confirmed: bool
+
+
+method("groups.custody.status", params=GroupsCustodyStatusParams, result=GroupsCustodyStatusResult,
+       doc="Who keeps this Group Chat's history, how far each copy reaches, and the tail at risk.")
+method("groups.custody.designate", params=GroupsCustodyDesignateParams, result=GroupsCustodyDesignateResult,
+       doc="The room owner designates (or not) one custodian to continue the group; its operator must allow it.")
+method("groups.custody.add", params=GroupsCustodyAddParams, result=GroupsCustodyChangeResult,
+       doc="Add an installation that keeps the room's history without a Bot, after a live scoped probe.")
+method("groups.custody.remove", params=GroupsCustodyRemoveParams, result=GroupsCustodyChangeResult,
+       doc="Stop keeping a copy on one custodian-only installation.")
+method("groups.custody.allow", params=GroupsCustodyAllowParams, result=GroupsCustodyAllowResult,
+       doc="On a member installation: allow (or not) the room owner to continue the group here.")
 
 
 # ── bot relay ─────────────────────────────────────────────────────────────────────────────────

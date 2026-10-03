@@ -784,15 +784,17 @@ class PeerRunsHTTPClient:
 
     def replicate_page(
         self, *, grant: str, room_id: str, room_name: str, members: list[dict[str, Any]],
-        page: dict[str, Any]) -> Mapping[str, Any]:
+        page: dict[str, Any], custody: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
         """Send one history page with a ``replicate`` grant, never broad API auth.
 
         Pages are bounded in UTF-8; escaping non-ASCII text would multiply their wire size.
+        ``custody`` reports the room's protection to the custodian beside the page.
         """
         return self._request(
             "/v1/room-members/replica", method="POST", room_grant=self._require_room_grant(grant),
             ensure_ascii=False,
-            body={"room_id": room_id, "room_name": room_name, "members": members, "page": page})
+            body={"room_id": room_id, "room_name": room_name, "members": members, "page": page,
+                  **({"custody": dict(custody)} if custody is not None else {})})
 
     def replicate_work_records(self, *, grant: str, record: dict[str, Any]) -> Mapping[str, Any]:
         """Send one whole task-evidence record with a ``work_records`` grant."""

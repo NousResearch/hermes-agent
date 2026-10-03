@@ -80,9 +80,31 @@ retryable infra failure.
 
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
 store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
-instructions; `last_failure_error` surfaces the next step. Fix failures, rerun
-infrastructure checks or wait, then retry completion. Use `kanban_block` when
-human action is needed. Generic GitHub `failure` cannot establish whether a test
+instructions. Rejection sets an independent `acceptance_hold`, exposed by
+`show --json`, without changing `last_failure_error` or the active worker.
+Both ready and review dispatch remain held until acceptance succeeds or an
+operator explicitly clears that hold:
+
+```bash
+hermes kanban unblock <task-id> --acceptance-only --reason "Publication repaired; retry authorized"
+```
+
+This operator-only action preserves status, worker/auth errors, retry counters
+and the completion contract; it does not claim or spawn. A subsequent normal tick
+still checks all other guards. Ordinary unblock, reassignment and review handoffs
+do not implicitly clear acceptance. In-flight stale receipts cannot undo an
+explicit clear. Legacy cards are not retroactively held during migration.
+
+After fixing failures or waiting for infrastructure recovery, an operator can run
+`hermes kanban complete <task-id>` to recollect acceptance without claiming a new
+worker. If a worker must perform the retry instead, the operator first clears the
+hold with `--acceptance-only` as above; waiting alone does not clear it. Active
+workers can retry completion against their existing claim.
+
+CLI JSON and `kanban_show` / `kanban_list` expose `acceptance_hold`. Diagnostics
+name the rejected acceptance and its recovery instead of reporting the held card
+as a missing worker. Use `kanban_block` when human action is needed.
+Generic GitHub `failure` cannot establish whether a test
 or artifact upload failed; inspect its retained URL. Explicit infrastructure
 conclusions and API failures are classified separately. No extra worker is spawned.
 

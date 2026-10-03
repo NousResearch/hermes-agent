@@ -567,6 +567,50 @@ def _cron_failure_marker_error(text: str) -> Optional[str]:
     return evidence or "Cron agent reported failure."
 
 
+# Longest declared-failure text delivered to chat (Telegram caps a message at 4096 characters).
+DECLARED_FAILURE_DELIVERY_CAP = 3500
+
+
+def _no_agent_declared_failure(output: str) -> Optional[str]:
+    """Failure evidence a no_agent script declared itself: ``[CRON_FAILURE]`` as its first stdout line.
+
+    Scripts get the agent contract: the exact first line is control text, the rest is the message.
+    Works for exit 0 (``output`` is stdout) and for a non-zero exit, where ``_run_job_script``
+    returns ``Script exited with code N`` followed by the ``stdout:`` section (stderr, if any,
+    comes before it and is never searched for the marker).
+    """
+    text = output or ""
+    if text.startswith("Script exited with code "):
+        _head, sep, stdout = text.partition("\nstdout:\n")
+        if not sep:
+            return None
+        text = stdout
+    return _cron_failure_marker_error(text)
+
+
+def _declared_failure_verbatim(job: dict) -> bool:
+    """Deliver a declared failure exactly as the job wrote it, without the generic notice.
+
+    Always for no_agent scripts (their text IS the message); for agent jobs when
+    ``cron.declared_failure_delivery`` is ``verbatim`` (default ``notice`` keeps the wrapper).
+    """
+    if job.get("no_agent"):
+        return True
+    try:
+        cfg = load_config() or {}
+        mode = ((cfg.get("cron") or {}) if isinstance(cfg, dict) else {}).get("declared_failure_delivery")
+    except Exception:
+        mode = None
+    return str(mode or "").strip().lower() == "verbatim"
+
+
+def _cap_declared_failure(text: str) -> str:
+    text = (text or "").strip()
+    if len(text) <= DECLARED_FAILURE_DELIVERY_CAP:
+        return text
+    return text[: DECLARED_FAILURE_DELIVERY_CAP - 3].rstrip() + "..."
+
+
 def _is_cron_silence_response(text: str) -> bool:
     """True when a cron final response should suppress delivery: ``[SILENT]`` (or SILENT /
     NO_REPLY / NO REPLY) as the whole response OR its own first/last line — NOT mid-sentence.
@@ -2974,6 +3018,17 @@ def _compose_run_delivery(
         )
         if incident_acked:
             deliver_content = ""
+        elif agent_declared and _declared_failure_verbatim(job):
+            # The job wrote its own failure message (a no_agent script, or an agent job configured
+            # for verbatim delivery): deliver it as written, without the generic notice or the
+            # pause nudge, which would bury a data alert under "consider pausing this job".
+            deliver_content = _cap_declared_failure(err)
+        elif (job.get("no_agent") and (final_response or "").strip()
+              and not err.strip().lower().startswith("script timed out")):
+            # _run_no_agent_job already composed the alert around the script's own output ("a
+            # silently broken watchdog is the worst-case outcome"); the 180-character summary
+            # used to replace it, cutting every detail the script printed.
+            deliver_content = _cap_declared_failure(final_response) + _failure_streak_nudge(job)
         elif agent_declared:
             # The agent already diagnosed the failure in prose; the summarizer's substring
             # heuristics would re-diagnose it ("timed out" -> blame the model service, "401" ->
@@ -3410,10 +3465,14 @@ def _run_one_job_body(
         # declare that semantic failure so the existing failure path updates status, streaks,
         # ledger, and notification routing instead of recording a false healthy result.
         agent_declared = False
-        if success and not job.get("no_agent"):
-            marker_error = _cron_failure_marker_error(final_response)
-            if marker_error is not None:
-                success, error, agent_declared = False, marker_error, True
+        if job.get("no_agent"):
+            # A script may declare its own failure the same way (first stdout line), on exit 0 or
+            # non-zero; its message is then delivered as written instead of a 180-character summary.
+            marker_error = _no_agent_declared_failure(final_response if success else (error or ""))
+        else:
+            marker_error = _cron_failure_marker_error(final_response) if success else None
+        if marker_error is not None:
+            success, error, agent_declared = False, marker_error, True
 
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.

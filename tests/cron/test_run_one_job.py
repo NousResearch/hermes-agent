@@ -414,3 +414,98 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     # And it was torn down after the full lifecycle returned (no leak).
     assert ss.current_secret_scope() is None
 
+
+
+# ---------------------------------------------------------------------------
+# no_agent failure delivery: the script's own text reaches the operator
+# ---------------------------------------------------------------------------
+#
+# _run_no_agent_job composes an alert around the script's output, but the failure path used to
+# replace it with the generic 180-character summary plus a "pause it" hint, so a watchdog script's
+# data alert (which blocks are missing, what to do next) never reached the operator.
+
+
+def _capture_delivery(monkeypatch, **pipeline):
+    delivered = []
+    calls = _patch_pipeline(monkeypatch, **pipeline)
+    monkeypatch.setattr(s, "_deliver_result", lambda job, content, **kw: delivered.append(content))
+    return calls, delivered
+
+
+def test_no_agent_declared_failure_nonzero_exit_is_delivered_as_written(monkeypatch):
+    line = "3 report blocks missing (25 Sep 06:00 to 25 Sep 14:00) · next: 22:35 run catches up"
+    raw = f"Script exited with code 2\nstdout:\n[CRON_FAILURE]\n{line}"
+    calls, delivered = _capture_delivery(
+        monkeypatch, success=False, final=f"⚠ Cron watchdog 'wd' script failed\n\n{raw}\n\nTime: t", error=raw)
+
+    s.run_one_job({"id": "wd", "name": "wd", "no_agent": True, "deliver": "telegram"})
+
+    assert delivered == [line]
+    assert calls[-1] == ("mark", "wd", False)
+
+
+def test_no_agent_declared_failure_on_exit_zero_marks_the_run_failed(monkeypatch):
+    calls, delivered = _capture_delivery(monkeypatch, final="[CRON_FAILURE]\nbackup older than 2 days")
+
+    s.run_one_job({"id": "backup", "name": "backup check", "no_agent": True, "deliver": "telegram"})
+
+    assert delivered == ["backup older than 2 days"]
+    assert calls[-1] == ("mark", "backup", False)
+
+
+def test_no_agent_marker_in_stderr_is_not_a_declaration(monkeypatch):
+    raw = "Script exited with code 1\nstderr:\n[CRON_FAILURE]\nfrom a library"
+    _calls, delivered = _capture_delivery(monkeypatch, success=False, final=f"alert\n\n{raw}", error=raw)
+
+    s.run_one_job({"id": "e", "name": "e", "no_agent": True, "deliver": "telegram"})
+
+    assert delivered and delivered[0].startswith("alert")  # undeclared: the composed alert
+
+
+def test_no_agent_undeclared_failure_delivers_the_script_output_not_a_summary(monkeypatch):
+    detail = "block " + ", ".join(f"2026-09-{d:02d} 04Z" for d in range(1, 29))  # well past 180 chars
+    raw = f"Script exited with code 2\nstdout:\nALERT: reports missing\n{detail}"
+    alert = f"⚠ Cron watchdog 'wd' script failed\n\n{raw}\n\nTime: t"
+    _calls, delivered = _capture_delivery(monkeypatch, success=False, final=alert, error=raw)
+
+    s.run_one_job({"id": "wd2", "name": "wd", "no_agent": True, "deliver": "telegram"})
+
+    assert len(delivered) == 1 and detail in delivered[0]
+
+
+def test_no_agent_long_output_is_capped_for_chat(monkeypatch):
+    raw = "Script exited with code 2\nstdout:\n" + "x" * 9000
+    _calls, delivered = _capture_delivery(monkeypatch, success=False, final=f"alert\n\n{raw}", error=raw)
+
+    s.run_one_job({"id": "big", "name": "big", "no_agent": True, "deliver": "telegram"})
+
+    assert len(delivered[0]) <= s.DECLARED_FAILURE_DELIVERY_CAP
+    assert delivered[0].endswith("...")
+
+
+def test_no_agent_script_timeout_keeps_the_timeout_notice(monkeypatch):
+    raw = "Script timed out after 900s: /home/u/.hermes/scripts/nightly.sh"
+    _calls, delivered = _capture_delivery(monkeypatch, success=False, final=f"alert\n\n{raw}", error=raw)
+
+    s.run_one_job({"id": "slow", "name": "nightly", "no_agent": True, "deliver": "telegram"})
+
+    assert "timed out" in delivered[0] and not delivered[0].startswith("alert")
+
+
+def test_agent_declared_failure_verbatim_when_configured(monkeypatch):
+    evidence = "🔴 Report · block 12Z held · next: 22:35 run retries"
+    _calls, delivered = _capture_delivery(monkeypatch, final=f"[CRON_FAILURE]\n{evidence}")
+    monkeypatch.setattr(s, "load_config", lambda: {"cron": {"declared_failure_delivery": "verbatim"}})
+
+    s.run_one_job({"id": "rep", "name": "report", "deliver": "telegram"})
+
+    assert delivered == [evidence]
+
+
+def test_agent_declared_failure_keeps_the_notice_by_default(monkeypatch):
+    _calls, delivered = _capture_delivery(monkeypatch, final="[CRON_FAILURE]\nchild failed")
+    monkeypatch.setattr(s, "load_config", lambda: {})
+
+    s.run_one_job({"id": "rep2", "name": "report", "deliver": "telegram"})
+
+    assert delivered[0] != "child failed" and "child failed" in delivered[0]

@@ -23,13 +23,22 @@ stubResizeObserver()
 
 const OPTIONS: ModelOptionsResult = {
   providers: [
-    { authenticated: true, models: ['gpt-5.5', 'gpt-6'], name: 'OpenAI Codex', slug: 'openai-codex' },
-    { authenticated: true, models: ['qwen3-coder'], name: 'Qwen', slug: 'qwen' }
+    {
+      authenticated: true,
+      models: ['gpt-5.5', 'gpt-6'],
+      name: 'OpenAI Codex',
+      slug: 'openai-codex'
+    },
+    {
+      authenticated: true,
+      models: ['qwen3-coder'],
+      name: 'Qwen',
+      slug: 'qwen'
+    }
   ]
 }
 
-function renderDialog() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+function renderDialog(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
 
   return render(
     <QueryClientProvider client={client}>
@@ -56,6 +65,87 @@ afterEach(() => {
   cleanup()
   $confirmRequest.set(null)
   vi.clearAllMocks()
+})
+
+describe('provider focus', () => {
+  it('falls back to an available provider after the selected catalog disappears', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    renderDialog(client)
+    await screen.findByRole('switch', { name: /gpt-6/i })
+    fireEvent.click(screen.getByRole('button', { name: /^Qwen/ }))
+    client.setQueriesData({ queryKey: [] }, { providers: [OPTIONS.providers![0]] })
+    expect(await screen.findByRole('switch', { name: /gpt-6/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Qwen/ })).toBeNull()
+    expect($visibleModels.get()).toBeNull()
+  })
+
+  it.each([false, true])('preserves visibility with an empty or failed catalog (error=%s)', async failed => {
+    const stored = new Set(['qwen::'])
+    $visibleModels.set(stored)
+    if (failed) {
+      vi.mocked(requestModelOptions).mockRejectedValue(new Error('offline'))
+    } else {
+      vi.mocked(requestModelOptions).mockResolvedValue({ providers: [] })
+    }
+    renderDialog()
+    await screen.findByText(/no authenticated providers/i)
+    expect(screen.queryByRole('switch')).toBeNull()
+    expect($visibleModels.get()).toEqual(stored)
+    expect(screen.getByRole('button', { name: /add provider/i })).toBeTruthy()
+  })
+
+  it('searches other providers and restores the selected provider when cleared', async () => {
+    renderDialog()
+    await screen.findByRole('switch', { name: /gpt-6/i })
+    fireEvent.click(screen.getByRole('button', { name: /^Qwen/ }))
+    const search = screen.getByRole('textbox')
+    fireEvent.change(search, { target: { value: 'gpt-6' } })
+    expect(await screen.findByRole('switch', { name: /gpt-6/i })).toBeTruthy()
+    expect(screen.queryByRole('switch', { name: /qwen/i })).toBeNull()
+    fireEvent.change(search, { target: { value: '' } })
+    expect(await screen.findByRole('switch', { name: /qwen/i })).toBeTruthy()
+    expect($visibleModels.get()).toBeNull()
+  })
+
+  it('bulk toggles the active provider only and preserves another provider hide-all', async () => {
+    setVisibleModels(new Set(['openai-codex::', 'qwen::qwen3-coder']), OPTIONS.providers!)
+    renderDialog()
+    await screen.findByRole('switch', { name: /gpt-6/i })
+    fireEvent.click(screen.getByRole('button', { name: /^Qwen/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Qwen' }))
+    expect($visibleModels.get()).toEqual(new Set(['openai-codex::', 'qwen::']))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Qwen' }))
+    expect($visibleModels.get()).toEqual(new Set(['openai-codex::', 'qwen::qwen3-coder']))
+    expect(JSON.parse(window.localStorage.getItem('hermes.desktop.visible-models')!)).toEqual(
+      expect.arrayContaining(['openai-codex::', 'qwen::qwen3-coder'])
+    )
+  })
+
+  it('keeps custom model creation available when a search has no matches', async () => {
+    renderDialog()
+    await screen.findByRole('switch', { name: /gpt-6/i })
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'acme/new-model' }
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /acme\/new-model.*Qwen/i }))
+    expect($customModels.get()).toContainEqual({
+      provider: 'qwen',
+      model: 'acme/new-model'
+    })
+    expect(screen.getByText('New Model')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Qwen/ }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('shows only the selected provider models without changing visibility', async () => {
+    renderDialog()
+    await screen.findByRole('switch', { name: /gpt-6/i })
+    expect(screen.queryByRole('switch', { name: /qwen/i })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /^Qwen/ }))
+    expect(await screen.findByRole('switch', { name: /qwen/i })).toBeTruthy()
+    expect(screen.queryByRole('switch', { name: /gpt-6/i })).toBeNull()
+    expect($visibleModels.get()).toBeNull()
+  })
 })
 
 describe('Edit Models reset', () => {

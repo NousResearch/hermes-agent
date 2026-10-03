@@ -753,6 +753,13 @@ _hermes_repo_root_aliases: tuple[Path, ...] = _build_hermes_repo_root_aliases(
 _in_venv: bool = (getattr(sys, "base_prefix", sys.prefix) != sys.prefix
                   or hasattr(sys, "real_prefix"))  # real_prefix: virtualenv<20
 _hermes_site_packages: list[Path] | None = None  # lazily cached by local_pythonpath
+# Preserve the generation selected when this backend started.  The committed
+# selection can advance while the process remains alive, but its PYTHONPATH is
+# still the backend's own dependency environment and must be stripped from children.
+_startup_pythonpath_site_packages: tuple[Path, ...] = tuple(
+    Path(entry) for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+    if entry and Path(entry).name in ("site-packages", "dist-packages")
+)
 
 
 # --- Login-shell init files ---

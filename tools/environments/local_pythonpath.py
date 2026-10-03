@@ -108,6 +108,9 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
                               else Path(sys.prefix) / "lib" / pyver / "site-packages")
         local._hermes_site_packages = list(result)
     result = list(local._hermes_site_packages)
+    for startup_path in local._startup_pythonpath_site_packages:
+        if not any(_same_path(startup_path, existing) for existing in result):
+            result.append(startup_path)
 
     runtime_venv = _validated_runtime_venv(env)
     if runtime_venv is not None:

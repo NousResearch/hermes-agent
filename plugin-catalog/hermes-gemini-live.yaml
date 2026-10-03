@@ -1,0 +1,37 @@
+name: hermes-gemini-live
+repo: https://github.com/skappafrost/hermes-gemini-live
+sha: e37a6cba67913a5291807c3e3d767f25e6e5447c
+description: >-
+  Realtime duplex voice with the Gemini Live API, built around handing real work to Hermes.
+  A single control in the composer (not a floating panel): tap, speak, hear the model, and when
+  the ask needs files, a terminal, the web or memory the voice model delegates the job to the
+  api server and keeps talking, reading the outcome aloud when it lands. Three verbs rather than
+  thirty schemas — hermes_task starts, hermes_tasks reads the call's task board, and
+  hermes_task_update answers or redirects a task, including one that has stopped to ask
+  permission, which reaches the user as a spoken question and a "Hermes needs you" indicator.
+  Multi-task is one Live session plus a board, not a session per task. Mute drops the uplink
+  without hanging up, and the call survives composer remounts, so opening a session mid-sentence
+  does not kill it. Full-proxy architecture: the plugin backend owns the upstream Live socket and
+  the key, and the renderer is never given either, because the Live API carries the credential in
+  the socket URL. Ships no Python dependencies of its own, which keeps it out of the uv workspace
+  and lets one clone serve several profiles. Tested model behaviour is published in the README,
+  including that gemini-3.8-live-extended-thinking accepts a function declaration and then
+  delegates only about 2 times in 5, which is why gemini-3.8-live is the default. Disclosure —
+  pressing Start captures microphone audio and streams it through the local backend to
+  generativelanguage.googleapis.com using GEMINI_API_KEY from the Hermes home's .env; delegated
+  work runs as a Hermes run in the serving profile's own memory, and run output is held in
+  backend memory for the duration of the call. Transcripts are not sent anywhere else and no
+  telemetry is emitted.
+maintainer: skappafrost
+tier: community
+version: "0.1.0"
+category: voice
+docs_url: https://github.com/skappafrost/hermes-gemini-live#readme
+requires_hermes: ">=0.21"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - GEMINI_API_KEY

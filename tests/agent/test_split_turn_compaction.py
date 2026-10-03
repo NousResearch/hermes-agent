@@ -359,6 +359,34 @@ def test_restated_reply_keeps_splitting_on_later_compactions() -> None:
             messages.extend(_tool_group(100 * (cycle + 1) + index))
 
 
+def test_a_long_active_request_still_splits_and_survives_verbatim() -> None:
+    """A long but token-bounded request (e.g. a /goal continuation prompt) must not pin the turn.
+
+    The row-size guard is the token soft ceiling; a character cap on the request made every
+    long-goal session uncompressible (empty window, structural backoff, context overflow).
+    """
+    compressor = _make_compressor()
+    compressor.tail_token_budget = 1_000  # soft ceiling must hold the long request row itself
+    long_request = " ".join(f"step-{i}" for i in range(400))
+    assert len(long_request) > _ACTIVE_TASK_MAX_CHARS
+    messages = _oversized_active_turn()
+    messages[3]["content"] = long_request
+    for index in range(10, 40):
+        messages.extend(_tool_group(index))
+
+    cut = compressor._find_tail_cut_by_tokens(messages, compressor._protect_head_size(messages))
+    assert cut > 3
+
+    with patch.object(compressor, "_generate_summary", return_value=None):
+        compressed = compressor.compress(messages, current_tokens=90_000, force=True)
+    assert len(compressed) < len(messages)
+    _assert_tool_pairs_are_complete(compressed)
+    live = "\n".join(
+        str(m.get("content")).rsplit(_SUMMARY_END_MARKER, 1)[-1] for m in compressed if m["role"] == "user"
+    )
+    assert live.count(long_request) == 1
+
+
 @pytest.mark.parametrize(
     "payload, can_split",
     [

@@ -214,12 +214,19 @@ def _adopt(package, version: str, target: str, source: Path, manifest: dict, roo
     entry = root / entry_name
     if artifacts is None or entry.exists() or entry.is_symlink():
         return False
-    reason = package.verify(source, target)
+    verify_source = source
+    if package.binary(verify_source, target) is None or not package.binary(verify_source, target).is_file():
+        nested = [child for child in source.iterdir() if child.is_dir()
+                  and package.binary(child, target) is not None
+                  and package.binary(child, target).is_file()]
+        if len(nested) == 1:
+            verify_source = nested[0]
+    reason = package.verify(verify_source, target)
     if reason:
         logger.warning("pre-PM llama.cpp at %s left in place: %s", source, reason)
         return False
     try:
-        os.rename(source, entry)
+        os.rename(verify_source, entry)
     except OSError as exc:
         logger.warning("pre-PM llama.cpp at %s left in place: %s", source, exc)
         return False
@@ -228,8 +235,10 @@ def _adopt(package, version: str, target: str, source: Path, manifest: dict, roo
                                     target=target, artifacts=artifacts, digest=tree_digest(entry))
     except BaseException:
         with suppress(OSError):
-            os.rename(entry, source)
+            os.rename(entry, verify_source)
         raise
+    with suppress(OSError):
+        source.rmdir()
     with suppress(OSError):
         source.parent.rmdir()
     logger.info("moved llama.cpp b%s (%s) from %s into the PM store", version, package.name, source)

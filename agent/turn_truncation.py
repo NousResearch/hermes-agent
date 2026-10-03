@@ -232,13 +232,42 @@ class _Trunc(TruncationVerdict):
         ``compression_exhausted`` forwards the #98722 typed bit so the gateway can
         move future input off a bloated session (run_turn.py consumes it). ``failure`` is
         the ``(failure_reason, retryable)`` verdict for the UI descriptor.
+
+        These returns skip ``finalize_turn`` (#125492), so the observability duties that
+        only finalize performs are done here: the ``Turn ended:`` INFO line (agent.log
+        must capture WHY every turn ended) and the release of a deferred title upgrade
+        (else a self-hosted session whose first turn truncates keeps its placeholder
+        title forever, #117296).
         """
         agent = self.agent
         if cleanup:
             agent._cleanup_task_resources(self.effective_task_id)
         agent._persist_session(self.messages, self.conversation_history)
+        _final_messages = self.messages if result_messages is None else result_messages
+        _exit_reason = (
+            failure[0] if failure[0] == "truncated" else f"truncated({failure[0]})"
+        )
+        try:
+            # Same logger + format as turn_finalizer._log_turn_exit; the reason carries
+            # the typed failure verdict (``truncated`` / ``context_overflow`` / …).
+            # Fail-open by design: a broken import or signature drift must never mask
+            # the partial result — but it stays observable at debug level (#125505).
+            from agent.turn_finalizer import _log_turn_exit
+            _log_turn_exit(
+                agent, _final_messages, final_response, self.api_call_count,
+                _exit_reason, False, logger,
+            )
+        except Exception:
+            logger.debug("length-stop exit: turn-exit log failed", exc_info=True)
+        try:
+            # Start (or drop, when none) the title upgrade finalize_turn would have fired.
+            # Fail-open too, logged for the same reason (#125505).
+            from agent.turn_context import start_deferred_title_upgrade
+            start_deferred_title_upgrade(agent)
+        except Exception:
+            logger.debug("length-stop exit: deferred title upgrade failed", exc_info=True)
         return self.done("return", stamp_failure(partial_result(
-            self.messages if result_messages is None else result_messages, self.api_call_count,
+            _final_messages, self.api_call_count,
             final_response, error, failed=failed, compression_exhausted=compression_exhausted,
         ), *failure))
 

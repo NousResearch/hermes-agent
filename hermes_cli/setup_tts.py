@@ -269,10 +269,14 @@ def _setup_tts_provider(config: dict):
     if selected == "edge":
         edge_config = config.setdefault("tts", {}).setdefault("edge", {})
         current_voice = edge_config.get("voice", "en-US-AriaNeural")
-        voice_labels = [label for _, label in _EDGE_VOICE_CHOICES]
-        current_idx = next((i for i, (voice, _) in enumerate(_EDGE_VOICE_CHOICES) if voice == current_voice), 0)
+        voice_choices = list(_EDGE_VOICE_CHOICES)
+        current_idx = next((i for i, (voice, _) in enumerate(voice_choices) if voice == current_voice), None)
+        if current_idx is None:
+            current_idx = len(voice_choices)
+            voice_choices.append((current_voice, f"Keep current ({current_voice})"))
+        voice_labels = [label for _, label in voice_choices]
         voice_idx = _setup.prompt_choice("Select Edge TTS voice:", voice_labels, current_idx)
-        edge_config["voice"] = _EDGE_VOICE_CHOICES[voice_idx][0]
+        edge_config["voice"] = voice_choices[voice_idx][0]
     config.setdefault("tts", {})["provider"] = selected
     _setup.save_config(config)
     _setup.print_success(f"TTS provider set to: {_TTS_PROVIDER_LABELS.get(selected, selected)}")

@@ -52,6 +52,7 @@ import { reconnectGateway } from '@/store/gateway-reconnect'
 import { $interfaceMode, shownInMode } from '@/store/interface-mode'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
+import { installOpenTabsBackendSync, setOpenTabsSyncGateway } from '@/store/open-tabs-backend-sync'
 import { $poolLimitsSettingsRequest } from '@/store/pool-limits'
 import { $previewTarget } from '@/store/preview'
 import {
@@ -920,6 +921,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     [handleDesktopGatewayEvent, startFreshSessionDraft]
   )
 
+  useEffect(() => {
+    installOpenTabsBackendSync()
+  }, [])
+
   useGatewayBoot({
     beforeConnectionSwitch: () => {
       startFreshSessionDraft({ preserveRoute: true, workspaceTarget: null })
@@ -934,6 +939,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     },
     onGatewayReady: g => {
       gatewayRef.current = g
+      setOpenTabsSyncGateway(Boolean(g))
     },
     refreshHermesConfig,
     refreshSessions

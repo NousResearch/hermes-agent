@@ -14,6 +14,46 @@ from gateway import status
 
 
 class TestGatewayPidState:
+    def test_process_start_time_uses_monotonic_native_value(self, monkeypatch):
+        calls = []
+
+        class FakeNativeProcess:
+            def create_time(self, *, monotonic=False):
+                calls.append(monotonic)
+                return 12.34
+
+        class FakeProcess:
+            _proc = FakeNativeProcess()
+
+            def __init__(self, pid):
+                assert pid == 123
+
+            def create_time(self):
+                raise AssertionError("public create_time should not be used")
+
+        monkeypatch.setitem(__import__("sys").modules, "psutil", SimpleNamespace(Process=FakeProcess))
+
+        assert status._get_process_start_time(123) == 1234
+        assert calls == [True]
+
+    def test_process_start_time_falls_back_when_native_value_is_unavailable(self, monkeypatch):
+        class FakeNativeProcess:
+            def create_time(self, *, monotonic=False):
+                raise TypeError("legacy psutil")
+
+        class FakeProcess:
+            _proc = FakeNativeProcess()
+
+            def __init__(self, pid):
+                assert pid == 123
+
+            def create_time(self):
+                return 5.67
+
+        monkeypatch.setitem(__import__("sys").modules, "psutil", SimpleNamespace(Process=FakeProcess))
+
+        assert status._get_process_start_time(123) == 567
+
     def test_write_pid_file_records_gateway_metadata(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

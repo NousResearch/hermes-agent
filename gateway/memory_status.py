@@ -60,6 +60,16 @@ def classify_pressure(available_kib: Any, total_kib: Any) -> str:
     return "ok"
 
 
+def _profile_identity(home: Optional[Path]) -> Optional[str]:
+    """Best-effort profile name owning *home*, for the dashboard's diagnostic display —
+    never raises: an unrecognized layout (or no home) just omits identity."""
+    try:
+        from hermes_constants import profile_name_for_home
+        return profile_name_for_home(home)
+    except Exception:
+        return None
+
+
 def _read_state_files(home: Optional[Path]) -> tuple:
     """``(heartbeat, sentinel)`` dicts, each ``None`` when unreadable."""
     try:
@@ -86,6 +96,9 @@ def collect_memory_status(
         # Identity of the CURRENT life (sentinel started_at): the dashboard keys
         # banner dismissal on it so acknowledging one OOM restart does not mute the NEXT.
         "boot_id": None,
+        # Which profile this sample belongs to — lets the dashboard prove a banner
+        # reflects the profile it's currently showing rather than a stale/other one.
+        "profile": _profile_identity(home),
     }
 
     heartbeat, sentinel = _read_state_files(home)

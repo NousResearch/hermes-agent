@@ -182,3 +182,16 @@ class TestCollectMemoryStatus:
         status = collect_memory_status(tmp_path, now=_NOW)
         assert status["pressure"] == "unknown"
         assert status["gateway_rss_mb"] is None
+
+    def test_profile_identity_names_a_named_profile_home(self, tmp_path: Path) -> None:
+        # <root>/profiles/<name> is the named-profile layout; the dashboard
+        # uses this to prove a sample belongs to the profile it's showing.
+        home = tmp_path / "profiles" / "alpha"
+        home.mkdir(parents=True)
+        assert collect_memory_status(home, now=_NOW)["profile"] == "alpha"
+
+    def test_profile_identity_is_none_for_an_unrecognized_home(
+        self, tmp_path: Path
+    ) -> None:
+        assert collect_memory_status(tmp_path, now=_NOW)["profile"] is None
+        assert collect_memory_status(None, now=_NOW)["profile"] is None

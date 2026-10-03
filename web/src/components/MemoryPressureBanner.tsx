@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AlertTriangle, X } from "lucide-react";
-import type { StatusResponse } from "@/lib/api";
+import type { StatusResponse, MemoryPressureStatus } from "@/lib/api";
 import { useI18n } from "@/i18n";
 
 /**
@@ -66,6 +66,30 @@ function writeDismissed(entries: string[]) {
 function entryMatches(triggers: string[]) {
   return (entry: string) =>
     triggers.some((sev) => entry === sev || entry.startsWith(`${sev}:`));
+}
+
+function sampleAgeLabel(sampledAt: string | null | undefined): string | null {
+  if (!sampledAt) return null;
+  const sampledMs = Date.parse(sampledAt);
+  if (Number.isNaN(sampledMs)) return null;
+  const ageS = Math.max(0, Math.round((Date.now() - sampledMs) / 1000));
+  return ageS < 60 ? `${ageS}s ago` : `${Math.round(ageS / 60)}m ago`;
+}
+
+// Diagnostic suffix for a live memory trigger: the sampled numbers, sample
+// age and reporting profile — so a transient blip, a stale/mismatched
+// sample, or a real critical condition can be told apart at a glance
+// instead of only in the server logs.
+function memoryDiagnosticLabel(memory: MemoryPressureStatus | undefined) {
+  if (!memory) return "";
+  const parts: string[] = [];
+  if (memory.system_available_mb != null && memory.system_total_mb != null) {
+    parts.push(`${memory.system_available_mb} MB / ${memory.system_total_mb} MB available`);
+  }
+  const age = sampleAgeLabel(memory.sampled_at);
+  if (age) parts.push(`sampled ${age}`);
+  if (memory.profile) parts.push(`profile: ${memory.profile}`);
+  return parts.length > 0 ? ` (${parts.join(", ")})` : "";
 }
 
 export function MemoryPressureBanner({
@@ -141,6 +165,12 @@ export function MemoryPressureBanner({
   const critical = trigger === "critical" || trigger === "disk_critical";
   const diskFreeLabel =
     disk?.free_mb != null ? ` (${Math.round(disk.free_mb)} MB free)` : "";
+  // Only for a LIVE memory reading (critical/elevated) — the OOM-restart notice
+  // describes the previous boot's final gasp, which these numbers don't sample.
+  const memoryDiagLabel =
+    trigger === "critical" || trigger === "elevated"
+      ? memoryDiagnosticLabel(memory)
+      : "";
   const message =
     trigger === "disk_critical"
       ? `${
@@ -156,10 +186,13 @@ export function MemoryPressureBanner({
           ? (t.app.memoryOomRestartBanner ??
             "Your agent restarted unexpectedly, most likely because it ran out of memory. Long sessions and many concurrent tasks increase memory use.")
           : critical
-            ? (t.app.memoryCriticalBanner ??
-              "Your agent is almost out of memory and may restart. Consider closing idle sessions or upgrading its memory.")
-            : (t.app.memoryElevatedBanner ??
-              "Your agent is running low on memory.");
+            ? `${
+                t.app.memoryCriticalBanner ??
+                "Your agent is almost out of memory and may restart. Consider closing idle sessions or upgrading its memory."
+              }${memoryDiagLabel}`
+            : `${
+                t.app.memoryElevatedBanner ?? "Your agent is running low on memory."
+              }${memoryDiagLabel}`;
 
   return (
     <div

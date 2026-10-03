@@ -186,7 +186,12 @@ def install_hint(extra: str) -> str:
 def ensure_import(extra: str) -> None:
     """Make an extra available: no-op when the anchor imports, otherwise
     sync the venv with the extra enabled. Raises InstallError on failure
-    — including when a platform gate excludes this machine."""
+    — including when a platform gate excludes this machine.
+
+    Every raise names its own remedy. Callers surface it verbatim — ``pm/worker.py``
+    puts it in the error payload, and the provider adapters put it in the ImportError
+    a user reads — so ``InstallError``'s generic default ("retry, or run `hermes pm
+    doctor`") would answer "how do I install this?" with a command that cannot."""
     if available(extra):
         return
     if not extra_supported(extra):
@@ -197,6 +202,9 @@ def ensure_import(extra: str) -> None:
             "venv",
             f"extra {extra!r} is not supported on this platform "
             f"(gate: {marker!r}); the adapter degrades without it",
+            # Deliberately not install_hint(extra): no install can succeed on this platform,
+            # so naming one would send the user round a loop that never terminates.
+            f"nothing to install — {extra!r} does not build for this platform",
         )
     import sys
     from pm.package import InstallError
@@ -214,10 +222,24 @@ def ensure_import(extra: str) -> None:
         except (EOFError, KeyboardInterrupt):
             answer = "n"
         if answer and answer not in {"y", "yes"}:
-            raise InstallError("venv", f"installation of extra {extra!r} declined")
+            # Declining is the one failure where the install command is the whole answer: the
+            # prompt will not come back on its own, so the error has to carry it.
+            raise InstallError("venv", f"installation of extra {extra!r} declined",
+                               f"run `{install_hint(extra)}` when you want it")
     from pm.client import sync_venv
 
-    sync_venv([extra])
+    try:
+        sync_venv([extra])
+    except InstallError as exc:
+        # Unlike the three raises above, "retry" IS the right advice here: the sync is the
+        # install and it failed for an environmental reason. What the generic default cannot
+        # say is WHAT to retry — the user reached this through an implicit extra install they
+        # never named, and every `raise InstallError` under `sync_venv` reports the package it
+        # was building, not the extra that asked for it. So keep the cause, name the extra.
+        raise InstallError(
+            exc.package, exc.cause,
+            f"retry, or run `{install_hint(extra)}`; if it keeps failing, run `hermes pm doctor`",
+        ) from exc
     # The sync published a new generation. Swap this process onto it when nothing
     # already imported would change underneath it (adopt_selected); otherwise only
     # a restart can load it.
@@ -233,7 +255,10 @@ def ensure_import(extra: str) -> None:
         selected = site_packages(selected_venv(root)).resolve()
         if selected not in {Path(entry).resolve() for entry in sys.path}:
             reason = restart_needed(root) or "this process does not run from the install's dependency environment"
-            raise InstallError("venv", f"{extra} installed; restart Hermes to activate it ({reason})")
+            # The extra IS installed. Telling the user to install it again is the one thing that
+            # cannot help, and it is what the generic remedy amounts to.
+            raise InstallError("venv", f"{extra} installed; restart Hermes to activate it ({reason})",
+                               "restart Hermes")
 
 
 def ensure_and_bind(extra, importer, target_globals) -> bool:

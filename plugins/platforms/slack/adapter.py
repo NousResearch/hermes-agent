@@ -1064,6 +1064,8 @@ class SlackAdapter(BasePlatformAdapter):
         self._channel_teams: Dict[str, set] = {}
         # user target (team_id:user_id) → opened DM conversation ID (D...)
         self._dm_conversation_cache: Dict[str, str] = {}
+        # (team_id, lowercased handle) → user ID, from ``users.list`` for ``user_name:`` targets
+        self._user_handle_cache: Dict[Tuple[str, str], str] = {}
         # Dedup for Socket Mode reconnect replays; TTL must outlast the worst-case
         # redelivery gap (max_size bounds memory, so a long window is safe).
         # Dedup cache: prevents duplicate bot responses when Socket Mode reconnects redeliver events
@@ -1989,6 +1991,14 @@ class SlackAdapter(BasePlatformAdapter):
         #17261, #19236.
         """
         cid = str(chat_id or "")
+        # ``user:U...`` and ``user_name:<handle>`` are the two internal forms ``tools.send_message_targets``
+        # emits for a ``slack:U...`` / ``slack:@handle`` reference (cron ``deliver``, send_message). The
+        # standalone transport opens both (``send_message_senders``); the live adapter is the other half
+        # of the same path and must agree on both.
+        if cid.startswith("user:"):
+            cid = cid[len("user:"):]
+        elif cid.startswith("user_name:"):
+            cid = await self._resolve_user_handle(cid[len("user_name:"):], team_id=team_id)
         if not cid or cid[0] not in ("U", "W"):
             return chat_id
         cache_key = f"{team_id or ''}:{cid}"
@@ -2010,6 +2020,51 @@ class SlackAdapter(BasePlatformAdapter):
                 "[Slack] conversations.open failed for user target %s: %s "
                 "(check the bot's im:write scope)", cid, e)
         return chat_id
+
+    async def _resolve_user_handle(self, handle: str, team_id: Optional[str] = None) -> str:
+        """Resolve a ``@handle`` to its user ID via ``users.list`` (stable ``name`` only — display and real
+        names are mutable and non-unique), cached per (team, handle). Returns ``""`` when the handle is
+        unknown or ambiguous so the caller passes the original target through and the send surfaces the
+        error. Mirrors ``send_message_senders._resolve_slack_user_target``.
+        """
+        query = str(handle or "").strip().lstrip("@").lower()
+        if not query:
+            return ""
+        cache_key = (str(team_id or ""), query)
+        cached = self._user_handle_cache.get(cache_key)
+        if cached:
+            return cached
+        client = self._get_client("", team_id=team_id)
+        matches: List[str] = []
+        cursor: Optional[str] = None
+        try:
+            for _page in range(20):
+                kwargs: Dict[str, Any] = {"limit": 200}
+                if cursor:
+                    kwargs["cursor"] = cursor
+                payload = _slack_response_payload(await client.users_list(**kwargs))
+                if not payload.get("ok", True):
+                    logger.warning("[Slack] users.list failed for @%s: %s", query, payload.get("error"))
+                    return ""
+                matches += [
+                    str(m.get("id") or "") for m in payload.get("members") or []
+                    if not (m.get("deleted") or m.get("is_bot"))
+                    and str(m.get("name", "")).strip().lower() == query
+                ]
+                cursor = (payload.get("response_metadata") or {}).get("next_cursor")
+                if not cursor:
+                    break
+        except Exception as e:
+            logger.warning("[Slack] users.list failed for @%s: %s (check the bot's users:read scope)",
+                           query, e)
+            return ""
+        if len(matches) != 1 or not matches[0]:
+            logger.warning("[Slack] could not resolve @%s to exactly one user (%d matches); "
+                           "use a Slack user ID instead", query, len(matches))
+            return ""
+        self._user_handle_cache[cache_key] = matches[0]
+        self._trim_oldest_dict_entries(self._user_handle_cache, self._USER_NAME_CACHE_MAX)
+        return matches[0]
 
     async def _clear_thread_status_quietly(
         self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:

@@ -243,6 +243,11 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None,
         content = strip_ansi(content)
     entry = {"id": m.get("id"), "role": m.get("role"), "content": content, "timestamp": m.get("timestamp")}
     entry.update({k: m.get(k) for k in ("tool_name", "tool_calls", "tool_call_id") if m.get(k)})
+    # Surface per-message attribution when present (written by the persist path in
+    # agent/turn_context.py for every user message). Without this, session_search
+    # returns the words but not who/where - recreating attribution blindness post-compaction.
+    if m.get("display_metadata"):
+        entry["display_metadata"] = m["display_metadata"]
     if anchor_id is not None and m.get("id") == anchor_id:
         entry["anchor"] = True
     if max_content_len and content and len(content) > max_content_len:

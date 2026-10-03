@@ -18,8 +18,7 @@ export const slashCmdOpsEn = {
       reloadedOther: (count: string) => `reloaded .env (${count} vars updated)`
     },
     browser: {
-      usage:
-        'usage: /browser [connect|disconnect|status|use] [url] · persistent: set browser.cdp_url in config.yaml',
+      usage: 'usage: /browser [connect|disconnect|status|use] [url] · persistent: set browser.cdp_url in config.yaml',
       checking: (url: string) => `checking Chromium-family browser remote debugging at ${url}...`,
       connected: (url: string) => `browser connected: ${url}`,
       urlUnavailable: '(url unavailable)',

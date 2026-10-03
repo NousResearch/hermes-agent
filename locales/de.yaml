@@ -2355,6 +2355,7 @@ cli:
     removed: "Warteschlangeneintrag {index} entfernt: {preview}"
     item_not_found: "Warteschlangeneintrag {index} nicht gefunden. Aktuelle Größe: {size}"
     usage_edit: "Verwendung: /queue edit <number> <new prompt>"
+    usage_remove: "Verwendung: /queue rm <number>"
     updated: "Warteschlangeneintrag {index} aktualisiert: {preview}"
     usage_move: "Verwendung: /queue move <from> <to>"
     move_out_of_range: "Verschiebung außerhalb der Warteschlange. Aktuelle Größe: {size}"

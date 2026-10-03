@@ -184,13 +184,14 @@ def _skill_search_dirs() -> Tuple[List[Tuple[int, Path]], Path]:
     return roots, active_skills_dir
 
 
-def _skill_catalog(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _skill_catalog(*, skip_disabled: bool = False, include_hidden: bool = False) -> List[Dict[str, Any]]:
     """Every scanned skill resolved by ``agent.skill_utils.resolve_skill_catalog`` (status /
-    load_name / tier / path), visible ones only; cached per session. Resolution runs over ALL
-    files first — skill_view ignores platform/disabled gates when collecting candidates."""
+    load_name / tier / path), visible ones only unless *include_hidden*; cached per session.
+    Resolution runs over ALL files first — skill_view ignores platform/disabled gates when
+    collecting candidates, so it asks for hidden rows too."""
     from agent.skill_utils import (
         TIER_PROJECT, is_disabled_entry, iter_project_skill_files, iter_skill_index_files, resolve_skill_catalog)
-    cache_key = "with_disabled" if skip_disabled else "filtered"
+    cache_key = ("with_disabled" if skip_disabled else "filtered", include_hidden)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
     roots, _ = _skill_search_dirs()
     signature = _skills_scan_signature([d for _t, d in roots], disabled)
@@ -223,7 +224,8 @@ def _skill_catalog(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:
                 logger.debug("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
-    skills = [s for s in resolve_skill_catalog(scanned) if s.pop("visible") and not is_disabled_entry(s, disabled)]
+    skills = [s for s in resolve_skill_catalog(scanned)
+              if (s.pop("visible") or include_hidden) and not is_disabled_entry(s, disabled)]
     # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
     # signature, so the next call re-scans instead of serving a torn result.
     _SKILLS_CACHE[cache_key] = (signature, now, skills)
@@ -611,7 +613,7 @@ def skill_view(
         # duplicate's row) — whatever alias reached it; an unrelated copy at that path elsewhere is not.
         rel = _owned_relative(skill_dir, skill_md, all_dirs)
         if _is_skill_disabled(resolved_name, rel) and (_is_skill_disabled(resolved_name) or any(
-                e["path"] == skill_md and e["load_name"] == rel for e in _skill_catalog(skip_disabled=True))):
+                e["path"] == skill_md and e["load_name"] == rel for e in _skill_catalog(skip_disabled=True, include_hidden=True))):
             return _fail(f"Skill '{resolved_name}' is disabled. Enable it with `hermes skills` or inspect the files directly on disk.")
         if file_path and skill_dir:
             return _serve_skill_file(

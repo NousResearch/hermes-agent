@@ -65,13 +65,25 @@ def _parent_live_home(parent_agent: Any) -> Optional[Path]:
 
     The parent's per-profile SessionDB sits directly under its profile home
     (``<home>/state.db``), so the db path's parent IS the home. Returns None
-    when the parent exposes no SessionDB — the caller then falls back to the
-    ambient resolve, which is exactly the #91996 failure mode, so the skip is
-    logged rather than silent.
+    when the parent exposes no usable SessionDB — the caller then falls back
+    to the ambient resolve, which is exactly the #91996 failure mode, so the
+    skip is logged rather than silent.
     """
     parent_db = getattr(getattr(parent_agent, "_session_db", None), "db_path", None)
+    # Concrete str/Path only — NOT the os.PathLike protocol: MagicMock (and any
+    # duck-typed test double) registers __fspath__ and so IS PathLike, which is
+    # how a Mock "home" slipped through and transcripts landed at
+    # str(<MagicMock>) paths (PR #131931 side-effect screen).
+    if isinstance(parent_db, (str, Path)):
+        return Path(parent_db).parent
     if parent_db is not None:
-        return parent_db.parent
+        logger.debug(
+            "delegate_task: parent _session_db.db_path is %r (not a str/Path); "
+            "live-transcript home pinning skipped, falling back to ambient "
+            "HERMES_HOME resolve (transcripts may land in a different profile, #91996)",
+            parent_db,
+        )
+        return None
     logger.warning(
         "delegate_task: parent agent exposes no _session_db; live-transcript "
         "home pinning skipped, falling back to ambient HERMES_HOME resolve "

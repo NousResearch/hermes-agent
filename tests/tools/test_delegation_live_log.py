@@ -344,6 +344,38 @@ def test_parent_session_db_pins_home():
     assert _parent_live_home(parent) == Path("/prof")
 
 
+def test_mock_parent_db_path_is_not_pinned(caplog):
+    """Regression (PR #131931 side-effect screen): a duck-typed parent whose
+    ``_session_db.db_path`` is auto-created by a Mock is not a real path —
+    pinning to it would send transcripts to ``str(<MagicMock>)`` paths.  The
+    pin must fall back to None (ambient resolve), and the skip must leave a
+    trace.  Note the check is for concrete ``str``/``Path``, NOT the
+    ``os.PathLike`` protocol: MagicMock registers ``__fspath__`` and so IS
+    PathLike, which is exactly how the garbage pin slipped through."""
+    import logging as _logging
+
+    from tools.delegate_tool import _parent_live_home
+
+    parent = MagicMock()  # plain mock: _session_db.db_path auto-creates a Mock
+
+    with caplog.at_level(_logging.DEBUG, logger="tools.delegate_tool"):
+        assert _parent_live_home(parent) is None
+    assert any("home pinning skipped" in r.getMessage() for r in caplog.records), (
+        "the skipped pin must leave a log trace"
+    )
+
+
+def test_parent_db_path_accepts_str_paths():
+    """SessionDB always holds a Path, but a str db_path is a valid path value
+    too — it must pin, not be rejected by the concrete-type guard."""
+    from tools.delegate_tool import _parent_live_home
+
+    parent = MagicMock(spec=["_session_db"])
+    parent._session_db.db_path = "/prof/state.db"
+
+    assert _parent_live_home(parent) == Path("/prof")
+
+
 def test_prune_sweeps_the_pinned_root_not_ambient(tmp_path, monkeypatch):
     """Retention must clean where the dispatch writes: stale dirs under the
     pinned home are removed by that home's dispatches; a stale dir under the

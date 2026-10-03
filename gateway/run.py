@@ -1249,7 +1249,7 @@ def _build_gateway_agent_history(
 
     Observed context stays out of ``conversation_history`` so consecutive-user repair can't merge it in."""
     from hermes_time import get_timezone as _get_msg_tz
-    from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER, _SUMMARY_END_MARKER
+    from agent.context_compressor import INFLIGHT_TASK_REPLAY_METADATA_KEY
     from gateway.message_timestamps import (
         render_user_content_with_timestamp as _render_msg_ts,
         strip_leading_message_timestamps as _strip_msg_ts,
@@ -1260,11 +1260,9 @@ def _build_gateway_agent_history(
     observed_group_context: List[str] = []
     separate_observed_context = _uses_telegram_observed_group_context(channel_prompt)
 
-    def _is_generated_inflight_restatement(value: str) -> bool:
-        if value.startswith(_INFLIGHT_TASK_REPLAY_HEADER):
-            return True
-        _, boundary, remainder = value.rpartition(_SUMMARY_END_MARKER)
-        return bool(boundary and remainder.lstrip().startswith(_INFLIGHT_TASK_REPLAY_HEADER))
+    def _is_generated_inflight_restatement(msg: Dict[str, Any]) -> bool:
+        metadata = msg.get("display_metadata")
+        return isinstance(metadata, dict) and bool(metadata.get(INFLIGHT_TASK_REPLAY_METADATA_KEY))
 
     for msg in history or []:
         role = msg.get("role")
@@ -1305,7 +1303,7 @@ def _build_gateway_agent_history(
                 and role == "user"
                 and isinstance(content, str)
                 and not msg.get("_compressed_summary")
-                and not _is_generated_inflight_restatement(content)
+                and not _is_generated_inflight_restatement(msg)
             ):
                 rendered = _render_msg_ts(content, replay_timestamp, tz=_msg_tz)
                 # Preserve only a sidecar matching the complete rendered message,

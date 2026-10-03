@@ -344,6 +344,8 @@ def test_replay_row_does_not_carry_the_original_timestamp():
         "replay row kept the original task timestamp — it must be stamped "
         "at compaction time (#121064)"
     )
+    from agent.context_compressor import INFLIGHT_TASK_REPLAY_METADATA_KEY
+    assert replays[0]["display_metadata"][INFLIGHT_TASK_REPLAY_METADATA_KEY] is True
 
 
 def test_flagged_scaffolding_row_is_never_the_inflight_task():

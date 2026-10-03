@@ -244,11 +244,21 @@ def strip_stale_dangerous_confirmations(
             str(msg.get("content") or ""),
             flags=re.IGNORECASE,
         )
-        # Never leave an actionable destructive instruction in a user row after
-        # its confirmation expires. Preserve unrelated context when the row is
-        # only a reference/mixed request; if the remaining text still names a
-        # destructive action, replace the whole carrier with the safety notice.
-        if re.search(r"\b(?:reboot|restart|shutdown|power\s+off|wipe|delete|factory\s+reset)\b", redacted_content, re.IGNORECASE):
+        # Never leave a surviving destructive authorization in a user row after
+        # its confirmation expires. A bare keyword is not enough: summaries
+        # legitimately quote action names in documentation, filenames, key
+        # names, or negative instructions. Reset only when the action is an
+        # immediate follow-up to the expired confirmation or is explicitly
+        # authorized, preserving unrelated mixed-carrier context otherwise.
+        action = r"(?:reboot|restart|shutdown|power\s+off|wipe|delete|factory\s+reset)"
+        # Only inspect text that followed the expired confirmation.  A summary
+        # may mention an action elsewhere as documentation or a negated request.
+        suffix = redacted_content.split(_EXPIRED_CONFIRMATION_SENTINEL, 1)[-1]
+        immediate_followup = rf"^\s*(?:[.!?]\s*)*(?:{action})\b[^.?!\n]*(?:[.!?]|$)"
+        explicit_authorization = rf"\b(?:i|we)\s+(?:authorize|approved?|confirm(?:ed)?)\b[^.?!\n]*\b{action}\b"
+        if re.search(immediate_followup, suffix, re.IGNORECASE) or re.search(
+            explicit_authorization, suffix, re.IGNORECASE
+        ):
             redacted_content = _EXPIRED_CONFIRMATION_SENTINEL
         redacted["content"] = redacted_content
         # The api_content sidecar carries the exact bytes sent — the confirmation itself; replaying it would undo the redaction.

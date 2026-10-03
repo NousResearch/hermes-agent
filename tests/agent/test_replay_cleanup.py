@@ -110,6 +110,22 @@ def test_confirmation_expiry_does_not_preserve_destructive_followup():
     assert "production host" not in out[0]["content"]
 
 
+def test_confirmation_expiry_preserves_benign_reference_and_live_context():
+    cases = [
+        "Reference: the docs mention confirm reboot in restart.md. Budget is 25000. Live request: inspect the logs.",
+        "Reference: the docs mention confirm reboot. Budget is 25000. Live request: explain the Delete key.",
+        "Reference: the docs mention confirm reboot. Budget is 25000. Live request: do not restart anything; summarize the logs.",
+    ]
+    for content in cases:
+        out = strip_stale_dangerous_confirmations(
+            [{"role": "user", "content": content, "timestamp": 1_000.0}],
+            now=1_120.0,
+        )[0]["content"]
+        assert "EXPIRED" in out
+        assert "Budget is 25000." in out
+        assert "Live request:" in out
+
+
 def test_sanitize_replay_history_noop_on_clean_history():
     history = [_user("hi"), {"role": "assistant", "content": "hello"}]
     assert sanitize_replay_history(history) == history

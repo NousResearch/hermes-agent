@@ -5,6 +5,7 @@ import {
 } from "@hermes/shared";
 
 import { dashboardServingProfile } from "./profile-bootstrap";
+import type { AnalyticsRange } from "./analytics-range";
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
@@ -591,11 +592,11 @@ export const api = {
     if (params.component && params.component !== "all") qs.set("component", params.component);
     return fetchJSON<LogsResponse>(`/api/logs?${qs.toString()}`);
   },
-  getAnalytics: (days: number, profile = getManagementProfile()) =>
+  getAnalytics: (days: AnalyticsRange, profile = getManagementProfile()) =>
     fetchJSON<AnalyticsResponse>(
       appendProfileParam(`/api/analytics/usage?days=${days}`, profile),
     ),
-  getModelsAnalytics: (days: number, profile = getManagementProfile()) =>
+  getModelsAnalytics: (days: AnalyticsRange, profile = getManagementProfile()) =>
     fetchJSON<ModelsAnalyticsResponse>(
       appendProfileParam(`/api/analytics/models?days=${days}`, profile),
     ),

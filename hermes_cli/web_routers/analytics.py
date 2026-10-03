@@ -76,12 +76,60 @@ def _rows(db, sql: str, cutoff: float) -> List[Dict[str, Any]]:
     return [dict(r) for r in db._conn.execute(sql, (cutoff,)).fetchall()]
 
 
-def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
+# The Analytics page range selector sends ``days=all`` for the un-windowed
+# "All time" preset; numeric days keep the 1-365 window the 7d/30d/90d presets use.
+_ALL_RANGE = "all"
+_MAX_WINDOW_DAYS = 365
+
+
+def _resolve_window(days: "int | str | None") -> Optional[int]:
+    """Numeric window in days, or ``None`` for the all-time (``all``) range.
+
+    The query string is the wire form (``?days=all``), but internal callers and
+    tests still pass ints, so both are accepted. Non-positive or over-long
+    windows raise 422, matching the old ``Query(ge=1, le=365)`` contract.
+    """
+    if isinstance(days, str) and days.strip().lower() == _ALL_RANGE:
+        return None
+    try:
+        value = int(days)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="days must be a positive integer or 'all'")
+    if value < 1 or value > _MAX_WINDOW_DAYS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"days must be between 1 and {_MAX_WINDOW_DAYS}, or 'all'",
+        )
+    return value
+
+
+def _window_cutoff(window_days: Optional[int]) -> float:
+    """Epoch cutoff for ``started_at``; ``0.0`` for all-time.
+
+    ``started_at`` is a positive Unix timestamp, so ``> 0`` keeps every recorded
+    session while every query keeps a single ``WHERE started_at > ?`` shape — no
+    branchy "omit the WHERE" variants to drift apart.
+    """
+    if window_days is None:
+        return 0.0
+    return time.time() - (window_days * 86400)
+
+
+def _insights_days(window_days: Optional[int]) -> int:
+    """``InsightsEngine.get_usage_breakdown`` only takes a day count; widen it to
+    cover all recorded history (days since the epoch)."""
+    if window_days is not None:
+        return window_days
+    return int(time.time() // 86400) + 2
+
+
+def _get_usage_analytics(days: "int | str | None" = 30, profile: Optional[str] = None):
     from agent.insights import InsightsEngine
 
+    window_days = _resolve_window(days)
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
-        cutoff = time.time() - (days * 86400)
+        cutoff = _window_cutoff(window_days)
         # Local calendar day, per-row (DST-correct), the same day /insights uses (agent/insights.py).
         daily = _rows(db, """
             SELECT date(started_at, 'unixepoch', 'localtime') as day,
@@ -126,14 +174,14 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
             FROM sessions WHERE started_at > ?
         """, cutoff)[0]
-        usage = InsightsEngine(db).get_usage_breakdown(days=days)
+        usage = InsightsEngine(db).get_usage_breakdown(days=_insights_days(window_days))
 
         return {
             "daily": daily,
             "by_model": by_model,
             "by_task": _aux_task_summary(aux_rows),  # "what is compression costing me"
             "totals": totals,
-            "period_days": days,
+            "period_days": window_days,
             "skills": usage["skills"],
             "tools": usage["tools"],  # per-tool-name counts; desktop aggregates per toolset
         }
@@ -143,13 +191,13 @@ def _get_usage_analytics(days: int = 30, profile: Optional[str] = None):
 
 @router.get("/api/analytics/usage")
 async def get_usage_analytics(
-    days: int = Query(30, ge=1, le=365),
+    days: str = Query("30", description="Window in days (1-365), or 'all' for the full history."),
     profile: Optional[str] = None,
 ):
-    """``days`` is clamped to 1-365 (idea from #74778): huge or non-positive
-    values would force expensive full-history SQL and InsightsEngine work, or
-    produce empty/inverted time windows. The UI only offers 7/30/90-day
-    presets."""
+    """``days`` is a 1-365 day window, or the literal ``all`` for the entire
+    recorded history (idea from #74778 keeps numeric windows bounded so a huge
+    or non-positive value can't force an accidental full-history scan; the UI
+    now offers an explicit All preset)."""
     with corrupt_store_as_status(_session_db_path_for_profile(profile)):
         return await asyncio.to_thread(_get_usage_analytics, days, profile)
 
@@ -229,11 +277,12 @@ _MODEL_CARD_KEYS = (
 )
 
 
-def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
+def _get_models_analytics(days: "int | str | None" = 30, profile: Optional[str] = None):
     """Per-model token/cost/session breakdown plus models.dev capability metadata."""
+    window_days = _resolve_window(days)
     db = _open_session_db_for_profile(profile, read_only=True)
     try:
-        cutoff = time.time() - (days * 86400)
+        cutoff = _window_cutoff(window_days)
 
         raw_rows = _rows(db, """
             SELECT model,
@@ -298,16 +347,19 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
             FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
         """, cutoff)[0]
 
-        return {"models": models, "totals": totals, "period_days": days}
+        return {"models": models, "totals": totals, "period_days": window_days}
     finally:
         db.close()
 
 
 @router.get("/api/analytics/models")
 async def get_models_analytics(
-    days: int = Query(30, ge=1, le=365),
+    days: str = Query("30", description="Window in days (1-365), or 'all' for the full history."),
     profile: Optional[str] = None,
 ):
-    """Return model analytics without blocking the serving event loop."""
+    """Return model analytics without blocking the serving event loop.
+
+    ``days`` matches the usage endpoint: 1-365, or ``all`` for all history.
+    """
     with corrupt_store_as_status(_session_db_path_for_profile(profile)):
         return await asyncio.to_thread(_get_models_analytics, days, profile)

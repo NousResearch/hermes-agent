@@ -236,6 +236,8 @@ export interface Translations {
   // ── Analytics page ──
   analytics: {
     period: string;
+    /** Optional label for the all-time range preset (falls back to "All"). */
+    all?: string;
     totalTokens: string;
     totalSessions: string;
     apiCalls: string;

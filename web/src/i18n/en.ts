@@ -222,6 +222,7 @@ export const en: Translations = {
 
   analytics: {
     period: "Period:",
+    all: "All",
     totalTokens: "Total Tokens",
     totalSessions: "Total Sessions",
     apiCalls: "API Calls",

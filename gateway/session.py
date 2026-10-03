@@ -83,6 +83,8 @@ class SessionSource:
     guild_id: Optional[str] = None
     parent_chat_id: Optional[str] = None  # parent channel when chat_id is a thread
     message_id: Optional[str] = None  # triggering message (pin/reply/react)
+    # Permalink to the triggering event, provided to the model with the current turn.
+    source_permalink: Optional[str] = None
     role_authorized: bool = False  # adapter granted access via role, not user ID
     # Multiplex profile this message routes to (None => active/default); namespaces the key.
     profile: Optional[str] = None
@@ -125,7 +127,7 @@ class SessionSource:
     # optionals around the dual-written scope pair.
     _ALWAYS_FIELDS = ("chat_id", "chat_name", "chat_type", "user_id", "user_name", "thread_id", "chat_topic")
     _OPTIONAL_PRE_SCOPE = ("user_id_alt", "chat_id_alt")
-    _OPTIONAL_POST_SCOPE = ("parent_chat_id", "message_id", "profile")
+    _OPTIONAL_POST_SCOPE = ("parent_chat_id", "message_id", "source_permalink", "profile")
     _OPTIONAL_TAIL = ("auto_thread_initial_name", "prospective_thread_id")
 
     def to_dict(self) -> Dict[str, Any]:

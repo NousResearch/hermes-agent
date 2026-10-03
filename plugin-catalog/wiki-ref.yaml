@@ -1,20 +1,23 @@
 name: wiki-ref
 repo: https://github.com/EloquentBrush0x/hermes-context-refs
-sha: 0154f6bfaafc837cc4af78742e6db7c087d5b5a7
+sha: 27e7a6e00a5e44f25a37497b6c8b542d4d416c78
 subdir: wiki-ref
 description: >-
   @wiki:<title> context references: attach the lead section of a Wikipedia article to a message,
-  or one section with @wiki:<title>#<section>, with title autocomplete in the TUI and Desktop
-  composer. Disclosure — sends HTTPS GET requests to <language>.wikipedia.org/w/api.php only (the
-  referenced title and the typed autocomplete prefix leave the machine; a section is cut locally);
-  no API key, no files written, no subprocess; register() only adds the @wiki: reference provider.
+  or one section with @wiki:<title>#<section>; read another edition with @wiki:de:<title> or the
+  article's address; title autocomplete in the TUI and Desktop composer. Disclosure — sends HTTPS
+  GET requests to <edition>.wikipedia.org/w/api.php only, where the edition is the language setting
+  or the one a reference names (an address on another site, or an interwiki link off Wikipedia, is
+  refused before any request to it); the referenced title and the typed autocomplete prefix leave
+  the machine; a section is cut locally; no API key, no files written, no subprocess; register()
+  only adds the @wiki: reference provider.
 maintainer: EloquentBrush0x
 tier: community
 category: web
 requires_hermes: ">=0.21"
 docs_url: https://github.com/EloquentBrush0x/hermes-context-refs/tree/main/wiki-ref
-version: "1.1.0"
-image: https://raw.githubusercontent.com/EloquentBrush0x/hermes-context-refs/0154f6bfaafc837cc4af78742e6db7c087d5b5a7/docs/card.png
+version: "1.2.0"
+image: https://raw.githubusercontent.com/EloquentBrush0x/hermes-context-refs/27e7a6e00a5e44f25a37497b6c8b542d4d416c78/docs/card.png
 platforms: []
 capabilities:
   provides_tools: []

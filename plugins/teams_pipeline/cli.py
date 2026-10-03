@@ -12,7 +12,7 @@ from hermes_constants import display_hermes_home
 from gateway.config import Platform, load_gateway_config
 from plugins.teams_pipeline.meetings import (
     enrich_meeting_with_call_record, fetch_preferred_transcript_text, list_recording_artifacts, resolve_meeting_reference)
-from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
+from plugins.teams_pipeline.runtime import build_pipeline_from_config
 from plugins.teams_pipeline.store import TeamsPipelineStore, resolve_teams_pipeline_store_path
 from plugins.teams_pipeline.subscriptions import (
     build_graph_client, maintain_graph_subscriptions, sync_graph_subscription_record, utc_timestamp)
@@ -173,7 +173,7 @@ def _cmd_show(args) -> None:
 
 
 def _cmd_run(args) -> None:
-    pipeline = TeamsMeetingPipeline(graph_client=build_graph_client(), store=_open_store(args), config={})
+    pipeline = build_pipeline_from_config(load_gateway_config(), store=_open_store(args))
     _print_json(_compact_job(asyncio.run(pipeline.run_job(_text(args, "job_id"))).to_dict()))
 
 

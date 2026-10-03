@@ -1,8 +1,12 @@
+import io
+import logging
 import time
 from copy import deepcopy
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 import cli as cli_mod
 from cli import HermesCLI
@@ -52,6 +56,39 @@ def _attach_agent(
         ),
     )
     return cli_obj
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+@pytest.mark.parametrize("level", [logging.DEBUG, logging.INFO, logging.ERROR])
+@pytest.mark.parametrize("calls", [0, 1, None])
+def test_usage_preserves_logging_configuration(verbose, level, calls, capsys):
+    cli_obj = _make_cli()
+    cli_obj.verbose = verbose
+    if calls is not None:
+        _attach_agent(cli_obj, prompt_tokens=10, completion_tokens=2, total_tokens=12,
+                      api_calls=calls, context_tokens=10, context_length=100)
+    cli_obj._print_account_limits = lambda: False
+    cli_obj._print_nous_credits_block = lambda: False
+    root = logging.getLogger()
+    noisy = logging.getLogger("httpx")
+    previous = root.level, noisy.level
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    root.addHandler(handler)
+    try:
+        root.setLevel(level)
+        noisy.setLevel(logging.ERROR)
+        cli_obj._handle_usage_command("/usage")
+        assert root.level == level
+        assert noisy.level == logging.ERROR
+        root.debug("usage-debug-sentinel")
+        assert ("usage-debug-sentinel" in stream.getvalue()) == (level == logging.DEBUG)
+        assert capsys.readouterr().out
+    finally:
+        root.removeHandler(handler)
+        handler.close()
+        root.setLevel(previous[0])
+        noisy.setLevel(previous[1])
 
 
 class TestCLIStatusBar:

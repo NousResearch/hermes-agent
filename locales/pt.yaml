@@ -942,6 +942,32 @@ gateway:
     hint: "Recarregue e gerencie o faturamento no navegador — seu saldo é atualizado aqui depois."
   login:
     free_tier_remaining: "\nAlguns chats ainda estão no nível gratuito; use /model nesses chats para trocar."
+  merge:
+    no_named_sessions:     "Ainda não há sessões com título para mesclar. Dê um nome a uma sessão com `/title` primeiro."
+    list_header:           "🔀 **Sessões nas quais você pode mesclar** — responda `/merge <number>` ou `/merge <name>`:"
+    list_footer:           "_`/merge <number>` incorpora um resumo DESTA sessão naquela._"
+    not_found:             "Nenhuma sessão encontrada correspondente a '{name}'. Use `/merge` sem nome para listar as sessões mescláveis."
+    same_session:          "Essa é a sessão em que você já está — escolha outro destino para mesclar."
+    blocked_not_owner:     "Você só pode mesclar em sessões que possui. '{name}' pertence a outro chat/dono."
+    already_merged:        "Esta sessão já foi mesclada em **{title}** — não será incorporada novamente. (Inicie uma nova exploração para mesclar material novo.)"
+    no_conversation:       "Nada para mesclar — esta sessão ainda não tem conversa."
+    no_new_turns:          "Nada novo para mesclar — nenhuma mensagem ocorreu neste tópico após o ponto de ramificação."
+    no_summary:            "Não foi possível gerar um resumo desta sessão; nada foi mesclado. Tente novamente em instantes."
+    ledger_failed:         "Não foi possível registrar a mesclagem com segurança (armazenamento de sessões ocupado) — nada foi incorporado. Tente novamente em instantes."
+    fold_body:             "[SESSÃO MESCLADA — {title}] Um resumo de outra sessão ('{title}') foi incorporado a esta conversa. Trate-o como contexto de referência:\n\n{summary}"
+    fold_body_thread:      "[TÓPICO RAMIFICADO MESCLADO — {title}] Um tópico ramificado foi explorado e incorporado de volta a esta conversa. Resumo do que aconteceu na ramificação:\n\n{summary}"
+    fold_failed:           "Falha ao incorporar o resumo na sessão de destino: {error}"
+    source_marker:         "[MESCLADO — a nova exploração deste tópico foi incorporada em '{target}' em {when}. Você pode continuar aqui, mas o resumo dela já está naquela conversa.]"
+    source_marker_named:   "[MESCLADO — um resumo desta sessão foi incorporado em '{target}' em {when}. Você pode continuar aqui, mas o resumo dela já está naquela conversa.]"
+    source_thread_link:    " ({thread})"
+    target_note:           "🔀 **Incorporado de _{source}_**{child} — um resumo de {turns} mensagem(ns) agora está no contexto desta conversa.{record}"
+    target_note_named:     "🔀 **Incorporado de _{source}_** — um resumo de _{source}_ ({turns} mensagem(ns)) agora está no contexto desta conversa.{record}"
+    target_parent_link:    " ({parent})"
+    note_record_suffix:    " · registro completo: `{path}`"
+    md_suffix:             " · registro completo: `{path}`"
+    merged_thread:         "✅ **Incorporado de volta em _{title}_**{parent} — um resumo deste tópico agora está no contexto do pai, e este tópico foi arquivado (ainda pode ser retomado).{md}"
+    merged_thread_no_archive: "✅ **Incorporado de volta em _{title}_**{parent} — um resumo deste tópico agora está no contexto do pai. (Não foi possível arquivar o tópico automaticamente; você pode fechá-lo manualmente.){md}"
+    merged_named:          "✅ Mesclado em **{title}** — um resumo desta sessão agora está no contexto dela.{md}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Outro"
@@ -1515,6 +1541,8 @@ slash:
     description: "Transferir esta sessão para uma plataforma de mensagens (Telegram, Discord etc.)"
   branch:
     description: "Ramificar a sessão atual (novo tópico no Discord/Telegram/Slack/Matrix; --here permanece aqui)"
+  merge:
+    description: "Mesclar um resumo desta sessão em outra sessão (tópico ramificado ou sessão nomeada)"
   worktree:
     description: "Mostrar, listar, criar ou limpar worktrees git isolados"
   compress:

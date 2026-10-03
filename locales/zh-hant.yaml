@@ -942,6 +942,32 @@ gateway:
     hint: "請在瀏覽器中儲值並管理帳務 — 完成後你的餘額會在此更新。"
   login:
     free_tier_remaining: "\n部分聊天仍在使用免費方案；請在那些聊天中使用 /model 切換。"
+  merge:
+    no_named_sessions:     "目前尚無可合併的已命名工作階段。請先用 `/title` 為工作階段命名。"
+    list_header:           "🔀 **可合併的目標工作階段** — 回覆 `/merge <number>` 或 `/merge <name>`："
+    list_footer:           "_`/merge <number>` 會將本工作階段的摘要合併至該工作階段。_"
+    not_found:             "找不到符合 '{name}' 的工作階段。不加名稱執行 `/merge` 可列出可合併的工作階段。"
+    same_session:          "這正是你目前所在的工作階段 — 請選擇其他合併目標。"
+    blocked_not_owner:     "只能合併至你擁有的工作階段。'{name}' 屬於其他聊天／擁有者。"
+    already_merged:        "本工作階段已合併至 **{title}** — 不會重複合併。（若要合併新內容，請開始新的探索。）"
+    no_conversation:       "沒有可合併的內容 — 本工作階段尚無對話。"
+    no_new_turns:          "沒有新內容可合併 — 分支點之後此討論串未產生任何訊息。"
+    no_summary:            "無法產生本工作階段的摘要；未合併任何內容。請稍後再試。"
+    ledger_failed:         "無法安全記錄本次合併（工作階段儲存忙碌中）— 未合併任何內容。請稍後再試。"
+    fold_body:             "[已合併的工作階段 — {title}] 另一個工作階段（'{title}'）的摘要已合併至本對話。請將其視為參考脈絡：\n\n{summary}"
+    fold_body_thread:      "[分支討論串已合併 — {title}] 一個分支討論串已完成探索並合併回本對話。該分支中的內容摘要：\n\n{summary}"
+    fold_failed:           "無法將摘要合併至目標工作階段：{error}"
+    source_marker:         "[已合併 — 此討論串的新探索已於 {when} 合併至 '{target}'。你仍可在此繼續，但其摘要已存在於該對話中。]"
+    source_marker_named:   "[已合併 — 本工作階段的摘要已於 {when} 合併至 '{target}'。你仍可在此繼續，但其摘要已存在於該對話中。]"
+    source_thread_link:    " ({thread})"
+    target_note:           "🔀 **已從 _{source}_ 合併**{child} — {turns} 則訊息的摘要現已納入本對話的脈絡。{record}"
+    target_note_named:     "🔀 **已從 _{source}_ 合併** — _{source}_（{turns} 則訊息）的摘要現已納入本對話的脈絡。{record}"
+    target_parent_link:    " ({parent})"
+    note_record_suffix:    " · 完整記錄：`{path}`"
+    md_suffix:             " · 完整記錄：`{path}`"
+    merged_thread:         "✅ **已合併回 _{title}_**{parent} — 此討論串的摘要現已納入父對話的脈絡，且此討論串已封存（仍可繼續）。{md}"
+    merged_thread_no_archive: "✅ **已合併回 _{title}_**{parent} — 此討論串的摘要現已納入父對話的脈絡。（無法自動封存此討論串；你可以手動關閉。）{md}"
+    merged_named:          "✅ 已合併至 **{title}** — 本工作階段的摘要現已納入其脈絡。{md}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ 其他"
@@ -1515,6 +1541,8 @@ slash:
     description: "將此工作階段移交到訊息平台（Telegram、Discord 等）"
   branch:
     description: "分支目前工作階段（在 Discord/Telegram/Slack/Matrix 開新討論串；--here 留在原處）"
+  merge:
+    description: "將此工作階段的摘要合併到另一個工作階段（分支討論串或具名工作階段）"
   worktree:
     description: "顯示、列出、建立或清理隔離的 git 工作樹"
   compress:

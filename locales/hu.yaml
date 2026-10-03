@@ -956,6 +956,32 @@ gateway:
     hint: "Feltöltés és számlázás a böngészőben — az egyenleged utána itt is frissül."
   login:
     free_tier_remaining: "\nNéhány csevegés még az ingyenes szinten van; ott a /model paranccsal válthatsz."
+  merge:
+    no_named_sessions:     "Még nincs elnevezett munkamenet, amelybe beolvaszthatnál. Előbb adj nevet egy munkamenetnek a `/title` paranccsal."
+    list_header:           "🔀 **Munkamenetek, amelyekbe beolvaszthatsz** — válaszolj: `/merge <number>` vagy `/merge <name>`:"
+    list_footer:           "_A `/merge <number>` EZ a munkamenet összefoglalóját olvasztja be a kiválasztottba._"
+    not_found:             "Nincs a következőre illeszkedő munkamenet: '{name}'. Használd a `/merge` parancsot név nélkül a beolvasztható munkamenetek listázásához."
+    same_session:          "Ebben a munkamenetben vagy éppen — válassz másik célt a beolvasztáshoz."
+    blocked_not_owner:     "Csak a saját munkameneteidbe olvaszthatsz be. A(z) '{name}' másik csevegéshez/tulajdonoshoz tartozik."
+    already_merged:        "Ez a munkamenet már be lett olvasztva ide: **{title}** — nem olvasztjuk be újra. (Indíts új felfedezést friss anyag beolvasztásához.)"
+    no_conversation:       "Nincs mit beolvasztani — ebben a munkamenetben még nincs beszélgetés."
+    no_new_turns:          "Nincs új beolvasztanivaló — az elágazási pont után nem történt üzenetváltás ebben a szálban."
+    no_summary:            "Nem sikerült összefoglalót készíteni erről a munkamenetről; semmi sem lett beolvasztva. Próbáld újra egy pillanat múlva."
+    ledger_failed:         "Nem sikerült biztonságosan rögzíteni a beolvasztást (a munkamenet-tár foglalt) — semmi sem lett beolvasztva. Próbáld újra egy pillanat múlva."
+    fold_body:             "[BEOLVASZTOTT MUNKAMENET — {title}] Egy másik munkamenet ('{title}') összefoglalóját beolvasztottuk ebbe a beszélgetésbe. Kezeld referenciakontextusként:\n\n{summary}"
+    fold_body_thread:      "[BEOLVASZTOTT LEÁGAZOTT SZÁL — {title}] Egy leágazott szálat felfedeztünk, majd visszaolvasztottunk ebbe a beszélgetésbe. Összefoglaló arról, mi történt az ágban:\n\n{summary}"
+    fold_failed:           "Nem sikerült beolvasztani az összefoglalót a célmunkamenetbe: {error}"
+    source_marker:         "[BEOLVASZTVA — ennek a szálnak az új felfedezését beolvasztottuk ide: '{target}', ekkor: {when}. Itt folytathatod, de az összefoglalója már abban a beszélgetésben van.]"
+    source_marker_named:   "[BEOLVASZTVA — ennek a munkamenetnek az összefoglalóját beolvasztottuk ide: '{target}', ekkor: {when}. Itt folytathatod, de az összefoglalója már abban a beszélgetésben van.]"
+    source_thread_link:    " ({thread})"
+    target_note:           "🔀 **Beolvasztva innen: _{source}_**{child} — {turns} üzenet összefoglalója már ennek a beszélgetésnek a kontextusában van.{record}"
+    target_note_named:     "🔀 **Beolvasztva innen: _{source}_** — a(z) _{source}_ ({turns} üzenet) összefoglalója már ennek a beszélgetésnek a kontextusában van.{record}"
+    target_parent_link:    " ({parent})"
+    note_record_suffix:    " · teljes napló: `{path}`"
+    md_suffix:             " · teljes napló: `{path}`"
+    merged_thread:         "✅ **Visszaolvasztva ide: _{title}_**{parent} — ennek a szálnak az összefoglalója már a szülő kontextusában van, a szál pedig archiválva lett (továbbra is folytatható).{md}"
+    merged_thread_no_archive: "✅ **Visszaolvasztva ide: _{title}_**{parent} — ennek a szálnak az összefoglalója már a szülő kontextusában van. (A szálat nem sikerült automatikusan archiválni; kézzel bezárhatod.){md}"
+    merged_named:          "✅ Beolvasztva ide: **{title}** — ennek a munkamenetnek az összefoglalója már a kontextusában van.{md}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Egyéb"
@@ -1532,6 +1558,8 @@ slash:
     description: "A munkamenet átadása egy üzenetküldő platformnak (Telegram, Discord stb.)"
   branch:
     description: "Az aktuális munkamenet elágaztatása (új szál Discordon/Telegramon/Slacken/Matrixon; a --here itt marad)"
+  merge:
+    description: "A munkamenet összefoglalójának beolvasztása egy másik munkamenetbe (elágaztatott szál vagy elnevezett munkamenet)"
   worktree:
     description: "Izolált git worktree-k megjelenítése, listázása, létrehozása vagy tisztítása"
   compress:

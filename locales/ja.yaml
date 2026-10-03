@@ -942,6 +942,32 @@ gateway:
     hint: "チャージと請求の管理はブラウザで行ってください — 完了後、ここの残高が更新されます。"
   login:
     free_tier_remaining: "\n一部のチャットはまだ無料プランのままです。それらのチャットでは /model で切り替えてください。"
+  merge:
+    no_named_sessions:     "統合先となるタイトル付きセッションがまだありません。まず `/title` でセッションに名前を付けてください。"
+    list_header:           "🔀 **統合先にできるセッション** — `/merge <number>` または `/merge <name>` で返信してください:"
+    list_footer:           "_`/merge <number>` はこのセッションの要約をそのセッションに折り込みます。_"
+    not_found:             "'{name}' に一致するセッションが見つかりません。名前なしで `/merge` を実行すると統合可能なセッションを一覧表示します。"
+    same_session:          "それは現在使用中のセッションです — 別の統合先を選んでください。"
+    blocked_not_owner:     "自分が所有するセッションにのみ統合できます。'{name}' は別のチャット/所有者のものです。"
+    already_merged:        "このセッションはすでに **{title}** に統合済みです — 再度は折り込みません。（新しい内容を統合するには新しい検討を開始してください。）"
+    no_conversation:       "統合するものがありません — このセッションにはまだ会話がありません。"
+    no_new_turns:          "新たに統合するものがありません — 分岐地点以降、このスレッドではやり取りがありません。"
+    no_summary:            "このセッションの要約を生成できませんでした。何も統合されていません。しばらくしてから再試行してください。"
+    ledger_failed:         "統合を安全に記録できませんでした（セッションストアがビジー）— 何も折り込まれていません。しばらくしてから再試行してください。"
+    fold_body:             "[統合されたセッション — {title}] 別のセッション（'{title}'）の要約がこの会話に折り込まれました。参照用のコンテキストとして扱ってください:\n\n{summary}"
+    fold_body_thread:      "[分岐スレッドを統合 — {title}] 分岐スレッドでの検討結果がこの会話に折り返されました。分岐での内容の要約:\n\n{summary}"
+    fold_failed:           "対象セッションへの要約の折り込みに失敗しました: {error}"
+    source_marker:         "[統合済み — このスレッドの新しい検討内容は {when} に '{target}' へ折り込まれました。ここで続けることもできますが、その要約はすでにその会話に存在します。]"
+    source_marker_named:   "[統合済み — このセッションの要約は {when} に '{target}' へ折り込まれました。ここで続けることもできますが、その要約はすでにその会話に存在します。]"
+    source_thread_link:    " ({thread})"
+    target_note:           "🔀 **_{source}_ から折り込みました**{child} — {turns} 件のメッセージの要約がこの会話のコンテキストに入りました。{record}"
+    target_note_named:     "🔀 **_{source}_ から折り込みました** — _{source}_（{turns} 件のメッセージ）の要約がこの会話のコンテキストに入りました。{record}"
+    target_parent_link:    " ({parent})"
+    note_record_suffix:    " · 完全な記録: `{path}`"
+    md_suffix:             " · 完全な記録: `{path}`"
+    merged_thread:         "✅ **_{title}_ に折り返しました**{parent} — このスレッドの要約が親のコンテキストに入り、このスレッドはアーカイブされました（再開は可能です）。{md}"
+    merged_thread_no_archive: "✅ **_{title}_ に折り返しました**{parent} — このスレッドの要約が親のコンテキストに入りました。（スレッドを自動でアーカイブできませんでした。手動で閉じてください。）{md}"
+    merged_named:          "✅ **{title}** に統合しました — このセッションの要約がそのコンテキストに入りました。{md}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ その他"
@@ -1515,6 +1541,8 @@ slash:
     description: "このセッションをメッセージングプラットフォーム（Telegram、Discord など）に引き継ぐ"
   branch:
     description: "現在のセッションを分岐（Discord/Telegram/Slack/Matrix では新しいスレッド。--here でここに留まる）"
+  merge:
+    description: "このセッションの要約を別のセッションに統合（分岐スレッド、または名前付きセッション）"
   worktree:
     description: "分離された git worktree の表示、一覧、作成、または削除"
   compress:

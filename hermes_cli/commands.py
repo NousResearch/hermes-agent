@@ -107,6 +107,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<platform>", cli_only=True, argument_mode="options"),
     CommandDef("branch", "Branch the current session (new thread on Discord/Telegram/Slack/Matrix; --here stays here)",
                "Session", aliases=("fork",), args_hint="[--here] [name]"),
+    CommandDef("merge", "Merge a summary of this session into another session (branched thread, or a named session)",
+               "Session", gateway_only=True, args_hint="[name]"),
     CommandDef("worktree", "Show, list, create, or prune isolated git worktrees", "Session",
                cli_only=True, args_hint="[new [name]|list|prune [--dry-run]]",
                subcommands=("new", "list", "prune")),

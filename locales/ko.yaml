@@ -942,6 +942,32 @@ gateway:
     hint: "브라우저에서 충전과 결제 관리를 하면 잔액이 여기에도 곧 반영돼요."
   login:
     free_tier_remaining: "\n일부 채팅은 아직 무료 등급을 사용 중이에요. 해당 채팅에서 /model로 전환하세요."
+  merge:
+    no_named_sessions:     "아직 병합할 제목 있는 세션이 없습니다. 먼저 `/title`로 세션에 이름을 지정하세요."
+    list_header:           "🔀 **병합할 수 있는 세션** — `/merge <number>` 또는 `/merge <name>`으로 답장하세요:"
+    list_footer:           "_`/merge <number>`는 현재 세션의 요약을 해당 세션에 병합합니다._"
+    not_found:             "'{name}'과(와) 일치하는 세션이 없습니다. 이름 없이 `/merge`를 실행하면 병합 가능한 세션이 표시됩니다."
+    same_session:          "이미 사용 중인 세션입니다 — 다른 병합 대상을 선택하세요."
+    blocked_not_owner:     "본인이 소유한 세션에만 병합할 수 있습니다. '{name}'은(는) 다른 채팅/소유자의 것입니다."
+    already_merged:        "이 세션은 이미 **{title}**에 병합되었습니다 — 다시 병합하지 않습니다. (새로운 내용을 병합하려면 새 탐색을 시작하세요.)"
+    no_conversation:       "병합할 내용이 없습니다 — 이 세션에는 아직 대화가 없습니다."
+    no_new_turns:          "새로 병합할 내용이 없습니다 — 분기 지점 이후 이 스레드에서 오간 메시지가 없습니다."
+    no_summary:            "이 세션의 요약을 생성하지 못했습니다. 아무것도 병합되지 않았습니다. 잠시 후 다시 시도하세요."
+    ledger_failed:         "병합을 안전하게 기록하지 못했습니다(세션 저장소 사용 중) — 아무것도 병합되지 않았습니다. 잠시 후 다시 시도하세요."
+    fold_body:             "[병합된 세션 — {title}] 다른 세션('{title}')의 요약이 이 대화에 병합되었습니다. 참고 컨텍스트로 사용하세요:\n\n{summary}"
+    fold_body_thread:      "[분기 스레드 병합됨 — {title}] 분기된 스레드에서의 탐색 내용이 이 대화에 병합되었습니다. 분기에서 진행된 내용 요약:\n\n{summary}"
+    fold_failed:           "대상 세션에 요약을 병합하지 못했습니다: {error}"
+    source_marker:         "[병합됨 — 이 스레드의 새 탐색 내용이 {when}에 '{target}'(으)로 병합되었습니다. 여기서 계속해도 되지만, 요약은 이미 해당 대화에 있습니다.]"
+    source_marker_named:   "[병합됨 — 이 세션의 요약이 {when}에 '{target}'(으)로 병합되었습니다. 여기서 계속해도 되지만, 요약은 이미 해당 대화에 있습니다.]"
+    source_thread_link:    " ({thread})"
+    target_note:           "🔀 **_{source}_에서 병합됨**{child} — 메시지 {turns}개의 요약이 이 대화의 컨텍스트에 추가되었습니다.{record}"
+    target_note_named:     "🔀 **_{source}_에서 병합됨** — _{source}_(메시지 {turns}개)의 요약이 이 대화의 컨텍스트에 추가되었습니다.{record}"
+    target_parent_link:    " ({parent})"
+    note_record_suffix:    " · 전체 기록: `{path}`"
+    md_suffix:             " · 전체 기록: `{path}`"
+    merged_thread:         "✅ **_{title}_에 병합됨**{parent} — 이 스레드의 요약이 상위 대화의 컨텍스트에 추가되었고, 이 스레드는 보관되었습니다(다시 재개 가능).{md}"
+    merged_thread_no_archive: "✅ **_{title}_에 병합됨**{parent} — 이 스레드의 요약이 상위 대화의 컨텍스트에 추가되었습니다. (스레드를 자동으로 보관하지 못했습니다. 수동으로 닫을 수 있습니다.){md}"
+    merged_named:          "✅ **{title}**에 병합했습니다 — 이 세션의 요약이 해당 컨텍스트에 추가되었습니다.{md}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ 기타"
@@ -1515,6 +1541,8 @@ slash:
     description: "이 세션을 메시징 플랫폼(Telegram, Discord 등)으로 넘기기"
   branch:
     description: "현재 세션 분기 (Discord/Telegram/Slack/Matrix에서는 새 스레드; --here는 여기서 유지)"
+  merge:
+    description: "이 세션의 요약을 다른 세션에 병합 (분기 스레드 또는 이름 있는 세션)"
   worktree:
     description: "격리된 git 워크트리 표시, 목록, 생성 또는 정리"
   compress:

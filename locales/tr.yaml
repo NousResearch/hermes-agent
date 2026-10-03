@@ -942,6 +942,32 @@ gateway:
     hint: "Bakiye yükleme ve faturalandırma işlemlerini tarayıcıda yapın — bakiyeniz ardından burada güncellenir."
   login:
     free_tier_remaining: "\nBazı sohbetler hâlâ ücretsiz katmanda; o sohbetlerde geçiş yapmak için /model kullanın."
+  merge:
+    no_named_sessions:     "Henüz birleştirilebilecek başlıklı oturum yok. Önce `/title` ile bir oturuma ad verin."
+    list_header:           "🔀 **Birleştirebileceğiniz oturumlar** — `/merge <number>` veya `/merge <name>` ile yanıtlayın:"
+    list_footer:           "_`/merge <number>`, BU oturumun özetini seçtiğiniz oturuma katar._"
+    not_found:             "'{name}' ile eşleşen oturum bulunamadı. Birleştirilebilir oturumları listelemek için `/merge` komutunu adsız kullanın."
+    same_session:          "Bu, zaten içinde bulunduğunuz oturum — birleştirmek için farklı bir hedef seçin."
+    blocked_not_owner:     "Yalnızca sahibi olduğunuz oturumlara birleştirebilirsiniz. '{name}' farklı bir sohbete/sahibe ait."
+    already_merged:        "Bu oturum zaten **{title}** içine birleştirildi — tekrar katılmayacak. (Yeni içerik birleştirmek için yeni bir keşif başlatın.)"
+    no_conversation:       "Birleştirilecek bir şey yok — bu oturumda henüz konuşma yok."
+    no_new_turns:          "Birleştirilecek yeni bir şey yok — ayrılma noktasından sonra bu konuda hiç mesaj olmadı."
+    no_summary:            "Bu oturumun özeti oluşturulamadı; hiçbir şey birleştirilmedi. Birazdan tekrar deneyin."
+    ledger_failed:         "Birleştirme güvenli şekilde kaydedilemedi (oturum deposu meşgul) — hiçbir şey katılmadı. Birazdan tekrar deneyin."
+    fold_body:             "[BİRLEŞTİRİLEN OTURUM — {title}] Başka bir oturumun ('{title}') özeti bu konuşmaya katıldı. Bunu referans bağlam olarak değerlendirin:\n\n{summary}"
+    fold_body_thread:      "[AYRILMIŞ KONU BİRLEŞTİRİLDİ — {title}] Ayrılmış bir konu keşfedildi ve bu konuşmaya geri katıldı. Ayrımda olanların özeti:\n\n{summary}"
+    fold_failed:           "Özet hedef oturuma katılamadı: {error}"
+    source_marker:         "[BİRLEŞTİRİLDİ — bu konudaki yeni keşif {when} tarihinde '{target}' içine katıldı. Burada devam edebilirsiniz, ancak özeti zaten o konuşmada.]"
+    source_marker_named:   "[BİRLEŞTİRİLDİ — bu oturumun özeti {when} tarihinde '{target}' içine katıldı. Burada devam edebilirsiniz, ancak özeti zaten o konuşmada.]"
+    source_thread_link:    " ({thread})"
+    target_note:           "🔀 **_{source}_ kaynağından katıldı**{child} — {turns} mesajın özeti artık bu konuşmanın bağlamında.{record}"
+    target_note_named:     "🔀 **_{source}_ kaynağından katıldı** — _{source}_ ({turns} mesaj) özeti artık bu konuşmanın bağlamında.{record}"
+    target_parent_link:    " ({parent})"
+    note_record_suffix:    " · tam kayıt: `{path}`"
+    md_suffix:             " · tam kayıt: `{path}`"
+    merged_thread:         "✅ **_{title}_ içine geri katıldı**{parent} — bu konunun özeti artık üst konuşmanın bağlamında ve bu konu arşivlendi (yine de sürdürülebilir).{md}"
+    merged_thread_no_archive: "✅ **_{title}_ içine geri katıldı**{parent} — bu konunun özeti artık üst konuşmanın bağlamında. (Konu otomatik olarak arşivlenemedi; elle kapatabilirsiniz.){md}"
+    merged_named:          "✅ **{title}** içine birleştirildi — bu oturumun özeti artık onun bağlamında.{md}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Diğer"
@@ -1515,6 +1541,8 @@ slash:
     description: "Bu oturumu bir mesajlaşma platformuna devret (Telegram, Discord vb.)"
   branch:
     description: "Geçerli oturumu dallandır (Discord/Telegram/Slack/Matrix'te yeni konu; --here burada kalır)"
+  merge:
+    description: "Bu oturumun özetini başka bir oturuma birleştir (dallanmış konu veya adlandırılmış oturum)"
   worktree:
     description: "Yalıtılmış git worktree'lerini göster, listele, oluştur veya temizle"
   compress:

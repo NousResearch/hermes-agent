@@ -942,6 +942,32 @@ gateway:
     hint: "Laai op en bestuur fakturering in die blaaier — jou saldo word daarna hier opgedateer."
   login:
     free_tier_remaining: "\nSommige geselsies is nog op die gratis vlak; gebruik /model in daardie geselsies om oor te skakel."
+  merge:
+    no_named_sessions:     "Nog geen benoemde sessies om in saam te voeg nie. Gee eers 'n sessie 'n naam met `/title`."
+    list_header:           "🔀 **Sessies waarin jy kan saamvoeg** — antwoord `/merge <number>` of `/merge <name>`:"
+    list_footer:           "_`/merge <number>` vou 'n opsomming van HIERDIE sessie in daardie een in._"
+    not_found:             "Geen sessie gevind wat by '{name}' pas nie. Gebruik `/merge` sonder 'n naam om saamvoegbare sessies te lys."
+    same_session:          "Dis die sessie waarin jy reeds is — kies 'n ander teiken om in saam te voeg."
+    blocked_not_owner:     "Jy kan net saamvoeg in sessies wat aan jou behoort. '{name}' behoort aan 'n ander klets/eienaar."
+    already_merged:        "Hierdie sessie is reeds in **{title}** saamgevoeg — dit word nie weer ingevou nie. (Begin 'n nuwe verkenning om vars materiaal saam te voeg.)"
+    no_conversation:       "Niks om saam te voeg nie — hierdie sessie het nog geen gesprek nie."
+    no_new_turns:          "Niks nuuts om saam te voeg nie — geen beurte het ná die vertakpunt in hierdie draad plaasgevind nie."
+    no_summary:            "Kon nie 'n opsomming van hierdie sessie genereer nie; niks is saamgevoeg nie. Probeer oor 'n oomblik weer."
+    ledger_failed:         "Kon nie die samevoeging veilig aanteken nie (sessiestoor besig) — niks is ingevou nie. Probeer oor 'n oomblik weer."
+    fold_body:             "[SAAMGEVOEGDE SESSIE — {title}] 'n Opsomming van 'n ander sessie ('{title}') is in hierdie gesprek ingevou. Hanteer dit as verwysingskonteks:\n\n{summary}"
+    fold_body_thread:      "[VERTAKTE DRAAD SAAMGEVOEG — {title}] 'n Vertakte draad is verken en terug in hierdie gesprek ingevou. Opsomming van wat in die vertakking gebeur het:\n\n{summary}"
+    fold_failed:           "Kon nie die opsomming in die teikensessie invou nie: {error}"
+    source_marker:         "[SAAMGEVOEG — hierdie draad se nuwe verkenning is op {when} in '{target}' ingevou. Jy kan hier voortgaan, maar die opsomming daarvan leef reeds in daardie gesprek.]"
+    source_marker_named:   "[SAAMGEVOEG — 'n opsomming van hierdie sessie is op {when} in '{target}' ingevou. Jy kan hier voortgaan, maar die opsomming daarvan leef reeds in daardie gesprek.]"
+    source_thread_link:    " ({thread})"
+    target_note:           "🔀 **Ingevou vanaf _{source}_**{child} — 'n opsomming van {turns} boodskap(pe) is nou in hierdie gesprek se konteks.{record}"
+    target_note_named:     "🔀 **Ingevou vanaf _{source}_** — 'n opsomming van _{source}_ ({turns} boodskap(pe)) is nou in hierdie gesprek se konteks.{record}"
+    target_parent_link:    " ({parent})"
+    note_record_suffix:    " · volledige rekord: `{path}`"
+    md_suffix:             " · volledige rekord: `{path}`"
+    merged_thread:         "✅ **Terug ingevou in _{title}_**{parent} — 'n opsomming van hierdie draad is nou in die ouer se konteks, en hierdie draad is geargiveer (steeds hervatbaar).{md}"
+    merged_thread_no_archive: "✅ **Terug ingevou in _{title}_**{parent} — 'n opsomming van hierdie draad is nou in die ouer se konteks. (Kon nie die draad outomaties argiveer nie; jy kan dit handmatig sluit.){md}"
+    merged_named:          "✅ Saamgevoeg in **{title}** — 'n opsomming van hierdie sessie is nou in sy konteks.{md}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Ander"
@@ -1515,6 +1541,8 @@ slash:
     description: "Dra hierdie sessie oor na 'n boodskapplatform (Telegram, Discord, ens.)"
   branch:
     description: "Vertak die huidige sessie (nuwe draad op Discord/Telegram/Slack/Matrix; --here bly hier)"
+  merge:
+    description: "Voeg 'n opsomming van hierdie sessie by 'n ander sessie (vertakte draad, of 'n benoemde sessie)"
   worktree:
     description: "Wys, lys, skep of snoei geïsoleerde git-werkbome"
   compress:

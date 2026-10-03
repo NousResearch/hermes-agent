@@ -942,6 +942,32 @@ gateway:
     hint: "Cuir breis leis agus bainistigh billeáil sa bhrabhsálaí — nuashonrófar d'iarmhéid anseo ina dhiaidh sin."
   login:
     free_tier_remaining: "\nTá roinnt comhráite fós ar an bplean saor in aisce; úsáid /model sna comhráite sin chun athrú."
+  merge:
+    no_named_sessions:     "Níl aon seisiún ainmnithe ann le cumasc isteach ann go fóill. Tabhair ainm ar sheisiún le `/title` ar dtús."
+    list_header:           "🔀 **Seisiúin ar féidir leat cumasc isteach iontu** — freagair `/merge <number>` nó `/merge <name>`:"
+    list_footer:           "_Fillfidh `/merge <number>` achoimre ar an seisiún SEO isteach sa cheann sin._"
+    not_found:             "Níor aimsíodh aon seisiún a mheaitseálann '{name}'. Úsáid `/merge` gan ainm chun seisiúin in-chumaiscthe a liostáil."
+    same_session:          "Sin an seisiún ina bhfuil tú cheana féin — roghnaigh sprioc eile le cumasc isteach inti."
+    blocked_not_owner:     "Ní féidir leat cumasc isteach ach i seisiúin ar leatsa iad. Baineann '{name}' le comhrá/úinéir eile."
+    already_merged:        "Cumascadh an seisiún seo isteach i **{title}** cheana féin — ní fhilltear arís é. (Tosaigh fiosrúchán nua chun ábhar úr a chumasc.)"
+    no_conversation:       "Níl aon rud le cumasc — níl comhrá ar bith sa seisiún seo fós."
+    no_new_turns:          "Níl aon rud nua le cumasc — níor tharla aon seal sa snáithe seo tar éis phointe na craoibhe."
+    no_summary:            "Níorbh fhéidir achoimre a ghiniúint ar an seisiún seo; níor cumascadh aon rud. Bain triail eile as i gceann nóiméid."
+    ledger_failed:         "Níorbh fhéidir an cumasc a thaifeadadh go sábháilte (stór na seisiún gnóthach) — níor filleadh aon rud. Bain triail eile as i gceann nóiméid."
+    fold_body:             "[SEISIÚN CUMASCTHA — {title}] Filleadh achoimre ar sheisiún eile ('{title}') isteach sa chomhrá seo. Caith leis mar chomhthéacs tagartha:\n\n{summary}"
+    fold_body_thread:      "[SNÁITHE CRAOBHAITHE CUMASCTHA — {title}] Rinneadh snáithe craobhaithe a fhiosrú agus a fhilleadh ar ais isteach sa chomhrá seo. Achoimre ar ar tharla sa chraobh:\n\n{summary}"
+    fold_failed:           "Theip ar an achoimre a fhilleadh isteach sa sprioc-sheisiún: {error}"
+    source_marker:         "[CUMASCTHA — filleadh fiosrúchán nua an tsnáithe seo isteach i '{target}' ar {when}. Is féidir leat leanúint ar aghaidh anseo, ach tá a achoimre sa chomhrá sin cheana féin.]"
+    source_marker_named:   "[CUMASCTHA — filleadh achoimre ar an seisiún seo isteach i '{target}' ar {when}. Is féidir leat leanúint ar aghaidh anseo, ach tá a achoimre sa chomhrá sin cheana féin.]"
+    source_thread_link:    " ({thread})"
+    target_note:           "🔀 **Fillte isteach ó _{source}_**{child} — tá achoimre ar {turns} teachtaireacht(aí) i gcomhthéacs an chomhrá seo anois.{record}"
+    target_note_named:     "🔀 **Fillte isteach ó _{source}_** — tá achoimre ar _{source}_ ({turns} teachtaireacht(aí)) i gcomhthéacs an chomhrá seo anois.{record}"
+    target_parent_link:    " ({parent})"
+    note_record_suffix:    " · taifead iomlán: `{path}`"
+    md_suffix:             " · taifead iomlán: `{path}`"
+    merged_thread:         "✅ **Fillte ar ais isteach i _{title}_**{parent} — tá achoimre ar an snáithe seo i gcomhthéacs an tuismitheora anois, agus tá an snáithe seo curtha i gcartlann (fós in-atosaithe).{md}"
+    merged_thread_no_archive: "✅ **Fillte ar ais isteach i _{title}_**{parent} — tá achoimre ar an snáithe seo i gcomhthéacs an tuismitheora anois. (Níorbh fhéidir an snáithe a chartlannú go huathoibríoch; is féidir leat é a dhúnadh de láimh.){md}"
+    merged_named:          "✅ Cumascadh isteach i **{title}** — tá achoimre ar an seisiún seo ina chomhthéacs anois.{md}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Eile"
@@ -1515,6 +1541,8 @@ slash:
     description: "Tabhair an seisiún seo ar láimh d'ardán teachtaireachtaí (Telegram, Discord, etc.)"
   branch:
     description: "Brainseáil an seisiún reatha (snáithe nua ar Discord/Telegram/Slack/Matrix; fanann --here anseo)"
+  merge:
+    description: "Cumaisc achoimre ar an seisiún seo i seisiún eile (snáithe brainseáilte, nó seisiún ainmnithe)"
   worktree:
     description: "Taispeáin, liostáil, cruthaigh, nó bearr worktrees git scoite"
   compress:

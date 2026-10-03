@@ -942,6 +942,32 @@ gateway:
     hint: "Ricarica e gestisci la fatturazione nel browser — il saldo qui si aggiornerà subito dopo."
   login:
     free_tier_remaining: "\nAlcune chat sono ancora sul piano gratuito; usa /model in quelle chat per cambiare."
+  merge:
+    no_named_sessions:     "Nessuna sessione con titolo in cui unire, per ora. Assegna prima un nome a una sessione con `/title`."
+    list_header:           "🔀 **Sessioni in cui puoi unire** — rispondi `/merge <number>` o `/merge <name>`:"
+    list_footer:           "_`/merge <number>` integra un riepilogo di QUESTA sessione in quella scelta._"
+    not_found:             "Nessuna sessione corrispondente a '{name}'. Usa `/merge` senza nome per elencare le sessioni disponibili."
+    same_session:          "È la sessione in cui ti trovi già — scegli una destinazione diversa in cui unire."
+    blocked_not_owner:     "Puoi unire solo nelle sessioni di cui sei proprietario. '{name}' appartiene a un'altra chat/proprietario."
+    already_merged:        "Questa sessione è già stata unita in **{title}** — non verrà integrata di nuovo. (Avvia una nuova esplorazione per unire materiale inedito.)"
+    no_conversation:       "Niente da unire — questa sessione non ha ancora una conversazione."
+    no_new_turns:          "Niente di nuovo da unire — non ci sono stati messaggi in questo thread dopo il punto di diramazione."
+    no_summary:            "Impossibile generare un riepilogo di questa sessione; non è stato unito nulla. Riprova tra un momento."
+    ledger_failed:         "Impossibile registrare l'unione in sicurezza (archivio sessioni occupato) — non è stato integrato nulla. Riprova tra un momento."
+    fold_body:             "[SESSIONE UNITA — {title}] Il riepilogo di un'altra sessione ('{title}') è stato integrato in questa conversazione. Trattalo come contesto di riferimento:\n\n{summary}"
+    fold_body_thread:      "[THREAD DIRAMATO UNITO — {title}] Un thread diramato è stato esplorato e reintegrato in questa conversazione. Riepilogo di quanto è successo nella diramazione:\n\n{summary}"
+    fold_failed:           "Impossibile integrare il riepilogo nella sessione di destinazione: {error}"
+    source_marker:         "[UNITO — la nuova esplorazione di questo thread è stata integrata in '{target}' il {when}. Puoi continuare qui, ma il suo riepilogo è già in quella conversazione.]"
+    source_marker_named:   "[UNITO — un riepilogo di questa sessione è stato integrato in '{target}' il {when}. Puoi continuare qui, ma il suo riepilogo è già in quella conversazione.]"
+    source_thread_link:    " ({thread})"
+    target_note:           "🔀 **Integrato da _{source}_**{child} — un riepilogo di {turns} messaggio/i è ora nel contesto di questa conversazione.{record}"
+    target_note_named:     "🔀 **Integrato da _{source}_** — un riepilogo di _{source}_ ({turns} messaggio/i) è ora nel contesto di questa conversazione.{record}"
+    target_parent_link:    " ({parent})"
+    note_record_suffix:    " · registro completo: `{path}`"
+    md_suffix:             " · registro completo: `{path}`"
+    merged_thread:         "✅ **Reintegrato in _{title}_**{parent} — un riepilogo di questo thread è ora nel contesto del padre e il thread è archiviato (ancora riprendibile).{md}"
+    merged_thread_no_archive: "✅ **Reintegrato in _{title}_**{parent} — un riepilogo di questo thread è ora nel contesto del padre. (Impossibile archiviare il thread automaticamente; puoi chiuderlo manualmente.){md}"
+    merged_named:          "✅ Unito in **{title}** — un riepilogo di questa sessione è ora nel suo contesto.{md}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Altro"
@@ -1515,6 +1541,8 @@ slash:
     description: "Passa questa sessione a una piattaforma di messaggistica (Telegram, Discord, ecc.)"
   branch:
     description: "Crea un ramo della sessione attuale (nuovo thread su Discord/Telegram/Slack/Matrix; --here resta qui)"
+  merge:
+    description: "Unisci un riepilogo di questa sessione in un'altra sessione (thread ramificato o sessione con nome)"
   worktree:
     description: "Mostra, elenca, crea o elimina worktree git isolati"
   compress:

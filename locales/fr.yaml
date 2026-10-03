@@ -1133,6 +1133,32 @@ gateway:
     free_tier_remaining: |2-
 
       Certaines discussions sont encore sur l'offre gratuite ; utilisez /model dans ces discussions pour changer de modèle.
+  merge:
+    no_named_sessions:     "Aucune session nommée dans laquelle fusionner pour l'instant. Nommez d'abord une session avec `/title`."
+    list_header:           "🔀 **Sessions dans lesquelles vous pouvez fusionner** — répondez `/merge <number>` ou `/merge <name>` :"
+    list_footer:           "_`/merge <number>` replie un résumé de CETTE session dans celle choisie._"
+    not_found:             "Aucune session ne correspond à '{name}'. Utilisez `/merge` sans nom pour lister les sessions fusionnables."
+    same_session:          "C'est la session dans laquelle vous êtes déjà — choisissez une autre cible de fusion."
+    blocked_not_owner:     "Vous ne pouvez fusionner que dans vos propres sessions. '{name}' appartient à un autre chat/propriétaire."
+    already_merged:        "Cette session a déjà été fusionnée dans **{title}** — elle ne sera pas repliée à nouveau. (Lancez une nouvelle exploration pour fusionner du contenu inédit.)"
+    no_conversation:       "Rien à fusionner — cette session n'a pas encore de conversation."
+    no_new_turns:          "Rien de nouveau à fusionner — aucun échange n'a eu lieu dans ce fil après le point de branchement."
+    no_summary:            "Impossible de générer un résumé de cette session ; rien n'a été fusionné. Réessayez dans un instant."
+    ledger_failed:         "Impossible d'enregistrer la fusion en toute sécurité (magasin de sessions occupé) — rien n'a été replié. Réessayez dans un instant."
+    fold_body:             "[SESSION FUSIONNÉE — {title}] Le résumé d'une autre session ('{title}') a été replié dans cette conversation. Traitez-le comme contexte de référence :\n\n{summary}"
+    fold_body_thread:      "[FIL DÉRIVÉ FUSIONNÉ — {title}] Un fil dérivé a été exploré puis replié dans cette conversation. Résumé de ce qui s'est passé dans la branche :\n\n{summary}"
+    fold_failed:           "Échec du repli du résumé dans la session cible : {error}"
+    source_marker:         "[FUSIONNÉ — la nouvelle exploration de ce fil a été repliée dans '{target}' le {when}. Vous pouvez continuer ici, mais son résumé se trouve déjà dans cette conversation.]"
+    source_marker_named:   "[FUSIONNÉ — un résumé de cette session a été replié dans '{target}' le {when}. Vous pouvez continuer ici, mais son résumé se trouve déjà dans cette conversation.]"
+    source_thread_link:    " ({thread})"
+    target_note:           "🔀 **Replié depuis _{source}_**{child} — un résumé de {turns} message(s) est désormais dans le contexte de cette conversation.{record}"
+    target_note_named:     "🔀 **Replié depuis _{source}_** — un résumé de _{source}_ ({turns} message(s)) est désormais dans le contexte de cette conversation.{record}"
+    target_parent_link:    " ({parent})"
+    note_record_suffix:    " · enregistrement complet : `{path}`"
+    md_suffix:             " · enregistrement complet : `{path}`"
+    merged_thread:         "✅ **Replié dans _{title}_**{parent} — un résumé de ce fil est désormais dans le contexte du parent, et ce fil est archivé (toujours reprenable).{md}"
+    merged_thread_no_archive: "✅ **Replié dans _{title}_**{parent} — un résumé de ce fil est désormais dans le contexte du parent. (Impossible d'archiver le fil automatiquement ; vous pouvez le fermer manuellement.){md}"
+    merged_named:          "✅ Fusionné dans **{title}** — un résumé de cette session est désormais dans son contexte.{md}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Autre"
@@ -1767,6 +1793,8 @@ slash:
     description: "Transférer cette session vers une plateforme de messagerie (Telegram, Discord, etc.)"
   branch:
     description: "Créer une branche de la session en cours (nouveau fil sur Discord/Telegram/Slack/Matrix ; --here reste ici)"
+  merge:
+    description: "Fusionner un résumé de cette session dans une autre session (fil de branche ou session nommée)"
   worktree:
     description: "Afficher, lister, créer ou nettoyer des worktrees git isolés"
   compress:

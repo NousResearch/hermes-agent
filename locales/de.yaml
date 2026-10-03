@@ -942,6 +942,32 @@ gateway:
     hint: "Laden Sie Guthaben auf und verwalten Sie die Abrechnung im Browser — Ihr Guthaben wird hier anschließend aktualisiert."
   login:
     free_tier_remaining: "\nEinige Chats sind noch auf der kostenlosen Stufe; verwenden Sie /model in diesen Chats zum Wechseln."
+  merge:
+    no_named_sessions:     "Noch keine benannten Sitzungen zum Zusammenführen. Gib einer Sitzung zuerst mit `/title` einen Namen."
+    list_header:           "🔀 **Sitzungen, in die du zusammenführen kannst** — antworte mit `/merge <number>` oder `/merge <name>`:"
+    list_footer:           "_`/merge <number>` fügt eine Zusammenfassung DIESER Sitzung in jene ein._"
+    not_found:             "Keine Sitzung gefunden, die zu '{name}' passt. Nutze `/merge` ohne Namen, um zusammenführbare Sitzungen aufzulisten."
+    same_session:          "Das ist die Sitzung, in der du dich bereits befindest — wähle ein anderes Ziel zum Zusammenführen."
+    blocked_not_owner:     "Du kannst nur in Sitzungen zusammenführen, die dir gehören. '{name}' gehört zu einem anderen Chat/Besitzer."
+    already_merged:        "Diese Sitzung wurde bereits in **{title}** zusammengeführt — sie wird nicht erneut eingefügt. (Starte eine neue Erkundung, um neues Material zusammenzuführen.)"
+    no_conversation:       "Nichts zum Zusammenführen — diese Sitzung hat noch keine Unterhaltung."
+    no_new_turns:          "Nichts Neues zum Zusammenführen — nach dem Verzweigungspunkt gab es in diesem Thread keine Beiträge."
+    no_summary:            "Es konnte keine Zusammenfassung dieser Sitzung erstellt werden; nichts wurde zusammengeführt. Versuche es gleich noch einmal."
+    ledger_failed:         "Die Zusammenführung konnte nicht sicher protokolliert werden (Sitzungsspeicher ausgelastet) — nichts wurde eingefügt. Versuche es gleich noch einmal."
+    fold_body:             "[ZUSAMMENGEFÜHRTE SITZUNG — {title}] Eine Zusammenfassung einer anderen Sitzung ('{title}') wurde in diese Unterhaltung eingefügt. Behandle sie als Referenzkontext:\n\n{summary}"
+    fold_body_thread:      "[VERZWEIGTER THREAD ZUSAMMENGEFÜHRT — {title}] Ein verzweigter Thread wurde erkundet und zurück in diese Unterhaltung eingefügt. Zusammenfassung dessen, was im Zweig passiert ist:\n\n{summary}"
+    fold_failed:           "Die Zusammenfassung konnte nicht in die Zielsitzung eingefügt werden: {error}"
+    source_marker:         "[ZUSAMMENGEFÜHRT — die neue Erkundung dieses Threads wurde am {when} in '{target}' eingefügt. Du kannst hier weitermachen, aber die Zusammenfassung liegt bereits in jener Unterhaltung.]"
+    source_marker_named:   "[ZUSAMMENGEFÜHRT — eine Zusammenfassung dieser Sitzung wurde am {when} in '{target}' eingefügt. Du kannst hier weitermachen, aber die Zusammenfassung liegt bereits in jener Unterhaltung.]"
+    source_thread_link:    " ({thread})"
+    target_note:           "🔀 **Eingefügt aus _{source}_**{child} — eine Zusammenfassung von {turns} Nachricht(en) ist jetzt im Kontext dieser Unterhaltung.{record}"
+    target_note_named:     "🔀 **Eingefügt aus _{source}_** — eine Zusammenfassung von _{source}_ ({turns} Nachricht(en)) ist jetzt im Kontext dieser Unterhaltung.{record}"
+    target_parent_link:    " ({parent})"
+    note_record_suffix:    " · vollständiger Datensatz: `{path}`"
+    md_suffix:             " · vollständiger Datensatz: `{path}`"
+    merged_thread:         "✅ **Zurück in _{title}_ eingefügt**{parent} — eine Zusammenfassung dieses Threads ist jetzt im Kontext der übergeordneten Unterhaltung, und dieser Thread ist archiviert (weiterhin fortsetzbar).{md}"
+    merged_thread_no_archive: "✅ **Zurück in _{title}_ eingefügt**{parent} — eine Zusammenfassung dieses Threads ist jetzt im Kontext der übergeordneten Unterhaltung. (Der Thread konnte nicht automatisch archiviert werden; du kannst ihn manuell schließen.){md}"
+    merged_named:          "✅ In **{title}** zusammengeführt — eine Zusammenfassung dieser Sitzung ist jetzt in deren Kontext.{md}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Sonstiges"
@@ -1515,6 +1541,8 @@ slash:
     description: "Diese Sitzung an eine Messaging-Plattform übergeben (Telegram, Discord usw.)"
   branch:
     description: "Aktuelle Sitzung verzweigen (neuer Thread auf Discord/Telegram/Slack/Matrix; --here bleibt hier)"
+  merge:
+    description: "Eine Zusammenfassung dieser Sitzung in eine andere Sitzung einfügen (verzweigter Thread oder benannte Sitzung)"
   worktree:
     description: "Isolierte Git-Worktrees anzeigen, auflisten, erstellen oder bereinigen"
   compress:

@@ -942,6 +942,32 @@ gateway:
     hint: "Recarga y gestiona la facturación en el navegador — tu saldo se actualizará aquí después."
   login:
     free_tier_remaining: "\nAlgunos chats siguen en el nivel gratuito; usa /model en esos chats para cambiar."
+  merge:
+    no_named_sessions:     "Aún no hay sesiones con título en las que fusionar. Primero dale un nombre a una sesión con `/title`."
+    list_header:           "🔀 **Sesiones en las que puedes fusionar** — responde `/merge <number>` o `/merge <name>`:"
+    list_footer:           "_`/merge <number>` integra un resumen de ESTA sesión en esa._"
+    not_found:             "No se encontró ninguna sesión que coincida con '{name}'. Usa `/merge` sin nombre para listar las sesiones fusionables."
+    same_session:          "Esa es la sesión en la que ya estás — elige otro destino para fusionar."
+    blocked_not_owner:     "Solo puedes fusionar en sesiones que te pertenecen. '{name}' pertenece a otro chat/propietario."
+    already_merged:        "Esta sesión ya se fusionó en **{title}** — no se integrará de nuevo. (Inicia una nueva exploración para fusionar material nuevo.)"
+    no_conversation:       "No hay nada que fusionar — esta sesión aún no tiene conversación."
+    no_new_turns:          "No hay nada nuevo que fusionar — no hubo turnos en este hilo después del punto de ramificación."
+    no_summary:            "No se pudo generar un resumen de esta sesión; no se fusionó nada. Inténtalo de nuevo en un momento."
+    ledger_failed:         "No se pudo registrar la fusión de forma segura (el almacén de sesiones está ocupado) — no se integró nada. Inténtalo de nuevo en un momento."
+    fold_body:             "[SESIÓN FUSIONADA — {title}] Se integró en esta conversación un resumen de otra sesión ('{title}'). Trátalo como contexto de referencia:\n\n{summary}"
+    fold_body_thread:      "[HILO RAMIFICADO FUSIONADO — {title}] Se exploró un hilo ramificado y se integró de vuelta en esta conversación. Resumen de lo que ocurrió en la rama:\n\n{summary}"
+    fold_failed:           "No se pudo integrar el resumen en la sesión de destino: {error}"
+    source_marker:         "[FUSIONADO — la nueva exploración de este hilo se integró en '{target}' el {when}. Puedes continuar aquí, pero su resumen ya vive en esa conversación.]"
+    source_marker_named:   "[FUSIONADO — un resumen de esta sesión se integró en '{target}' el {when}. Puedes continuar aquí, pero su resumen ya vive en esa conversación.]"
+    source_thread_link:    " ({thread})"
+    target_note:           "🔀 **Integrado desde _{source}_**{child} — un resumen de {turns} mensaje(s) ya está en el contexto de esta conversación.{record}"
+    target_note_named:     "🔀 **Integrado desde _{source}_** — un resumen de _{source}_ ({turns} mensaje(s)) ya está en el contexto de esta conversación.{record}"
+    target_parent_link:    " ({parent})"
+    note_record_suffix:    " · registro completo: `{path}`"
+    md_suffix:             " · registro completo: `{path}`"
+    merged_thread:         "✅ **Integrado de vuelta en _{title}_**{parent} — un resumen de este hilo ya está en el contexto de la conversación principal, y este hilo está archivado (aún se puede reanudar).{md}"
+    merged_thread_no_archive: "✅ **Integrado de vuelta en _{title}_**{parent} — un resumen de este hilo ya está en el contexto de la conversación principal. (No se pudo archivar el hilo automáticamente; puedes cerrarlo manualmente.){md}"
+    merged_named:          "✅ Fusionado en **{title}** — un resumen de esta sesión ya está en su contexto.{md}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Otra"
@@ -1515,6 +1541,8 @@ slash:
     description: "Transferir esta sesión a una plataforma de mensajería (Telegram, Discord, etc.)"
   branch:
     description: "Ramificar la sesión actual (nuevo hilo en Discord/Telegram/Slack/Matrix; --here se queda aquí)"
+  merge:
+    description: "Fusionar un resumen de esta sesión en otra sesión (hilo ramificado o una sesión con nombre)"
   worktree:
     description: "Mostrar, listar, crear o limpiar worktrees aislados de git"
   compress:

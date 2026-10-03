@@ -942,6 +942,32 @@ gateway:
     hint: "在浏览器中充值并管理账单——之后余额会在此处更新。"
   login:
     free_tier_remaining: "\n部分聊天仍在使用免费套餐；请在那些聊天中用 /model 切换。"
+  merge:
+    no_named_sessions:     "暂无可合并的已命名会话。请先用 `/title` 为会话命名。"
+    list_header:           "🔀 **可合并到的会话** — 回复 `/merge <number>` 或 `/merge <name>`："
+    list_footer:           "_`/merge <number>` 会将本会话的摘要合并到该会话中。_"
+    not_found:             "未找到与 '{name}' 匹配的会话。不带名称执行 `/merge` 可列出可合并的会话。"
+    same_session:          "这就是你当前所在的会话 — 请选择其他目标进行合并。"
+    blocked_not_owner:     "只能合并到你拥有的会话。'{name}' 属于其他聊天/所有者。"
+    already_merged:        "本会话已合并到 **{title}** — 不会重复合并。（如需合并新内容，请开始新的探索。）"
+    no_conversation:       "无内容可合并 — 本会话尚无对话。"
+    no_new_turns:          "没有新内容可合并 — 分支点之后本子区没有产生消息。"
+    no_summary:            "无法生成本会话的摘要；未合并任何内容。请稍后重试。"
+    ledger_failed:         "无法安全记录本次合并（会话存储繁忙）— 未合并任何内容。请稍后重试。"
+    fold_body:             "[已合并的会话 — {title}] 另一个会话（'{title}'）的摘要已合并到本对话中。请将其视为参考上下文：\n\n{summary}"
+    fold_body_thread:      "[分支子区已合并 — {title}] 一个分支子区已完成探索并合并回本对话。该分支中的内容摘要：\n\n{summary}"
+    fold_failed:           "未能将摘要合并到目标会话：{error}"
+    source_marker:         "[已合并 — 本子区的新探索已于 {when} 合并到 '{target}'。你仍可在此继续，但其摘要已存在于该对话中。]"
+    source_marker_named:   "[已合并 — 本会话的摘要已于 {when} 合并到 '{target}'。你仍可在此继续，但其摘要已存在于该对话中。]"
+    source_thread_link:    " ({thread})"
+    target_note:           "🔀 **已从 _{source}_ 合并**{child} — {turns} 条消息的摘要现已进入本对话的上下文。{record}"
+    target_note_named:     "🔀 **已从 _{source}_ 合并** — _{source}_（{turns} 条消息）的摘要现已进入本对话的上下文。{record}"
+    target_parent_link:    " ({parent})"
+    note_record_suffix:    " · 完整记录：`{path}`"
+    md_suffix:             " · 完整记录：`{path}`"
+    merged_thread:         "✅ **已合并回 _{title}_**{parent} — 本子区的摘要已进入父对话的上下文，且本子区已归档（仍可恢复）。{md}"
+    merged_thread_no_archive: "✅ **已合并回 _{title}_**{parent} — 本子区的摘要已进入父对话的上下文。（无法自动归档该子区；你可以手动关闭。）{md}"
+    merged_named:          "✅ 已合并到 **{title}** — 本会话的摘要现已进入其上下文。{md}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ 其他"
@@ -1515,6 +1541,8 @@ slash:
     description: "将此会话移交到消息平台（Telegram、Discord 等）"
   branch:
     description: "从当前会话分支（在 Discord/Telegram/Slack/Matrix 上新建话题；--here 留在当前位置）"
+  merge:
+    description: "将此会话的摘要合并到另一个会话（分支话题或已命名会话）"
   worktree:
     description: "显示、列出、创建或清理隔离的 git worktree"
   compress:

@@ -1834,6 +1834,17 @@ class TestCodexTransportXaiServiceTierStrip:
 
         assert kw.get("service_tier") == "priority"
 
+    def test_grok_47_preserves_priority_service_tier(self, transport):
+        kw = transport.build_kwargs(
+            model="x-ai/grok-4.7-latest",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            request_overrides={"service_tier": "priority"},
+        )
+
+        assert kw.get("service_tier") == "priority"
+
     def test_grok_46_strips_non_priority_service_tier(self, transport):
         kw = transport.build_kwargs(
             model="grok-4.6",

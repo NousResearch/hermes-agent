@@ -411,6 +411,12 @@ def is_anthropic_fast_mode_model(model: Optional[str]) -> bool:
     return re.sub(r"-\d{8}$", "", name) in _ANTHROPIC_FAST_MODE_MODELS
 
 
+def grok_supports_priority_processing(model: str) -> bool:
+    """Whether *model* accepts xAI Priority Processing (Grok 4.6 and 4.7)."""
+    name = (model or "").strip().lower().replace("_", "-").rsplit("/", 1)[-1]
+    return any(name == family or name.startswith(f"{family}-") for family in ("grok-4.6", "grok-4.7"))
+
+
 _CONTEXT_LENGTH_KEYS = (
     "context_length", "context_window", "context_size", "max_context_length", "max_position_embeddings",
     "max_model_len", "max_input_tokens", "max_sequence_length", "max_seq_len", "n_ctx_train", "n_ctx", "ctx_size",

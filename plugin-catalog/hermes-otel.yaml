@@ -1,6 +1,6 @@
 name: hermes-otel
 repo: https://github.com/briancaffey/hermes-otel
-sha: "18313bde815d4dc6ab238e982c6aa86a63a512f8"
+sha: "d234865b13e997e0b3a50dc18aaad7c7d7b1b1fe"
 subdir: hermes_otel
 description: 'OpenTelemetry for Hermes Agent: sessions, LLM and API calls, tool calls, sub-agents and
   approvals as OTLP traces, metrics and logs to any OTLP backend. Disclosure — sends span data, including
@@ -13,8 +13,8 @@ tier: community
 category: general
 requires_hermes: ">=0.21"
 docs_url: https://briancaffey.github.io/hermes-otel/
-version: "1.18.1"
-image: https://raw.githubusercontent.com/briancaffey/hermes-otel/18313bde815d4dc6ab238e982c6aa86a63a512f8/docs/catalog-banner.png
+version: "1.18.2"
+image: https://raw.githubusercontent.com/briancaffey/hermes-otel/d234865b13e997e0b3a50dc18aaad7c7d7b1b1fe/docs/catalog-banner.png
 capabilities:
   provides_tools: []
   provides_hooks:

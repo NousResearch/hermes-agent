@@ -97,3 +97,30 @@ class TestGatewayCommandWSLMessages:
         out = capsys.readouterr().out
         assert "WSL detected" in out
         assert "hermes gateway run" in out
+
+def test_wsl_interop_paths_treat_unreadable_parent_as_absent(monkeypatch):
+    """#128255: Path.exists() re-raises PermissionError on 3.11/3.12 when a fixed
+    candidate sits under an unreadable /mnt/c, aborting gateway install/start/status.
+    Unreadable candidates must be treated as absent instead."""
+    import os
+    from pathlib import Path
+    from hermes_cli import gateway
+
+    monkeypatch.setattr(gateway, "is_wsl", lambda: True)
+    monkeypatch.setattr(os.environ, "get", lambda k, d="": "/mnt/d/tools" if k == "PATH" else d)
+    monkeypatch.setattr(gateway.shutil, "which", lambda _exe: None)
+
+    real_exists = Path.exists
+
+    def denying_exists(self):
+        if str(self).startswith("/mnt/c"):
+            raise PermissionError(13, "Permission denied")
+        return real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", denying_exists)
+
+    # Must not raise: the fixed /mnt/c/... candidates hit PermissionError inside
+    # Path.exists() and must be treated as absent, not fatal. The PATH-derived
+    # entry survives (it is never existence-checked).
+    result = gateway._build_wsl_interop_paths([])
+    assert result == ["/mnt/d/tools"]

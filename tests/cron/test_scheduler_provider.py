@@ -9,7 +9,7 @@ CronScheduler provider interface.
 
 No production code is exercised beyond the two ticker entry points:
   - gateway/run.py::_start_cron_ticker        (production gateway ticker)
-  - hermes_cli/web_server.py::_start_desktop_cron_ticker  (desktop fallback)
+  - hermes_cli/web_server_lifespan.py::_start_desktop_cron_ticker  (desktop fallback)
 
 Both call `cron.scheduler.tick(...)` on a loop and exit when their stop_event
 is set. We patch `cron.scheduler.tick` (both tickers import it locally as
@@ -75,7 +75,7 @@ def test_desktop_ticker_calls_tick_then_stops():
     """The desktop dashboard ticker loop calls cron.scheduler.tick and exits
     once the stop_event is set. Desktop has no live adapters, so it ticks with
     no adapters/loop."""
-    from hermes_cli.web_server import _start_desktop_cron_ticker
+    from hermes_cli.web_server_lifespan import _start_desktop_cron_ticker
 
     calls = []
     stop = threading.Event()

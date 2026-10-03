@@ -542,6 +542,7 @@
     --composer-width: 100%;
     --composer-control-size: 1.5rem;
     --composer-control-primary-size: 1.625rem;
+    --composer-voice-menu-size: 1.25rem;
     --composer-control-gap: 0.25rem;
     --composer-row-gap: 0.25rem;
     --composer-ring-strength: 1;
@@ -832,6 +833,18 @@
   *::selection {
     background: var(--ui-selection-background);
     color: inherit;
+  }
+}
+
+/* Touch surfaces need a real finger-sized control lane. Keep desktop's
+   compact 24/26px rhythm, but promote the same composer actions to the 44px
+   minimum recommended for coarse pointers without adding a second
+   mobile-only component. */
+@media (hover: none), (pointer: coarse) {
+  :root {
+    --composer-control-size: 2.75rem;
+    --composer-control-primary-size: 2.75rem;
+    --composer-voice-menu-size: var(--composer-control-size);
   }
 }
 
@@ -1367,6 +1380,9 @@ textarea,
 [contenteditable]:not([contenteditable='false']),
 [data-slot='aui_user-message-root'],
 [data-slot='aui_assistant-message-content'],
+[data-slot='aui_assistant-message-content'] p,
+[data-slot='aui_assistant-message-content'] pre,
+[data-slot='aui_assistant-message-content'] code,
 [data-slot='aui_system-message-root'],
 [data-selectable-text='true'],
 [data-selectable-text='true'] * {
@@ -1387,6 +1403,13 @@ button,
 [data-slot='aui_user-message-root'] [role='button'] {
   -webkit-user-select: text;
   user-select: text;
+}
+
+[data-slot='aui_user-message-root'] [data-slot='aui_user-touch-edit'] {
+  -webkit-user-select: none;
+  user-select: none;
+  min-width: 44px;
+  min-height: 44px;
 }
 
 img,
@@ -2453,6 +2476,45 @@ button[data-slot='aui_msg-reactions']:focus-visible {
 button[data-slot='aui_msg-reactions'] svg {
   width: 0.875rem;
   height: 0.875rem;
+}
+
+/* Hover reveals are useful on desktop, but a coarse pointer needs a stable
+   action lane. Keep the rich desktop row intact and expose a compact Copy +
+   More pair on touch surfaces; the buttons themselves get the 44px hit box
+   while the glyphs retain the existing quiet 14px scale. */
+.aui-message-actions-touch {
+  display: none;
+}
+
+@media (hover: none), (pointer: coarse) {
+  [data-slot='aui_msg-actions'] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  [data-slot='aui_msg-actions'] .aui-message-actions-desktop {
+    display: none;
+  }
+
+  [data-slot='aui_msg-actions'] .aui-message-actions-touch {
+    display: flex;
+  }
+
+  [data-slot='aui_msg-actions'] .aui-message-actions-touch button {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+
+  button[data-slot='aui_msg-reactions'] {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+    opacity: 0.5;
+    pointer-events: auto;
+  }
+
+  button[data-slot='aui_msg-reactions'][data-reacted] {
+    opacity: 1;
+  }
 }
 
 /* Re-declare the clearance calc on every chat surface. `:root` computes it
@@ -3802,6 +3864,22 @@ html[data-hud-window] [data-slot='popover-content'] {
 
 [data-hud-shell] [data-slot='composer-bounds'] *::-webkit-scrollbar {
   display: none;
+}
+
+/* CSS zoom scales viewport units too; browser shells must fit their parent. */
+html[data-hermes-desktop-host='browser'] #root[data-browser-viewport] {
+  position: relative;
+  top: var(--browser-viewport-top);
+  height: var(--browser-viewport-height);
+}
+
+html[data-hermes-desktop-host='browser'] [data-contrib-shell] {
+  width: 100%;
+  height: 100%;
+}
+
+html[data-hermes-desktop-host='browser'] [data-slot='sidebar-container'] {
+  height: 100%;
 }
 
 /* Keep-alive hidden panes (see pane-visibility.ts) hide with `visibility:

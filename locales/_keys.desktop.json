@@ -2127,6 +2127,7 @@
     "preview.web.commentPlaceholder",
     "preview.web.commentTitle",
     "preview.web.commenting",
+    "preview.web.embeddedPreviewHint",
     "preview.web.failedRestarting",
     "preview.web.failedToLoad",
     "preview.web.fallbackTitle",

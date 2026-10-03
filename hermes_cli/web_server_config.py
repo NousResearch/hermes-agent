@@ -91,6 +91,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "Legacy Vercel Sandbox runtime (deprecated by Vercel; a pinned runtime overrides the image; clear to use the image)",
         "node24", "node22", "python3.13", clearable=True),
     "terminal.modal_mode": _select("Modal sandbox mode", "sandbox", "function"),
+    "desktop.theme_mode": _select(
+        "Desktop / Webapp light-dark mode for this profile. Blank = not set (each client keeps its own).",
+        "", "light", "dark", "system",
+    ),
     "proxy.enabled": {
         "type": "boolean",
         "description": (

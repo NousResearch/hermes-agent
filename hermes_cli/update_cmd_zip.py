@@ -27,7 +27,7 @@ _ZIP_PRESERVED_TOP_LEVEL = {"venv", ".venv", "node_modules", ".git", ".env"}
 # its own node_modules (electron itself), and the dashboard assets. The dirty-tree guard admits them and
 # `_stage_entries` grafts the live copies into the staged tree so the swap keeps them (#90495).
 _ZIP_PRESERVED_NESTED = {
-    "apps": ("desktop/release", "desktop/dist", "desktop/node_modules", "desktop/build"),
+    "apps": ("desktop/release", "desktop/dist", "desktop/dist-webapp", "desktop/node_modules", "desktop/build"),
     "hermes_cli": ("web_dist",),
     "scripts": ("whatsapp-bridge/node_modules",),
     "ui-tui": ("dist", "node_modules", "packages/hermes-ink/dist"),

@@ -70,22 +70,32 @@ def describe_holder_pid(pid: int) -> str:
 
 
 def _looks_like_python_executable(program: str) -> bool:
-    name = os.path.basename(program).lower().removesuffix(".exe")
-    for prefix in ("python", "pypy"):
-        if name.startswith(prefix):
-            suffix = name[len(prefix) :]
-            return not suffix or all(char.isdigit() or char == "." for char in suffix)
-    return False
+    """``python``/``pythonw``/``pypy`` (optionally versioned and ``.exe``) under any directory.
+
+    ``pythonw`` is how Windows runs Hermes without a console (gateway launchers, Scheduled Tasks,
+    Desktop backends). Both separators split because ``os.path.basename`` keeps ``\\`` on POSIX,
+    and Windows command lines are classified on every host.
+    """
+    name = program.replace("\\", "/").rsplit("/", 1)[-1].lower().removesuffix(".exe")
+    return any(
+        name.startswith(prefix) and all(char.isdigit() or char == "." for char in name[len(prefix) :])
+        for prefix in ("python", "pythonw", "pypy")
+    )
 
 
-def _python_execution_target(argv: Sequence[str]) -> Optional[Tuple[str, str]]:
-    """Return the Python module or script selected by interpreter options."""
+def _python_execution_target(argv: Sequence[str]) -> Optional[Tuple[str, str, int]]:
+    """``(kind, target, index)`` of the module or script interpreter options select, else ``None``.
+
+    ``kind`` is ``"module"`` or ``"script"``. ``index`` is the argv slot holding the target (the
+    ``-mX`` cluster itself when the module is attached), so the target's own arguments start at
+    ``index + 1``. ``-c`` inline source has no target: its payload is data, not identity.
+    """
     index = 1
     while index < len(argv):
         arg = argv[index]
         if arg == "--":
             index += 1
-            return ("script", argv[index]) if index < len(argv) else None
+            return ("script", argv[index], index) if index < len(argv) else None
         if arg in _PYTHON_LONG_OPTIONS_WITH_OPERANDS:
             index += 2
             continue
@@ -106,16 +116,16 @@ def _python_execution_target(argv: Sequence[str]) -> Optional[Tuple[str, str]]:
                     return None
                 if option == "m":
                     if attached:
-                        return "module", attached
+                        return "module", attached, index
                     index += 1
-                    return ("module", argv[index]) if index < len(argv) else None
+                    return ("module", argv[index], index) if index < len(argv) else None
                 if option in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS:
                     consumed_next = not attached
                     break
                 option_index += 1
             index += 2 if consumed_next else 1
             continue
-        return "script", arg
+        return "script", arg, index
     return None
 
 
@@ -131,7 +141,7 @@ def _looks_like_hermes(argv: Sequence[str]) -> bool:
     target = _python_execution_target(argv)
     if target is None:
         return False
-    kind, value = target
+    kind, value, _index = target
     normalized = value.lower().replace("\\", "/")
     if kind == "module":
         return normalized in _HERMES_PYTHON_MODULES
@@ -368,8 +378,16 @@ def _sqlite_family(base: str) -> Tuple[str, str, str]:
     return (base, base + "-wal", base + "-shm")
 
 
-def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
-    """Return foreign processes using state.db or a WAL sidecar via Windows Restart Manager."""
+# Paths per RmRegisterResources call: a profile tree registers thousands of files.
+_RM_REGISTER_CHUNK = 1000
+
+
+def windows_restart_manager_pids(paths: Sequence[str]) -> List[int]:
+    """PIDs Windows Restart Manager reports holding any of *paths* open; raises OSError on API failure.
+
+    One ``RmGetList`` answers for every registered file at once, so the cost follows the file
+    count rather than the number of processes on the machine.
+    """
     import ctypes
     from ctypes import wintypes
 
@@ -384,21 +402,18 @@ def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
         api.RmStartSession, api.RmRegisterResources, api.RmGetList, api.RmEndSession
     )
 
-    db_abspath = os.path.abspath(os.fspath(db_path))
-    resources = [path for path in _sqlite_family(db_abspath) if os.path.exists(path)]
-    if not resources:
-        return []
-
     session = wintypes.DWORD()
     key = ctypes.create_unicode_buffer(_RM_SESSION_KEY_LEN)
     rc = start(ctypes.byref(session), 0, key)
     if rc:
         raise OSError(rc, "RmStartSession failed")
     try:
-        filenames = (wintypes.LPCWSTR * len(resources))(*resources)
-        rc = register(session, len(resources), filenames, 0, None, 0, None)
-        if rc:
-            raise OSError(rc, "RmRegisterResources failed")
+        for offset in range(0, len(paths), _RM_REGISTER_CHUNK):
+            chunk = paths[offset:offset + _RM_REGISTER_CHUNK]
+            filenames = (wintypes.LPCWSTR * len(chunk))(*chunk)
+            rc = register(session, len(chunk), filenames, 0, None, 0, None)
+            if rc:
+                raise OSError(rc, "RmRegisterResources failed")
 
         # Pass 1 sizes (ERROR_MORE_DATA); the process set can change before the data pass, so retry the
         # bounded race with a re-sized buffer.
@@ -411,17 +426,22 @@ def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
                 apps if needed.value else None, ctypes.byref(reasons),
             )
             if rc == 0:
-                own_pid = os.getpid()
-                return [
-                    (int(apps[index].process.pid), db_abspath)
-                    for index in range(count.value)
-                    if int(apps[index].process.pid) != own_pid
-                ]
+                return [int(apps[index].process.pid) for index in range(count.value)]
             if rc != _RM_ERROR_MORE_DATA:
                 raise OSError(rc, "RmGetList failed")
         raise RuntimeError("Restart Manager holder set kept changing")
     finally:
         end(session)
+
+
+def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
+    """Return foreign processes using state.db or a WAL sidecar via Windows Restart Manager."""
+    db_abspath = os.path.abspath(os.fspath(db_path))
+    resources = [path for path in _sqlite_family(db_abspath) if os.path.exists(path)]
+    if not resources:
+        return []
+    own_pid = os.getpid()
+    return [(pid, db_abspath) for pid in windows_restart_manager_pids(resources) if pid != own_pid]
 
 
 def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:

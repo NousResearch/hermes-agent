@@ -656,7 +656,8 @@ def test_startup_warn_discharged_when_multiplexer_covers_owed_profiles(monkeypat
 
 
 @pytest.mark.parametrize("supervisor", ["desktop", "launchd"])
-def test_startup_warn_discharged_when_inventory_holds_supervised_serve(monkeypatch, capsys, supervisor):
+@pytest.mark.parametrize("kind", ["serve", "dashboard", "webapp"])
+def test_startup_warn_discharged_when_inventory_holds_supervised_serve(monkeypatch, capsys, supervisor, kind):
     """A supervised serve/dashboard row in the marker's inventory is its supervisor's to
     restart (#115090 for receipts, #111494 for the Desktop backend) — it must not make the
     gateway warning permanently undischargeable once every gateway serves the pulled SHA.
@@ -671,7 +672,7 @@ def test_startup_warn_discharged_when_inventory_holds_supervised_serve(monkeypat
         expected_sha=disk_sha,
         runtimes=[
             {"kind": "gateway", "profile": "default", "pid": 42, "supervisor": "systemd"},
-            {"kind": "serve", "profile": "default", "pid": 6161, "supervisor": supervisor,
+            {"kind": kind, "profile": "default", "pid": 6161, "supervisor": supervisor,
              "detail": {"create_time": 1000.0}},
         ],
     )
@@ -689,14 +690,15 @@ def test_startup_warn_discharged_when_inventory_holds_supervised_serve(monkeypat
     assert not update_cmd_fleet._fleet_restart_obligation_armed()
 
 
-def test_startup_warn_kept_when_inventory_holds_unclassified_serve(monkeypatch, capsys):
+@pytest.mark.parametrize("kind", ["serve", "dashboard", "webapp"])
+def test_startup_warn_kept_when_inventory_holds_unclassified_serve(monkeypatch, capsys, kind):
     """Fail-closed stays: a serve row no supervisor owns is still unsettled evidence."""
     disk_sha = "e" * 40
     update_cmd._write_fleet_restart_pending_marker(
         expected_sha=disk_sha,
         runtimes=[
             {"kind": "gateway", "profile": "default", "pid": 42, "supervisor": "systemd"},
-            {"kind": "serve", "profile": "default", "pid": 6161, "supervisor": "manual"},
+            {"kind": kind, "profile": "default", "pid": 6161, "supervisor": "manual"},
         ],
     )
     _patch_marker_sha(monkeypatch, disk_sha)

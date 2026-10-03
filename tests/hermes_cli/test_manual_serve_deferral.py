@@ -13,7 +13,7 @@ from hermes_cli.update_serve_obligations import defer_manual_serve, retain_recei
 from hermes_constants import get_hermes_home
 
 
-@pytest.mark.parametrize("kind", ["serve", "dashboard"])
+@pytest.mark.parametrize("kind", ["serve", "dashboard", "webapp"])
 @pytest.mark.parametrize("condition", ["alive", "unknown", "write-error", "missing-identity", "failed-unit"])
 def test_manual_deferral_survives_receipt_rotation(monkeypatch, capsys, kind, condition):
     runtime = RuntimeRecord(kind=kind, profile="work", pid=900, supervisor="manual-serve", restart_via="respawn-argv", detail={"create_time": 1000.0})
@@ -54,6 +54,7 @@ def test_manual_deferral_survives_receipt_rotation(monkeypatch, capsys, kind, co
     warning = capsys.readouterr().err
     assert f"{kind} [work] pid 900" in warning
     assert "relaunch" in warning
+    assert f"hermes {kind}" in warning
     assert "hermes gateway restart" not in warning
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: None)
     fleet._warn_pending_fleet_restart_on_startup()
@@ -204,7 +205,7 @@ def test_historical_retention_failure_warns_and_survives_rotation(monkeypatch, c
     assert "900" not in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("kind", ["serve", "dashboard"])
+@pytest.mark.parametrize("kind", ["serve", "dashboard", "webapp"])
 @pytest.mark.parametrize("alive", [True, None, False])
 def test_unreadable_create_time_discharges_only_a_proven_dead_pid(monkeypatch, kind, alive):
     """#116507: a row without a readable create_time is discharged once its pid is provably dead,

@@ -7,7 +7,6 @@ import { openStarMapNodeMenuFor } from '@/app/starmap/context-menu-handle'
 import { DROPDOWN_KIT } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
-import { writeClipboardText } from '@/components/ui/copy-button'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,10 +16,13 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { type Translations, useI18n } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
 import { hostPathLabel, hudForcesNativeLinks, normalizeExternalUrl, openExternalLink } from '@/lib/external-link'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { isRemoteGateway } from '@/lib/media'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
+import { isTouchInteraction } from '@/lib/touch-interaction'
 import { openPreview } from '@/store/preview'
 
 import { ShellMenuItems } from './shell-menu-items'
@@ -51,6 +53,12 @@ const EDIT_SHORTCUTS = {
   paste: formatCombo('mod+v'),
   selectAll: formatCombo('mod+a')
 } as const
+
+function isNativeMediaContextMenu(event: MouseEvent): boolean {
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : []
+
+  return [event.target, ...path].some(target => target instanceof HTMLMediaElement)
+}
 
 function isLoopbackUrl(url: string): boolean {
   try {
@@ -545,18 +553,38 @@ export function AppContextMenu() {
   const open = useStore($contextMenu)
 
   useEffect(() => {
-    // stopPropagation beats other renderer handlers; preventDefault is never
-    // called because Chromium emits the main-process context-menu event (the
-    // spellcheck + image-coordinate source) only for unprevented gestures —
-    // and with no Menu.popup anywhere, "default" means no menu at all.
+    // Electron needs unprevented gestures for main-process spellcheck and
+    // image coordinates. Webapp must cancel the browser's native menu when
+    // we own the gesture, or it opens alongside the app menu.
     const onContextMenu = (event: MouseEvent) => {
       const element = event.target instanceof Element ? event.target : null
+
+      // Long-press belongs to the browser/OS, including the interval BEFORE
+      // selection handles exist. Stop pane/row fallback menus without
+      // cancelling the native menu. Explicit app actions live in More.
+      const nativeTouchTarget = element?.closest(
+        '[data-slot="aui_user-message-root"], [data-slot="aui_assistant-message-content"], [data-slot="aui_system-message-root"], [data-selectable-text="true"], input, textarea, [contenteditable]:not([contenteditable="false"]), a[href], img, video, audio'
+      )
+
+      if (isBrowserHostedDesktop() && nativeTouchTarget && isTouchInteraction(event)) {
+        event.stopPropagation()
+
+        return
+      }
 
       const trigger = element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)
 
       // Only the pane-body wrapper is a fallback menu. Explicit row, tab and
       // status-bar menus still own their whole gesture, even inside a pane.
       if (trigger && !trigger.hasAttribute('data-zone-body')) {
+        return
+      }
+
+      // Browser-owned media controls need their native context menu, including
+      // save and picture-in-picture actions. Chromium can retarget a control
+      // hit through the media element's UA shadow tree, so inspect the whole
+      // composed path instead of relying only on event.target.
+      if (isBrowserHostedDesktop() && isNativeMediaContextMenu(event)) {
         return
       }
 
@@ -574,6 +602,10 @@ export function AppContextMenu() {
       const terminal = terminalMenuHandleFor(element)
 
       if (terminal) {
+        if (isBrowserHostedDesktop()) {
+          event.preventDefault()
+        }
+
         event.stopPropagation()
         openTerminalContextMenu(event.clientX, event.clientY, terminal)
 
@@ -603,6 +635,10 @@ export function AppContextMenu() {
       // opens the link menu.
       if (!owned && element?.closest(`[${CONTEXT_MENU_SKIP_ATTR}]`)) {
         return
+      }
+
+      if (isBrowserHostedDesktop()) {
+        event.preventDefault()
       }
 
       event.stopPropagation()

@@ -202,8 +202,16 @@ def get_skills_directory_mount(container_base: str = "/root/.hermes") -> list[Di
 
     Bind mounts follow symlinks, so a dir containing any symlink is replaced by a sanitized
     temp copy (regular files only); symlink-free dirs are returned directly, zero overhead.
+    Generated copies carry their original ``reuse_source`` for stable container identity.
     """
-    return [_mount(_safe_skills_path(d), cp) for d, cp in _skill_dir_roots(container_base)]
+    mounts = []
+    for source, destination in _skill_dir_roots(container_base):
+        safe_source = _safe_skills_path(source)
+        entry = _mount(safe_source, destination)
+        if safe_source != str(source):
+            entry["reuse_source"] = str(source)
+        mounts.append(entry)
+    return mounts
 
 
 def _safe_skills_path(skills_dir: Path) -> str:

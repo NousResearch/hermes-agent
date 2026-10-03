@@ -373,6 +373,37 @@ class TestReasoningOverridesDefaultConfig:
         assert result2 == {"enabled": True, "effort": "low"}
 
 
+class TestMkdirUnderHermesHome:
+    """A named profile deleted after the liveness check must not be rebuilt by the mkdir."""
+
+    @pytest.mark.parametrize("removed", (True, False), ids=("removed", "tombstoned"))
+    def test_delete_landing_after_the_liveness_check_fails_the_mkdir(
+        self, tmp_path, monkeypatch, removed,
+    ):
+        import shutil
+
+        (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+        home = tmp_path / "profiles" / "worker"
+        home.mkdir(parents=True)
+        real_mkdir = Path.mkdir
+
+        def delete_then_mkdir(self, *args, **kwargs):
+            # ``hermes profile delete`` tombstones, then removes the tree; it wins the race here.
+            monkeypatch.setattr(Path, "mkdir", real_mkdir)
+            hermes_constants.mark_named_profile_deleted(home)
+            if removed:
+                shutil.rmtree(home)
+            return real_mkdir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", delete_then_mkdir)
+        with pytest.raises(FileNotFoundError):
+            hermes_constants.mkdir_under_hermes_home(home / "logs" / "curator")
+
+        assert Path.mkdir is real_mkdir, "the delete must land inside mkdir_under_hermes_home"
+        if removed:
+            assert not home.exists()
+
+
 class TestSecureParentDir:
     """Tests for secure_parent_dir() — prevents chmod on / or top-level dirs."""
 

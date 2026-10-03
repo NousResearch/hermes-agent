@@ -29,7 +29,7 @@ def _args(**over):
         "no_open": True,
         "open_profile": None,
         "skip_build": False,
-        "headless_backend": False,
+        "ui_surface": "dashboard",
         "tui": False,
     }
     base.update(over)
@@ -150,7 +150,7 @@ def test_desktop_child_dashboard_drops_packaged_renderer(main_mod, monkeypatch):
     monkeypatch.setenv("HERMES_WEB_DIST", packaged)
     monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
 
-    main_mod._dashboard_sanitize_desktop_env(headless_backend=False)
+    main_mod._dashboard_sanitize_desktop_env(headless=False)
 
     assert "HERMES_WEB_DIST" not in os.environ
     assert "HERMES_SERVE_HEADLESS" not in os.environ
@@ -162,7 +162,7 @@ def test_desktop_headless_serve_keeps_packaged_renderer(main_mod, monkeypatch):
     monkeypatch.setenv("HERMES_DESKTOP", "1")
     monkeypatch.setenv("HERMES_WEB_DIST", packaged)
 
-    main_mod._dashboard_sanitize_desktop_env(headless_backend=True)
+    main_mod._dashboard_sanitize_desktop_env(headless=True)
 
     assert os.environ["HERMES_WEB_DIST"] == packaged
 
@@ -176,6 +176,6 @@ def test_desktop_owned_fallback_dashboard_keeps_packaged_renderer(main_mod, monk
     monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
     monkeypatch.setenv("HERMES_WEB_DIST", packaged)
 
-    main_mod._dashboard_sanitize_desktop_env(headless_backend=False)
+    main_mod._dashboard_sanitize_desktop_env(headless=False)
 
     assert os.environ["HERMES_WEB_DIST"] == packaged

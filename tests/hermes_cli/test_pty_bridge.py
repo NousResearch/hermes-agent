@@ -13,6 +13,7 @@ import select
 import shutil
 import signal
 import sys
+import threading
 import time
 
 import pytest
@@ -77,6 +78,7 @@ class TestPtyBridgeIO:
         bridge = PtyBridge.__new__(PtyBridge)
         bridge._fd = 123
         bridge._closed = False
+        bridge._fd_lock = threading.Lock()
         wait_started = asyncio.Event()
         release_write = asyncio.Event()
         write_calls = 0
@@ -120,6 +122,7 @@ class TestPtyBridgeIO:
         bridge = PtyBridge.__new__(PtyBridge)
         bridge._fd = 123
         bridge._closed = False
+        bridge._fd_lock = threading.Lock()
 
         def fake_write(_fd, _data):
             raise BlockingIOError(errno.EAGAIN, "buffer full")
@@ -273,6 +276,7 @@ class TestPtyBridgeClose:
         bridge._fd = -1
         bridge._pgid = 67890
         bridge._closed = False
+        bridge._fd_lock = threading.Lock()
 
         bridge.close()
 

@@ -12,6 +12,7 @@ import {
   disposeSecondariesForConnection,
   liveSecondaryConnectionIds,
   openGatewayForAgent,
+  parkSecondariesForRetiredBackend,
   pruneSecondaryGateways,
   SECONDARY_MIN_LIFETIME_MS,
   setPrimaryGateway,
@@ -169,6 +170,54 @@ afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+})
+
+it.each(['close', 'remove', 'prune'] as const)('%s fully disposes a parked route with a turn lease', async cleanup => {
+  const localOwner = { ...owner, connectionId: 'local', mode: 'local' as const }
+  vi.mocked(window.hermesDesktop.getConnectionFor!).mockResolvedValue({
+    ...localOwner,
+    isFullscreen: false,
+    nativeOverlayWidth: 0,
+    logs: [],
+    windowButtonPosition: null,
+    authMode: 'token',
+    token: 'test-only',
+    wsUrl: remoteUrl,
+    baseUrl: 'https://h2-remote.invalid'
+  })
+  const submitted = requestForSessionProfile(localOwner, ambient, 'prompt.submit', { session_id: sessionId })
+  await vi.advanceTimersByTimeAsync(10)
+  await submitted
+  const socket = sockets.find(socket => socket.url === remoteUrl)!
+  const close = vi.spyOn(HermesGateway.prototype, 'close')
+  expect(socket.readyState).toBe(NetworkSocket.OPEN)
+  expect(parkSecondariesForRetiredBackend(localOwner.profile)).toEqual(['conn:local::research'])
+
+  if (cleanup === 'close') {
+    closeSecondaryGateways()
+  } else if (cleanup === 'remove') {
+    disposeSecondariesForConnection(localOwner.connectionId)
+  } else {
+    await vi.advanceTimersByTimeAsync(SECONDARY_MIN_LIFETIME_MS + 1)
+    pruneSecondaryGateways(new Set())
+  }
+
+  await vi.advanceTimersByTimeAsync(10)
+  expect.soft(socket.readyState).toBe(NetworkSocket.CLOSED)
+  expect.soft(close).toHaveBeenCalledTimes(1) // Turn-lease release can re-enter disposal.
+  expect(liveSecondaryConnectionIds()).toEqual(new Set())
+  onEvent.mockClear()
+  // Even an already queued browser message cannot reach the retired route.
+  socket.dispatchEvent(new MessageEvent('message', {
+    data: JSON.stringify({ jsonrpc: '2.0', method: 'event', params: {
+      type: 'message.delta', session_id: sessionId, payload: { text: 'late event' }
+    } })
+  }))
+  expect(onEvent).not.toHaveBeenCalled()
+  closeSecondaryGateways()
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(close).toHaveBeenCalledTimes(1)
+  expect(sockets.filter(candidate => candidate.url === remoteUrl)).toEqual([socket])
 })
 
 describe('background remote turn reconnect', () => {

@@ -29,8 +29,8 @@ from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 from hermes_cli.dashboard_auth.refresh_singleflight import refresh_session_coalesced
 from hermes_cli.dashboard_auth.request_utils import (
     access_token_max_age as _expires_in_seconds, client_ip as _client_ip,
-    extract_bearer as _extract_bearer, is_safe_next_path, scan_session_providers,
-    unreachable_response)
+    cookie_origin_is_allowed, extract_bearer as _extract_bearer, is_safe_next_path,
+    scan_session_providers, unreachable_response)
 
 _log = logging.getLogger(__name__)
 
@@ -157,7 +157,12 @@ async def gated_auth_middleware(
         return await call_next(request)
     # Already authenticated by the token-auth seam (service caller on a registered token
     # route): not a cookie session, must not bounce to /login.
-    if getattr(request.state, "token_authenticated", False) or _path_is_public(request.url.path):
+    if getattr(request.state, "token_authenticated", False):
+        return await call_next(request)
+    # Login/callback routes have their own credentials/state checks. Logout
+    # is public so an expired session can leave, but still consumes cookies.
+    cookie_logout = request.url.path == "/auth/logout"
+    if _path_is_public(request.url.path) and not cookie_logout:
         return await call_next(request)
     # RFC 8252 native-app bearer path: the same provider-minted access token the cookie flow
     # stores, verified with the same provider stack, no cookie read or set. A presented-but-
@@ -165,6 +170,8 @@ async def gated_auth_middleware(
     # following a cookie redirect.
     bearer = _extract_bearer(request)
     if bearer:
+        if cookie_logout:
+            return await call_next(request)
         try:
             bearer_session = _verify_access_token(request, access_token=bearer, audit=False)
         except ProviderError as e:
@@ -176,10 +183,17 @@ async def gated_auth_middleware(
 
     at, _rt = read_session_cookies(request)
     provider_hint = read_session_provider(request)
+    if (at or _rt) and request.method not in {"GET", "HEAD", "OPTIONS", "TRACE"} and not cookie_origin_is_allowed(request):
+        return JSONResponse(status_code=403, content={
+            "detail": "Cookie-authenticated writes must come from the dashboard's own origin. "
+                      "Behind a reverse proxy, set dashboard.public_url to the URL the browser uses."})
+    if cookie_logout:
+        return await call_next(request)
     if not at and not _rt:
         # No session at all: try the silent portal bounce before /login.
         auto = _auto_sso_response(request)
         return auto if auto is not None else _unauth_response(request, reason="no_cookie")
+
     # An absent AT with a present RT is the COMMON expiry case (the AT cookie's Max-Age tracks
     # the token TTL, so the browser evicts it first) — skip straight to refresh.
     session = None

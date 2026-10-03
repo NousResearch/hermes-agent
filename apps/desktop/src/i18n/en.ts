@@ -4884,6 +4884,7 @@ export const en: Translations = {
       sentMessage: count => `${count} log entr${count === 1 ? 'y' : 'ies'} added to composer`
     },
     web: {
+      embeddedPreviewHint: 'Some sites block embedded previews. Open the original page in a browser tab.',
       appFailedToBoot: 'Preview app failed to boot',
       serverNotFound: 'Server not found',
       remoteLoopback:
@@ -5000,7 +5001,7 @@ export const en: Translations = {
     saveApply: 'Save & apply',
     notExpressible: 'this arrangement interlocks (pinwheel) — not expressible as nested splits yet',
     zoneCount: count => `${count} zones`,
-    tabCount: count => `${count} tabs`
+    tabCount: count => `${count} tab${count === 1 ? '' : 's'}`
   },
 
   contextMenu: {

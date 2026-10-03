@@ -91,7 +91,7 @@ declare global {
       ) => Promise<{ ok: boolean; error?: string }>
       // Resume this session in the user's own terminal emulator (`hermes --tui
       // --resume <id>`) — the external terminal, not the in-app pane.
-      openSessionInTerminal: (
+      openSessionInTerminal?: (
         sessionId: string,
         opts?: { cwd?: string; profile?: string }
       ) => Promise<{ ok: boolean; error?: string }>
@@ -102,7 +102,7 @@ declare global {
       // Pop the in-app Browser (webview + address bar) into its own OS window.
       // `tabId` is the `$previewTabs` id; closing the window fires
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
-      openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+      openBrowserWindow?: (tabId: string) => Promise<{ ok: boolean; error?: string }>
       // Cross-window renderer relay (pop-out Browser ↔ chat windows). Electron
       // main relays opaque payloads to the other Hermes renderer windows;
       // renderer code keeps the destination exact and rejects anything not
@@ -111,7 +111,7 @@ declare global {
         send: (payload: unknown) => void
         onMessage: (callback: (payload: unknown) => void) => () => void
       }
-      onBrowserPopoutClosed: (callback: (tabId: string) => void) => () => void
+      onBrowserPopoutClosed?: (callback: (tabId: string) => void) => () => void
       // Claim a one-shot cross-window ambient cue (turn-end sound / spoken
       // reply). Resolves true for the first window to claim a key, false for
       // peers — so N open windows don't all fire the same cue.
@@ -136,7 +136,7 @@ declare global {
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
-      petOverlay: {
+      petOverlay?: {
         open: (request: PetOverlayOpenRequest) => Promise<{ ok: boolean; bounds?: PetOverlayBounds }>
         close: () => Promise<{ ok: boolean }>
         setBounds: (bounds: PetOverlayBounds) => void
@@ -183,7 +183,7 @@ declare global {
       // shortcut registration + the persisted preference (it must restore the
       // shortcut on a cold launch without the renderer visiting Settings), so
       // the renderer reads/writes it here and adopts the authoritative reply.
-      quickEntry: {
+      quickEntry?: {
         getSettings: () => Promise<QuickEntryStatus>
         // Returns the resulting state — including `registered: false` +
         // `error: 'taken'` when another app already owns the chord, so a failed
@@ -223,11 +223,11 @@ declare global {
       // Opt-in OS-keychain encryption for stored gateway secrets (default
       // off). `get` never touches the OS keychain; `set` re-encodes stored
       // secrets and can throw when the keychain is unusable.
-      getSecretStorageEncryption: () => Promise<{ on: boolean }>
-      setSecretStorageEncryption: (on: boolean) => Promise<{ on: boolean }>
+      getSecretStorageEncryption?: () => Promise<{ on: boolean }>
+      setSecretStorageEncryption?: (on: boolean) => Promise<{ on: boolean }>
       // v2 multi-connection registry: named agent sources, all persisted
       // together (local + any number of remote/cloud/ssh instances).
-      connections: {
+      connections?: {
         list: () => Promise<DesktopConnectionsRegistry>
         save: (
           payload: DesktopRegistryConnectionInput
@@ -337,6 +337,12 @@ declare global {
         path?: string
         saved: boolean
       }>
+      /** Browser media elements need an authenticated HTTP source, not Electron's custom protocol. */
+      getGatewayFileStreamUrl?: (payload: {
+        connectionId?: null | string
+        path: string
+        profile?: null | string
+      }) => Promise<string>
       saveImageFromUrl: (url: string) => Promise<boolean>
       /** Edit verb against the window's focused element (the custom context
        *  menu's Cut/Copy/Paste/Select all). */
@@ -364,6 +370,13 @@ declare global {
       savePastedText: (text: string) => Promise<string>
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
+      /** Browser-hosted drag/drop stages File bytes in authenticated,
+       *  profile-scoped host storage. Native shells already expose real paths. */
+      stageFileForAttach?: (file: File) => Promise<string>
+      /** Source ownership returned when this browser stages a file on its host. */
+      getStagedFileForAttach?: (path: string) => HermesStagedUpload | undefined
+      /** Browser-picked display name; never replaces the host path or source identity. */
+      getStagedFileDisplayName?: (path: string) => string | undefined
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
       /** Resolves to `HermesReadFileErrorResult` when the watched file was
        *  already gone at call time (a restored tab probing a deleted path) —
@@ -544,11 +557,22 @@ declare global {
          *  only; null on Windows or when unavailable). Used to reopen a tab
          *  where the user last `cd`'d. */
         cwd: (id: string) => Promise<string | null>
+        /** Explicit close: terminate the shell, including a disconnected attachment. */
         dispose: (id: string) => Promise<boolean>
-        onData: (id: string, callback: (payload: string) => void) => () => void
+        /** Browser cleanup releases the viewer without terminating its shell. */
+        detach?: (id: string) => Promise<boolean>
+        closeSaved?: (restoreKey: string) => Promise<boolean>
+        onState?: (id: string, callback: (state: HermesTerminalState) => void) => () => void
+        onData: (id: string, callback: (payload: string, options?: { replay: boolean }) => void) => () => void
         onExit: (id: string, callback: (payload: HermesTerminalExit) => void) => () => void
         resize: (id: string, size: { cols: number; rows: number }) => Promise<boolean>
-        start: (options?: { cols?: number; cwd?: string; rows?: number }) => Promise<HermesTerminalSession>
+        start: (options?: {
+          cols?: number
+          cwd?: string
+          rows?: number
+          restoreKey?: string
+          resumeOnly?: boolean
+        }) => Promise<HermesTerminalSession>
         write: (id: string, data: string) => Promise<boolean>
       }
       reachPreviewUrl?: (url: string) => Promise<string>
@@ -665,7 +689,7 @@ declare global {
       // Main-process `before-input-event` forwards Ctrl/Cmd+F here so the
       // renderer can still open the FindBar when the OS compositor has
       // already grabbed the chord (#81727, e.g. Pop!_OS / GNOME).
-      onOpenFindBarRequested: (callback: () => void) => () => void
+      onOpenFindBarRequested?: (callback: () => void) => () => void
     }
   }
 }
@@ -692,10 +716,14 @@ export interface DesktopMarketplaceThemeResult {
   themes: DesktopMarketplaceThemeFile[]
 }
 
+export type HermesTerminalState = 'open' | 'reconnecting' | 'disconnected'
+
 export interface HermesTerminalSession {
   cwd: string
   id: string
   shell: string
+  /** Server-owned process and replay; do not restore renderer scrollback. */
+  persistent?: boolean
 }
 
 export interface HermesTerminalExit {
@@ -1192,6 +1220,9 @@ export interface DesktopRosterAgent {
 
 export interface DesktopAgentRoster {
   agents: DesktopRosterAgent[]
+  /** Registry source whose agents are already represented by the active
+   * gateway's rich profiles.list rows; mergers annotate instead of duplicate. */
+  primaryConnectionId?: string
   sources: {
     connectionId: string
     label: string
@@ -1681,6 +1712,14 @@ export interface HermesPreviewFileChanged {
   id: string
   path: string
   url: string
+}
+
+/** Backend-provided source identity, not an authorization token. */
+export interface HermesStagedUpload {
+  install_id: string
+  path: string
+  profile_home: string
+  profile_incarnation: string | null
 }
 
 export interface HermesSelectPathsOptions {

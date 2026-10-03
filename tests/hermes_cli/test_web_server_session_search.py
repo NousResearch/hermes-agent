@@ -194,7 +194,11 @@ def test_desktop_session_search_attaches_profile_to_rich_results(monkeypatch):
             }
 
     monkeypatch.setattr("hermes_state.SessionDB", _RichFakeSessionDB)
-    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda name: True)
+    from hermes_cli.profiles import get_profile_dir
+
+    profile_home = get_profile_dir("personal")
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n")
     response = asyncio.run(_rt_sessions.search_sessions(q="20260603", limit=1, profile="personal"))
     assert response["results"][0]["profile"] == "personal"
     assert response["results"][0]["title"] == "Custom Title"

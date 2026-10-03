@@ -115,6 +115,13 @@ describe('HUD mode', () => {
 // folds into the same menu the HUD uses, then the model pill drops. Send is
 // the last thing standing.
 describe('narrow tiles', () => {
+  it('lets Queue and Send wrap independently at the smallest pane width', () => {
+    renderControls({ busy: true, busyAction: 'queue', minimal: true })
+    const send = screen.getByLabelText('Send')
+    const queue = screen.getByLabelText('Queue message')
+    expect(send.parentElement).toBe(queue.parentElement)
+    expect(getComputedStyle(send.parentElement!).flexWrap).toBe('wrap')
+  })
   it('folds the voice controls into one menu without entering HUD mode', () => {
     renderControls({ foldVoice: true })
 

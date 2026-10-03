@@ -58,13 +58,17 @@ def run_source_script(project_root: Path, script: str, *args: str, env: dict, la
     )
 
 
-def prepare_source_dependencies(project_root: Path, workspaces: tuple[str, ...], *, env: dict,
-                                explicit: bool = False) -> None:
+def _install_args(explicit: bool) -> tuple[str, ...]:
     from pm import lazy_installs_allowed
 
+    return () if explicit or lazy_installs_allowed() else ("--no-install",)
+
+
+def prepare_source_dependencies(project_root: Path, workspaces: tuple[str, ...], *, env: dict,
+                                explicit: bool = False) -> None:
     run_source_script(
         project_root, "scripts/build/node-deps.mjs", "--source", str(project_root), "--reuse",
-        *(() if explicit or lazy_installs_allowed() else ("--no-install",)),
+        *_install_args(explicit),
         *(arg for workspace in workspaces for arg in ("--workspace", workspace)), env=env,
         label="Preparing Node dependencies",
     )
@@ -90,6 +94,12 @@ def build_source_web(project_root: Path, *, env: dict, icons: Path | None = None
     run_source_script(project_root, "scripts/build/web.mjs", "--source", str(project_root),
                       "--icons", str(icons), "--out", str(project_root / "hermes_cli/web_dist"), env=env,
                       label="Building the web UI")
+
+
+def build_source_webapp(project_root: Path, *, env: dict, explicit: bool = False) -> None:
+    """Browser renderer; its dependencies live in a private workspace, never the checkout's."""
+    run_source_script(project_root, "apps/desktop/scripts/build-webapp.mjs", *_install_args(explicit),
+                      env=env, label="Building the Webapp renderer")
 
 
 def source_frontends(project_root: Path) -> tuple[str, ...]:

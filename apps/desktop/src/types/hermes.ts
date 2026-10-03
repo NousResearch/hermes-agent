@@ -486,6 +486,8 @@ export interface HermesConfig {
   }
   desktop?: {
     font_family?: string
+    theme?: string
+    theme_mode?: string
     repo_scan_enabled?: boolean
     repo_scan_roots?: string[]
     repo_scan_exclude_paths?: string[]
@@ -690,6 +692,9 @@ export interface SessionMessage {
   content: unknown
   /** Backend-projected user-visible content when a physical row also carries internal model scaffolding. */
   display_content?: unknown
+  /** Backend canonical human-turn classification, before display unwrapping.
+   * Display-only; absent on older backends. False still renders the notice. */
+  user_originated?: boolean
   /** Sanitized, profile-authorized public commentary supplied by the history backend. Never recover this from raw replay. */
   display_commentary?: string[]
   /** Display-only reasoning after removing exact public commentary; stored reasoning remains unmodified. */
@@ -787,6 +792,8 @@ export interface SessionResumeResult {
     status?: string
     streaming?: boolean
     user?: string
+    /** Display-only classification of the original turn, shared with history. */
+    user_originated?: boolean
   }
   queued?: null | {
     user?: string

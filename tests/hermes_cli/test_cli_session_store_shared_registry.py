@@ -20,9 +20,9 @@ def test_cli_session_store_is_the_registry_handle_goals_reuse(monkeypatch):
     constructed = []
     real_open = hermes_state_registry._open_session_db
 
-    def recording_open(path):
+    def recording_open(path, expected_profile_incarnation):
         constructed.append(path)
-        return real_open(path)
+        return real_open(path, expected_profile_incarnation)
 
     monkeypatch.setattr(hermes_state_registry, "_open_session_db", recording_open)
 

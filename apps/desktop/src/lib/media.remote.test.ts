@@ -84,7 +84,19 @@ describe('mediaGatewayStreamUrl', () => {
 
   it('rewrites gateway-local media to the main-process remote stream proxy', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 's e/cret' } as never)
-    expect(mediaGatewayStreamUrl('file:///tmp/a b.mp4')).toBe('hermes-media://remote/%2Ftmp%2Fa%20b.mp4')
+
+    for (const path of [
+      '/tmp/a b.mp4',
+      'file:///tmp/a%20b.mp4',
+      'C:/Users/Alice/video.mp4',
+      'file:///C:/Users/Alice/video%20clip.mp4',
+      'file://nas/share/video%20clip.mp4'
+    ]) {
+      const url = new URL(mediaGatewayStreamUrl(path))
+      expect(url.protocol).toBe('hermes-media:')
+      expect(url.hostname).toBe('remote')
+      expect.soft(decodeURIComponent(url.pathname.slice(1)), path).toBe(path)
+    }
   })
 
   it('supports OAuth remotes with no renderer-visible token and scopes pool profiles', () => {

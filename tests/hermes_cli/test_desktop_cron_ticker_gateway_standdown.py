@@ -54,14 +54,14 @@ def _enumeration_fails(**_kw):
 
 def test_external_provider_waits_while_gateway_owns_cron(ticker_env, gateway, caplog):
     """An external provider has no per-tick gate: it is not started while the gateway owns cron."""
-    from hermes_cli import web_server
+    from hermes_cli import web_server_lifespan
 
     _home, started = ticker_env
     stopped = threading.Event()
     stopped.set()
 
     with caplog.at_level(logging.INFO, logger="hermes_cli.web_server"):
-        web_server._start_desktop_cron_ticker(stopped, interval=0)
+        web_server_lifespan._start_desktop_cron_ticker(stopped, interval=0)
 
     assert started == {}  # backend shut down while the gateway still owned cron
     assert gateway["probes"] == 1
@@ -71,7 +71,7 @@ def test_external_provider_waits_while_gateway_owns_cron(ticker_env, gateway, ca
 def test_external_provider_starts_once_the_gateway_is_gone(ticker_env, gateway, monkeypatch):
     """The deferred start happens once that gateway stops instead of never (#126822), with one
     ownership probe per interval."""
-    from hermes_cli import web_server
+    from hermes_cli import web_server_lifespan
 
     _home, started = ticker_env
     stop = threading.Event()
@@ -82,25 +82,25 @@ def test_external_provider_starts_once_the_gateway_is_gone(ticker_env, gateway, 
 
     monkeypatch.setattr(stop, "wait", _interval_elapses)
 
-    web_server._start_desktop_cron_ticker(stop, interval=0)
+    web_server_lifespan._start_desktop_cron_ticker(stop, interval=0)
 
     assert "kwargs" in started
     assert gateway["probes"] == 2  # startup probe + one re-probe after the interval
 
 
 def test_ticker_starts_when_no_gateway(ticker_env, gateway):
-    from hermes_cli import web_server
+    from hermes_cli import web_server_lifespan
 
     _home, started = ticker_env
     gateway["running"] = False
 
-    web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
+    web_server_lifespan._start_desktop_cron_ticker(threading.Event(), interval=0)
 
     assert "kwargs" in started  # provider started as before
 
 
 def test_ticker_fails_open_when_ownership_probe_raises(ticker_env, monkeypatch, caplog):
-    from hermes_cli import web_server
+    from hermes_cli import web_server_lifespan
 
     _home, started = ticker_env
 
@@ -112,7 +112,7 @@ def test_ticker_fails_open_when_ownership_probe_raises(ticker_env, monkeypatch, 
     monkeypatch.setattr(profiles, "_check_gateway_running", _boom)
 
     with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
-        web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
+        web_server_lifespan._start_desktop_cron_ticker(threading.Event(), interval=0)
 
     assert "kwargs" in started  # not a silent stand-down
     assert "gateway-ownership probe failed" in caplog.text
@@ -124,7 +124,7 @@ def test_gated_ticker_resumes_after_the_gateway_stops(ticker_env, gateway, monke
     import cron.scheduler_provider as sp
     import hermes_cli.profiles as profiles
     import hermes_logging
-    from hermes_cli import web_server
+    from hermes_cli import web_server_lifespan
 
     home, started = ticker_env
 
@@ -136,7 +136,7 @@ def test_gated_ticker_resumes_after_the_gateway_stops(ticker_env, gateway, monke
     monkeypatch.setattr(profiles, "profiles_to_serve", lambda **_kw: [("default", home)])
     monkeypatch.setattr(hermes_logging, "enable_profile_log_routing", lambda _homes: None)
 
-    web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
+    web_server_lifespan._start_desktop_cron_ticker(threading.Event(), interval=0)
 
     gate = started["kwargs"]["profile_gate"]
     assert gate("default", home) is False  # the live gateway ticks with its adapters
@@ -150,7 +150,7 @@ def test_fail_open_ticker_uses_the_same_profile_gate(ticker_env, gateway, monkey
     that comes back."""
     import cron.scheduler_provider as sp
     import hermes_cli.profiles as profiles
-    from hermes_cli import web_server
+    from hermes_cli import web_server_lifespan
 
     home, started = ticker_env
 
@@ -161,7 +161,7 @@ def test_fail_open_ticker_uses_the_same_profile_gate(ticker_env, gateway, monkey
     monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: _InProcess())
     monkeypatch.setattr(profiles, "profiles_to_serve", _enumeration_fails)
 
-    web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
+    web_server_lifespan._start_desktop_cron_ticker(threading.Event(), interval=0)
 
     kwargs = started["kwargs"]
     assert set(kwargs) == {"interval", "profile_homes", "profile_gate"}
@@ -181,7 +181,7 @@ def test_fail_open_ticker_yields_to_the_multiplexer_serving_this_profile(tmp_pat
     import cron.scheduler_provider as sp
     import hermes_cli.profiles as profiles
     import hermes_constants
-    from hermes_cli import web_server
+    from hermes_cli import web_server_lifespan
 
     satellite = tmp_path / "profiles" / "worker"
     satellite.mkdir(parents=True)
@@ -200,7 +200,7 @@ def test_fail_open_ticker_yields_to_the_multiplexer_serving_this_profile(tmp_pat
     monkeypatch.setattr(
         profiles, "_served_by_running_multiplexer", lambda name: multiplexer["serves"] and name == "worker")
 
-    web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
+    web_server_lifespan._start_desktop_cron_ticker(threading.Event(), interval=0)
 
     [(name, home)] = started["kwargs"]["profile_homes"]()
     assert (name, home) == ("worker", satellite)
@@ -218,7 +218,7 @@ def test_gated_out_fail_open_tick_leaves_the_gateway_store_status_alone(tmp_path
     import hermes_cli.profiles as profiles
     import hermes_constants
     from cron.scheduler_provider import InProcessCronScheduler
-    from hermes_cli import web_server
+    from hermes_cli import web_server_lifespan
 
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
     monkeypatch.setattr(profiles, "profiles_to_serve", _enumeration_fails)
@@ -232,7 +232,7 @@ def test_gated_out_fail_open_tick_leaves_the_gateway_store_status_alone(tmp_path
     # One real scheduler cycle, with no wall-clock wait.
     monkeypatch.setattr(stop, "wait", lambda _timeout: stop.set())
 
-    web_server._start_desktop_cron_ticker(stop, interval=0)
+    web_server_lifespan._start_desktop_cron_ticker(stop, interval=0)
 
     assert ticked == []
     assert True not in beats  # at most the startup liveness beat, never a success

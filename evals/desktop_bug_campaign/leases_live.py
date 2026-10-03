@@ -70,7 +70,7 @@ def backend(port):
                     'delegating': bool(rec and gw._session_has_active_delegations(sid, rec)),
                     'delegate_interrupted': sid in work and work[sid][2].is_set()}
 
-    start_server(host='127.0.0.1', port=port, open_browser=False, headless=True)
+    start_server(host='127.0.0.1', port=port, open_browser=False, ui_surface='serve')
 
 
 def fixture(port):

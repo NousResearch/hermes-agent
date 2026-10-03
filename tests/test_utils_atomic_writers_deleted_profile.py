@@ -116,6 +116,31 @@ class TestAtomicWritersRefuseDeletedProfileHome:
         assert not profile.exists()
 
 
+class TestConcurrentDeleteDuringWrite:
+    def test_writer_does_not_rebuild_home_deleted_after_its_liveness_check(
+        self, tmp_path, monkeypatch
+    ):
+        import shutil
+
+        (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
+        profile = tmp_path / "profiles" / "p1"
+        profile.mkdir(parents=True)
+        real_mkdir = Path.mkdir
+
+        def delete_then_mkdir(self, *args, **kwargs):
+            monkeypatch.setattr(Path, "mkdir", real_mkdir)
+            mark_named_profile_deleted(profile)
+            shutil.rmtree(profile)
+            return real_mkdir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", delete_then_mkdir)
+        with pytest.raises(FileNotFoundError):
+            atomic_json_write(profile / "cache" / "reasoning_caps.json", {"m": {}})
+
+        assert Path.mkdir is real_mkdir, "the delete must land inside the writer"
+        assert not profile.exists()
+
+
 class TestUnrelatedProfilesPathsStillWrite:
     def test_custom_home_with_profiles_segment_writes(self, tmp_path):
         custom_home = tmp_path / "srv" / "profiles" / "buildcache"

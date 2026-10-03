@@ -9,17 +9,21 @@
 import { useStore } from '@nanostores/react'
 import { type MouseEventHandler, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { useTouchTitlebar } from '@/app/shell/use-touch-titlebar'
 import { $chatOnboardingSolo } from '@/components/onboarding-chat/assembly'
 import { PaneTab, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { $paneStates } from '@/store/panes'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
 import { useWindowControlsOverlap } from '../../geometry'
+import { $narrowOverlayPaneIds } from '../../narrow-overlay-state'
 import { NO_PANE_GROUP } from '../../pane-visibility'
 import { allPaneIds, findGroupOfPane, type LayoutNode } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
@@ -46,6 +50,7 @@ export function narrowOverlayWidth(ctx: TrackContext, tree: LayoutNode | null, r
 }
 
 export function NarrowOverlays() {
+  const touchTitlebar = useTouchTitlebar()
   const narrow = useStore($narrowViewport)
   const solo = useStore($chatOnboardingSolo)
   const tree = useStore($layoutTree)
@@ -61,6 +66,7 @@ export function NarrowOverlays() {
   // the same way a docked zone does (TreeGroup's wcOverlap -> paddingTop plus
   // an absolute drag-region spacer so the band stays a window-drag target).
   const overlayRef = useRef<HTMLDivElement>(null)
+  const outsidePress = useRef<{ id: number; x: number; y: number } | null>(null)
   const wcOverlap = useWindowControlsOverlap(overlayRef, reveal !== null)
 
   const onMouseLeave = useCallback<MouseEventHandler<HTMLDivElement>>(event => {
@@ -91,6 +97,15 @@ export function NarrowOverlays() {
 
   const collapsiblesRef = useRef(collapsibles)
   collapsiblesRef.current = collapsibles
+
+  useEffect(() => {
+    const active = narrow && !solo && reveal ? collapsibles.find(p => p.id === reveal.id) : undefined
+    const zone = active && tree ? findGroupOfPane(tree, active.id) : null
+    const visible = active ? collapsibles.filter(p => (zone ? zone.panes.includes(p.id) : p.id === active.id)) : []
+    $narrowOverlayPaneIds.set(new Set(visible.flatMap(p => [p.id, ...(paneChrome(p).revealAliases ?? [])])))
+
+    return () => $narrowOverlayPaneIds.set(new Set())
+  }, [narrow, solo, reveal, collapsibles, tree])
 
   // ⌘B / ⌘G's narrow branch dispatches the app's toggle-reveal event with the
   // REAL pane id — accept those via each contribution's revealAliases.
@@ -124,7 +139,9 @@ export function NarrowOverlays() {
         }
 
         if (mode === 'close') {
-          return current?.id === match.id ? null : current
+          const currentTree = $layoutTree.get()
+          const targetZone = currentTree ? findGroupOfPane(currentTree, match.id) : null
+          return current && (current.id === match.id || targetZone?.panes.includes(current.id)) ? null : current
         }
 
         return current?.id === match.id && current.pinned ? null : { id: match.id, pinned: true }
@@ -187,6 +204,38 @@ export function NarrowOverlays() {
 
   return (
     <>
+      {revealed && (
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 z-30"
+          data-narrow-overlay-backdrop=""
+          onPointerCancel={() => { outsidePress.current = null }}
+          onPointerDown={event => {
+            if (event.button === 0 && isTopEscapeLayer(ESCAPE_PRIORITY.narrowOverlay)) {
+              // Dismissal must not focus the transcript or input underneath.
+              event.preventDefault()
+              outsidePress.current = { id: event.pointerId, x: event.clientX, y: event.clientY }
+            }
+          }}
+          onPointerLeave={() => { outsidePress.current = null }}
+          onPointerMove={event => {
+            const press = outsidePress.current
+
+            if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) > 8) {
+              outsidePress.current = null
+            }
+          }}
+          onPointerUp={event => {
+            const press = outsidePress.current
+            outsidePress.current = null
+
+            if (press?.id === event.pointerId && isTopEscapeLayer(ESCAPE_PRIORITY.narrowOverlay)) {
+              event.preventDefault()
+              setReveal(null)
+            }
+          }}
+        />
+      )}
       {/* Hover-intent strips on each edge that has a collapsed pane. */}
       {sides.map(side => (
         <div
@@ -223,7 +272,13 @@ export function NarrowOverlays() {
           // (macOS traffic lights); the spacer above keeps that band
           // draggable, mirroring TreeGroup's reservation.
           style={{
-            paddingTop: wcOverlap ? wcOverlap.y + wcOverlap.height : undefined,
+            paddingTop: isBrowserHostedDesktop()
+              ? touchTitlebar
+                ? 44
+                : TITLEBAR_HEIGHT
+              : wcOverlap
+                ? wcOverlap.y + wcOverlap.height
+                : undefined,
             width: `min(${overlayWidth}, 85vw)`
           }}
         >

@@ -56,18 +56,35 @@ const sized =
     ref.current = node
   }
 
-function Harness({ dockHeight, surfaceHeight }: { dockHeight: number; surfaceHeight: number }) {
+function Harness({
+  dockHeight,
+  surfaceHeight,
+  width = 640
+}: {
+  dockHeight: number
+  surfaceHeight: number
+  width?: number
+}) {
   const composerDockRef = useRef<HTMLDivElement | null>(null)
   const composerRef = useRef<HTMLFormElement | null>(null)
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
 
-  useComposerMetrics({ composerDockRef, composerRef, composerSurfaceRef, editorRef, poppedOut: false })
+  const fit = useComposerMetrics({ composerDockRef, composerRef, composerSurfaceRef, editorRef, poppedOut: false })
 
   return (
     <div data-chat-surface="">
       <div ref={sized(composerDockRef, dockHeight)}>
-        <form ref={composerRef}>
+        <form
+          ref={node => {
+            composerRef.current = node
+
+            if (node) {
+              node.getBoundingClientRect = () => ({ width, height: surfaceHeight }) as DOMRect
+            }
+          }}
+        >
+          <output data-testid="fit">{JSON.stringify(fit)}</output>
           <div ref={sized(composerSurfaceRef, surfaceHeight)}>
             <div ref={editorRef} />
           </div>
@@ -88,6 +105,20 @@ describe('useComposerMetrics — published clearance survives an effect replay',
   afterEach(() => {
     cleanup()
     vi.unstubAllGlobals()
+  })
+
+  it('uses a single control column below the two-touch-target budget', () => {
+    vi.spyOn(window, 'getComputedStyle').mockReturnValue({ getPropertyValue: () => '44px' } as unknown as CSSStyleDeclaration)
+    const { getByTestId } = render(<Harness dockHeight={200} surfaceHeight={120} width={80} />)
+    expect(JSON.parse(getByTestId('fit').textContent!)).toMatchObject({ minimal: true, singleColumn: true })
+    vi.restoreAllMocks()
+  })
+
+  it('collapses extra controls earlier when touch targets consume more width', () => {
+    vi.spyOn(window, 'getComputedStyle').mockReturnValue({ getPropertyValue: () => '44px' } as unknown as CSSStyleDeclaration)
+    const { getByTestId } = render(<Harness dockHeight={200} surfaceHeight={120} width={220} />)
+    expect(JSON.parse(getByTestId('fit').textContent!)).toMatchObject({ minimal: true, foldVoice: true })
+    vi.restoreAllMocks()
   })
 
   it('republishes the dock height after StrictMode replays the cleanup', () => {

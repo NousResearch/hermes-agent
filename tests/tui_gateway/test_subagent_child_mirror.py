@@ -16,14 +16,18 @@ import pytest
 
 
 @pytest.fixture()
-def server():
+def server(tmp_path):
+    launch_home = tmp_path / "hermes"
+    launch_home.mkdir()
     # Mocks are scoped to the initial import only (see
     # tests/tui_gateway/test_protocol.py for the rationale).
     with patch.dict(
         "sys.modules",
         {
             "hermes_constants": MagicMock(
-                get_hermes_home=MagicMock(return_value="/tmp/hermes_test_child_mirror")
+                get_hermes_home=MagicMock(return_value=str(launch_home)),
+                named_profile_home_is_unavailable=MagicMock(return_value=False),
+                profile_deletion_marker_path=MagicMock(return_value=None),
             ),
             "hermes_cli.env_loader": MagicMock(),
             "hermes_cli.banner": MagicMock(),
@@ -33,6 +37,7 @@ def server():
         import importlib
 
         mod = importlib.import_module("tui_gateway.server")
+    setattr(mod, "_hermes_home", launch_home)
 
     yield mod
     mod._sessions.clear()
@@ -127,7 +132,7 @@ def test_live_child_session_gets_native_stream(server, emits):
 def test_window_closed_midrun_drops_state_then_fresh_turn_on_reopen(server, emits):
     server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
     _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
-    assert (None, "child-1") in server._child_mirrors
+    assert (None, None, "child-1") in server._child_mirrors
 
     # Window closes → live session gone → state dropped on the next event.
     server._sessions.clear()
@@ -154,13 +159,13 @@ def test_upgraded_child_session_not_mirrored(server, emits):
     assert [(e, s) for e, s, _ in emits] == [("subagent.tool", "parent-sid")]
     assert server._child_mirrors == {}
     # Liveness registry still updates — it serves resume, not the mirror.
-    assert (None, "child-1") in server._active_child_runs
+    assert (None, None, "child-1") in server._active_child_runs
 
 
 def test_stale_child_run_not_reported_active(server, emits):
     """A leaked registry entry (lost completion event) must age out instead of
     pinning running=true on every future lazy resume of that child."""
-    server._active_child_runs[(None, "child-1")] = 0.0  # epoch — ancient
+    server._active_child_runs[(None, None, "child-1")] = 0.0  # epoch — ancient
 
     assert server._child_run_active("child-1", None) is False
 
@@ -196,13 +201,13 @@ def test_active_child_runs_registry_tracks_liveness(server, emits):
     open), and completion clears it — lazy watch resumes read this registry to
     report running=true while the child is silent inside a long tool call."""
     _relay(server, "subagent.start", preview="go", child_session_id="child-1")
-    assert (None, "child-1") in server._active_child_runs
+    assert (None, None, "child-1") in server._active_child_runs
 
     _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
-    assert (None, "child-1") in server._active_child_runs
+    assert (None, None, "child-1") in server._active_child_runs
 
     _relay(server, "subagent.complete", child_session_id="child-1", status="completed", summary="ok")
-    assert (None, "child-1") not in server._active_child_runs
+    assert (None, None, "child-1") not in server._active_child_runs
 
 
 def test_start_mirrors_as_immediate_header_line(server, emits):
@@ -238,4 +243,40 @@ def test_text_mirrors_as_message_delta(server, emits):
         ("message.delta", {"text": "the answer."}),
     ]
 
+
+def test_named_child_mirror_and_liveness_follow_the_captured_incarnation(server, emits):
+    home = str(server._hermes_home / "profiles" / "worker")
+
+    def generation(token):
+        parent = f"parent-{token}"
+        server._sessions[parent] = {"profile_home": home, "profile_incarnation": token}
+        server._sessions["watch"] = {
+            "session_key": "child-1", "agent": None,
+            "profile_home": home, "profile_incarnation": token,
+        }
+        return parent
+
+    def relay(parent, event, text=""):
+        server._on_tool_progress(parent, event, preview=text, child_session_id="child-1")
+
+    parent_a = generation("generation-a")
+    relay(parent_a, "subagent.text", "A reply")
+    assert ("message.delta", "watch", {"text": "A reply"}) in emits
+
+    # Recreating the same profile replaces its watch record, not its coordinates.
+    parent_b = generation("generation-b")
+    emits.clear()
+    relay(parent_a, "subagent.text", "stale A reply")
+    assert not emits
+    assert not server._child_run_active("child-1", home, "generation-b")
+
+    relay(parent_b, "subagent.text", "B reply")
+    assert ("message.delta", "watch", {"text": "B reply"}) in emits
+    assert server._child_run_active("child-1", home, "generation-b")
+    emits.clear()
+    relay(parent_a, "subagent.complete")
+    assert not any(sid == "watch" for _, sid, _ in emits)
+    assert server._child_run_active("child-1", home, "generation-b")
+    relay(parent_b, "subagent.complete", "B done")
+    assert not server._child_run_active("child-1", home, "generation-b")
 

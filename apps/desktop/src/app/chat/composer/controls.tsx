@@ -114,7 +114,10 @@ export function ComposerControls({
   )
 
   return (
-    <div className="flex min-w-0 shrink items-center gap-(--composer-control-gap)">
+    <div
+      className="flex min-w-0 shrink items-center justify-end gap-(--composer-control-gap)"
+      style={{ flexWrap: minimal ? 'wrap' : undefined }}
+    >
       {minimal ? null : (
         <>
           {hideModelPill ? null : (

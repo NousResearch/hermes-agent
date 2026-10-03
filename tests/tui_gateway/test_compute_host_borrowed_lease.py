@@ -203,6 +203,8 @@ def test_child_rotation_never_claims_and_parent_reanchors_its_real_lease():
 
 
 def test_close_holds_lease_until_isolated_turn_settles(monkeypatch):
+    from tui_gateway.host_supervisor import TurnSettlement
+
     interrupts: list[str] = []
     monkeypatch.setattr(server, "_get_compute_host_supervisor",
                         lambda *a, **k: types.SimpleNamespace(interrupt=lambda sid, **k: interrupts.append(sid)))
@@ -212,6 +214,7 @@ def test_close_holds_lease_until_isolated_turn_settles(monkeypatch):
     parent = _seed_parent_lease("A")
     session = _parent_session("sid", "A", parent)
     session["_compute_host_turn_id"] = "turn-1"  # the child is still running this turn
+    settlement = session["_compute_host_turn_settlement"] = TurnSettlement()
     session["_closing"] = True
     try:
         assert server._teardown_popped_session(session, end_reason="tui_close") is True
@@ -222,6 +225,7 @@ def test_close_holds_lease_until_isolated_turn_settles(monkeypatch):
         lease, refusal = _foreign_acquire("A")
         assert lease is None and getattr(refusal, "reason", "") == "SESSION_NOT_OWNED"
         # Child settlement (turn.end, or turn.error from _fail_pending_turns on child death) releases it.
+        settlement.completed.set()
         server._on_compute_host_turn_done("rid", "sid", session, {"type": "turn.end", "sid": "sid", "session_key": "A"})
         assert _registry() == [] and parent.lease_id not in server._own_live_lease_ids()
         lease, refusal = _foreign_acquire("A")

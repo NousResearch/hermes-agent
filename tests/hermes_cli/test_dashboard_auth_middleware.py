@@ -181,6 +181,7 @@ def test_gated_require_token_endpoint_accepts_cookie_session(gated_app):
     _complete_stub_login(gated_app)
     r = gated_app.post(
         "/api/dashboard/agent-plugins/install",
+        headers={"Origin": "https://fly-app.fly.dev"},
         json={"identifier": "definitely not a valid identifier",
               "force": False, "enable": False},
     )
@@ -193,6 +194,38 @@ def test_gated_require_token_endpoint_accepts_cookie_session(gated_app):
         f"Expected the install handler's 400 (bad identifier), got "
         f"{r.status_code}: {r.text}"
     )
+
+
+@pytest.fixture
+def proxied_gated_app(monkeypatch):
+    """Gated all-interfaces bind reached through a TLS-terminating proxy that is not in
+    ``trusted_proxies`` and no ``public_url``: the server sees ``http://127.0.0.1:9119`` while
+    the browser addresses ``https://dash.example.com``."""
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    clear_providers()
+    register_provider(StubAuthProvider())
+    for key, value in (("bound_host", "0.0.0.0"), ("bound_port", 9119), ("auth_required", True),
+                       ("trusted_public_hosts", frozenset())):
+        monkeypatch.setattr(web_server.app.state, key, value, raising=False)
+    yield TestClient(web_server.app, base_url="http://127.0.0.1:9119")
+    clear_providers()
+
+
+def test_cookie_write_trusts_the_browsers_same_origin_verdict_behind_a_proxy(proxied_gated_app):
+    """The server's own URL cannot name the browser-facing origin behind such a proxy, so
+    the browser's unforgeable ``Sec-Fetch-Site`` decides: the dashboard's own page may write
+    with its cookie session, a sibling or foreign page may not."""
+    _complete_stub_login(proxied_gated_app)
+
+    own_page = proxied_gated_app.post("/api/auth/ws-ticket", headers={
+        "Origin": "https://dash.example.com", "Sec-Fetch-Site": "same-origin"})
+    assert own_page.status_code == 200, own_page.text
+
+    for origin, fetch_site in (("https://evil.example", "cross-site"),
+                               ("https://blog.example.com", "same-site")):
+        forged = proxied_gated_app.post("/api/auth/ws-ticket", headers={
+            "Origin": origin, "Sec-Fetch-Site": fetch_site})
+        assert forged.status_code == 403, (fetch_site, forged.text)
 
 
 # A representative spread of the OTHER ``_require_token`` endpoints (there are

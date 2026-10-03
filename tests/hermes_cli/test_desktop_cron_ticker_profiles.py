@@ -13,7 +13,7 @@ import threading
 
 import pytest
 
-import hermes_cli.web_server as ws
+import hermes_cli.web_server_lifespan as ws
 
 
 class _RecordingBuiltin:

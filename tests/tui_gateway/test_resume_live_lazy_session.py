@@ -25,6 +25,7 @@ import tui_gateway.server as srv
 def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
     (h / "profiles" / "ops").mkdir(parents=True)
+    (h / "profiles" / "ops" / "config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(h))
     return h
 
@@ -33,12 +34,14 @@ def home(tmp_path, monkeypatch):
 def live_lazy_session(home):
     """A live registry record shaped like session.create's lazy output."""
     sid = "live-lazy-1"
+    profile_home = home / "profiles" / "ops"
     record = {
         "history": [],
         "last_active": 0.0,
         "pending_title": "Bot Chat",
         "pending_hidden": True,
-        "profile_home": str(home / "profiles" / "ops"),
+        "profile_home": str(profile_home),
+        "profile_incarnation": srv._capture_profile_incarnation(profile_home),
         "running": False,
         "session_key": "20260823_000000_abc123",
         "source": "desktop",

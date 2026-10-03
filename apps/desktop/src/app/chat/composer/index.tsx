@@ -406,7 +406,7 @@ export function ChatBar({
     return onCancel()
   }, [activeQueueSessionKeyRef, onCancel])
 
-  const { compactPill, foldVoice, minimal, stacked } = useComposerMetrics({
+  const { compactPill, foldVoice, minimal, stacked, singleColumn } = useComposerMetrics({
     composerDockRef,
     composerRef,
     composerSurfaceRef,
@@ -1533,9 +1533,11 @@ export function ChatBar({
                   <div
                     className={cn(
                       'grid w-full',
-                      stacked
-                        ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
-                        : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
+                      singleColumn
+                        ? 'grid-cols-[minmax(0,1fr)] gap-(--composer-row-gap) [grid-template-areas:"input"_"menu"_"controls"]'
+                        : stacked
+                          ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
+                          : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
                     )}
                   >
                     <div className="flex translate-y-[3px] items-start gap-(--composer-control-gap) self-start [grid-area:menu]">

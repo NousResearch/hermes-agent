@@ -182,6 +182,8 @@ interface Secondary {
   // While true the entry auto-reconnects on drop; pruning flips it off so a
   // deliberate close doesn't trigger the backoff loop.
   wantOpen: boolean
+  /** Explicit teardown is separate from parking, which also clears wantOpen. */
+  disposed: boolean
   /**
    * Main retired this scope's pooled backend for a foreground open elsewhere
    * (electron/pool-retire.ts). A parked-by-stall entry re-arms on the
@@ -1114,6 +1116,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     retained: false,
     relayRetainCount: 0,
     wantOpen: true,
+    disposed: false,
     retiredByPool: false,
     activationLeaseUntil: 0
   }
@@ -2334,10 +2337,11 @@ export function parkSecondariesForRetiredBackend(poolKey: string): string[] {
 // Tear a secondary down: stop its reconnect loop, detach listeners, close the
 // socket. Caller handles removal from the map.
 function disposeSecondary(entry: Secondary): void {
-  if (!entry.wantOpen) {
+  if (entry.disposed) {
     return
   }
 
+  entry.disposed = true
   entry.wantOpen = false
   entry.pendingConnectionRedial = false
   clearTimer(entry)
@@ -2346,8 +2350,8 @@ function disposeSecondary(entry: Secondary): void {
   entry.offRequest()
   entry.offState()
   entry.gateway.close()
-  // Release can re-enter disposal at refcount zero. wantOpen is already false,
-  // and listeners are detached, so explicit teardown never rearms reconnect.
+  // Release can re-enter disposal at refcount zero. The disposal guard is already
+  // set and listeners are detached, so teardown closes once and never rearms reconnect.
   releaseTurnLeasesForScope(entry.scope)
 }
 

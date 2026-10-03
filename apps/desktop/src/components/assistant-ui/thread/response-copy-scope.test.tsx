@@ -47,15 +47,19 @@ function renderThread() {
   return { clipboard, ...rendered }
 }
 
-it('default Copy reads only the tail reply, not the whole response group', async () => {
-  const { clipboard, container } = renderThread()
+it.each(['desktop', 'touch'])(
+  'default %s Copy reads only the tail reply, not the whole response group',
+  async surface => {
+    const { clipboard, container } = renderThread()
 
-  await waitFor(() => expect(container.textContent).toContain('The deployment is verified.'))
-  const actions = container.querySelector('[data-slot="aui_msg-actions"]') as HTMLElement
-  fireEvent.click(within(actions).getByRole('button', { name: /^copy$/i }))
+    await waitFor(() => expect(container.textContent).toContain('The deployment is verified.'))
+    const actions = container.querySelector('[data-slot="aui_msg-actions"]') as HTMLElement
+    const surfaceActions = actions.querySelector(`.aui-message-actions-${surface}`) as HTMLElement
+    fireEvent.click(within(surfaceActions).getByRole('button', { name: /^copy$/i }))
 
-  await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith('The deployment is verified.'))
-})
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith('The deployment is verified.'))
+  }
+)
 
 it('Copy full response reads every assistant text segment in the group', async () => {
   const { clipboard, container } = renderThread()
@@ -69,25 +73,29 @@ it('Copy full response reads every assistant text segment in the group', async (
   )
 })
 
-it('a solo reply copies its own text and offers no separate full-response button', async () => {
-  const storedSolo: SessionMessage[] = [
-    { role: 'user', content: 'Hi', timestamp: 1 },
-    { role: 'assistant', content: 'Hello there.', timestamp: 2 }
-  ]
+it.each(['desktop', 'touch'])(
+  'a solo reply copies its own text through %s actions and offers no full-response button',
+  async surface => {
+    const storedSolo: SessionMessage[] = [
+      { role: 'user', content: 'Hi', timestamp: 1 },
+      { role: 'assistant', content: 'Hello there.', timestamp: 2 }
+    ]
 
-  const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) }
-  vi.stubGlobal('navigator', { ...navigator, clipboard })
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) }
+    vi.stubGlobal('navigator', { ...navigator, clipboard })
 
-  const { container } = render(
-    <ThreadRuntime messages={toChatMessages(storedSolo).map(toRuntimeMessage)}>
-      <Thread />
-    </ThreadRuntime>
-  )
+    const { container } = render(
+      <ThreadRuntime messages={toChatMessages(storedSolo).map(toRuntimeMessage)}>
+        <Thread />
+      </ThreadRuntime>
+    )
 
-  await waitFor(() => expect(container.textContent).toContain('Hello there.'))
-  const actions = container.querySelector('[data-slot="aui_msg-actions"]') as HTMLElement
-  fireEvent.click(within(actions).getByRole('button', { name: /^copy$/i }))
-  await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith('Hello there.'))
-  // The two scopes are identical on a solo reply, so only the default Copy exists.
-  expect(within(actions).queryByRole('button', { name: /copy full response/i })).toBeNull()
-})
+    await waitFor(() => expect(container.textContent).toContain('Hello there.'))
+    const actions = container.querySelector('[data-slot="aui_msg-actions"]') as HTMLElement
+    const surfaceActions = actions.querySelector(`.aui-message-actions-${surface}`) as HTMLElement
+    fireEvent.click(within(surfaceActions).getByRole('button', { name: /^copy$/i }))
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith('Hello there.'))
+    // The two scopes are identical on a solo reply, so only the default Copy exists.
+    expect(within(actions).queryByRole('button', { name: /copy full response/i })).toBeNull()
+  }
+)

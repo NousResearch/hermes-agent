@@ -23,16 +23,20 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
+from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.profile_incarnation import profile_incarnation_lease
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+from hermes_cli.web_routers.uploads import _removed_on_failure, _resolve_upload_generation
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
     _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
 )
 from hermes_cli.web_models import (
-    ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
+    ChatImageUpload, FileTicketRequest, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete,
+    ManagedFileUpload,
 )
 
 router = APIRouter()
@@ -477,18 +481,42 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     dir ``clipboard.paste`` / ``image.attach`` use).
     """
     def _run():
-        data, mime_type, ext = _decode_chat_image_upload(payload)
-        with _profile_scope(profile) as scoped_home:
-            img_dir = Path(scoped_home or get_hermes_home()) / "images"
-            with _io_errors("Image directory is not writable", "Could not create image directory"):
-                img_dir.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home, named_profile_home_is_unavailable
 
-            stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
-            stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
-            with _io_errors("Image directory is not writable", "Could not write image"):
-                target.write_bytes(data)
+        data, mime_type, ext = _decode_chat_image_upload(payload)
+        home, expected_incarnation = _resolve_upload_generation(profile)
+
+        try:
+            with profile_incarnation_lease(
+                home,
+                expected_incarnation,
+                require_incarnation=expected_incarnation is not None,
+            ):
+                img_dir = home / "images"
+                with _io_errors("Image directory is not writable", "Could not create image directory"):
+                    try:
+                        mkdir_under_hermes_home(img_dir)
+                    except FileNotFoundError:
+                        raise HTTPException(status_code=404, detail="Profile home is unavailable")
+
+                stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
+                stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
+
+                with _removed_on_failure(target):
+                    with _io_errors("Image directory is not writable", "Could not write image"):
+                        target.write_bytes(data)
+                    if named_profile_home_is_unavailable(home) or not target.is_file():
+                        raise HTTPException(
+                            status_code=404,
+                            detail="Profile was deleted during upload",
+                        )
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Profile was deleted or replaced during upload",
+            ) from exc
 
         return {
             "ok": True,
@@ -527,13 +555,15 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
     return {"path": display_path, "parent": parent, "entries": entries, **_managed_response_meta(policy)}
 
 
-def _managed_readable_file(request: Request, path: str) -> tuple[Any, Path, str, int, str]:
+def _managed_readable_file(
+    request: Request, path: str, *, create_root: bool = True,
+) -> tuple[Any, Path, str, int, str]:
     """Resolve + guard a managed file for reading: existence, regular file,
     sensitive-path denylist. Returns (policy, target, display_path, max_bytes,
     mime_type). Callers own the live-SQLite 409 (held through the read for
     /api/files/read, point-in-time for streamed responses)."""
     from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES
-    policy, target, display_path = _resolve_managed_path(path, request)
+    policy, target, display_path = _resolve_managed_path(path, request, create_root=create_root)
     if not target.exists():
         raise HTTPException(status_code=404, detail="File not found")
     if not target.is_file():
@@ -578,6 +608,18 @@ async def _managed_file_response(
     media_only: bool = False,
 ) -> FileResponse:
     """Range-aware response after applying managed-file policy."""
+    authority = getattr(request.state, "file_ticket_authority", None)
+    if authority is not None:
+        from hermes_cli.web_server_file_response import OpenedFileResponse
+
+        return OpenedFileResponse(
+            path=str(authority.target),
+            opener=lambda: _open_ticket_file(request, authority, media_only=media_only),
+            media_type=_fs_mime_type(authority.target),
+            filename=authority.target.name,
+            content_disposition_type=content_disposition_type,
+            headers={"X-Content-Type-Options": "nosniff"} if media_only else None,
+        )
     _policy, target, _display_path, max_bytes, mime_type = _managed_readable_file(request, path)
     if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
         raise HTTPException(status_code=415, detail="Unsupported media type")
@@ -592,16 +634,97 @@ async def _managed_file_response(
     )
 
 
+def _open_ticket_file(request: Request, authority: file_tickets.FileAuthority, *, media_only: bool):
+    """Check the captured generation and pin the file before releasing its lease."""
+    try:
+        with authority.lease():
+            _policy, target, _display, max_bytes, _mime = _managed_readable_file(
+                request, str(authority.target), create_root=False,
+            )
+            if target != authority.target:
+                raise HTTPException(status_code=403, detail="File ticket target changed")
+            if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
+                raise HTTPException(status_code=415, detail="Unsupported media type")
+            _refuse_live_database(target)
+            handle = target.open("rb")
+            try:
+                opened = os.fstat(handle.fileno())
+                if not stat.S_ISREG(opened.st_mode):
+                    raise HTTPException(status_code=400, detail="Only regular files can be read")
+                if opened.st_size > max_bytes:
+                    raise HTTPException(status_code=413, detail="File is too large")
+                return handle
+            except BaseException:
+                handle.close()
+                raise
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="File ticket profile or resource is unavailable") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="File is not readable") from exc
+
+
+@router.post("/api/files/ticket")
+async def issue_file_ticket(payload: FileTicketRequest, request: Request):
+    """Ticket a browser download/media URL instead of putting the session token in it."""
+    from hermes_cli.profile_incarnation import ensure_profile_incarnation
+    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_constants import named_profile_home
+
+    def owner_generation():
+        home = _cron_profile_home(payload.profile)[1] if payload.profile else get_hermes_home()
+        return Path(home), ensure_profile_incarnation(home)
+
+    def capture():
+        _policy, target, _display, _max, _mime = _managed_readable_file(request, path, create_root=False)
+        generations = {owner: generation} if generation is not None else {}
+        target_home = named_profile_home(target)
+        if target_home is not None and target_home not in generations:
+            target_generation = ensure_profile_incarnation(target_home)
+            if target_generation is None:
+                raise FileNotFoundError("Named profile incarnation is unavailable")
+            generations[target_home] = target_generation
+        authority = file_tickets.FileAuthority(target, tuple(generations.items()))
+        with authority.lease():
+            return authority
+
+    try:
+        # Capture the session/profile owner BEFORE looking up its cwd. The file
+        # may be outside that home, but the ticket must still die with its owner.
+        owner, generation = await asyncio.to_thread(owner_generation)
+        path = payload.path
+        if payload.session_id is not None or path.lower().startswith("file:"):
+            path = str(await _fs_download_path(path, payload.profile, payload.session_id))
+        authority = await asyncio.to_thread(capture)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="File ticket profile is unavailable") from exc
+    query = {"path": payload.path, "profile": payload.profile, "session_id": payload.session_id}
+    ticket = file_tickets.mint(
+        payload.route, {key: value for key, value in query.items() if value is not None}, authority=authority,
+    )
+    return JSONResponse({"ticket": ticket}, headers={"Cache-Control": "no-store"})
+
+
 @router.get("/api/files/download")
-async def download_managed_file(request: Request, path: str):
+@router.head("/api/files/download")
+async def download_managed_file(
+    request: Request, path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
+):
     """Stream a managed file as an attachment download.
 
-    ``auth_middleware`` also accepts the session token as ``?token=`` here so a
-    shell/browser-opened download (no session header) still authenticates.
+    ``auth_middleware`` also accepts a path-bound ``?ticket=`` (browsers) or the
+    session token as ``?token=`` (Electron's remote external link) here so a
+    download without the session header still authenticates.
     Chromium marks ``<audio>``/``<video>`` subresource requests via
     ``Sec-Fetch-Dest``; those are served inline for Desktop builds that still
     use this route as their player source, attachment semantics otherwise.
     """
+    # Match Desktop's session/host-OS path resolution, then retain the managed
+    # root, sensitive-file and size checks. Unscoped managed-relative paths
+    # still resolve under the configured files root, not the server cwd.
+    if getattr(request.state, "file_ticket_authority", None) is None and (
+        session_id is not None or path.lower().startswith("file:")
+    ):
+        path = str(await _fs_download_path(path, profile, session_id))
     fetch_destination = request.headers.get("sec-fetch-dest", "").lower()
     is_media_subresource = fetch_destination in {"audio", "video"}
     return await _managed_file_response(
@@ -614,11 +737,14 @@ async def download_managed_file(request: Request, path: str):
 
 @router.get("/api/files/stream")
 @router.head("/api/files/stream")
-async def stream_managed_file(request: Request, path: str):
+async def stream_managed_file(request: Request, path: str, profile: Optional[str] = None):
     """Stream managed audio/video inline with HTTP Range support — Electron's
     media pipeline may reject an attachment response as an ``<audio>``/
-    ``<video>`` source. Same auth, size cap, sensitive guard and MIME detection
-    as download."""
+    ``<video>`` source. Browser media elements authenticate with a reusable
+    path-bound ``?ticket=``; the session token is never accepted in this URL.
+    Same size cap, sensitive guard and MIME detection as download."""
+    if getattr(request.state, "file_ticket_authority", None) is None and path.lower().startswith("file:"):
+        path = str(await _fs_download_path(path, profile, None))
     return await _managed_file_response(request, path, content_disposition_type="inline", media_only=True)
 
 

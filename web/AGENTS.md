@@ -30,10 +30,12 @@ their failures non-destructively so the terminal pane keeps working.
 ## `dashboard` vs `serve`
 
 `dashboard` and `serve` share `cmd_dashboard` / `start_server` but are independent surfaces — neither
-launches the other. `serve` is the headless backend the desktop app spawns (`headless_backend=True`:
+launches the other. `serve` is the headless backend the desktop app spawns (`ui_surface="serve"`:
 `cmd_dashboard` skips `_build_web_ui` and exports `HERMES_SERVE_HEADLESS=1` so `mount_spa()`
 disables the SPA even if a stray `web_dist/` exists — only JSON-RPC/WS/API is reachable). The
 desktop has no build/runtime dependency on this frontend. Details: `apps/desktop/src/AGENTS.md`.
+What each surface (`serve`, `dashboard`, `webapp`) may do is one table,
+`hermes_cli/web_server_surface.py`; read it instead of comparing `ui_surface` strings.
 
 ## Rules
 

@@ -40,6 +40,7 @@ def _refusal(target: str, current: str, *, on_cross_vm_fs: bool) -> Optional[str
 
 
 def cmd_set_journal_mode(args) -> int:
+    from hermes_cli.sqlite_safe_read import connect_tracked
     from hermes_state import _default_db_path
     from hermes_state_holders import describe_holder_pid, foreign_state_db_holders
     from hermes_state_wal import (_path_on_cross_vm_fs, _set_journal_mode_no_wait, is_sqlite_wal_reset_vulnerable,
@@ -82,7 +83,7 @@ def cmd_set_journal_mode(args) -> int:
     # timeout=0: any opener that appeared between the scan and the flip makes the pragma fail with
     # 'database is locked' instead of sneaking the switch between a writer's transactions.
     try:
-        conn = sqlite3.connect(str(db_path), timeout=0.0, isolation_level=None)
+        conn = connect_tracked(db_path, timeout=0.0, isolation_level=None)
     except (OSError, sqlite3.Error) as exc:
         print(f"✗ Cannot open {db_path}: {exc}")
         return 1

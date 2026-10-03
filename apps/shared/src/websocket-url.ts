@@ -118,7 +118,7 @@ function readWindowLocation(): { host: string; protocol: string } {
   return { host: window.location.host, protocol: window.location.protocol }
 }
 
-function normalizeBasePath(basePath: string | undefined): string {
+export function normalizeBasePath(basePath: string | undefined): string {
   if (!basePath) {
     return ''
   }

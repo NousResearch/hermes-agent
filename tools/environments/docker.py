@@ -128,48 +128,17 @@ def _container_identity(shared_key: str = "") -> str:
     return f"{_sanitize_label_value(shared_key)[:50]}-{digest}"
 
 
-def _is_volatile_mount_spec(spec: str) -> bool:
-    """True when *spec* is a ``host:container[:mode]`` mount whose host source is a
-    per-process tempdir (a ``mkdtemp`` under the system temp), so its path is random
-    per process and must not be hashed into the reuse label.
-
-    The known source is the symlink-safe skills copy from
-    ``credential_files._safe_skills_path``: any symlink under ``skills/`` makes it a
-    fresh ``mkdtemp`` per process. Stable host paths — including a symlink-free
-    skills dir, which mounts directly — never sit under the process tempdir.
-    """
-    if spec in ("-v", "--mount") or ":" not in spec:
-        return False  # the flag element itself, or a non-bind arg (tmpfs modes etc.)
-    parsed = _split_volume_spec(spec)
-    source = parsed[0] if parsed is not None else spec.split(":", 1)[0]
-    if _is_windows_drive_path(source):
-        return False  # drive-letter hosts can never be the POSIX process tempdir
-    try:
-        temp_root = os.path.realpath(tempfile.gettempdir())
-        source_abs = os.path.realpath(os.path.abspath(os.path.expanduser(source)))
-        return source_abs == temp_root or source_abs.startswith(temp_root + os.sep)
-    except OSError:  # unreadable source — treat as stable, fail the safe way
-        return False
-
-
 def _reuse_environment_fingerprint(*, image: str, mount_args: list[str], hermes_home: str) -> str:
     """Hash immutable configuration so reuse cannot silently attach to stale mounts.
 
     Hash requested values rather than exposing profile paths and volume sources in labels.
     Keep mount order: later arguments can override earlier mount destinations.
-    Per-process tempdir-sourced mounts (the symlink-safe skills copy) have their volatile
-    host path replaced by a stable placeholder: the path is random per process, so hashing
-    it made the label differ across processes and cross-process container reuse never
-    matched for users with any symlink under ``skills/``. The container path stays in the
-    hash, so moving where that mount lands still forces a fresh container.
+    The caller marks known generated skills copies separately from direct binds and supplies
+    their original source. All other sources retain their identity, including user temp binds.
     """
     normalized_home = os.path.normcase(os.path.abspath(os.path.expanduser(hermes_home)))
-    canonical_mounts = [
-        (f"<volatile-tempdir-mount>:{spec.split(':', 1)[1]}"
-         if _is_volatile_mount_spec(spec) else spec)
-        for spec in mount_args]
     payload = json.dumps(
-        {"image": image, "mount_args": canonical_mounts, "hermes_home": normalized_home},
+        {"image": image, "mount_args": mount_args, "hermes_home": normalized_home},
         sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
@@ -528,11 +497,12 @@ _RO_MOUNT_SOURCES = (
     ("get_cache_directory_mounts", False, "cache dir"))
 
 
-def _readonly_skill_mount_args() -> list[str]:
+def _readonly_skill_mount_args(*, fingerprint_args: list[str] | None = None) -> list[str]:
     """``-v host:container:ro`` args for credential files, skill dirs and cache dirs. Read-only so the
     container can authenticate/read but never modify host state. Missing or wrong-kind sources are
     skipped with a warning (Docker-in-Docker auto-creates a missing file source as a directory,
-    which would exit 125)."""
+    which would exit 125). If supplied, fingerprint_args receives the same mounts with known
+    generated skills copies identified by a distinct marker and their original source."""
     args: list[str] = []
     try:
         import tools.credential_files as cf
@@ -548,6 +518,11 @@ def _readonly_skill_mount_args() -> list[str]:
                     logger.warning("Docker: skipping %s mount — %s: %s", noun.split()[0], problem, src)
                     continue
                 args.extend(["-v", f"{entry['host_path']}:{entry['container_path']}:ro"])
+                if fingerprint_args is not None:
+                    source, kind = entry["host_path"], "-v"
+                    if getter == "get_skills_directory_mount" and "reuse_source" in entry:
+                        source, kind = entry["reuse_source"], "<sanitized-skills-copy>"
+                    fingerprint_args.extend([kind, f"{source}:{entry['container_path']}:ro"])
                 logger.info("Docker: mounting %s %s -> %s", noun, entry["host_path"], entry["container_path"])
     except Exception as e:
         logger.debug("Docker: could not load credential file mounts: %s", e)
@@ -687,10 +662,12 @@ class DockerEnvironment(BaseEnvironment):
                 mount, cwd)
             cwd = mount
             self.cwd = mount
-        volume_args.extend(_readonly_skill_mount_args())
+        fingerprint_mounts = [*writable_args, *volume_args]
+        volume_args.extend(_readonly_skill_mount_args(fingerprint_args=fingerprint_mounts))
         egress_label, egress_volume_args, egress_host_args, env_args, validated_extra = (
             self._egress_and_env_args(extra_args))
         volume_args.extend(egress_volume_args)
+        fingerprint_mounts.extend(egress_volume_args)
         user_args = _host_user_args(run_as_host_user)
 
         # Resolved once so it works when /usr/local/bin is not in PATH (macOS services).
@@ -737,7 +714,7 @@ class DockerEnvironment(BaseEnvironment):
         # changed image/mount/home configuration must start a fresh container.
         if not shared_container_key:
             self._labels[_ENVIRONMENT_LABEL_KEY] = _reuse_environment_fingerprint(
-                image=image, mount_args=[*writable_args, *volume_args],
+                image=image, mount_args=fingerprint_mounts,
                 hermes_home=str(get_hermes_home()))
         # Saved for container recreation on "No such container" recovery.
         self._image = image

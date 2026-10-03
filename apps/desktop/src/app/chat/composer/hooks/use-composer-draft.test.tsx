@@ -173,7 +173,20 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
   })
 
   it('carries a pre-session draft onto the session the fresh chat is re-homed to, before its runtime id is known', () => {
-    const preSessionAttachment: ComposerAttachment = { id: 'file:new', kind: 'file', label: 'new.txt' }
+    const preSessionAttachment: ComposerAttachment = {
+      id: 'file:new',
+      kind: 'file',
+      label: 'new.txt',
+      path: '/srv/hermes/profiles/owner/uploads/new.txt',
+      stagedUpload: {
+        install_id: '11111111111111111111111111111111',
+        path: '/srv/hermes/profiles/owner/uploads/new.txt',
+        profile_home: '/srv/hermes/profiles/owner',
+        profile_incarnation: '22222222222222222222222222222222'
+      },
+      titlePreview: 'Pasted text used to title the new session'
+    }
+
     stashSessionDraft(null, 'do not lose this draft', [preSessionAttachment])
 
     const { rerender } = render(
@@ -717,4 +730,34 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
     expectForegroundSelectionPreserved(foreground)
     foreground.editor.remove()
   })
+})
+
+it('keeps touch mount and turn completion from focusing the editor while accepting deliberate focus', () => {
+  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
+  let draft!: ReturnType<typeof useComposerDraft>
+
+  function TouchDraft({ disabled }: { disabled: boolean }) {
+    draft = useComposerDraft({
+      activeQueueSessionKey: 'touch-focus', focusKey: null, inputDisabled: disabled,
+      queueEditRef: { current: null }, sessionId: 'touch-focus'
+    })
+
+    return <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} tabIndex={0} />
+  }
+
+  try {
+    const { rerender } = render(<TouchDraft disabled={false} />)
+    expect(globalThis.document.activeElement).not.toBe(draft.editorRef.current)
+    rerender(<TouchDraft disabled={true} />)
+    rerender(<TouchDraft disabled={false} />)
+    expect(globalThis.document.activeElement).not.toBe(draft.editorRef.current)
+    act(() => draft.focusInput())
+    expect(globalThis.document.activeElement).toBe(draft.editorRef.current)
+  } finally {
+    cleanup()
+    clearSessionDraft('touch-focus')
+    mainComposerScope.clear()
+    markActiveComposer('main')
+    vi.unstubAllGlobals()
+  }
 })

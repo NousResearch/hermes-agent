@@ -100,7 +100,7 @@ def _spawn_serve(port: int, tmp_path: Path, merge_stderr: bool = True) -> subpro
     code = (
         "from hermes_cli.web_server import start_server\n"
         f"start_server(host='127.0.0.1', port={port}, open_browser=False, "
-        "headless=True)\n"
+        "ui_surface='serve')\n"
     )
     return subprocess.Popen(
         [sys.executable, "-c", code],

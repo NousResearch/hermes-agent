@@ -592,35 +592,28 @@ def test_reuse_environment_fingerprint_tracks_immutable_configuration():
     )
 
 
-def test_reuse_environment_fingerprint_ignores_volatile_temp_mounts(tmp_path, monkeypatch):
-    """A mount whose host source is a per-process tempdir must not churn the
-    reuse label: symlinked skills trees are served from a fresh mkdtemp copy
-    every process (``_safe_skills_path``), so hashing that path made the
-    label differ across processes and container reuse never matched."""
+@pytest.mark.parametrize("source_prefix,destination,mode", [
+    ("project", "/workspace", "rw"),
+    ("hermes-skills-safe", "/root/.hermes/skills", "ro"),
+])
+def test_reuse_environment_fingerprint_preserves_user_temp_mounts(
+    tmp_path, monkeypatch, source_prefix, destination, mode,
+):
+    """Temp paths, even ones resembling generated skills copies, retain user bind identity."""
     temp_root = tmp_path / "tmp"
     temp_root.mkdir()
     monkeypatch.setattr(docker_env.tempfile, "gettempdir", lambda: str(temp_root))
-    stable_source = str(tmp_path / "data")
     process_a = docker_env._reuse_environment_fingerprint(
         image="python:3.11",
-        mount_args=["-v", f"{temp_root}/hermes-skills-safe-a1b2c3:/root/.hermes/skills:ro",
-                    "-v", f"{stable_source}:/data:ro"],
+        mount_args=["-v", f"{temp_root}/{source_prefix}-a:{destination}:{mode}"],
         hermes_home="/profiles/alpha",
     )
     process_b = docker_env._reuse_environment_fingerprint(
         image="python:3.11",
-        mount_args=["-v", f"{temp_root}/hermes-skills-safe-d4e5f6:/root/.hermes/skills:ro",
-                    "-v", f"{stable_source}:/data:ro"],
+        mount_args=["-v", f"{temp_root}/{source_prefix}-b:{destination}:{mode}"],
         hermes_home="/profiles/alpha",
     )
-    assert process_a == process_b
-    # A real mount change still forces a fresh container.
-    assert process_a != docker_env._reuse_environment_fingerprint(
-        image="python:3.11",
-        mount_args=["-v", f"{temp_root}/hermes-skills-safe-a1b2c3:/root/.hermes/skills:ro",
-                    "-v", f"{tmp_path}/other-data:/data:ro"],
-        hermes_home="/profiles/alpha",
-    )
+    assert process_a != process_b
 
 
 def test_run_command_sanitizes_unsafe_task_id(monkeypatch):
@@ -744,6 +737,40 @@ def test_sandbox_dir_name_never_resolves_to_the_sandbox_root():
 
 
 @pytest.mark.require_symlinks
+@pytest.mark.parametrize("starts_sanitized", [False, True])
+def test_skills_mount_sanitization_changes_reuse_identity(monkeypatch, tmp_path, starts_sanitized):
+    """Direct skills binds and sanitized copies must never share a reuse identity."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/synthetic/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    monkeypatch.setattr(docker_env.DockerEnvironment, "init_session", lambda self: None)
+    hermes_home = tmp_path / "alpha"
+    skills_dir = hermes_home / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text("# skill")
+    link = skills_dir / "link"
+    if starts_sanitized:
+        link.symlink_to(tmp_path / "outside")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(docker_env.tempfile, "gettempdir", lambda: str(tmp_path))
+    calls = _mock_subprocess_run(monkeypatch)
+
+    first = _make_dummy_env()
+    direct_mount = f"{skills_dir}:/root/.hermes/skills:ro"
+    first_mounts = _bind_mount_specs(_run_args_from_calls(calls))
+    assert (direct_mount in first_mounts) is (not starts_sanitized)
+
+    if starts_sanitized:
+        link.unlink()
+    else:
+        link.symlink_to(tmp_path / "outside")
+    calls.clear()
+    second = _make_dummy_env()
+    second_mounts = _bind_mount_specs(_run_args_from_calls(calls))
+    assert (direct_mount in second_mounts) is starts_sanitized
+    assert first._labels["hermes-environment"] != second._labels["hermes-environment"]
+
+
+@pytest.mark.require_symlinks
 def test_symlinked_skills_tree_reuses_container_across_processes(monkeypatch, tmp_path):
     """A symlink under ``skills/`` makes the skills mount a fresh mkdtemp copy per
     process (and even per DockerEnvironment construction — ``_safe_skills_path``
@@ -758,22 +785,23 @@ def test_symlinked_skills_tree_reuses_container_across_processes(monkeypatch, tm
     (skills_dir / "some-skill" / "SKILL.md").write_text("# skill")
     (skills_dir / "link").symlink_to(tmp_path / "outside")  # forces the safe-copy path
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    _mock_subprocess_run(monkeypatch)
+    monkeypatch.setattr(docker_env.tempfile, "gettempdir", lambda: str(tmp_path))
+    calls = _mock_subprocess_run(monkeypatch)
 
-    config = {"image": "python:3.11", "volumes": ["volume-a:/workspace"]}
+    def skills_mount():
+        return next(spec for spec in _bind_mount_specs(_run_args_from_calls(calls))
+                    if spec.endswith(":/root/.hermes/skills:ro"))
+
+    config = {"image": "python:3.11", "volumes": [f"{tmp_path}/project-a:/workspace:rw"]}
     first = _make_dummy_env(**config)
+    first_mount = skills_mount()
+    calls.clear()
     second = _make_dummy_env(**config)
+    assert first_mount != skills_mount(), "expected a fresh symlink-safe skills copy"
     assert first._labels["hermes-environment"] == second._labels["hermes-environment"]
-    # The safe copy really is per-construction volatile: proof the stability above
-    # comes from canonicalization, not from the mount happening to be stable.
-    mounts = []
-    for entry in docker_env._readonly_skill_mount_args():
-        if entry not in ("-v",) and ":/root/.hermes/skills" in entry:
-            mounts.append(entry)
-    assert mounts, "expected a skills mount from the symlink-safe copy"
 
-    # A real (non-tempdir) mount change must still start a fresh container.
-    changed = dict(config, volumes=["volume-b:/workspace"])
+    # A user bind change under the same temp root must still start a fresh container.
+    changed = dict(config, volumes=[f"{tmp_path}/project-b:/workspace:rw"])
     third = _make_dummy_env(**changed)
     assert third._labels["hermes-environment"] != first._labels["hermes-environment"]
 

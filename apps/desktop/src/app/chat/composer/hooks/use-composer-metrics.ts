@@ -32,19 +32,31 @@ export interface ComposerFit {
   foldVoice: boolean
   minimal: boolean
   tight: boolean
+  singleColumn: boolean
 }
 
-const ROOMY: ComposerFit = { compactPill: false, foldVoice: false, minimal: false, tight: false }
+const ROOMY: ComposerFit = { compactPill: false, foldVoice: false, minimal: false, tight: false, singleColumn: false }
 
-const fitForWidth = (width: number): ComposerFit => ({
-  compactPill: width < COMPOSER_COMPACT_PILL_PX,
-  foldVoice: width < COMPOSER_FOLD_VOICE_PX,
-  minimal: width < COMPOSER_MINIMAL_PX,
-  tight: width < COMPOSER_STACK_BREAKPOINT_PX
-})
+const fitForWidth = (width: number, controlSize: number): ComposerFit => {
+  const growth = Math.max(0, controlSize - 24)
+
+  return {
+    compactPill: width < COMPOSER_COMPACT_PILL_PX + growth * 5,
+    foldVoice: width < COMPOSER_FOLD_VOICE_PX + growth * 5,
+    minimal: width < COMPOSER_MINIMAL_PX + growth * 3,
+    tight: width < COMPOSER_STACK_BREAKPOINT_PX + growth * 5,
+    // Two buttons + gap + surface padding + border. At the 80px pane floor
+    // touch controls keep their hit size by occupying separate rows.
+    singleColumn: width < controlSize * 2 + 24
+  }
+}
 
 const sameFit = (a: ComposerFit, b: ComposerFit) =>
-  a.compactPill === b.compactPill && a.foldVoice === b.foldVoice && a.minimal === b.minimal && a.tight === b.tight
+  a.compactPill === b.compactPill &&
+  a.foldVoice === b.foldVoice &&
+  a.minimal === b.minimal &&
+  a.tight === b.tight &&
+  a.singleColumn === b.singleColumn
 
 interface UseComposerMetricsResult extends ComposerFit {
   stacked: boolean
@@ -130,7 +142,13 @@ export function useComposerMetrics({
     const surfaceHeight = composerSurfaceRef.current?.getBoundingClientRect().height
 
     if (width > 0) {
-      const nextFit = fitForWidth(width)
+      const token = getComputedStyle(composer).getPropertyValue('--composer-control-size').trim()
+
+      const size =
+        parseFloat(token) *
+        (token.endsWith('rem') ? parseFloat(getComputedStyle(document.documentElement).fontSize) : 1)
+
+      const nextFit = fitForWidth(width, Number.isFinite(size) ? size : 24)
 
       if (!sameFit(nextFit, lastFitRef.current)) {
         lastFitRef.current = nextFit
@@ -231,6 +249,7 @@ export function useComposerMetrics({
     foldVoice: fit.foldVoice || fit.minimal,
     minimal: fit.minimal,
     stacked: expanded || fit.tight,
-    tight: fit.tight
+    tight: fit.tight,
+    singleColumn: fit.singleColumn
   }
 }

@@ -266,6 +266,7 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
                 label: next.label,
                 path: next.path,
                 refText: next.refText,
+                stagedUpload: next.stagedUpload,
                 uploadState: next.uploadState
               })
             } else {

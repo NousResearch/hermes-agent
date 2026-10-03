@@ -764,9 +764,20 @@ export const focusComposerInput = (el: HTMLElement | null) => {
     el.focus({ preventScroll: true })
   }
 
+  const retry = () => {
+    // A native media control may take focus after the initial pointer move.
+    // Its newer focus wins over these queued retries; a fresh explicit
+    // composer request still gets the synchronous focus call below.
+    if (document.activeElement instanceof HTMLMediaElement) {
+      return
+    }
+
+    focus()
+  }
+
   focus()
-  window.requestAnimationFrame(focus)
-  window.setTimeout(focus, 0)
+  window.requestAnimationFrame(retry)
+  window.setTimeout(retry, 0)
 }
 
 /** Drop focus from the main composer input (status-stack chrome, sidebar, etc.).

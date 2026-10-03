@@ -154,6 +154,41 @@ export const slashCmdCoreEn = {
       none: 'no user widgets found',
       summary: (parts: string) => `widgets — ${parts}`
     },
+    widgets: {
+      added: (names: string) => `added: ${names}`,
+      removed: (names: string) => `removed: ${names}`,
+      error: (reason: string) => `widgets: ${reason}`,
+      list: {
+        builtIn: 'built-in',
+        // {0}=source count, {1}=one indented "  id  [state]  src" line per source
+        summary: (count: string, lines: string) => `widgets (${count}):\n${lines}`,
+        none: 'widgets (0): none registered',
+        open: 'open',
+        loaded: 'loaded'
+      },
+      reload: {
+        // {0}=widget file path
+        label: (target: string) => `widgets reload ${target}`
+      },
+      load: {
+        label: 'widgets load',
+        usage: 'usage: /widgets load <path-to.mjs>'
+      },
+      unload: {
+        // {0}=widget app id
+        ok: (id: string) => `widgets: unloaded ${id}`,
+        usage: 'usage: /widgets unload <id>'
+      },
+      update: {
+        // {0}=widget app id, {1}=listeners, {2}=docked note (empty when nothing docked)
+        done: (scope: string, listeners: string, docked: string) =>
+          `widgets: update ${scope} — signaled ${listeners}${docked}`,
+        docked: (ids: string) => `docked: ${ids}`,
+        listenerOne: (count: string) => `${count} listener`,
+        listenerOther: (count: string) => `${count} listeners`,
+        unknown: (id: string) => `widgets: unknown widget app: ${id}`
+      }
+    },
     heapdump: {
       // {0}=heap size, {1}=rss size (pre-formatted)
       writing: (heap: string, rss: string) => `writing heap dump (heap ${heap} · rss ${rss})…`,

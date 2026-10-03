@@ -240,20 +240,26 @@ def prune_idle_entries(root: Path, max_idle_hours: float, skip_names: frozenset[
                 shutil.rmtree(entry, ignore_errors=True)
             else:
                 entry.unlink()
-        except OSError:
+        except OSError as exc:
+            # Attempted, failed outright (permissions, vanished mid-run): the record
+            # is the audit; the count only ever claims confirmed removals.
+            logger.info(
+                "scratch prune: removal failed entry=%r kind=%s error=%s",
+                entry.name, kind, exc,
+            )
             continue
-        removed += 1
-        # The record is written only for confirmed departures: ``rmtree(ignore_errors=True)``
-        # can leave residue, and an audit trail must not claim a removal that did not happen.
         if entry.exists():
+            # ``rmtree(ignore_errors=True)`` can leave residue — a partial removal is
+            # not a removal. Recorded, never counted (#132401 review round 2).
             logger.info(
                 "scratch prune: removal left residue entry=%r kind=%s bytes=%d newest_mtime=%.0f",
                 entry.name, kind, bytes_ or 0, newest or 0.0,
             )
-        else:
-            logger.info(
-                "scratch prune: removed entry=%r kind=%s bytes=%d newest_mtime=%.0f",
-                entry.name, kind, bytes_ or 0, newest or 0.0,
-            )
+            continue
+        logger.info(
+            "scratch prune: removed entry=%r kind=%s bytes=%d newest_mtime=%.0f",
+            entry.name, kind, bytes_ or 0, newest or 0.0,
+        )
+        removed += 1
     release_git_worktrees(repos)
     return removed

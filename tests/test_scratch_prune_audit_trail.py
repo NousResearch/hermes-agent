@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import time
+from pathlib import Path
 
 import pytest
 
@@ -132,3 +134,55 @@ def test_prune_summary_logged_at_boot_caller(tmp_path, audit_records):
     summary = [r.message for r in audit_records.records if "removed 2 idle entry" in r.message]
     all_records = [r.message for r in audit_records.records]
     assert summary, all_records
+
+
+def test_prune_failed_removal_not_counted_and_logged(tmp_path, audit_records, monkeypatch):
+    """andrexibiza's C2/F2 (issue #132401): a failed directory removal must not be
+    reported as a removal — the count claims confirmed departures only, and the
+    failure leaves its own record. Monkeypatched rmtree leaves the entry intact,
+    mimicking an ignore_errors-suppressed partial failure (permissions, locked files)."""
+    import hermes_constants_scratch as scratch_mod
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "locked-lane"
+    entry.mkdir()
+    (entry / "payload").write_text("data\n", encoding="utf-8")
+    _age(entry)
+    _age(entry / "payload")
+
+    real_rmtree = shutil.rmtree
+
+    def failing_rmtree(path, *args, **kwargs):
+        # Pure residue simulation: rmtree swallows every error (ignore_errors
+        # semantics under a fully-locked tree) and the entry survives intact.
+        return None
+
+    monkeypatch.setattr(scratch_mod.shutil, "rmtree", failing_rmtree)
+    assert prune_scratch_dir(scratch) == 0  # not counted — the entry still exists
+    all_records = [r.message for r in audit_records.records]
+    residue = [m for m in all_records if "removal left residue" in m and "locked-lane" in m]
+    assert residue, all_records
+    assert not any("removed entry='locked-lane'" in m for m in all_records)
+
+
+def test_prune_oserror_failure_logged_not_counted(tmp_path, audit_records, monkeypatch):
+    """An outright OSError on the delete path (vanished mid-run, permissions) is
+    recorded as a failure and never counted as a removal."""
+    import hermes_constants_scratch as scratch_mod
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "doomed-lane"
+    entry.mkdir()
+    (entry / "f").write_text("x", encoding="utf-8")
+    _age(entry)
+    _age(entry / "f")
+
+    def exploding_rmtree(path, *args, **kwargs):
+        raise OSError("simulated permission denied")
+
+    monkeypatch.setattr(scratch_mod.shutil, "rmtree", exploding_rmtree)
+    assert prune_scratch_dir(scratch) == 0
+    all_records = [r.message for r in audit_records.records]
+    failed = [m for m in all_records if "removal failed" in m and "doomed-lane" in m]
+    assert failed, all_records
+    assert entry.exists()  # and the entry itself survives the failed attempt

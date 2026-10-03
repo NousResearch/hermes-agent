@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from types import SimpleNamespace
 from typing import Any, Dict, List
 
 import pytest
@@ -158,6 +159,79 @@ def test_missing_method_returns_error():
     assert result.get("cdp_docs") == browser_cdp_tool.CDP_DOCS_URL
 
 
+def test_browser_cdp_bounds_oversized_result_on_stateless_path(monkeypatch):
+    monkeypatch.setattr(browser_cdp_tool, "_MAX_CDP_RESULT_CHARS", 100)
+    monkeypatch.setattr(browser_cdp_tool, "_resolve_cdp_endpoint", lambda: "ws://cdp.test")
+
+    async def fake_cdp_call(*args, **kwargs):
+        return {"data": "x" * 5000}
+
+    # Stub only the WebSocket transport; exercise browser_cdp's production
+    # redaction, result bound, and final JSON serialization.
+    monkeypatch.setattr(browser_cdp_tool, "_cdp_call", fake_cdp_call)
+
+    result = json.loads(browser_cdp_tool.browser_cdp(method="Runtime.evaluate"))
+
+    assert result["success"] is True
+    assert result["result"] == {
+        "truncated": True,
+        "reason": "CDP result exceeded the model output limit",
+        "max_chars": 100,
+    }
+    assert "x" * 5000 not in json.dumps(result)
+
+
+def test_browser_cdp_bounds_oversized_result_on_supervisor_path(monkeypatch):
+    monkeypatch.setattr(browser_cdp_tool, "_MAX_CDP_RESULT_CHARS", 100)
+
+    loop = asyncio.new_event_loop()
+    loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+    loop_thread.start()
+
+    class FakeSupervisor:
+        _loop = loop
+
+        def snapshot(self):
+            return SimpleNamespace(frame_tree={
+                "top": {"frame_id": "frame-1", "session_id": "session-1"},
+                "children": [],
+            })
+
+        async def _cdp(self, method, params, *, session_id, timeout):
+            assert method == "Runtime.evaluate"
+            assert session_id == "session-1"
+            return {"result": {"data": "y" * 5000}}
+
+    class FakeRegistry:
+        def get(self, task_id):
+            assert task_id == "task-1"
+            return FakeSupervisor()
+
+    from tools import browser_supervisor
+    monkeypatch.setattr(browser_supervisor, "SUPERVISOR_REGISTRY", FakeRegistry())
+
+    try:
+        # The supervisor's _cdp coroutine is the WebSocket transport stub;
+        # browser_cdp and _browser_cdp_via_supervisor remain production code.
+        result = json.loads(browser_cdp_tool.browser_cdp(
+            method="Runtime.evaluate",
+            frame_id="frame-1",
+            task_id="task-1",
+        ))
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=3.0)
+        loop.close()
+
+    assert result["success"] is True
+    assert result["frame_id"] == "frame-1"
+    assert result["session_id"] == "session-1"
+    assert result["result"] == {
+        "truncated": True,
+        "reason": "CDP result exceeded the model output limit",
+        "max_chars": 100,
+    }
+    assert "y" * 5000 not in json.dumps(result)
 
 
 # ---------------------------------------------------------------------------

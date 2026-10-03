@@ -19,6 +19,8 @@ from tools.browser_extension_router import routed_browser_handler
 logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
+_MAX_CDP_FRAME_BYTES = 64 * 1024 * 1024
+_MAX_CDP_RESULT_CHARS = 2_000_000
 
 # Browser/target inspection that never reads page body/cookies/DOM/storage — stays
 # usable so the model can list tabs or navigate away from a blocked page.
@@ -116,6 +118,15 @@ def _blocked(message: str, method: str) -> str:
     return tool_error(message, method=method, cdp_docs=CDP_DOCS_URL)
 
 
+def _bound_cdp_result(result: Any) -> Any:
+    """Keep oversized CDP payloads out of model-facing tool results."""
+    encoded = json.dumps(result, ensure_ascii=False)
+    if len(encoded) <= _MAX_CDP_RESULT_CHARS:
+        return result
+    return {"truncated": True, "reason": "CDP result exceeded the model output limit",
+            "max_chars": _MAX_CDP_RESULT_CHARS}
+
+
 def _expression_private_target(expression: str) -> Optional[str]:
     from tools.browser_tool_eval_policy import _expression_targets_private_url
     return _expression_targets_private_url(expression)
@@ -171,9 +182,8 @@ async def _cdp_call(ws_url: str, method: str, params: Dict[str, Any], target_id:
     page-level session over the browser-level WebSocket; without it ``method`` runs at browser level."""
     assert websockets is not None  # guarded by _WS_AVAILABLE at call-site
     from agent.proxy_bypass import loopback_connect_kwargs
-    # max_size=None: CDP responses (e.g. DOM.getDocument) can be large; ping_interval=None: CDP
-    # servers don't expect pings.
-    async with websockets.connect(ws_url, max_size=None, open_timeout=timeout, close_timeout=5,
+    # Bound frames before websockets buffers them; CDP servers don't expect pings.
+    async with websockets.connect(ws_url, max_size=_MAX_CDP_FRAME_BYTES, open_timeout=timeout, close_timeout=5,
                                   ping_interval=None, **loopback_connect_kwargs(ws_url)) as ws:
         next_id = 1
 
@@ -254,7 +264,7 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
         return tool_error(f"CDP call via supervisor failed: {type(exc).__name__}: {exc}", cdp_docs=CDP_DOCS_URL)
 
     return json.dumps({"success": True, "method": method, "frame_id": frame_id, "session_id": child_sid,
-                       "result": result_msg.get("result", {})}, ensure_ascii=False)
+                       "result": _bound_cdp_result(result_msg.get("result", {}))}, ensure_ascii=False)
 
 
 def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id: Optional[str] = None,
@@ -313,9 +323,9 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         logger.exception("browser_cdp unexpected error")
         return tool_error(f"Unexpected error: {type(exc).__name__}: {exc}", method=method)
 
-    payload: Dict[str, Any] = {"success": True, "method": method, "result": _redact_cdp_output(
+    payload: Dict[str, Any] = {"success": True, "method": method, "result": _bound_cdp_result(_redact_cdp_output(
         result, always_paths=_CDP_ALWAYS_BINARY_PATHS.get(method, ()),
-        flagged_paths=_CDP_FLAGGED_BINARY_PATHS.get(method, ()))}
+        flagged_paths=_CDP_FLAGGED_BINARY_PATHS.get(method, ()) ))}
     if target_id:
         payload["target_id"] = target_id
     return json.dumps(payload, ensure_ascii=False)

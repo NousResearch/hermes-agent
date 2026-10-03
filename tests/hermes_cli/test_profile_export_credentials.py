@@ -108,7 +108,7 @@ class TestCredentialExclusion:
         (profile_dir / "config.yaml.bak-my-note").write_text(f"model:\n  api_key: {_LEAKED_KEY}\n")
         (profile_dir / "GOOGLE_CHAT_USER_TOKENS").mkdir(exist_ok=True)
         (profile_dir / "GOOGLE_CHAT_USER_TOKENS" / "upper.json").write_text("fake-credential")
-        nested = ["skills/s/.ssh/id_rsa", "skills/s/.aws/credentials", "skills/s/.envrc"]
+        nested = [f"skills/s/{r}" for r in (".ssh/id_rsa", ".aws/credentials", ".gnupg/x", ".kube/config", ".envrc")]
         for rel in nested:
             (profile_dir / rel).parent.mkdir(parents=True, exist_ok=True)
             (profile_dir / rel).write_text("fake-credential")

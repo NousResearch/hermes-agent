@@ -26,19 +26,20 @@ def test_object_without_properties_gets_empty_properties():
 
 
 def test_nested_object_without_properties_gets_empty_properties():
+    # NOTE (#102795): bare nested objects keep the llama.cpp injection;
+    # ANNOTATED ones (with description et al) skip it for Bedrock — see
+    # test_nested_annotated_empty_object_skips_properties_injection.
     tools = [_tool("t", {
         "type": "object",
         "properties": {
             "name": {"type": "string"},
-            "arguments": {"type": "object", "description": "free-form"},
+            "arguments": {"type": "object"},
         },
         "required": ["name"],
     })]
     out = sanitize_tool_schemas(tools)
     args = out[0]["function"]["parameters"]["properties"]["arguments"]
-    assert args["type"] == "object"
-    assert args["properties"] == {}
-    assert args["description"] == "free-form"
+    assert args == {"type": "object", "properties": {}, "required": []}
 
 
 def test_bare_string_object_value_replaced_with_schema_dict():
@@ -591,3 +592,78 @@ def test_builtin_tool_without_required_gets_empty_required_list():
         "properties": {"opts": {"type": "object", "properties": {"k": {"type": "string"}}}},
     })])[0]["function"]["parameters"]
     assert nested["properties"]["opts"]["required"] == []
+
+
+def test_annotated_empty_object_skips_properties_injection_bedrock():
+    # Issue #102795: Bedrock (draft 2020-12 strict) rejects
+    # {type: object, description: ..., properties: {}} while accepting
+    # both halves separately. The llama.cpp-motivated empty-properties
+    # injection must not fire on annotated nodes (e.g. delegate_task's
+    # per-task output_schema). #56123 still emits required: [] (valid
+    # everywhere, and without a properties map there is nothing to prune).
+    tools = [_tool("t", {"type": "object", "description": "free-form"})]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    assert "properties" not in params
+    assert params == {"type": "object", "description": "free-form", "required": []}
+
+
+def test_nested_annotated_empty_object_skips_properties_injection():
+    # Same shape as delegate_task tasks[].output_schema.
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "output_schema": {"type": "object", "description": "child schema"},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    nested = out[0]["function"]["parameters"]["properties"]["output_schema"]
+    assert "properties" not in nested
+    assert nested == {"type": "object", "description": "child schema", "required": []}
+
+
+def test_bare_empty_object_still_gets_properties_for_llamacpp():
+    # Guard: unannotated free-form objects keep the llama.cpp injection.
+    tools = [_tool("t", {"type": "object"})]
+    out = sanitize_tool_schemas(tools)
+    assert out[0]["function"]["parameters"] == {
+        "type": "object", "properties": {}, "required": []}
+
+
+def test_each_annotation_key_skips_empty_properties_injection():
+    # Issue #102795 follow-up: every key in _ANNOTATION_KEYS triggers
+    # the Bedrock exception, not just description.
+    from tools.schema_sanitizer import _ANNOTATION_KEYS
+    assert len(_ANNOTATION_KEYS) >= 2
+    for key in sorted(_ANNOTATION_KEYS):
+        node = {"type": "object", key: "x"}
+        tools = [_tool("t", {"type": "object",
+                             "properties": {"p": node}})]
+        out = sanitize_tool_schemas(tools)
+        got = out[0]["function"]["parameters"]["properties"]["p"]
+        assert "properties" not in got, key
+        assert got.get("type") == "object" and got.get(key) == "x", key
+
+
+def test_annotated_node_with_dangling_required_prunes_to_empty_list():
+    # Regression guard for the #102795 + #56123 intersection: an annotated node that
+    # skips the properties injection must still prune a dangling required to [] (the
+    # #56123 guarantee), never leave it referencing properties that no longer exist.
+    tools = [_tool("t", {"type": "object", "properties": {"p": {
+        "type": "object", "description": "d", "required": ["nope"],
+    }}})]
+    out = sanitize_tool_schemas(tools)
+    got = out[0]["function"]["parameters"]["properties"]["p"]
+    assert "properties" not in got
+    assert got["required"] == []
+
+
+def test_annotated_node_prunes_required_to_surviving_properties():
+    # A required name that does survive sanitization is kept even on annotated nodes.
+    tools = [_tool("t", {"type": "object", "properties": {"p": {
+        "type": "object", "description": "d", "required": ["k"],
+        "properties": {"k": {"type": "string"}},
+    }}})]
+    out = sanitize_tool_schemas(tools)
+    got = out[0]["function"]["parameters"]["properties"]["p"]
+    assert got["required"] == ["k"]

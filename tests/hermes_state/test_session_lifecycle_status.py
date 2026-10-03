@@ -130,6 +130,30 @@ def test_session_lifecycle_statuses_shapes(db):
     }
 
 
+def test_session_lifecycle_status_uses_last_visible_message_after_undo(db):
+    db.create_session("s_undo_completed_turn", source="cli")
+    db.append_message("s_undo_completed_turn", "user", "finish this")
+    db.append_message(
+        "s_undo_completed_turn", "assistant", "done", finish_reason="stop"
+    )
+    db.append_message("s_undo_completed_turn", "user", "undo this ask")
+
+    db.rewind_user_turn("s_undo_completed_turn", -1)
+
+    assert db.session_lifecycle_statuses(["s_undo_completed_turn"])[
+        "s_undo_completed_turn"
+    ] == SESSION_STATUS_COMPLETE
+
+
+def test_session_lifecycle_status_ignores_trailing_hidden_message(db):
+    db.create_session("s_hidden_tail", source="cli")
+    db.append_message("s_hidden_tail", "user", "finish this")
+    db.append_message("s_hidden_tail", "assistant", "done", finish_reason="stop")
+    db.append_message("s_hidden_tail", "user", "hidden scaffolding", display_kind="hidden")
+
+    assert db.session_lifecycle_statuses(["s_hidden_tail"])["s_hidden_tail"] == SESSION_STATUS_COMPLETE
+
+
 def test_session_lifecycle_statuses_empty_input(db):
     assert db.session_lifecycle_statuses([]) == {}
     assert db.session_lifecycle_statuses([None, ""]) == {}

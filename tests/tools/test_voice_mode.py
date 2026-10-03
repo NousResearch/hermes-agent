@@ -918,6 +918,28 @@ class TestPlaybackInterrupt:
         with _playback_lock:
             assert vm._active_playback is None
 
+    def test_stopped_reply_is_not_restarted_by_the_next_player(self, monkeypatch, tmp_path):
+        """A player killed by stop_playback() exits non-zero. Reading that as a broken player
+        sent the reply to the next one, which played it again from the start."""
+        import tools.voice_mode as vm
+
+        reply = tmp_path / "reply.mp3"
+        reply.write_bytes(b"\xff\xfb")
+        tried = []
+
+        def _barged_in_player(cmd):
+            tried.append(cmd[0])
+            vm.stop_playback()
+            return False  # what the terminated player reports
+
+        monkeypatch.setattr(vm, "_system_player_candidates", lambda path: [["first", path], ["second", path]])
+        monkeypatch.setattr(vm.shutil, "which", lambda name: name)
+        monkeypatch.setattr(vm, "_run_system_player", _barged_in_player)
+
+        vm.play_audio_file(str(reply))
+
+        assert tried == ["first"]
+
 # ============================================================================
 # Continuous mode flow
 # ============================================================================

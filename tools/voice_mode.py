@@ -971,6 +971,7 @@ def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[s
 
 # ── Audio playback (interruptable) ──
 _active_playback: Optional[subprocess.Popen] = None  # so stop_playback can interrupt it
+_stop_requests = 0  # bumped by stop_playback so a playback in progress stops trying players
 _playback_lock = threading.Lock()
 
 
@@ -982,10 +983,11 @@ def _set_active_playback(proc) -> None:
 
 def stop_playback() -> None:
     """Interrupt the currently playing audio (if any)."""
-    global _active_playback
+    global _active_playback, _stop_requests
     with _playback_lock:
         proc = _active_playback
         _active_playback = None
+        _stop_requests += 1
     if proc and proc.poll() is None:
         with suppress(Exception):
             proc.terminate()
@@ -1141,20 +1143,26 @@ def _decode_ogg_for_afplay(file_path: str) -> Optional[str]:
         return None
 
 
-def _play_audio_file_impl(file_path: str) -> bool:
+def _play_audio_file_impl(file_path: str, stops: Optional[int] = None) -> bool:
+    if stops is None:
+        stops = _stop_requests
     if not os.path.isfile(file_path):
         logger.warning("Audio file not found: %s", file_path)
         return False
     wav_path = _decode_ogg_for_afplay(file_path)
     if wav_path:
         try:
-            return _play_audio_file_impl(wav_path)
+            return _play_audio_file_impl(wav_path, stops)
         finally:
             _unlink_quietly(wav_path)
     # macOS skips sounddevice output (TCC media-library prompt) and plays through afplay.
     if file_path.endswith(".wav") and _sounddevice_output_allowed() and _play_wav_via_sounddevice(file_path):
         return True
     for cmd in _system_player_candidates(file_path):
+        # A player killed by stop_playback() exits non-zero; the next one would restart the
+        # reply from the top. This also catches a stop that landed during the Ogg decode.
+        if _stop_requests != stops:
+            return False
         if shutil.which(cmd[0]) and _run_system_player(cmd):
             return True
     logger.warning("No audio player available for %s", file_path)

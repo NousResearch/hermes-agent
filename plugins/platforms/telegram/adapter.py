@@ -2995,6 +2995,10 @@ class TelegramAdapter(BasePlatformAdapter):
         app.add_handler(TelegramMessageHandler(
             filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
             self._handle_media_message))
+        # PTB 22.8 predates Bot API 10.1 RichMessage, so a rich-only inbound Message has no
+        # known content field and does not match TEXT/media filters. Observe all Message updates
+        # in a later group and no-op unless the raw/future rich_message payload is present.
+        app.add_handler(TelegramMessageHandler(filters.ALL, self._handle_rich_message), group=1)
         app.add_handler(CallbackQueryHandler(self._handle_callback_query))
         # Inline command picker; inert until the owner enables inline mode via BotFather /setinline.
         app.add_handler(InlineQueryHandler(self._handle_inline_query))
@@ -6581,6 +6585,26 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._ensure_forum_commands(update.message)
         self._enqueue_text_event(await self._build_triggered_event(msg, update, MessageType.TEXT))
 
+    async def _handle_rich_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle Bot API 10.1+ RichMessage content, including PTB-unknown raw payloads."""
+        msg = self._effective_update_message(update)
+        if not msg:
+            return
+        rich_text = self._extract_rich_message_text(msg)
+        if not rich_text:
+            return
+        # Future PTB may expose both a normal text projection and rich_message. Let the normal
+        # text handler own that case so one Telegram update cannot reach the agent twice.
+        if getattr(msg, "text", None) or getattr(msg, "caption", None):
+            return
+        if not self._is_user_authorized_from_message(msg):
+            self._log_blocked_user(msg)
+            return
+        if not self._gate_or_observe(msg, update, MessageType.TEXT):
+            return
+        await self._ensure_forum_commands(msg)
+        self._enqueue_text_event(await self._build_triggered_event(msg, update, MessageType.TEXT))
+
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
         msg = self._effective_update_message(update)
@@ -7045,59 +7069,128 @@ class TelegramAdapter(BasePlatformAdapter):
             self._dm_topics[cache_key] = int(thread_id)
             logger.info("[%s] Cached DM topic from message: %s -> thread_id=%s", self.name, cache_key, thread_id)
 
+    @staticmethod
+    def _rich_get(value: Any, key: str, default: Any = None) -> Any:
+        """Read a field from raw Bot API dicts or future PTB rich-message objects."""
+        if isinstance(value, dict):
+            return value.get(key, default)
+        return getattr(value, key, default)
+
+    @classmethod
+    def _inbound_rich_message_payload(cls, message: Any) -> Any:
+        """Return RichMessage from future PTB attrs or PTB 22.x api_kwargs."""
+        rich = getattr(message, "rich_message", None)
+        if rich is not None:
+            return rich
+        api_kwargs = getattr(message, "api_kwargs", None)
+        getter = getattr(api_kwargs, "get", None)
+        return getter("rich_message") if callable(getter) else None
+
     @classmethod
     def _flatten_rich_inline_text(cls, value: Any) -> str:
-        """Best-effort plaintext flattener for Bot API rich-message inline nodes."""
+        """Best-effort plaintext flattener for Bot API rich-message RichText nodes."""
         if value is None:
             return ""
         if isinstance(value, str):
             return value
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
             return "".join(cls._flatten_rich_inline_text(item) for item in value)
-        if isinstance(value, dict):
-            for key in ("text", "children"):
-                if value.get(key) is not None:
-                    return cls._flatten_rich_inline_text(value[key])
+        text = cls._rich_get(value, "text")
+        if text is not None:
+            return cls._flatten_rich_inline_text(text)
+        alternative = cls._rich_get(value, "alternative_text")
+        if isinstance(alternative, str):
+            return alternative
+        expression = cls._rich_get(value, "expression")
+        if isinstance(expression, str):
+            return expression
+        children = cls._rich_get(value, "children")
+        if children is not None:
+            return cls._flatten_rich_inline_text(children)
         return ""
 
     @classmethod
+    def _flatten_rich_table(cls, block: Any) -> List[str]:
+        """Render a RichBlockTable as Markdown so row/column relationships survive."""
+        rows = cls._rich_get(block, "cells", [])
+        if not isinstance(rows, (list, tuple)) or not rows:
+            return []
+        rendered: List[List[str]] = []
+        header_flags: List[bool] = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)):
+                continue
+            cells: List[str] = []
+            flags: List[bool] = []
+            for cell in row:
+                text = cls._flatten_rich_inline_text(cls._rich_get(cell, "text"))
+                cells.append(text.replace("|", "\\|").replace("\n", " ").strip())
+                flags.append(bool(cls._rich_get(cell, "is_header", False)))
+            if cells:
+                rendered.append(cells)
+                if len(rendered) == 1:
+                    header_flags = flags
+        if not rendered:
+            return []
+        width = max(len(row) for row in rendered)
+        rendered = [row + [""] * (width - len(row)) for row in rendered]
+        lines = ["| " + " | ".join(row) + " |" for row in rendered]
+        if header_flags and any(header_flags):
+            lines.insert(1, "| " + " | ".join(["---"] * width) + " |")
+        caption = cls._flatten_rich_inline_text(cls._rich_get(block, "caption")).strip()
+        return ([caption] if caption else []) + lines
+
+    @classmethod
     def _flatten_rich_blocks(cls, blocks: Any) -> str:
-        """Best-effort plaintext flattener for Bot API rich-message blocks."""
-        if not isinstance(blocks, list):
+        """Best-effort plaintext/Markdown flattener for Bot API rich-message blocks."""
+        if not isinstance(blocks, (list, tuple)):
             return ""
         lines: List[str] = []
         for block in blocks:
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "list":
-                for item in block.get("items", []):
-                    if not isinstance(item, dict):
-                        continue
-                    item_lines = cls._flatten_rich_blocks(item.get("blocks")).splitlines()
+            block_type = cls._rich_get(block, "type", "")
+            if block_type == "list":
+                for item in cls._rich_get(block, "items", []) or []:
+                    item_lines = cls._flatten_rich_blocks(cls._rich_get(item, "blocks")).splitlines()
                     if not item_lines:
                         continue
-                    label = item.get("label")
+                    label = cls._rich_get(item, "label")
                     lines.append(f"{label} {item_lines[0]}".strip() if label else item_lines[0])
                     lines.extend(item_lines[1:])
                 continue
-            text = cls._flatten_rich_inline_text(block.get("text"))
+            if block_type == "table":
+                lines.extend(cls._flatten_rich_table(block))
+                continue
+            nested = cls._rich_get(block, "blocks")
+            if nested is not None:
+                nested_text = cls._flatten_rich_blocks(nested)
+                if nested_text:
+                    lines.extend(nested_text.splitlines())
+            text = cls._flatten_rich_inline_text(cls._rich_get(block, "text"))
             if text:
                 lines.extend(text.splitlines())
+            expression = cls._rich_get(block, "expression")
+            if isinstance(expression, str) and expression and expression != text:
+                lines.append(expression)
+            summary = cls._flatten_rich_inline_text(cls._rich_get(block, "summary"))
+            if summary:
+                lines.append(summary)
         return "\n".join(line.rstrip() for line in lines if line)
 
     @classmethod
-    def _extract_rich_reply_text(cls, reply_to_message: Any) -> Optional[str]:
-        """Return plaintext echoed by Telegram's rich_message reply payload."""
+    def _extract_rich_message_text(cls, message: Any) -> Optional[str]:
+        """Return a model-friendly text projection of an inbound RichMessage."""
         try:
-            getter = getattr(getattr(reply_to_message, "api_kwargs", None), "get", None)
-            if not callable(getter):
+            rich = cls._inbound_rich_message_payload(message)
+            if rich is None:
                 return None
-            rich_getter = getattr(getter("rich_message"), "get", None)
-            if not callable(rich_getter):
-                return None
-            return cls._flatten_rich_blocks(rich_getter("blocks")).strip() or None
+            return cls._flatten_rich_blocks(cls._rich_get(rich, "blocks")).strip() or None
         except Exception:
             return None
+
+    @classmethod
+    def _extract_rich_reply_text(cls, reply_to_message: Any) -> Optional[str]:
+        """Return plaintext/Markdown echoed by Telegram's rich_message reply payload."""
+        return cls._extract_rich_message_text(reply_to_message)
 
     def _resolve_topic_binding(self, message: Message, chat_type: str, thread_id_str: Optional[str]) -> tuple:
         """Return ``(chat_topic, topic_skill)`` for a DM topic or bound forum topic (else Nones)."""
@@ -7201,8 +7294,9 @@ class TelegramAdapter(BasePlatformAdapter):
         from plugins.platforms.telegram.telegram_context import group_identity_prompt
         _chat_id_str = str(chat.id)
         channel_prompt = resolve_channel_prompt(self.config.extra, thread_id_str or _chat_id_str, _chat_id_str if thread_id_str else None)
+        message_text = expand_link_entities(message) or self._extract_rich_message_text(message) or ""
         return MessageEvent(
-            text=expand_link_entities(message), message_type=msg_type, source=source, raw_message=message,
+            text=message_text, message_type=msg_type, source=source, raw_message=message,
             message_id=str(message.message_id), platform_update_id=update_id,
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text, auto_skill=topic_skill,
             channel_prompt=group_identity_prompt(self, message, channel_prompt),

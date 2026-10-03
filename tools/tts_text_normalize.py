@@ -129,63 +129,6 @@ def normalize_symbols_for_tts(text: str) -> str:
     return _EMOJI_RE.sub("", _VARIATION_SELECTOR_RE.sub("", text))
 
 
-# --- Identifier-dense tokens (#119207) ---------------------------------------
-# Filenames with extensions, hashes, UUIDs, dense model/version IDs and paths
-# are read character-by-character ("peyton-sample-20260922.wav" becomes
-# "peyton dash sample dash two zero two six..."), making clean synthesized
-# audio sound corrupted. They become silence, never a hardcoded English
-# placeholder word (#86602: the reply may be in any language). Ordinary
-# prose, dates, ratios and short hyphenated words (COVID-19, well-known)
-# pass through untouched. Mirrored token-for-token by
-# apps/desktop/src/lib/speech-text.ts — keep both in lockstep and extend the
-# shared corpus (tests/fixtures/identifier_speech_corpus.json) first.
-
-_FILENAME_EXT_RE = re.compile(
-    r"[\w.-]{0,60}\.(?:wav|ogg|mp3|flac|m4a|aac|py|pyc|ts|tsx|js|jsx|mjs|cjs|json|yaml|yml|toml|"
-    r"md|mdx|txt|csv|xlsx|xls|pdf|png|jpg|jpeg|gif|webp|svg|log|sql|sh|bash|zsh|rs|go|java|rb|php|"
-    r"html|css|lock|tar|gz|zip|db|sqlite|sqlite3|onnx|pt|bin|env|ini|conf|cfg|xml)\b",
-    re.IGNORECASE)
-_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
-_HASH_PREFIX_HEX_RE = re.compile(
-    r"\b(?:sha(?:-?256|-?512|-?1|3)?|blake2[ab]?|md5|crc32?)[:\s]+[0-9a-fA-F]{7,64}", re.IGNORECASE)
-_HEX_RUN_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{7,64}(?![0-9a-fA-F])")
-_IDENTIFIER_TOKEN_RE = re.compile(r"[A-Za-z0-9_./~@-]+")
-_DATE_TOKEN_RE = re.compile(r"\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?")
-
-
-def _is_dense_identifier(token: str) -> bool:
-    """True for a machine token a voice would spell out character by character."""
-    if "@" in token or _DATE_TOKEN_RE.fullmatch(token):
-        return False  # email addresses, dates ("2026-09-28", "2026/06/02")
-    if token.startswith(("~/", "./", "../", "/")):
-        return True  # filesystem paths
-    if "/" in token and (_FILENAME_EXT_RE.search(token) or any(char.isdigit() for char in token)):
-        return True  # paths and dense model IDs ("meta-llama/Llama-3.3-70B-Instruct")
-    if _FILENAME_EXT_RE.search(token) or _UUID_RE.search(token):
-        return True
-    # Hex-hash runs ("73688014f78", "e3b0c442...") — digit-free runs
-    # ("defaced") are legitimate words and stay.
-    if _HEX_RUN_RE.fullmatch(token) and re.search(r"\d", token):
-        return True
-    digits = any(char.isdigit() for char in token)
-    if not digits:
-        return False
-    seps = sum(token.count(char) > 0 for char in "_./")
-    hyphens = token.count("-")
-    if seps >= 2 or hyphens >= 2:
-        return True  # v2.1.0-beta.3, Llama-3.3-70B, dated filename slugs
-    return "/" in token or (hyphens >= 1 and seps >= 1)
-
-
-def prune_identifier_tokens_for_tts(text: str) -> str:
-    """Silence identifier-dense tokens; keep ordinary prose verbatim."""
-    if not text:
-        return ""
-    text = _HASH_PREFIX_HEX_RE.sub(" ", text)
-    return _IDENTIFIER_TOKEN_RE.sub(
-        lambda m: " " if _is_dense_identifier(m.group(0)) else m.group(0), text)
-
-
 def smooth_whitespace_for_tts(text: str) -> str:
     """Collapse visual formatting into calm spoken paragraphs. A _HEAD-marked heading folds into
     the next content line as a lead-in ("Weather, It will be sunny."); a heading with no content
@@ -229,11 +172,7 @@ def smooth_whitespace_for_tts(text: str) -> str:
     flush_pending()
     text = "\n".join(lines)
     for pattern, repl in ((r"\n{3,}", "\n\n"), (r"[ \t]{2,}", " "), (r"\s+([,.;:!?])", r"\1"),
-                          # A sentence mark only gains a space when NOT glued to
-                          # a word char on both sides — "user@example.com" is a
-                          # single token, not "example. com".
-                          (r"(?<![A-Za-z0-9])[,.;:!?](?=[A-Za-z])", r"\g<0> "),
-                          (r"\.{4,}", "...")):
+                          (r"([,.;:!?])([A-Za-z])", r"\1 \2"), (r"\.{4,}", "...")):
         text = re.sub(pattern, repl, text)
     # Single-line text ("Here is the list:") skips the per-line pause pass, so close a
     # final colon here too -- never a digit-preceded one ("final score 3:2" is a ratio).
@@ -262,6 +201,23 @@ def strip_nonspoken_blocks(text: str) -> str:
     return text
 
 
+# Visible leading section labels (gateway TTS, #107044): a reply may start with
+# ``Reasoning:`` / ``thinking：`` / ``分析：`` etc. Strip only at the very start
+# of the text — never mid-prose, never non-allowlisted headers.
+_LEADING_REASONING_LABEL_RE = re.compile(
+    r"^\s*(?:reasoning|thinking|analysis|\u63a8\u7406|\u601d\u8003|\u5206\u6790)"
+    r"[ \t]*(?:[:\uff1a]|\r?\n)",
+    flags=re.IGNORECASE,
+)
+
+
+def strip_leading_reasoning_labels(text: str) -> str:
+    """Strip an allowlisted leading section label so TTS does not speak it."""
+    if not text:
+        return ""
+    return _LEADING_REASONING_LABEL_RE.sub("", text, count=1)
+
+
 def flatten_newlines_for_payload(text: str) -> str:
     """Collapse newlines into sentence breaks for single-line TTS payloads: some OpenAI-compatible
     backends (e.g. Kokoro) truncate at the first newline; smoothing already ends each line with
@@ -282,13 +238,12 @@ def flatten_newlines_for_payload(text: str) -> str:
 
 def prepare_spoken_text(text: str, max_chars: int | None = 4000) -> str:
     """Return a TTS-friendly script from assistant text (deterministic cleanup, not a rewrite).
-    Pipeline: non-spoken blocks > Markdown > symbols/units > identifier-dense tokens >
+    Pipeline: non-spoken blocks > leading reasoning labels > Markdown > symbols/units >
     line formatting into sentence pauses > single line (for newline-sensitive providers),
     then ``max_chars``."""
     spoken = text
-    for step in (strip_nonspoken_blocks, strip_markdown_for_tts, normalize_symbols_for_tts,
-                 prune_identifier_tokens_for_tts,
-                 smooth_whitespace_for_tts, flatten_newlines_for_payload):
+    for step in (strip_nonspoken_blocks, strip_leading_reasoning_labels, strip_markdown_for_tts,
+                 normalize_symbols_for_tts, smooth_whitespace_for_tts, flatten_newlines_for_payload):
         spoken = step(spoken)
     if max_chars is not None and max_chars > 0 and len(spoken) > max_chars:
         spoken = spoken[:max_chars].rstrip()

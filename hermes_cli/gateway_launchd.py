@@ -10,6 +10,7 @@ from pathlib import Path
 import contextlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -347,8 +348,67 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
 
+_LAUNCHER_IN_DEFINITION_RE = re.compile(r"exec (?P<launcher>\S*?/\.hermes/bin/hermes)")
+
+
+def launcher_root_is_viable(root: Path) -> bool:
+    """Would a service launcher minted on ``root`` survive ``hermes_bootstrap``?
+
+    Mirrors ``pm.environments.activate_dependencies`` -> ``_require_own_dependencies``: a launcher that
+    runs PM's store Python needs either a committed dependency generation or a sealed payload venv,
+    otherwise it exits 1 before the gateway starts. A pinned environment copy
+    (``<installs>/<key>/environments/<env>/workspace``) is NOT a self-sufficient install root -- its
+    install key is derived from its own path, which owns no state under the installs root.
+
+    The imports are inline on purpose: they read the defining modules at call time, so a test patches
+    ``pm.environments.committed_venv`` / ``pm.environments.payload_venv`` /
+    ``hermes_cli._launchers.resolve_store_python``.
+    """
+    from hermes_cli._launchers import resolve_store_python
+    from pm.environments import committed_venv, payload_venv
+
+    if resolve_store_python(root) is None:
+        return True  # externally owned runtime (Nix, developer venv): keeps its own interpreter
+    return payload_venv(root) is not None or committed_venv(root) is not None
+
+
+def assert_launcher_root_is_viable(root: Path) -> None:
+    """Fail closed before a service definition is persisted.
+
+    A definition whose launcher root cannot resolve its install state is not a degraded service, it is
+    an infinite respawn loop: launchd ``KeepAlive(SuccessfulExit=false)`` retries every
+    ``ThrottleInterval`` seconds forever, and the gateway watchdog adds a ``kickstart -k`` on top.
+    Refuse to write it, and leave any previous working definition untouched.
+    """
+    if launcher_root_is_viable(root):
+        return
+    raise RuntimeError(
+        "refusing to write a service definition whose code root cannot resolve its dependencies: "
+        f"{root}\n"
+        '  A launcher at this root exits 1 with "no dependency environment is committed for this '
+        'install".\n'
+        "  Write the definition from the install root that owns the install state instead, i.e.\n"
+        "    <install root>/.hermes/bin/hermes gateway install --force"
+    )
+
+
+def installed_service_launcher_root(definition: str) -> Path | None:
+    """The code root an installed service definition will run, or None when it names none.
+
+    ``ProgramArguments`` carries ``exec <root>/.hermes/bin/hermes ...`` inside the osascript string, so
+    the launcher path is recoverable from text without parsing the plist.
+    """
+    match = _LAUNCHER_IN_DEFINITION_RE.search(definition)
+    if match is None:
+        return None
+    return Path(match.group("launcher")).parent.parent.parent
+
+
 def generate_launchd_plist() -> str:
     from html import escape
+    # Fail closed BEFORE any write: a bad definition is an infinite respawn loop, and the previous
+    # (working) definition must survive a refused regeneration.
+    assert_launcher_root_is_viable(_gw().PROJECT_ROOT)
     # Stable cwd anchor — never the volatile source checkout (same rot risk as systemd's WorkingDirectory).
     working_dir = _gw()._stable_service_working_dir()
     hermes_home = str(_gw().get_hermes_home().resolve())
@@ -911,11 +971,25 @@ def launchd_status(deep: bool = False):
     launchd_unsupported = _gw()._launchd_unsupported_marker_exists()
 
     print(f"Launchd plist: {plist_path}")
-    if _gw().launchd_plist_is_current():
+    installed_text = plist_path.read_text(encoding="utf-8-sig") if plist_path.exists() else ""
+    installed_root = installed_service_launcher_root(installed_text)
+    current_root = _gw().PROJECT_ROOT
+    if installed_root is not None and installed_root.resolve() != current_root.resolve():
+        print(f"✗ Service definition runs a DIFFERENT code root: {installed_root}")
+        print(f"  Current code root: {current_root}")
+        print(f"  Repair: {current_root}/.hermes/bin/hermes gateway install --force")
+        service_definition_ok = False
+    elif not launcher_root_is_viable(current_root):
+        print(f"✗ This code root ({current_root}) cannot resolve its dependencies;")
+        print("  a service definition written from here would never start.")
+        print("  Repair: run gateway install from the install root that owns the install state.")
+        service_definition_ok = False
+    elif launchd_plist_is_current():
         print("✓ Service definition matches the current Hermes install")
+        service_definition_ok = True
     else:
         print("⚠ Service definition is stale relative to the current Hermes install")
-        print("  Run: hermes gateway start")
+        service_definition_ok = False
 
     if not service_listed:
         print("✗ Gateway service is not loaded")

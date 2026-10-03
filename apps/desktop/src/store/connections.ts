@@ -23,6 +23,7 @@ import {
   $activeGatewayProfile,
   $freshSessionRequest,
   $newChatProfile,
+  $newChatRoute,
   $showAllProfiles,
   captureNewChatSource,
   ensureGatewayAgent,
@@ -405,6 +406,8 @@ export async function selectConnection(connectionId: string, options: SelectConn
     // A connection switch is a new-chat intent on THAT source: keep the
     // registry identity with the profile so the next create names local::x /
     // <source>::x exactly, never a bare profile string.
+    // An older explicit agent route must not override the selected source.
+    $newChatRoute.set(null)
     captureNewChatSource()
     requestFreshSession()
     await rememberConnection(connectionId)
@@ -533,11 +536,18 @@ export async function selectConnection(connectionId: string, options: SelectConn
     if (revision === switchRevision) {
       await rememberConnection(connectionId)
 
+      // Remembering crosses IPC too; a newer click may now own the draft.
+      if (revision !== switchRevision) {
+        return
+      }
+
       if (!restoreOnBoot) {
         $showAllProfiles.set(false)
       }
 
       $newChatProfile.set(targetProfile)
+      // An older explicit agent route must not override the selected source.
+      $newChatRoute.set(null)
       captureNewChatSource()
       requestFreshSession()
       await refreshActiveProfile()

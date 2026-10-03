@@ -43,6 +43,12 @@ def _numeric_or(value, default):
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) else default
 
 
+# Consecutive failed microphone reopens the wake-word auto-resume watchdog tolerates before
+# giving up (#131177: a hot-plugged mic leaves PortAudio's device snapshot stale, so every
+# reopen fails until the process restarts).
+_WAKE_RESUME_FAILURE_LIMIT = 5
+
+
 def _unlink_quietly(path) -> None:
     try:
         if path and os.path.isfile(path):
@@ -718,6 +724,7 @@ class CLIVoiceMixin:
 
         def _loop():
             idle_polls = 0
+            resume_failures = 0
             try:
                 while getattr(self, "_wake_word_active", False) and not getattr(self, "_should_exit", False):
                     time.sleep(0.25)
@@ -741,10 +748,26 @@ class CLIVoiceMixin:
                             from tools.wake_word import resume_listening
                             if resume_listening(owner=self):
                                 self._wake_suspended = False
+                                resume_failures = 0
                             else:
                                 self._wake_word_active = False
                         except Exception as e:
-                            logger.debug("wake word resume failed: %s", e)
+                            # A hot-plugged/removed microphone leaves PortAudio's
+                            # startup device snapshot stale, so every reopen fails
+                            # until the process restarts (#131177). Bound the retry
+                            # instead of looping (and logging) forever.
+                            resume_failures += 1
+                            if resume_failures < _WAKE_RESUME_FAILURE_LIMIT:
+                                logger.debug("wake word resume failed: %s", e)
+                                continue
+                            self._wake_word_active = False
+                            logger.warning("wake word: microphone reopen failed %d times — "
+                                           "auto-resume watchdog giving up", resume_failures)
+                            from cli import _DIM, _RST, _cprint
+                            _cprint(f"\n{_DIM}Wake word stopped: the microphone failed to reopen "
+                                    f"{_WAKE_RESUME_FAILURE_LIMIT} times. An audio device change "
+                                    f"can leave PortAudio with a stale device list — replug the "
+                                    f"device and run /wake off + /wake on, or restart Hermes.{_RST}")
             finally:
                 self._wake_watchdog_started = False
 

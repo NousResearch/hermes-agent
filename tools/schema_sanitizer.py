@@ -21,9 +21,32 @@ _PROP_KEY_BAD_CHARS = re.compile(r"[^a-zA-Z0-9_.-]")
 _UNION_KEYS = ("anyOf", "oneOf")
 _UNION_META_KEYS = ("title", "description", "default", "examples")  # copied onto replacements
 
+# Tool schemas come from untrusted providers (MCP servers / plugins); without a budget a
+# pathological nesting depth raises RecursionError here, which the model_tools call site
+# swallows only to forward the *unsanitized* schema onward. Past the budget the deeper
+# fragment is replaced by a permissive object schema instead (shallow semantics intact).
+_MAX_SCHEMA_DEPTH = 100
+
 
 def _empty_object() -> dict:
     return {"type": "object", "properties": {}, "required": []}
+
+
+def _bound_schema_depth(node: Any, depth: int = 0) -> Any:
+    """Depth-budgeted structural copy of *node* (containers rebuilt, immutable leaves shared).
+    Fragments nested at/under ``_MAX_SCHEMA_DEPTH`` are replaced by a permissive schema so a
+    pathological tool schema cannot exhaust the Python stack here — or in any later
+    ``copy.deepcopy`` of the result. The boundary sits one level above the walker's own budget,
+    so bounded trees pass through ``_sanitize_node`` without a second truncation."""
+    if depth >= _MAX_SCHEMA_DEPTH:
+        logger.warning("schema_sanitizer: schema nesting reaches %d levels; replacing the "
+                       "deeper fragment with a permissive schema", _MAX_SCHEMA_DEPTH)
+        return [] if isinstance(node, list) else _empty_object()
+    if isinstance(node, list):
+        return [_bound_schema_depth(item, depth + 1) for item in node]
+    if not isinstance(node, dict):
+        return node
+    return {key: _bound_schema_depth(value, depth + 1) for key, value in node.items()}
 
 
 def _rewrite(schema: Any, fn: Callable[[dict], Any]) -> Any:
@@ -84,7 +107,7 @@ def sanitize_tool_schemas(tools: list[dict]) -> list[dict]:
 
 
 def _sanitize_single_tool(tool: dict) -> dict:
-    out = copy.deepcopy(tool)
+    out = _bound_schema_depth(tool)
     fn = out.get("function") if isinstance(out, dict) else None
     if not isinstance(fn, dict):
         return out
@@ -247,6 +270,9 @@ def _sanitize_node(node: Any, path: str) -> Any:
     (unknown strings → permissive object); object nodes gain ``properties: {}``; ``type`` arrays
     are normalized; property keys are renamed to the provider-safe pattern and ``required``
     follows, with entries missing from ``properties`` pruned.
+
+    Callers pass fragments already bounded by ``_bound_schema_depth`` (or equally shallow), so
+    this recursion itself cannot exceed the Python stack.
 
     - Normalizes ``type: [X, "null"]`` arrays to single ``type: X`` (keeping ``nullable: true`` as a hint),
     and multi-type arrays like ``["number", "string"]`` to an ``anyOf`` of single-type schemas so no branch

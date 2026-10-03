@@ -397,3 +397,33 @@ class TestUnionTypeList:
         assert sort["type"] == "string"
         assert sort["enum"] == ["asc", "desc"]
         assert params["properties"]["sort"]["type"] == ["string", "null"]
+
+
+class TestSchemaDepthBudget:
+    """Untrusted MCP/plugin schemas must not exhaust the Python stack (#132005): past the
+    depth budget the deeper fragment is replaced by a permissive object schema."""
+
+    @staticmethod
+    def _deep(depth: int) -> dict:
+        node: dict = {"type": "string"}
+        for _ in range(depth):
+            node = {"type": "object", "properties": {"x": node}}
+        return node
+
+    def test_deeply_nested_schema_is_trimmed_not_crashed(self):
+        out = sanitize_moonshot_tool_parameters(self._deep(1000))
+        assert out["type"] == "object"
+        assert "x" in out["properties"]  # shallow levels survive
+        placeholder = {"type": "object", "properties": {}, "required": []}
+        node = out
+        for _ in range(120):
+            if node == placeholder:
+                break
+            node = node["properties"]["x"]
+        else:
+            raise AssertionError("permissive placeholder never appeared within 120 levels")
+
+    def test_shallow_schema_unaffected_by_budget(self):
+        out = sanitize_moonshot_tool_parameters(
+            {"type": "object", "properties": {"q": {"type": "string"}}})
+        assert out["properties"]["q"]["type"] == "string"

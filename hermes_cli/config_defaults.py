@@ -1950,6 +1950,15 @@ DEFAULT_CONFIG = {
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
+        # PR acceptance transport. "gh": the native gh CLI collector run as the assignee
+        # profile's own login (default, unchanged). "mcp": explicit MCP-only mode — evidence
+        # must come from the named `github_acceptance` stdio MCP server defined in the
+        # completing profile's OWN config (App credentials via ${VAR} refs to that profile's
+        # .env). In mcp mode gh/PAT/REST/ambient credentials are never used and a missing
+        # server fails closed instead of falling back. Unknown values fail closed too.
+        "pr_acceptance": {
+            "transport": "gh",
+        },
     },
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.

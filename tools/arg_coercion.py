@@ -1,9 +1,11 @@
 """Tool-argument type coercion: repair string-typed values the model emitted against a tool's JSON Schema.
 
 Models emit "42" for integers, "true" for booleans, JSON-encoded strings for
-arrays/objects (also nested inside containers), and bare scalars where an array
-is expected (wrapped in a one-element list). Coercion is schema-guided and
-conservative: originals are kept whenever a repair is not unambiguous.
+arrays/objects (also nested inside containers), bare scalars where an array
+is expected (wrapped in a one-element list), and ``null``/``{}`` for optional
+fields they mean to leave unset (dropped so the tool default applies). Coercion
+is schema-guided and conservative: originals are kept whenever a repair is not
+unambiguous.
 """
 
 import json
@@ -23,9 +25,11 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         return args
 
     schema = registry.get_schema(tool_name)
-    properties = ((schema or {}).get("parameters") or {}).get("properties")
+    parameters = (schema or {}).get("parameters") or {}
+    properties = parameters.get("properties")
     if not properties:
         return args
+    required = parameters.get("required") if isinstance(parameters.get("required"), list) else []
 
     # The model saw the SANITIZED schema (provider-illegal property keys were
     # renamed); map those keys back to the registry's wire names first.
@@ -38,6 +42,13 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     for key, value in list(args.items()):
         prop_schema = properties.get(key)
         if not prop_schema:
+            continue
+        # ``null`` / ``{}`` for an optional field whose schema provably rejects them is the
+        # model's way of saying "unset" (strict providers fill every optional slot; #72036).
+        # Drop the key so the handler's own default applies instead of a NoneType crash.
+        if key not in required and _is_unset_placeholder(value, prop_schema):
+            del args[key]
+            logger.info("coerce_tool_args: dropped %r placeholder for optional %s.%s", value, tool_name, key)
             continue
         expected = prop_schema.get("type")
         is_container = isinstance(value, (list, tuple))
@@ -80,6 +91,21 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     return args
 
 
+def _is_unset_placeholder(value: Any, schema: Any) -> bool:
+    """True when *value* is ``None`` or ``{}`` and *schema* is a bare single-type property that
+    provably rejects it. Compositions, references, ``nullable`` and enums naming ``null`` may accept
+    those values, so they are left alone (mirrors anomalyco/opencode#45002)."""
+    if value is not None and value != {}:
+        return False
+    if not isinstance(schema, dict) or not isinstance(schema.get("type"), str) or schema["type"] == "null":
+        return False
+    if any(key in schema for key in ("anyOf", "oneOf", "allOf", "const", "$ref")) or schema.get("nullable") is True:
+        return False
+    if isinstance(schema.get("enum"), list) and None in schema["enum"]:
+        return False
+    return value is None or schema["type"] != "object"
+
+
 def _schema_accepts_kind(schema: Any, kind: str) -> bool:
     """True when *schema* permits JSON type *kind* via ``type`` or any anyOf/oneOf/allOf branch."""
     if not isinstance(schema, dict):
@@ -108,6 +134,10 @@ def _normalize_json_strings_for_schema(value: Any, schema: Any) -> Any:
         expects_array = _schema_accepts_kind(schema, "array")
         expects_object = _schema_accepts_kind(schema, "object")
         if not ((expects_array and trimmed.startswith("[")) or (expects_object and trimmed.startswith("{"))):
+            # Nested scalar ("2" for an integer item/sub-field): same rule as the top level.
+            nested_type = schema.get("type")
+            if isinstance(nested_type, str) and nested_type in ("integer", "number", "boolean"):
+                return _coerce_value(value, nested_type, schema=schema)
             return value
         try:
             parsed = json.loads(trimmed)

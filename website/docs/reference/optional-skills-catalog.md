@@ -87,6 +87,7 @@ hermes skills uninstall <skill-name>
 | [**system-atlas**](../user-guide/skills/optional/creative/creative-system-atlas.md) | Build explorable isometric architecture atlases as HTML. |
 | [**tldraw-offline**](../user-guide/skills/optional/creative/creative-tldraw-offline.md) | Drive and script tldraw offline canvases with an agent. |
 | [**unreal-mcp**](../user-guide/skills/optional/creative/creative-unreal-mcp.md) | Automate Unreal Engine editor scenes, actors, and renders. |
+| [**vlog-auto-edit**](../user-guide/skills/optional/creative/creative-vlog-auto-edit.md) | Auto-edit travel vlogs from raw clips, upstream-maintained. |
 
 ## data-science
 

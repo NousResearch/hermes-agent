@@ -77,6 +77,8 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     assert argv[argv.index("--") + 1:] == ["/bin/bash", "-c", "true"]
     properties = [argv[i + 1] for i, token in enumerate(argv) if token == "--property"]
     assert "MemoryAccounting=yes" in properties
+    # Own cgroup, but no background-worker cap: a big foreground build must not be OOM-killed.
+    assert not any(p.startswith("MemoryMax=") for p in properties)
     # `--unit` takes the bare name; the recorded unit is what a kill path stops.
     assert proc._hermes_scope_unit == f"{argv[argv.index('--unit') + 1]}.scope"
     # The availability probe derives the user-bus variables, so the spawn must carry them

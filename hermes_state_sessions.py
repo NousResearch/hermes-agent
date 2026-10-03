@@ -133,12 +133,36 @@ def _session_filter_where(
     # legacy heuristic (parent ended with 'branched' before the child started), covering branch sessions
     # created before the marker existed.
     include_sources = [source] if source else list(sources or [])
+    # A min_messages floor checks the ROW's own message_count. The listable row of a
+    # compression chain is its root, and compression leaves the ancestors holding
+    # message_count = 0 (the whole transcript moves to the live tip) — so the floor
+    # severed every chain whose tip holds the messages and the conversation vanished
+    # from every min_messages-filtered listing (#126841; same invariant class as
+    # #55588/#117713, different trigger). Admit a listable root whose forward
+    # compression chain still holds a row meeting the floor; a truly empty chain
+    # (nothing anywhere) stays filtered.
+    if min_message_count > 0:
+        _chain_floor_sql = (
+            "(s.message_count >= ? OR (s.parent_session_id IS NULL AND EXISTS ("
+            "WITH RECURSIVE _floor_chain(cur_id) AS ("
+            "SELECT s.id UNION ALL"
+            " SELECT child.id FROM _floor_chain"
+            " JOIN sessions p ON p.id = _floor_chain.cur_id"
+            " JOIN sessions child ON child.parent_session_id = _floor_chain.cur_id"
+            " WHERE p.end_reason = 'compression')"
+            " SELECT 1 FROM _floor_chain fc JOIN sessions cs ON cs.id = fc.cur_id"
+            " WHERE cs.message_count >= ?)))"
+        )
+        floor_params: List[Any] = [min_message_count, min_message_count]
+    else:
+        _chain_floor_sql = "s.message_count >= ?"
+        floor_params = []
     for clause, values in (
         (f"s.source IN ({_session_ids_placeholders(include_sources)})", include_sources),
         ("s.session_key = ?", [session_key] if session_key else []),
         (f"s.source NOT IN ({_session_ids_placeholders(exclude_sources or ())})", exclude_sources or []),
         (_cwd_prefix_clause(cwd_prefix) if cwd_prefix else ("", [])),
-        ("s.message_count >= ?", [min_message_count] if min_message_count > 0 else []),
+        (_chain_floor_sql, floor_params),
     ):
         if values:
             where.append(clause)

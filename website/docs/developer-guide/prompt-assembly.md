@@ -223,7 +223,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
     project_context = (
         _load_hermes_md(cwd_path)       # 1. .hermes.md / HERMES.md (walks to git root)
         or _load_agents_md(cwd_path)    # 2. AGENTS.md (cwd only)
-        or _load_claude_md(cwd_path)    # 3. CLAUDE.md (cwd only)
+        or _load_claude_md(cwd_path)    # 3. CLAUDE.md + .claude/rules/**/*.md (cwd only)
         or _load_cursorrules(cwd_path)  # 4. .cursorrules / .cursor/rules/*.mdc
     )
 
@@ -254,7 +254,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 |----------|-------|-------------|-------|
 | 1 | `.hermes.md`, `HERMES.md` | CWD up to git root | Hermes-native project config |
 | 2 | `AGENTS.md` | CWD only | Common agent instruction file |
-| 3 | `CLAUDE.md` | CWD only | Claude Code compatibility |
+| 3 | `CLAUDE.md`, `.claude/CLAUDE.md`, `.claude/rules/**/*.md` | CWD only | Claude Code compatibility (`paths`-scoped rules state their globs in the heading) |
 | 4 | `.cursorrules`, `.cursor/rules/*.mdc` | CWD only | Cursor compatibility |
 
 All context files are:
@@ -285,7 +285,7 @@ Local memory and user profile data are captured in the system prompt's **volatil
 
 1. `.hermes.md` / `HERMES.md` (walks to git root)
 2. `AGENTS.md` (CWD at startup; subdirectories discovered progressively during the session via `agent/subdirectory_hints.py`)
-3. `CLAUDE.md` (CWD only)
+3. `CLAUDE.md` + `.claude/rules/**/*.md` (CWD only)
 4. `.cursorrules` / `.cursor/rules/*.mdc` (CWD only)
 
 `SOUL.md` is loaded separately via `load_soul_md()` for the identity slot. When it loads successfully, `build_context_files_prompt(skip_soul=True)` prevents it from appearing twice.

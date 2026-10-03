@@ -1725,9 +1725,11 @@ def _agents_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
 
 
 def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
-    """CLAUDE.md / claude.md — cwd only, first non-empty wins."""
+    """CLAUDE.md / claude.md / .claude/CLAUDE.md — cwd only, first non-empty wins — followed by every
+    Claude Code rule module under ``.claude/rules/`` (all of them load)."""
+    from agent.context_rule_files import discover_rule_files
     found: list[tuple[str, Path, str]] = []
-    for name in ("CLAUDE.md", "claude.md"):
+    for name in ("CLAUDE.md", "claude.md", ".claude/CLAUDE.md"):
         candidate = cwd_path / name
         if not _exists_or_denied(candidate):
             continue
@@ -1735,6 +1737,7 @@ def _claude_md_candidates(cwd_path: Path) -> list[tuple[str, Path, str]]:
         found.append((name, candidate, content))
         if content:
             break
+    found += [(label, path, _read_context_file(path)) for label, path in discover_rule_files(cwd_path)]
     return found
 
 
@@ -1808,11 +1811,26 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
 
 
 def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """CLAUDE.md / claude.md — cwd only."""
-    for name, path, content in _claude_md_candidates(cwd_path):
-        if content:
-            return _context_section(content, name, "CLAUDE.md", path, context_length)
-    return ""
+    """CLAUDE.md (cwd, first non-empty) plus every ``.claude/rules/**/*.md`` module.
+
+    Rules are their own provenance-labelled sections; a path-scoped rule (``paths`` frontmatter) states its
+    globs in the heading because the builder has no per-read trigger (see ``agent.context_rule_files``).
+    A lone CLAUDE.md renders exactly as before; with rules the merged block is capped like the AGENTS.md chain."""
+    from agent.context_rule_files import RULE_LABEL_PREFIX, rule_heading, rule_scope
+    sections: list[str] = []
+    for label, path, content in _claude_md_candidates(cwd_path):
+        if not content:
+            continue
+        if label.startswith(RULE_LABEL_PREFIX):
+            body = f"## {rule_heading(label, rule_scope(content))}\n\n" \
+                   f"{_scan_context_content(_strip_yaml_frontmatter(content), label)}"
+            sections.append(_truncate_content(body, label, context_length=context_length, read_path=str(path)))
+        else:
+            sections.append(_context_section(content, label, "CLAUDE.md", path, context_length))
+    if len(sections) <= 1:
+        return sections[0] if sections else ""
+    return _truncate_content("\n\n".join(sections), "CLAUDE.md (with .claude/rules)", context_length=context_length,
+                             read_path=str(cwd_path / "CLAUDE.md"))
 
 
 def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
@@ -1834,7 +1852,8 @@ def build_context_files_prompt(
     """Discover and load context files for the system prompt (each capped, see ``_get_context_file_max_chars``).
 
     Only ONE project context type loads, first found wins: .hermes.md/HERMES.md (walk to git root) →
-    AGENTS.md chain (git root → cwd) → CLAUDE.md (cwd) → .cursorrules + .cursor/rules/*.mdc (cwd). SOUL.md
+    AGENTS.md chain (git root → cwd) → CLAUDE.md + .claude/rules/**/*.md (cwd) → .cursorrules + .cursor/rules/*.mdc
+    (cwd). SOUL.md
     from HERMES_HOME is independent and always included unless *skip_soul* (already the identity slot).
     """
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()

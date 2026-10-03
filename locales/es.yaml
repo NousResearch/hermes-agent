@@ -942,6 +942,9 @@ gateway:
     hint: "Recarga y gestiona la facturación en el navegador — tu saldo se actualizará aquí después."
   login:
     free_tier_remaining: "\nAlgunos chats siguen en el nivel gratuito; usa /model en esos chats para cambiar."
+  switch_announce:
+    model: "🔀 Modelo: {old} → {new}"
+    reasoning: "🔀 Razonamiento: {old} → {new}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Otra"

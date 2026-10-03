@@ -942,6 +942,9 @@ gateway:
     hint: "Cuir breis leis agus bainistigh billeáil sa bhrabhsálaí — nuashonrófar d'iarmhéid anseo ina dhiaidh sin."
   login:
     free_tier_remaining: "\nTá roinnt comhráite fós ar an bplean saor in aisce; úsáid /model sna comhráite sin chun athrú."
+  switch_announce:
+    model: "🔀 Samhail: {old} → {new}"
+    reasoning: "🔀 Réasúnáíocht: {old} → {new}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Eile"

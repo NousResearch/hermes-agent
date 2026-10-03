@@ -942,6 +942,9 @@ gateway:
     hint: "請在瀏覽器中儲值並管理帳務 — 完成後你的餘額會在此更新。"
   login:
     free_tier_remaining: "\n部分聊天仍在使用免費方案；請在那些聊天中使用 /model 切換。"
+  switch_announce:
+    model: "🔀 模型：{old} → {new}"
+    reasoning: "🔀 推理：{old} → {new}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ 其他"

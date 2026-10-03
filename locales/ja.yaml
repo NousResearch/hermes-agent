@@ -942,6 +942,9 @@ gateway:
     hint: "チャージと請求の管理はブラウザで行ってください — 完了後、ここの残高が更新されます。"
   login:
     free_tier_remaining: "\n一部のチャットはまだ無料プランのままです。それらのチャットでは /model で切り替えてください。"
+  switch_announce:
+    model: "🔀 モデル: {old} → {new}"
+    reasoning: "🔀 推論: {old} → {new}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ その他"

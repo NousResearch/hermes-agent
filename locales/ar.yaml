@@ -942,6 +942,9 @@ gateway:
     hint: "أعد تعبئة الرصيد وأدِر الفوترة في المتصفح — سيتحدّث رصيدك هنا بعد ذلك."
   login:
     free_tier_remaining: "\nما زالت بعض المحادثات على المستوى المجاني؛ استخدم /model في تلك المحادثات للتبديل."
+  switch_announce:
+    model: "🔀 النموذج: {old} → {new}"
+    reasoning: "🔀 التفكير: {old} → {new}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ أخرى"

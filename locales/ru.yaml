@@ -942,6 +942,9 @@ gateway:
     hint: "Пополняйте баланс и управляйте оплатой в браузере — баланс здесь обновится после этого."
   login:
     free_tier_remaining: "\nНекоторые чаты всё ещё на бесплатном тарифе; используйте /model в этих чатах, чтобы переключиться."
+  switch_announce:
+    model: "🔀 Модель: {old} → {new}"
+    reasoning: "🔀 Рассуждения: {old} → {new}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Другое"

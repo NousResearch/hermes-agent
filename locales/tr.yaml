@@ -942,6 +942,9 @@ gateway:
     hint: "Bakiye yükleme ve faturalandırma işlemlerini tarayıcıda yapın — bakiyeniz ardından burada güncellenir."
   login:
     free_tier_remaining: "\nBazı sohbetler hâlâ ücretsiz katmanda; o sohbetlerde geçiş yapmak için /model kullanın."
+  switch_announce:
+    model: "🔀 Model: {old} → {new}"
+    reasoning: "🔀 Akıl yürütme: {old} → {new}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Diğer"

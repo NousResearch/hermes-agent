@@ -942,6 +942,9 @@ gateway:
     hint: "Laden Sie Guthaben auf und verwalten Sie die Abrechnung im Browser — Ihr Guthaben wird hier anschließend aktualisiert."
   login:
     free_tier_remaining: "\nEinige Chats sind noch auf der kostenlosen Stufe; verwenden Sie /model in diesen Chats zum Wechseln."
+  switch_announce:
+    model: "🔀 Modell: {old} → {new}"
+    reasoning: "🔀 Reasoning: {old} → {new}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Sonstiges"

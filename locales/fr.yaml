@@ -1133,6 +1133,9 @@ gateway:
     free_tier_remaining: |2-
 
       Certaines discussions sont encore sur l'offre gratuite ; utilisez /model dans ces discussions pour changer de modèle.
+  switch_announce:
+    model: "🔀 Modèle : {old} → {new}"
+    reasoning: "🔀 Raisonnement : {old} → {new}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Autre"

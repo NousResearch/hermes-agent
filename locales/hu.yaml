@@ -956,6 +956,9 @@ gateway:
     hint: "Feltöltés és számlázás a böngészőben — az egyenleged utána itt is frissül."
   login:
     free_tier_remaining: "\nNéhány csevegés még az ingyenes szinten van; ott a /model paranccsal válthatsz."
+  switch_announce:
+    model: "🔀 Modell: {old} → {new}"
+    reasoning: "🔀 Gondolkodás: {old} → {new}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Egyéb"

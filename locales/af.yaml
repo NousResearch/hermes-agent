@@ -942,6 +942,9 @@ gateway:
     hint: "Laai op en bestuur fakturering in die blaaier — jou saldo word daarna hier opgedateer."
   login:
     free_tier_remaining: "\nSommige geselsies is nog op die gratis vlak; gebruik /model in daardie geselsies om oor te skakel."
+  switch_announce:
+    model: "🔀 Model: {old} → {new}"
+    reasoning: "🔀 Redenering: {old} → {new}"
 platform:
   whatsapp:
     clarify_other_title: "✏️ Ander"

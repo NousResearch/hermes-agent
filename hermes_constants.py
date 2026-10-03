@@ -993,6 +993,13 @@ def export_scratch_tmp_env() -> bool:
 
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max", "ultra")
 
+# Sentinel for "the effective reasoning effort cannot be resolved from here".
+# Deliberately not a member of VALID_REASONING_EFFORTS and not a value a user
+# can select, so it can never be mistaken for a real effort level. Callers that
+# compare a before/after pair must treat its presence on EITHER side as "no
+# provable change" and stay silent, rather than substituting a guessed default.
+REASONING_BASELINE_UNKNOWN = "\x00unknown-reasoning-baseline"
+
 
 def parse_reasoning_effort(effort) -> dict | None:
     """Parse a reasoning effort level into a config dict.

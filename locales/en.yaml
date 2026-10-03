@@ -985,6 +985,9 @@ gateway:
 
   login:
     free_tier_remaining: "\nSome chats are still on the free tier; use /model in those chats to switch."
+  switch_announce:
+    model: "🔀 Model: {old} → {new}"
+    reasoning: "🔀 Reasoning: {old} → {new}"
 
 platform:
   whatsapp:

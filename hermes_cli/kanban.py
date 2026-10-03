@@ -10,6 +10,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -210,8 +211,11 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
-    "gc",
+    "gc", "set-model",
 })
+
+# ``lane-model show`` is read-only; ``set``/``clear`` re-route the whole board.
+_DELEGATED_CHILD_DENIED_LANE_ACTIONS: frozenset[str] = frozenset({"set", "clear"})
 
 _DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
     "create", "new", "rm", "remove", "delete", "switch", "use", "rename",
@@ -223,6 +227,9 @@ def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
     action = getattr(args, "kanban_action", None)
     if action == "boards":
         if (getattr(args, "boards_action", None) or "list") not in _DELEGATED_CHILD_DENIED_BOARD_ACTIONS:
+            return False
+    elif action == "lane-model":
+        if (getattr(args, "lane_action", None) or "show") not in _DELEGATED_CHILD_DENIED_LANE_ACTIONS:
             return False
     elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
         return False
@@ -577,23 +584,319 @@ def _cmd_assign(args: argparse.Namespace) -> int:
                       f"Assigned {args.task_id} to {profile or '(unassigned)'}")
 
 
+_ACTIVE_STATUSES = frozenset({"triage", "todo", "scheduled", "ready", "running", "blocked", "review"})
+"""Statuses a set-model selector treats as live work. ``done``/``archived``
+are excluded: re-routing a finished card changes nothing and would make
+``--all-active`` report work it didn't do."""
+
+# Any ``t_*`` token is an INTENDED task id. Matching only well-formed hex would
+# silently reclassify a typo'd id (``t_nope``) as the model name, and the
+# command would "succeed" against the wrong thing instead of saying
+# ``no such task``.
+_TASK_ID_RE = re.compile(r"^t_\w+$", re.IGNORECASE)
+
+_CLEAR_WORDS = frozenset({"none", "-", "null", ""})
+
+
+def _split_ids_and_model(positionals: list[str]) -> tuple[list[str], Optional[str]]:
+    """``<id>... [model]`` -> (ids, model). Ids are recognised by shape, not
+    position, so ``set-model MODEL --where ...`` parses and a batch cannot
+    swallow its model as one more card id."""
+    ids = [tok for tok in positionals if _TASK_ID_RE.match(tok)]
+    rest = [tok for tok in positionals if not _TASK_ID_RE.match(tok)]
+    if len(rest) > 1:
+        raise ValueError(f"expected at most one model positional, got: {', '.join(rest)}")
+    return ids, (rest[0] if rest else None)
+
+
+def _parse_where(clauses: list[str]) -> dict[str, frozenset]:
+    """``--where status=running,ready assignee=x`` -> ``{"status": {...}, ...}``."""
+    allowed = ("status", "assignee")
+    filters: dict[str, set] = {}
+    for clause in clauses or []:
+        key, sep, raw = str(clause).partition("=")
+        key = key.strip().lower()
+        if not sep or not key:
+            raise ValueError(f"bad --where clause {clause!r}; expected key=value")
+        if key not in allowed:
+            raise ValueError(f"unsupported --where key {key!r}; supported: {', '.join(allowed)}")
+        values = {v.strip() for v in raw.split(",") if v.strip()}
+        if not values:
+            raise ValueError(f"--where {key} needs at least one value")
+        if key == "status":
+            values = {v.lower() for v in values}
+            unknown = values - _ACTIVE_STATUSES
+            if unknown:
+                raise ValueError(
+                    f"--where status={','.join(sorted(unknown))} is not an active status; "
+                    f"use one of {', '.join(sorted(_ACTIVE_STATUSES))}"
+                )
+        filters.setdefault(key, set()).update(values)
+    return {k: frozenset(v) for k, v in filters.items()}
+
+
+def _set_model_writes(conn, ids: list[str], where: dict, all_active: bool,
+                      model: Optional[str], provider: Optional[str]) -> list:
+    """Resolve the selection into ``BatchRouteWrite`` records.
+
+    Named ids are authoritative: a missing or terminal one refuses the whole
+    batch here, and again under the writer lock if it changes after this
+    read. Selector matches carry the selector as their in-txn predicate, so a
+    card that stops matching before the lock is skipped and reported.
+    """
+    if ids:
+        writes = []
+        for task_id in dict.fromkeys(ids):
+            task = kb.get_task(conn, task_id)
+            if task is None:
+                raise ValueError(f"no such task: {task_id}")
+            if task.status not in _ACTIVE_STATUSES:
+                raise ValueError(f"cannot set model override on {task.status} task {task_id}")
+            writes.append(kb.BatchRouteWrite(
+                task_id=task_id, model=model, provider=provider,
+                require_statuses=_ACTIVE_STATUSES,
+            ))
+        return writes
+    statuses = where.get("status") or _ACTIVE_STATUSES
+    assignees = where.get("assignee")
+    sql = f"SELECT id FROM tasks WHERE status IN ({','.join('?' * len(statuses))})"
+    params: list = sorted(statuses)
+    if assignees:
+        sql += f" AND assignee IN ({','.join('?' * len(assignees))})"
+        params += sorted(assignees)
+    return [
+        kb.BatchRouteWrite(
+            task_id=row["id"], model=model, provider=provider,
+            require_statuses=frozenset(statuses), require_assignees=assignees,
+            skip_if_unmatched=True,
+        )
+        for row in conn.execute(sql + " ORDER BY created_at, id", params)
+    ]
+
+
+def _reclaim_after_commit(conn, task_ids: list[str], reason: str) -> tuple[list[str], dict[str, str]]:
+    """Reclaim each card of an ALREADY-COMMITTED route batch; never raises.
+
+    ``reclaim_task`` SIGTERMs a live worker — irreversible — so it must run
+    after the route transaction, not inside it. That makes every failure here
+    post-commit: an exception escaping this loop would take the receipt
+    naming the moved cards with it, and the operator would believe nothing
+    happened. So failures are caught by POSITION, not by type, and become
+    per-card error strings. ``reclaim_task`` stays the single authority on
+    what is reclaimable (a non-running card is a designed no-op).
+    """
+    reclaimed: list[str] = []
+    errors: dict[str, str] = {}
+    for i, task_id in enumerate(task_ids):
+        try:
+            if kb.reclaim_task(conn, task_id, reason=reason):
+                reclaimed.append(task_id)
+        except (KeyboardInterrupt, SystemExit) as exc:
+            errors[task_id] = f"reclaim interrupted ({exc.__class__.__name__}); the worker may already have been signalled"
+            for rest in task_ids[i + 1:]:
+                errors[rest] = "reclaim not attempted (batch interrupted)"
+            break
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            errors[task_id] = f"{exc.__class__.__name__}: {exc or 'no detail'}"
+    return reclaimed, errors
+
+
 def _cmd_set_model(args: argparse.Namespace) -> int:
-    model = args.model
-    if model is not None and model.lower() in {"none", "-", "null", ""}:
-        model = None
-    provider = getattr(args, "provider", None)
+    try:
+        ids, model = _split_ids_and_model(list(getattr(args, "positionals", None) or []))
+        model_flag = getattr(args, "model_flag", None)
+        if model is not None and model_flag is not None:
+            raise ValueError("model given both positionally and with --model")
+        model = model if model is not None else model_flag
+        if model is not None and model.strip().lower() in _CLEAR_WORDS:
+            model = None
+        provider = getattr(args, "provider", None)
+        where = _parse_where(getattr(args, "where", None) or [])
+        all_active = bool(getattr(args, "all_active", False))
+        if ids and (where or all_active):
+            raise ValueError("pass task ids OR a selector (--where/--all-active), not both")
+        if not ids and not where and not all_active:
+            raise ValueError("set-model needs task ids, --where, or --all-active")
+    except ValueError as exc:
+        return _err(f"kanban: {exc}", 2)
+    reclaim = bool(getattr(args, "reclaim", False))
+    single = len(ids) == 1
+
+    skipped: dict[str, str] = {}
+    written: list[str] = []
+    reclaimed: list[str] = []
+    reclaim_errors: dict[str, str] = {}
+    batch_error: Optional[str] = None
     try:
         with kbc.connect_closing() as conn:
-            ok = kb.set_model_override(conn, args.task_id, model, provider=provider)
-    except (ValueError, RuntimeError) as exc:
+            writes = _set_model_writes(conn, ids, where, all_active, model, provider)
+            if not writes:
+                return _err("kanban: selector matched no active tasks")
+            # One transaction for the whole batch (see apply_batch_route_writes).
+            written = kb.apply_batch_route_writes(conn, writes, skipped=skipped)
+            if reclaim and written:
+                route = f"{provider}/{model}" if provider and model else (model or "profile default")
+                reclaimed, reclaim_errors = _reclaim_after_commit(
+                    conn, written, reason=f"set-model --reclaim -> {route}",
+                )
+    except Exception as exc:  # noqa: BLE001 - re-raised unless the batch committed
+        if not written:
+            if isinstance(exc, (ValueError, RuntimeError)):
+                return _err(f"kanban: {exc}", 2)
+            raise
+        # Committed, then something failed (connection teardown, …). The
+        # routes are durable: print the receipt instead of a bare error.
+        batch_error = f"{exc.__class__.__name__}: {exc or 'no detail'}"
+
+    label = (f"{provider}:{model}" if provider else model) if model else None
+    for task_id in written:
+        if single:
+            if label:
+                tail = " (reclaimed; redispatches now)" if task_id in reclaimed else " (applies on next dispatch)"
+                print(f"Set model override on {task_id}: {label}{tail}")
+            else:
+                print(f"Cleared model override on {task_id} (worker uses its lane override or profile default)")
+            continue
+        applies = "redispatch" if task_id in reclaimed else "next-dispatch"
+        route = (f"{provider}/{model}" if provider else model) if model else "cleared"
+        print(f"{task_id}: route={route} applies={applies}")
+    # The receipt covers every selected card: selector matches that stopped
+    # matching before the writer lock were NOT written.
+    for task_id, why in skipped.items():
+        print(f"{task_id}: skipped ({why}; no longer matches the selector), route unchanged")
+    for task_id, message in reclaim_errors.items():
+        print(f"kanban: {task_id}: route applied but reclaim failed: {message}", file=sys.stderr)
+    if batch_error:
+        print(f"kanban: routes above were applied, but the command did not finish cleanly: {batch_error}",
+              file=sys.stderr)
+    if not written:
+        return _err("kanban: every selected card stopped matching; nothing written")
+    return 1 if (reclaim_errors or batch_error) else 0
+
+
+def _parse_ttl(value: str) -> int:
+    """``30s``/``45m``/``2h``/``1d`` (or bare seconds) -> seconds (> 0)."""
+    raw = str(value or "").strip().lower()
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    mult = units.get(raw[-1:], 1)
+    number = raw[:-1] if raw[-1:] in units else raw
+    try:
+        seconds = int(float(number) * mult)
+    except ValueError:
+        raise ValueError(f"bad --ttl {value!r}; use a duration like 30m, 2h or 1d") from None
+    if seconds <= 0:
+        raise ValueError(f"bad --ttl {value!r}; a lane override must expire in the future")
+    return seconds
+
+
+def _format_ttl(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    for size, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+        if seconds >= size:
+            value = seconds / size
+            return f"{int(value)}{unit}" if value == int(value) else f"{value:.1f}{unit}"
+    return f"{seconds}s"
+
+
+def _lane_label(assignee: Optional[str]) -> str:
+    return assignee or "(board-wide)"
+
+
+def _cmd_lane_model(args: argparse.Namespace) -> int:
+    action = getattr(args, "lane_action", None) or "show"
+    return {"set": _cmd_lane_model_set, "clear": _cmd_lane_model_clear}.get(
+        action, _cmd_lane_model_show,
+    )(args)
+
+
+def _cmd_lane_model_set(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_db_lanes as kbl
+
+    provider, sep, model = str(args.route or "").partition("/")
+    provider, model = provider.strip(), model.strip()
+    if not sep or not provider or not model:
+        return _err(f"kanban: bad route {args.route!r}; expected <provider>/<model>", 2)
+    reason = (getattr(args, "reason", None) or "").strip()
+    if not reason:
+        return _err("kanban: lane-model set requires a non-empty --reason", 2)
+    try:
+        ttl_seconds = _parse_ttl(args.ttl)
+        effort = kb.normalize_reasoning_effort(getattr(args, "reasoning_effort", None))
+    except ValueError as exc:
         return _err(f"kanban: {exc}", 2)
-    if not ok:
-        return _err(f"no such task: {args.task_id}")
-    if model:
-        label = f"{provider}:{model}" if provider else model
-        print(f"Set model override on {args.task_id}: {label} (applies on next dispatch)")
-    else:
-        print(f"Cleared model override on {args.task_id} (worker uses its profile default)")
+    assignee = _stripped_or_none(getattr(args, "assignee", None))
+    now = int(time.time())
+    with kbc.connect_closing() as conn:
+        row = kbl.set_lane_model_override(
+            conn, provider=provider, model=model, expires_at=now + ttl_seconds,
+            reasoning_effort=effort, reason=reason, assignee=assignee,
+            created_by=_profile_author(), now=now,
+        )
+    print(f"lane-model set: route={row.route} lane={_lane_label(row.assignee)} "
+          f"ttl={_format_ttl(ttl_seconds)} applies=next-dispatch")
+    print(f"  reason: {reason}")
+    print("  cards with their own set-model override are unaffected; on expiry this lane "
+          "falls back to the board-wide lane if one is active, else the profile default")
+    return 0
+
+
+def _lane_row_dict(row, now: int) -> dict:
+    return {
+        "assignee": row.assignee, "provider": row.provider, "model": row.model,
+        "route": row.route, "reasoning_effort": row.reasoning_effort, "reason": row.reason,
+        "created_by": row.created_by, "created_at": row.created_at,
+        "expires_at": row.expires_at, "ttl_remaining_seconds": row.ttl_remaining(now),
+    }
+
+
+def _cmd_lane_model_show(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_db_lanes as kbl
+
+    now = int(time.time())
+    with kbc.connect_closing() as conn:
+        rows = kbl.list_lane_model_overrides(conn, now=now)
+    if _json_out(args, [_lane_row_dict(r, now) for r in rows]):
+        return 0
+    if not rows:
+        print("(no active lane-model overrides)")
+        return 0
+    for row in rows:
+        effort = f" effort={row.reasoning_effort}" if row.reasoning_effort else ""
+        print(f"{_lane_label(row.assignee)}: route={row.route}{effort} "
+              f"ttl={_format_ttl(row.ttl_remaining(now))} remaining")
+        if row.reason:
+            print(f"  reason: {row.reason}")
+        if row.created_by:
+            print(f"  set by: {row.created_by}")
+    return 0
+
+
+def _cmd_lane_model_clear(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_db_lanes as kbl
+
+    assignee = _stripped_or_none(getattr(args, "assignee", None))
+    clear_all = bool(getattr(args, "clear_all", False))
+    with kbc.connect_closing() as conn:
+        if clear_all:
+            removed = kbl.clear_all_lane_model_overrides(conn)
+        else:
+            one = kbl.clear_lane_model_override(conn, assignee=assignee)
+            removed = [one] if one else []
+        # Name what routes each cleared lane NOW: clearing an assignee lane
+        # under a live board-wide lane does not return it to the profile
+        # default, and saying so would be a false receipt.
+        now = int(time.time())
+        successors = {
+            row.assignee: kbl.lane_successor_label(
+                kbl.get_lane_model_override(conn, assignee=row.assignee, now=now)
+            )
+            for row in removed
+        }
+    if not removed:
+        return _err(f"no lane-model override set for {'any lane' if clear_all else _lane_label(assignee)}")
+    for row in removed:
+        print(f"Cleared lane-model override for {_lane_label(row.assignee)} "
+              f"(was {row.route}); lane now routes via {successors[row.assignee]}")
     return 0
 
 
@@ -1138,6 +1441,16 @@ def _cmd_stats(args: argparse.Namespace) -> int:
         stats = kb.board_stats(conn)
     if _json_out(args, stats):
         return 0
+    # Active lane overrides first: when spawns are being re-routed, that is
+    # the context for every number below.
+    lanes = stats.get("lane_model_overrides") or []
+    if lanes:
+        print("Active lane-model overrides:")
+        for row in lanes:
+            reason = f" — {row['reason']}" if row.get("reason") else ""
+            print(f"  {_lane_label(row.get('assignee'))}: route={row['provider']}/{row['model']} "
+                  f"ttl={_format_ttl(row['ttl_remaining_seconds'])} remaining{reason}")
+        print()
     print("By status:")
     for k in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
         print(f"  {k:8s}  {stats['by_status'].get(k, 0)}")
@@ -1319,7 +1632,7 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
 _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
-    "assign": _cmd_assign, "set-model": _cmd_set_model,
+    "assign": _cmd_assign, "set-model": _cmd_set_model, "lane-model": _cmd_lane_model,
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,

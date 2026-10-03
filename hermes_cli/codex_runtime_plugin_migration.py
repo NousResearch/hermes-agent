@@ -381,13 +381,23 @@ def _build_hermes_tools_mcp_entry() -> dict:
     """Codex stdio entry launching Hermes' own tool surface as an MCP server (browser/web/
     delegate_task/vision/memory/skills call-backs).
 
+    Persist the installation launcher rather than the interpreter running this migration. Managed
+    installs refresh that launcher when the Python pin changes, so Codex never retains a versioned
+    store path that PM can later garbage-collect. Developer/Nix installs fall back to
+    ``runtime_command``, which bootstraps the checkout explicitly and does not need ambient
+    PYTHONPATH.
+
     HERMES_HOME passes through only IF SET, read from os.environ (not get_hermes_home()): when
     unset the codex subprocess must inherit its launcher's runtime HERMES_HOME (systemd, gateway,
-    kanban), not a migrate-time default burned into config.toml that pins the wrong profile. The
-    pytest-tempdir guard keeps a sibling test's monkeypatched HERMES_HOME out of the user's real
-    config. PYTHONPATH passes through so a worktree-launched hermes finds the branch's modules.
+    kanban), not a migrate-time default burned into config.toml. The pytest-tempdir guard keeps a
+    sibling test's monkeypatched HERMES_HOME out of the user's real config.
     """
-    import sys
+    from hermes_cli._launchers import installation_command
+
+    repo_root = Path(__file__).resolve().parent.parent
+    command = installation_command(
+        repo_root, module="agent.transports.hermes_tools_mcp_server")
+
     env: dict[str, str] = {}
     # HERMES_HOME passes through IF SET so the MCP subprocess sees the same config / auth / sessions DB as
     # the parent CLI. Read from os.environ (not get_hermes_home()) on purpose: when the env var is unset we
@@ -400,14 +410,12 @@ def _build_hermes_tools_mcp_entry() -> dict:
     hermes_home = os.environ.get("HERMES_HOME") or ""
     if hermes_home and not _looks_like_test_tempdir(hermes_home):
         env["HERMES_HOME"] = hermes_home
-    if os.environ.get("PYTHONPATH"):
-        env["PYTHONPATH"] = os.environ["PYTHONPATH"]
     # Quiet mode + redaction defaults so the MCP wire stays clean.
     env["HERMES_QUIET"] = "1"
     env["HERMES_REDACT_SECRETS"] = env.get("HERMES_REDACT_SECRETS", "true")
     return {
-        "command": sys.executable,
-        "args": ["-m", "agent.transports.hermes_tools_mcp_server"],
+        "command": command[0],
+        "args": command[1:],
         "env": env,
         # Generous timeouts — browser_navigate or delegate_task can take a while.
         "startup_timeout_sec": 30.0,

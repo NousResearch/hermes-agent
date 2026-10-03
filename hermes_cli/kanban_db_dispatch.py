@@ -25,6 +25,7 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
+from hermes_cli.active_sessions import MAX_CONCURRENT_SESSIONS
 from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
 if TYPE_CHECKING:
@@ -145,6 +146,11 @@ class DispatchResult:
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released to ``ready`` WITHOUT counting
     a failure — a long quota window must never trip the circuit breaker."""
+    capacity_deferred: list[str] = field(default_factory=list)
+    """Task ids whose workers were refused by the active-session capacity cap
+    (``MAX_CONCURRENT_SESSIONS``). They are released to ``ready`` WITHOUT
+    counting a failure and respawn only after the cooldown, like other host
+    capacity deferrals."""
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
@@ -173,6 +179,8 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.capacity_deferred:
+            counts["session_capacity"] = counts.get("session_capacity", 0) + len(res.capacity_deferred)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -260,6 +268,61 @@ def _exit_code_kind(code: int) -> "tuple[str, int]":
 _EXIT_TRAILER_RE = re.compile(
     r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
 )
+_REFUSAL_REASON_RE = re.compile(r"^hermes-refusal-reason:\s*([A-Z_]+)\s*$", re.MULTILINE)
+
+
+def _latest_log_run_segment(raw: Optional[str]) -> str:
+    """The append-only worker-log segment that belongs to the latest observed run."""
+    if not raw:
+        return ""
+    trailers = list(_EXIT_TRAILER_RE.finditer(raw))
+    if not trailers:
+        return raw
+    latest = trailers[-1]
+    trailing = raw[latest.end():]
+    if trailing.strip():
+        # A later worker may crash before ``exit_single_query`` writes a new
+        # trailer.  Once it appends any output after the previous trailer, that
+        # trailing text is the latest observed run; never reuse the previous
+        # refusal marker or diagnostic segment.
+        return trailing
+    previous_end = trailers[-2].end() if len(trailers) > 1 else 0
+    return raw[previous_end:latest.start()]
+
+
+def _latest_log_exit_code(raw: Optional[str]) -> Optional[int]:
+    """Exit code for the latest observed log run, if that run wrote a trailer."""
+    if not raw:
+        return None
+    trailers = list(_EXIT_TRAILER_RE.finditer(raw))
+    if not trailers:
+        return None
+    latest = trailers[-1]
+    if raw[latest.end():].strip():
+        return None
+    return int(latest.group(1))
+
+
+def _refusal_reason_for_latest_log_run(raw: Optional[str]) -> Optional[str]:
+    """Machine-readable refusal reason for the log run ending at the latest trailer."""
+    segment = _latest_log_run_segment(raw)
+    matches = _REFUSAL_REASON_RE.findall(segment)
+    return matches[-1] if matches else None
+
+
+def _worker_log_refusal_reason(task_id: str, board: Optional[str] = None) -> Optional[str]:
+    """Machine-readable active-session refusal reason from the worker log.
+
+    The quiet CLI prints ``hermes-refusal-reason: <REASON>`` before the human
+    message. Dispatch uses only the exact machine contract from the latest log
+    run, never translated prose or stale markers from prior attempts, so capacity
+    deferrals stay distinct from ownership/registry errors and later crashes.
+    """
+    try:
+        raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
+    except Exception:
+        return None
+    return _refusal_reason_for_latest_log_run(raw)
 
 
 def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
@@ -274,8 +337,7 @@ def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional
         raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
     except Exception:
         return None
-    matches = _EXIT_TRAILER_RE.findall(raw or "")
-    return int(matches[-1]) if matches else None
+    return _latest_log_exit_code(raw)
 
 
 def reap_worker_zombies() -> "list[int]":
@@ -1010,6 +1072,10 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
         return ""
     if not raw:
         return ""
+    # Logs are append-only across attempts.  Keep diagnostics anchored to the
+    # latest run segment so stale refusal text from a prior retry does not ride
+    # along with a later ordinary crash.
+    raw = _latest_log_run_segment(raw)
     raw = _EXIT_TRAILER_RE.sub("", raw)
     cut = raw.rfind(_exit_summary_marker())
     if cut != -1:
@@ -1033,15 +1099,22 @@ class _DeadWorker:
     event_payload: dict
     protocol_violation: bool = False
     rate_limited: bool = False
+    # ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
+    # credential/model — trips the breaker on this first occurrence.
     terminal_provider: bool = False
-    """``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``: the provider rejected the worker's
-    credential/model — trips the breaker on this first occurrence."""
+    # ``MAX_CONCURRENT_SESSIONS``: host/session-capacity refusal; retry later
+    # without consuming the task failure budget.
+    capacity_deferred: bool = False
 
     @property
     def run_outcome(self) -> str:
-        # A rate-limited requeue is recorded as ``rate_limited`` so board history
-        # doesn't show a phantom crash for a quota wall.
-        return "rate_limited" if self.rate_limited else "crashed"
+        # Capacity/rate-limit requeues are recorded explicitly so board history
+        # doesn't show phantom crashes for temporary host/provider limits.
+        if self.capacity_deferred:
+            return "capacity_deferred"
+        if self.rate_limited:
+            return "rate_limited"
+        return "crashed"
 
 
 def _classify_dead_worker(
@@ -1082,6 +1155,21 @@ def _classify_dead_worker_exit(
         logged = _worker_log_exit_code(task_id, board=board)
         if logged is not None:
             kind, code = _exit_code_kind(logged)
+    if task_id and _worker_log_refusal_reason(task_id, board=board) == MAX_CONCURRENT_SESSIONS:
+        # The active-session cap is host capacity, not task failure. Defer and
+        # let the respawn guard space retries; do not blur it with ownership or
+        # registry-coordination refusals, which remain ordinary nonzero crashes.
+        payload = {"pid": pid, "claimer": claimer, "refusal_reason": MAX_CONCURRENT_SESSIONS}
+        if code is not None and kind != "unknown":
+            payload.update({"exit_kind": kind, "exit_code": code})
+        return _DeadWorker(
+            kind, code,
+            f"pid {pid} refused by active-session capacity ({MAX_CONCURRENT_SESSIONS}) — "
+            "requeued without counting a failure",
+            "capacity_deferred",
+            payload,
+            capacity_deferred=True,
+        )
     if kind == "clean_exit":
         # rc=0 while still ``running``: usually the work succeeded and only the
         # paperwork was skipped; the corrective sentence reaches the retry
@@ -1135,6 +1223,7 @@ class _CrashSweep:
 
     crashed: list[str] = field(default_factory=list)
     rate_limited: list[str] = field(default_factory=list)
+    capacity_deferred: list[str] = field(default_factory=list)
     # ``(task_id, pid, claimer, dead_worker)``: accounted after the txn via
     # ``_record_task_failure`` (needs its own write_txn).
     crash_details: list[tuple[str, int, str, _DeadWorker]] = field(default_factory=list)
@@ -1195,10 +1284,11 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 "outcome": dead.run_outcome,
                 "retry_status": retry_status,
             })
-            if dead.rate_limited or dead.protocol_violation:
+            if dead.rate_limited or dead.protocol_violation or dead.capacity_deferred:
                 # Stamp last_failure_error WITHOUT touching ``consecutive_failures``:
-                # a rate-limited requeue must show ``check_respawn_guard`` a quota
-                # blocker; a below-budget protocol violation never reaches
+                # a rate-limited or session-capacity requeue must show
+                # ``check_respawn_guard`` the transient-capacity blocker; a
+                # below-budget protocol violation never reaches
                 # ``_record_task_failure`` (which stamps this column), yet the
                 # board UI and retry worker need the corrective message.
                 conn.execute(
@@ -1207,6 +1297,8 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
                 )
             if dead.rate_limited:
                 sweep.rate_limited.append(row["id"])
+            elif dead.capacity_deferred:
+                sweep.capacity_deferred.append(row["id"])
             else:
                 sweep.crashed.append(row["id"])
                 sweep.crash_details.append((row["id"], pid, row["claim_lock"], dead))
@@ -1301,16 +1393,19 @@ def detect_crashed_workers(conn: sqlite3.Connection, board: Optional[str] = None
     Clean exit while ``running`` is a protocol violation with a bounded
     violation-only retry budget; ``KANBAN_RATE_LIMIT_EXIT_CODE`` is a quota
     wall, released WITHOUT counting a failure and surfaced via the
-    ``_last_rate_limited`` attribute (the return stays crashed-only).
+    ``_last_rate_limited`` attribute; active-session capacity refusals are
+    released the same way and surfaced via ``_last_capacity_deferred`` (the
+    return stays crashed-only).
     """
     sweep = _reclaim_dead_workers(conn, board=board)
     # Outside the main txn: account each crash and maybe trip the breaker.
     auto_blocked = _account_crashes(conn, sweep.crash_details) if sweep.crash_details else []
     # Side-channel attributes keep the public ``list[str]`` return stable;
     # ``dispatch_once`` reads them to populate ``DispatchResult``. Rate-limited
-    # requeues did NOT count a failure and are NOT crashes.
+    # and session-capacity requeues did NOT count a failure and are NOT crashes.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     detect_crashed_workers._last_rate_limited = sweep.rate_limited  # type: ignore[attr-defined]
+    detect_crashed_workers._last_capacity_deferred = sweep.capacity_deferred  # type: ignore[attr-defined]
     # Fired only now, after the reclaim txn AND breaker accounting have
     # committed, so subscribers always observe fully durable board state.
     if sweep.exited_hook_payloads and _kb._kanban_observer_consumed("on_kanban_worker_exited"):
@@ -1530,10 +1625,11 @@ def check_respawn_guard(
     Called per ready/review row before any claim attempt. Priority order:
     ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
     refused — no restart-safe scope — within the cooldown; never counted),
-    ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
-    checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
-    ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
+    ``"session_capacity_cooldown"`` (latest run hit the active-session cap;
+    never counted), ``"rate_limit_cooldown"`` (latest run ``rate_limited``
+    within the cooldown; checked BEFORE ``blocker_auth`` because the requeue
+    stamps a quota-flavored ``last_failure_error`` that would otherwise park the
+    task forever — that path never increments ``consecutive_failures``), ``"blocker_auth"``
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
@@ -1569,6 +1665,13 @@ def check_respawn_guard(
             ended_at = latest_run["ended_at"]
             if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
                 return "infrastructure_cooldown"
+    if latest_run is not None and latest_run["outcome"] == "capacity_deferred":
+        if rl_cooldown <= 0:
+            return None
+        ended_at = latest_run["ended_at"]
+        if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
+            return "session_capacity_cooldown"
+        return None
     if latest_run is not None and latest_run["outcome"] == "rate_limited":
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
@@ -2201,6 +2304,7 @@ def _run_reclaim_phase(
     # went back to ``ready`` and the respawn guard defers them until quota clears.
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
+    result.capacity_deferred.extend(getattr(detect_crashed_workers, "_last_capacity_deferred", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 

@@ -209,6 +209,7 @@ def test_rehydrate_keeps_a_live_loopback_override(store_factory):
 @pytest.mark.parametrize("url,expected_probe", [
     ("http://127.0.0.1:20016/v1", True),
     ("http://localhost:21182/v1", True),
+    ("http://0.0.0.0:20016/v1", True),
     ("https://cline.algofzco.com/v1", False),   # remote endpoints are never probed
     ("http://127.0.0.1/v1", False),             # no port -> nothing to probe
     (None, False),
@@ -232,6 +233,26 @@ def test_live_loopback_endpoint_is_not_probed_when_port_is_open():
 
     with patch("gateway.run_agent_cache.socket.create_connection"):
         assert _dead_loopback_endpoint("http://127.0.0.1:21139/v1") is False
+
+
+def test_dead_loopback_endpoint_dials_loopback_for_wildcard_bind():
+    """A wildcard bind target 0.0.0.0 must be dialed as 127.0.0.1 (connect to 0.0.0.0 fails with WSAEADDRNOTAVAIL)."""
+    from gateway.run_agent_cache import _dead_loopback_endpoint
+
+    with patch("gateway.run_agent_cache.socket.create_connection") as mock_connect:
+        assert _dead_loopback_endpoint("http://0.0.0.0:14304/v1") is False
+        mock_connect.assert_called_once_with(("127.0.0.1", 14304), timeout=0.5)
+
+
+def test_dead_loopback_endpoint_treats_timeout_as_live():
+    """A slow accept queue or timeout is treated as live (only ConnectionRefused/OSError counts as dead)."""
+    from gateway.run_agent_cache import _dead_loopback_endpoint
+
+    with patch(
+        "gateway.run_agent_cache.socket.create_connection",
+        side_effect=TimeoutError("timed out"),
+    ):
+        assert _dead_loopback_endpoint("http://127.0.0.1:20016/v1") is False
 
 
 def test_rehydrate_opencode_override_heals_relay_url_for_rederived_wire(store_factory):

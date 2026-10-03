@@ -53,8 +53,9 @@ def _dead_loopback_endpoint(base_url: Any, *, timeout: float = 0.5) -> bool:
         return False
     if not host or not port or host not in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
         return False
+    dial_host = "127.0.0.1" if host == "0.0.0.0" else host
     try:
-        with socket.create_connection((host, port), timeout=timeout):
+        with socket.create_connection((dial_host, port), timeout=timeout):
             return False
     except TimeoutError:
         return False  # a slow accept queue is still a live listener

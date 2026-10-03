@@ -33,6 +33,29 @@ def test_docker_daemon_probe_failure_captures_daemon_reason(monkeypatch):
     assert backends.terminal_backend_unavailable_reason()
 
 
+def test_probe_timeout_is_read_from_terminal_probe_timeout_env(monkeypatch):
+    monkeypatch.setitem(backends._BACKEND_SPECS, "docker",
+                        {"binary": (lambda: "/usr/bin/docker", "version", "unused")})
+    seen = {}
+
+    def fake_run(*a, **k):
+        seen["timeout"] = k.get("timeout")
+        return subprocess.CompletedProcess(a[0], 0, b"", b"")
+
+    monkeypatch.setattr(backends.subprocess, "run", fake_run)
+    monkeypatch.setenv("TERMINAL_PROBE_TIMEOUT", "42.5")
+    assert backends._check_requirements("docker", {}) is True
+    assert seen["timeout"] == 42.5
+
+    monkeypatch.setenv("TERMINAL_PROBE_TIMEOUT", "not-a-number")
+    assert backends._check_requirements("docker", {}) is True
+    assert seen["timeout"] == 20.0
+
+    monkeypatch.delenv("TERMINAL_PROBE_TIMEOUT")
+    assert backends._check_requirements("docker", {}) is True
+    assert seen["timeout"] == 20.0
+
+
 def test_ssh_unconfigured_captures_reason():
     assert backends._check_requirements("ssh", {"ssh_host": "", "ssh_user": ""}) is False
     assert backends.terminal_backend_unavailable_reason()
@@ -48,3 +71,48 @@ def test_check_terminal_requirements_exception_captures_reason(monkeypatch):
     monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
     assert terminal_tool.check_terminal_requirements() is False
     assert "boom" in terminal_tool.terminal_backend_unavailable_reason()
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "inf", "-inf", "nan", "1e400", "true"])
+def test_non_positive_or_unparsable_probe_timeout_falls_back(monkeypatch, raw):
+    from tools.terminal_tool_config import _probe_timeout
+
+    monkeypatch.setenv("TERMINAL_PROBE_TIMEOUT", raw)
+    assert _probe_timeout() == 20.0
+
+
+def test_docker_preflight_uses_the_probe_timeout(monkeypatch):
+    """The Docker backend's own preflight honours the same setting as the requirements check."""
+    import tools.environments.docker as docker_env
+
+    seen = {}
+
+    def fake_run_capture(argv, timeout=None, **_):
+        seen["timeout"] = timeout
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "run_capture", fake_run_capture)
+    monkeypatch.setenv("TERMINAL_PROBE_TIMEOUT", "60")
+    docker_env._ensure_docker_available()
+    assert seen["timeout"] == 60.0
+
+    monkeypatch.delenv("TERMINAL_PROBE_TIMEOUT")
+    docker_env._ensure_docker_available()
+    assert seen["timeout"] == 20.0
+
+
+def test_singularity_preflight_uses_the_probe_timeout(monkeypatch):
+    import tools.environments.singularity as sing
+
+    seen = {}
+
+    def fake_run_capture(argv, timeout=None, **_):
+        seen["timeout"] = timeout
+        return subprocess.CompletedProcess(argv, 0, "apptainer version 1.3", "")
+
+    monkeypatch.setattr(sing, "_find_singularity_executable", lambda: "apptainer")
+    monkeypatch.setattr(sing, "run_capture", fake_run_capture)
+    monkeypatch.setenv("TERMINAL_PROBE_TIMEOUT", "45")
+    assert sing._ensure_singularity_available() == "apptainer"
+    assert seen["timeout"] == 45.0

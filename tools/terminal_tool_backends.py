@@ -17,7 +17,7 @@ from tools.environments.modal import ModalEnvironment as _ModalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
-from tools.terminal_tool_config import _get_plugin_env_provider
+from tools.terminal_tool_config import _get_plugin_env_provider, _probe_timeout
 from tools.tool_backend_helpers import (has_direct_modal_credentials, managed_nous_tools_enabled,
                                         nous_tool_gateway_unavailable_message, resolve_modal_backend_state)
 
@@ -341,7 +341,8 @@ def _check_requirements(env_type: str, config: Dict[str, Any]) -> bool:
         executable = finder()
         if not executable:
             return _reject(missing_msg or f"the {env_type!r} backend's executable was not found")
-        probe = subprocess.run([executable, arg], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+        probe = subprocess.run([executable, arg], capture_output=True, timeout=_probe_timeout(),
+                               stdin=subprocess.DEVNULL)
         if probe.returncode != 0:
             return _reject(f"{_PROBE_FAILED_REASONS[env_type]} (`{executable} {arg}` exited with code {probe.returncode})")
         return True

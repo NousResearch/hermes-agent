@@ -148,6 +148,10 @@ export const arChrome = {
   },
   sidebar: {
     profileRail: 'شريط الملفات الشخصية',
+    resize: {
+      pinnedBoundary: 'تغيير حجم المثبتة والجلسات',
+      sessionsBottom: 'تغيير حجم الجلسات'
+    },
     markAllRead: 'وضع علامة مقروء على الكل',
     filter: {
       grouping: 'تجميع',

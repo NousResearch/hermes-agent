@@ -128,6 +128,7 @@ The app is built for working on several things at once:
 - **Tabs** — **Cmd/Ctrl+T** opens a new session tab; **Ctrl+Tab** / **Ctrl+Shift+Tab** cycle sessions, and **Ctrl+1…9** jump to a recent session by position. **Cmd/Ctrl+W** closes the focused tab — except over an interactive terminal, where it keeps its shell meaning (word erase) — and **Cmd/Ctrl+Shift+T** reopens the last closed one.
 - **Multiple windows** — **Cmd/Ctrl+Shift+N** opens a new window, and any session can be popped out via its context menu (**New window**) or from the command palette. A popped-out window renders that single chat without the global sidebar — handy for parking a long-running session on another monitor. Live agent output streams into every window showing the session.
 - **Panes** — **Cmd/Ctrl+B** toggles the left sidebar, **Cmd/Ctrl+J** the right one, and **Cmd/Ctrl+\\** swaps which side the sidebars sit on.
+- **Sidebar section heights** — drag the line between **Pinned** and **Sessions**, or the one between **Sessions** and the messaging/cron block below it, to trade height between them; the other side gives up exactly what you take, so nothing is pushed out of view. With a line focused, the arrow keys move it, and double-clicking either line returns every section to its natural size. Heights are remembered per interface mode. Short windows (under about 768 px of height) drop the lines and scroll the whole list instead.
 
 #### Interface mode
 

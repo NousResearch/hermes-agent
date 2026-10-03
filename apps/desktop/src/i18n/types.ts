@@ -3154,6 +3154,10 @@ export interface Translations {
       working: string
       done: string
     }
+    resize: {
+      pinnedBoundary: string
+      sessionsBottom: string
+    }
     markAllRead: string
   }
 

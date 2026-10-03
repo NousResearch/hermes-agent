@@ -60,6 +60,16 @@ export function handleToolEvent(ctx: GatewayEventContext): boolean {
 
     flushQueuedDeltas(sessionId)
     upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type, occurredAt)
+    // #106451: a starting tool proves the turn is live. A premature settle
+    // must not park the session idle while rows keep arriving — re-assert
+    // working on activity; completion signals never re-arm, only this does.
+    // ponytail: tool/text activity only; a turn whose only post-settle signs
+    // are reasoning deltas re-arms on its next tool/delta.
+    updateSessionState(sessionId, state =>
+      state.interrupted || state.busy
+        ? state
+        : { ...state, busy: true, turnLive: true, turnStartedAt: state.turnStartedAt ?? Date.now() }
+    )
 
     if (isActiveEvent) {
       setPetActivity({ reasoning: false, toolRunning: true })

@@ -169,7 +169,18 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
   if (event.type === 'message.delta') {
     if (sessionId) {
-      appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt)
+      const text = coerceGatewayText(payload?.text)
+      appendAssistantDelta(sessionId, text, occurredAt)
+
+      // #106451: streamed text proves the turn is live — same re-arm as
+      // tool.start above. Empty deltas carry no signal and stay out.
+      if (text) {
+        updateSessionState(sessionId, state =>
+          state.interrupted || state.busy
+            ? state
+            : { ...state, busy: true, turnLive: true, turnStartedAt: state.turnStartedAt ?? Date.now() }
+        )
+      }
     }
 
     return true

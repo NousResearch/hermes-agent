@@ -28,6 +28,7 @@
  */
 
 import { actEngineSource, type PreviewActAction, type PreviewActResult } from '@/lib/preview-act/act-in-page'
+import { inspectTargetInPage } from '@/lib/preview-act/inspect-in-page'
 import { watchInPage } from '@/lib/preview-act/watch-in-page'
 import type { PreviewOwner } from '@/store/preview-ownership'
 
@@ -783,6 +784,32 @@ export async function actOnActivePreview(
   }
 
   const typed = action as PreviewActAction
+
+  // A targeted read must not inventory/rebind refs, install the watcher, scroll,
+  // focus, or even acquire the native input channel. Keep the guest payload
+  // independent of the mutating engine preamble.
+  if (typed.kind === 'elements' && (typed.selector != null || typed.ref != null)) {
+    if (signal?.aborted) {
+      return { error: 'Target inspection was cancelled; no input was sent.', success: false }
+    }
+
+    const target = { ref: typed.ref, selector: typed.selector, max: typed.max }
+
+    try {
+      const trip = await runJson(
+        run,
+        `JSON.stringify((${inspectTargetInPage.toString()})(document, window.__hermesActHolder, ${JSON.stringify(target)}))`
+      )
+
+      if (trip.kind === 'answered') {
+        return trip.result
+      }
+    } catch {
+      // Guest/IPC failures and malformed JSON must not expose page exception text.
+    }
+
+    return { error: 'Target inspection did not answer; no input was sent.', success: false }
+  }
 
   // Annotation, not interaction: nothing is clicked, nothing settles, and the
   // page is not re-read, so these skip the whole act-then-inventory path.

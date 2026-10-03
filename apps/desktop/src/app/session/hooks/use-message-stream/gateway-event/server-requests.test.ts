@@ -371,6 +371,23 @@ describe('preview pop-out forwarding', () => {
     expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ acted: 'elements', success: true })
   })
 
+  it('preserves targeted inspection and its bounded result through the wire and pop-out route', async () => {
+    const result = { success: true, inspection: { candidateCount: 0, candidates: [], truncated: false } }
+    requestPopoutPreviewAct.mockResolvedValue(result)
+
+    const { respond } = deliver(
+      'preview.act',
+      { action: 'elements', selector: 'svg circle', ref: 'btn-resize', max: 2, session_id: 'session-a' },
+      'session-a'
+    )
+
+    await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1), { timeout: 30_000 })
+    expect(requestPopoutPreviewAct).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'elements', selector: 'svg circle', ref: 'btn-resize', max: 2 }), sessionAOwner
+    )
+    expect(JSON.parse(respond.mock.calls[0][0].value)).toEqual(result)
+  })
+
   it('runs the act locally when this window has a live surface', async () => {
     hasLivePreviewSurface.mockReturnValue(true)
 

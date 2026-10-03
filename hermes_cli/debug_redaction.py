@@ -45,10 +45,6 @@ _SENSITIVE_HEADER_NAMES = (
     "set-cookie",
     *SECRET_HEADER_NAME_LIST,
 )
-_SENSITIVE_HEADER_COMPACT_NAMES = frozenset(
-    "".join(ch for ch in name.casefold() if ch.isalnum())
-    for name in _SENSITIVE_HEADER_NAMES
-)
 _HEADER_NAME_PATTERN = "|".join(re.escape(name) for name in _SENSITIVE_HEADER_NAMES)
 _QUOTED_HEADER_RE = re.compile(
     rf"(?P<prefix>['\"]?(?:{_HEADER_NAME_PATTERN})['\"]?\s*[:=]\s*)"
@@ -191,8 +187,3 @@ def redact_debug_support_text(value: object, *, max_chars: int | None = None) ->
     except Exception:
         return REDACTION_UNAVAILABLE
     return text[:max_chars] if max_chars is not None else text
-
-
-def redact_debug_support_error(error: object) -> str:
-    """Render an outward-facing debug/support failure without raw exception data."""
-    return redact_debug_support_text(error)

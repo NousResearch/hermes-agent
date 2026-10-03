@@ -15,10 +15,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 from hermes_constants import get_hermes_home
-from hermes_cli.debug_redaction import (
-    redact_debug_support_error,
-    redact_debug_support_text,
-)
+from hermes_cli.debug_redaction import redact_debug_support_text
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -256,15 +253,6 @@ def _resolve_log_path(log_name: str) -> Optional[Path]:
     return None
 
 
-def _redact_log_text(text: str) -> str:
-    """Strict support-egress scrub (``hermes_cli.debug_redaction``).
-
-    Debug/support payloads always use strict URL handling. Ordinary tool output
-    retains its separate, less destructive URL policy in ``agent.redact``.
-    """
-    return redact_debug_support_text(text)
-
-
 def _read_tail_bytes(
     log_path: Path, size: int, max_bytes: int, tail_lines: int
 ) -> tuple[bytes, int, bool]:
@@ -329,7 +317,7 @@ def _capture_log_snapshot(
         if redact:
             # The support scrub needs the complete logical field before either
             # the summary-line cap or full-log byte cap can remove its key.
-            all_text = _redact_log_text(all_text)
+            all_text = redact_debug_support_text(all_text)
         if start_offset and not starts_on_boundary:
             all_text = all_text.split("\n", 1)[1] if "\n" in all_text else ""
         tail_text = "".join(all_text.splitlines(keepends=True)[-tail_lines:]).rstrip("\n")
@@ -339,7 +327,7 @@ def _capture_log_snapshot(
             full_text = f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{full_text}"
         return LogSnapshot(path=log_path, tail_text=tail_text, full_text=full_text)
     except Exception as exc:
-        error = redact_debug_support_error(exc)
+        error = redact_debug_support_text(exc)
         return LogSnapshot(path=log_path, tail_text=f"(error reading: {error})", full_text=None)
 
 
@@ -370,7 +358,7 @@ def _capture_dump(redact: bool = True) -> str:
     with contextlib.redirect_stdout(capture), contextlib.suppress(SystemExit):
         run_dump(SimpleNamespace(show_keys=False))
     text = capture.getvalue()
-    return _redact_log_text(text) if redact else text
+    return redact_debug_support_text(text) if redact else text
 
 
 def collect_debug_report(
@@ -485,7 +473,7 @@ def build_debug_share(
         try:
             urls[label] = upload_to_pastebin(content, expiry_days=expiry)
         except Exception as exc:
-            failures.append(f"{label}: {redact_debug_support_error(exc)}")
+            failures.append(f"{label}: {redact_debug_support_text(exc)}")
     _schedule_auto_delete(list(urls.values()))
     return DebugShareResult(urls=urls, failures=failures, redacted=redact,
                             auto_delete_seconds=_AUTO_DELETE_SECONDS, report=report)
@@ -547,7 +535,7 @@ def run_debug_share(args):
     try:
         result = build_debug_share(log_lines=log_lines, expiry=expiry, redact=redact)
     except RuntimeError as exc:
-        print(f"\nUpload failed: {redact_debug_support_error(exc)}", file=sys.stderr)
+        print(f"\nUpload failed: {redact_debug_support_text(exc)}", file=sys.stderr)
         print("\nRun `hermes debug share --local` to print the report instead.\n")
         sys.exit(1)
     label_width = max(len(k) for k in result.urls)
@@ -604,7 +592,7 @@ def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:
     try:
         res = share_to_nous(build_nous_bundle(bundle, redact=redact))
     except Exception as exc:
-        error = redact_debug_support_error(exc)
+        error = redact_debug_support_text(exc)
         print(f"\nNous upload failed: {error}\n"
               "\nThe Nous diagnostics service may be unavailable or not yet provisioned.\n"
               "Run `hermes debug share --local` to print the report instead, "
@@ -642,10 +630,10 @@ def run_debug_delete(args):
                     f"{redact_debug_support_text(url)} (unexpected response)"
                 )
         except ValueError as exc:
-            print(f"  ✗ {redact_debug_support_error(exc)}")
+            print(f"  ✗ {redact_debug_support_text(exc)}")
         except Exception as exc:
             safe_url = redact_debug_support_text(url)
-            print(f"  ✗ Could not delete {safe_url}: {redact_debug_support_error(exc)}")
+            print(f"  ✗ Could not delete {safe_url}: {redact_debug_support_text(exc)}")
 
 
 def run_debug(args):

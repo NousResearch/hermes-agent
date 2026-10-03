@@ -531,9 +531,9 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"ok": True, "view_url": view_url, "upload_id": upload_id,
                          "expires_at": res.get("expiresAt") or res.get("expires_at")})
     except Exception as e:
-        from hermes_cli.debug_redaction import redact_debug_support_error
+        from hermes_cli.debug_redaction import redact_debug_support_text
 
-        return _ok(rid, {"ok": False, "error": redact_debug_support_error(e)})
+        return _ok(rid, {"ok": False, "error": redact_debug_support_text(e)})
 
 
 def register(server) -> None:

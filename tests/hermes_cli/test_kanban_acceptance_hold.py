@@ -137,6 +137,61 @@ def test_normal_unblock_does_not_implicitly_clear_acceptance(board):
     assert tick(board) == []
 
 
+def test_operator_can_retry_completion_without_new_claim(board, monkeypatch):
+    from hermes_cli import kanban as cli
+
+    tid = rejected(board)
+    assert kb.get_task(board, tid).current_run_id is None
+    calls = []
+    def accepted(*args, **kwargs):
+        calls.append(args)
+        return {"ok": True, "classification": "success"}
+    monkeypatch.setattr(store, "collect_acceptance", accepted)
+    parser = argparse.ArgumentParser()
+    cli.build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args(["kanban", "complete", tid, "--summary", "Acceptance repaired"])
+    assert cli.kanban_command(args) == 0
+    assert len(calls) == 1
+    task = kb.get_task(board, tid)
+    assert task.status == "done" and not task.acceptance_hold
+    assert task.current_run_id is None
+
+
+def test_hold_is_visible_in_cli_and_tool_payloads(board, capsys):
+    import json
+    from hermes_cli import kanban as cli
+    from tools import kanban_tools
+
+    tid = rejected(board)
+    parser = argparse.ArgumentParser()
+    cli.build_parser(parser.add_subparsers(dest="command"))
+    for held in (True, False):
+        args = parser.parse_args(["kanban", "show", tid, "--json"])
+        assert cli.kanban_command(args) == 0
+        assert json.loads(capsys.readouterr().out)["task"]["acceptance_hold"] is held
+        assert json.loads(kanban_tools._handle_show({"task_id": tid}))["task"]["acceptance_hold"] is held
+        rows = json.loads(kanban_tools._handle_list({}))["tasks"]
+        assert next(row for row in rows if row["id"] == tid)["acceptance_hold"] is held
+        if held:
+            assert store.clear_acceptance_hold(board, tid)
+
+
+def test_held_task_diagnostic_names_the_recovery_not_a_missing_worker(board):
+    from hermes_cli.kanban_diagnostics import compute_task_diagnostics
+
+    tid = rejected(board)
+    task = kb.get_task(board, tid)
+    now = task.created_at + 24 * 3600
+    diags = compute_task_diagnostics(task, [], [], now=now)
+    assert not any(d.kind == "stranded_in_ready" for d in diags)
+    held = next(d for d in diags if d.kind == "acceptance_rejected")
+    assert "--acceptance-only" in str(held.actions)
+    assert store.clear_acceptance_hold(board, tid)
+    diags = compute_task_diagnostics(kb.get_task(board, tid), [], [], now=now)
+    assert not any(d.kind == "acceptance_rejected" for d in diags)
+    assert any(d.kind == "stranded_in_ready" for d in diags)
+
+
 def test_migration_is_inert_for_legacy_cards(board):
     tid = kb.create_task(board, title="Legacy")
     with kb.write_txn(board):

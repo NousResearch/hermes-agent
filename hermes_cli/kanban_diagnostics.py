@@ -679,6 +679,25 @@ def _rule_block_unblock_cycling(task, events, runs, now, cfg) -> list[Diagnostic
     )]
 
 
+def _rule_acceptance_rejected(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """A deliberate publication hold needs publication recovery, not reassignment."""
+    if not _task_field(task, "acceptance_hold", default=False):
+        return []
+    task_id = _task_field(task, "id")
+    inspect = f"hermes kanban events {task_id}"
+    clear = f"hermes kanban unblock {task_id} --acceptance-only"
+    return [Diagnostic(
+        kind="acceptance_rejected", severity="warning",
+        title="PR acceptance is holding dispatch",
+        detail="Inspect the acceptance receipt and repair its cause. An operator can retry "
+               "completion directly, or explicitly clear only this hold to authorize a worker retry. "
+               "Other worker/auth guards remain in force.",
+        actions=[_cli_hint("Inspect acceptance receipt", inspect, suggested=True),
+                 _cli_hint("Authorize retry after repairing acceptance", clear)],
+        data={"acceptance_hold": True},
+    )]
+
+
 def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     """Assigned, unclaimed, ``ready`` for >= cfg["stranded_threshold_seconds"]
     (default 30 min). Deliberately age-based and identity-agnostic so it
@@ -686,7 +705,7 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     pools alike without a registry to curate. Unassigned tasks are excluded —
     the dispatcher's ``skipped_unassigned`` already covers them."""
     threshold_seconds = float(cfg.get("stranded_threshold_seconds", 30 * 60))
-    if _task_field(task, "status") != "ready":
+    if _task_field(task, "status") != "ready" or _task_field(task, "acceptance_hold", default=False):
         return []
     # A live claim means it's being worked on even without progress yet.
     if _task_field(task, "claim_lock"):
@@ -747,6 +766,7 @@ _RULES: list[RuleFn] = [
     _rule_running_with_open_parents,
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
+    _rule_acceptance_rejected,
     _rule_stranded_in_ready,
 ]
 

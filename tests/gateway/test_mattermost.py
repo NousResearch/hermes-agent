@@ -393,6 +393,46 @@ class TestMattermostMentionBehavior:
             await self.adapter._handle_ws_event(self._make_event("hello", channel_id="chan_456"))
             assert self.adapter.handle_message.called
 
+    def _gating_env(self):
+        for var in ("MATTERMOST_ALLOWED_CHANNELS", "MATTERMOST_REQUIRE_MENTION", "MATTERMOST_FREE_RESPONSE_CHANNELS"):
+            os.environ.pop(var, None)
+
+    def test_strip_self_mention_collapses_doubled_space(self):
+        """A multi-recipient post keeps the peer handle and leaves no doubled space (#125380)."""
+        self._gating_env()
+        result = self.adapter._apply_channel_gating("chan_456", "@hermes-bot @otherbot team roll call")
+        assert result == "@otherbot team roll call"
+
+    def test_strip_bold_wrapped_mention_leaves_no_empty_bold(self):
+        """**@bot** must redact whole, not to a literal "****" (#125380)."""
+        self._gating_env()
+        result = self.adapter._apply_channel_gating("chan_456", "status for **@hermes-bot** and **@otherbot** ok")
+        assert result == "status for and **@otherbot** ok"
+
+    @pytest.mark.asyncio
+    async def test_channel_mention_message_carries_identity_prompt(self):
+        """The channel turn gets an ephemeral identity anchor so a surviving peer handle in a
+        multi-bot channel doesn't read as "addressed to someone else" (#125380, Slack parity)."""
+        self._gating_env()
+        await self.adapter._handle_ws_event(self._make_event("@hermes-bot @otherbot team roll call"))
+        event = self.adapter.handle_message.await_args.args[0]
+        assert event.text == "@otherbot team roll call"
+        assert event.channel_prompt and '"@hermes-bot"' in event.channel_prompt
+        assert "mention routing" in event.channel_prompt
+
+    @pytest.mark.asyncio
+    async def test_dm_message_gets_no_identity_prompt(self):
+        """DMs are already directed; no identity anchor is injected."""
+        self._gating_env()
+        await self.adapter._handle_ws_event(self._make_event("hello", channel_type="D"))
+        event = self.adapter.handle_message.await_args.args[0]
+        assert event.channel_prompt is None
+
+    def test_identity_prompt_skipped_without_username(self):
+        """No resolvable handle → no prompt (blank string, not a partial sentence)."""
+        self.adapter._bot_username = ""
+        assert self.adapter._build_identity_prompt() == ""
+
 
 # ---------------------------------------------------------------------------
 # File upload (send_image)

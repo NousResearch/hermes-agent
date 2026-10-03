@@ -347,6 +347,18 @@ DEFAULT_CONFIG = {
         # go first because n/nvm/asdf write PATH exports there without an interactivity guard. Turn
         # off if an rc file misbehaves when sourced non-interactively (exits on TTY check).
         "auto_source_bashrc": True,
+        # User-declared directories prepended to the terminal child PATH with top
+        # priority, in list order — before every Hermes-managed entry (#126460).
+        # The channel for routing bare ``python``/``pip`` at a user environment
+        # (Windows chat-terminal counterpart of cron ``--interpreter``); works for
+        # any user toolchain (the dirs affect all PATH lookups, not only python).
+        # An entry already in PATH is moved to its config position, an absent one
+        # is inserted. Example:
+        #   user_env_dirs:
+        #     - C:/Program Files/Python313
+        #     - C:/Program Files/Python313/Scripts
+        # Empty by default: PATH is left unchanged.
+        "user_env_dirs": [],
         # The default sandbox for every container backend: the nikolaik/python-nodejs base
         # (Python 3.13 / Node 26) plus a display stack, so Bot Screen, computer_use and the
         # bot's browser run INSIDE the sandbox and the pane can watch them (see bot_desktop).

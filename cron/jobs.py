@@ -3392,15 +3392,18 @@ def _prune_job_output(job_output_dir: Path, keep: int) -> int:
     return deleted
 
 
-def save_job_output(job_id: str, output: str):
+def save_job_output(job_id: str, output: str, execution_id: Optional[str] = None):
     """Save job output to file."""
     ensure_dirs()
     job_output_dir = _job_output_dir(job_id)
     _ensure_cron_dir(job_output_dir)
     _secure_dir(job_output_dir)
-    output_file = job_output_dir / f"{_hermes_now().strftime('%Y-%m-%d_%H-%M-%S')}.md"
+    output_file = job_output_dir / ((str(execution_id) if execution_id else _hermes_now().strftime('%Y-%m-%d_%H-%M-%S')) + ".md")
     atomic_write_text(output_file, output, tmp_prefix=".output_", mode=0o600)
     _secure_file(output_file)
+    if execution_id:
+        from cron.executions import set_execution_output_path
+        set_execution_output_path(execution_id, str(output_file))
     # Bound per-job output growth so long-running deploys don't fill the disk (#52383).
     _prune_job_output(job_output_dir, _cron_output_keep())
     return output_file

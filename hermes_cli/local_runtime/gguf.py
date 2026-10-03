@@ -35,6 +35,8 @@ _GGML_TYPE_SIZES = {
     21: (110, 256), 22: (82, 256), 23: (136, 256), 24: (1, 1), 25: (2, 1),
     26: (4, 1), 27: (8, 1), 28: (8, 1), 29: (56, 256), 30: (2, 1),
     39: (17, 32),  # MXFP4 — 32 elements per 17-byte block (gpt-oss family)
+    41: (18, 128),  # Q1_0 — fp16 scale + 128 one-bit quants (1-bit Bonsai)
+    42: (18, 64),   # Q2_0 — fp16 scale + 64 two-bit quants (ternary g64)
 }
 
 # GGUF metadata value types -> struct format; STRING (8) and ARRAY (9) are variable-length.

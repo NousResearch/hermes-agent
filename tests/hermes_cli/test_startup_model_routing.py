@@ -206,3 +206,85 @@ def test_oneshot_and_tui_qualified_model_never_reaches_default_provider(tmp_path
     choice = _resolve_model_and_provider(cfg, None, None)
     assert (choice.provider, choice.model) == ("custom:jetson-vllm", "nemotron-nano-30b")
     assert tui_server._resolve_startup_runtime() == ("nemotron-nano-30b", "custom:jetson-vllm")
+
+
+def test_startup_route_pinned_provider_survives_prefix_alias(monkeypatch):
+    """A config-pinned ``custom:<name>`` provider must survive an ``hf:`` model prefix.
+
+    The upstream endpoint requires the prefix on the wire, so the alias must stay part of the
+    model id instead of rerouting startup to huggingface (fresh CLI sessions then failed auth
+    with "No usable credentials found for provider 'huggingface'"). See #125578."""
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    route = model_switch.resolve_startup_model_route(
+        "hf:zai-org/GLM-5.3-Flash",
+        current_provider="custom:synthetic",
+        pinned_provider="custom:synthetic",
+        user_providers={"synthetic": {"base_url": "https://api.synthetic.new/openai/v1"}},
+    )
+    assert route == model_switch.StartupModelRoute("hf:zai-org/GLM-5.3-Flash", "")
+
+
+def test_startup_route_prefix_matching_pin_still_consumed(monkeypatch):
+    """A prefix that normalizes to the pinned provider is not a conflict: the split still runs."""
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    route = model_switch.resolve_startup_model_route(
+        "hf:zai-org/GLM-5.3-Flash", pinned_provider="huggingface")
+    assert route == model_switch.StartupModelRoute("zai-org/GLM-5.3-Flash", "huggingface")
+
+
+def test_startup_route_unpinned_prefix_alias_keeps_inference(monkeypatch):
+    """Without an explicit pin the alias inference stays the documented quick-switch syntax."""
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    assert model_switch.resolve_startup_model_route(
+        "hf:zai-org/GLM-5.3-Flash") == model_switch.StartupModelRoute(
+        "zai-org/GLM-5.3-Flash", "huggingface")
+    assert model_switch.resolve_startup_model_route(
+        "hf:zai-org/GLM-5.3-Flash", pinned_provider="auto") == model_switch.StartupModelRoute(
+        "zai-org/GLM-5.3-Flash", "huggingface")
+
+
+def test_startup_route_pin_keeps_custom_qualified_syntax(monkeypatch):
+    """The documented ``custom:<name>:<model>`` routing syntax still outranks the pin (#73943)."""
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    route = model_switch.resolve_startup_model_route(
+        "custom:jetson-vllm:nemotron-nano-30b", pinned_provider="anthropic",
+        user_providers={"jetson-vllm": {"base_url": "http://127.0.0.1:8000/v1"}})
+    assert route == model_switch.StartupModelRoute("nemotron-nano-30b", "custom:jetson-vllm")
+
+
+def test_startup_route_unresolvable_pin_warns_and_routes_on_prefix(monkeypatch, caplog):
+    """A typo pin (``custom:typ0`` — no such configured entry) must not suppress a resolvable
+    prefix route and then die downstream on the missing entry: warn and keep the split."""
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    with caplog.at_level("WARNING", logger="hermes_cli.model_switch"):
+        route = model_switch.resolve_startup_model_route(
+            "hf:zai-org/GLM-5.3-Flash", pinned_provider="custom:typ0",
+            user_providers={"synthetic": {"base_url": "https://api.synthetic.new/openai/v1"}})
+    assert route == model_switch.StartupModelRoute("zai-org/GLM-5.3-Flash", "huggingface")
+    assert "custom:typ0" in caplog.text
+
+
+def test_startup_route_resolvable_pins_raise_no_warning(monkeypatch, caplog):
+    """Pins naming a configured entry or a built-in slug stay silent (the #125578 guard)."""
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    with caplog.at_level("WARNING", logger="hermes_cli.model_switch"):
+        configured = model_switch.resolve_startup_model_route(
+            "hf:zai-org/GLM-5.3-Flash", pinned_provider="custom:synthetic",
+            user_providers={"synthetic": {"base_url": "https://api.synthetic.new/openai/v1"}})
+        builtin = model_switch.resolve_startup_model_route(
+            "openai-api:gpt-4o", pinned_provider="anthropic")
+    assert configured == model_switch.StartupModelRoute("hf:zai-org/GLM-5.3-Flash", "")
+    assert builtin == model_switch.StartupModelRoute("openai-api:gpt-4o", "")
+    assert caplog.text == ""
+
+
+def test_startup_route_bare_config_key_pin_is_resolvable(monkeypatch, caplog):
+    """A pin written as a bare ``providers:`` key (no ``custom:`` prefix) still names a real
+    entry and must not be discarded as a typo."""
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    with caplog.at_level("WARNING", logger="hermes_cli.model_switch"):
+        route = model_switch.resolve_startup_model_route(
+            "hf:zai-org/GLM-5.3-Flash", pinned_provider="synthetic",
+            user_providers={"synthetic": {"base_url": "https://api.synthetic.new/openai/v1"}})
+    assert route == model_switch.StartupModelRoute("hf:zai-org/GLM-5.3-Flash", "")
+    assert caplog.text == ""

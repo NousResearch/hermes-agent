@@ -354,8 +354,64 @@ class StartupModelRoute(NamedTuple):
     api_key: str = ""
 
 
+def _pin_resolves(pin: str, *, user_providers: Optional[dict] = None,
+                  custom_ids: Optional[set] = None) -> bool:
+    """Whether an explicit provider pin names a real provider: a built-in slug/alias, or a
+    configured ``providers:``/``custom_providers:`` entry (``custom:<name>`` or its bare key).
+
+    A typo pin (``custom:typ0``) must fail closed here so the caller can warn and route on the
+    prefix instead of suppressing a resolvable route and dying downstream on the missing entry."""
+    candidate = _clean(pin)
+    if not candidate:
+        return False
+    configured = {_clean(str(name)).lower() for name in (user_providers or {})}
+    configured |= {_clean(str(slug)).lower() for slug in (custom_ids or ())}
+    bare = candidate[7:] if candidate.lower().startswith("custom:") else candidate
+    if candidate.lower() in configured or _clean(bare).lower() in configured:
+        return True
+    try:
+        from hermes_cli.models import _KNOWN_PROVIDER_NAMES, normalize_provider as _normalize
+        normalized = _normalize(candidate)
+        return normalized in _KNOWN_PROVIDER_NAMES or candidate in _KNOWN_PROVIDER_NAMES
+    except Exception:
+        # Catalog unavailable: treat the pin as valid rather than change routing on an
+        # import failure.
+        return True
+
+
+def _prefix_alias_outranks_pin(qualified_provider: str, pinned_provider: str, *,
+                               user_providers: Optional[dict] = None,
+                               custom_ids: Optional[set] = None) -> bool:
+    """Whether a ``provider:model`` prefix inferred from the string would override an explicit
+    config-side provider pin (``model.provider`` or a dict-valued default — never the ambient
+    ``HERMES_INFERENCE_PROVIDER``, matching the runtime resolver's config-before-env order).
+
+    The qualified ``custom:`` routing syntax (#73943) still wins, and so does a prefix that
+    normalizes to the pinned provider. Any other resolvable prefix stays part of the model id —
+    not just generic aliases: the pinned endpoint may require the vendor prefix on the wire
+    (#125578). A pin naming no configured or built-in provider is warned about and ignored.
+    ``auto`` is not a pin — it delegates to exactly this alias inference."""
+    pin = _clean(pinned_provider)
+    if not pin or pin.lower() == "auto":
+        return False
+    route = _clean(qualified_provider)
+    if route.lower().startswith("custom"):
+        return False
+    if not _pin_resolves(pin, user_providers=user_providers, custom_ids=custom_ids):
+        logger.warning(
+            "Configured model provider %r matches no built-in or configured provider; "
+            "ignoring it as a startup pin and routing on the model prefix instead.", pin)
+        return False
+    try:
+        from hermes_cli.models import normalize_provider as _normalize
+        return _normalize(route) != _normalize(pin)
+    except Exception:
+        return route.lower() != pin.lower()
+
+
 def resolve_startup_model_route(
     raw_model: str, *, explicit_provider: str = "", current_provider: str = "",
+    pinned_provider: str = "",
     user_providers: Optional[dict] = None,
     custom_providers: Optional[list] = None) -> Optional[StartupModelRoute]:
     """Resolve aliases, ``provider:model`` and configured ``provider/model`` input at startup.
@@ -365,7 +421,13 @@ def resolve_startup_model_route(
     model. ``provider/model`` strings are consumed only for providers present in user config. When
     ``current_provider`` is a routing aggregator and the raw string is an aggregator-native slug
     (``anthropic/claude-opus-4.6`` on OpenRouter) the input stays on the aggregator — a
-    ``providers:`` block for the same vendor must not steal the route."""
+    ``providers:`` block for the same vendor must not steal the route.
+
+    ``pinned_provider`` marks the config-side provider as an explicit pin the caller must keep
+    (only meaningful for a model string that itself came from config, not an explicit ``-m``):
+    some vendors require the prefix on the wire (``hf:`` model ids on a named-custom endpoint),
+    so a generic alias prefix must not reroute startup away from the pin — the string is left
+    unsplit and the pin falls through to the caller's ladder (#125578)."""
     raw = _clean(raw_model)
     if not raw:
         return None
@@ -400,6 +462,9 @@ def resolve_startup_model_route(
                       for entry in (custom_providers or []) if isinstance(entry, dict) and _clean(entry.get("name")))
     qualified_provider, qualified_model = parse_model_input(raw, "", custom_ids=custom_ids)
     if qualified_provider:
+        if _prefix_alias_outranks_pin(qualified_provider, pinned_provider,
+                                      user_providers=user_providers, custom_ids=custom_ids):
+            return StartupModelRoute(model=raw, provider="")
         return StartupModelRoute(model=qualified_model, provider=qualified_provider)
     if "/" not in raw:
         return None

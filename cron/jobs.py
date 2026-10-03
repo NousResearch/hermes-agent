@@ -1668,6 +1668,26 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def _snapshot_provider_identity(runtime: Any) -> Optional[str]:
+    """The provider string to store as a job's pin identity.
+
+    A pin is re-requested verbatim on every later run, so it must round-trip:
+    ``resolve_runtime_provider(requested=pin)`` has to resolve again. A NAMED custom
+    provider (``custom:<name>``) resolves to the bare ``custom`` billing class, and bare
+    ``custom`` with no endpoint is exactly the credential-less shape that raises AuthError
+    at the next run — so the resolved ``provider`` alone would poison the job. Prefer the
+    requested identity there; every other provider keeps the resolved name (a concrete
+    provider is the point of the pin: it must not follow a later global switch to a
+    different one).
+    """
+    resolved = str(runtime.get("provider") or "").strip().lower() if isinstance(runtime, dict) else ""
+    if resolved == "custom" and isinstance(runtime, dict):
+        requested = str(runtime.get("requested_provider") or "").strip().lower()
+        if requested.startswith("custom:"):
+            return requested
+    return resolved or None
+
+
 def _main_model_pin() -> Tuple[Optional[str], Optional[str]]:
     """``(provider, model)`` the main agent runs on right now (``model.default`` + the provider it
     resolves to), for ``pinned=True`` jobs: the lock is a plain per-job pin, so the scheduler needs
@@ -1684,7 +1704,7 @@ def _main_model_pin() -> Tuple[Optional[str], Optional[str]]:
     provider = None
     with contextlib.suppress(Exception):
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        provider = _normalize_job_optional_text(resolve_runtime_provider(requested=None).get("provider"))
+        provider = _snapshot_provider_identity(resolve_runtime_provider(requested=None))
     return (provider.lower() if provider else None), model
 
 

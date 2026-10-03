@@ -20,6 +20,7 @@ import {
   projectFolders,
   projectPrimaryPath
 } from './model'
+import type { ProjectSessionsStatus } from './use-project-sessions'
 
 // Sessions mount a page at a time; a project can hold thousands of chats.
 const SESSION_FIRST_PAGE = 20
@@ -39,7 +40,7 @@ export interface ProjectDetailProps {
   onShowInSidebar: () => void
   project: SidebarProjectTree
   recent: SessionInfo[]
-  sessionsFailed: boolean
+  sessionsStatus: ProjectSessionsStatus
 }
 
 export function ProjectDetail({
@@ -50,7 +51,7 @@ export function ProjectDetail({
   onShowInSidebar,
   project,
   recent,
-  sessionsFailed
+  sessionsStatus
 }: ProjectDetailProps) {
   const { t } = useI18n()
   const p = t.projects
@@ -79,7 +80,9 @@ export function ProjectDetail({
         )}
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-xs">
           <dt className="text-(--ui-text-tertiary)">{p.primaryPath}</dt>
-          <dd className="truncate font-mono text-(--ui-text-secondary)">{primaryPath ?? p.noPath}</dd>
+          <dd className="truncate font-mono text-(--ui-text-secondary)" title={primaryPath ?? undefined}>
+            {primaryPath ?? p.noPath}
+          </dd>
           <dt className="text-(--ui-text-tertiary)">{p.sessions}</dt>
           <dd className="text-(--ui-text-secondary)">{p.sessionCount(project.sessionCount)}</dd>
         </dl>
@@ -94,39 +97,49 @@ export function ProjectDetail({
         </div>
       </header>
 
-      <DetailSection title={p.activeSessions}>
-        {active.length === 0 ? (
-          <DetailNote>{p.noActiveSessions}</DetailNote>
-        ) : (
-          <ul className="grid gap-px">
-            {active.map(({ session, state }) => (
-              <li key={session.id}>
-                <SessionRow onOpen={onOpenSession} session={session} status={state} />
-              </li>
-            ))}
-          </ul>
-        )}
-      </DetailSection>
+      {sessionsStatus === 'limited' ? (
+        <DetailSection title={p.sessions}>
+          {/* The way through is the existing profile switcher, one step away
+              via "Show in sidebar" above — the cockpit never switches profile. */}
+          <DetailNote>{p.allProfilesLimited}</DetailNote>
+        </DetailSection>
+      ) : (
+        <>
+          <DetailSection title={p.activeSessions}>
+            {active.length === 0 ? (
+              <DetailNote>{p.noActiveSessions}</DetailNote>
+            ) : (
+              <ul className="grid gap-px">
+                {active.map(({ session, state }) => (
+                  <li key={session.id}>
+                    <SessionRow onOpen={onOpenSession} session={session} status={state} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </DetailSection>
 
-      <DetailSection title={p.sessions}>
-        {sessionsFailed && <ErrorBanner>{p.sessionsFailed}</ErrorBanner>}
-        {recent.length === 0 ? (
-          active.length === 0 && <DetailNote>{p.noSessions}</DetailNote>
-        ) : (
-          <ul className="grid gap-px">
-            {page.shown.map(session => (
-              <li key={session.id}>
-                <SessionRow onOpen={onOpenSession} session={session} />
-              </li>
-            ))}
-          </ul>
-        )}
-        {page.more > 0 && (
-          <Button onClick={page.showMore} size="xs" variant="text">
-            {t.sidebar.showMoreIn(page.more, project.label)}
-          </Button>
-        )}
-      </DetailSection>
+          <DetailSection title={p.sessions}>
+            {sessionsStatus === 'failed' && <ErrorBanner>{p.sessionsFailed}</ErrorBanner>}
+            {recent.length === 0 ? (
+              active.length === 0 && <DetailNote>{p.noSessions}</DetailNote>
+            ) : (
+              <ul className="grid gap-px">
+                {page.shown.map(session => (
+                  <li key={session.id}>
+                    <SessionRow onOpen={onOpenSession} session={session} />
+                  </li>
+                ))}
+              </ul>
+            )}
+            {page.more > 0 && (
+              <Button onClick={page.showMore} size="xs" variant="text">
+                {t.sidebar.showMoreIn(page.more, project.label)}
+              </Button>
+            )}
+          </DetailSection>
+        </>
+      )}
 
       <DetailSection title={p.repositories}>
         {repositories.length === 0 ? (
@@ -137,13 +150,17 @@ export function ProjectDetail({
               <li className="space-y-1" key={repo.id}>
                 <div className="flex min-w-0 items-baseline gap-2">
                   <Codicon className="shrink-0 self-center text-(--ui-text-tertiary)" name="repo" />
-                  <span className="truncate text-xs font-medium">{repo.label}</span>
+                  <span className="truncate text-xs font-medium" title={repo.label}>
+                    {repo.label}
+                  </span>
                   <span className="ml-auto shrink-0 text-[0.65rem] tabular-nums text-(--ui-text-tertiary)">
                     {p.sessionCount(repo.sessionCount)}
                   </span>
                 </div>
                 {repo.path && (
-                  <div className="truncate pl-5 font-mono text-[0.65rem] text-(--ui-text-tertiary)">{repo.path}</div>
+                  <div className="truncate pl-5 font-mono text-[0.65rem] text-(--ui-text-tertiary)" title={repo.path}>
+                    {repo.path}
+                  </div>
                 )}
                 <ul className="grid gap-0.5 pl-5">
                   {repo.groups.map(group => (
@@ -152,12 +169,17 @@ export function ProjectDetail({
                         className="shrink-0 text-(--ui-text-tertiary)"
                         name={group.isKanban ? 'project' : 'git-branch'}
                       />
-                      <span className="truncate text-(--ui-text-secondary)">{group.label}</span>
+                      <span className="truncate text-(--ui-text-secondary)" title={group.label}>
+                        {group.label}
+                      </span>
                       <span className="shrink-0 text-[0.65rem] text-(--ui-text-tertiary)">
                         {laneLabel[laneKind(group)]}
                       </span>
                       {group.path && group.path !== repo.path && (
-                        <span className="ml-auto min-w-0 truncate font-mono text-[0.65rem] text-(--ui-text-tertiary)">
+                        <span
+                          className="ml-auto min-w-0 truncate font-mono text-[0.65rem] text-(--ui-text-tertiary)"
+                          title={group.path}
+                        >
                           {group.path}
                         </span>
                       )}
@@ -178,7 +200,9 @@ export function ProjectDetail({
             {folders.map(folder => (
               <li className="flex min-w-0 items-center gap-2 text-xs" key={folder.path}>
                 <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="folder" />
-                <span className="min-w-0 truncate font-mono text-(--ui-text-secondary)">{folder.path}</span>
+                <span className="min-w-0 truncate font-mono text-(--ui-text-secondary)" title={folder.path}>
+                  {folder.path}
+                </span>
                 {folder.label && <span className="shrink-0 text-(--ui-text-tertiary)">{folder.label}</span>}
                 {folder.isPrimary && (
                   <Badge size="xs" variant="outline">

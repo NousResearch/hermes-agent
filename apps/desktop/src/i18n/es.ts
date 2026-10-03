@@ -3919,10 +3919,12 @@ export const esOverrides = {
     loading: 'Cargando proyectos',
     emptyTitle: 'Aún no hay proyectos',
     emptyDesc: 'Crea un proyecto para mantener juntas sus carpetas, repositorios y sesiones.',
-    newProject: 'Nuevo proyecto',
     noMatchesTitle: 'No hay proyectos que coincidan',
     unavailableTitle: 'Los proyectos no están disponibles',
     unavailableDesc: 'El backend de Hermes conectado aún no admite proyectos. Actualiza Hermes para usarlos.',
+    loadFailedTitle: 'No se pudieron cargar los proyectos',
+    loadFailedDesc: 'Hermes no devolvió la lista de proyectos. Comprueba la conexión e inténtalo de nuevo.',
+    partialFailed: 'No se pudieron actualizar todos los detalles de los proyectos. Se muestra lo último que se cargó.',
     selectTitle: 'Selecciona un proyecto',
     selectDesc: 'Elige un proyecto para ver sus carpetas, repositorios y sesiones.',
     autoDiscovered: 'Repositorio detectado automáticamente',
@@ -3941,6 +3943,8 @@ export const esOverrides = {
     sessions: 'Sesiones',
     noSessions: 'Este proyecto aún no tiene sesiones.',
     sessionsFailed: 'No se pudieron cargar todas las sesiones de este proyecto. Se muestran las más recientes.',
+    allProfilesLimited:
+      'Con «Todos los perfiles» no se pueden listar las sesiones de un proyecto. Elige un solo perfil en la barra lateral para ver todas las sesiones de este proyecto.',
     untitledSession: 'Sesión sin título',
     status: {
       background: 'En segundo plano',

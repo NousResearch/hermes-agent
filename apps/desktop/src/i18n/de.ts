@@ -3927,11 +3927,14 @@ export const deOverrides = {
     loading: 'Projekte werden geladen',
     emptyTitle: 'Noch keine Projekte',
     emptyDesc: 'Erstellen Sie ein Projekt, um Ordner, Repositorys und Sessions zusammenzuhalten.',
-    newProject: 'Neues Projekt',
     noMatchesTitle: 'Keine passenden Projekte',
     unavailableTitle: 'Projekte sind nicht verfügbar',
     unavailableDesc:
       'Das verbundene Hermes-Backend unterstützt noch keine Projekte. Aktualisieren Sie Hermes, um sie zu nutzen.',
+    loadFailedTitle: 'Projekte konnten nicht geladen werden',
+    loadFailedDesc:
+      'Hermes hat die Projektliste nicht geliefert. Prüfen Sie die Verbindung und versuchen Sie es erneut.',
+    partialFailed: 'Nicht alle Projektdetails konnten aktualisiert werden. Angezeigt wird der zuletzt geladene Stand.',
     selectTitle: 'Projekt auswählen',
     selectDesc: 'Wählen Sie ein Projekt, um seine Ordner, Repositorys und Sessions zu sehen.',
     autoDiscovered: 'Automatisch erkanntes Repository',
@@ -3950,6 +3953,8 @@ export const deOverrides = {
     sessions: 'Sessions',
     noSessions: 'Noch keine Sessions in diesem Projekt.',
     sessionsFailed: 'Nicht alle Sessions dieses Projekts konnten geladen werden. Die neuesten werden angezeigt.',
+    allProfilesLimited:
+      'In „Alle Profile“ lassen sich die Sessions eines Projekts nicht auflisten. Wählen Sie in der Seitenleiste ein einzelnes Profil, um alle Sessions dieses Projekts zu sehen.',
     untitledSession: 'Unbenannte Session',
     status: {
       background: 'Läuft im Hintergrund',

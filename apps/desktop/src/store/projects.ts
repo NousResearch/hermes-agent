@@ -381,8 +381,13 @@ let projectsRefreshGeneration = 0
 
 // Pull the full project list + active pointer. Best-effort: a failure (gateway
 // not up yet) leaves the cached atoms intact so the sidebar doesn't flicker.
-export async function refreshProjects(): Promise<void> {
+// Resolves false only when THIS read failed for the still-current owner, so a
+// page that needs an honest error state can tell "no projects" from "no
+// answer"; a read superseded by a newer one (or a newer scope) leaves the
+// outcome to that read and resolves true. Fire-and-forget callers ignore it.
+export async function refreshProjects(): Promise<boolean> {
   const generation = ++projectsRefreshGeneration
+  const owner = projectProfile()
   let context: ActiveProjectsContext | null = null
 
   try {
@@ -395,16 +400,29 @@ export async function refreshProjects(): Promise<void> {
     )
 
     if (generation !== projectsRefreshGeneration || !stillOnProjectsContext(context)) {
-      return
+      return true
     }
 
     applyPayload(payload)
     markProjectsRpcSuccess()
+
+    return true
   } catch (err) {
-    if (context && generation === projectsRefreshGeneration && stillOnProjectsContext(context)) {
+    // No context means the connect itself failed — or the owner moved while
+    // connecting, which (like a moved context) is the newer owner's to report.
+    if (
+      generation !== projectsRefreshGeneration ||
+      (context ? !stillOnProjectsContext(context) : projectProfile() !== owner)
+    ) {
+      return true
+    }
+
+    if (context) {
       markProjectsRpcFailure(err)
     }
+
     // Backend may not be ready; keep the last known list.
+    return false
   }
 }
 
@@ -446,7 +464,7 @@ function applyProjectTreePayload(res: ProjectTreePayload): void {
   }
 }
 
-async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<void> {
+async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<boolean> {
   const generation = ++projectTreeRefreshGeneration
   const { gateway, profile } = context
 
@@ -480,15 +498,21 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
     }
 
     if (generation !== projectTreeRefreshGeneration || !stillOnProjectsContext(context)) {
-      return
+      return true
     }
 
     applyProjectTreePayload(res)
     markProjectsRpcSuccess()
+
+    return true
   } catch (err) {
-    if (generation === projectTreeRefreshGeneration && stillOnProjectsContext(context)) {
-      markProjectsRpcFailure(err)
+    if (generation !== projectTreeRefreshGeneration || !stillOnProjectsContext(context)) {
+      return true
     }
+
+    markProjectsRpcFailure(err)
+
+    return false
   } finally {
     if (generation === projectTreeRefreshGeneration && activeGateway() === gateway) {
       $projectTreeLoading.set(false)
@@ -498,18 +522,21 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
 
 // Pull the authoritative project tree (overview structure + counts + preview
 // sessions + the scoped-session-id set). Best-effort: a failure leaves the
-// cached tree intact so the sidebar doesn't flicker.
-export async function refreshProjectTree(): Promise<void> {
+// cached tree intact so the sidebar doesn't flicker. Same result contract as
+// `refreshProjects`: false only when this read failed for the current scope.
+export async function refreshProjectTree(): Promise<boolean> {
   if ($profileScope.get() === ALL_PROFILES) {
-    await refreshProjectTreeAcrossProfiles()
-
-    return
+    return refreshProjectTreeAcrossProfiles()
   }
 
+  const owner = projectProfile()
+
   try {
-    await refreshProjectTreeOn(await activeProjectsContext())
+    return await refreshProjectTreeOn(await activeProjectsContext())
   } catch {
-    // Backend may not be ready; keep the last known tree.
+    // Backend may not be ready; keep the last known tree. An owner that moved
+    // while connecting leaves the outcome to the newer owner's read.
+    return projectProfile() !== owner
   }
 }
 
@@ -517,7 +544,7 @@ export async function refreshProjectTree(): Promise<void> {
 // backend's own profile, so it can only ever describe a slice of this view;
 // the REST fan-out reads every profile's databases directly instead of asking
 // us to hold a backend open per profile just to draw lanes.
-async function refreshProjectTreeAcrossProfiles(): Promise<void> {
+async function refreshProjectTreeAcrossProfiles(): Promise<boolean> {
   const generation = ++projectTreeRefreshGeneration
   $projectTreeLoading.set(true)
 
@@ -530,13 +557,23 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
     // A profile switch mid-flight leaves this payload describing the wrong
     // scope; the newer refresh owns the tree.
     if (generation !== projectTreeRefreshGeneration || $profileScope.get() !== ALL_PROFILES) {
-      return
+      return true
     }
 
     applyProjectTreePayload(res)
     markProjectsRpcSuccess()
+
+    return true
   } catch (err) {
+    // A departed All Profiles read must not publish its failure over the
+    // newer read (or single-profile scope) that now owns availability.
+    if (generation !== projectTreeRefreshGeneration || $profileScope.get() !== ALL_PROFILES) {
+      return true
+    }
+
     markProjectsRpcFailure(err)
+
+    return false
   } finally {
     if (generation === projectTreeRefreshGeneration) {
       $projectTreeLoading.set(false)

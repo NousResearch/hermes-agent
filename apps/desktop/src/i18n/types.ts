@@ -2930,10 +2930,12 @@ export interface Translations {
     loading: string
     emptyTitle: string
     emptyDesc: string
-    newProject: string
     noMatchesTitle: string
     unavailableTitle: string
     unavailableDesc: string
+    loadFailedTitle: string
+    loadFailedDesc: string
+    partialFailed: string
     selectTitle: string
     selectDesc: string
     autoDiscovered: string
@@ -2952,6 +2954,7 @@ export interface Translations {
     sessions: string
     noSessions: string
     sessionsFailed: string
+    allProfilesLimited: string
     untitledSession: string
     status: Record<'background' | 'needs-input' | 'stalled' | 'working', string>
     openArtifacts: string

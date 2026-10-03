@@ -11,6 +11,7 @@ import { lazy, type ReactNode, Suspense } from 'react'
 
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { LocalizedTabTitle, translateNow } from '@/i18n'
 import { $routeTiles, closeRouteTile, type RouteTile } from '@/store/route-tiles'
 
 import {
@@ -30,12 +31,24 @@ const MessagingView = lazy(async () => ({ default: (await import('../messaging')
 const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')).ArtifactsView }))
 const ProjectsView = lazy(async () => ({ default: (await import('../projects')).ProjectsView }))
 
-// Built-in page views + their pane titles, keyed by route.
-const BUILTIN_PAGES: Record<string, { render: () => ReactNode; title: string }> = {
-  [ARTIFACTS_ROUTE]: { render: () => <ArtifactsView />, title: 'Artifacts' },
-  [PROJECTS_ROUTE]: { render: () => <ProjectsView />, title: 'Projects' },
-  [MESSAGING_ROUTE]: { render: () => <MessagingView />, title: 'Messaging' },
-  [CAPABILITIES_ROUTE]: { render: () => <CapabilitiesView />, title: 'Capabilities' }
+interface BuiltinPage {
+  render: () => ReactNode
+  title: () => string
+  /** Live tab label that follows the app language (see LocalizedTabTitle). */
+  tabTitle?: () => ReactNode
+}
+
+// Built-in page views + their pane titles, keyed by route. Projects reuses its
+// sidebar navigation label, so the tab reads the same as the link that opened it.
+const BUILTIN_PAGES: Record<string, BuiltinPage> = {
+  [ARTIFACTS_ROUTE]: { render: () => <ArtifactsView />, title: () => 'Artifacts' },
+  [PROJECTS_ROUTE]: {
+    render: () => <ProjectsView />,
+    title: () => translateNow('sidebar.nav.projects'),
+    tabTitle: () => <LocalizedTabTitle select={t => t.sidebar.nav.projects} />
+  },
+  [MESSAGING_ROUTE]: { render: () => <MessagingView />, title: () => 'Messaging' },
+  [CAPABILITIES_ROUTE]: { render: () => <CapabilitiesView />, title: () => 'Capabilities' }
 }
 
 /** Humanize a route path into a tab title: `/my-atlas` → `My Atlas`. */
@@ -51,7 +64,7 @@ const humanizePath = (path: string): string =>
  *  else a humanized path — never the internal `${source}:${id}` key. */
 function routeTitle(path: string): string {
   if (BUILTIN_PAGES[path]) {
-    return BUILTIN_PAGES[path].title
+    return BUILTIN_PAGES[path].title()
   }
 
   return contributedRoutes().find(r => r.path === path)?.title ?? humanizePath(path)
@@ -106,6 +119,7 @@ export const watchRouteTiles = paneMirror<RouteTile>({
   dir: t => t.dir,
   minWidth: '22rem',
   title: routeTitle,
+  tabTitle: path => BUILTIN_PAGES[path]?.tabTitle?.(),
   render: path => <RouteTilePane path={path} />,
   close: closeRouteTile
 })

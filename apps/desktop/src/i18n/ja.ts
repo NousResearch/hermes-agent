@@ -2421,11 +2421,13 @@ export const ja = defineLocale({
     loading: 'プロジェクトを読み込み中',
     emptyTitle: 'プロジェクトはまだありません',
     emptyDesc: 'プロジェクトを作成すると、フォルダー、リポジトリ、セッションをまとめて管理できます。',
-    newProject: '新しいプロジェクト',
     noMatchesTitle: '一致するプロジェクトはありません',
     unavailableTitle: 'プロジェクトを利用できません',
     unavailableDesc:
       '接続中の Hermes バックエンドはまだプロジェクトに対応していません。利用するには Hermes を更新してください。',
+    loadFailedTitle: 'プロジェクトを読み込めませんでした',
+    loadFailedDesc: 'Hermes からプロジェクト一覧が返されませんでした。接続を確認して、もう一度お試しください。',
+    partialFailed: 'プロジェクトの詳細をすべて更新できませんでした。最後に読み込んだ内容を表示しています。',
     selectTitle: 'プロジェクトを選択',
     selectDesc: 'プロジェクトを選ぶと、フォルダー、リポジトリ、セッションが表示されます。',
     autoDiscovered: '自動検出されたリポジトリ',
@@ -2444,6 +2446,8 @@ export const ja = defineLocale({
     sessions: 'セッション',
     noSessions: 'このプロジェクトにはまだセッションがありません。',
     sessionsFailed: 'このプロジェクトのセッションをすべて読み込めませんでした。最新のものを表示しています。',
+    allProfilesLimited:
+      '「すべてのプロファイル」では、プロジェクトのセッションを一覧表示できません。サイドバーでプロファイルを 1 つ選ぶと、このプロジェクトのすべてのセッションを表示できます。',
     untitledSession: '無題のセッション',
     status: {
       background: 'バックグラウンドで実行中',

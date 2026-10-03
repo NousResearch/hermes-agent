@@ -8,10 +8,12 @@ export const arProjects = {
     loading: 'جارٍ تحميل المشاريع',
     emptyTitle: 'لا توجد مشاريع بعد',
     emptyDesc: 'أنشئ مشروعًا لتجمع مجلداته ومستودعاته وجلساته في مكان واحد.',
-    newProject: 'مشروع جديد',
     noMatchesTitle: 'لا توجد مشاريع مطابقة',
     unavailableTitle: 'المشاريع غير متاحة',
     unavailableDesc: 'الخادم الخلفي لـ Hermes المتصل لا يدعم المشاريع بعد. حدّث Hermes لاستخدامها.',
+    loadFailedTitle: 'تعذّر تحميل المشاريع',
+    loadFailedDesc: 'لم يُرجع Hermes قائمة المشاريع. تحقّق من الاتصال ثم أعد المحاولة.',
+    partialFailed: 'تعذّر تحديث كل تفاصيل المشاريع. تُعرض آخر معلومات محمّلة.',
     selectTitle: 'اختر مشروعًا',
     selectDesc: 'اختر مشروعًا لعرض مجلداته ومستودعاته وجلساته.',
     autoDiscovered: 'مستودع مكتشف تلقائيًا',
@@ -30,6 +32,8 @@ export const arProjects = {
     sessions: 'الجلسات',
     noSessions: 'لا توجد جلسات في هذا المشروع بعد.',
     sessionsFailed: 'تعذّر تحميل كل جلسات هذا المشروع. تُعرض أحدث الجلسات.',
+    allProfilesLimited:
+      'لا يمكن لعرض «كل الملفات الشخصية» سرد جلسات مشروع واحد. اختر ملفًا شخصيًا واحدًا من الشريط الجانبي لعرض كل جلسات هذا المشروع.',
     untitledSession: 'جلسة بلا عنوان',
     status: {
       background: 'يعمل في الخلفية',

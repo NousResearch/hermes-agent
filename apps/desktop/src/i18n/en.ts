@@ -3499,10 +3499,12 @@ export const en: Translations = {
     loading: 'Loading projects',
     emptyTitle: 'No projects yet',
     emptyDesc: 'Create a project to keep its folders, repositories, and sessions together.',
-    newProject: 'New project',
     noMatchesTitle: 'No matching projects',
     unavailableTitle: 'Projects are unavailable',
     unavailableDesc: 'The connected Hermes backend does not support projects yet. Update Hermes to use them.',
+    loadFailedTitle: "Couldn't load projects",
+    loadFailedDesc: "Hermes didn't return the project list. Check the connection and try again.",
+    partialFailed: "Couldn't refresh every project detail. Showing what loaded last.",
     selectTitle: 'Select a project',
     selectDesc: 'Choose a project to see its folders, repositories, and sessions.',
     autoDiscovered: 'Auto-discovered repository',
@@ -3521,6 +3523,8 @@ export const en: Translations = {
     sessions: 'Sessions',
     noSessions: 'No sessions in this project yet.',
     sessionsFailed: "Couldn't load every session for this project. Showing the most recent ones.",
+    allProfilesLimited:
+      "All Profiles can't list one project's sessions. Choose a single profile in the sidebar to see every session in this project.",
     untitledSession: 'Untitled session',
     status: {
       background: 'Running in background',

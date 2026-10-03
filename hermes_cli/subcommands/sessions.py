@@ -87,6 +87,8 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         help="Export only a filtered view (user-prompts: one prompt record "
             "per line for jsonl, headed sections for md)")
     sessions_export.add_argument("--session-id", help="Session ID or unique prefix to export")
+    sessions_export.add_argument("--machine", default=None, metavar="ID",
+        help="Machine provenance stamp for cross-machine sync (default: hostname)")
     _add_session_filter_args(
         sessions_export, "Only export sessions older than AGE (duration like '5h'/'2d', "
         "bare number of days, or an ISO timestamp). Filtered exports include pinned and archived "
@@ -313,6 +315,18 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
         help="Which tool to import from (default: pick across both)")
     sessions_import.add_argument(
         "path", nargs="?", help="Path to a specific session JSONL file (skips the picker)")
+
+    sessions_import_hermes = sessions_subparsers.add_parser(
+        "import-hermes", help="Import a Hermes sessions export (JSONL) into this store",
+        description="Read a JSONL file produced by 'hermes sessions export' and "
+            "import the sessions into the local state.db. Existing session IDs "
+            "are skipped (not overwritten). Use --machine to filter by provenance.")
+    sessions_import_hermes.add_argument(
+        "input", help="Path to the JSONL export file (from 'hermes sessions export')")
+    sessions_import_hermes.add_argument("--machine", default=None, metavar="ID",
+        help="Only import sessions stamped with this machine_id")
+    sessions_import_hermes.add_argument("--dry-run", action="store_true",
+        help="Preview what would be imported without importing")
 
 
     # cmd_sessions lives in hermes_cli/sessions_cmd.py; the parser is threaded

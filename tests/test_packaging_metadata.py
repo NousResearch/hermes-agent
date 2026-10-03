@@ -1,4 +1,5 @@
 """Independent core/optional dependency and reviewed CVE policies."""
+import re
 import tomllib
 from pathlib import Path
 
@@ -6,6 +7,10 @@ from packaging.requirements import Requirement
 from packaging.version import Version
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _normalize(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def test_test_dependencies_are_group_only_in_manifest_and_lock():
@@ -51,3 +56,25 @@ def test_starlette_server_pins_and_lock_exclude_cve_2026_48710():
     assert len(pins) == 1 and pins[0].operator == "==" and Version(pins[0].version) >= floor
     versions = [Version(row["version"]) for row in lock["package"] if row["name"] == "starlette"]
     assert versions and all(version >= floor for version in versions)
+
+
+def test_build_system_requires_exempt_from_exclude_newer():
+    metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    exempt = {_normalize(name) for name in metadata["tool"]["uv"]["exclude-newer-package"]}
+    for requirement in map(Requirement, metadata["build-system"]["requires"]):
+        pins = list(requirement.specifier)
+        if len(pins) == 1 and pins[0].operator == "==":
+            assert _normalize(requirement.name) in exempt, requirement
+
+
+def test_exact_pinned_deps_exempt_from_exclude_newer():
+    metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    exempt = {_normalize(name) for name in metadata["tool"]["uv"]["exclude-newer-package"]}
+    specs = list(map(Requirement, metadata["project"]["dependencies"]))
+    for extra in metadata["project"].get("optional-dependencies", {}).values():
+        specs.extend(map(Requirement, extra))
+    specs.extend(map(Requirement, metadata["build-system"]["requires"]))
+    for requirement in specs:
+        pins = list(requirement.specifier)
+        if len(pins) == 1 and pins[0].operator == "==" and "*" not in pins[0].version:
+            assert _normalize(requirement.name) in exempt, requirement

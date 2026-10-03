@@ -1436,9 +1436,69 @@ _TOOL_MEDIA_RE = re.compile(
 from gateway.media_repair import tool_name_by_call_id as _tool_name_by_call_id  # noqa: E402
 
 
+def _media_path_aliases(
+    path: str, profile_name: Optional[str] = None,
+) -> set[str]:
+    """Return literal and profile-scoped identities for a cached media path.
+
+    The gateway and Docker worker can name one cache entry with different absolute roots. This uses
+    path-shape identity (not content hashing), while retaining the profile in the canonical alias so a
+    same-named file from another multiplexed profile cannot suppress the current profile's attachment.
+    """
+    normalized = os.path.normpath(str(path).strip())
+    aliases = {normalized}
+    slash_path = normalized.replace("\\", "/")
+    lower_path = slash_path.lower()
+    cache_relative = None
+    for marker in (
+        "cache/images/",
+        "cache/audio/",
+        "cache/videos/",
+        "cache/documents/",
+        "cache/screenshots/",
+    ):
+        marker_index = lower_path.find(f"/{marker}")
+        if marker_index >= 0:
+            cache_relative = slash_path[marker_index + 1 :]
+            break
+        if lower_path.startswith(marker):
+            cache_relative = slash_path
+            break
+    if cache_relative is None:
+        return aliases
+
+    path_profile = None
+    profiles_marker = "/profiles/"
+    profiles_index = lower_path.find(profiles_marker)
+    if profiles_index >= 0:
+        after_profiles = slash_path[profiles_index + len(profiles_marker) :]
+        cache_index = after_profiles.lower().find("/cache/")
+        if cache_index > 0:
+            path_profile = after_profiles[:cache_index]
+    scoped_profile = path_profile or str(profile_name or "").strip()
+    if scoped_profile:
+        aliases.add(f"profile:{scoped_profile}/{cache_relative}")
+    return aliases
+
+
+def _media_path_seen(
+    path: str,
+    history_media_paths: set[str],
+    profile_name: Optional[str] = None,
+) -> bool:
+    """Whether ``path`` identifies an artifact already present in history."""
+    candidate = _media_path_aliases(path, profile_name)
+    return any(
+        candidate.intersection(_media_path_aliases(old, profile_name))
+        for old in history_media_paths
+    )
+
+
 def _collect_auto_append_media_tags(
     messages: List[Dict[str, Any]], history_offset: int = 0,
-    history_media_paths: Optional[set] = None) -> tuple[List[str], bool]:
+    history_media_paths: Optional[set] = None,
+    profile_name: Optional[str] = None,
+) -> tuple[List[str], bool]:
     """Collect real media tags from current-turn producer-tool results only.
 
     Producer allowlist: docs/logs/search results contain example MEDIA: strings that must never become
@@ -1480,7 +1540,9 @@ def _collect_auto_append_media_tags(
                     path = payload.get(field)
                     if (isinstance(path, str)
                             and _TOOL_MEDIA_RE.fullmatch(f"MEDIA:{path}")
-                            and path not in history_media_paths):
+                            and not _media_path_seen(
+                                path, history_media_paths, profile_name,
+                            )):
                         media_tags.append(f"MEDIA:{path}")
                         break
             continue
@@ -1488,7 +1550,9 @@ def _collect_auto_append_media_tags(
             continue
         for match in _TOOL_MEDIA_RE.finditer(content):
             path = match.group(1).strip().rstrip('",}')
-            if path and path not in history_media_paths:
+            if path and not _media_path_seen(
+                path, history_media_paths, profile_name,
+            ):
                 media_tags.append(f"MEDIA:{path}")
         if "[[audio_as_voice]]" in content:
             has_voice_directive = True

@@ -195,14 +195,18 @@ Each cell kills a real `hermes update` (or the Desktop hand-off script) at one p
 of the update, then asserts what the user is owed: the next `hermes` launch is
 runnable, the checkout is at the pre-update commit or the target, and nothing the
 dead update left (a git lock, `.hermes-update-in-progress`) blocks the next update.
-A cell that is red on `main` because another lane fixes it carries
-`xfail(strict=False, reason="upd-txn: fixed by <lane>")` until that lane lands.
+A cell whose fix is an open PR wraps only its final assertions in
+`known_failure` (`tests/e2e/core/_pending_fixes.py`): it XFAILs on exactly that gap's
+message, fails on anything else, and passes once the fix lands, whichever merges
+first. Kill points are observed states (a git child in the process tree, HEAD read
+from the ref files, the hand-off's update child plus its marker), never sleeps.
 
 | Cell | Kill point | Test | Fixing lane |
 |---|---|---|---|
-| Windows `mid_git` | `taskkill /T /F` while the update's git child (fetch / merge / reset) runs | `tests/e2e/core/windows_update/test_crash_cells.py::test_update_killed_mid_git_leaves_a_runnable_install` | LP-COMMIT (stale `.git/index.lock`; launch-time interrupted-pull repair fails on a machine whose only Git is the installer's copy) |
-| Windows `tree_moved` | right after the checkout reached the target, before the update finished | `tests/e2e/core/windows_update/test_crash_cells.py::test_update_killed_after_the_tree_moved_leaves_a_runnable_install` | see the test's marker |
-| Windows `desktop_handoff` | `scripts/desktop-update/windows.ps1` while its `hermes update` child runs | `tests/e2e/core/windows_update/test_crash_cells.py::test_desktop_handoff_killed_mid_run_leaves_a_runnable_install` | see the test's marker |
+| Windows `mid_git` | `taskkill /T /F` while the update's git child (fetch / merge / reset) runs | `tests/e2e/core/windows_update/test_crash_cells.py::test_update_killed_mid_git_leaves_a_runnable_install` | #132361 (stale `.git/index.lock`; launch-time interrupted-pull repair ran a bare `git` a machine with only the installer's Git does not have) |
+| Windows `tree_moved` | right after the checkout reached the target, before the update finished | `tests/e2e/core/windows_update/test_crash_cells.py::test_update_killed_after_the_tree_moved_leaves_a_runnable_install` | green on main |
+| Windows `desktop_handoff` | `scripts/desktop-update/windows.ps1` and its whole tree while its `hermes update` child runs | `tests/e2e/core/windows_update/test_crash_cells.py::test_desktop_handoff_killed_mid_run_leaves_a_runnable_install` | green on main |
+| Windows `orphaned_update` | only `windows.ps1` (no `/T`); its `hermes update` keeps running and must finish with the marker LIVE until it exits, then gone | `tests/e2e/core/windows_update/test_crash_cells.py::test_desktop_handoff_script_killed_alone_keeps_the_marker_live_until_its_update_ends` | #132354 + #132365 (line-4 delegate) |
 | POSIX commit points | per lane | `tests/e2e/core/upgrade/<area>/test_hostile_<lane>.py` | the lane that owns the file |
 
 The Windows cells run in the Windows install + update journey

@@ -21,8 +21,17 @@ Cells (one machine, in order; each publishes a fresh commit to update to):
 * ``mid_git``: killed while the update's git child (fetch / merge / reset) is alive;
 * ``tree_moved``: killed right after the checkout moved to the target, before the
   update finished (dependency sync, launcher refresh, completion stamp);
-* ``desktop_handoff``: the Desktop hand-off script killed while its ``hermes update``
-  child runs.
+* ``desktop_handoff``: the Desktop hand-off script's whole tree killed while its
+  ``hermes update`` child runs;
+* ``orphaned_update``: ONLY the hand-off script killed (its ``hermes update`` child keeps
+  running, the shape of a closed progress window or an ended PowerShell). The update must
+  finish, ``.hermes-update-in-progress`` must read LIVE for as long as it runs (contract
+  C1: the owner or its line-4 delegate is alive) and be gone once it exits.
+
+Kill points are observed states, never timings: a git child of the update in the
+process tree, HEAD read straight from the ref files, the hand-off's ``hermes update``
+child plus its claimed marker. Each waits with a bounded timeout and an update that
+exits before its kill point is a harness verdict, never a pass.
 
 The crash-cell matrix (cell -> file -> fixing lane) is in
 website/docs/developer-guide/source-update-completion.md.
@@ -30,10 +39,13 @@ website/docs/developer-guide/source-update-completion.md.
 
 from __future__ import annotations
 
-import json
+import subprocess
 import time
 
+import psutil
 import pytest
+
+from tests.e2e.core._pending_fixes import known_failure
 
 from tests.e2e.core.windows_update._machine import (
     REQUIRES_OPT_IN,
@@ -78,6 +90,26 @@ def _head(machine) -> str:
         return ""
 
 
+def _head_ref(machine) -> str:
+    """HEAD read straight from ``.git`` (no subprocess), so a kill point polls it cheaply."""
+    git_dir = machine.install_dir / ".git"
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8-sig").strip()
+        if not head.startswith("ref: "):
+            return head
+        ref = head[5:].strip()
+        loose = git_dir / ref
+        if loose.is_file():
+            return loose.read_text(encoding="utf-8-sig").strip()
+        for line in (git_dir / "packed-refs").read_text(encoding="utf-8-sig").splitlines():
+            sha, _, name = line.partition(" ")
+            if name.strip() == ref:
+                return sha
+    except OSError:  # mid-write by the update: the next poll reads it
+        pass
+    return ""
+
+
 def _kill_when(machine, proc, label: str, point, target: str) -> str:
     """Poll ``point(proc, machine, target)`` until it names the moment, then taskkill the whole tree.
 
@@ -95,7 +127,7 @@ def _kill_when(machine, proc, label: str, point, target: str) -> str:
             raise AssertionError(fail_with(
                 machine, f"{label}: the update exited rc={proc.returncode} before the kill point "
                          f"(transcript {proc.transcript.name})"))
-        time.sleep(0.02)
+        time.sleep(0.05)
     taskkill_tree(proc.pid)
     raise AssertionError(fail_with(machine, f"{label}: kill point not reached within {UPDATE_TIMEOUT:.0f}s"))
 
@@ -151,8 +183,173 @@ def _update_child(proc, machine, target) -> str | None:
 
 
 def _tree_moved(proc, machine, target) -> str | None:
-    """The checkout's HEAD is the target: git is done, the rest of the update is not."""
-    return "checkout at target" if _head(machine) == target else None
+    """The checkout's HEAD is the target: git is done, the rest of the update is not.
+
+    Read from the ref files, not ``git rev-parse``: the window between HEAD moving and
+    the update exiting is ~20 s on the runner (dependency sync, launcher refresh, skills,
+    completion stamp; run 37147409475), and a file read cannot stall the way a spawned
+    git can."""
+    return "checkout at target" if _head_ref(machine) == target else None
+
+
+# -- marker (contract C1, line format) -----------------------------------------------
+
+CT_TOLERANCE = 1.0  # seconds; writers round ct to 3 decimals
+
+
+def _parse_marker(text: str) -> dict:
+    """``<pid>\\n<started_at>\\n[ct:<ct>\\n][delegate:<pid> ct:<ct>\\n]`` (positional)."""
+    lines = text.lstrip("\ufeff").splitlines()
+
+    def num(index: int, cast):
+        try:
+            return cast(lines[index].strip())
+        except (IndexError, ValueError):
+            return None
+
+    def ct(field: str):
+        field = field.strip()
+        try:
+            return float(field[3:]) if field.startswith("ct:") else None
+        except ValueError:
+            return None
+
+    delegate = delegate_ct = None
+    if len(lines) > 3 and lines[3].startswith("delegate:"):
+        head, _, tail = lines[3][len("delegate:"):].partition(" ")
+        delegate, delegate_ct = (int(head) if head.strip().isdigit() else None), ct(tail)
+    return {"pid": num(0, int), "started_at": num(1, float),
+            "ct": ct(lines[2]) if len(lines) > 2 else None,
+            "delegate": delegate, "delegate_ct": delegate_ct}
+
+
+def _identity_live(pid: int | None, ct: float | None) -> bool:
+    if not pid or pid <= 0:
+        return False
+    try:
+        proc = psutil.Process(pid)
+        if not proc.is_running():
+            return False
+        return ct is None or abs(proc.create_time() - ct) <= CT_TOLERANCE
+    except psutil.Error:
+        return False
+
+
+def _marker_live(text: str) -> str | None:
+    """Who keeps the marker LIVE (``"owner <pid>"`` / ``"delegate <pid>"``), or None."""
+    m = _parse_marker(text)
+    if _identity_live(m["pid"], m["ct"]):
+        return f"owner {m['pid']}"
+    if _identity_live(m["delegate"], m["delegate_ct"]):
+        return f"delegate {m['delegate']}"
+    return None
+
+
+def _read_marker(machine) -> str | None:
+    try:
+        return (machine.hermes_home / MARKER).read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:  # mid-replace by a writer
+        return f"<unreadable: {exc}>"
+
+
+def _marker_text(machine) -> str:
+    text = _read_marker(machine)
+    if text is None:
+        return "<absent>"
+    return f"{text!r} parsed={_parse_marker(text)} live={_marker_live(text)}"
+
+
+# -- orphaned update: only the hand-off script dies --------------------------------
+
+
+def _direct_update_child(proc) -> psutil.Process | None:
+    try:
+        children = psutil.Process(proc.pid).children()
+    except psutil.Error:
+        return None
+    for child in children:
+        try:
+            argv = [a.lower() for a in child.cmdline()]
+        except psutil.Error:
+            continue
+        if "update" in argv and "--yes" in argv:
+            return child
+    return None
+
+
+def _orphan(machine, srv, label: str) -> dict:
+    """Start the hand-off script, kill ONLY its powershell once its ``hermes update``
+    child runs under the claimed marker, and watch that orphaned update to its end."""
+    pre = _head(machine)
+    target = machine.mint(pre, label)
+    machine.publish(target)
+    with machine.gateway_phase():
+        proc = _handoff(machine, f"{label}-script")()
+        deadline = time.monotonic() + UPDATE_TIMEOUT
+        child = None
+        while time.monotonic() < deadline:
+            child = _direct_update_child(proc)
+            if child is not None and _read_marker(machine) is not None:
+                break
+            child = None
+            if proc.poll() is not None:
+                raise AssertionError(fail_with(
+                    machine, f"{label}: the hand-off exited rc={proc.returncode} before its hermes update "
+                             f"child ran (transcript {proc.transcript.name})"))
+            time.sleep(0.05)
+        if child is None:
+            taskkill_tree(proc.pid)
+            raise AssertionError(fail_with(machine, f"{label}: no hermes update child within {UPDATE_TIMEOUT:.0f}s"))
+        marker_at_kill = _read_marker(machine)
+        # No /T: the script alone dies; its update child (in the script's job, which has
+        # no KILL_ON_JOB_CLOSE) keeps running.
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/F"], capture_output=True, timeout=60)
+        proc.wait(timeout=60)
+        killed_at = time.monotonic()
+        dead_while_running = None
+        holders: set[str] = set()
+        rc = None
+        while time.monotonic() < killed_at + UPDATE_TIMEOUT:
+            try:
+                rc = child.wait(timeout=0.25)
+                break
+            except psutil.TimeoutExpired:
+                pass
+            except psutil.NoSuchProcess:
+                break
+            text = _read_marker(machine)
+            if text is not None and text.startswith("<unreadable"):
+                continue  # a writer is replacing it this instant; the next sample reads it
+            who = _marker_live(text) if text is not None else None
+            if not who:  # confirm on a second read: never call a mid-swap sample DEAD
+                time.sleep(0.1)
+                text = _read_marker(machine)
+                if text is None:
+                    who = None
+                else:
+                    who = "?" if text.startswith("<unreadable") else _marker_live(text)
+            if who and who != "?":
+                holders.add(who.split()[0])
+            elif not who and dead_while_running is None and child.is_running():
+                dead_while_running = (round(time.monotonic() - killed_at, 1),
+                                      "<absent>" if text is None else repr(text))
+        orphan_finished = not child.is_running()
+        if not orphan_finished:
+            machine.kill_owned()
+        after_orphan = _head(machine)
+        marker_after_orphan = _read_marker(machine)
+        marker_after_orphan_text = _marker_text(machine)
+        turn = one_shot_turn(machine, srv, f"{label}-next-launch")
+        follow_up = machine.hermes("update", "--yes", label=f"{label}-follow-up-update", timeout=UPDATE_TIMEOUT)
+    return {"pre": pre, "target": target, "seen": f"update child {child.pid}",
+            "marker_at_kill": marker_at_kill, "orphan_finished": orphan_finished, "orphan_rc": rc,
+            "dead_while_running": dead_while_running, "holders": sorted(holders),
+            "after_orphan": after_orphan, "marker_after_orphan": marker_after_orphan,
+            "marker_after_orphan_text": marker_after_orphan_text,
+            "turn": turn, "after_launch": _head(machine), "follow_up": follow_up,
+            "final": _head(machine), "marker_final": (machine.hermes_home / MARKER).is_file()}
 
 
 @pytest.fixture(scope="module")
@@ -171,6 +368,7 @@ def journey(tmp_path_factory):
                                                     _cli_update(machine, "tree-moved-update"), _tree_moved))
                 j.step("desktop_handoff", lambda: _crash(machine, srv, "handoff",
                                                          _handoff(machine, "handoff-script"), _update_child))
+                j.step("orphaned_update", lambda: _orphan(machine, srv, "orphan"))
             yield j
         finally:
             machine.teardown()
@@ -195,18 +393,11 @@ def _assert_recovered(journey: Journey, cell: str) -> None:
            f"{_marker_text(m)}", follow)
 
 
-def _marker_text(machine) -> str:
-    try:
-        return json.dumps(json.loads((machine.hermes_home / MARKER).read_text(encoding="utf-8-sig")))
-    except (OSError, ValueError) as exc:
-        return f"<unreadable: {exc}>"
-
-
 # Red on main (wine2e run 37139409703): the killed git leaves .git/index.lock, which
 # hermes_cli/gitlock.py only sweeps once it is 10 minutes old, and the launch-time
 # interrupted-pull repair (hermes_cli/_early_recovery.py) dies with WinError 2 on a
 # machine whose only Git is the installer's private copy — so the next update refuses.
-@pytest.mark.xfail(strict=False, reason="upd-txn: fixed by LP-COMMIT")
+# Fixed by #132361 (this branch is stacked on it).
 def test_update_killed_mid_git_leaves_a_runnable_install(journey: Journey) -> None:
     _assert_recovered(journey, "mid_git")
 
@@ -217,3 +408,39 @@ def test_update_killed_after_the_tree_moved_leaves_a_runnable_install(journey: J
 
 def test_desktop_handoff_killed_mid_run_leaves_a_runnable_install(journey: Journey) -> None:
     _assert_recovered(journey, "desktop_handoff")
+
+
+# Main's hand-off claims the marker with the script's pid and its update child runs
+# under that claim without naming itself, so the marker reads DEAD the moment the
+# script dies while the update still runs (a second update is admitted), and nothing
+# removes it afterwards. The line-4 delegate (#132354 script side, #132365 Python side)
+# keeps it LIVE. Merge-order safe: XFAILs only on exactly this gap.
+ORPHAN_MARKER_GAP = (r"orphaned_update: \.hermes-update-in-progress (read DEAD|survived)",
+                     "upd-txn: the line-4 delegate lands in #132354 + #132365")
+
+
+def test_desktop_handoff_script_killed_alone_keeps_the_marker_live_until_its_update_ends(
+        journey: Journey) -> None:
+    m, r = journey.machine, journey["orphaned_update"]
+    assert r["orphan_finished"], fail_with(
+        m, f"orphaned_update: the orphaned hermes update was still running {UPDATE_TIMEOUT:.0f}s after "
+           f"the script died")
+    with known_failure(*ORPHAN_MARKER_GAP):
+        assert r["dead_while_running"] is None, fail_with(
+            m, f"orphaned_update: {MARKER} read DEAD {r['dead_while_running'][0]}s after the script died "
+               f"while its hermes update still ran: {r['dead_while_running'][1]} "
+               f"(at kill: {r['marker_at_kill']!r})")
+    assert r["orphan_rc"] == 0 and r["after_orphan"] == r["target"], fail_with(
+        m, f"orphaned_update: the hermes update orphaned by the dead script did not finish the update "
+           f"(rc={r['orphan_rc']}, checkout {r['after_orphan']}, target {r['target']}; "
+           f"marker holders seen: {r['holders']})")
+    with known_failure(*ORPHAN_MARKER_GAP):
+        assert r["marker_after_orphan"] is None, fail_with(
+            m, f"orphaned_update: {MARKER} survived the orphaned update's exit: "
+               f"{r['marker_after_orphan_text']}")
+    turn = r["turn"]
+    assert turn.ok, fail_with(m, "orphaned_update: the launch after the orphaned update ran no turn", turn.run)
+    follow = r["follow_up"]
+    assert follow.returncode == 0 and r["final"] == r["target"] and not r["marker_final"], fail_with(
+        m, f"orphaned_update: the next update did not complete cleanly (rc={follow.returncode}, "
+           f"checkout {r['final']}, marker left={r['marker_final']}): {failure_line(follow)}", follow)

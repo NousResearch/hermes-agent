@@ -23,11 +23,27 @@ def install_key(project_root: Path) -> str:
 
 
 def dependency_home_root() -> Path:
-    """Scope dependency state like a process launched in the active home."""
-    from hermes_constants import get_default_hermes_root, get_hermes_home_override
+    """Scope dependency state like a process launched in the active home.
+
+    Runs on the pre-import bootstrap path (``hermes_bootstrap`` -> ``activate_dependencies`` /
+    ``venv_sync.prepare_launch``), before ``hermes_cli.main``'s own sudo/profile fix-ups have had a
+    chance to run. Under ``sudo`` with no explicit ``HERMES_HOME``, sudo already reset HOME=/root
+    and stripped HERMES_HOME, so the naive env-var lookup below resolves to /root/.hermes — owned by
+    root, not the real checkout owner — and the dependency generation looks stale/foreign when it is
+    not. Falls back to the same invoker-aware resolution ``gateway.py``/``main.py`` use
+    (:func:`hermes_constants.sudo_invoker_default_home`) so this matches what the rest of the CLI
+    considers the active home under sudo.
+    """
+    from hermes_constants import get_default_hermes_root, get_hermes_home_override, sudo_invoker_default_home
 
     override = get_hermes_home_override()
-    return get_default_hermes_root(home=override) if override else get_default_hermes_root()
+    if override:
+        return get_default_hermes_root(home=override)
+    if not os.environ.get("HERMES_HOME", "").strip():
+        sudo_home = sudo_invoker_default_home()
+        if sudo_home is not None:
+            return get_default_hermes_root(home=sudo_home)
+    return get_default_hermes_root()
 
 
 def installs_root() -> Path:
@@ -113,7 +129,17 @@ def base_venv(project_root: Path) -> Path:
 
 
 def store_root(project_root: Path) -> Path:
-    """Resolve a payload-relative or stamped store before PM imports."""
+    """Resolve a payload-relative or stamped store before PM imports.
+
+    The "no stamped ``runtimeDir``" fallback below used to be ``get_default_hermes_root() /
+    "tools"``, which is HOME-relative (not HERMES_HOME-aware): under sudo with no explicit
+    HERMES_HOME, sudo resets HOME=/root and strips HERMES_HOME, so that call resolved to
+    /root/.hermes/tools -- root's own private tool cache -- instead of the existing shared
+    install's tool store. PM then judged the (perfectly fine) shared generation "foreign" and
+    built a brand-new duplicate Python/venv generation owned by root. ``dependency_home_root()``
+    carries the same invoker-aware sudo fallback already used by ``pm.paths.store_root`` callers
+    elsewhere, so this now agrees with the rest of the CLI on which home is active under sudo.
+    """
     override = os.environ.get("HERMES_RUNTIME_DIR")
     if override:
         return Path(override).resolve()
@@ -134,10 +160,10 @@ def store_root(project_root: Path) -> Path:
             try:
                 data = json.loads(stamp.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError):
-                return get_default_hermes_root() / "tools"
+                return dependency_home_root() / "tools"
             value = data.get("runtimeDir") if isinstance(data, dict) else None
-            return Path(value).resolve() if value else get_default_hermes_root() / "tools"
-    return get_default_hermes_root() / "tools"
+            return Path(value).resolve() if value else dependency_home_root() / "tools"
+    return dependency_home_root() / "tools"
 
 
 def flush_before_selecting() -> None:

@@ -318,6 +318,73 @@ Without a published card callback, Feishu will still successfully *send* interac
 
 Error codes 200672 / 200673 indicate the callback *did* reach Hermes and Feishu rejected the response; if you see them, please file an issue with the matching `gateway.log` lines.
 
+## User Access (`user_access_token`)
+
+The bot's own credentials mint a `tenant_access_token`, which only reaches messages addressed to the
+Hermes bot. Anything scoped to *you* — searching your whole message history, reading what another
+bot said in a shared chat — needs a **user access token** (UAT). This is opt-in and separate from bot
+setup; without it nothing below exists and the bot behaves exactly as before.
+
+```bash
+hermes feishu login     # authorize (opens the consent page in your browser)
+hermes feishu status     # show the stored grant, its scopes and expiry
+hermes feishu logout     # forget it
+```
+
+`login` runs Feishu's **authorization-code flow with PKCE** over a loopback redirect, so the token
+never leaves your machine. There is no QR / device-code option here: Feishu's device-code endpoint
+mints *applications* (that is what [Scan-to-Create](#recommended-scan-to-create-one-command) uses)
+and has no user-token grant.
+
+### One-time console setup
+
+Feishu refuses an unregistered redirect URI, so add this exact URL under
+**Security Settings > Redirect URLs** in the developer console before the first login:
+
+```
+http://127.0.0.1:43829/feishu/callback
+```
+
+Use `hermes feishu login --redirect-uri ...` if that port is taken; the URI you pass must be the one
+allow-listed in the console.
+
+Then add these scopes under **Permission Management** and publish a new app version:
+
+| Scope | Purpose |
+|-------|---------|
+| `offline_access` | Return a refresh token, so the grant survives past two hours |
+| `search:message` | Cross-chat full-text message search (user token only) |
+| `im:message:readonly` | Read messages |
+| `im:message.p2p_msg:get_as_user` | Read a direct chat's history as you |
+| `im:message.group_msg:get_as_user` | Read a group chat's history as you |
+
+`hermes feishu login --scope "..."` requests a different set; `hermes feishu status` reports what
+Feishu actually granted, which is what to check when a call comes back with a permission error.
+
+### What it unlocks
+
+Two tools in the `feishu_user` toolset, folded into the `hermes-feishu` bundle. Both stay out of the
+model's schema entirely until a grant is stored, so an install that never runs `hermes feishu login`
+pays nothing for them:
+
+| Tool | Does |
+|------|------|
+| `feishu_message_search` | Full-text search across every chat you can see, filterable by chat, sender and time range |
+| `feishu_message_list` | Read one chat's history as you — including messages the Hermes bot never saw |
+
+The token is stored in `~/.hermes/auth.json` (mode `0600`) under `providers.feishu-user`, per profile,
+and is refreshed automatically shortly before it expires. Feishu rotates the refresh token on every
+use and invalidates the previous one immediately; Hermes refreshes under the auth-store lock so
+concurrent sessions can never spend the same refresh token twice. If Feishu revokes the grant
+(password change, admin action, an unused app), the stored tokens are dropped and the next tool call
+says to run `hermes feishu login` again.
+
+:::warning
+A UAT carries your own authority, not the bot's: anything you can read in Feishu, the agent can read
+while the grant lasts. Grant it only on an install you control, and `hermes feishu logout` when you
+are done.
+:::
+
 ## Document Comment Intelligent Reply
 
 Beyond chat, the adapter can also answer `@`-mentions left on **Feishu/Lark documents**. When a user comments on a document (local text selection or whole-doc comment) and @-mentions the bot, Hermes reads the document plus the surrounding comment thread and posts an LLM reply inline on the thread.
@@ -597,7 +664,13 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | Error 200340 (also seen as 220340) when clicking approval buttons | Feishu has no valid card callback for the published app version: add `card.action.trigger` under the **Callback Configuration** tab (not Event Configuration), pick Long Connection / the request URL, enable **Interactive Card**, then publish a new version. See [Required Feishu App Configuration](#required-feishu-app-configuration). The click never reaches Hermes, so nothing appears in `gateway.log`. |
 | Error 200342 / 200343 when clicking approval buttons | Webhook mode: Feishu cannot connect to / resolve the callback request URL. Fix the URL or switch to Long Connection. |
 | `Webhook rate limit exceeded` | More than 120 requests/minute from the same IP. This is usually a misconfiguration or loop. |
+| `Feishu app credentials are missing` on `hermes feishu login` | The bot app is not configured yet — run `hermes setup` and set up Feishu / Lark first. |
+| `redirect_uri` error on the consent page | The URI is not in **Security Settings > Redirect URLs**, or a new app version was not published. See [User Access](#user-access-user_access_token). |
+| `Feishu message search failed: ... hermes feishu login` | The grant is missing a scope. Add the scopes above, publish a version, then re-run `hermes feishu login`. |
+| `feishu_message_search` not offered to the model | No user grant is stored — the tools are gated on it. Check `hermes feishu status`. |
 
 ## Toolset
 
 Feishu / Lark uses the `hermes-feishu` platform preset, which includes the same core tools as Telegram and other gateway-based messaging platforms.
+
+With a user grant stored (see [User Access](#user-access-user_access_token)) the bundle also carries `feishu_message_search` and `feishu_message_list`; they are absent otherwise.

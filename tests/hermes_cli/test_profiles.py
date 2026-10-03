@@ -906,7 +906,10 @@ class TestListProfiles:
         assert resp.status_code == 200
         assert resp.json()["profiles"][0]["name"] == "default"
         assert walks == ["hermes-skill-count"]
-        assert any(i["text"] == "@default" for i in methods_complete._profile_mention_items("def"))
+        # The primary profile completes as @hermes only — its raw 'default' row was
+        # the @default/@hermes picker duplicate; it must never come back.
+        assert any(i["text"] == "@hermes" for i in methods_complete._profile_mention_items("her"))
+        assert not any(i["text"] == "@default" for i in methods_complete._profile_mention_items(""))
         assert walks == ["hermes-skill-count"]
 
         # Control: the detail/CLI path counts synchronously on the caller's thread.

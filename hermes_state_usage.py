@@ -79,6 +79,91 @@ _MODEL_USAGE_FIELDS = frozenset((
     "actual_cost_usd", "cost_status", "cost_source", "api_call_count"))
 
 
+def backfill_unknown_session_costs(db_path: str, *, dry_run: bool = False) -> Dict[str, Any]:
+    """Re-price sessions whose cost was never finalized (``cost_status`` NULL or
+    ``'unknown'``) — e.g. because the live ``/models`` pricing fetch failed at
+    finalization time and the row was persisted with a ``0.0`` placeholder.
+
+    Only ENDED sessions (``ended_at IS NOT NULL``) are touched: an active session
+    legitimately has ``cost_status`` NULL while in flight and is left to the normal
+    finalization path.
+
+    Zero-token sessions are finalized as ``'included'`` $0 (no usage -> no
+    billable cost, a fact rather than an estimate). Sessions with a resolvable
+    model/provider are re-priced via ``estimate_usage_cost`` at their STORED
+    route (so ``/model`` switches and provider routes are honoured). Sessions
+    with no model AND non-zero tokens are skipped (nothing to price against), as
+    are sessions whose route still yields no pricing.
+
+    Pass ``dry_run=True`` to compute the report without writing. Returns
+    ``{"found", "fixed", "skipped", "details"}``.
+    """
+    import sqlite3
+
+    from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+
+    _COLS = (
+        "id", "model", "billing_provider", "billing_base_url", "billing_mode",
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+        "reasoning_tokens",
+    )
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT " + ", ".join(_COLS)
+            + " FROM sessions WHERE (cost_status IS NULL OR cost_status = 'unknown')"
+            + " AND ended_at IS NOT NULL"
+        ).fetchall()
+        report: Dict[str, Any] = {"found": len(rows), "fixed": 0, "skipped": 0, "details": []}
+        for r in rows:
+            sid = r["id"]
+            tokens = [r[c] or 0 for c in _TOKEN_COUNTERS]
+            if not any(tokens):
+                status, amount, source, pv, actual = "included", 0.0, "none", None, None
+            elif r["model"]:
+                usage = CanonicalUsage(
+                    input_tokens=r["input_tokens"] or 0,
+                    output_tokens=r["output_tokens"] or 0,
+                    cache_read_tokens=r["cache_read_tokens"] or 0,
+                    cache_write_tokens=r["cache_write_tokens"] or 0,
+                    reasoning_tokens=r["reasoning_tokens"] or 0,
+                )
+                res = estimate_usage_cost(
+                    r["model"], usage,
+                    provider=r["billing_provider"],
+                    base_url=r["billing_base_url"],
+                    api_key="",
+                )
+                if res.amount_usd is None:
+                    report["skipped"] += 1
+                    report["details"].append({"id": sid, "result": "still-unpriced"})
+                    continue
+                status, amount, source, pv = (
+                    res.status, float(res.amount_usd), res.source, res.pricing_version,
+                )
+                actual = amount if status == "actual" else None
+            else:
+                report["skipped"] += 1
+                report["details"].append({"id": sid, "result": "no-model"})
+                continue
+            if not dry_run:
+                conn.execute(
+                    "UPDATE sessions SET estimated_cost_usd = ?, actual_cost_usd = ?, "
+                    "cost_status = ?, cost_source = ?, pricing_version = ? WHERE id = ?",
+                    (amount, actual, status, source, pv, sid),
+                )
+            report["fixed"] += 1
+            report["details"].append(
+                {"id": sid, "status": status, "amount": amount, "source": source},
+            )
+        if not dry_run:
+            conn.commit()
+        return report
+    finally:
+        conn.close()
+
+
 class SessionUsageMixin:
     """Coalesced token writer, per-model usage rows, billing route."""
 

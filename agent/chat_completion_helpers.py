@@ -3850,8 +3850,13 @@ class _StreamingCall(StreamingWaitMonitor):
         not count the queueing as the stream's silence."""
         from agent.llm_concurrency import readmit_prepaid
 
-        readmit_prepaid(self.agent.provider, cancelled=lambda: bool(self.agent._interrupt_requested))
-        self.last_chunk_time["t"] = time.time()
+        self.admission_waiting = True
+        try:
+            readmit_prepaid(self.agent.provider, cancelled=lambda: bool(self.agent._interrupt_requested))
+        finally:
+            # Restart the response clock before the monitor may judge silence again.
+            self.last_chunk_time["t"] = time.time()
+            self.admission_waiting = False
 
     # ── poll-loop monitor (heartbeat / stale kill / interrupt) ──────────
 

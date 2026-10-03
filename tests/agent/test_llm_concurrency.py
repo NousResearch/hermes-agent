@@ -10,7 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import llm_concurrency, relay_llm
+import run_agent
+from agent import chat_completion_helpers, llm_concurrency, relay_llm
 from agent.chat_completion_helpers import _context_thread_target
 from agent.rate_limit_tracker import RateLimitBucket, RateLimitState
 from hermes_cli import config as config_module
@@ -236,6 +237,15 @@ def test_requests_per_minute_paces_starts_fairly_and_honors_rate_limit_headers(p
         clock.now += 0.1
         await starts_after("loosened", 0.9)
 
+        # Unsetting the pacing key (auto or numeric -> concurrency cap only) drops an exhausted
+        # window's hold too: the next request is admitted with nothing in flight and no clock advance.
+        for paced in ("auto", 60):
+            providers({"openrouter": {"requests_per_minute": paced, "max_in_flight": 1}})
+            llm_concurrency.note_rate_limit_state("openrouter", _request_window(0, 60.0))
+            providers({"openrouter": {"max_in_flight": 1}})
+            await asyncio.wait_for(request(f"cap-only-after-{paced}", "main"), timeout=5)
+        providers({"openrouter": {"requests_per_minute": 60}})
+
     asyncio.run(scenario())
 
     # A streaming retry is a new physical request: admitted and paced afresh, not re-entry of
@@ -271,3 +281,32 @@ def test_requests_per_minute_paces_starts_fairly_and_honors_rate_limit_headers(p
     clock.now = 5001.0
     assert call.result(timeout=5) == ["chunk-1", "chunk-2"]
     assert opened == [5000.0, 5001.0]
+
+    # Queueing for that admission is not provider silence: the real stall monitor beside the real
+    # retry path neither warns, kills nor strikes while the retry waits past the stale threshold,
+    # and still kills an admitted attempt that goes silent.
+    monkeypatch.setattr(llm_concurrency, "time", time)
+    llm_concurrency._reset_provider_limiters()
+    providers({"openrouter": {"max_in_flight": 1}})
+    agent = run_agent.AIAgent(
+        api_key="k", base_url="https://openrouter.ai/api/v1", model="m", provider="openrouter",
+        quiet_mode=True, skip_context_files=True, skip_memory=True, enabled_toolsets=[], max_iterations=1,
+    )
+    streaming = chat_completion_helpers._StreamingCall(agent, {"model": "m", "messages": []}, None)
+    streaming._stream_stale_timeout = 0.5
+    streaming._call_done = threading.Event()
+    stale_kills: list[float] = []
+    streaming._kill_stale_stream = stale_kills.append
+    monitor = threading.Thread(target=streaming._monitor_loop, daemon=True)
+    monitor.start()
+    try:
+        with llm_concurrency.prepaid_provider_slot("openrouter"):
+            first_attempt = llm_concurrency.acquire_provider_slot("openrouter")
+            threading.Timer(1.5, first_attempt.release).start()
+            streaming._readmit_retry()  # queued ~1.5 s against a 0.5 s stale threshold
+            assert stale_kills == []
+            time.sleep(1.2)  # admitted, and the provider never answers
+            assert stale_kills
+    finally:
+        streaming._call_done.set()
+        monitor.join(timeout=5)

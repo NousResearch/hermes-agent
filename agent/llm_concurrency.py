@@ -168,7 +168,8 @@ class _Gate:
         if cap and self._in_flight >= cap:
             return _POLL_SECONDS
         now = time.monotonic()
-        earliest = self._blocked_until
+        # The exhausted-window hold is header pacing too: it lapses with ``pace_from_headers``.
+        earliest = self._blocked_until if self.limits.pace_from_headers else 0.0
         if self._last_start is not None:
             earliest = max(earliest, self._last_start + self._interval(now))
         if earliest > now:

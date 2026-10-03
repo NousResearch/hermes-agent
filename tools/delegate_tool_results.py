@@ -210,11 +210,12 @@ def _trim_summary_with_footer(summary: str, cap: int, task_index: int) -> tuple[
         f"of {original_len:,} total — trimmed to protect the parent's context window.",
     ]
     if spill_path:
-        # read_file is 1-indexed; +2 moves past the last head line shown.
+        # Skip a newline at the cut, but reread a partially shown line so its remainder is not lost.
+        middle_start_line = summary.count("\n", 0, len(head) + 1) + 1
         footer_lines.append(f"Full subagent output saved to: {spill_path}")
         footer_lines.append(
             f'To read the omitted middle: read_file path="{spill_path}" '
-            f"offset={head.count(chr(10)) + 2} limit=200  (the file is the complete "
+            f"offset={middle_start_line} limit=200  (the file is the complete "
             f"summary; raise/lower offset to page through it)."
         )
     else:

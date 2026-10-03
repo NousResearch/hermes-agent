@@ -66,6 +66,8 @@ class ProviderProfile:
     # FIRST with the parsed CLI namespace; truthy = the plugin owned the action, falsy = built-in path.
     # ``refresh_credential(entry) -> Mapping | None``: the credential pool's refresh of a pooled OAuth
     # row — return the rotated fields (``access_token``, ``refresh_token``, ``expires_at_ms`` …) or raise.
+    # Only refreshable field names apply; pool-owned ones (id, source, priority, endpoints, status)
+    # are refused; see model-provider-plugin.md for the key contract.
     # Both own their own token endpoints; Hermes passes no secrets beyond the pooled row itself.
     # ``classify_api_error(error, *, status_code, error_code, message, body, model) -> Mapping | None``:
     # consulted by ``agent.error_classifier.classify_api_error`` for THIS provider's failures only, after

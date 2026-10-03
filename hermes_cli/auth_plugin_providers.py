@@ -9,8 +9,11 @@ callables that core consults BEFORE any built-in, name-keyed path:
   (``args`` is the parsed CLI namespace; truthy = the plugin owned the action, falsy = built-in path).
 - ``refresh_credential(entry) -> Mapping | None`` for the credential pool: given the pooled
   ``PooledCredential`` it returns the rotated fields (``access_token``, ``refresh_token``,
-  ``expires_at_ms`` …) or raises. A separate hook rather than ``auth_handler("refresh", …)`` because
-  the pool has a credential row, not an argparse namespace, and needs tokens back, not a bool.
+  ``expires_at_ms`` …) or raises. Only refreshable field names apply; pool-owned ones
+  (``id``, ``source``, ``priority``, endpoint fields, status bookkeeping) are refused;
+  see model-provider-plugin.md for the key contract. A separate hook rather than
+  ``auth_handler("refresh", …)`` because the pool has a credential row, not an argparse
+  namespace, and needs tokens back, not a bool.
 
 Every function here late-imports ``hermes_cli.auth`` names: this module is imported by the auth facade
 right after ``PROVIDER_REGISTRY`` exists, and by ``agent.credential_pool``.

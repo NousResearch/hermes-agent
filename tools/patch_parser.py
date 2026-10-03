@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 if TYPE_CHECKING:  # annotations only; the real import is per-call in apply_v4a_operations
     from tools.file_operations_common import PatchResult
 
-from tools.file_operations_common import PatchResult
+from tools.file_operations_common import PatchResult, _detect_line_ending, _normalize_line_endings
 
 
 class OperationType(Enum):
@@ -132,6 +132,14 @@ def _split_hunk(hunk: Hunk) -> Tuple[List[str], List[str]]:
             [l.content for l in hunk.lines if l.prefix != '-'])
 
 
+def _match_view(content: str) -> Tuple[str, Optional[str]]:
+    """``(content to match hunks against, the file's line ending)``. Hunks are joined with bare LF,
+    so a CRLF file is matched on its LF view, as ``patch_replace`` does: against the raw text an
+    ambiguous hunk can match only one copy and be applied instead of refused."""
+    ending = _detect_line_ending(content)
+    return (content.replace("\r\n", "\n") if ending == "\r\n" else content), ending
+
+
 def _no_match_hint(error: Optional[str], search_pattern: str, content: str) -> str:
     """Best-effort 'Did you mean...' suffix; never lets a hint failure mask the real error."""
     with contextlib.suppress(Exception):
@@ -162,7 +170,7 @@ def _validate_operations(operations: List[PatchOperation], file_ops: Any) -> Lis
         if path in removed_paths:
             return None, "file not found"
         r = file_ops.read_file_raw(path)
-        return (None, r.error) if r.error else (r.content, None)
+        return (None, r.error) if r.error else (_match_view(r.content)[0], None)
 
     def _occupied(path: str) -> Optional[str]:
         """Why an Add target or Move destination is not free, or None. Only a read that reports
@@ -406,7 +414,8 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
     read_result = file_ops.read_file_raw(op.file_path)  # raw: no line numbers / truncation
     if read_result.error:
         return _fail(f"Cannot read file: {read_result.error}")
-    current_content = new_content = read_result.content
+    current_content = read_result.content
+    new_content, file_ending = _match_view(current_content)
     for hunk in op.hunks:
         search_lines, replace_lines = _split_hunk(hunk)
         if search_lines and search_lines == replace_lines:
@@ -437,6 +446,9 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
                 continue
             hint = _no_match_hint(error, search_pattern, new_content)
             return _fail(f"Could not apply hunk: {error}" + hint)
+    # Back to the file's own ending, so the diff shows only the edit (write_file would restore it).
+    if file_ending == "\r\n":
+        new_content = _normalize_line_endings(new_content, file_ending)
     # Pass pre_content to skip a redundant re-read inside write_file when supported.
     extra = {"pre_content": current_content} if _write_file_accepts_pre_content(file_ops) else {}
     write_result = file_ops.write_file(op.file_path, new_content, **extra)

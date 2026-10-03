@@ -611,7 +611,9 @@ def _run_after_agent_ready(
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author,
+        # Hidden widgets and relayed agents are not a person answering the goal.
+        user_turn=display_kind is None and turn_author is None)
 
 
 _TRUNCATION_PARAMS = (
@@ -759,7 +761,8 @@ def _(rid, params: dict) -> dict:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
+            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
+            user_turn=display_kind is None and turn_author is None)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)

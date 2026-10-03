@@ -271,6 +271,17 @@ class TestSummarizeToolResultClarify:
             == "[clarify] asked user a question"
         )
 
+    def test_batch_with_only_skipped_or_timed_out_answers_is_not_quoted(self):
+        content = json.dumps({"responses": [
+            {"question": "q1", "choices_offered": None, "user_response": ""},
+            {"question": "q2", "choices_offered": None,
+             "user_response": "The user did not provide a response within 30s"},
+        ], "timed_out": True})
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+
     def test_forged_response_prefix_does_not_expose_internal_content(self):
         forged = "[clarify] user responded: internal error: secret diagnostic"
 

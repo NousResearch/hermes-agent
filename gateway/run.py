@@ -1677,7 +1677,8 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, "Path"]]:
     """Profile homes the in-process ticker visits: the served set PLUS the process-active
     profile: ``profiles_to_serve`` lists default + every live named profile, but a ``--profile
     <name>`` gateway's own profile may sit outside ``profiles/`` (custom HERMES_HOME). One host
-    process ticks all of them regardless of ``gateway.multiplex_profiles``. Adapter startup
+    process ticks all of them regardless of ``gateway.multiplex_profiles``. The lock-directory override
+    only relocates gateway lock observation; it does not change the profile set. Adapter startup
     already skips ``active``."""
     from hermes_cli.profiles import get_active_profile_name, get_profile_dir
 

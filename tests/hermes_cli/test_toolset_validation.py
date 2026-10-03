@@ -208,3 +208,56 @@ def test_populated_platforms_produce_no_empty_list_warning():
     cfg = {"cli": ["hermes-cli"], "telegram": ["hermes-telegram"]}
     warnings = validate_platform_toolsets(cfg, _is_valid)
     assert warnings == []
+
+
+def test_plugin_platform_toolset_validates_and_has_no_warnings():
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from toolsets import validate_toolset, resolve_toolset
+
+    platform = "test_plugin_plat"
+    platform_registry.register(
+        PlatformEntry(
+            name=platform,
+            label="Test Plugin Platform",
+            adapter_factory=lambda _config: object(),
+            check_fn=lambda: True,
+        )
+    )
+    try:
+        toolset_name = f"hermes-{platform}"
+        assert validate_toolset(toolset_name) is True
+        assert len(resolve_toolset(toolset_name)) > 0
+
+        warnings = validate_platform_toolsets({platform: [toolset_name]}, validate_toolset)
+        assert warnings == []
+    finally:
+        platform_registry.unregister(platform)
+
+
+def test_unknown_toolset_does_not_suggest_itself_when_name_matches_default():
+    # If a predicate rejects the default toolset name, it shouldn't produce "did you mean 'hermes-teams'?" for 'hermes-teams'
+    platform = "teams"
+    warnings = validate_platform_toolsets({platform: ["hermes-teams"]}, lambda name: False)
+    unknown = [w for w in warnings if "unknown toolset 'hermes-teams'" in w]
+    assert len(unknown) == 1
+    assert "did you mean 'hermes-teams'?" not in unknown[0]
+
+
+def test_platform_default_keys_includes_plugin_platforms():
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from hermes_cli.tools_config import _platform_default_keys
+
+    platform = "test_custom_chat"
+    platform_registry.register(
+        PlatformEntry(
+            name=platform,
+            label="Custom Chat",
+            adapter_factory=lambda _config: object(),
+            check_fn=lambda: True,
+        )
+    )
+    try:
+        keys = _platform_default_keys()
+        assert f"hermes-{platform}" in keys
+    finally:
+        platform_registry.unregister(platform)

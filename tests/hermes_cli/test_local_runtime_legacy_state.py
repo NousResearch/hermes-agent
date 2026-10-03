@@ -49,6 +49,7 @@ def test_legacy_endpoint_requires_managed_process_identity(tmp_path, monkeypatch
     monkeypatch.setattr(recovery.psutil, "Process", lambda pid: process)
     monkeypatch.setattr(recovery.psutil, "pid_exists", lambda pid: True)
 
-    expected = {"base_url": state["base_url"], "api_key": state["api_key"]} if accepted else None
+    expected = ({"base_url": state["base_url"], "api_key": state["api_key"], "pid": state["pid"]}
+                if accepted else None)
     assert recovery.legacy_recorded_process(state) is (process if accepted else None)
     assert endpoint._state_endpoint() == expected

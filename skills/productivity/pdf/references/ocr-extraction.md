@@ -1,14 +1,9 @@
-# OCR & Document Text Extraction (merged from the ocr-and-documents skill)
-
-Scripts referenced below live in this skill's scripts/ directory.
 # PDF & Document Extraction
 
 For DOCX: see the `docx` skill (create/edit) or use `python-docx` for structured reads.
 For PPTX: see the `powerpoint` skill (full create/read/edit support).
 For PDF manipulation (merge, split, forms, watermarks, creation): see the `pdf` skill.
 This skill covers **text extraction from PDFs and scanned documents**.
-
-> **Coming from a `read_file` EXTRACTION COVERAGE WARNING?** `read_file` auto-converts local PDFs but reads the text layer only; the warning footer lists the pages that yielded no text (scanned images). For a handful of pages, render + vision is fastest: `pdftoppm -jpeg -r 150 -f N -l N file.pdf $TMPDIR/page` then `vision_analyze` each image. For bulk OCR of many pages, use marker-pdf below (Step 2).
 
 ## Step 1: Remote URL Available?
 
@@ -25,24 +20,24 @@ Only use local extraction when: the file is local, web_extract fails, or you nee
 
 ## Step 2: Choose Local Extractor
 
-| Feature | pymupdf (~25MB) | marker-pdf (~3-5GB) |
-|---------|-----------------|---------------------|
-| **Text-based PDF** | ✅ | ✅ |
-| **Scanned PDF (OCR)** | ❌ | ✅ (90+ languages) |
-| **Tables** | ✅ (basic) | ✅ (high accuracy) |
-| **Equations / LaTeX** | ❌ | ✅ |
-| **Code blocks** | ❌ | ✅ |
-| **Forms** | ❌ | ✅ |
-| **Headers/footers removal** | ❌ | ✅ |
-| **Reading order detection** | ❌ | ✅ |
-| **Images extraction** | ✅ (embedded) | ✅ (with context) |
-| **Images → text (OCR)** | ❌ | ✅ |
-| **EPUB** | ✅ | ✅ |
-| **Markdown output** | ✅ (via pymupdf4llm) | ✅ (native, higher quality) |
-| **Install size** | ~25MB | ~3-5GB (PyTorch + models) |
-| **Speed** | Instant | ~1-14s/page (CPU), ~0.2s/page (GPU) |
+| Feature | pymupdf (~25MB) | liteparse (optional) | marker-pdf (~3-5GB) |
+|---------|-----------------|----------------------|---------------------|
+| **Text-based PDF** | ✅ | ✅ | ✅ |
+| **Scanned PDF (OCR)** | ❌ | ✅ optional Tesseract or HTTP OCR | ✅ (90+ languages) |
+| **Tables** | ✅ (basic) | ✅ reconstructed; quality varies with layout | ✅ (high accuracy) |
+| **Equations / LaTeX** | ❌ | ❌ | ✅ |
+| **Code blocks** | ❌ | ❌ | ✅ |
+| **Forms** | ❌ | ⚠️ optional structured AcroForm extraction | ✅ |
+| **Headers/footers removal** | ❌ | ✅ for repeated page bands in Markdown | ✅ |
+| **Reading order detection** | ❌ | ✅ useful fast check | ✅ |
+| **Images extraction** | ✅ (embedded) | ✅ optional bytes and metadata | ✅ (with context) |
+| **Images → text (OCR)** | ❌ | ✅ optional OCR | ✅ |
+| **EPUB** | ✅ | ❌ | ✅ |
+| **Markdown output** | ✅ (via pymupdf4llm) | ✅ headings, tables, lists, images, and links; quality varies | ✅ (native, higher quality) |
+| **Install size** | ~25MB | lightweight optional package | ~3-5GB (PyTorch + models) |
+| **Speed** | Instant | fast native parser; OCR adds cost | ~1-14s/page (CPU), ~0.2s/page (GPU) |
 
-**Decision**: Use pymupdf unless you need OCR, equations, forms, or complex layout analysis.
+**Decision**: Use pymupdf/pymupdf4llm as the safe default for text PDFs. Use optional `liteparse` for fast local extraction, spatial reading-order reconstruction, or OCR without a large ML stack. Prefer marker-pdf when equations, code blocks, difficult OCR, or complex layout fidelity matter most.
 
 If the user needs marker capabilities but the system lacks ~5GB free disk:
 > "This document needs OCR/advanced extraction (marker-pdf), which requires ~5GB for PyTorch and models. Your system has [X]GB free. Options: free up space, provide a URL so I can use web_extract, or I can try pymupdf which works for text-based PDFs but not scanned documents or equations."
@@ -67,13 +62,42 @@ python scripts/extract_pymupdf.py document.pdf --pages 0-4   # Specific pages
 
 **Inline**:
 ```bash
-python -c "
+python3 -c "
 import pymupdf
 doc = pymupdf.open('document.pdf')
 for page in doc:
     print(page.get_text())
 "
 ```
+
+---
+
+## liteparse (optional fast text fallback)
+
+LiteParse 2.10.1 renders headings, tables, lists, images, and links into `result.text` when `output_format="markdown"`. Its own documentation cautions that reconstruction quality varies with document complexity, so inspect the output before using it for agent-ready chunking. Keep `pymupdf4llm` as the safe default and use marker-pdf for difficult OCR, equations, or complex layouts.
+
+```bash
+# Add to an existing uv project:
+uv add 'liteparse==2.10.1'
+
+# Or create a standalone virtual environment:
+uv venv && uv pip install 'liteparse==2.10.1'
+```
+
+**Via helper script**:
+```bash
+python scripts/extract_liteparse.py document.pdf
+python scripts/extract_liteparse.py document.pdf --pages 1-3
+python scripts/extract_liteparse.py document.pdf --max-pages 5
+python scripts/extract_liteparse.py document.pdf --ocr       # enable OCR (slower)
+```
+
+**Smoke test against a local text PDF**:
+```bash
+python scripts/extract_liteparse.py path/to/text.pdf --max-pages 1
+```
+
+Expected result: the command prints first-page Markdown. If `liteparse` is missing, use one of the project/virtual-environment commands above. If the output needs more reliable structure, OCR quality, equation handling, or complex layout semantics, switch back to `pymupdf4llm` or `marker-pdf`.
 
 ---
 
@@ -157,9 +181,10 @@ No extra dependencies needed — pymupdf covers split, merge, search, and text e
 ## Notes
 
 - `web_extract` is always first choice for URLs
-- pymupdf is the safe default — instant, no models, works everywhere
+- pymupdf/pymupdf4llm is the safe default — instant, no models, works everywhere, and gives better markdown for text PDFs
+- LiteParse 2.10.1 is optional for fast local extraction and spatially reconstructed Markdown; keep OCR disabled for text PDFs to avoid unnecessary work
 - marker-pdf is for OCR, scanned docs, equations, complex layouts — install only when needed
-- Both helper scripts accept `--help` for full usage
+- Helper scripts accept `--help` for full usage
 - marker-pdf downloads ~2.5GB of models to `~/.cache/huggingface/` on first use
 - For Word docs: `pip install python-docx` (better than OCR — parses actual structure)
 - For PowerPoint: see the `powerpoint` skill (uses python-pptx)

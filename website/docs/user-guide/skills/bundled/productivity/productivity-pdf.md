@@ -20,7 +20,7 @@ PDF files: create, read, merge, fill, OCR, edit text.
 | Author | Nous Research |
 | License | MIT |
 | Platforms | linux, macos, windows |
-| Tags | `pdf`, `documents`, `forms`, `ocr`, `text-extraction`, `reportlab`, `pypdf`, `pdfplumber`, `pymupdf`, `marker` |
+| Tags | `pdf`, `documents`, `forms`, `ocr`, `text-extraction`, `reportlab`, `pypdf`, `pdfplumber`, `pymupdf`, `marker`, `liteparse` |
 | Related skills | [`docx`](../../bundled/productivity/productivity-docx.md), [`xlsx`](../../bundled/productivity/productivity-xlsx.md), [`powerpoint`](../../bundled/productivity/productivity-powerpoint.md) |
 
 ## Reference: full SKILL.md
@@ -33,7 +33,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 Create PDFs from structured specs, build and fill AcroForm forms (with layout linting and visual overlays), extract text/tables/metadata, merge/split/rotate/watermark/stamp pages, export page images, manage metadata and attachments, and encrypt/decrypt — using pypdf, reportlab, and pdfplumber. Two absorbed capabilities live in references/ (read the matching file before those tasks):
 
-- **Scanned/image-only PDFs and OCR** (pymupdf fast path, marker-pdf quality path, scripts/extract_pymupdf.py + scripts/extract_marker.py): `references/ocr-extraction.md`
+- **Scanned/image-only PDFs and OCR** (pymupdf default, optional LiteParse fast path, marker-pdf quality path; scripts/extract_pymupdf.py, scripts/extract_liteparse.py, scripts/extract_marker.py): `references/ocr-extraction.md`
 - **Editing text inside an existing PDF via natural-language prompts** (nano-pdf CLI): `references/nano-pdf-editing.md`
 
 ## When to Use

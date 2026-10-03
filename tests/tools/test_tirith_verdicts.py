@@ -69,7 +69,8 @@ def test_circuit_dedup_and_success_reset(scan, monkeypatch, caplog):
             assert "unavailable" in tirith.check_command_security("fail")["summary"]
         scan["tirith_fail_open"] = False
         assert tirith.check_command_security("after") == {
-            "action": "allow", "findings": [], "summary": "tirith disabled (circuit breaker)"}
+            "action": "allow", "findings": [], "summary": "tirith disabled (circuit breaker)",
+            "scanner_state": "disabled"}
     assert len(calls) == 1 + tirith._CRASH_LIMIT
     assert sum("tirith spawn failed" in r.message for r in caplog.records) == 1
 
@@ -88,7 +89,7 @@ def test_app_warning_exception_never_downgrades_block(scan, monkeypatch, code, f
     monkeypatch.setattr(subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a, code, body, ""))
     result = tirith.check_command_security("curl https://example.app")
     assert result == {"action": expected, "findings": [] if expected == "allow" else findings,
-                      "summary": "" if expected == "allow" else "finding"}
+                      "summary": "" if expected == "allow" else "finding", "scanner_state": "ran"}
 
 
 def test_caps_disabled_and_programming_errors(scan, monkeypatch):

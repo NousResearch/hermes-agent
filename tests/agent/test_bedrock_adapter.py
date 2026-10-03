@@ -696,6 +696,104 @@ class TestBuildConverseKwargs:
             assert {"cachePoint": {"type": "default"}} not in m["content"]
 
 
+class TestConverseReasoningEffort:
+    """Bedrock-hosted OpenAI GPT on Converse takes the effort as
+    ``additionalModelRequestFields={"reasoning": {"effort": ...}}`` (live-verified: the nested shape is
+    validated, the flat ``reasoning_effort`` key is ``unknown_parameter``). Every other family on
+    Converse keeps its request unchanged."""
+
+    MSGS = [{"role": "user", "content": "Hi"}]
+    # Live-verified accepted levels per model generation (bedrock-runtime us-east-1).
+    GPT6_LEVELS = {"none", "low", "medium", "high", "xhigh", "max"}
+    GPT55_LEVELS = {"none", "low", "medium", "high", "xhigh"}
+
+    @staticmethod
+    def _fields(model, reasoning_config, messages=None):
+        from agent.bedrock_adapter import build_converse_kwargs
+        kwargs = build_converse_kwargs(
+            model=model, messages=messages or TestConverseReasoningEffort.MSGS, reasoning_config=reasoning_config,
+        )
+        return kwargs.get("additionalModelRequestFields")
+
+    @pytest.mark.parametrize("model", ["us.openai.gpt-6-sol", "global.openai.gpt-6-sol", "openai.gpt-6-sol",
+                                       "us.openai.gpt-6-luna", "us.openai.gpt-5.6-sol"])
+    @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+    def test_supported_effort_reaches_the_wire_under_any_profile_prefix(self, model, effort):
+        fields = self._fields(model, {"enabled": True, "effort": effort})
+        assert fields == {"reasoning": {"effort": effort}}
+
+    @pytest.mark.parametrize("effort", ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"])
+    def test_every_hermes_level_maps_into_the_accepted_vocabulary(self, effort):
+        """No Hermes level may produce a value Converse rejects (``minimal`` is unsupported, ``ultra``
+        is Hermes-internal; both are live 400s when sent verbatim)."""
+        for model, accepted in (("us.openai.gpt-6-sol", self.GPT6_LEVELS), ("us.openai.gpt-5.5", self.GPT55_LEVELS)):
+            cfg = {"enabled": False} if effort == "none" else {"enabled": True, "effort": effort}
+            fields = self._fields(model, cfg)
+            assert fields is not None, (model, effort)
+            assert fields["reasoning"]["effort"] in accepted, (model, effort, fields)
+
+    def test_unsupported_levels_clamp_to_the_nearest_accepted_level_without_escalating(self):
+        gpt6 = lambda e: self._fields("us.openai.gpt-6-sol", {"enabled": True, "effort": e})["reasoning"]["effort"]
+        gpt55 = lambda e: self._fields("us.openai.gpt-5.5", {"enabled": True, "effort": e})["reasoning"]["effort"]
+        assert gpt6("ultra") == "max"
+        assert gpt6("minimal") == "low"  # nothing weaker except "none", which would switch reasoning off
+        assert gpt55("max") == gpt55("ultra") == "xhigh"
+
+    def test_explicit_disable_sends_none_where_the_model_has_it(self):
+        """An omitted field leaves the model's default effort on, so a disable must be sent explicitly."""
+        assert self._fields("us.openai.gpt-6-sol", {"enabled": False}) == {"reasoning": {"effort": "none"}}
+
+    def test_disable_is_omitted_on_a_model_without_none(self):
+        """gpt-6-astra rejects ``none`` (live 400): the disable degrades to the route default, not a 400."""
+        assert self._fields("us.openai.gpt-6-astra", {"enabled": False}) is None
+        assert self._fields("us.openai.gpt-6-astra", {"enabled": True, "effort": "high"}) == {
+            "reasoning": {"effort": "high"}}
+
+    @pytest.mark.parametrize("cfg", [None, {}, {"enabled": True}, {"enabled": True, "effort": ""},
+                                     {"enabled": True, "effort": "turbo"}])
+    def test_unset_or_unmappable_effort_sends_nothing(self, cfg):
+        """Unset stays unset (the model's own default), and a bespoke name never reaches a validating wire."""
+        assert self._fields("us.openai.gpt-6-sol", cfg) is None
+
+    @pytest.mark.parametrize("model", [
+        "us.anthropic.claude-opus-4-6-v1", "anthropic.claude-sonnet-4-6-20250514-v1:0",
+        "openai.gpt-oss-120b-1:0", "openai.gpt-oss-20b-1:0", "openai.gpt-oss-safeguard-120b",
+        "us.amazon.nova-pro-v1:0", "deepseek.v3-v1:0", "us.xai.grok-4.6", "us.meta.llama4-maverick-17b-instruct-v1:0",
+    ])
+    def test_other_families_never_get_the_openai_reasoning_field(self, model):
+        for cfg in ({"enabled": True, "effort": "high"}, {"enabled": False}):
+            assert self._fields(model, cfg) is None, model
+
+    def test_reasoning_field_is_byte_stable_as_the_conversation_grows(self):
+        """Prompt caching: the field depends only on model + configured effort, never on history."""
+        cfg = {"enabled": True, "effort": "high"}
+        short = self._fields("us.openai.gpt-6-sol", cfg)
+        grown = self._fields("us.openai.gpt-6-sol", cfg, messages=[
+            {"role": "system", "content": "Be helpful."}, {"role": "user", "content": "First"},
+            {"role": "assistant", "content": "Reply"}, {"role": "user", "content": "Second"},
+        ])
+        assert json.dumps(short, sort_keys=True) == json.dumps(grown, sort_keys=True)
+
+    def test_call_converse_sends_the_field_to_boto3(self):
+        from agent.bedrock_adapter import call_converse
+        client = MagicMock()
+        client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
+            "stopReason": "end_turn", "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+        }
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=client):
+            call_converse(region="us-east-1", model="us.openai.gpt-6-sol", messages=self.MSGS,
+                          reasoning_config={"enabled": True, "effort": "low"})
+        assert client.converse.call_args.kwargs["additionalModelRequestFields"] == {"reasoning": {"effort": "low"}}
+
+    def test_transport_forwards_reasoning_config(self):
+        import agent.transports.bedrock  # noqa: F401
+        from agent.transports import get_transport
+        kw = get_transport("bedrock_converse").build_kwargs(
+            model="us.openai.gpt-6-sol", messages=self.MSGS, reasoning_config={"enabled": True, "effort": "xhigh"})
+        assert kw["additionalModelRequestFields"] == {"reasoning": {"effort": "xhigh"}}
+
+
 # ---------------------------------------------------------------------------
 # cachePoint rejection self-heal (#97281)
 # ---------------------------------------------------------------------------

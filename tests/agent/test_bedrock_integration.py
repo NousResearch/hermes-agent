@@ -456,6 +456,28 @@ class TestAuxiliaryClientBedrockResolution:
             wire_kwargs = boto3_client.converse.call_args.kwargs
             assert wire_kwargs["inferenceConfig"]["maxTokens"] == 1234
 
+    def test_bedrock_converse_shim_forwards_aux_reasoning_effort(self, monkeypatch):
+        """Auxiliary calls on a Converse-routed Bedrock OpenAI GPT (``us.``/``global.`` ids stay on
+        Converse) carry the task's reasoning effort as additionalModelRequestFields; GPT-OSS on the
+        same shim is unchanged."""
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIO...MPLE")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+
+        from agent.auxiliary_client import BedrockAuxiliaryClient, _build_call_kwargs
+
+        boto3_client = MagicMock()
+        with patch("agent.bedrock_adapter._get_bedrock_runtime_client", return_value=boto3_client), \
+             patch("agent.bedrock_adapter.normalize_converse_response"):
+            for model, expected in (("us.openai.gpt-6-sol", {"reasoning": {"effort": "max"}}),
+                                    ("openai.gpt-oss-20b-1:0", None)):
+                client = BedrockAuxiliaryClient("us-east-1", model)
+                call_kwargs = _build_call_kwargs(
+                    "bedrock", model, [{"role": "user", "content": "summarize"}],
+                    reasoning_config={"enabled": True, "effort": "ultra"})
+                client.chat.completions.create(**call_kwargs)
+                wire_kwargs = boto3_client.converse.call_args.kwargs
+                assert wire_kwargs.get("additionalModelRequestFields") == expected, model
+
     def test_bedrock_mantle_config_region_beats_env_region(self, monkeypatch):
         """bedrock.region in config.yaml must win over AWS_REGION for auxiliary
         Mantle calls — the same priority the main runtime resolver uses (#65076

@@ -3,6 +3,7 @@ import os
 import re
 from io import StringIO
 import subprocess
+import tempfile
 
 import pytest
 
@@ -591,6 +592,37 @@ def test_reuse_environment_fingerprint_tracks_immutable_configuration():
     )
 
 
+def test_reuse_environment_fingerprint_ignores_volatile_temp_mounts(tmp_path, monkeypatch):
+    """A mount whose host source is a per-process tempdir must not churn the
+    reuse label: symlinked skills trees are served from a fresh mkdtemp copy
+    every process (``_safe_skills_path``), so hashing that path made the
+    label differ across processes and container reuse never matched."""
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setattr(docker_env.tempfile, "gettempdir", lambda: str(temp_root))
+    stable_source = str(tmp_path / "data")
+    process_a = docker_env._reuse_environment_fingerprint(
+        image="python:3.11",
+        mount_args=["-v", f"{temp_root}/hermes-skills-safe-a1b2c3:/root/.hermes/skills:ro",
+                    "-v", f"{stable_source}:/data:ro"],
+        hermes_home="/profiles/alpha",
+    )
+    process_b = docker_env._reuse_environment_fingerprint(
+        image="python:3.11",
+        mount_args=["-v", f"{temp_root}/hermes-skills-safe-d4e5f6:/root/.hermes/skills:ro",
+                    "-v", f"{stable_source}:/data:ro"],
+        hermes_home="/profiles/alpha",
+    )
+    assert process_a == process_b
+    # A real mount change still forces a fresh container.
+    assert process_a != docker_env._reuse_environment_fingerprint(
+        image="python:3.11",
+        mount_args=["-v", f"{temp_root}/hermes-skills-safe-a1b2c3:/root/.hermes/skills:ro",
+                    "-v", f"{tmp_path}/other-data:/data:ro"],
+        hermes_home="/profiles/alpha",
+    )
+
+
 def test_run_command_sanitizes_unsafe_task_id(monkeypatch):
     """A task_id containing characters Docker rejects in label values must be
     sanitized before reaching ``docker run --label``; otherwise the daemon
@@ -709,6 +741,41 @@ def test_sandbox_dir_name_never_resolves_to_the_sandbox_root():
         name = docker_env._sandbox_dir_name(value)
         assert name not in {"", ".", ".."}, repr(value)
         assert not (set(name) & set(':/\\')), name
+
+
+@pytest.mark.require_symlinks
+def test_symlinked_skills_tree_reuses_container_across_processes(monkeypatch, tmp_path):
+    """A symlink under ``skills/`` makes the skills mount a fresh mkdtemp copy per
+    process (and even per DockerEnvironment construction — ``_safe_skills_path``
+    rmtree+mkdtemps on every call). The reuse label must stay stable anyway, or
+    the persistent container is never reused and users silently lose the
+    installed packages / filesystem state of their long-lived sandbox."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    hermes_home = tmp_path / "alpha"
+    skills_dir = hermes_home / "skills"
+    (skills_dir / "some-skill").mkdir(parents=True)
+    (skills_dir / "some-skill" / "SKILL.md").write_text("# skill")
+    (skills_dir / "link").symlink_to(tmp_path / "outside")  # forces the safe-copy path
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _mock_subprocess_run(monkeypatch)
+
+    config = {"image": "python:3.11", "volumes": ["volume-a:/workspace"]}
+    first = _make_dummy_env(**config)
+    second = _make_dummy_env(**config)
+    assert first._labels["hermes-environment"] == second._labels["hermes-environment"]
+    # The safe copy really is per-construction volatile: proof the stability above
+    # comes from canonicalization, not from the mount happening to be stable.
+    mounts = []
+    for entry in docker_env._readonly_skill_mount_args():
+        if entry not in ("-v",) and ":/root/.hermes/skills" in entry:
+            mounts.append(entry)
+    assert mounts, "expected a skills mount from the symlink-safe copy"
+
+    # A real (non-tempdir) mount change must still start a fresh container.
+    changed = dict(config, volumes=["volume-b:/workspace"])
+    third = _make_dummy_env(**changed)
+    assert third._labels["hermes-environment"] != first._labels["hermes-environment"]
 
 
 def test_labels_attribute_populated_after_init(monkeypatch):

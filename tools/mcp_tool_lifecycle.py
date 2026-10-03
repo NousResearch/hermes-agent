@@ -24,14 +24,16 @@ _orphan_stdio_pid_servers: Dict[int, str] = {}
 # grandchildren keep that PGID after the direct child exits, so killpg still reaches them.
 # Separate from _stdio_pids so the PGID survives the child's removal. Empty on Windows.
 _stdio_pgids: Dict[int, int] = {}
-# Spawn-time start ticks (/proc/<pid>/stat field 22) of each stdio child's pgroup leader,
-# captured alongside the PGID.  PIDs/PGIDs are recycled by the kernel once the original
-# process exits and is reaped, so a long-lived tracker holding a bare PGID is unsafe: by
-# the time a sweep runs, that number may name an unrelated process group (observed in the
-# wild: a desktop browser whose session leader happened to reuse a dead MCP child's PID —
-# #43044).  We re-check the leader's start time before signalling so a recycled PGID is
-# never killed.  None entries are dropped: platforms without /proc (macOS) have no baseline
-# and keep the legacy best-effort behaviour.
+# Spawn-time start-time fingerprints of each stdio child's pgroup leader, captured
+# alongside the PGID (the psutil fallback means every platform has a baseline, macOS
+# included).  PIDs/PGIDs are recycled by the kernel once the original process exits and
+# is reaped, so a long-lived tracker holding a bare PGID is unsafe: by the time a sweep
+# runs, that number may name an unrelated process group (observed in the wild: a
+# desktop browser whose session leader happened to reuse a dead MCP child's PID —
+# #43044).  We re-check the leader's start time — drift-tolerantly, since same-host
+# readings drift ~1 s on macOS (#117505) — before signalling so a recycled PGID is
+# never killed.  None entries are dropped: a capture that raced the child's exit keeps
+# the legacy best-effort behaviour.
 _stdio_starttimes: Dict[int, int] = {}  # pid -> leader start ticks
 # Per-spawn marker inherited by stdio descendants. On Linux, an exited leader's
 # numeric PGID alone cannot prove ownership after the original group disappears.
@@ -94,8 +96,9 @@ def _signal_marked_group(pgid: int, marker: str, sig: int) -> bool:
 
 
 def _leader_start_time(pid: int) -> Optional[int]:
-    """``/proc``-backed start time of the pgroup leader (PGID == leader PID on setsid spawn);
-    ``None`` on platforms without /proc (macOS/Windows) or for an already-reaped PID."""
+    """Start-time fingerprint of the pgroup leader (PGID == leader PID on setsid spawn);
+    ``None`` only when the reading is genuinely unavailable (already-reaped PID, no
+    /proc AND no psutil) — the psutil fallback covers macOS/Windows."""
     from gateway.status import get_process_start_time
     try:
         return get_process_start_time(pid)
@@ -325,20 +328,27 @@ def _signal_mcp_process(pid: int, sig: int, server_name: str, pgid: Optional[int
 
     On Linux, an absent leader leaves a recyclable PGID, so signal only group
     members carrying this spawn's marker through pidfds. A mismatched live leader
-    is never signalled. Other platforms retain the existing best-effort path."""
+    is never signalled. Other platforms retain the drift-tolerant upstream guard."""
     current_start = _leader_start_time(pid) if expected_start is not None or spawn_marker else None
-    if expected_start is not None and current_start is not None and current_start != expected_start:
-        logger.debug(
-            "Skip signalling MCP pid %d (%s): start-time mismatch — PID was recycled; "
-            "refusing to kill an unrelated process group.", pid, server_name)
-        return
-    if sys.platform.startswith("linux") and current_start is None and expected_start is not None and not spawn_marker:
-        logger.debug("Skip MCP pid %d (%s): exited leader has no group ownership marker", pid, server_name)
-        return
+    if expected_start is not None:
+        if current_start is None:
+            from gateway.status import _pid_exists
+            if not _pid_exists(pid) and (not sys.platform.startswith("linux") or not spawn_marker):
+                logger.debug("Skip MCP pid %d (%s): leader is gone and group ownership is unknown", pid, server_name)
+                return
+        else:
+            try:
+                from gateway.status import start_time_fingerprints_match
+                if not start_time_fingerprints_match(expected_start, current_start):
+                    logger.debug(
+                        "Skip signalling MCP pid %d (%s): start-time mismatch — PID was recycled; "
+                        "refusing to kill an unrelated process group.", pid, server_name)
+                    return
+            except (TypeError, ValueError):
+                pass  # junk fingerprints: best-effort, never break signalling
     if sys.platform.startswith("linux") and spawn_marker and (current_start is None or expected_start is None):
-        # The leader is gone. Its PGID might now belong to a different group,
-        # including one whose new leader has also exited. Verify each descendant
-        # and use its pidfd instead of killpg on the recyclable group number.
+        # A missing leader's PGID can be reused, even by a group whose leader
+        # has exited. Verify each descendant and signal its stable pidfd.
         if pgid is not None and pgid != my_pgid:
             _signal_marked_group(pgid, spawn_marker, sig)
         return
@@ -431,7 +441,7 @@ def _kill_orphaned_mcp_children(include_active: bool = False, server_name: Optio
             try:
                 if sys.platform.startswith("linux") and markers.get(pid):
                     group_alive = bool(_marked_group_pids(pgid, markers[pid]))
-                else:
+                elif not sys.platform.startswith("linux"):
                     os.killpg(pgid, 0)  # windows-footgun: ok — POSIX-only, guarded
                     group_alive = True
             except (ProcessLookupError, PermissionError, OSError):

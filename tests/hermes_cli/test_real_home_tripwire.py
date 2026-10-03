@@ -168,6 +168,21 @@ def test_path_metadata_exemption_tracks_path_changes(protected_home, monkeypatch
         guard.check(target, metadata=True)
 
 
+def test_path_entry_itself_is_lookup_metadata_not_state(protected_home, monkeypatch):
+    """Resolving the dir of a PATH hit (``isdir(dirname(which(...)))``) stats the PATH entry
+    itself: still command lookup. Reading its contents, or its parent, is not."""
+    from tests.home_io_guard import HomeIOGuard
+
+    entry = protected_home / "installs" / "venv" / "bin"
+    guard = HomeIOGuard(lambda: [protected_home])
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", str(entry)]))
+    guard.check(entry, metadata=True)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(entry)  # listdir/scandir/open are not metadata
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(entry.parent, metadata=True)
+
+
 def test_relative_path_metadata_exemption_tracks_working_directory(protected_home, tmp_path, monkeypatch):
     from tests.home_io_guard import HomeIOGuard
 

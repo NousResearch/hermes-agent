@@ -191,6 +191,14 @@ class TestShouldExclude:
         assert not _should_exclude(Path("scratch/node/index.js"))
         assert not _should_exclude(Path("profiles/clean/skills/x/models/a.txt"))
 
+    def test_excludes_generated_artifacts_inside_codebase_only(self):
+        from hermes_cli.backup import _should_exclude
+
+        for artifact in ("dist", "build", "release", "web_dist", "out", "target",
+                         ".hermes-runtime", "bin", ".worktrees", "package.egg-info"):
+            assert _should_exclude(Path("hermes-agent") / artifact / "generated.bin")
+        assert not _should_exclude(Path("skills/example/build/notes.md"))
+
     def test_excludes_desktop_emergency_state_db_baks(self):
         """The desktop updater's pre-flight drops timestamped
         state.db.pre-update-emergency-*.bak files at the HERMES_HOME root —
@@ -303,7 +311,7 @@ class TestIterBackupFiles:
         list(_iter_backup_files(root, tmp_path / "out.zip", skipped))
         assert "models" in skipped
         assert "hermes-agent" not in skipped
-        assert "hermes-agent/.git" in skipped
+        assert str(Path("hermes-agent") / ".git") in skipped
 
     @pytest.mark.platforms("linux")
     def test_skips_unix_sockets(self, tmp_path, monkeypatch):
@@ -870,6 +878,28 @@ class TestRoundTrip:
         assert not (dst_home / "plugins" / "__pycache__").exists()
         # PID files should NOT be present
         assert not (dst_home / "gateway.pid").exists()
+
+    def test_import_warns_before_overwriting_existing_codebase(self, tmp_path, monkeypatch, capsys):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        existing = hermes_home / "hermes-agent"
+        existing.mkdir()
+        (existing / "run_agent.py").write_text("local change\n")
+        zip_path = tmp_path / "codebase.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("config.yaml", "model: test\n")
+            zf.writestr("hermes-agent/run_agent.py", "backup source\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        from hermes_cli.backup import run_import
+
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        out = capsys.readouterr().out
+        assert "Target already contains a hermes-agent codebase" in out
+        assert "local changes may be lost" in out
+        assert (existing / "run_agent.py").read_text() == "backup source\n"
 
 
 # ---------------------------------------------------------------------------

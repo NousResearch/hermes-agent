@@ -84,6 +84,13 @@ _EXCLUDED_DIRS = {
     ".cache", ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 }
 
+# The installed codebase is useful source data, but its generated outputs are not portable and
+# can dominate an archive (desktop bundles alone can be hundreds of MB). Keep this scoped to the
+# root-level checkout so a user's similarly named project directories remain restorable.
+_EXCLUDED_CODEBASE_ARTIFACT_DIRS = frozenset({
+    "dist", "build", "release", "web_dist", "out", "target", ".hermes-runtime", "bin", ".worktrees",
+})
+
 # Hermes-managed runtime downloads are regenerable. Match only profile roots:
 # a deeper directory of the same name (such as a skill's models/) is user data.
 _EXCLUDED_ROOT_DIRS = LOCAL_RUNTIME_ROOT_DIRS | (PM_RUNTIME_ROOT_DIRS - {"cache"})
@@ -109,6 +116,16 @@ def _in_excluded_root_dir(rel_path: Path) -> bool:
     if len(parts) >= 3 and parts[0] == "profiles":
         parts = parts[2:]
     return len(parts) >= 2 and parts[0] == "cache" and parts[1] not in _KEPT_CACHE_SUBDIRS
+
+
+def _in_excluded_codebase_artifact(rel_path: Path) -> bool:
+    """True for generated artifacts inside the root-level hermes-agent checkout."""
+    parts = rel_path.parts
+    return bool(
+        parts and parts[0] == "hermes-agent"
+        and any(part in _EXCLUDED_CODEBASE_ARTIFACT_DIRS or part.endswith(".egg-info")
+                for part in parts[1:])
+    )
 
 
 # SQLite sidecars are excluded because ``*.db`` is snapshotted via ``sqlite3.backup()``:
@@ -309,6 +326,8 @@ def _should_exclude(rel_path: Path) -> bool:
     parts = rel_path.parts
     if _in_excluded_root_dir(rel_path):
         return True
+    if _in_excluded_codebase_artifact(rel_path):
+        return True
     if any(p in _EXCLUDED_DIRS for p in parts):
         return True
     name = rel_path.name
@@ -328,6 +347,7 @@ def _iter_backup_files(hermes_root: Path, out_path: Path, skipped_dirs: Optional
         kept = [
             d for d in dirnames
             if d not in _EXCLUDED_DIRS
+            and not _in_excluded_codebase_artifact(rel_dir / d)
             and not _in_excluded_root_dir(rel_dir / d)]
         if skipped_dirs is not None:
             skipped_dirs.update(str(rel_dir / d) for d in set(dirnames) - set(kept))
@@ -750,6 +770,10 @@ def run_import(args) -> Optional[int]:
         prefix = _detect_prefix(zf)
         members = [n for n in zf.namelist() if not n.endswith("/")]
         file_count = len(members)
+        archive_has_codebase = any(
+            _import_member_rel(member, prefix)[0].startswith("hermes-agent/")
+            for member in members
+        )
 
         print(f"Backup contains {file_count} files")
         print(f"Target: {display_hermes_home()}")
@@ -760,6 +784,11 @@ def run_import(args) -> Optional[int]:
         # Check for existing installation
         has_config = (hermes_root / "config.yaml").exists()
         has_env = (hermes_root / ".env").exists()
+
+        if archive_has_codebase and (hermes_root / "hermes-agent").is_dir():
+            print()
+            print("Warning: Target already contains a hermes-agent codebase.")
+            print("Importing will overwrite matching codebase files; local changes may be lost.")
 
         if (has_config or has_env) and not args.force:
             print()

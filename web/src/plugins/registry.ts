@@ -18,6 +18,7 @@ import React, {
   createContext,
 } from "react";
 import { api, fetchJSON, authedFetch, buildWsUrl, buildWsAuthParam } from "@/lib/api";
+import { handleImagePaste } from "@/lib/chatImagePaste";
 import { cn, timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -184,7 +185,7 @@ export function exposePluginSDK() {
     },
 
     // Utilities
-    utils: { cn, timeAgo, isoTimeAgo },
+    utils: { cn, timeAgo, isoTimeAgo, handleImagePaste },
 
     // Hooks
     useI18n,

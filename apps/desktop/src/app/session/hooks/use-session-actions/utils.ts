@@ -1254,8 +1254,49 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
       message => textWithoutReferenceLines(chatMessageText(message)) === textWithoutReferenceLines(text)
     )
 
+  // A steered turn persists its follow-up (correction) as a newer user row
+  // while the snapshot still carries the whole turn as inflight. The prompt
+  // that opened the turn then sits before the latest user run — behind the
+  // sealed pre-correction output — so the run-scoped check misses it and
+  // appends a duplicate prompt below the newer activity (#122724). When the
+  // first correction is already persisted, the turn opener is the nearest
+  // user row before it. Anchored on the NEWEST matching row: the same
+  // follow-up text may have been sent in an earlier turn, and matching that
+  // older row first walks back to the wrong opener. Scoped to that row (not
+  // any older identical prompt) so a newly accepted repeat keeps projecting
+  // while its own row is still in flight to the store — prompts persist
+  // before inference begins, so that window is a narrow race.
+  const turnOpenerBeforeCorrection =
+    inflightUser && inflightCorrections.length
+      ? (() => {
+          const newestCorrectionIndex = messages.findLastIndex(
+            message =>
+              message.role === 'user' &&
+              textWithoutReferenceLines(chatMessageText(message)) ===
+                textWithoutReferenceLines(inflightCorrections[0])
+          )
+
+          if (newestCorrectionIndex < 0) {
+            return undefined
+          }
+
+          for (let index = newestCorrectionIndex - 1; index >= 0; index -= 1) {
+            if (messages[index].role === 'user') {
+              return messages[index]
+            }
+          }
+
+          return undefined
+        })()
+      : undefined
+
   const inflightUserAlreadyPersisted =
-    projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
+    projection[safelyPersistedInflightUser] === true ||
+    (Boolean(inflightUser) && persistedInLatestRun(inflightUser)) ||
+    (Boolean(inflightUser) &&
+      turnOpenerBeforeCorrection !== undefined &&
+      textWithoutReferenceLines(chatMessageText(turnOpenerBeforeCorrection)) ===
+        textWithoutReferenceLines(inflightUser))
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
     // Project the prompt through the same conversion history uses, so the live

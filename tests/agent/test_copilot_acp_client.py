@@ -588,3 +588,70 @@ def test_cli_death_is_reported_as_a_crash_not_a_timeout(tmp_path):
         assert "exited early: fatal: agent segfaulted" in str(exc)
     else:
         raise AssertionError("session on a dead CLI must raise")
+
+
+# --- exit is observed before the final output is consumed ------------------
+#
+# poll() can report the CLI's exit while its last updates and the prompt
+# response still sit in the stdout pipe / inbox. Ending the read loop on the
+# exit alone turns a complete, successful answer into "exited early", which
+# the agent loop then retries on a different budget.
+
+
+_ANSWER_THEN_EXIT_ACP_CLI = """import json, os, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    if method == "initialize":
+        result = {"protocolVersion": 1}
+    elif method == "session/new":
+        result = {"sessionId": "s1"}
+    elif method == "session/prompt":
+        # A burst the client cannot consume before the process is gone.
+        for word in ["final"] + [" "] * 400 + ["answer"]:
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "method": "session/update", "params": {
+                "update": {"sessionUpdate": "agent_message_chunk", "content": {"text": word}}}}) + "\\n")
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": {"stopReason": "end_turn"}}) + "\\n")
+        sys.stdout.flush()
+        os._exit(0)
+    else:
+        result = {}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}) + "\\n")
+    sys.stdout.flush()
+"""
+
+
+def test_answer_that_arrives_with_the_exit_is_not_a_crash(tmp_path):
+    server = tmp_path / "answer_then_exit_acp.py"
+    server.write_text(_ANSWER_THEN_EXIT_ACP_CLI, encoding="utf-8")
+    client = CopilotACPClient(command=sys.executable, args=[str(server)], acp_cwd=str(tmp_path))
+
+    text, _reasoning = client._run_prompt("hi", timeout_seconds=30)
+
+    assert text == "final" + " " * 400 + "answer"
+
+
+_EXIT_WITH_HELD_STDOUT_ACP_CLI = """import subprocess, sys
+# A descendant inherits stdout and keeps it open long after this process has exited, so the
+# client never sees EOF on the pipe.
+subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)"])
+sys.exit(2)
+"""
+
+
+def test_exit_drain_is_bounded_when_a_descendant_holds_stdout(tmp_path):
+    import time
+
+    server = tmp_path / "exit_with_held_stdout_acp.py"
+    server.write_text(_EXIT_WITH_HELD_STDOUT_ACP_CLI, encoding="utf-8")
+    client = CopilotACPClient(command=sys.executable, args=[str(server)], acp_cwd=str(tmp_path))
+
+    started = time.monotonic()
+    try:
+        with client._session(30):
+            pass
+    except RuntimeError as exc:
+        assert "exited early" in str(exc)
+    else:
+        raise AssertionError("a CLI that exits without answering must raise")
+    assert time.monotonic() - started < 3, "a held-open pipe must not stall exit reporting until the session deadline"

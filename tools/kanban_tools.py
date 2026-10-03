@@ -20,11 +20,15 @@ from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
 from tools.kanban_tools_schemas import (
+    KANBAN_ARCHIVE_SCHEMA,
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
-    KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
-    KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_DECOMPOSE_SCHEMA, KANBAN_DISCOVER_SCHEMA,
+    KANBAN_GRAPH_SCHEMA,
+    KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
+    KANBAN_LIST_SCHEMA, KANBAN_PROMOTE_SCHEMA, KANBAN_REASSIGN_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA,
+    KANBAN_REQUEST_REVIEW_SCHEMA,
+    KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA, KANBAN_UNLINK_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +98,30 @@ def _visible(*, to_env_worker: bool) -> bool:
 def _check_kanban_mode() -> bool:
     """Lifecycle tools: dispatcher workers + profiles with the ``kanban`` toolset."""
     return _visible(to_env_worker=True)
+
+
+@no_cache_check_fn
+def _check_kanban_complete_mode() -> bool:
+    """``kanban_complete`` everywhere EXCEPT an implementation run on a
+    review-gated card.
+
+    The dispatcher stamps ``HERMES_KANBAN_REQUIRED_REVIEWER`` and
+    ``HERMES_KANBAN_RUN_PHASE`` into the worker's startup context; only a
+    review-lane claim earns ``review``, so a same-profile implementer never
+    sees the tool either. Hiding is a usability control — the backend
+    re-derives the same verdict from lifecycle/run state in
+    ``kb.complete_task``, so a stale or absent env var cannot widen what is
+    accepted. Ungated cards keep the tool exactly as before.
+    """
+    if not _check_kanban_mode():
+        return False
+    if (
+        os.environ.get("HERMES_KANBAN_TASK")
+        and os.environ.get("HERMES_KANBAN_REQUIRED_REVIEWER")
+        and os.environ.get("HERMES_KANBAN_RUN_PHASE", "implementation") != "review"
+    ):
+        return False
+    return True
 
 
 @no_cache_check_fn
@@ -361,6 +389,64 @@ def _redact_metadata(metadata: dict) -> Optional[dict]:
         return None
 
 
+# --- Canonical profile validation / enumeration -------------------------------
+#
+# One kernel for every caller-supplied profile name on this surface
+# (``kanban_create`` assignee/reviewer, ``kanban_reassign`` destination,
+# ``kanban_request_review`` reviewer) plus the ``kanban_discover`` roster.
+# The kernel itself lives in ``hermes_cli.kanban_validation`` so the DB layer
+# (create/reassign/request_review) and these handlers can never drift: it
+# resolves through ``hermes_cli.profiles``, which is what the CLI and the
+# dispatcher's spawn gate already use — ``default`` resolves through the
+# profile root (HERMES_HOME / env aware, never the current home), and a
+# directory that is tombstoned, marker-less or not a valid profile id never
+# passes.
+
+def _require_installed_profile(what: str, value: Any, *, hint: str = "") -> str:
+    """Reject ``value`` unless it names a profile this home can actually spawn.
+
+    Returns the stripped name. Validated BEFORE the board is opened, so a
+    typo'd assignee can never leave a task row, a dependency edge, an event
+    or a workspace behind — the dispatcher would otherwise bucket it as
+    ``skipped_nonspawnable`` forever.
+
+    The wording is the shared kernel's (``hermes_cli.kanban_validation``): a
+    profile is "not found", never "not installed", and the refusal always
+    carries the roster, ``kanban_discover`` guidance and ``Nothing changed``.
+    """
+    from hermes_cli.kanban_validation import require_profile
+
+    try:
+        return require_profile(what, value, hint=hint)
+    except ValueError as exc:
+        raise _Reject(str(exc)) from None
+
+
+def _require_reviewer_capability(profile: str) -> None:
+    """A reviewer must already carry the skill the dispatcher force-loads for a
+    review-lane worker; reject before the board is opened."""
+    from hermes_cli.kanban_validation import REVIEW_SKILLS, require_skills
+
+    try:
+        require_skills(profile, REVIEW_SKILLS)
+    except ValueError as exc:
+        raise _Reject(str(exc)) from None
+
+
+def _require_assignee_skills(profile: Optional[str], skills: Optional[list]) -> None:
+    """Every explicitly forced skill must resolve in the assignee's effective
+    skill library — checked before the board is opened so a mixed
+    valid/missing list is rejected atomically with zero writes."""
+    if not skills or not profile:
+        return
+    from hermes_cli.kanban_validation import require_skills
+
+    try:
+        require_skills(profile, skills)
+    except ValueError as exc:
+        raise _Reject(str(exc)) from None
+
+
 def _coerce_str_list(value: Any, name: str, what: str, *, strip: bool = False):
     """Accept a single string (convenience) or a list/tuple; with ``strip`` the
     items are stringified, stripped, and empties dropped."""
@@ -421,10 +507,11 @@ def _opt_int(value: Any, default: Optional[int] = None) -> Optional[int]:
 _TASK_FIELDS = tuple(
     "id title body assignee status tenant priority workspace_kind workspace_path created_by "
     "created_at started_at completed_at result current_run_id model_override "
-    "provider_override completion_contract last_failure_error".split())
+    "provider_override completion_contract last_failure_error required_reviewer".split())
 _TASK_SUMMARY_FIELDS = tuple(
     "id title assignee status priority tenant workspace_kind workspace_path project_id created_by "
-    "created_at started_at completed_at current_run_id model_override provider_override".split())
+    "created_at started_at completed_at current_run_id model_override provider_override "
+    "required_reviewer".split())
 _RUN_FIELDS = tuple("id profile status outcome summary error metadata started_at ended_at".split())
 _COMMENT_FIELDS = ("author", "body", "created_at")
 _EVENT_FIELDS = ("kind", "payload", "created_at", "run_id")
@@ -767,6 +854,10 @@ def _handle_complete(args: dict, **kw) -> str:
             return tool_error(
                 f"kanban_complete refused: {claim_err}. Nothing changed. Wait for the worker "
                 f"to finish, or an operator can run `hermes kanban complete --force {tid}`.")
+        except kb.ReviewerGateError as gate_err:
+            # Backend enforcement of the review gate (the tool is hidden from an
+            # implementation run anyway — this is the alternate-route defence).
+            return tool_error(f"kanban_complete refused: {gate_err}")
         except kb.HallucinatedCardsError as hall_err:
             # The gate runs before the write txn, so the task was NOT mutated;
             # say so explicitly or the model treats the error as terminal and
@@ -834,10 +925,19 @@ def _handle_block(args: dict, **kw) -> str:
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
-        ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))
-        _check(ok, f"could not block {tid} (unknown id or not in running/ready)")
+        review_before = kb.review_association(conn, tid)
+        ok, why = kb.block_task(
+            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid),
+            with_reason=True,
+        )
+        _check(ok, why or f"could not block {tid} (unknown id or not in running/ready/review)")
         landed_kind = kb.get_task(conn, tid).block_kind
         extra: dict = {"block_kind": landed_kind}
+        if why:
+            # The card IS blocked, but its worker could not be proven stopped —
+            # or a spawn for it is still in flight and unpublished. Quote the
+            # exact blocker so the later archive refusal is never a surprise.
+            extra["stop_blocker"] = why
         if kind == "dependency" and landed_kind != kind:
             # block_task re-kinds a dependency wait that no open parent can satisfy.
             extra["requested_kind"] = kind
@@ -846,6 +946,7 @@ def _handle_block(args: dict, **kw) -> str:
                 "so this was recorded as needs_input (sticky until a human unblocks) "
                 "instead of parking in todo where the dispatcher would respawn it."
             )
+        extra["review"] = _review_receipt(review_before, kb.review_association(conn, tid))
         return _ok_landed(kb, conn, tid, "blocked", **extra)
 
 
@@ -889,13 +990,15 @@ def _handle_request_review(args: dict, **kw) -> str:
     # Reviewer is model-supplied free text stored durably on the event payload.
     reviewer = _redact_opt(args.get("reviewer") or None)
     if reviewer:
-        from hermes_cli.profiles import list_profile_names, profile_exists
-
         # A non-profile reviewer would park the card in `review` on an assignee
-        # the dispatcher can never spawn (#106163).
-        _check(profile_exists(reviewer),
-               f"reviewer profile {reviewer!r} is not installed. "
-               f"Installed profiles: {', '.join(list_profile_names())}")
+        # the dispatcher can never spawn (#106163). Same kernel as the
+        # kanban_create / kanban_reassign assignee guards.
+        reviewer = _require_installed_profile("reviewer", reviewer)
+        # ...and it must carry the review-phase skill the dispatcher injects:
+        # routing review to a profile without it spawns a reviewer that cannot
+        # do the phase. (A card with a saved reviewer refuses any other name
+        # inside kb.request_review, so the gate cannot be re-pointed here.)
+        _require_reviewer_capability(reviewer)
     with _board(args.get("board")) as (kb, conn):
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         try:
@@ -1099,6 +1202,16 @@ def _handle_create(args: dict, **kw) -> str:
     assignee = args.get("assignee")
     _check(assignee, "assignee is required — name the profile that should execute this "
                      "task (the dispatcher will only spawn tasks with an assignee)")
+    # Validated before `_board` is even opened: a profile that does not exist
+    # must not leave a task row, a dependency edge, an event or a workspace
+    # behind — the dispatcher would only ever bucket it as skipped_nonspawnable.
+    assignee = _require_installed_profile("assignee", assignee)
+    # Review gate, same zero-side-effect contract: the reviewer must exist AND
+    # already carry the skill the dispatcher injects for review-phase startup.
+    reviewer = args.get("reviewer") or None
+    if reviewer is not None:
+        reviewer = _require_installed_profile("reviewer", reviewer)
+        _require_reviewer_capability(reviewer)
     # Workspace sharing is always explicit: omitted fields mean a fresh scratch workspace
     # even for a dispatcher-spawned creator (reusing the parent's path would let a child
     # mutate review evidence or race its checkout). Project identity is the one safe thing
@@ -1110,6 +1223,10 @@ def _handle_create(args: dict, **kw) -> str:
     triage, skills, goal_mode = (
         _parse_bool_arg(args, "triage"), _coerce_str_list(args.get("skills"), "skills", "skill names"),
         _parse_bool_arg(args, "goal_mode"))
+    # Forced skills are validated against the ASSIGNEE's effective library here,
+    # before the board is opened; kb.create_task re-checks so the backend/CLI/API
+    # paths carry the same rule.
+    _require_assignee_skills(assignee, skills)
     model_override, provider_override = args.get("model"), args.get("provider")
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
@@ -1146,6 +1263,7 @@ def _handle_create(args: dict, **kw) -> str:
             goal_mode=goal_mode, goal_max_turns=_opt_int(args.get("goal_max_turns")),
             completion_contract=args.get("completion_contract"),
             initial_status=str(args.get("initial_status") or "running"),
+            reviewer=reviewer,
             created_by=_persisted_identity(), session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
         wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
@@ -1275,26 +1393,546 @@ def _handle_unblock(args: dict, **kw) -> str:
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact (cycles/self-links/running
     children → ValueError). A worker linking its OWN running card proves ownership
-    with its run id so the dependency-block handoff still works."""
+    with its run id so the dependency-block handoff still works.
+
+    The receipt reports what ACTUALLY happened: ``gated`` is True only when this
+    link really demoted a ``ready`` child back to ``todo``, and the child's
+    resulting status plus any parents still gating it are read back from the
+    board rather than assumed.
+
+    A link mutates the CHILD (edge row + possible demotion + event), so a
+    task-scoped worker may only link edges whose child is its own card —
+    exactly like ``kanban_unlink``. Orchestrators (no ``HERMES_KANBAN_TASK``)
+    route any edge, and the run-id handoff below still proves ownership of a
+    RUNNING own card.
+    """
     _reject_delegated_child_mutation("kanban_link")
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
     _check(parent_id and child_id, "both parent_id and child_id are required")
+    parent_id, child_id = str(parent_id), str(child_id)
+    # Prompt-injected foreign ids must not let a worker gate (or demote, or
+    # append events to) a sibling's card — _reject_delegated_child_mutation
+    # only covers delegate children, and _worker_run_id(foreign_child) is None
+    # for a non-running foreign task, so the CAS below is NOT the guard.
+    _enforce_worker_task_ownership(child_id)
     with _board(args.get("board")) as (kb, conn):
+        _existing_task(kb, conn, parent_id)
+        previous_status = _existing_task(kb, conn, child_id).status
         gated = kb.link_tasks(
             conn, parent_id=parent_id, child_id=child_id,
-            expected_child_run_id=_worker_run_id(str(child_id)))
-        return _ok(parent_id=parent_id, child_id=child_id, gated=gated,
-                   **({"gated_by": parent_id} if gated else {}))
+            expected_child_run_id=_worker_run_id(child_id))
+        child = kb.get_task(conn, child_id)
+        unsatisfied = _dependency_gates(kb, conn, child_id)
+        return _ok(
+            parent_id=parent_id, child_id=child_id,
+            # True only when a demotion genuinely occurred, never as a claim.
+            gated=gated,
+            gated_by=parent_id if gated else None,
+            previous_status=previous_status,
+            status=child.status if child else previous_status,
+            unsatisfied_parents=unsatisfied,
+            remaining_gates=bool(unsatisfied),
+        )
+
+
+# --- Controlled planning / lifecycle tools ---------------------------------
+
+def _dependency_gates(kb, conn, task_id: str) -> list[dict]:
+    """``[{id, status}]`` for every direct parent still gating ``task_id``."""
+    return [{"id": pid, "status": status} for pid, status in kb.unsatisfied_parents(conn, task_id)]
+
+
+@_kanban_handler("kanban_graph")
+def _handle_graph(args: dict, **kw) -> str:
+    """Read-only direct parent/child graph for one task.
+
+    Deliberately SELECT-only: no ``recompute_ready``, no readiness promotion and
+    no event append ever runs here, so inspecting a graph cannot move a card.
+    """
+    tid = _require_task_id(args)
+    with _board(args.get("board")) as (kb, conn):
+        task = _existing_task(kb, conn, tid)
+        graph = kb.task_graph_context(conn, tid)
+        return _ok(
+            task_id=tid,
+            task={"id": task.id, "title": task.title, "status": task.status},
+            parents=graph["parents"],
+            children=graph["children"],
+            read_only=True,
+        )
+
+
+@_kanban_handler("kanban_unlink")
+def _handle_unlink(args: dict, **kw) -> str:
+    """Drop a parent→child edge, mirroring ``kanban_link``'s validation.
+
+    Unlinking can promote the child (releasing its last open parent), which is a
+    lifecycle mutation of that card — so a task-scoped worker may only do it to
+    its own card, never to a sibling's.
+    """
+    _reject_delegated_child_mutation("kanban_unlink")
+    parent_id = args.get("parent_id")
+    child_id = args.get("child_id")
+    _check(parent_id and child_id, "both parent_id and child_id are required")
+    parent_id, child_id = str(parent_id), str(child_id)
+    _check(parent_id != child_id, "a task cannot depend on itself")
+    _enforce_worker_task_ownership(child_id)
+    with _board(args.get("board")) as (kb, conn):
+        _existing_task(kb, conn, parent_id)
+        previous_status = _existing_task(kb, conn, child_id).status
+        # A task-scoped worker may only move its OWN card. unlink_tasks'
+        # board-wide recompute_ready would promote an unrelated
+        # stale-but-eligible sibling (and append its `promoted` event) as a
+        # side effect of this worker's unlink, so scope it to the affected
+        # child. Orchestrators / CLI / dashboard (no HERMES_KANBAN_TASK) keep
+        # the historical board-wide behaviour.
+        removed = kb.unlink_tasks(
+            conn, parent_id, child_id,
+            board_wide_recompute=not _own_task_env(child_id, "HERMES_KANBAN_TASK"))
+        child = kb.get_task(conn, child_id)
+        status = child.status if child else previous_status
+        unsatisfied = _dependency_gates(kb, conn, child_id)
+        return _ok(
+            parent_id=parent_id, child_id=child_id,
+            removed=removed,
+            previous_status=previous_status,
+            status=status,
+            # True only if the removal actually landed the child on 'ready'.
+            promoted=bool(removed and status == "ready" and previous_status != "ready"),
+            gated=bool(unsatisfied),
+            unsatisfied_parents=unsatisfied,
+        )
+
+
+@_kanban_handler("kanban_promote")
+def _handle_promote(args: dict, **kw) -> str:
+    """Promote a triage task into the normal flow, reporting where it landed."""
+    _reject_delegated_child_mutation("kanban_promote")
+    _require_orchestrator_tool("kanban_promote")
+    tid = args.get("task_id")
+    _check(tid, "task_id is required")
+    tid = str(tid)
+    _enforce_worker_task_ownership(tid)
+    reason = _redact_opt(args.get("reason") or None)
+    with _board(args.get("board")) as (kb, conn):
+        _existing_task(kb, conn, tid)
+        ok, err, _landed = kb.promote_triage_task(
+            conn, tid, actor=_persisted_identity(), reason=reason)
+        _check(ok, err)
+        task = kb.get_task(conn, tid)
+        unmet = _dependency_gates(kb, conn, tid)
+        out: dict = {
+            "task_id": tid,
+            "status": task.status if task else None,
+            "ready": bool(task and task.status == "ready"),
+            "unmet_parents": unmet,
+        }
+        if unmet:
+            out["gate_reason"] = "unmet parent gate(s): " + ", ".join(
+                f"{m['id']} ({m['status']})" for m in unmet)
+        return _ok(**out)
+
+
+def _archive_impact_receipt(kb, conn, dependents: list[str], before: dict) -> dict:
+    """Classify each dependent AFTER the archive + readiness recompute.
+
+    Three disjoint questions, answered from the board rather than assumed:
+    ``changed`` — status actually moved (with before/after), ``waiting`` — still
+    held back and why (remaining parent gates, a block hold, or BOTH at once —
+    a blocked dependent is never reduced to one cause), ``ready_followup``
+    — now runnable and needing assignment or dispatch.
+    """
+    changed, waiting, ready_followup = [], [], []
+    for dep_id in dependents:
+        task = kb.get_task(conn, dep_id)
+        if task is None:
+            continue
+        prev = before.get(dep_id)
+        prev_status = prev.status if prev else None
+        if prev_status != task.status:
+            changed.append({
+                "id": task.id, "title": task.title,
+                "before": prev_status, "after": task.status,
+            })
+        gates = _dependency_gates(kb, conn, dep_id)
+        held = task.status == "blocked"
+        if gates or held:
+            # A blocked dependent can be GATED and HELD at the same time (its
+            # block hold plus another parent still open). Expose both causes:
+            # `hold` is reported whenever the card is blocked, and `reason`
+            # names every remaining cause instead of picking the first one.
+            hold_kind = getattr(task, "block_kind", None)
+            causes: list[str] = []
+            if gates:
+                causes.append("waiting on unsatisfied parent dependencies")
+            if held:
+                causes.append(f"held in blocked ({hold_kind or 'unclassified'})")
+            entry = {
+                "id": task.id, "title": task.title, "status": task.status,
+                "unsatisfied_parents": gates,
+                "reason": "; ".join(causes),
+            }
+            if held:
+                entry["hold"] = {"kind": hold_kind}
+            waiting.append(entry)
+        if task.status == "ready":
+            ready_followup.append({
+                "id": task.id, "title": task.title, "assignee": task.assignee,
+                "needs_assignment": not task.assignee,
+                "changed": prev_status != "ready",
+            })
+    return {"changed": changed, "waiting": waiting, "ready_followup": ready_followup}
+
+
+def _review_receipt(before: dict, after: dict) -> dict:
+    """Same-card review evidence for an archive/block receipt.
+
+    The review flow is same-card (``request_review`` + ``claim_review_task``
+    claim THIS card into a reviewer run), so the receipt names the review run
+    the move closed or preserved — nothing is inferred into a second card, and
+    nothing outside this card is stopped on its behalf. What the move affects
+    elsewhere is carried by the ordinary dependency graph
+    (``linked_before``/``linked_after``) plus the archive impact receipt, which
+    report dependents without mutating them.
+    """
+    run = after.get("active_review_run") or before.get("active_review_run")
+    if run:
+        was = ("active before this move and closed by it"
+               if before.get("active_review_run") and not after.get("active_review_run")
+               else "active")
+        note = (f"same-card review run {run['id']} (profile {run['profile']}, "
+                f"outcome {run['outcome']}) identified from its claimed event "
+                f"source_status=review — {was}")
+    elif after.get("review_runs"):
+        ids = ", ".join(str(r["id"]) for r in after["review_runs"])
+        note = f"no active review run; same-card review run(s) {ids} preserved in history"
+    else:
+        note = "no same-card review run"
+    return {
+        "lane": after.get("lane"), "note": note,
+        "reviewer": after.get("reviewer"), "active_review_run": run,
+        "review_runs": after.get("review_runs"),
+        "linked_before": before.get("linked"), "linked_after": after.get("linked"),
+    }
+
+
+def _archive_reason(args: dict) -> str:
+    """Required archive rationale, checked BEFORE the board is opened.
+
+    Missing, non-string, empty and whitespace-only input is rejected here, ahead
+    of ``_board``/``_existing_task``/``archive_task``, so a bad reason can never
+    leave a status flip, an event or a run behind.
+
+    The wording is the agent's own (no normalization, no generic stand-in), but
+    it crosses the SAME ``_redact`` boundary every other agent-authored free-text
+    field on this board crosses before it is stored — ``kanban_block`` reason,
+    ``kanban_complete`` summary/result, ``kanban_comment`` body, and this PR's
+    own ``kanban_promote`` reason. The reason is durable (``task_events.payload``)
+    and is echoed back by ``kanban_show``, so an unredacted secret here would be
+    both stored and re-served to the model. Plain prose passes through verbatim;
+    only credential-shaped text is masked.
+    """
+    reason = args.get("reason")
+    if reason is None:
+        raise _Reject(
+            "reason is required — say why this task is being archived; it is "
+            "recorded on the archive event. Nothing changed.")
+    if not isinstance(reason, str):
+        raise _Reject(
+            f"reason must be a string, got {type(reason).__name__}. Nothing changed.")
+    if not reason.strip():
+        raise _Reject(
+            "reason must not be empty or whitespace-only — say why this task is "
+            "being archived. Nothing changed.")
+    return _redact(reason)
+
+
+# The agent-facing archive runs the ONE shared archive policy (see
+# ``hermes_cli.kanban_db.ARCHIVE_PROTECTED_STATUSES``): ``ready``/``running``/
+# ``review`` are refused with a block/stop-first instruction, everything else —
+# every other valid status AND legacy raw statuses such as ``completed`` —
+# archives directly, and ``archived`` is the already-archived no-op. This tool
+# NEVER blocks a task on the caller's behalf, so a refusal never parks a card.
+# It is also the ONLY surface that supplies a ``reason``, so it is the only one
+# whose ``archived`` event carries a payload.
+@_kanban_handler("kanban_archive")
+def _handle_archive(args: dict, **kw) -> str:
+    """Archive a task under the shared policy, with an impact + review receipt."""
+    _reject_delegated_child_mutation("kanban_archive")
+    _require_orchestrator_tool("kanban_archive")
+    tid = args.get("task_id")
+    _check(tid, "task_id is required")
+    tid = str(tid)
+    # Validated first: an invalid reason must fail with no status/event/run
+    # side effects, so nothing below it may have run yet.
+    reason = _archive_reason(args)
+    _enforce_worker_task_ownership(tid)
+    with _board(args.get("board")) as (kb, conn):
+        task = _existing_task(kb, conn, tid)
+        before_status = task.status
+        if before_status == "archived":
+            raise _Reject(f"{tid} is already archived; nothing changed")
+        # Review association and dependents are snapshotted BEFORE the move so
+        # the receipt reports real before/after instead of assuming it.
+        review_before = kb.review_association(conn, tid)
+        dependents = kb.child_ids(conn, tid)
+        before = {d: kb.get_task(conn, d) for d in dependents}
+        # One shared policy with the CLI/dashboard/DB lifecycle: the refusal
+        # copy (block/stop first, live worker, in-flight spawn) comes from the
+        # same writer that enforces it, and nothing is archived on refusal.
+        # Only this tool hands the writer a payload, so only agent archives
+        # carry provenance; refusals and the already-archived no-op above write
+        # no event at all. ``actor`` is the persisted runtime identity, never a
+        # caller argument (board records feed future workers' prompts).
+        ok, why = kb.archive_task(
+            conn, tid, with_reason=True,
+            event_payload={
+                "source": "kanban_archive",
+                "actor": _persisted_identity(),
+                "reason": reason,
+            },
+        )
+        if not ok:
+            raise _Reject(why or f"kanban_archive refused: {tid} was not archived")
+        receipt = _archive_impact_receipt(kb, conn, dependents, before)
+        return _ok(
+            task_id=tid, status="archived", previous_status=before_status,
+            reason=reason,
+            dependents=receipt,
+            review=_review_receipt(review_before, kb.review_association(conn, tid)),
+        )
+
+
+@_kanban_handler("kanban_decompose")
+def _handle_decompose(args: dict, **kw) -> str:
+    """Apply an agent-authored child graph with no auxiliary/LLM call."""
+    _reject_delegated_child_mutation("kanban_decompose")
+    _require_orchestrator_tool("kanban_decompose")
+    tid = args.get("task_id")
+    _check(tid, "task_id is required")
+    tid = str(tid)
+    _enforce_worker_task_ownership(tid)
+    children = args.get("children")
+    if not isinstance(children, list) or not children:
+        return tool_error("kanban_decompose: children must be a non-empty array of child specs")
+    with _board(args.get("board")) as (kb, conn):
+        _existing_task(kb, conn, tid)
+        from hermes_cli.kanban_decompose import apply_explicit_decomposition
+        # Validation happens before any write and the fan-out is one atomic
+        # transaction, so a bad graph leaves the board byte-for-byte unchanged.
+        child_ids = apply_explicit_decomposition(
+            conn, tid, children=list(children), author=_persisted_identity())
+        root = kb.get_task(conn, tid)
+        kids = [kb.get_task(conn, cid) for cid in child_ids]
+        return _ok(
+            task_id=tid,
+            child_ids=child_ids,
+            status=root.status if root else None,
+            root=_fields(root, ("id", "status", "assignee")) | {
+                # The root waits on every child; these are its parent edges.
+                "parents": kb.parent_ids(conn, tid),
+            },
+            children=[
+                {
+                    "id": k.id, "title": k.title, "status": k.status,
+                    "assignee": k.assignee, "parents": kb.parent_ids(conn, k.id),
+                }
+                for k in kids if k is not None
+            ],
+        )
+
+
+# --- Profile routing: reassign + discovery ------------------------------------
+
+# ``profile.yaml`` is the ONLY file discovery reads: it is deliberately tiny
+# metadata ABOUT the profile (see hermes_cli/profiles.py), never config.yaml,
+# .env, auth.json, SOUL.md or any prompt/skill content. The roster consumers
+# (the decomposer prompt, ``hermes profile list``) are bounded, so the strings
+# handed to a model here are bounded too — the describer's own contract caps a
+# description at 280 characters.
+_DESCRIPTOR_DESCRIPTION_MAX = 400
+_DESCRIPTOR_DISPLAY_NAME_MAX = 64  # the writer refuses anything longer
+
+
+def _bounded_text(value: Any, limit: int) -> str:
+    """Single-line, stripped, hard-capped. Never raises."""
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _profile_descriptor(profile_dir) -> dict:
+    """``profile.yaml`` status + the fields the roster contract exposes.
+
+    Status is explicit rather than implied: ``missing`` (no descriptor — a
+    perfectly normal profile), ``unreadable`` (present but the filesystem said
+    no), ``invalid`` (present but not a safely-parsed mapping, or a mapping
+    whose values the canonical loader refuses to normalise), ``ok``. A
+    malformed descriptor must be *reported*, never silently downgraded to
+    "absent" and never raised: one broken profile must not take discovery (or
+    ``hermes profile list``) down with it. Parsing goes through the safe loader
+    only, and only the exception class name is surfaced — a YAML scanner error
+    is allowed to quote the document it choked on.
+    """
+    path = profile_dir / "profile.yaml"
+    try:
+        path.stat()
+    except FileNotFoundError:
+        return {"status": "missing"}
+    except OSError:
+        # Present for ``stat`` purposes but not readable — reported, never raised.
+        return {"status": "unreadable"}
+    if not path.is_file():
+        # e.g. a directory named profile.yaml: it exists and is not a descriptor.
+        return {"status": "invalid", "detail": "not-a-file"}
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        return {"status": "invalid", "detail": "not-utf8"}
+    except OSError:
+        return {"status": "unreadable"}
+    try:
+        import hermes_yaml as yaml
+
+        data = yaml.safe_load(raw)
+    except Exception as exc:  # noqa: BLE001 - every parser failure is "invalid"
+        return {"status": "invalid", "detail": type(exc).__name__}
+    if not isinstance(data, dict):
+        return {"status": "invalid", "detail": "not-a-mapping"}
+
+    # Canonical loader for the OK path: the same normalisation
+    # ``list_profiles()`` / the decomposer roster / ``hermes profile list`` use.
+    from hermes_cli.profiles import read_profile_meta
+
+    try:
+        meta = read_profile_meta(profile_dir)
+    except Exception as exc:  # noqa: BLE001 - a malformed descriptor must not abort the roster
+        # The loader documents itself as never raising, but a syntactically
+        # valid mapping can still carry a value it cannot normalise — a list
+        # where ``role`` must be a scalar raises inside its ``PROFILE_ROLES``
+        # membership test. That is a malformed descriptor, so it is reported as
+        # ``invalid`` with the exception class only: the message may quote the
+        # document it failed on, and one broken profile must not take
+        # discovery down with it.
+        return {"status": "invalid", "detail": type(exc).__name__}
+    # Descriptor text is an operator-authored free-text field heading straight
+    # to a model, so it crosses the same ``_redact`` boundary as every other
+    # agent-visible free text here. (Nothing is written back — this is only the
+    # view discovery returns.)
+    return {
+        "status": "ok",
+        "description": _bounded_text(_redact(meta.get("description") or ""),
+                                     _DESCRIPTOR_DESCRIPTION_MAX),
+        "display_name": _bounded_text(_redact(meta.get("display_name") or ""),
+                                      _DESCRIPTOR_DISPLAY_NAME_MAX),
+        "role": meta.get("role"),
+    }
+
+
+@_kanban_handler("kanban_discover")
+def _handle_discover(args: dict, **kw) -> str:
+    """Read-only roster of every profile this home can spawn work to.
+
+    Home-scoped, not board-scoped: no board is opened (opening one can
+    initialize the database, which would be a write), no file is written and
+    no describer is run. The enumeration is ``hermes_cli.profiles``' own, so
+    the roster and the ``kanban_create`` / ``kanban_reassign`` guards can
+    never disagree about what a valid assignee is.
+    """
+    from hermes_cli import profiles as profiles_mod
+
+    names = profiles_mod.list_profile_names()
+    entries = [
+        {
+            "name": name,
+            "is_default": name == "default",
+            "descriptor": _profile_descriptor(profiles_mod.get_profile_dir(name)),
+        }
+        for name in names
+    ]
+    return _ok(count=len(entries), profiles=entries)
+
+
+@_kanban_handler("kanban_reassign")
+def _handle_reassign(args: dict, **kw) -> str:
+    """Hand a card to another profile through the CLI's own assign kernel.
+
+    Deliberately not a second implementation: ``kanban_db.reassign_task`` /
+    ``assign_task`` are what ``hermes kanban reassign`` runs, including its
+    active-worker guard (a card with a live claim is refused inside the write
+    transaction, before any UPDATE) and its ``assigned`` audit event. The
+    destination profile is validated before the board is opened, so a typo
+    changes nothing.
+    """
+    _reject_delegated_child_mutation("kanban_reassign")
+    _require_orchestrator_tool("kanban_reassign")
+    tid = args.get("task_id")
+    _check(tid, "task_id is required")
+    tid = str(tid)
+    assignee = args.get("assignee")
+    _check(assignee and str(assignee).strip(),
+           "assignee is required — name the destination profile. Nothing changed.")
+    assignee = _require_installed_profile("assignee", assignee)
+    _enforce_worker_task_ownership(tid)
+    reclaim = _parse_bool_arg(args, "reclaim")
+    reason = _redact_opt(args.get("reason") or None)
+    with _board(args.get("board")) as (kb, conn):
+        task = _existing_task(kb, conn, tid)
+        before = _fields(task, ("id", "status", "assignee"))
+        events_before = len(kb.list_events(conn, tid))
+        # Shared machinery: reclaim (optional) + assign, same guards as the CLI.
+        ok = kb.reassign_task(conn, tid, assignee, reclaim_first=reclaim, reason=reason)
+        if not ok:
+            landed = kb.get_task(conn, tid)
+            _check(landed is not None, f"task {tid} not found — nothing changed")
+            _check(False,
+                   f"cannot reassign {tid}: it is still running under a live claim "
+                   f"(status {landed.status}). Set reclaim=true to release the claim "
+                   f"first — the CLI equivalent is "
+                   f"`hermes kanban reassign {tid} {assignee} --reclaim`. Nothing changed.")
+        landed = _existing_task(kb, conn, tid)
+        events = kb.list_events(conn, tid)
+        audit = events[-1] if len(events) > events_before else None
+        _check(audit is not None and audit.kind == "assigned",
+               f"reassigned {tid} but could not read back its audit event")
+        return _ok(
+            task_id=tid,
+            status=landed.status,
+            assignee=landed.assignee,
+            previous_assignee=before["assignee"],
+            claim_reclaimed=reclaim,
+            # Readback, not a restatement of the request: the stored event.
+            audit=_fields(audit, _EVENT_FIELDS),
+        )
 
 
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
 # kanban_list / kanban_unblock route the board and are hidden from task workers.
-_ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+# kanban_archive / kanban_promote / kanban_decompose are likewise board-level
+# lifecycle moves: a task-scoped worker must not archive, promote or fan out a
+# card (its own escape hatch around the complete/review gates, or a sibling's).
+# kanban_reassign hands a card to a different profile — the same class of move.
+# kanban_discover stays worker-visible: it is read-only (no board, no writes)
+# and a worker that is about to fan out needs the same roster kanban_create
+# validates against.
+_ORCHESTRATOR_TOOLS = frozenset({
+    "kanban_list", "kanban_unblock",
+    "kanban_archive", "kanban_promote", "kanban_decompose", "kanban_reassign",
+})
+# Per-tool visibility overrides layered on the two gates above. A tool not
+# named here keeps the default (orchestrator tools are hidden from workers,
+# everything else is worker-visible).
+_TOOL_GATES = {
+    "kanban_complete": _check_kanban_complete_mode,
+}
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
+    ("kanban_discover", KANBAN_DISCOVER_SCHEMA, _handle_discover, "🔎"),
+    ("kanban_graph", KANBAN_GRAPH_SCHEMA, _handle_graph, "🕸"),
     ("kanban_complete", KANBAN_COMPLETE_SCHEMA, _handle_complete, "✔"),
     ("kanban_block", KANBAN_BLOCK_SCHEMA, _handle_block, "⏸"),
     ("kanban_schedule", KANBAN_SCHEDULE_SCHEMA, _handle_schedule, "⏰"),
@@ -1306,10 +1944,16 @@ _TOOLS = (
     ("kanban_attach_url", KANBAN_ATTACH_URL_SCHEMA, _handle_attach_url, "📎"),
     ("kanban_attachments", KANBAN_ATTACHMENTS_SCHEMA, _handle_attachments, "📎"),
     ("kanban_create", KANBAN_CREATE_SCHEMA, _handle_create, "➕"),
+    ("kanban_reassign", KANBAN_REASSIGN_SCHEMA, _handle_reassign, "🔀"),
+    ("kanban_decompose", KANBAN_DECOMPOSE_SCHEMA, _handle_decompose, "🗂"),
+    ("kanban_promote", KANBAN_PROMOTE_SCHEMA, _handle_promote, "⏫"),
     ("kanban_unblock", KANBAN_UNBLOCK_SCHEMA, _handle_unblock, "▶"),
-    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
+    ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"),
+    ("kanban_unlink", KANBAN_UNLINK_SCHEMA, _handle_unlink, "⛓"),
+    ("kanban_archive", KANBAN_ARCHIVE_SCHEMA, _handle_archive, "🗄"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:
-    _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode
+    _gate = _TOOL_GATES.get(_name) or (
+        _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode)
     registry.register(name=_name, toolset="kanban", schema=_sch, handler=_handler, emoji=_emoji,
                       check_fn=_gate)

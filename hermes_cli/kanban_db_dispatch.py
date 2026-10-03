@@ -133,6 +133,11 @@ class DispatchResult:
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    discarded_spawns: list[tuple[str, int]] = field(default_factory=list)
+    """``(task_id, pid)`` children that were started but whose publication lost the
+    claim (the card was blocked/archived/reclaimed while the spawn ran): the
+    worker was stopped and verified instead of being attached to the row, so no
+    worker runs and the card is never reported as spawned."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
@@ -1465,21 +1470,108 @@ def _record_task_failure(
         return True
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
+def _publication_still_owned(
+    conn: sqlite3.Connection, task_id: str, claim_lock, run_id,
+) -> bool:
+    """True when the row still shows exactly the claim/run this spawn belongs to.
+
+    The fence check inside one IMMEDIATE txn is what makes publication
+    linearizable with block/archive: whoever commits first wins, and the loser
+    sees the state it no longer owns instead of writing onto it."""
+    row = conn.execute(
+        "SELECT status, claim_lock, current_run_id, spawn_fence FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None or row["status"] != "running":
+        return False
+    if claim_lock is not None and row["claim_lock"] != claim_lock:
+        return False
+    if run_id is not None and int(row["current_run_id"] or 0) != int(run_id):
+        return False
+    fence = _kb._json_dict(_kb._row_get(row, "spawn_fence")) or None
+    return _kb._fence_is_mine(fence, claim_lock, run_id)
+
+
+def _set_worker_pid(
+    conn: sqlite3.Connection, task_id: str, pid: int, *,
+    claim_lock: Optional[str] = None, run_id: Optional[int] = None,
+) -> str:
     """Record the spawned child's pid + its restart-stable fingerprint (``_process_fingerprint``), and
     emit a ``spawned`` event carrying them. The fingerprint is what lets every later liveness/kill
     decision tell OUR worker from a process that recycled the PID after a reboot. A failed capture is
     persisted as ``UNVERIFIED_WORKER_FINGERPRINT``, never NULL: NULL is the legacy pre-fingerprint row
-    whose bare-PID kill authority a new spawn must not inherit."""
-    started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
+    whose bare-PID kill authority a new spawn must not inherit.
+
+    Passing ``claim_lock``/``run_id`` fences the publication against the exact
+    claim and run this spawn was started for: the write only lands while the
+    row still shows that claim, that run and ``running`` status. When the claim
+    has already been blocked/archived/replaced, NOTHING is written — the late
+    PID must never be welded onto a state it does not belong to — and the child
+    is stopped with its canonical ``(pid, start fingerprint)``, verified gone,
+    and recorded truthfully by :func:`kanban_db._settle_fenced_spawn`; a
+    survivor keeps the card unarchivable with its identity attached to the
+    fence instead of to ``worker_pid``. Returns ``"published"`` or
+    ``"discarded"``. Omitting both fence arguments keeps the legacy unfenced
+    write (callers that already own the row, e.g. tests driving the DB
+    directly); every dispatcher spawn passes them.
+    """
+    # Capturing the fingerprint must never be the thing that loses the worker:
+    # a failed capture is already represented by UNVERIFIED_WORKER_FINGERPRINT.
+    try:
+        started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
+    except Exception:  # pragma: no cover - import/IO failure inside the probe
+        started_at = UNVERIFIED_WORKER_FINGERPRINT
+    fenced = not (claim_lock is None and run_id is None)
     with _kb.write_txn(conn):
-        conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
-                     (int(pid), started_at, task_id))
-        run_id = _kb._current_run_id(conn, task_id)
-        if run_id is not None:
-            conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
-                         (int(pid), started_at, run_id))
-        _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
+        owns = (not fenced) or _publication_still_owned(conn, task_id, claim_lock, run_id)
+        if owns:
+            conn.execute(
+                "UPDATE tasks SET worker_pid = ?, worker_started_at = ?, spawn_fence = NULL "
+                "WHERE id = ?",
+                (int(pid), started_at, task_id),
+            )
+            published_run = int(run_id) if run_id is not None else _kb._current_run_id(conn, task_id)
+            if published_run is not None:
+                conn.execute(
+                    "UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
+                    (int(pid), started_at, published_run),
+                )
+            _kb._append_event(
+                conn, task_id, "spawned",
+                {"pid": int(pid), "started_at": started_at}, run_id=published_run,
+            )
+            return "published"
+    # Here only when the claim this spawn belonged to is already gone. Signalling
+    # and polling a process takes seconds, so it happens OUTSIDE the txn rather
+    # than holding SQLite's single writer.
+    # Arm the worker's identity on the fence FIRST: from this moment the card is
+    # held against a known process, so a failure in the stop below can never
+    # leave a live child behind an archivable card.
+    _kb._arm_spawn_fence_identity(
+        conn, task_id, claim=claim_lock, run=run_id, pid=int(pid), started_at=started_at)
+    info = _terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
+    stopped = not _worker_alive(pid, started_at)
+    stop: dict[str, Any] = {**info, "stopped": stopped}
+    if not stopped:
+        stop["blocker"] = (
+            f"worker pid {int(pid)} (start fingerprint {started_at!r}) survived the stop; "
+            f"its execution cannot be proven stopped"
+        )
+    released = _kb._settle_fenced_spawn(
+        conn, task_id, claim=claim_lock, run=run_id, pid=int(pid),
+        started_at=started_at, stop=stop,
+    )
+    if released:
+        _kb._log.info(
+            "kanban dispatch: late spawn of %s fenced out (claim %r run %r); "
+            "worker pid %s stopped and verified gone", task_id, claim_lock, run_id, pid,
+        )
+    else:
+        _kb._log.warning(
+            "kanban dispatch: late spawn of %s fenced out (claim %r run %r); worker pid %s "
+            "NOT proven gone — the card keeps its hold", task_id, claim_lock, run_id, pid,
+        )
+    return "discarded"
 
 
 def adopt_worker_pid(conn: sqlite3.Connection, task_id: str, run_id: int, pid: int) -> bool:
@@ -1492,14 +1584,31 @@ def adopt_worker_pid(conn: sqlite3.Connection, task_id: str, run_id: int, pid: i
     and it must exit without working it."""
     started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
     with _kb.write_txn(conn):
-        row = conn.execute("SELECT status, current_run_id, worker_pid, claim_lock FROM tasks WHERE id = ?",
-                           (task_id,)).fetchone()
+        row = conn.execute(
+            "SELECT status, current_run_id, worker_pid, claim_lock, spawn_fence "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
         if row is None or row["status"] != "running" or row["current_run_id"] != int(run_id):
             return False
         # Liveness checks are host-local: a pid from another host (or pid namespace) proves nothing here.
         if row["worker_pid"] is None and (row["claim_lock"] or "").startswith(_kb._host_prefix()):
-            conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
-                         (int(pid), started_at, task_id))
+            # Self-registration is this spawn's PUBLICATION: the in-flight spawn fence
+            # the dispatcher armed before starting this child has served its purpose
+            # (``worker_pid`` is no longer NULL), so settle it here — otherwise a
+            # dispatcher that died mid-spawn would leave the hold armed forever and
+            # the card could never be archived or re-dispatched. Only the fence that
+            # names THIS claim/run may be cleared; a predecessor's unresolved hold
+            # stays exactly as it is.
+            fence = _kb._json_dict(_kb._row_get(row, "spawn_fence")) or None
+            settles_fence = fence is not None and _kb._fence_is_mine(
+                fence, _kb._row_get(row, "claim_lock"), run_id)
+            conn.execute(
+                "UPDATE tasks SET worker_pid = ?, worker_started_at = ?"
+                + (", spawn_fence = NULL" if settles_fence else "")
+                + " WHERE id = ?",
+                (int(pid), started_at, task_id),
+            )
             conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
                          (int(pid), started_at, int(run_id)))
             _kb._append_event(conn, task_id, "worker_registered", {"pid": int(pid), "started_at": started_at},
@@ -1528,6 +1637,9 @@ def check_respawn_guard(
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
+    ``"spawn_fence_hold"`` (an earlier spawn's fence is still unresolved — its
+    child may be alive under a NULL ``worker_pid``, so this tick must not claim
+    the card or start a second child beside it),
     ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
     refused — no restart-safe scope — within the cooldown; never counted),
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
@@ -1549,6 +1661,19 @@ def check_respawn_guard(
     ).fetchone()
     if row is None:
         return None
+
+    # 0. An earlier spawn's fence still holds this card. Its child may be alive
+    #    while ``worker_pid`` is NULL (the spawn has not published yet), so a
+    #    successor claim would overwrite the hold and stack a second untracked
+    #    child on it. The predecessor's own dispatcher settles the fence — or,
+    #    once it is provably gone, a hold whose spawner died with no live child
+    #    of that spawn observable is settled first (``_settle_dead_spawn_fence``,
+    #    which also attaches a discovered child's identity instead of releasing),
+    #    and a retained identity that is provably gone is already released just
+    #    before this check. Until then this card starts nothing and stays exactly
+    #    where it is; the next tick re-checks.
+    if _kb.spawn_fence(conn, task_id) is not None:
+        return "spawn_fence_hold"
 
     now = int(time.time())
 
@@ -2070,6 +2195,18 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
+    if not dry_run:
+        # Settle a RESOLVED hold before the guard reads it: a fence whose
+        # retained identity is provably gone — or whose spawner died without a
+        # live child of that spawn observable — releases here (recorded as
+        # ``spawn_fence_released``), so a finished or abandoned predecessor can
+        # never wedge the card out of the pool. Anything still unresolved — an
+        # identity still live, a spawner still spawning, or a hold this host
+        # cannot prove empty — stays armed and the guard below keeps this card
+        # out of the claim entirely: no overwrite, no second child, no claim
+        # left owning nothing. A dry run never writes, so it sees the hold
+        # exactly as it is.
+        _kb._settle_dead_spawn_fence(conn, task_id)
     guard_reason = check_respawn_guard(conn, task_id, lane=lane)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
@@ -2120,10 +2257,54 @@ def _dispatch_lane_task(
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        # Authoritative phase stamp for this spawn: only the review lane earns
+        # "review", so a same-profile implementer cannot claim the phase by
+        # carrying the reviewer's profile name.
+        claimed.run_phase = "review"
+    claim_lock, claim_run = claimed.claim_lock, claimed.current_run_id
+    # Arm the in-flight spawn fence BEFORE the child exists. From here until this
+    # spawn is settled, a NULL ``worker_pid`` must never be read as "nothing is
+    # running" (block/archive consult the fence instead), and a publication that
+    # loses this claim in the meantime is fenced out and stopped rather than
+    # welded onto a row it no longer belongs to. A lost claim — and a claim
+    # facing an EARLIER spawn's unresolved fence — stops here: no child is
+    # started, and a claim of ours that cannot arm its fence is unwound rather
+    # than left owning nothing.
+    if not _kb._hold_spawn_fence(conn, claimed.id, claim_lock, claim_run):
+        # No child may start: either the claim already moved on (nothing of
+        # ours to unwind — someone else owns the row), or an EARLIER spawn's
+        # fence still holds the card and was not overwritten. A claim WE still
+        # own must not be left behind either: a ``running`` row with no child
+        # anywhere is exactly the stranded state this fence exists to prevent,
+        # so unwind it atomically back to the phase it came from.
+        unwound = _kb._release_unarmed_claim(conn, claimed.id, claim_lock, claim_run)
+        if unwound is not None:
+            _kb._log.info(
+                "kanban dispatcher: spawn of %s unwound (back to %s) — an unresolved "
+                "spawn fence still holds the card; no child was started",
+                claimed.id, unwound,
+            )
+        else:
+            _kb._log.info(
+                "kanban dispatcher: spawn of %s skipped, its claim %r is already gone",
+                claimed.id, claim_lock,
+            )
+        return False
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
-            _set_worker_pid(conn, claimed.id, int(pid))
+            published = _set_worker_pid(
+                conn, claimed.id, int(pid), claim_lock=claim_lock, run_id=claim_run)
+            if published != "published":
+                # The claim died while the child was starting: it was stopped and
+                # verified gone (or its identity is retained on the fence, which
+                # keeps the card unarchivable). Nothing is running for this card.
+                result.discarded_spawns.append((claimed.id, int(pid)))
+                return False
+        else:
+            # Spawn reported no PID: nothing to track — same contract as before
+            # the fence existed, so release this spawn's own marker.
+            _kb._release_spawn_fence(conn, claimed.id, claim_lock, claim_run)
         # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
         _kb._fire_worker_spawned_hook(conn, claimed, str(workspace), pid, board=board)
         # consecutive_failures is deliberately NOT reset here: resetting on
@@ -2135,6 +2316,11 @@ def _dispatch_lane_task(
     except Exception as exc:
         from tools.process_registry import RestartSafeScopeUnavailable
 
+        # This spawn never published a worker identity, so its fence must not
+        # hold the card forever. A fence that already carries a worker identity
+        # the stop path could not prove gone is deliberately NOT released — that
+        # hold is what keeps the card unarchivable (see ``_release_spawn_fence``).
+        _kb._release_spawn_fence(conn, claimed.id, claim_lock, claim_run)
         # The host refused the spawn (no restart-safe scope): nothing about the
         # card ran, so it must not spend the card's retry budget (#114720).
         infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
@@ -2828,6 +3014,23 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     ).argv
 
 
+def review_gate_env(task: Task) -> dict:
+    """Startup context for a review-gated card; ``{}`` when the card is ungated.
+
+    ``HERMES_KANBAN_RUN_PHASE`` carries the dispatcher's own claim decision
+    (only the review lane earns ``review``), never a profile string the child
+    could have influenced. Both values are conveniences for tool visibility —
+    ``complete_task`` re-derives the same verdict from lifecycle/run state, so
+    a spoofed or absent env var changes nothing about what the backend accepts.
+    """
+    if not task.required_reviewer:
+        return {}
+    return {
+        "HERMES_KANBAN_REQUIRED_REVIEWER": task.required_reviewer,
+        "HERMES_KANBAN_RUN_PHASE": getattr(task, "run_phase", None) or "implementation",
+    }
+
+
 def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
     """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
 
@@ -2887,6 +3090,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Review gate, in the child's startup context and only when the card is
+    # actually gated (an ungated card keeps its historical, clean env).
+    env.update(review_gate_env(task))
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.
     env["HERMES_SESSION_SOURCE"] = "kanban"

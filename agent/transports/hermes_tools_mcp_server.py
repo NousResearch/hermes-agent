@@ -62,9 +62,11 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     # Without them a codex-runtime worker can't report completion and hangs.
     "kanban_complete", "kanban_block", "kanban_schedule", "kanban_request_review",
     "kanban_request_changes", "kanban_comment",
-    "kanban_heartbeat", "kanban_show", "kanban_list",
+    "kanban_heartbeat", "kanban_show", "kanban_list", "kanban_graph", "kanban_unlink",
     # Orchestrator-only (the kanban tool gates them on HERMES_KANBAN_TASK unset).
     "kanban_create", "kanban_unblock", "kanban_link",
+    "kanban_decompose", "kanban_promote", "kanban_archive",
+    "kanban_reassign", "kanban_discover",
 )
 
 

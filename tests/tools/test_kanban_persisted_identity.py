@@ -22,6 +22,12 @@ def board_env(tmp_path, monkeypatch):
     root = tmp_path / "hroot"
     for name in ("alpha", "beta"):
         (root / "profiles" / name).mkdir(parents=True)
+    # kanban_create validates its assignee against the live profile roster, so
+    # the peer this test fans out to needs the identity marker that makes a
+    # directory a profile (config.yaml).
+    peer = root / "profiles" / "peer"
+    peer.mkdir(parents=True, exist_ok=True)
+    (peer / "config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
     for var in ("HERMES_PROFILE", "HERMES_PROFILE_NAME", "HERMES_SESSION_ID", "HERMES_KANBAN_DB",
                 "HERMES_KANBAN_HOME", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_WORKSPACES_ROOT"):

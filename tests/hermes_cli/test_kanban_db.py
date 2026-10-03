@@ -10,6 +10,7 @@ import sys
 import time
 import types
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -1429,8 +1430,10 @@ def test_link_tasks_archived_parent_is_terminal_no_gate(kanban_home):
     """archived is terminal for recompute_ready, so linking under an archived
     parent must not demote a ready child (it would only flap back to ready)."""
     with kbc.connect() as conn:
-        parent = kb.create_task(conn, title="archived parent")
-        kb.archive_task(conn, parent)
+        # ``triage`` so the card is archivable directly: ``ready`` is protected
+        # work in flight (see test_archive_task_protects_work_in_flight_only).
+        parent = kb.create_task(conn, title="archived parent", triage=True)
+        assert kb.archive_task(conn, parent) is True
         child = kb.create_task(conn, title="child")
         assert kb.get_task(conn, child).status == "ready"
 
@@ -2030,13 +2033,14 @@ def test_write_txn_check_reads_correct_header_fields(tmp_path):
 
 
 
-def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):
-    """``archive_task`` on a *running* task must actually signal its host-local
-    worker process, not just null ``worker_pid`` in the DB (#76196: a worker
-    kept running past its own archive and could still push/complete work
-    against a task nothing tracks anymore). The termination outcome is
-    auditable via the ``archive_worker_termination`` event."""
+def test_archive_running_task_is_refused_and_block_stops_the_worker(kanban_home, monkeypatch):
+    """``running`` is protected: a direct archive is refused with no mutation
+    and signals nothing. The supported path is block-first, and the block may
+    only clear the worker identity once the process is PROVEN gone (pid +
+    start fingerprint) — otherwise #76196 returns (a worker outliving its own
+    archive and pushing work against a task nothing tracks)."""
     import json
+    import signal as signal_mod
 
     with kbc.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
@@ -2045,42 +2049,305 @@ def test_archive_running_task_terminates_worker(kanban_home, monkeypatch):
         # A verified spawn: an uncaptured fingerprint would (correctly) refuse the signal.
         monkeypatch.setattr(kbd, "_process_fingerprint", lambda _pid: "boot:1|777")
         kbd._set_worker_pid(conn, t, 54321)
-
         monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+
         signalled = []
-        assert kb.archive_task(
-            conn, t, signal_fn=lambda pid, sig: signalled.append((pid, sig)),
-        ) is True
-
-        assert signalled and signalled[0][0] == 54321
-
+        ok, why = kb.archive_task(conn, t, with_reason=True)
+        assert ok is False
+        assert "'running'" in why and "stop the worker" in why
+        assert signalled == [], "a refused archive must not signal anything"
         row = conn.execute(
-            "SELECT payload FROM task_events "
-            "WHERE task_id = ? AND kind = 'archive_worker_termination'",
-            (t,),
-        ).fetchone()
-        payload = json.loads(row["payload"])
+            "SELECT status, worker_pid FROM tasks WHERE id = ?", (t,)).fetchone()
+        assert (row["status"], row["worker_pid"]) == ("running", 54321)
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = 'archived'",
+            (t,),).fetchone()[0] == 0
+
+        # Block-first: the worker is signalled with the canonical identity and
+        # reaped, and only then is the identity cleared.
+        assert kb.block_task(
+            conn, t, reason="operator stop", signal_fn=lambda pid, sig: signalled.append((pid, sig)),
+            with_reason=True,
+        ) == (True, None)
+        assert signalled and signalled[0] == (54321, signal_mod.SIGTERM)
+        row = conn.execute(
+            "SELECT status, worker_pid, worker_started_at FROM tasks WHERE id = ?", (t,)).fetchone()
+        assert row["status"] == "blocked"
+        assert (row["worker_pid"], row["worker_started_at"]) == (None, None)
+        assert kb.latest_run(conn, t).outcome == "blocked", "the run must close truthfully"
+        payload = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'block_worker_termination'",
+            (t,),).fetchone()["payload"])
         assert payload["prev_pid"] == 54321
-        assert payload["host_local"] is True
-        assert payload["termination_attempted"] is True
+        assert payload["stopped"] is True
         assert payload["terminated"] is True
+
+        # Now the archive is allowed: no live worker, status not protected.
+        assert kb.archive_task(conn, t) is True
+        assert kb.get_task(conn, t).status == "archived"
+
+
+def test_archive_surviving_worker_blocks_the_archive_until_it_is_gone(kanban_home, monkeypatch):
+    """A worker that cannot be stopped keeps its identity on the card: the block
+    still lands (and reports the blocker), but the archive refuses with the
+    precise reason until the process is actually gone."""
+    import json
+
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        host = kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        monkeypatch.setattr(kbd, "_process_fingerprint", lambda _pid: "boot:1|777")
+        kbd._set_worker_pid(conn, t, 54321)
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+        monkeypatch.setattr(kbd, "_poll_worker_exit", lambda *a, **k: False)
+
+        signalled = []
+        ok, why = kb.block_task(
+            conn, t, reason="operator stop",
+            signal_fn=lambda pid, sig: signalled.append((pid, sig)), with_reason=True,
+        )
+        assert ok is True and why and "cannot be proven stopped" in why
+        assert signalled, "the stop must at least be attempted"
+        row = conn.execute(
+            "SELECT status, worker_pid FROM tasks WHERE id = ?", (t,)).fetchone()
+        assert row["status"] == "blocked"
+        assert row["worker_pid"] == 54321, "an unproven stop must not lose the identity"
+        payload = json.loads(conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'block_worker_termination'",
+            (t,),).fetchone()["payload"])
+        assert payload["stopped"] is False
+        assert payload["blocker"]
+
+        ok, why = kb.archive_task(conn, t, with_reason=True)
+        assert ok is False and "live worker (pid 54321)" in why
+        assert kb.get_task(conn, t).status == "blocked", "nothing may change on refusal"
+
+        # The process finally exits: the same card archives without any rewrite
+        # of history (the identity is cleared by the archive that used it).
+        monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+        assert kb.archive_task(conn, t) is True
         assert kb.get_task(conn, t).status == "archived"
 
 
 def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
-    """A never-claimed (``triage``/``ready``/``done``) task has no live worker:
-    ``archive_task`` must not signal anything, and no termination event is
-    recorded — only for tasks that were actually ``running`` at archive time."""
+    """A finished (``done``) card has no live worker: ``archive_task`` must not
+    signal anything, and records no worker-termination event — that bookkeeping
+    belongs to the block path, because ``running`` can no longer be archived."""
     with kbc.connect() as conn:
         t = kb.create_task(conn, title="x", assignee="a")
-        signalled = []
-        assert kb.archive_task(
-            conn, t, signal_fn=lambda pid, sig: signalled.append((pid, sig)),
-        ) is True
-        assert signalled == []
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (t,))
+        conn.commit()
+        assert kb.archive_task(conn, t) is True
         row = conn.execute(
-            "SELECT 1 FROM task_events "
-            "WHERE task_id = ? AND kind = 'archive_worker_termination'",
-            (t,),
-        ).fetchone()
+            "SELECT 1 FROM task_events WHERE task_id = ? "
+            "AND kind IN ('block_worker_termination', 'archive_worker_termination')",
+            (t,),).fetchone()
         assert row is None
+        assert kb.get_task(conn, t).status == "archived"
+
+
+# --------------------------------------------------------------------------- Shared archive policy
+# Protect exactly ready/running/review; every other status (including legacy
+# raw values such as `completed`) archives directly — "don't refuse unknown."
+
+
+def test_archive_task_protects_work_in_flight_only(kanban_home):
+    """Boundary of the shared policy: known non-protected statuses, raw
+    ``completed`` and an arbitrary unrecognized status all archive directly,
+    while ``ready``/``running``/``review`` are refused with NO mutation."""
+    allowed = ["triage", "todo", "scheduled", "blocked", "done", "completed", "wibble"]
+    for status in allowed:
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title=f"card {status}", assignee="a", triage=True)
+            conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, tid))
+            conn.commit()
+            events_before = conn.execute(
+                "SELECT COUNT(*) FROM task_events WHERE task_id = ?", (tid,)).fetchone()[0]
+            ok, why = kb.archive_task(conn, tid, with_reason=True)
+            assert ok is True, f"{status!r} must archive directly, got: {why}"
+            assert why is None
+            assert kb.get_task(conn, tid).status == "archived"
+            assert conn.execute(
+                "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = 'archived'",
+                (tid,),).fetchone()[0] == 1
+            assert conn.execute(
+                "SELECT COUNT(*) FROM task_events WHERE task_id = ?", (tid,)).fetchone()[0] == events_before + 1
+
+    for status in ("ready", "running", "review"):
+        with kbc.connect() as conn:
+            tid = kb.create_task(conn, title=f"flight {status}", assignee="a")
+            conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, tid))
+            conn.commit()
+            before = [dict(r) for r in conn.execute(
+                "SELECT status, block_kind, claim_lock, worker_pid, current_run_id "
+                "FROM tasks WHERE id = ?", (tid,))]
+            ok, why = kb.archive_task(conn, tid, with_reason=True)
+            assert ok is False, f"{status!r} must be protected"
+            assert f"{tid!r}" in why or tid in why
+            assert "block" in why
+            assert kb.get_task(conn, tid).status == status, "refusal must not mutate"
+            assert [dict(r) for r in conn.execute(
+                "SELECT status, block_kind, claim_lock, worker_pid, current_run_id "
+                "FROM tasks WHERE id = ?", (tid,))] == before
+            assert conn.execute(
+                "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = 'archived'",
+                (tid,),).fetchone()[0] == 0
+            # Refusing must never park the card either (this tool never blocks
+            # on the caller's behalf).
+            assert kb.get_task(conn, tid).block_kind is None
+
+
+def test_archive_of_an_already_archived_task_writes_no_second_event(kanban_home):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="once", assignee="a", triage=True)
+        assert kb.archive_task(conn, tid) is True
+        ok, why = kb.archive_task(conn, tid, with_reason=True)
+        assert ok is False and "already archived" in why
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = 'archived'",
+            (tid,),).fetchone()[0] == 1
+        # Archive is not deletion: the row and its history survive.
+        assert kb.get_task(conn, tid) is not None
+
+
+def test_archive_event_payload_is_opt_in(kanban_home):
+    """``archive_task`` keeps its historical payload-less ``archived`` event for
+    every existing caller (operator CLI, dashboard): the payload is opt-in, and
+    only the agent tool supplies one. A refusal — payload supplied or not —
+    writes no event at all, and a malformed payload is rejected before the
+    write so nothing half-recorded can land."""
+    provenance = {"source": "kanban_archive", "actor": "test-profile", "reason": "duplicate"}
+    with kbc.connect() as conn:
+        plain = kb.create_task(conn, title="cli-style", assignee="a", triage=True)
+        assert kb.archive_task(conn, plain) is True
+        assert kb.archive_task(conn, plain, with_reason=True) == (
+            False, f"{plain} is already archived; nothing changed")
+
+        agent = kb.create_task(conn, title="agent-style", assignee="a", triage=True)
+        assert kb.archive_task(
+            conn, agent, with_reason=True, event_payload=provenance) == (True, None)
+
+        # Refused with a payload in hand: still no event, still no mutation.
+        in_flight = kb.create_task(conn, title="in flight", assignee="a")
+        assert in_flight and kb.get_task(conn, in_flight).status == "ready"
+        refused = kb.archive_task(
+            conn, in_flight, with_reason=True, event_payload=provenance)
+        assert refused[0] is False and "block" in refused[1]
+
+        # Malformed payload: rejected before any archive write happens.
+        malformed = kb.create_task(conn, title="malformed", assignee="a", triage=True)
+        with pytest.raises(ValueError, match="event_payload"):
+            kb.archive_task(conn, malformed, event_payload=["not", "a", "dict"])
+        assert kb.get_task(conn, malformed).status == "triage"
+
+        payload_by_task = dict(conn.execute(
+            "SELECT task_id, payload FROM task_events WHERE kind = 'archived'").fetchall())
+        assert payload_by_task == {plain: None, agent: json.dumps(
+            provenance, ensure_ascii=False)}
+        assert in_flight not in payload_by_task
+        assert malformed not in payload_by_task
+
+
+def test_review_to_block_is_supported_and_resumes_the_review_lane(kanban_home):
+    """``review`` has its own auditable stop-first path: block, then unblock
+    returns the card to the review lane (never to a fresh implementation run)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="under review", assignee="builder")
+        assert kb.request_review(conn, tid, summary="ready", reviewer="reviewer") is True
+        assert kb.get_task(conn, tid).status == "review"
+
+        ok, why = kb.archive_task(conn, tid, with_reason=True)
+        assert ok is False and "'review'" in why and "stop the review" in why
+        assert kb.get_task(conn, tid).status == "review"
+
+        assert kb.block_task(
+            conn, tid, reason="needs_input: maintainer decision", kind="needs_input",
+            with_reason=True,
+        ) == (True, None)
+        blocked = kb.get_task(conn, tid)
+        assert blocked.status == "blocked"
+        events = [e for e in kb.list_events(conn, tid) if e.kind == "blocked"]
+        assert events and events[-1].payload["source_status"] == "review"
+
+        assert kb.unblock_task(conn, tid) is True
+        assert kb.get_task(conn, tid).status == "review"
+        # Second stop, then the archive goes through.
+        assert kb.block_task(conn, tid, reason="still waiting") is True
+        assert kb.archive_task(conn, tid) is True
+        assert kb.get_task(conn, tid).status == "archived"
+
+
+def test_review_association_identifies_the_same_card_reviewer_run(kanban_home):
+    """The default review lane is same-card: the reviewer run is this card's own
+    run, identified by claimed ``source_status=review`` provenance."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="subject", assignee="builder")
+        assert kb.request_review(conn, tid, summary="ready", reviewer="reviewer") is True
+        assoc = kb.review_association(conn, tid)
+        assert assoc["found"] is True
+        assert assoc["lane"] == "same_card"
+        assert assoc["reviewer"] == "reviewer"
+        assert "reviewer_cards" not in assoc, "no reviewer card is inferred from the graph"
+        assert assoc["active_review_run"] is None, "nobody has claimed the review yet"
+
+        review = kb.claim_review_task(conn, tid, claimer="reviewer:1")
+        assert review is not None
+        assoc = kb.review_association(conn, tid)
+        assert assoc["active_review_run"] is not None
+        assert assoc["active_review_run"]["id"] == review.current_run_id
+        assert len(assoc["review_runs"]) == 1
+
+
+def test_archive_task_guarded_update_beats_a_stale_pre_read(kanban_home):
+    """The diagnostic pre-read inside ``archive_task`` is allowed to be stale:
+    it reports an ALLOWED status after a concurrent transition already moved the
+    row into the protected set. The guard lives in the UPDATE predicate itself,
+    so the archive loses that race and changes nothing."""
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="racer", assignee="a")
+        assert kb.get_task(conn, t).status == "ready"
+
+        class _LyingCursor:
+            def __init__(self, real):
+                self._real = real
+
+            def fetchone(self):
+                return {"status": "blocked", "claim_lock": None,
+                        "worker_pid": None, "worker_started_at": None,
+                        "spawn_fence": None}
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        class _StaleConn:
+            """Connection proxy whose ONLY lie is the archive status pre-read."""
+
+            _PRE_READ = (
+                "SELECT status, claim_lock, worker_pid, worker_started_at, spawn_fence "
+                "FROM tasks WHERE id = ?"
+            )
+
+            def __init__(self, real):
+                self._real = real
+                self.pre_read_served = False
+
+            def execute(self, sql, params=()):
+                cur = self._real.execute(sql) if not params else self._real.execute(sql, params)
+                if not self.pre_read_served and sql.strip() == self._PRE_READ:
+                    self.pre_read_served = True
+                    return _LyingCursor(cur)
+                return cur
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        lying = _StaleConn(conn)
+        assert kb.archive_task(cast(sqlite3.Connection, lying), t) is False
+        assert lying.pre_read_served, "the stale pre-read never happened"
+        # The guarded UPDATE saw the real status and archived nothing.
+        assert kb.get_task(conn, t).status == "ready", "lost the race but archived anyway"
+        assert conn.execute(
+            "SELECT COUNT(*) FROM task_events WHERE task_id = ? AND kind = 'archived'",
+            (t,),
+        ).fetchone()[0] == 0

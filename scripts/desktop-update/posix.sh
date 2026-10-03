@@ -88,15 +88,168 @@ STARTED_AT="$(date +%s)"  # the shim's elapsed clock; see serve-ui.py
 
 UI_SERVER_PID="" UI_BROWSER_PID="" UI_PANEL_PID="" UI_PROFILE_DIR="" FINAL_CODE=1
 FINAL_MSG="update did not complete"
-DONE_NOTE=""  # set when the update succeeded but the user must act (reopen, reinstall, rebuild)
-APP_REBUILD_FAILED=0  # 1 = the code committed but the Desktop app build is an owed follow-up
+DONE_NOTE=""  # set when the update succeeded but the app will NOT reopen itself
+# Follow-up work that failed AFTER `hermes update` committed the new code. The
+# result stays ok:true (contract C3: ok:false only while still on the previous
+# version); each entry reaches the Desktop as a warning.
+WARNINGS=()
+MARKER_BODY=""  # the exact bytes we published; release compares against them
+MARKER_CLAIMED=0
+APP_REBUILD_FAILED=0
 
 log() { echo "$(date +%Y-%m-%dT%H:%M:%S%z) $1" | tee -a "$LOG" 2>/dev/null; }
 
-owed_followup_steps() { # $OUT -> the distinct owed steps, space-separated, in print order
-  # hermes_cli/update_receipt.record_followup prints each as one whole line.
-  printf '%s\n' "$OUT" | sed -n "s/^.*Update follow-up '\([A-Za-z0-9_]*\)' did not finish: .*$/\1/p" \
-    | awk '!seen[$0]++' | tr '\n' ' ' | sed 's/ *$//'
+# ── process identity (update marker contract C1) ────────────────────────────
+# A pid alone is not an identity: the marker records the owner's creation time
+# (`ct:` unix seconds, 3 decimals) so a reused pid never reads as the owner.
+proc_ct() { # pid -> creation time, or nothing when it cannot be read
+  local pid="$1" stat rest start btime hz lstart secs
+  [ "$pid" -gt 0 ] 2>/dev/null || return 0
+  if [ -r "/proc/$pid/stat" ]; then
+    stat="$(cat "/proc/$pid/stat" 2>/dev/null)" || return 0
+    rest="${stat##*) }"  # comm may hold spaces/parens; fields resume after the last ") "
+    start="$(printf '%s\n' "$rest" | awk '{print $20}')"  # field 22 overall
+    btime="$(awk '/^btime /{print $2}' /proc/stat 2>/dev/null)"
+    hz="$(getconf CLK_TCK 2>/dev/null)"
+    [ -n "$start" ] && [ -n "$btime" ] && [ -n "$hz" ] || return 0
+    awk -v b="$btime" -v s="$start" -v h="$hz" 'BEGIN{printf "%.3f\n", b + s / h}'
+  elif [ "$(uname)" = "Darwin" ]; then
+    lstart="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//;s/ *$//')"
+    [ -n "$lstart" ] || return 0
+    secs="$(LC_ALL=C date -j -f '%a %b %e %T %Y' "$lstart" +%s 2>/dev/null)" || return 0
+    [ -n "$secs" ] && printf '%s.000\n' "$secs"
+  fi
+}
+
+pid_alive() { # pid exists and is not a zombie
+  local pid="$1" st
+  [ "$pid" -gt 0 ] 2>/dev/null || return 1
+  st="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  [ -n "$st" ] && [ "${st#Z}" = "$st" ]
+}
+
+ident_alive() { # pid recorded-ct -> 0 iff that same process is still running
+  local pid="$1" want="${2:-}" have
+  pid_alive "$pid" || return 1
+  [ -n "$want" ] || return 0
+  have="$(proc_ct "$pid")"
+  [ -n "$have" ] || return 0  # unknown actual ct with a live pid counts as live
+  awk -v a="$want" -v b="$have" 'BEGIN{d=a-b; if (d<0) d=-d; exit !(d<=2.0)}'
+}
+
+M_PID="" M_STARTED="" M_CT="" M_DPID="" M_DCT=""
+marker_parse() { # marker text -> M_* fields
+  local l1 l2 l3 l4
+  { IFS= read -r l1; IFS= read -r l2; IFS= read -r l3; IFS= read -r l4; } <<EOF_MARKER
+$1
+EOF_MARKER
+  M_PID="$(printf '%s' "$l1" | tr -d '[:space:]\357\273\277')"
+  M_STARTED="$(printf '%s' "$l2" | tr -d '[:space:]')"
+  M_CT="" M_DPID="" M_DCT=""
+  case "$l3" in ct:*) M_CT="$(printf '%s' "${l3#ct:}" | tr -d '[:space:]')" ;; esac
+  case "$l4" in
+    delegate:*)
+      M_DPID="$(printf '%s' "$l4" | sed -n 's/^delegate:\([0-9][0-9]*\).*/\1/p')"
+      M_DCT="$(printf '%s' "$l4" | sed -n 's/.* ct:\([0-9.][0-9.]*\).*/\1/p')"
+      ;;
+  esac
+  case "$M_PID" in ''|*[!0-9]*) M_PID="" ;; esac
+  case "$M_STARTED" in ''|*[!0-9]*) M_STARTED="" ;; esac
+}
+
+marker_live() { # marker text -> 0 iff LIVE (owner OR delegate), per contract C1 rule 3/6
+  marker_parse "$1"
+  if [ -n "$M_DPID" ] && ident_alive "$M_DPID" "$M_DCT"; then return 0; fi
+  [ -n "$M_PID" ] || return 1
+  ident_alive "$M_PID" "$M_CT" || return 1
+  if [ -z "$M_CT" ]; then
+    # v1 marker (no creation time): keep the legacy 20-minute ceiling so a
+    # reused pid on an old-format marker still self-heals.
+    [ -n "$M_STARTED" ] || return 1
+    [ $(( $(date +%s) - M_STARTED )) -le 1200 ] || return 1
+  fi
+  return 0
+}
+
+marker_publish_new() { # body -> 0 iff we created the marker (never replaces one)
+  local tmp="$MARKER.$$.tmp" rc
+  printf '%s' "$1" > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 2; }
+  ln "$tmp" "$MARKER" 2>/dev/null; rc=$?  # link(2) is an atomic no-replace create
+  rm -f "$tmp" 2>/dev/null
+  return $rc
+}
+
+marker_claim() { # FIRST action of the daemon (contract C2). Sets MARKER_BODY/CLAIMED.
+  local seen attempt ct started
+  ct="$(proc_ct $$)"
+  for attempt in 1 2; do
+    started="$STARTED_AT"
+    MARKER_BODY="$$"$'\n'"$started"$'\n'"${ct:+ct:$ct}"$'\n'
+    [ -n "$ct" ] || MARKER_BODY="$$"$'\n'"$started"$'\n'
+    marker_publish_new "$MARKER_BODY"
+    case $? in
+      0) MARKER_CLAIMED=1; log "claimed update marker (pid $$${ct:+ ct $ct})"; return 0 ;;
+      2) log "WARNING: could not write update marker"; return 0 ;;
+    esac
+    seen="$(cat "$MARKER" 2>/dev/null)" || continue
+    if [ -z "$seen" ]; then sleep 0.5; seen="$(cat "$MARKER" 2>/dev/null)"; fi
+    if marker_live "$seen" && [ "$M_PID" != "$$" ]; then
+      if [ "$DESKTOP_PID" -gt 0 ] 2>/dev/null && [ "$M_PID" = "$DESKTOP_PID" ] && [ -z "$M_DPID" ]; then
+        # The Desktop's bridge claim: adopt it as its hand-off partner. One
+        # acquisition time for the whole chain: keep its line 2.
+        [ -n "$M_STARTED" ] && started="$M_STARTED" && STARTED_AT="$M_STARTED"
+        MARKER_BODY="$$"$'\n'"$started"$'\n'"${ct:+ct:$ct}"$'\n'
+        [ -n "$ct" ] || MARKER_BODY="$$"$'\n'"$started"$'\n'
+        printf '%s' "$MARKER_BODY" > "$MARKER.$$.tmp" 2>/dev/null || { rm -f "$MARKER.$$.tmp"; return 0; }
+        if [ "$(cat "$MARKER" 2>/dev/null)" = "$seen" ] && mv -f "$MARKER.$$.tmp" "$MARKER" 2>/dev/null; then
+          MARKER_CLAIMED=1; log "adopted the Desktop's update marker (desktop pid $DESKTOP_PID -> $$)"; return 0
+        fi
+        rm -f "$MARKER.$$.tmp" 2>/dev/null
+        continue
+      fi
+      MARKER_REFUSED_PID="${M_DPID:-$M_PID}"
+      return 1
+    fi
+    # Dead owner: compare-and-delete the exact bytes judged dead, then retry.
+    if [ "$(cat "$MARKER" 2>/dev/null)" = "$seen" ]; then
+      rm -f "$MARKER" 2>/dev/null
+      log "reclaimed a dead update marker (pid ${M_PID:-?})"
+    fi
+  done
+  MARKER_REFUSED_PID="${M_PID:-unknown}"
+  return 1
+}
+
+marker_release() { # compare-and-delete; never drops a marker whose delegate is LIVE
+  local now
+  [ "$MARKER_CLAIMED" -eq 1 ] && [ "$NO_MARKER_CLEANUP" -eq 0 ] || return 0
+  now="$(cat "$MARKER" 2>/dev/null)" || return 0
+  case "$now"$'\n' in "$MARKER_BODY"*) ;; *) log "leaving update marker: no longer ours"; return 0 ;; esac
+  marker_parse "$now"
+  if [ -n "$M_DPID" ] && ident_alive "$M_DPID" "$M_DCT"; then
+    log "leaving update marker: delegate pid $M_DPID (hermes update) is still running"
+    return 0
+  fi
+  [ "$(cat "$MARKER" 2>/dev/null)" = "$now" ] && rm -f "$MARKER" 2>/dev/null
+  MARKER_CLAIMED=0
+}
+
+run_bounded() { # seconds cmd... -> cmd's stdout; 124 when it had to be killed
+  local secs="$1" out pid i rc
+  shift
+  out="$(mktemp "${TMPDIR:-/tmp}/hermes-update-probe.$$.XXXXXX")" || return 1
+  "$@" > "$out" 2>/dev/null < /dev/null &
+  pid=$!
+  for ((i = 0; i < secs * 10; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    rm -f "$out" 2>/dev/null
+    log "WARNING: probe timed out after ${secs}s: $*"
+    return 124
+  fi
+  wait "$pid"; rc=$?
+  cat "$out" 2>/dev/null; rm -f "$out" 2>/dev/null
+  return $rc
 }
 
 # Keep a durable signal breadcrumb.  A detached hand-off used to leave only the
@@ -270,7 +423,7 @@ start_ui() {
   fi
   { [ -f "$html" ] && [ -n "$py" ] && [ -n "$browser" ]; } || { log "shim: no renderer; skipping UI"; return; }
 
-  UI_PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hermes-update-ui-XXXXXXXX")" || {
+  UI_PROFILE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hermes-update-ui-$$-XXXXXXXX")" || {
     UI_PROFILE_DIR=""
     log "shim: could not allocate a browser profile; skipping UI"
     return
@@ -287,10 +440,10 @@ start_ui() {
   # window showed ERR_CONNECTION_REFUSED for the whole run; upstream #66753).
   # stop_ui ends the server with SIGKILL instead — it is stateless HTTP.
   "$py" -c 'import os, signal, sys; os.setsid(); signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal(signal.SIGHUP, signal.SIG_IGN); os.execv(sys.argv[1], sys.argv[1:])' \
-    "$py" "$SCRIPT_DIR/serve-ui.py" "$html" "$STATUS" "$STARTED_AT" > "$LOG_DIR/desktop-update-ui-port" 2>>"$LOG" &
+    "$py" "$SCRIPT_DIR/serve-ui.py" "$html" "$STATUS" "$STARTED_AT" "$$" > "$STATUS.port" 2>>"$LOG" &
   UI_SERVER_PID=$!
   for i in $(seq 1 10); do
-    port="$(tr -cd '0-9' < "$LOG_DIR/desktop-update-ui-port" 2>/dev/null)"
+    port="$(tr -cd '0-9' < "$STATUS.port" 2>/dev/null)"
     [ -n "$port" ] && break
     sleep 0.2
   done
@@ -397,6 +550,32 @@ linux_gate() {
   GATE=manual GATE_MSG="Update complete, but the rebuilt app can't relaunch itself (its sandbox helper needs root ownership). Reopen Hermes to finish."
 }
 
+mac_bundle_recover() { # bundle path -- finish or roll back an interrupted swap
+  # Start-of-run recovery for BOTH bundle swappers (this script's .old/.new and
+  # `hermes desktop`'s .hermes-update-old/-new). The update marker serialises
+  # swappers, so anything left here belongs to a dead run. A missing bundle
+  # with its aside copy present means the swap died between its two renames:
+  # put the previous app back (the staged copy may be partial). A present
+  # bundle makes every aside/staged copy a leftover.
+  local target="$1" aside staged
+  [ -n "$target" ] || return 0
+  for aside in "$target.old" "$target.hermes-update-old"; do
+    if [ ! -e "$target" ] && [ -d "$aside" ]; then
+      if mv "$aside" "$target" 2>/dev/null; then
+        log "recovered an interrupted app swap: restored $target from $aside"
+      else
+        log "WARNING: could not restore $target from $aside"
+      fi
+    fi
+  done
+  [ -d "$target" ] || return 0
+  for staged in "$target.old" "$target.new" "$target.hermes-update-old" "$target.hermes-update-new"; do
+    if [ -e "$staged" ]; then
+      rm -rf "$staged" 2>/dev/null && log "removed a leftover $staged"
+    fi
+  done
+}
+
 mac_swap() {
   local rebuilt="" c
   for c in "$INSTALL_ROOT/apps/desktop/release/mac-arm64/Hermes.app" \
@@ -407,32 +586,40 @@ mac_swap() {
   # Transactional swap: stage a full copy, move the old bundle aside, move
   # the copy in. Every step checked; a failed final move ROLLS BACK so the
   # user always has a launchable app, and the result file tells the truth.
-  # A failed rebuild left release/ holding the OLD build: nothing new to install.
+  # The code update already committed, so every failure here is a follow-up
+  # warning on an ok:true result, never "still on the previous version".
   if [ "$FINAL_CODE" -eq 0 ] && [ "$APP_REBUILD_FAILED" -eq 0 ] && [ -n "$rebuilt" ] \
       && [ -d "$RELAUNCH_TARGET" ] && [ "$rebuilt" != "$RELAUNCH_TARGET" ]; then
     publish_stage "Installing the new app"
-    rm -rf "$RELAUNCH_TARGET.new" "$RELAUNCH_TARGET.old" 2>/dev/null || true
+    mac_bundle_recover "$RELAUNCH_TARGET"
     if ! /usr/bin/ditto "$rebuilt" "$RELAUNCH_TARGET.new"; then
       rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
-      DONE_NOTE="Update complete, but the new app could not be staged; the previous version was kept. Run the update again."
-      log "WARNING: bundle copy failed; keeping existing app"
-    elif ! mv "$RELAUNCH_TARGET" "$RELAUNCH_TARGET.old"; then
+      DONE_NOTE="Hermes was updated, but the new app could not be staged; the previous app was kept. Run the update again."
+      add_warning "app-swap" "bundle copy failed; previous app kept"
+      return
+    fi
+    # The two renames are one critical section: a signal between them would
+    # leave no app at the user's path. Defer HUP/INT/QUIT/TERM across it;
+    # SIGKILL there is finished by mac_bundle_recover on the next run.
+    trap '' HUP INT QUIT TERM
+    if ! mv "$RELAUNCH_TARGET" "$RELAUNCH_TARGET.old"; then
       rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
-      DONE_NOTE="Update complete, but the new app could not replace the old one; the previous version was kept. Run the update again."
-      log "WARNING: could not move old bundle aside; keeping existing app"
+      DONE_NOTE="Hermes was updated, but the new app could not replace the old one; the previous app was kept. Run the update again."
+      add_warning "app-swap" "could not move the old bundle aside; previous app kept"
     elif ! mv "$RELAUNCH_TARGET.new" "$RELAUNCH_TARGET"; then
       if mv "$RELAUNCH_TARGET.old" "$RELAUNCH_TARGET"; then
         rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
-        DONE_NOTE="Update complete, but the new app could not be installed; the previous version was restored. Run the update again."
-        log "WARNING: bundle install failed; rolled back to the previous app"
+        DONE_NOTE="Hermes was updated, but the new app could not be installed; the previous app was restored. Run the update again."
+        add_warning "app-swap" "bundle install failed; rolled back to the previous app"
       else
-        FINAL_CODE=7 FINAL_MSG="The update finished but installing the new app failed and the previous app could not be restored. Reinstall Hermes (the rebuilt app is at $rebuilt)."
-        log "ERROR: bundle install failed AND rollback failed"
+        DONE_NOTE="Hermes was updated, but installing the new app failed and the previous app could not be restored. Reinstall Hermes (the rebuilt app is at $rebuilt)."
+        add_warning "app-swap" "bundle install failed AND rollback failed"
       fi
     else
       rm -rf "$RELAUNCH_TARGET.old" 2>/dev/null || true
       log "swapped app bundle"
     fi
+    trap 'on_signal HUP' HUP; trap 'on_signal INT' INT; trap 'on_signal QUIT' QUIT; trap 'on_signal TERM' TERM
   fi
 }
 
@@ -443,8 +630,8 @@ deliver_outcome() { # the truth-determining half: swap bundles / gate the relaun
   else
     linux_gate
     if [ "$GATE" != "relaunch" ] && [ "$FINAL_CODE" -eq 0 ]; then
-      DONE_NOTE="${DONE_NOTE:+$DONE_NOTE }$GATE_MSG"
-      log "no relaunch ($GATE): $GATE_MSG"
+      DONE_NOTE="$GATE_MSG"
+      add_warning "relaunch" "$GATE: $GATE_MSG"
     fi
   fi
 }
@@ -453,6 +640,12 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
   # part of the outcome — gille's review). Returns nonzero when a launch
   # was due but did not verifiably happen; caller downgrades to manual.
   [ -n "$RELAUNCH_TARGET" ] || return 0
+  if [ "$DESKTOP_PID" -gt 0 ] 2>/dev/null && ident_alive "$DESKTOP_PID" "$DESKTOP_CT"; then
+    # The Desktop never quit (exit 4) or refused us: it is still open, so a
+    # second instance would only fight its single-instance lock.
+    log "relaunch skipped: the Desktop (pid $DESKTOP_PID) is still running"
+    return 0
+  fi
   if [ "$(uname)" = "Darwin" ]; then
     # A supplied target that no longer exists is a REJECTED launch (the
     # swap failed badly or the bundle vanished) — not "no launch due".
@@ -467,7 +660,9 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
     # immediate exec failure (ENOENT, ELF mismatch, dead sandbox) dies
     # within the window and downgrades to manual instead of lying.
     (cd "${RELAUNCH_CWD:-/}" 2>/dev/null || cd /
-     setsid "$RELAUNCH_TARGET" ${RELAUNCH_ARGS[@]+"${RELAUNCH_ARGS[@]}"} >/dev/null 2>&1 &
+     # The relaunched app must not inherit the hand-off's update env.
+     env -u HERMES_UPDATE_STATUS_FILE -u HERMES_UPDATE_STARTED_AT -u HERMES_UPDATE_HANDOFF_PID -u PYTHONUNBUFFERED \
+       setsid "$RELAUNCH_TARGET" ${RELAUNCH_ARGS[@]+"${RELAUNCH_ARGS[@]}"} >/dev/null 2>&1 &
      echo $! > "$STATUS.launchpid") || { log "WARNING: relaunch spawn failed"; return 1; }
     local lp
     lp="$(cat "$STATUS.launchpid" 2>/dev/null)"; rm -f "$STATUS.launchpid" 2>/dev/null
@@ -479,12 +674,23 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
 
 MANUAL=0  # 1 = update landed but the user must act (result protocol field)
 
-write_result() {
-  printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","channel":"%s","finished_at":%s}' \
+write_result() { # atomic (tmp + rename); started_at ties it to marker line 2
+  local w="" item
+  for item in ${WARNINGS[@]+"${WARNINGS[@]}"}; do
+    w="$w${w:+,}\"$(json_escape "$item")\""
+  done
+  printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","channel":"%s","started_at":%s,"finished_at":%s,"warnings":[%s]}' \
     "$([ "$FINAL_CODE" -eq 0 ] && echo true || echo false)" "$FINAL_CODE" \
     "$([ "$MANUAL" -eq 1 ] && echo true || echo false)" \
-    "$(json_escape "$FINAL_MSG")" "$(json_escape "$BRANCH")" "$(json_escape "$CHANNEL")" "$(date +%s)" \
-    > "$RESULT.tmp" 2>/dev/null && mv -f "$RESULT.tmp" "$RESULT" 2>/dev/null || true
+    "$(json_escape "$FINAL_MSG")" "$(json_escape "$BRANCH")" "$(json_escape "$CHANNEL")" \
+    "${STARTED_AT:-0}" "$(date +%s)" "$w" \
+    > "$RESULT.$$.tmp" 2>/dev/null && mv -f "$RESULT.$$.tmp" "$RESULT" 2>/dev/null
+  rm -f "$RESULT.$$.tmp" 2>/dev/null || true
+}
+
+add_warning() { # step reason -- post-commit follow-up failed; the update still counts
+  WARNINGS+=("$1: $2")
+  log "WARNING ($1): $2"
 }
 
 finish() {
@@ -502,23 +708,20 @@ finish() {
   [ "$FINAL_CODE" -eq 0 ] && [ -n "$DONE_NOTE" ] && { FINAL_MSG="$DONE_NOTE"; MANUAL=1; }
   write_result
 
-  if [ "$NO_MARKER_CLEANUP" -eq 0 ] && [ "$(head -1 "$MARKER" 2>/dev/null | tr -d '[:space:]')" = "$$" ]; then
-    rm -f "$MARKER" 2>/dev/null || true
-  fi
+  marker_release
 
   if [ "$FINAL_CODE" -ne 0 ]; then
     publish "error" "$FINAL_MSG"; stop_ui leave-window
     launch_app || true   # error path still tries to bring the app back
-    rm -f "$STATUS" "$STATUS.tmp" "$LOG_DIR/desktop-update-ui-port" 2>/dev/null || true
+    rm -f "$STATUS" "$STATUS.tmp" "$STATUS.port" 2>/dev/null || true
     return
   fi
 
   if [ -n "$DONE_NOTE" ]; then
-    if [ "$(uname)" = "Darwin" ] || [ "$GATE" = "relaunch" ]; then
-      # mac DONE_NOTE = swap failed but the PREVIOUS bundle was kept/rolled
-      # back, or (any OS) the Desktop rebuild is owed — bring the kept app
-      # back up; the note still tells the user what to do.
-      # A gated linux outcome (skew/manual) skips the launch BY DESIGN.
+    if [ "$GATE" != "skew" ] && [ "$GATE" != "manual" ]; then
+      # A kept/rolled-back mac bundle or a failed post-commit follow-up: bring
+      # the app back up; the note still tells the user what to re-run. A gated
+      # linux outcome (skew/manual) skips the launch BY DESIGN.
       if ! launch_app; then
         # Even the kept bundle didn't come back: the durable message must
         # carry BOTH facts (update ok, previous app not reopened).
@@ -537,7 +740,7 @@ finish() {
     write_result
     publish "manual" "$FINAL_MSG"; stop_ui leave-window
   fi
-  rm -f "$STATUS" "$STATUS.tmp" "$LOG_DIR/desktop-update-ui-port" 2>/dev/null || true
+  rm -f "$STATUS" "$STATUS.tmp" "$STATUS.port" 2>/dev/null || true
 }
 trap finish EXIT
 
@@ -706,6 +909,11 @@ if [ "$SELF_TEST_UI" -eq 1 ]; then
 fi
 
 # ── the actual job ──────────────────────────────────────────────────────────
+# Everything below is ONE brace group: bash parses a compound command whole
+# before running it, so `hermes update` rewriting this very file (the script
+# lives in the checkout it updates) can never feed the rest of the run from a
+# shifted offset of the new text.
+{
 # Electron's macOS quit teardown sends SIGTERM to its still-parented updater
 # child on this machine. `detached + unref` gives the child a process group but
 # does not re-parent it before `before-quit` runs, so the hand-off consistently
@@ -724,28 +932,42 @@ if [ "$HANDOFF_DAEMONIZED" -ne 1 ]; then
   # as a flag. Appending here previously left HANDOFF_DAEMONIZED unset on
   # every re-exec, causing this block to re-fire forever (self-exec loop,
   # unbounded argv growth) whenever relaunch args were present.
+  # nohup leaves SIGHUP ignored, and an ignored-at-entry signal can never be
+  # re-trapped by bash, so every child (hermes update, gateways it starts, the
+  # relaunched app) inherited it. The daemon has no terminal after setsid:
+  # restore the default before exec.
   /usr/bin/nohup /usr/bin/python3 -c '
-import os, sys
+import os, signal, sys
 env = os.environ.copy()
 os.setsid()
+signal.signal(signal.SIGHUP, signal.SIG_DFL)
 os.execve("/bin/bash", ["/bin/bash", sys.argv[1], *sys.argv[2:]], env)
 ' "$SCRIPT_DIR/posix.sh" --daemonized "${ORIGINAL_ARGS[@]}" >/dev/null 2>&1 &
-  exit 0
+  DAEMON_PID=$!
+  # Contract C2: the hand-off has started only once the daemon has claimed
+  # the marker. Report a daemon that never got that far (no /usr/bin/python3,
+  # a refused claim) as a failed launch so the Desktop stays up.
+  for _ in $(seq 1 100); do
+    [ "$(head -1 "$MARKER" 2>/dev/null | tr -d '[:space:]')" = "$DAEMON_PID" ] && exit 0
+    if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+      wait "$DAEMON_PID"; code=$?
+      [ "$code" -ne 0 ] || code=70
+      exit "$code"
+    fi
+    sleep 0.1
+  done
+  exit 70
 fi
 
 # Electron terminates the entire detached updater process group during quit,
 # including the loopback status server.  Arm TERM immunity before `start_ui`
-# so the shim server and the later `hermes update` subprocess both inherit
-# SIG_IGN.  The orchestrator restores its normal TERM handler after the update
-# command has returned; the already-running server keeps the inherited setting
-# until normal cleanup closes it.
+# so the shim server inherits SIG_IGN.  The orchestrator restores its normal
+# TERM handler after the update command has returned.
 trap '' TERM
-log "hand-off start: root=$INSTALL_ROOT branch=$BRANCH channel=$CHANNEL desktopPid=$DESKTOP_PID pid=$$"
-rm -f "$RESULT" 2>/dev/null || true
 
-# Marker claim: same cross-process lock contract as windows.ps1 /
-# update_lock.py (the `hermes update` child adopts it via process ancestry).
-# The Desktop supplies one acquisition time for the whole ownership chain.
+# Marker claim FIRST (contract C1/C2): before the Desktop wait, the UI or any
+# probe. The Desktop supplies one acquisition time for the whole ownership
+# chain; a bridge marker owned by --desktop-pid is adopted.
 NOW="$(date +%s)"
 STARTED_AT="${HERMES_UPDATE_STARTED_AT:-$NOW}"
 case "$STARTED_AT" in ''|*[!0-9]*) STARTED_AT="$NOW" ;; esac
@@ -756,18 +978,52 @@ if [ "${#STARTED_AT}" -ne "${#NOW}" ] \
     || [[ "$STARTED_AT" > "$NOW" || "$STARTED_AT" < "$MIN_STARTED_AT" ]]; then
   STARTED_AT="$NOW"
 fi
-printf '%s\n%s\n' "$$" "$STARTED_AT" > "$MARKER" 2>/dev/null || log "WARNING: could not write update marker"
+DESKTOP_CT="$(proc_ct "$DESKTOP_PID")"
+MARKER_REFUSED_PID=""
+if ! marker_claim; then
+  FINAL_CODE=2 FINAL_MSG="Another Hermes update is already running (process $MARKER_REFUSED_PID). Nothing was changed. Wait for it to finish, then try again."
+  log "$FINAL_MSG"
+  exit 2
+fi
+log "hand-off start: root=$INSTALL_ROOT branch=$BRANCH channel=$CHANNEL desktopPid=$DESKTOP_PID pid=$$"
 
 if [ "$SELF_TEST_MARKER" -eq 1 ]; then
   trap - EXIT
   exit 0
 fi
 
+# Start-of-run recovery of litter only a dead hand-off can leave (we hold the
+# marker, so no other hand-off is running): an interrupted app swap, a TCC heal
+# backup of a killed run, UI/probe temp files whose owning pid is gone.
+case "$RELAUNCH_TARGET" in *.app) mac_bundle_recover "$RELAUNCH_TARGET" ;; esac
+for _stale in "$INSTALL_ROOT"/venv/bin/*.tcc-heal-old.* "$INSTALL_ROOT"/venv/bin/*.tcc-heal-new.* \
+    "${TMPDIR:-/tmp}"/hermes-update-status.[0-9]* "${TMPDIR:-/tmp}"/hermes-update-probe.[0-9]* \
+    "${TMPDIR:-/tmp}"/hermes-update-ui-[0-9]*-*; do
+  [ -e "$_stale" ] || [ -L "$_stale" ] || continue
+  case "$_stale" in
+    *.tcc-heal-*) _owner="${_stale##*.}" ;;
+    *) _owner="$(printf '%s' "${_stale##*/}" | sed -n 's/^[^0-9]*\([0-9][0-9]*\).*/\1/p')" ;;
+  esac
+  case "$_owner" in ''|*[!0-9]*) continue ;; esac
+  { [ "$_owner" != "$$" ] && ! pid_alive "$_owner"; } || continue
+  case "$_stale" in
+    *.tcc-heal-old.*)
+      _orig="${_stale%.tcc-heal-old.*}"
+      if [ ! -e "$_orig" ] && [ ! -L "$_orig" ]; then
+        mv -f "$_stale" "$_orig" 2>/dev/null && log "restored $_orig from a killed TCC heal"
+      else
+        rm -f "$_stale" 2>/dev/null
+      fi ;;
+    *) rm -rf "$_stale" 2>/dev/null ;;
+  esac
+done
+
 # Wait out the Desktop (FAIL CLOSED: updating under live backends bricks).
+# Zombie-aware and identity-checked: a reused pid is not the Desktop.
 if [ "$DESKTOP_PID" -gt 0 ] 2>/dev/null; then
-  for _ in $(seq 1 100); do kill -0 "$DESKTOP_PID" 2>/dev/null || break; sleep 0.3; done
-  if kill -0 "$DESKTOP_PID" 2>/dev/null; then
-    FINAL_CODE=4 FINAL_MSG="Update aborted: the Hermes window (pid $DESKTOP_PID) did not exit within 30s. Nothing was changed. Close Hermes fully and try again."
+  for _ in $(seq 1 200); do ident_alive "$DESKTOP_PID" "$DESKTOP_CT" || break; sleep 0.3; done
+  if ident_alive "$DESKTOP_PID" "$DESKTOP_CT"; then
+    FINAL_CODE=4 FINAL_MSG="Update aborted: the Hermes window (pid $DESKTOP_PID) did not exit within 60s. Nothing was changed. Close Hermes fully and try again."
     log "$FINAL_MSG"; exit "$FINAL_CODE"
   fi
 fi
@@ -794,7 +1050,7 @@ select_update_invoke() {
     expected="$(cd "$INSTALL_ROOT" && pwd -P)" || return 1
     for candidate in "$HOME/.local/bin/hermes" "$HERMES_HOME/bin/hermes"; do
       [ -x "$candidate" ] || continue
-      version="$("$candidate" --version 2>/dev/null)" || continue
+      version="$(run_bounded 60 "$candidate" --version)" || continue
       reported="$(printf '%s\n' "$version" | sed -n 's/^Install directory: //p')"
       [ -d "$reported" ] || continue
       [ "$(cd "$reported" && pwd -P)" = "$expected" ] || continue
@@ -832,15 +1088,18 @@ export PYTHONUNBUFFERED=1
 # shim's UI through this file; without a watching UI the variable is simply
 # absent and the helper no-ops.
 export HERMES_UPDATE_STATUS_FILE="$STATUS"
+# `hermes update` runs under OUR marker claim (contract C1 rule 4/6).
+export HERMES_UPDATE_HANDOFF_PID="$$"
 # --keep-stash: never re-apply local source edits after the update (they stay
 # parked in git stash). Probe --help first: older installed backends don't
 # know the flag and argparse would abort with exit 2, which collides with the
-# "close all Hermes windows" sentinel.
+# "close all Hermes windows" sentinel. The probe is bounded: a hung launcher
+# must not hold the marker forever.
 KEEP_STASH=""
-if "${UPDATE_INVOKE[@]}" update --help 2>/dev/null | grep -q -- '--keep-stash'; then
+if run_bounded 60 "${UPDATE_INVOKE[@]}" update --help | grep -q -- '--keep-stash'; then
   KEEP_STASH="--keep-stash"
 else
-  log "installed hermes predates --keep-stash; running without it"
+  log "installed hermes predates --keep-stash (or the probe failed); running without it"
 fi
 # --gateway restarts the local messaging gateway after the update. The
 # Desktop omits it (--no-gateway) when it is served by a remote gateway
@@ -852,10 +1111,20 @@ if [ "$NO_GATEWAY" -eq 1 ]; then
   GATEWAY_FLAG=""
   log "update requested without --gateway (remote-served Desktop)"
 fi
+
+run_update() { # streams straight into the log (a killed run keeps its output);
+  # OUT = this run's slice of the log. TERM goes back to default for the child
+  # so neither it nor anything it starts (gateways) inherits our SIG_IGN.
+  local offset
+  offset="$(wc -c < "$LOG" 2>/dev/null | tr -d '[:space:]')"
+  ( trap - TERM; exec "${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}" ) >> "$LOG" 2>&1
+  CODE=$?
+  OUT="$(tail -c +"$(( ${offset:-0} + 1 ))" "$LOG" 2>/dev/null)"
+}
+
 log "running: ${UPDATE_INVOKE[*]} update --yes $GATEWAY_FLAG $KEEP_STASH ${TARGET_ARGS[*]}"
 publish_stage "Updating code and dependencies"
-OUT="$("${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}" 2>&1)"; CODE=$?
-printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
+run_update
 log "hermes update exit code: $CODE"
 
 if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
@@ -877,45 +1146,12 @@ if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -ne 0 ] && [ "$CODE" -ne 2 ]; then
   log "retrying once (freshly pulled fix loads on the second run)"
   publish_stage "Retrying update"
   select_update_invoke || { FINAL_CODE=3 FINAL_MSG="Updated installation launcher is missing; repair this installation."; exit 3; }
-  OUT="$("${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}" 2>&1)"; CODE=$?
-  printf '%s\n' "$OUT" >> "$LOG" 2>/dev/null
+  run_update
   log "retry exit code: $CODE"
 fi
 trap 'on_signal TERM' TERM
 
-# Pre-PM update code could report a failed desktop build with exit zero.
-# Current composition propagates failure and never enters this legacy repair.
-if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; then
-  log "desktop build failed inside hermes update; retrying build"
-  publish_stage "Rebuilding Desktop"
-  "${UPDATE_INVOKE[@]}" desktop --force-build --build-only >> "$LOG" 2>&1 || {
-    FINAL_CODE=6 FINAL_MSG="Code and dependencies updated, but the Desktop app rebuild failed - you are running the previous build. Run hermes desktop --force-build from a terminal to retry."
-    exit 6
-  }
-fi
-
 if [ "$CODE" -eq 0 ]; then FINAL_CODE=0 FINAL_MSG="Update complete."
-  # Contract C3: a Desktop build that fails after the code committed is an owed
-  # follow-up (hermes update exits 0 and prints one whole "Desktop app build
-  # owed:" line for it; the follow-up text itself is truncated). The user is on
-  # the new Hermes, but this app was not rebuilt: say so and say how to fix it,
-  # never "finished OK" and never "still on the previous version".
-  if printf '%s\n' "$OUT" | grep -Eq '^[[:space:]]*Desktop app build owed: '; then
-    APP_REBUILD_FAILED=1
-    DONE_NOTE="Hermes was updated, but the Desktop app could not be rebuilt, so it still runs its old build. Run hermes desktop --force-build in a terminal to rebuild it; the update log has the build error."
-    log "desktop app build is an owed follow-up of the committed update"
-  fi
-  # Every other owed follow-up (a gateway still on the old code, a Windows
-  # resume, a lost completion, channel adoption, maintenance...) prints one
-  # whole "Update follow-up '<step>' did not finish:" line. None of them may
-  # end as a plain "Update complete." (review regression 1).
-  OWED_STEPS="$(owed_followup_steps)"
-  if [ -n "$OWED_STEPS" ]; then
-    case " $OWED_STEPS " in *" gateway_restart "*) OWED_HINT=" Run hermes gateway restart to move the messaging gateway onto the new code now." ;; *) OWED_HINT="" ;; esac
-    if [ -n "$DONE_NOTE" ]; then DONE_NOTE="$DONE_NOTE Follow-up steps still owed: $OWED_STEPS.$OWED_HINT"
-    else DONE_NOTE="Hermes was updated, but some follow-up steps did not finish ($OWED_STEPS). The next launch or hermes update retries them; the update log has the details.$OWED_HINT"; fi
-    log "owed follow-ups of the committed update: $OWED_STEPS"
-  fi
 else
   FINAL_CODE="$CODE" FINAL_MSG="Update failed (exit $CODE). Run hermes debug share in a terminal to send a report."
   # The bricked-venv class is fixable and must not read as a generic exit 1:
@@ -926,4 +1162,19 @@ else
     FINAL_MSG="Update failed: the Python interpreter inside $INSTALL_ROOT/venv cannot start (heal state: $TCC_HEAL_STATE). Reinstall the runtime with the Hermes installer, or run hermes doctor --fix from a terminal if any hermes command still works."
   fi
 fi
+
+# Pre-PM update code could report a failed desktop build with exit zero.
+# Current composition propagates failure and never enters this legacy repair.
+# The code already committed: a failed rebuild is a follow-up warning on an
+# ok:true result (contract C3), never "you're still on the previous version".
+if [ "$LEGACY_INSTALL" -eq 1 ] && [ "$CODE" -eq 0 ] && printf '%s' "$OUT" | grep -q "Desktop build failed"; then
+  log "desktop build failed inside hermes update; retrying build"
+  publish_stage "Rebuilding Desktop"
+  if ! ( trap - TERM; exec "${UPDATE_INVOKE[@]}" desktop --force-build --build-only ) >> "$LOG" 2>&1; then
+    APP_REBUILD_FAILED=1
+    DONE_NOTE="Hermes was updated, but the Desktop app rebuild failed - you are running the previous app build. Run hermes desktop --force-build from a terminal to retry."
+    add_warning "desktop-rebuild" "hermes desktop --force-build --build-only failed"
+  fi
+fi
 exit "$FINAL_CODE"
+}

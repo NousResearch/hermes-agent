@@ -186,8 +186,30 @@ class SubdirectoryHintTracker:
             return None
         if self._home_is_working_dir:
             return None
-        all_hints = [h for d in self._extract_directories(tool_name, tool_args) if (h := self._load_hints_for_directory(d))]
+        read_targets = self._read_targets(tool_args)
+        all_hints = [
+            h for d in self._extract_directories(tool_name, tool_args)
+            if (h := self._load_hints_for_directory(d, read_targets=read_targets))
+        ]
         return "\n\n" + "\n\n".join(all_hints) if all_hints else None
+
+    def _read_targets(self, args: Dict[str, Any]) -> Set[Path]:
+        """Resolved files named directly by the call's path args. A hint file the
+        model is reading itself must not come back a second time as a hint
+        (reading ``apps/desktop/AGENTS.md`` doubled the file in the result)."""
+        targets: Set[Path] = set()
+        for key in _PATH_ARG_KEYS:
+            val = args.get(key)
+            if not (isinstance(val, str) and val.strip()):
+                continue
+            try:
+                p = Path(val).expanduser()
+                p = (p if p.is_absolute() else self.working_dir / p).resolve()
+                if p.is_file():
+                    targets.add(p)
+            except (OSError, ValueError, RuntimeError):
+                pass
+        return targets
 
     def _extract_directories(self, tool_name: str, args: Dict[str, Any]) -> list:
         """Extract directory paths from tool call arguments."""
@@ -271,7 +293,7 @@ class SubdirectoryHintTracker:
             return True  # outside the tree — already rejected upstream
         return any(part in _EXCLUDED_DIR_NAMES for part in rel_parts)
 
-    def _load_hints_for_directory(self, directory: Path) -> Optional[str]:
+    def _load_hints_for_directory(self, directory: Path, read_targets: Optional[Set[Path]] = None) -> Optional[str]:
         """Load the first hint file in *directory*; formatted text or None."""
         self._loaded_dirs.add(directory)
         if self._home_is_working_dir or not self._within_working_dir(directory):
@@ -295,6 +317,11 @@ class SubdirectoryHintTracker:
                     logger.debug("Skipping duplicate hint content at %s (digest %s)", hint_path, digest[:12])
                     return None
                 self._loaded_digests.add(digest)
+                if target in (read_targets or ()):
+                    # The call itself returns this file; the digest is now loaded so a later
+                    # visit to the directory does not re-send it either.
+                    logger.debug("Skipping hint %s: the tool call reads that file directly", hint_path)
+                    return None
                 # Same security scan as startup context loading.
                 content = _scan_context_content(content, filename)
                 rel_path = self._display_path(hint_path)

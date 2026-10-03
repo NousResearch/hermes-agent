@@ -243,8 +243,11 @@ def _strategy_block_anchor(content: str, pattern: str) -> list[Span]:
         i for i in range(len(norm_content_lines) - n + 1)
         if norm_content_lines[i].strip() == first_line
         and norm_content_lines[i + n - 1].strip() == last_line}
-    # Looser thresholds (0.10/0.30) matched unrelated blocks; these are the safe floor.
-    threshold = 0.50 if len(potential_matches) == 1 else 0.70
+    # Looser thresholds (0.10/0.30) matched unrelated blocks; a single
+    # anchor-matching candidate still binds the wrong neighbor at 0.50, so
+    # require 0.70 in all cases (fail closed, #93698).
+    # ponytail: flat 0.70, no per-shape tuning; revisit if legit loose edits regress.
+    threshold = 0.70
     pattern_middle = '\n'.join(pattern_lines[1:-1])
 
     def similar(i: int) -> bool:

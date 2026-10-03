@@ -45,6 +45,11 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         # code + endpoint, never gh's stderr (credentials/host details).
         denied = re.search(r"HTTP (40[134])", exc.stderr or "")
         if denied:
+            if (denied[1] == "403"
+                    and ("/rules/branches/" in endpoint or endpoint.endswith("/protection"))
+                    and "Upgrade to GitHub Pro or make this repository public to enable this feature."
+                    in (exc.stderr or "")):
+                raise _GatePlanError from None
             raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
         if exc.returncode == 4:  # gh's authentication-required exit: this profile has no login
             raise _GateAuthError(f"gh has no login for {endpoint.split('?')[0]}") from None
@@ -59,6 +64,9 @@ class _GateAuthError(RuntimeError):
     """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
     this profile's login cannot see the repo — an identity problem to fix, not
     an infrastructure blip to retry."""
+
+class _GatePlanError(RuntimeError):
+    """The branch-rules REST feature is unavailable on this private repository's plan."""
 
 
 def _gh_env(profile_home: str | None) -> dict[str, str] | None:
@@ -135,15 +143,51 @@ def collect_acceptance(contract: str, published_pr: str | None,
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
-                     paginate=True, profile_home=profile_home)
-        for page in rules:
-            for rule in page:
-                if rule["type"] == "required_status_checks":
-                    required.update((r["context"], r.get("integration_id"))
-                                    for r in rule["parameters"]["required_status_checks"])
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                         paginate=True, profile_home=profile_home)
+        except _GatePlanError:
+            # A plan-limited endpoint does not prove that no other rules apply.
+            # GraphQL's includeParents covers repository AND inherited org rulesets;
+            # if its count is unavailable or nonzero, do not infer requirements.
+            inventory = _api("graphql", query='''{repository(owner:%s,name:%s){isPrivate
+                rulesets(first:1,includeParents:true){totalCount}}}''' % (
+                    json.dumps(owner), json.dumps(name)), profile_home=profile_home)["data"]["repository"]
+            if inventory is None or inventory["isPrivate"] is not True or inventory["rulesets"]["totalCount"] != 0:
+                raise ValueError("Cannot establish absence of applicable rulesets")
+            if not (pr.get("baseRef") or {}).get("branchProtectionRule"):
+                # GraphQL's null is ambiguous on its own (no rule vs. no read scope
+                # on this field). The classic REST endpoint requires the identical
+                # paid plan as the rules API; a matching plan-limited 403 there is
+                # independent proof classic protection cannot exist on this repo at
+                # all (not merely unreadable to this login), so absence is verified
+                # the same way rulesets absence already is above.
+                try:
+                    _api(f"repos/{repo}/branches/{quote(branch, safe='')}/protection",
+                         profile_home=profile_home)
+                except _GatePlanError:
+                    pass
+                else:
+                    raise ValueError("Cannot read classic branch protection")
+            receipt["rules_source"] = "classic-branch-protection; rulesets verified absent"
+        else:
+            for page in rules:
+                for rule in page:
+                    if rule["type"] == "required_status_checks":
+                        required.update((r["context"], r.get("integration_id"))
+                                        for r in rule["parameters"]["required_status_checks"])
+        if not required and receipt.get("rules_source"):
+            # GitHub has verifiably no enforceable protection on this plan (rules
+            # API and classic protection both plan-limited, rulesets confirmed
+            # absent above): there is no named "required check" list to read from
+            # GitHub at all. The only fail-closed proof left is that every check
+            # GitHub actually reported for this exact head completed successfully
+            # (a `skipped` conclusion is a lane's own `if:` condition declining to
+            # run, not a pass GitHub is vouching for — it is excluded, never
+            # silently counted as green) and that at least one check ran.
+            receipt["rules_source"] += "; no enforceable protection on this plan, falling back to all-reported-checks"
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
-        if not required:
+        if not required and not receipt.get("rules_source"):
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
             return receipt
         pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
@@ -154,29 +198,66 @@ def collect_acceptance(contract: str, published_pr: str | None,
         statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
                                                        paginate=True, profile_home=profile_home) for s in page]
         outcomes = []
-        for context, app_id in sorted(required, key=str):
-            matching = [r for r in runs if r["name"] == context and
-                        (app_id in (None, -1) or r["app"]["id"] == app_id)]
-            # A legacy status can satisfy an unpinned context, but never a check pinned to an app.
-            legacy = [s for s in statuses if s["context"] == context] if app_id in (None, -1) else []
-            selected = matching + ([max(legacy, key=lambda s: s["id"])] if legacy else [])
-            if not selected:
+        if required:
+            for context, app_id in sorted(required, key=str):
+                matching = [r for r in runs if r["name"] == context and
+                            (app_id in (None, -1) or r["app"]["id"] == app_id)]
+                # A legacy status can satisfy an unpinned context, but never a check pinned to an app.
+                legacy = [s for s in statuses if s["context"] == context] if app_id in (None, -1) else []
+                selected = matching + ([max(legacy, key=lambda s: s["id"])] if legacy else [])
+                if not selected:
+                    outcomes.append("missing")
+                    receipt["checks"].append({"name": context, "classification": "missing", "head_sha": sha})
+                for check in selected:
+                    is_run = "conclusion" in check
+                    outcome = check.get("conclusion") if is_run else check["state"]
+                    classification = _classify(check, sha, outcome, is_run)
+                    outcomes.append(classification)
+                    receipt["checks"].append({"name": context, "id": check["id"],
+                        "url": check.get("html_url") or check.get("target_url"),
+                        "head_sha": check.get("head_sha", check.get("sha")),
+                        "classification": classification, "conclusion": outcome})
+        else:
+            # Fallback gate: no named required check exists to look up, so every
+            # completed run reported for this exact head stands in for it. A run
+            # still `pending`/`in_progress` blocks exactly like a named pending
+            # check would; `skipped`/`neutral` are excluded (a lane opting out is
+            # not the lane passing) rather than treated as green.
+            if not runs:
                 outcomes.append("missing")
-                receipt["checks"].append({"name": context, "classification": "missing", "head_sha": sha})
-            for check in selected:
-                is_run = "conclusion" in check
-                outcome = check.get("conclusion") if is_run else check["state"]
-                classification = _classify(check, sha, outcome, is_run)
-                outcomes.append(classification)
-                receipt["checks"].append({"name": context, "id": check["id"],
+                receipt["checks"].append({"name": "(no checks reported)", "classification": "missing", "head_sha": sha})
+            for check in runs:
+                classification = _classify(check, sha, check.get("conclusion"), True)
+                entry = {"name": check["name"], "id": check["id"],
                     "url": check.get("html_url") or check.get("target_url"),
                     "head_sha": check.get("head_sha", check.get("sha")),
-                    "classification": classification, "conclusion": outcome})
+                    "classification": classification, "conclusion": check.get("conclusion")}
+                receipt["checks"].append(entry)
+                if classification == "infra" and check.get("conclusion") in ("skipped", "neutral"):
+                    continue  # opted out, not a blocking outcome
+                outcomes.append(classification)
         # Re-read after all pages: old-head successes are never transferable.
         current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
         if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
             return receipt
+        if receipt.get("rules_source"):
+            refreshed = _api("graphql", query='''{repository(owner:%s,name:%s){
+                pullRequest(number:%d){headRefOid baseRefName state}
+                rulesets(first:1,includeParents:true){totalCount}
+                ref(qualifiedName:%s){branchProtectionRule{
+                    requiredStatusChecks{context app{databaseId}}}}}}''' % (
+                    json.dumps(owner), json.dumps(name), number, json.dumps("refs/heads/" + branch)),
+                profile_home=profile_home)["data"]["repository"]
+            refreshed_protection = ((refreshed or {}).get("ref") or {}).get("branchProtectionRule") or {}
+            refreshed_required = {(r["context"], (r.get("app") or {}).get("databaseId"))
+                                  for r in refreshed_protection.get("requiredStatusChecks", [])}
+            refreshed_pr = refreshed["pullRequest"]
+            if (refreshed_pr["headRefOid"] != sha or refreshed_pr["baseRefName"] != branch
+                    or refreshed_pr["state"] not in {"OPEN", "MERGED"}
+                    or refreshed["rulesets"]["totalCount"] != 0 or refreshed_required != required):
+                receipt.update(classification="stale", detail="Branch requirements changed while collecting evidence; retry.")
+                return receipt
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
         receipt["ok"] = receipt["classification"] == "success"
         return receipt

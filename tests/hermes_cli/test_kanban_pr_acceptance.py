@@ -20,12 +20,42 @@ def github(tmp_path, monkeypatch):
             state["requests"].append(self.path)
             sha = state["head"]
             if self.path == "/graphql":
-                value = {"data": {"repository": {"pullRequest": {
+                state["graphql_reads"] = state.get("graphql_reads", 0) + 1
+                if state.get("refresh_head_change") and state["graphql_reads"] == 3:
+                    state["head"] = sha = "b" * 40
+                protection = state.get("protection", {"requiredStatusChecks": [
+                    {"context": "required", "app": {"databaseId": 1}}]})
+                repository = {"pullRequest": {
                     "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
-                    "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
-                        {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+                    "baseRef": {"branchProtectionRule": protection}},
+                    "isPrivate": True,
+                    "rulesets": {"totalCount": state.get("rulesets_count", 0)},
+                    "ref": {"branchProtectionRule": state.get("ref_protection", protection)}}
+                if state.get("rulesets_unknown"):
+                    repository.pop("rulesets")
+                value = {"data": {"repository": repository}}
             elif "/rules/branches/" in self.path:
+                if state.get("rules_denial"):
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(state["rules_denial"].encode())
+                    return
                 value = [[]]
+            elif self.path.endswith("/protection"):
+                # The classic branch-protection REST endpoint requires the same paid
+                # plan as the rules API on a private repo: plan-limited by default
+                # whenever the rules API is (real GitHub behaviour), unless the test
+                # explicitly asks for it to be readable (`classic_protection_readable`).
+                if state.get("classic_protection_readable"):
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"{}")
+                    return
+                self.send_response(403)
+                self.end_headers()
+                self.wfile.write(
+                    b"Upgrade to GitHub Pro or make this repository public to enable this feature.")
+                return
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
                        "app": {"id": 1}, "status": "in_progress" if state["conclusion"] == "pending" else "completed", "conclusion": state["conclusion"],
@@ -60,9 +90,12 @@ def github(tmp_path, monkeypatch):
     shim = tmp_path / "bin"
     shim.mkdir()
     gh = shim / "gh"
-    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
+    gh.write_text(f"#!{sys.executable}\nimport json,sys,urllib.request,urllib.error\n"
                   f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
-                  "print(urllib.request.urlopen(u).read().decode())\n")
+                  "try:\n    print(urllib.request.urlopen(u).read().decode())\n"
+                  "except urllib.error.HTTPError as exc:\n"
+                  "    print('gh: '+exc.read().decode()+' (HTTP '+str(exc.code)+')', file=sys.stderr)\n"
+                  "    sys.exit(1)\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -230,3 +263,49 @@ def test_assigned_card_with_unresolvable_profile_is_auth_not_ambient(tmp_path, m
             "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
     assert receipt["classification"] == "auth"
     assert "'ghost'" in receipt["detail"] and "cannot be resolved" in receipt["detail"]
+
+
+@pytest.mark.platforms("posix")
+def test_plan_limited_private_rules_use_verified_classic_protection(github):
+    """Exercise the real gh subprocess, HTTP 403, SQLite receipt, and exact-head checks."""
+    github["rules_denial"] = "Upgrade to GitHub Pro or make this repository public to enable this feature."
+    with connect() as conn:
+        for scenario, changes, expected, expected_required in (
+            ("success", {}, "success", [{"context": "required", "app_id": 1}]),
+            ("failed check", {"conclusion": "failure"}, "failure", None),
+            ("missing check", {"missing": True}, "missing", None),
+            ("unreadable rulesets", {"rulesets_unknown": True}, "infra", None),
+            ("rulesets exist", {"rulesets_count": 1}, "infra", None),
+            # GraphQL null is ambiguous alone; the classic REST endpoint is ALSO
+            # plan-limited here (matching real GitHub), which independently proves
+            # classic protection cannot exist at all -> verified absence, fallback
+            # to all-reported-checks (no named required check to read at all).
+            ("no classic protection, also plan-limited", {"protection": None}, "success", []),
+            # The classic endpoint being genuinely READABLE but still returning no
+            # rule is the truly ambiguous case GraphQL null cannot resolve on its
+            # own -> stays infra, never silently treated as absence.
+            ("no classic protection, but endpoint readable",
+             {"protection": None, "classic_protection_readable": True}, "infra", None),
+            ("rules change", {"ref_protection": {"requiredStatusChecks": []}}, "stale", None),
+            ("head change", {"head_change": True}, "stale", None),
+            ("head changes during refresh", {"refresh_head_change": True}, "stale", None),
+            ("unknown 403", {"rules_denial": "Resource not accessible by integration"}, "auth", None),
+        ):
+            github.update({"conclusion": "success", "head": "a" * 40, "rules_denial":
+                "Upgrade to GitHub Pro or make this repository public to enable this feature."})
+            for key in ("missing", "rulesets_unknown", "rulesets_count", "protection", "ref_protection",
+                        "head_change", "refresh_head_change", "graphql_reads", "classic_protection_readable"):
+                github.pop(key, None)
+            github.update(changes)
+            tid = kb.create_task(conn, title=scenario, completion_contract="acme/repo")
+            ok = kb.complete_task(conn, tid, result="done",
+                                  metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+            receipt = json.loads(conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0])
+            assert receipt["classification"] == expected, scenario
+            assert ok is (expected == "success"), scenario
+            assert (kb.get_task(conn, tid).status == "done") is ok
+            if ok:
+                assert receipt["checks"][0]["head_sha"] == "a" * 40
+                if expected_required is not None:
+                    assert receipt["required"] == expected_required

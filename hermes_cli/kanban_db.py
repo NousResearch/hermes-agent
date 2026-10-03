@@ -1324,6 +1324,41 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
     return cleaned
 
 
+def _default_max_runtime_seconds() -> Optional[int]:
+    """``kanban.default_max_runtime_seconds`` from config.yaml, or ``None``.
+
+    Applied by :func:`create_task` when a caller doesn't set its own
+    ``max_runtime_seconds`` — see #131802 (MAST, NeurIPS 2025, category:
+    Termination): cards with no runtime cap have no termination condition and
+    can run for hours unobserved. A falsy config value (``0``/``None``)
+    preserves the pre-existing uncapped behaviour.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        value = kanban_cfg.get("default_max_runtime_seconds")
+        return int(value) if value else None
+    except Exception:
+        return None
+
+
+def _default_review_max_runtime_seconds() -> Optional[int]:
+    """``kanban.default_review_max_runtime_seconds`` from config.yaml, or ``None``.
+
+    Applied by :func:`request_review` to shorten the implementation-sized
+    default cap once a card moves into review — see #131802.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
+        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+        value = kanban_cfg.get("default_review_max_runtime_seconds")
+        return int(value) if value else None
+    except Exception:
+        return None
+
+
 def create_task(
     conn: sqlite3.Connection, *, title: str, body: Optional[str] = None,
     assignee: Optional[str] = None, created_by: Optional[str] = None,
@@ -1361,6 +1396,12 @@ def create_task(
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
+    # No caller is required to think about termination: every card gets a runtime cap unless it
+    # opts out or the operator disabled the standing default (0/None in config). A stuck worker
+    # with no termination condition is a documented multi-agent failure mode (MAST, NeurIPS 2025,
+    # category: Termination); without this, cards have silently run 4-7h unobserved (#131802).
+    if max_runtime_seconds is None:
+        max_runtime_seconds = _default_max_runtime_seconds()
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -3465,7 +3506,7 @@ def request_review(
                 return _ret(False, "parent dependencies are not satisfied")
             trow = conn.execute(
                 "SELECT assignee, status, claim_lock, current_run_id, worker_pid, "
-                "worker_started_at FROM tasks WHERE id = ?", (task_id,),
+                "worker_started_at, max_runtime_seconds FROM tasks WHERE id = ?", (task_id,),
             ).fetchone()
             if trow is None:
                 return _ret(False, "task not found")
@@ -3506,8 +3547,18 @@ def request_review(
                 implementer = trow["assignee"]
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
+            # Review passes are expected to be shorter than the implementation they
+            # check; lower the runtime cap to the standing review default, but ONLY
+            # when nobody set a bespoke cap on this card (current value is exactly
+            # the standing implementation default) — a custom cap always wins.
+            runtime_sql = ""
+            runtime_params: tuple[Any, ...] = ()
+            review_cap = _default_review_max_runtime_seconds()
+            if review_cap and trow["max_runtime_seconds"] == _default_max_runtime_seconds():
+                runtime_sql = ", max_runtime_seconds = ?"
+                runtime_params = (review_cap,)
             params: tuple[Any, ...] = (
-                *(() if reviewer is None else (reviewer,)), task_id,
+                *(() if reviewer is None else (reviewer,)), *runtime_params, task_id,
                 *(() if expected_run_id is None else (int(expected_run_id),)),
             )
             cur = conn.execute(
@@ -3517,7 +3568,7 @@ def request_review(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL
-                """ + assignee_sql + """
+                """ + assignee_sql + runtime_sql + """
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + run_guard,

@@ -1950,6 +1950,18 @@ DEFAULT_CONFIG = {
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
+        # Per-task max_runtime_seconds applied automatically to every task that does not set its own
+        # value explicitly (kanban_create's own max_runtime_seconds argument always wins). Stuck
+        # workers with no termination condition are a documented multi-agent failure mode (MAST,
+        # NeurIPS 2025, category: Termination) — a runtime cap ensures enforce_max_runtime eventually
+        # SIGTERMs and re-queues instead of a card burning hours unobserved. 0/None = no automatic
+        # default (back-compat: existing installs keep uncapped tasks unless they opt in).
+        "default_max_runtime_seconds": 10800,  # 3h: implementation-sized work.
+        # Same default, applied once a task is moved into the 'review' column (request_review) —
+        # review/verification passes are expected to be shorter than the implementation they check.
+        # Only takes effect when the task's current max_runtime_seconds is still exactly the standing
+        # default_max_runtime_seconds (i.e. nobody set a bespoke cap on this card).
+        "default_review_max_runtime_seconds": 3600,  # 1h.
     },
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.

@@ -285,6 +285,84 @@ def _get_profiles_root() -> Path:
     return _get_default_hermes_home() / "profiles"
 
 
+class ProfileBusyError(RuntimeError):
+    """Another create/rename still holds this profile slug's admission fence."""
+
+
+# How long a create/rename waits for another generation of the same slug. A rename holds the fence
+# across a gateway stop (10 s poll), MCP shutdown, the directory move and the state.db rekey, so
+# this is deliberately generous; it only bounds a wedged holder (a crashed one releases the lock).
+_PROFILE_ADMISSION_TIMEOUT = 120.0
+_PROFILE_ADMISSION_POLL = 0.05
+
+
+def _try_lock_admission_file(fh) -> bool:
+    """One non-blocking exclusive lock attempt. Windows ``LK_LOCK`` gives up with EDEADLK after
+    ~10 s and POSIX ``LOCK_EX`` never gives up, so both platforms poll a non-blocking lock under
+    one explicit deadline instead."""
+    if os.name == "nt":
+        import msvcrt
+        fh.seek(0)
+        try:
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+    import fcntl
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _unlock_admission_file(fh) -> None:
+    if os.name == "nt":
+        import msvcrt
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def _admission_lock(path: Path, name: str, deadline: float):
+    fh = open(path, "a+b")
+    try:
+        while not _try_lock_admission_file(fh):
+            if time.monotonic() >= deadline:
+                raise ProfileBusyError(
+                    f"Profile '{name}' is busy: another create or rename of it is still in progress. "
+                    "Try again in a moment.")
+            time.sleep(_PROFILE_ADMISSION_POLL)
+        try:
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                _unlock_admission_file(fh)
+    finally:
+        fh.close()
+
+
+@contextlib.contextmanager
+def _profile_admission_fence(*names: str):
+    """Serialize identity generations for profile slugs across processes.
+
+    A rename keeps both its source and destination fenced until routing/session identity has
+    migrated. Otherwise the vacated source slug can be recreated while durable rows still belong
+    to the old generation, letting the replacement claim those routes. A contender waits up to
+    ``_PROFILE_ADMISSION_TIMEOUT`` on every platform, then raises :class:`ProfileBusyError`.
+    """
+    lock_root = _get_profiles_root() / ".admission-locks"
+    lock_root.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + _PROFILE_ADMISSION_TIMEOUT
+    with contextlib.ExitStack() as stack:
+        for name in sorted(set(names)):
+            stack.enter_context(_admission_lock(lock_root / f"{name}.lock", name, deadline))
+        yield
+
+
 def _get_default_hermes_home() -> Path:
     """Default (pre-profile) HERMES_HOME: ``~/.hermes``, or HERMES_HOME itself in
     Docker/custom deployments (e.g. ``/opt/data``)."""
@@ -1394,7 +1472,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _clone_file(source_dir, profile_dir, SYNC_MANIFEST_NAME)
 
 
-def create_profile(
+def _create_profile_unlocked(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
     clone_channels: bool = False, sync_imports: bool = False,
@@ -1475,6 +1553,21 @@ def create_profile(
     # rescans periodically, so a missed signal only delays serving).
     _notify_multiplexer(canon)
     return profile_dir
+
+
+def create_profile(
+    name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
+    no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
+    clone_channels: bool = False, sync_imports: bool = False,
+) -> Path:
+    """Create one profile while excluding another identity generation with the same slug."""
+    canon = _canon_valid(name)
+    with _profile_admission_fence(canon):
+        return _create_profile_unlocked(
+            name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
+            no_alias=no_alias, no_skills=no_skills, description=description,
+            clone_channels=clone_channels, sync_imports=sync_imports,
+        )
 
 
 def _clone_staging_dir(profile_dir: Path) -> Path:
@@ -2451,6 +2544,12 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     new_canon = _canon_valid(new_name)
     if new_canon == "default":
         raise ValueError("Cannot rename to 'default' — it is reserved.")
+    with _profile_admission_fence(old_canon, new_canon):
+        return _rename_profile_unlocked(old_canon, new_canon)
+
+
+def _rename_profile_unlocked(old_canon: str, new_canon: str) -> Path:
+    """Perform a validated rename while the caller holds both slug admission fences."""
     old_dir = get_profile_dir(old_canon)
     new_dir = get_profile_dir(new_canon)
     if not old_dir.is_dir():

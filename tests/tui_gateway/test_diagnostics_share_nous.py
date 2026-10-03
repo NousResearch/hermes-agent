@@ -143,8 +143,8 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
     assert "support-fixture" in rendered
     assert not [canary for canary in canaries.values() if canary in rendered]
 
-    # An oversized client value is scrubbed through a line-aligned 2x-cap window
-    # (bounded cost), with the same capped output as scrubbing the whole value.
+    # An oversized client value is scrubbed through a bounded window (line-aligned
+    # when a line ends in [2x, 3x) cap), with the same capped output as a full scrub.
     import hermes_cli.debug_redaction as dr
 
     real_redact, scrubbed_sizes = dr.redact_debug_support_text, []
@@ -160,6 +160,12 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
     big_context = _envelope(captured_upload["blob"])["files"]["error-context.txt"]
     assert max(scrubbed_sizes) <= 2 * 8_000 + len(line)
     assert big_context == real_redact((line * 2_000).strip(), max_chars=8_000)
+    scrubbed_sizes.clear()
+    monkeypatch.setattr(dr, "redact_debug_support_text", _spy)
+    one_line = f"cookie={canaries['header']} " + "x" * 2_000_000
+    assert _handler()("rid-one-line", {"error_context": one_line})["result"]["ok"] is True
+    monkeypatch.setattr(dr, "redact_debug_support_text", real_redact)
+    assert max(scrubbed_sizes) <= 3 * 8_000
 
     import hermes_cli.diagnostics_upload as du
 

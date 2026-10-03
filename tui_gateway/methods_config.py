@@ -482,13 +482,15 @@ def _(rid, params: dict) -> dict:
 
 
 def _redact_client_text(text: str, cap: int) -> str:
-    """Strict-scrub client text, then cap it. The scrub sees a line-aligned window of
-    2x the cap so a key cut by the cap still gets redacted, but an unbounded RPC
-    param cannot make the superlinear scrub run on megabytes."""
+    """Strict-scrub client text, then cap it. The scrub sees at most 3x the cap: the
+    first line end in [2x, 3x) cap, else a hard 2x-cap cut, so a key cut by the cap
+    still gets redacted but an unbounded (even single-line) RPC param cannot make
+    the superlinear scrub run on megabytes."""
     from hermes_cli.debug_redaction import redact_debug_support_text
 
-    cut = text.find("\n", 2 * cap)
-    return redact_debug_support_text(text if cut < 0 else text[: cut + 1], max_chars=cap)
+    cut = text.find("\n", 2 * cap, 3 * cap)
+    window = text[: cut + 1] if cut >= 0 else text[: 2 * cap]
+    return redact_debug_support_text(window, max_chars=cap)
 
 
 def _safe_client_label(label: str) -> str:

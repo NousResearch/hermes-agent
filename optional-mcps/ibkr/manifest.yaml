@@ -1,0 +1,47 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: ibkr
+description: >-
+  Official Interactive Brokers remote MCP — brokerage account summary,
+  positions, balances, trades, market-data snapshot/history, contract and
+  option search, watchlists and alerts via https://api.ibkr.com/v1/api/mcp-public (OAuth).
+source: https://www.interactivebrokers.com/en/trading/ai-integrations.php
+
+transport:
+  type: http
+  url: https://api.ibkr.com/v1/api/mcp-public
+
+auth:
+  type: oauth
+
+# Draft-only trading surface: these compose order instructions but never
+# place orders autonomously — keep them excluded by default so a user opts
+# in explicitly.
+tools:
+  default_excluded:
+    - create_order_instruction
+    - delete_order_instruction
+
+suggest:
+  keywords:
+    - ibkr
+    - interactive brokers
+    - brokerage
+    - portfolio
+  hosts:
+    - interactivebrokers.com
+    - ibkr.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with Interactive
+  Brokers (or run `hermes mcp login ibkr`). Log in with IBKR credentials +
+  IBKey 2FA, authorize one account, then restart the session so tools load.
+
+  IBKR's WAF requires a User-Agent on OAuth discovery/registration requests;
+  this is handled automatically (see the mcp-oauth user-agent fix). No
+  manual client_id or client_name is needed.
+
+  Order-instruction tools are excluded by default (read-only monitoring);
+  enable them explicitly if you want draft instruction composition.

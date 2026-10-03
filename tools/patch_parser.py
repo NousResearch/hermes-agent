@@ -289,8 +289,7 @@ def _unified_diff(path: str, old: str, new: Optional[str]) -> str:
 
 
 def apply_v4a_operations(operations: List[PatchOperation], file_ops: Any) -> PatchResult:
-    """Two-phase: validate everything, then apply (atomic on validation failure). A phase-2
-    failure (validate/apply race) carries a ``git diff`` note since state may be inconsistent.
+    """Validate all operations, then apply them as a rollback-backed transaction.
     ``file_ops`` needs read_file_raw/write_file/delete_file/move_file."""
 
     def _bullets(errs: List[str]) -> str:
@@ -302,19 +301,66 @@ def apply_v4a_operations(operations: List[PatchOperation], file_ops: Any) -> Pat
             error="Patch validation failed (no files were modified):\n" + _bullets(errors))
     files: Dict[str, List[str]] = {"created": [], "deleted": [], "modified": []}
     all_diffs: List[str] = []
+    # Snapshot every path the transaction can mutate. Validation is not enough: a
+    # write can still fail after an earlier operation has landed.
+    paths = list(dict.fromkeys(
+        path for op in operations for path in (op.file_path, op.new_path) if path))
+    snapshots = {path: file_ops.read_file_raw(path) for path in paths}
+    # A read that FAILED (not ``not_found``) captured nothing to restore, and an image read
+    # carries no text (``content`` is ""): applying would leave a path the rollback cannot put
+    # back, or would "restore" it as an empty file, so stop before anything is written.
+    unreadable = [f"{path}: could not snapshot the file before applying — {snap.error}"
+                  for path, snap in snapshots.items()
+                  if snap.error and not getattr(snap, "not_found", False)]
+    unreadable += [f"{path}: binary file — its bytes cannot be snapshotted for rollback; "
+                   "move or delete it with the terminal instead"
+                   for path, snap in snapshots.items()
+                   if not snap.error and getattr(snap, "is_binary", False)]
+    if unreadable:
+        return PatchResult(
+            success=False,
+            error="Patch apply aborted (no files were modified):\n" + _bullets(unreadable))
+    # Paths an operation has started on, in order; rollback restores exactly these, newest first,
+    # so a file the transaction never reached is not rewritten.
+    touched: List[str] = []
+
+    def _rollback() -> List[str]:
+        rollback_errors = []
+        for path in reversed(touched):
+            snapshot = snapshots[path]
+            try:
+                # Every snapshot is restorable here (checked above): not_found means the path
+                # did not exist before the patch.
+                result = (file_ops.delete_file(path) if snapshot.error
+                          else file_ops.write_file(path, snapshot.content))
+            except Exception as e:  # a raising backend must not abort restoring the other paths
+                rollback_errors.append(f"{path}: {e}")
+                continue
+            if result.error:
+                rollback_errors.append(f"{path}: {result.error}")
+        return rollback_errors
+
     # V4A bypasses write_file's WriteResult plumbing: LSP diagnostics and lint propagate per file.
     lsp_blocks: List[str] = []
     lint_results: Dict[str, dict] = {}
     for op in operations:
         handler, verb, bucket = _APPLY_DISPATCH[op.operation]
+        touched.extend(path for path in (op.file_path, op.new_path) if path and path not in touched)
         try:
             ok, payload, lsp, lint = handler(op, file_ops)
         except Exception as e:
-            ok, payload = None, str(e)
+            ok, payload, lsp, lint = None, str(e), None, None
         if not ok:
             prefix = f"Failed to {verb}" if ok is False else "Error processing"
             errors.append(f"{prefix} {op.file_path}: {payload}")
-            continue
+            rollback_errors = _rollback()
+            if rollback_errors:
+                errors.extend(f"Rollback failed for {error}" for error in rollback_errors)
+                rollback_note = "rollback was incomplete — run `git diff` to assess"
+            else:
+                rollback_note = "all changes were rolled back"
+            return PatchResult(success=False, error=(
+                f"Apply phase failed ({rollback_note}):\n" + _bullets(errors)))
         is_move = op.operation is OperationType.MOVE
         files[bucket].append(f"{op.file_path} -> {op.new_path}" if is_move else op.file_path)
         all_diffs.append(payload)
@@ -324,9 +370,8 @@ def apply_v4a_operations(operations: List[PatchOperation], file_ops: Any) -> Pat
             lint_results[op.file_path] = lint
     # Each LSP block carries its own <diagnostics file="..."> header; joining keeps attribution.
     return PatchResult(
-        success=not errors,
-        error=("Apply phase failed (state may be inconsistent — run `git diff` to assess):\n"
-               + _bullets(errors)) if errors else None,
+        success=True,
+        error=None,
         diff='\n'.join(all_diffs),
         files_modified=files["modified"], files_created=files["created"], files_deleted=files["deleted"],
         lint=lint_results or None, lsp_diagnostics="\n\n".join(lsp_blocks) or None)

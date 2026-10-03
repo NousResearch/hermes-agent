@@ -90,6 +90,8 @@ Drop both files into `~/.hermes/plugins/hello-world/`, restart Hermes, and the m
 
 The model-facing tool description belongs in `schema["description"]`. The optional `ctx.register_tool(description=...)` value is separate `ToolEntry` registry metadata: when omitted, it defaults to the schema description, but Hermes does not copy it back into a schema that lacks `description`. Prefer defining the text once in the schema. If you provide both values, keep them synchronized; the model sees the schema value.
 
+For a recovery or control tool that must stay reachable without the Tool Search bridge, pass `never_defer=True` to `ctx.register_tool(...)`. This opt-in is per tool: sibling tools retain their normal deferral, and availability checks and toolset selection still apply. The declaration also takes precedence over `tools.tool_search.defer`. Use it sparingly because a direct schema consumes context on every turn. It defaults to `False`; no existing registrations change.
+
 Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable them only for trusted repositories by setting `HERMES_ENABLE_PROJECT_PLUGINS=true` before starting Hermes.
 
 ## What plugins can do

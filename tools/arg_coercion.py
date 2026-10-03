@@ -184,6 +184,10 @@ def _coerce_json(value: str, expected_python_type: type):
 def _coerce_number(value: str, integer_only: bool = False):
     """Parse *value* as a number; original string on failure, inf/nan, or decimals when integer_only."""
     try:
+        return int(value)
+    except (ValueError, TypeError):
+        pass
+    try:
         f = float(value)
     except (ValueError, OverflowError):
         return value

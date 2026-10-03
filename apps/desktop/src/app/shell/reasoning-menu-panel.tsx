@@ -40,6 +40,14 @@ export function ReasoningMenuPanel(props: ModelMenuHostProps) {
   return (
     <ModelOptionsContent
       canDisableReasoning={caps?.can_disable_reasoning ?? undefined}
+      daybreak={
+        caps?.daybreak && controller.daybreakFor && controller.setDaybreak
+          ? {
+              ...controller.daybreakFor(row),
+              onChange: enabled => controller.setDaybreak!(enabled, row)
+            }
+          : undefined
+      }
       defaultEffort={defaultEffort}
       effort={controller.current.effort}
       effortWire={controller.current.effortWire}
@@ -55,6 +63,8 @@ export function ReasoningMenuPanel(props: ModelMenuHostProps) {
       onSetOptions={patch => controller.setOptions(patch, row)}
       provider={provider}
       reasoning={caps?.reasoning ?? true}
+      serviceTier={controller.current.serviceTier}
+      ultrafastSupported={caps?.ultrafast ?? false}
     />
   )
 }

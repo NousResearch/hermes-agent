@@ -10,6 +10,7 @@ import {
   getFrozenQueuedTransport,
   getQueuedPrompts,
   isQueueParked,
+  isSteerableEntry,
   migrateQueuedPrompts,
   parkQueuedPrompts,
   promoteQueuedPrompt,
@@ -565,4 +566,30 @@ describe('composer queue terminal payload persistence', () => {
     ).toBe(true)
     expect(getFrozenQueuedTransport(entry!.id)).toBeUndefined()
   })
+})
+
+describe('isSteerableEntry and the running turn program', () => {
+  const entry = () => ({ attachments: [], text: 'follow up' })
+
+  it('lets the same program steer and makes only a Standard <-> Daybreak change wait', () => {
+    expect(isSteerableEntry(entry())).toBe(true)
+    expect(isSteerableEntry(entry(), false, false)).toBe(true)
+    expect(isSteerableEntry(entry(), true, true)).toBe(true)
+    expect(isSteerableEntry(entry(), false, true)).toBe(false)
+    expect(isSteerableEntry(entry(), true, false)).toBe(false)
+  })
+})
+
+it('removes legacy model Daybreak choices when queued content is saved again', () => {
+  window.localStorage.setItem(
+    QUEUE_STORAGE_KEY,
+    JSON.stringify({
+      'daybreak-queue': [{ id: 'legacy-entry', text: 'review', attachments: [], queuedAt: 1, daybreakEnabled: true }]
+    })
+  )
+  simulateComposerQueueReloadForTests()
+  expect(updateQueuedPrompt('daybreak-queue', 'legacy-entry', { text: 'updated review' })).toBe(true)
+  const entry = JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY)!)['daybreak-queue'][0]
+  expect(entry.text).toBe('updated review')
+  expect(entry).not.toHaveProperty('daybreakEnabled')
 })

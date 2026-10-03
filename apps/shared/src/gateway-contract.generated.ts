@@ -519,6 +519,7 @@ export interface SessionLiveInfo {
   provider?: string
   reasoning_effort?: string
   reasoning_effort_wire?: string
+  daybreak_active?: boolean
   service_tier?: string
   fast?: boolean
   yolo?: boolean
@@ -786,6 +787,8 @@ export interface ModelOptionProvider {
 /** ``hermes_cli/inventory.py::_apply_capabilities``. */
 export interface ModelCapabilities {
   fast: boolean
+  ultrafast?: boolean
+  daybreak?: boolean
   reasoning: boolean
   can_disable_reasoning?: boolean | null
 }
@@ -2617,6 +2620,7 @@ export interface PromptSubmitParams {
   queued?: boolean | null
   surface?: string | null
   voice_context?: string | null
+  daybreak_enabled?: boolean | null
   title_preview?: string | null
   truncate_before_user_ordinal?: number | null
   truncate_before_row_id?: number | null
@@ -2945,6 +2949,7 @@ export interface SessionCreateParams {
   provider?: string | null
   reasoning_effort?: string | null
   fast?: boolean | null
+  service_tier?: string | null
   close_on_disconnect?: boolean
   hidden?: boolean
   room_plumbing?: boolean
@@ -3225,6 +3230,7 @@ export interface SessionCwdSetResult {
   provider?: string
   reasoning_effort?: string
   reasoning_effort_wire?: string
+  daybreak_active?: boolean
   service_tier?: string
   fast?: boolean
   yolo?: boolean

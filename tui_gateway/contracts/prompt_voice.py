@@ -35,6 +35,7 @@ class PromptSubmitParams(SessionParams):
     queued: bool | None = None  # client queue drain — the busy path must hold it, never redirect/steer
     surface: str | None = None  # a ClientSurface value; unknown values clear the surface
     voice_context: str | None = None  # recent spoken transcript, model input only (voice-live)
+    daybreak_enabled: bool | None = None  # explicit per-turn request on ChatGPT subscription routes
     # Desktop-generated large-paste preview (first ~1000 chars); TITLE input only, never the model turn.
     title_preview: str | None = None
     truncate_before_user_ordinal: int | None = None

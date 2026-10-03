@@ -70,6 +70,9 @@ class SessionLiveInfo(OpenModel):
     # The level the route's entry clamp actually sends for ``reasoning_effort`` ("" when unset/none;
     # equal when verbatim). Lets clients label a clamped Hermes step ("ultra sends max on this route").
     reasoning_effort_wire: str = ""
+    # Whether the running turn carries the Daybreak access program (false when idle); a queued
+    # message steers it only when it asks for the same program.
+    daybreak_active: bool = False
     service_tier: str = ""
     fast: bool = False
     yolo: bool = False

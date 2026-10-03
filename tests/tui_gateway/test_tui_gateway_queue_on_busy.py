@@ -642,6 +642,21 @@ def test_busy_image_prompts_keep_b_and_c_attachments_in_submission_order(monkeyp
 
 # ── _drain_queued_prompt ───────────────────────────────────────────────────
 
+def test_queued_daybreak_turns_keep_their_own_selection(monkeypatch):
+    fired = []
+    monkeypatch.setattr(
+        server, "_run_prompt_submit",
+        lambda rid, sid, session, text, **kwargs: fired.append((text, kwargs.get("daybreak_enabled"))),
+    )
+    session = _session()
+    server._enqueue_prompt(session, "Blue review", "ws-9", daybreak_enabled=True)
+    server._enqueue_prompt(session, "ordinary follow-up", "ws-9", daybreak_enabled=False)
+
+    assert server._drain_queued_prompt("r1", "sid", session) is True
+    session["running"] = False
+    assert server._drain_queued_prompt("r2", "sid", session) is True
+    assert fired == [("Blue review", True), ("ordinary follow-up", False)]
+
 def test_drain_fires_queued_prompt_and_claims_running(monkeypatch):
     fired = {}
     monkeypatch.setattr(
@@ -804,4 +819,3 @@ def test_drain_continues_with_later_queued_prompt_after_dispatch_failure(monkeyp
     assert calls == ["broken", "next"]
     assert session["queued_prompt"] is None
     assert session.get("queued_prompts") is None
-

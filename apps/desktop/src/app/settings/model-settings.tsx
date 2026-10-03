@@ -84,10 +84,19 @@ export function ModelSettingsSkeleton({ subpage }: Pick<ModelSettingsProps, 'sub
   )
 }
 
-// agent.service_tier stores "fast"/"priority"/"on" for fast and "ultrafast" for OpenAI
-// Ultrafast; anything else is normal (mirrors agent.fast_mode.parse_service_tier).
+type SpeedTier = 'fast' | 'normal' | 'ultrafast'
+
+// `agent.daybreak` as written by hand or by this page (true / "true" / "on" / 1).
+const isTruthyConfig = (value: unknown): boolean =>
+  ['1', 'on', 'true', 'yes'].includes(
+    String(value ?? '')
+      .trim()
+      .toLowerCase()
+  )
+
+// Priority aliases and Ultrafast are distinct choices in the profile default.
 const isFastTier = (tier: unknown): boolean =>
-  ['fast', 'priority', 'on', 'ultrafast'].includes(
+  ['fast', 'priority', 'on'].includes(
     String(tier ?? '')
       .trim()
       .toLowerCase()
@@ -625,6 +634,9 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
   const reasoningSupported = mainCaps?.reasoning ?? true
   const fastSupported = mainCaps?.fast ?? false
+  const ultrafastSupported = mainCaps?.ultrafast ?? false
+  // The account catalog says whether this model accepts Daybreak on this route.
+  const daybreakSupported = mainCaps?.daybreak ?? false
 
   // Hand-written `reasoning_effort: false`/`off` reaches us as boolean false
   // ("false" once stringified) — show it as Off, not an empty select.
@@ -634,7 +646,21 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
   const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || DEFAULT_REASONING_EFFORT
 
-  const fastOn = isFastTier(getNested(config ?? {}, 'agent.service_tier'))
+  const rawTier = getNested(config ?? {}, 'agent.service_tier')
+  const fastOn = isFastTier(rawTier)
+
+  // One profile-default speed: Standard, Fast (Priority) or Ultrafast. Ultrafast
+  // only shows as a choice on models that offer it.
+  const speedValue: SpeedTier =
+    String(rawTier ?? '')
+      .trim()
+      .toLowerCase() === 'ultrafast'
+      ? 'ultrafast'
+      : fastOn
+        ? 'fast'
+        : 'normal'
+
+  const daybreakOn = isTruthyConfig(getNested(config ?? {}, 'agent.daybreak'))
 
   // Persist a single agent.* default as a sparse patch (PUT /api/config
   // deep-merges onto disk). Never send the whole cached record: it is a
@@ -642,7 +668,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   // surface changed meanwhile — a CLI-pinned auxiliary slot came back as
   // provider "auto" / model "" (#95460). Optimistic, with rollback on failure.
   const writeAgentDefault = useCallback(
-    async (key: string, value: string) => {
+    async (key: string, value: boolean | string) => {
       if (!config) {
         return
       }
@@ -1019,7 +1045,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                 : `${selectedProviderRow?.name} signs in through your browser — Hermes runs the flow for you.`}
             </p>
           )}
-          {config && mainModel && (reasoningSupported || fastSupported) && (
+          {config && mainModel && (reasoningSupported || fastSupported || ultrafastSupported || daybreakSupported) && (
             <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
               <span className="text-xs text-muted-foreground">{m.defaultsLabel}</span>
               {reasoningSupported && (
@@ -1042,14 +1068,44 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                   </Select>
                 </div>
               )}
-              {fastSupported && (
-                <label className="flex items-center gap-2 text-xs">
-                  {t.shell.modelOptions.fast}
+              {ultrafastSupported ? (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="shrink-0 whitespace-nowrap">{m.speed}</span>
+                  <Select
+                    onValueChange={value => void writeAgentDefault('agent.service_tier', value)}
+                    value={speedValue}
+                  >
+                    <SelectTrigger aria-label={m.speed} className={cn('min-w-28', CONTROL_TEXT)}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="normal">{m.speedStandard}</SelectItem>
+                      {fastSupported && <SelectItem value="fast">{t.shell.modelOptions.fast}</SelectItem>}
+                      <SelectItem value="ultrafast">{t.shell.modelOptions.ultrafast}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : (
+                fastSupported && (
+                  <label className="flex items-center gap-2 text-xs">
+                    {t.shell.modelOptions.fast}
+                    <Switch
+                      checked={fastOn}
+                      onCheckedChange={checked =>
+                        void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')
+                      }
+                      size="xs"
+                    />
+                  </label>
+                )
+              )}
+              {daybreakSupported && (
+                <label className="flex items-center gap-2 text-xs" title={m.daybreakHint}>
+                  Daybreak
                   <Switch
-                    checked={fastOn}
-                    onCheckedChange={checked =>
-                      void writeAgentDefault('agent.service_tier', checked ? 'fast' : 'normal')
-                    }
+                    aria-label="Daybreak"
+                    checked={daybreakOn}
+                    onCheckedChange={checked => void writeAgentDefault('agent.daybreak', checked)}
                     size="xs"
                   />
                 </label>

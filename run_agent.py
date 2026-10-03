@@ -1263,7 +1263,10 @@ class AIAgent(
 
         See #17446.
         """
-        return getattr(self, "_fallback_index", 0) < len(getattr(self, "_fallback_chain", None) or [])
+        from agent.daybreak import daybreak_requested
+        return not daybreak_requested() and (
+            getattr(self, "_fallback_index", 0) < len(getattr(self, "_fallback_chain", None) or [])
+        )
 
     _restore_primary_runtime = _forward("agent.agent_runtime_helpers", "restore_primary_runtime")
     _try_recover_primary_transport = _forward("agent.agent_runtime_helpers", "try_recover_primary_transport")

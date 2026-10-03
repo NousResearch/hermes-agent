@@ -13,18 +13,21 @@ const entry = (id: string, text: string): QueuedPromptEntry => ({
   text
 })
 
-function renderPanel(entries: QueuedPromptEntry[]) {
+function renderPanel(entries: QueuedPromptEntry[], requestedDaybreak?: boolean) {
   return render(
     <I18nProvider configClient={{ getConfig: async () => ({}), saveConfig: async () => ({ ok: true }) }}>
       <QueuePanel
-        busy={false}
+        busy={requestedDaybreak !== undefined}
         editingId={null}
         entries={entries}
         onDelete={vi.fn()}
         onEdit={vi.fn()}
         onResume={vi.fn()}
         onSendNow={vi.fn()}
+        onSteerNow={vi.fn()}
         parked={false}
+        requestedDaybreak={requestedDaybreak}
+        runningDaybreak={true}
       />
     </I18nProvider>
   )
@@ -79,4 +82,15 @@ describe('QueuePanel expandable previews', () => {
     fireEvent.click(collapse)
     expect(screen.getByRole('button', { name: /expand/i }).getAttribute('aria-expanded')).toBe('false')
   })
+})
+
+
+it('offers redirect only when the current selection matches the running program', async () => {
+  let view = renderPanel([entry('queued', 'review')], false)
+  fireEvent.click(await view.findByRole('button', { name: /queued/i }))
+  expect(screen.queryByRole('button', { name: /Steer —/ })).toBeNull()
+  cleanup()
+  view = renderPanel([entry('queued', 'review')], true)
+  fireEvent.click(await view.findByRole('button', { name: /queued/i }))
+  expect(screen.getByRole('button', { name: /Steer —/ })).toBeTruthy()
 })

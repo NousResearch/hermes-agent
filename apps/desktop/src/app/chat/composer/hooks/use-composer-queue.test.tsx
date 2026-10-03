@@ -14,6 +14,7 @@ import {
   resetFrozenQueuedTransportsForTests,
   simulateComposerQueueReloadForTests
 } from '@/store/composer-queue'
+import { $daybreakModelChoices, setDaybreakSelection } from '@/store/daybreak'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import { setSessionsLoading } from '@/store/session'
 
@@ -84,6 +85,7 @@ describe('useComposerQueue park integration', () => {
     vi.restoreAllMocks()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    $daybreakModelChoices.set({})
     resetFrozenQueuedTransportsForTests()
     clearNotifications()
     clearComposerTerminalSelections()
@@ -155,6 +157,18 @@ describe('useComposerQueue park integration', () => {
     const { onSubmit } = renderQueueHook()
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
+  })
+
+  it('uses the current model choice when steering a queued prompt', async () => {
+    setDaybreakSelection(SESSION_KEY, true)
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'review with Daybreak' })!
+    setDaybreakSelection(SESSION_KEY, false)
+    const onSteer = vi.fn(async () => true)
+    const { hook } = renderQueueHook({ busy: true, onSteer })
+
+    expect(await hook.result.current.steerQueuedNow(entry.id)).toBe(true)
+    expect(onSteer).toHaveBeenCalled()
     expect(getQueuedPrompts(SESSION_KEY)).toHaveLength(0)
   })
 

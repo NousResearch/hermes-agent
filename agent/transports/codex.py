@@ -755,6 +755,17 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs.update(request_overrides)
             kwargs["model"] = wire_model
 
+        # ChatGPT OAuth accepts the Responses access-program field separately
+        # from the model slug. Preserve unrelated extra_body options; API-key,
+        # xAI, Copilot and custom Responses routes never receive this choice.
+        cyber_access_program = params.get("cyber_access_program") if is_codex_backend else None
+        if cyber_access_program:
+            extra_body = dict(kwargs.get("extra_body") or {})
+            access_programs = dict(extra_body.get("access_programs") or {})
+            access_programs["cyber"] = cyber_access_program
+            extra_body["access_programs"] = access_programs
+            kwargs["extra_body"] = extra_body
+
         # ``prompt_cache_options`` is not a Responses.create() kwarg in the OpenAI SDK, so a
         # top-level copy (e.g. from request_overrides) fails the call with TypeError before any
         # request is sent, on every route. Endpoints that manage cache lifetime own it

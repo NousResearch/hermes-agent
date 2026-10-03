@@ -676,11 +676,17 @@ def recover_after_classification(
             _vlines(agent, "🔐 Nous paid access verified — refreshed runtime credentials and retrying request...")
             return True, False
 
-    recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
-        status_code=status_code, has_retried_429=_retry.has_retried_429,
-        classified_reason=classified.reason, error_context=error_context,
-        billing_unverified=classified.billing_unverified,
-    )
+    from agent.daybreak import daybreak_requested
+    # Pool entries may belong to different ChatGPT accounts/workspaces. Keep an
+    # explicit Daybreak turn on its selected identity, including on access errors.
+    if daybreak_requested():
+        recovered_with_pool = False
+    else:
+        recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
+            status_code=status_code, has_retried_429=_retry.has_retried_429,
+            classified_reason=classified.reason, error_context=error_context,
+            billing_unverified=classified.billing_unverified,
+        )
     if recovered_with_pool:
         return True, recovered_with_pool
 

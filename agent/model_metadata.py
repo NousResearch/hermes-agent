@@ -1786,6 +1786,7 @@ _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 # ``{slug: max_context_window}`` from the same fetch, keyed by the same token fingerprint. Only the
 # opted-in ``-900k`` bump reads it (#105443); a catalog without the field leaves the entry empty.
 _codex_oauth_max_context_cache: Dict[str, Dict[str, int]] = {}
+_codex_oauth_access_programs_cache: Dict[str, Dict[str, list[str]]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 _CODEX_OAUTH_CONTEXT_NEGATIVE_TTL = 300  # a probe that found no catalog is retried after 5 minutes; must stay < TTL
 # The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
@@ -1900,7 +1901,12 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
         return {}, False
     result: Dict[str, int] = {}
     max_result: Dict[str, int] = {}
+    access_programs: Dict[str, list[str]] = {}
     for item in entries:
+        if isinstance(item, dict) and isinstance(item.get('slug'), str):
+            programs = item.get('available_access_programs') or {}
+            if isinstance(programs, dict) and isinstance(programs.get('cyber'), list):
+                access_programs[item['slug'].strip()] = [p for p in programs['cyber'] if isinstance(p, str)]
         slug, ctx, max_ctx = (item.get("slug"), item.get("context_window"), item.get("max_context_window")) if isinstance(item, dict) else (None, None, None)
         if isinstance(slug, str) and isinstance(ctx, int) and ctx > 0:
             result[slug.strip()] = ctx
@@ -1909,10 +1915,25 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: 
     if not result:
         _remember_no_codex_catalog(cache_key)
         return {}, False
-    # Max first: a reader that sees the fresh context entry must also see its cap.
+    # Dependents first: a reader that sees the fresh context entry must also see its cap and the
+    # access programs from the same fetch.
     _codex_oauth_max_context_cache[cache_key] = max_result
+    _codex_oauth_access_programs_cache[cache_key] = access_programs
     _codex_oauth_context_cache[cache_key] = (result, now)
     return result, True
+
+
+def codex_access_programs(access_token: str, base_url: str = '') -> Dict[str, list[str]]:
+    """Fresh account/route-scoped catalog eligibility, without network I/O.
+
+    Catalog discovery owns refreshes. Picker decoration and turn dispatch only
+    consume evidence already published by that discovery.
+    """
+    key = _codex_oauth_token_fingerprint(access_token, base_url)
+    cached = _codex_oauth_context_cache.get(key)
+    if cached is None or time.time() - cached[1] >= _CODEX_OAUTH_CONTEXT_CACHE_TTL:
+        return {}
+    return _codex_oauth_access_programs_cache.get(key, {})
 
 
 def _codex_catalog_key(keys, slug: str) -> Optional[str]:

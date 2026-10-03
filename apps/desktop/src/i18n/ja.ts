@@ -3364,6 +3364,8 @@ export const ja = defineLocale({
       options: 'オプション',
       thinking: '思考',
       fast: '高速',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: '標準速度を使用',
       effort: '努力度',
       minimal: '最小',
       low: '低',

@@ -9,6 +9,7 @@ post-turn follow-ups (queued prompt, goal continuation, notifications).
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -419,12 +420,12 @@ def _after_complete_turn(sid: str, session: dict, st: _TurnRun, raw: Any) -> Non
 
 
 def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str, *,
-                            on_done=None, on_error=None) -> None:
+                            on_done=None, on_error=None, daybreak_enabled: bool | None = None) -> None:
     """Chain one follow-up turn (caller set ``running``); on failure run ``on_error``, log,
     release ``running``."""
     try:
         _emit("message.start", sid)
-        _run_prompt_submit(rid, sid, session, prompt)
+        _run_prompt_submit(rid, sid, session, prompt, daybreak_enabled=daybreak_enabled)
         if on_done is not None:
             on_done()
     except Exception as exc:
@@ -441,10 +442,12 @@ def _run_post_turn_followups(
     prompt wins over every auto follow-up (drain it, skip the rest); a leftover /steer is
     requeued first so it isn't dropped; then goal continuation, then completion
     notifications.  Each nested submit re-checks ``running`` under the lock."""
+    from agent.daybreak import inherited_daybreak_choice
+    daybreak_enabled = inherited_daybreak_choice()
     steer = result.get("pending_steer") if isinstance(result, dict) else None
     if isinstance(steer, str) and steer.strip():
         with session["history_lock"]:
-            _enqueue_prompt(session, steer, session.get("transport"))
+            _enqueue_prompt(session, steer, session.get("transport"), daybreak_enabled=daybreak_enabled)
     if _drain_queued_prompt(rid, sid, session):
         return
     if goal_followup:
@@ -454,7 +457,8 @@ def _run_post_turn_followups(
             if session.get("_turn_cancel_requested"):
                 return  # the user pressed Stop; the goal resumes after their next prompt
             session["running"] = True
-        _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
+        _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch",
+                                daybreak_enabled=daybreak_enabled)
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof
     # and compression-chain aware (same fail-closed gate as the poller): session B must
     # not consume session A's event.  Unclaimable events are requeued for the poller.
@@ -734,7 +738,7 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
 def _invoke_agent(
     sid: str, session: dict, st: _TurnRun, prompt: Any, run_message: Any, streamer,
     images: list[str], display_kind: str | None, display_metadata: dict | None,
-    turn_author: dict | None = None, text: Any = None) -> None:
+    turn_author: dict | None = None, text: Any = None, daybreak_enabled: bool | None = None) -> None:
     """Wire the streaming callbacks and run the conversation into ``st.result``.
     ``text`` is the turn's raw submit, matched against the row staged by prompt.submit."""
     agent = st.agent
@@ -797,10 +801,27 @@ def _invoke_agent(
         "session.title", sid, {"session_id": _k, "title": t})
     _usage_stop, _usage_thread = _start_usage_ticker(sid, agent)
     try:
+        from agent.daybreak import daybreak_turn, resolve_turn_daybreak
         from agent.notification_presentation import notification_turn, event_presentation_muted
-        with notification_turn(agent, muted=event_presentation_muted("message.delta", sid), session_id=sid):
+        daybreak_enabled = resolve_turn_daybreak(
+            daybreak_enabled, _load_cfg() if daybreak_enabled is None else None,
+            provider=getattr(agent, "provider", ""), api_mode=getattr(agent, "api_mode", ""), model=getattr(agent, "model", ""),
+            access_token=getattr(agent, "api_key", "") or "", base_url=getattr(agent, "base_url", "") or "",
+        )
+        with daybreak_turn(
+            daybreak_enabled, provider=getattr(agent, "provider", ""), api_mode=getattr(agent, "api_mode", ""), model=getattr(agent, "model", "")
+        ), notification_turn(
+            agent, muted=event_presentation_muted("message.delta", sid), session_id=sid
+        ):
+            from agent.daybreak import daybreak_requested
+            # The running turn's program decides whether a mid-turn message may steer it (same
+            # program) or must wait for its own turn (Standard <-> Daybreak).
+            session["_running_daybreak"] = daybreak_requested()
+            with contextlib.suppress(Exception):
+                _emit("session.info", sid, _session_info(agent, session))
             st.result = agent.run_conversation(run_message, **st.run_kwargs)
     finally:
+        session.pop("_running_daybreak", None)
         # Stop AND join before anything emits: a tick surviving past message.complete would
         # roll the client's usage back to a stale snapshot (unbounded join: same worst case).
         _usage_stop.set()
@@ -1107,7 +1128,7 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    turn_author: dict | None = None, daybreak_enabled: bool | None = None) -> bool:
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1168,7 +1189,7 @@ def _run_prompt_submit(
             prompt, run_message, cols, streamer = prepared
             _invoke_agent(
                 sid, session, st, prompt, run_message, streamer, images, display_kind,
-                display_metadata, turn_author, text)
+                display_metadata, turn_author, text, daybreak_enabled)
             status_note = _absorb_turn_result(
                 sid, session, st, text, display_kind, display_metadata)
             payload, raw, status = _complete_turn_payload(session, st, status_note, cols)
@@ -1224,7 +1245,9 @@ def _run_prompt_submit(
         with notification_policy_snapshot(agent, "tui", notification_config), notification_turn(agent, muted=muted, session_id=sid):
             followup = run_body()
         if followup is not None:
-            _run_post_turn_followups(rid, sid, session, *followup)
+            from agent.daybreak import followup_daybreak_choice
+            with followup_daybreak_choice(daybreak_enabled):
+                _run_post_turn_followups(rid, sid, session, *followup)
     # The handle is resolved BEFORE _sessions_lock: a profile session opens its own SessionDB through the
     # state registry, and _sessions_lock gates every create/close/prompt on this backend.
     with _routing_provenance_db(session) as routing_db, _sessions_lock:

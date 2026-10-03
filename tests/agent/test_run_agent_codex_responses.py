@@ -287,6 +287,12 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs
 
+    from agent.daybreak import daybreak_turn
+    agent.model = "gpt-6-sol"
+    with daybreak_turn(True, provider=agent.provider, api_mode=agent.api_mode):
+        selected = agent._build_api_kwargs([{"role": "user", "content": "Review this patch"}])
+    assert selected["extra_body"]["access_programs"] == {"cyber": "daybreak_blue"}
+
 
 def test_build_api_kwargs_mantle_sets_extended_prompt_cache_retention(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)

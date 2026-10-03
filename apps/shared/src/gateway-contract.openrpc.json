@@ -18880,6 +18880,16 @@
             "title": "Fast",
             "type": "boolean"
           },
+          "ultrafast": {
+            "default": false,
+            "title": "Ultrafast",
+            "type": "boolean"
+          },
+          "daybreak": {
+            "default": false,
+            "title": "Daybreak",
+            "type": "boolean"
+          },
           "reasoning": {
             "title": "Reasoning",
             "type": "boolean"
@@ -26245,6 +26255,18 @@
             "default": null,
             "title": "Voice Context"
           },
+          "daybreak_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Daybreak Enabled"
+          },
           "title_preview": {
             "anyOf": [
               {
@@ -29766,6 +29788,18 @@
             "default": null,
             "title": "Fast"
           },
+          "service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Service Tier"
+          },
           "close_on_disconnect": {
             "default": false,
             "title": "Close On Disconnect",
@@ -29892,6 +29926,11 @@
             "default": "",
             "title": "Reasoning Effort Wire",
             "type": "string"
+          },
+          "daybreak_active": {
+            "default": false,
+            "title": "Daybreak Active",
+            "type": "boolean"
           },
           "service_tier": {
             "default": "",
@@ -30759,6 +30798,11 @@
             "default": "",
             "title": "Reasoning Effort Wire",
             "type": "string"
+          },
+          "daybreak_active": {
+            "default": false,
+            "title": "Daybreak Active",
+            "type": "boolean"
           },
           "service_tier": {
             "default": "",

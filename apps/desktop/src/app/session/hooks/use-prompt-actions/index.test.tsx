@@ -11,6 +11,7 @@ import { createClientSessionState } from '@/lib/chat-runtime'
 import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
+import { $daybreakModelChoices, setDaybreakSelection } from '@/store/daybreak'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $goalsBySession, setSessionGoal } from '@/store/goals'
 import { $hudMode } from '@/store/hud'
@@ -20,6 +21,7 @@ import {
   $busy,
   $connection,
   $currentCwd,
+  $currentProvider,
   $currentUsage,
   $messages,
   $sessions,
@@ -2162,8 +2164,98 @@ describe('usePromptActions submit / queue drain semantics', () => {
   afterEach(() => {
     cleanup()
     $connection.set(null)
+    $daybreakModelChoices.set({})
+    $currentProvider.set('')
     vi.mocked(requestGatewayForAgent).mockReset()
     vi.restoreAllMocks()
+  })
+
+  it.each([
+    { fromQueue: false, captured: undefined, expected: true },
+    { fromQueue: true, captured: true, expected: true },
+    { fromQueue: true, captured: false, expected: false },
+    { fromQueue: true, captured: undefined, expected: undefined }
+  ])('sends the Daybreak choice for a subscription turn: %j', async ({ fromQueue, captured, expected }) => {
+    const storedId = 'stored-daybreak'
+    const runtimeId = 'runtime-daybreak'
+    setSessions([sessionInfo({ id: storedId, profile: 'default' })])
+    dropSessionState(runtimeId)
+    $currentProvider.set('openai-codex')
+    setDaybreakSelection(storedId, true)
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={runtimeId}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={{ current: new Map([[storedId, runtimeId]]) }}
+        storedSessionId={storedId}
+      />
+    )
+
+    expect(await handle!.submitText('review this patch', { fromQueue, daybreakEnabled: captured })).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      {
+        session_id: runtimeId,
+        text: 'review this patch',
+        ...(fromQueue ? { queued: true } : {}),
+        ...(expected !== undefined ? { daybreak_enabled: expected } : {})
+      },
+      1_800_000
+    )
+  })
+
+  it('keeps the Daybreak choice made at Send while a new chat is created', async () => {
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/'
+    let releaseCreate!: () => void
+
+    const createGate = new Promise<void>(resolve => {
+      releaseCreate = resolve
+    })
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      await createGate
+      activeSessionIdRef.current = 'runtime-daybreak-new'
+      selectedStoredSessionIdRef.current = 'stored-daybreak-new'
+      routeToken = '/stored-daybreak-new'
+
+      return 'runtime-daybreak-new'
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    $currentProvider.set('openai-codex')
+    setDaybreakSelection(null, true)
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    const sending = handle!.submitText('review this patch')
+    await waitFor(() => expect(createBackendSessionForSend).toHaveBeenCalledTimes(1))
+    setDaybreakSelection(null, false)
+    releaseCreate()
+
+    expect(await sending).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: 'runtime-daybreak-new', text: 'review this patch', daybreak_enabled: true },
+      1_800_000
+    )
   })
 
   it('pins prompt.submit to the active registry connection when the remote session row is untagged', async () => {

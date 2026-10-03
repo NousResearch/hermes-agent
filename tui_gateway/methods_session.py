@@ -332,7 +332,7 @@ def _seed_row(record: dict) -> None:
 
 def _create_overrides(params: dict) -> tuple:
     """PER-SESSION (model, reasoning, service_tier) overrides from the composer — never a global config
-    write. ``fast`` presence is the contract: omitted inherits, true pins priority, false pins normal ("")."""
+    write. An explicit tier wins over legacy ``fast``; omitted inherits and normal pins ""."""
     create_model = _str_param(params, "model")
     model_override = None
     if create_model:
@@ -343,7 +343,14 @@ def _create_overrides(params: dict) -> tuple:
             from hermes_constants import parse_reasoning_effort
             reasoning_override = parse_reasoning_effort(effort)
     service_tier_override = None
-    if "fast" in params:
+    if params.get("service_tier") is not None:
+        from agent.fast_mode import NORMAL_TIER_WORDS, parse_service_tier
+        raw_tier = str(params["service_tier"] or "").strip().lower()
+        parsed_tier = parse_service_tier(raw_tier)
+        if parsed_tier is None and raw_tier not in NORMAL_TIER_WORDS:
+            raise ValueError(f"unknown service tier: {raw_tier}")
+        service_tier_override = parsed_tier or ""
+    elif "fast" in params:
         service_tier_override = "priority" if is_truthy_value(params.get("fast")) else ""
     return model_override, reasoning_override, service_tier_override
 
@@ -425,7 +432,10 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     with contextlib.suppress(Exception):
         explicit_cwd = bool(raw_cwd) and (remote_cwd or os.path.isdir(os.path.abspath(os.path.expanduser(raw_cwd))))
     _enable_gateway_prompts()
-    session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
+    try:
+        session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
+    except ValueError as exc:
+        return _err(rid, 4002, str(exc))
     composer_override_profile = None
     if session_model_override and _flag(params, "follow_profile_config"):
         # Same provenance a mid-chat switch records (_apply_model_switch): without the OWNING profile's

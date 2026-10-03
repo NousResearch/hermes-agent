@@ -14,6 +14,7 @@ import {
   shouldAutoDrain,
   withQueueDrainClaim
 } from '@/store/composer-queue'
+import { daybreakSelectionFor } from '@/store/daybreak'
 import { notify } from '@/store/notifications'
 import {
   $sessionProfilesTruncated,
@@ -190,6 +191,7 @@ export function useBackgroundQueueDrain({
         const accepted = await Promise.resolve(
           submitTextRef.current(resolved.transportText, {
             attachments: liveEntry.attachments,
+            daybreakEnabled: daybreakSelectionFor(sessionKey, runtimeSessionId),
             ...(resolved.displayText ? { displayText: resolved.displayText } : {}),
             fromQueue: true,
             sessionId: runtimeSessionId,

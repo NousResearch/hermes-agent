@@ -19,6 +19,7 @@ export interface RemoveQueuedPromptOptions {
 export interface QueuedPromptEntry {
   id: string
   text: string
+  /** Choice captured when queued, so later switch clicks cannot change this turn. */
   /** What the queue panel and the sent bubble show, when it differs from the
    *  text the agent receives. A queued `/skill` invocation carries the whole
    *  expanded skill body as `text` — the UI shows the invocation instead.
@@ -115,22 +116,18 @@ const dropFrozenTransportsRemovedFrom = (previous: QueuedPromptEntry[], next: Qu
 }
 
 const toPersistedEntry = (entry: QueuedPromptEntry): QueuedPromptEntry => {
+  // Ignore legacy persisted choices as well as newly queued model changes.
+  const { daybreakEnabled: _legacyChoice, ...persisted } = entry as QueuedPromptEntry & { daybreakEnabled?: boolean }
   const frozen = frozenQueuedTransportById.get(entry.id)?.trim()
 
-  if (!frozen) {
-    return entry
-  }
+  if (frozen) {
+    if (persisted.text === frozen) {
+      persisted.text = persisted.displayText ?? ''
+    }
 
-  // Never write fenced selection CONTENTS into localStorage. Prefer the chip
-  // form already on the entry; if `text` accidentally holds transport, swap it.
-  const persisted: QueuedPromptEntry = { ...entry }
-
-  if (persisted.text === frozen) {
-    persisted.text = persisted.displayText ?? ''
-  }
-
-  if (persisted.displayText === frozen) {
-    delete persisted.displayText
+    if (persisted.displayText === frozen) {
+      delete persisted.displayText
+    }
   }
 
   return persisted
@@ -139,10 +136,21 @@ const toPersistedEntry = (entry: QueuedPromptEntry): QueuedPromptEntry => {
 /** Whether a queued entry can ride a mid-turn redirect: text-only, non-empty,
  *  not a slash command — the same gate `steerDraft` applies to the live draft
  *  (attachments can't ride a redirect; slash commands execute, not steer). */
-export const isSteerableEntry = (entry: Pick<QueuedPromptEntry, 'attachments' | 'text'>): boolean => {
+export const isSteerableEntry = (
+  entry: Pick<QueuedPromptEntry, 'attachments' | 'text'>,
+  runningDaybreak = false,
+  requestedDaybreak?: boolean
+): boolean => {
   const text = entry.text.trim()
 
-  return Boolean(text) && entry.attachments.length === 0 && !SLASH_COMMAND_RE.test(text)
+  // A redirect inherits the running turn's program: an explicit choice may
+  // steer only a turn that already runs that program; a change waits.
+  return (
+    Boolean(text) &&
+    entry.attachments.length === 0 &&
+    !SLASH_COMMAND_RE.test(text) &&
+    (requestedDaybreak === undefined || requestedDaybreak === runningDaybreak)
+  )
 }
 
 type QueueState = Record<string, QueuedPromptEntry[]>

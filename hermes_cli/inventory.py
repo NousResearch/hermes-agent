@@ -319,7 +319,7 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
-    from hermes_cli.models import model_supports_fast_mode
+    from hermes_cli.models import resolve_fast_mode_overrides
 
     try:
         from agent.models_dev import get_model_capabilities
@@ -330,6 +330,19 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
         slug = row.get("slug") or ""
         caps: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
+        programs = {}
+        # The Codex app-server runtime keeps Codex's own model settings (#75186) and cannot carry
+        # Daybreak, so the switch is only offered on the direct Responses route.
+        from hermes_cli.codex_runtime_switch import get_current_runtime
+        if slug == 'openai-codex' and get_current_runtime(metadata_config or {}) != "codex_app_server":
+            try:
+                from hermes_cli.auth_codex import resolve_codex_runtime_credentials
+                from hermes_cli.auth_constants import AuthError
+                from agent.model_metadata import codex_access_programs
+                creds = resolve_codex_runtime_credentials(read_only=True)
+                programs = codex_access_programs(creds.get('api_key') or '', creds.get('base_url') or '')
+            except AuthError:
+                pass
 
         for model in row.get("models") or []:
             reasoning = True
@@ -341,7 +354,17 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                 except Exception:
                     reasoning = True
 
-            entry: dict[str, Any] = {"fast": bool(model_supports_fast_mode(model)), "reasoning": reasoning}
+            route = {"provider": slug, "base_url": row.get("api_url")}
+            entry: dict[str, Any] = {
+                "fast": resolve_fast_mode_overrides(model, **route) is not None,
+                "reasoning": reasoning,
+            }
+            if resolve_fast_mode_overrides(model, tier="ultrafast", **route) is not None:
+                entry["ultrafast"] = True
+
+            if slug == 'openai-codex':
+                from agent.model_metadata import strip_codex_context_variant_suffix
+                entry['daybreak'] = any(p in {'daybreak_blue', 'daybreak_red'} for p in programs.get(strip_codex_context_variant_suffix(model), []))
 
             if reasoning and read_reasoning_catalog is not None:
                 try:

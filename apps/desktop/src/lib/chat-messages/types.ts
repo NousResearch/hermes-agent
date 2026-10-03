@@ -119,6 +119,7 @@ export type GatewayEventPayload = {
   provider?: string
   reasoning_effort?: string
   reasoning_effort_wire?: string
+  daybreak_active?: boolean
   service_tier?: string
   fast?: boolean
   approval_mode?: string

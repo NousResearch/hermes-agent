@@ -70,6 +70,18 @@ class TestFallbackChainInit:
 
 
 class TestFallbackChainAdvancement:
+    def test_explicit_daybreak_turn_keeps_its_subscription_route(self):
+        from agent.daybreak import daybreak_turn
+
+        agent = _make_agent(fallback_model=[{"provider": "openrouter", "model": "fallback"}])
+        agent.provider = "openai-codex"
+        agent.api_mode = "codex_responses"
+
+        with daybreak_turn(True, provider=agent.provider, api_mode=agent.api_mode):
+            assert agent._has_pending_fallback() is False
+            assert agent._try_activate_fallback() is False
+        assert agent._fallback_index == 0
+
     def test_exhausted_returns_false(self):
         agent = _make_agent(fallback_model=None)
         assert agent._try_activate_fallback() is False

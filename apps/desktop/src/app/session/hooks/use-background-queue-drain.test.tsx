@@ -12,6 +12,7 @@ import {
   parkQueuedPrompts,
   resetFrozenQueuedTransportsForTests
 } from '@/store/composer-queue'
+import { $daybreakModelChoices, setDaybreakSelection } from '@/store/daybreak'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import {
   $sessions,
@@ -89,6 +90,7 @@ describe('useBackgroundQueueDrain', () => {
     vi.useRealTimers()
     $queuedPromptsBySession.set({})
     $parkedQueueSessions.set({})
+    $daybreakModelChoices.set({})
     resetFrozenQueuedTransportsForTests()
     $sessions.set([])
     setSessionsLoading(true)
@@ -160,6 +162,23 @@ describe('useBackgroundQueueDrain', () => {
     } finally {
       delete (window.navigator as { locks?: unknown }).locks
     }
+  })
+
+  it('preserves Daybreak when the queue drains in the background after selection resets', async () => {
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => true)
+    setDaybreakSelection('stored-session-a', true)
+    enqueueQueuedPrompt('stored-session-a', { text: 'queued review', attachments: [] })
+    $daybreakModelChoices.set({})
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await waitFor(() =>
+      expect(submitText).toHaveBeenCalledWith(
+        'queued review',
+        expect.objectContaining({ daybreakEnabled: undefined, fromQueue: true })
+      )
+    )
   })
 
   it('forwards queued displayText so frozen @terminal chips render in the bubble', async () => {

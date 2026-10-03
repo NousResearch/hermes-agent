@@ -24,6 +24,9 @@ interface QueuePanelProps {
   onSteerNow?: (id: string) => void
   /** True after an explicit halt: entries wait until resumed / sent / edited. */
   parked: boolean
+  /** Whether the running turn carries Daybreak: only entries asking for the same program steer it. */
+  runningDaybreak?: boolean
+  requestedDaybreak?: boolean
 }
 
 const entryPreview = (entry: QueuedPromptEntry, c: Translations['composer']) =>
@@ -44,7 +47,9 @@ export function QueuePanel({
   onResume,
   onSendNow,
   onSteerNow,
-  parked
+  parked,
+  requestedDaybreak,
+  runningDaybreak = false
 }: QueuePanelProps) {
   const { t } = useI18n()
   const c = t.composer
@@ -93,7 +98,7 @@ export function QueuePanel({
         const attachmentsCount = entry.attachments.length
         // Steer only surfaces where it can actually deliver: a live turn to
         // redirect and an entry the redirect can carry (text-only, no slash).
-        const canSteer = busy && Boolean(onSteerNow) && isSteerableEntry(entry)
+        const canSteer = busy && Boolean(onSteerNow) && isSteerableEntry(entry, runningDaybreak, requestedDaybreak)
         const preview = entryPreview(entry, c)
         const canExpand = shouldOfferExpandedPreview(preview)
         const isExpanded = expandedIds.has(entry.id)

@@ -145,3 +145,7 @@ describe('model-status-label', () => {
     })
   })
 })
+
+it('keeps Ultrafast distinct from Fast in the composer label', () => {
+  expect(formatModelPillLabel('gpt-6-astra-900k', { fastMode: true, serviceTier: 'ultrafast' })).toContain('Ultrafast')
+})

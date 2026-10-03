@@ -1143,6 +1143,10 @@ def _is_openai_fast_model(model_id: Optional[str]) -> bool:
     """OpenAI flagship eligible for Priority Processing. Codex-series excluded — the Codex Responses
     API doesn't accept ``service_tier``."""
     base = _strip_vendor_prefix(str(model_id or "")).split(":")[0]
+    # Subscription Daybreak aliases advertise no speed tiers. The generic
+    # GPT prefix otherwise offers a switch whose priority request is ignored.
+    if base.startswith(("gpt-daybreak-", "gpt-5.6-cyber")):
+        return False
     return bool(base) and "codex" not in base and base.startswith(tuple(_OPENAI_FAST_MODE_PREFIXES))
 
 

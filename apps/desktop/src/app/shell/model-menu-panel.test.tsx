@@ -4,8 +4,19 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $customModels } from '@/store/custom-models'
+import { $daybreakModelChoices, daybreakSelectionFor } from '@/store/daybreak'
+import { $modelPresets, setModelPreset } from '@/store/model-presets'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
-import { $activeSessionId, $currentModel, $currentProvider, setCurrentModelSource } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentFastMode,
+  $currentModel,
+  $currentProvider,
+  $currentServiceTier,
+  $defaultDaybreak,
+  $selectedStoredSessionId,
+  setCurrentModelSource
+} from '@/store/session'
 
 import { ModelMenuPanel } from './model-menu-panel'
 
@@ -53,6 +64,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $daybreakModelChoices.set({})
+  $defaultDaybreak.set(false)
+  $selectedStoredSessionId.set(null)
   vi.clearAllMocks()
 })
 
@@ -139,6 +153,128 @@ describe('ModelMenuPanel MoA presets', () => {
 })
 
 describe('ModelMenuPanel current selection', () => {
+  it('clears a remembered Priority preset on a model without speed support', async () => {
+    $activeSessionId.set(null)
+    $currentProvider.set('openai-codex')
+    $currentModel.set('gpt-6-astra')
+    setModelPreset('openai-codex', 'gpt-daybreak-blue-latest', { serviceTier: 'priority' })
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          name: 'ChatGPT or Codex Subscription',
+          slug: 'openai-codex',
+          models: ['gpt-daybreak-blue-latest'],
+          capabilities: { 'gpt-daybreak-blue-latest': { fast: false, ultrafast: false, reasoning: true } }
+        }
+      ]
+    })
+    renderPanel()
+    fireEvent.click(await screen.findByRole('menuitem', { name: /daybreak.*blue/i }))
+    await vi.waitFor(() => expect($currentServiceTier.get()).toBe('normal'))
+    expect($currentFastMode.get()).toBe(false)
+    $modelPresets.set({})
+  })
+
+  it('keeps Daybreak out of the top-level catalog even for an eligible model', async () => {
+    $activeSessionId.set(null)
+    $currentProvider.set('openai-codex')
+    $currentModel.set('gpt-6-sol')
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          name: 'ChatGPT or Codex Subscription',
+          slug: 'openai-codex',
+          models: ['gpt-6-sol'],
+          capabilities: { 'gpt-6-sol': { daybreak: true, fast: true, reasoning: true } }
+        }
+      ]
+    })
+    renderPanel()
+    await screen.findByRole('menuitem', { name: /GPT-6-sol/ })
+    expect(screen.queryByRole('switch', { name: 'Daybreak' })).toBeNull()
+  })
+
+  it('remembers Daybreak from an unselected row and applies it when that row is selected', async () => {
+    $activeSessionId.set(null)
+    $currentProvider.set('openai-codex')
+    $currentModel.set('gpt-6-sol')
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          name: 'ChatGPT or Codex Subscription',
+          slug: 'openai-codex',
+          models: ['gpt-6-sol', 'gpt-6-luna'],
+          capabilities: {
+            'gpt-6-sol': { daybreak: true, fast: true, reasoning: true },
+            'gpt-6-luna': { daybreak: true, fast: true, reasoning: true }
+          }
+        }
+      ]
+    })
+    renderPanel(
+      vi.fn(selection => {
+        $currentModel.set(selection.model)
+        $currentProvider.set(selection.provider)
+      })
+    )
+    const luna = await screen.findByRole('menuitem', { name: /GPT-6-luna/ })
+    fireEvent.pointerMove(luna, { pointerType: 'mouse' })
+    const daybreak = await screen.findByRole('switch', { name: 'Daybreak' })
+    expect(daybreak.hasAttribute('disabled')).toBe(false)
+
+    fireEvent.click(daybreak)
+    await vi.waitFor(() =>
+      expect(screen.getByRole('switch', { name: 'Daybreak' }).getAttribute('aria-checked')).toBe('true')
+    )
+    // Preference only: the selected model's conversation choice is untouched.
+    expect(daybreakSelectionFor(null)).toBeUndefined()
+
+    fireEvent.click(luna)
+    await vi.waitFor(() => expect(daybreakSelectionFor(null)).toBe(true))
+    $modelPresets.set({})
+  })
+
+  it('shows the profile Daybreak default until the conversation makes its own choice', async () => {
+    $activeSessionId.set(null)
+    $currentProvider.set('openai-codex')
+    $currentModel.set('gpt-6-sol')
+    $defaultDaybreak.set(true)
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          name: 'ChatGPT or Codex Subscription',
+          slug: 'openai-codex',
+          models: ['gpt-6-sol', 'gpt-6-astra'],
+          capabilities: {
+            'gpt-6-sol': { daybreak: true, fast: true, reasoning: true },
+            'gpt-6-astra': { daybreak: false, fast: true, reasoning: true }
+          }
+        }
+      ]
+    })
+    renderPanel(
+      vi.fn(selection => {
+        $currentModel.set(selection.model)
+        $currentProvider.set(selection.provider)
+      })
+    )
+    const sol = await screen.findByRole('menuitem', { name: /GPT-6-sol/ })
+    fireEvent.pointerMove(sol, { pointerType: 'mouse' })
+    const daybreak = await screen.findByRole('switch', { name: 'Daybreak' })
+    // No explicit choice yet: the switch shows the default and nothing is pinned for the turn.
+    expect(daybreak.getAttribute('aria-checked')).toBe('true')
+    expect(daybreakSelectionFor(null)).toBeUndefined()
+
+    fireEvent.click(daybreak)
+    await vi.waitFor(() => expect(daybreakSelectionFor(null)).toBe(false))
+    expect(screen.getByRole('switch', { name: 'Daybreak' }).getAttribute('aria-checked')).toBe('false')
+
+    // An ineligible model drops the explicit choice instead of pinning it off.
+    fireEvent.click(await screen.findByRole('menuitem', { name: /GPT-6-astra/ }))
+    await vi.waitFor(() => expect(daybreakSelectionFor(null)).toBeUndefined())
+    $modelPresets.set({})
+  })
+
   it('keeps the checkmark on the live SessionView model when a stale options response disagrees', async () => {
     $currentProvider.set('google')
     $currentModel.set('gemini-3.1-pro')

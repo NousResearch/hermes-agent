@@ -157,6 +157,9 @@ DEFAULT_CONFIG = {
         # turn), "cold" (first turn of a session only).
         "service_tier": "",
         "fast_auto_seconds": 60,
+        # Daybreak access program by default on ChatGPT subscription (openai-codex, Responses) turns
+        # whose model the account catalog marks eligible; an explicit per-turn choice always wins.
+        "daybreak": False,
         # Responses API final-answer length (`text.verbosity`): "" = not sent (provider default),
         # or low | medium | high. Responses-family transports only; chat_completions never sends it.
         "text_verbosity": "",

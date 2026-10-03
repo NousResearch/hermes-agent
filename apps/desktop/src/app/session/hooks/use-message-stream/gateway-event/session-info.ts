@@ -4,6 +4,7 @@ import { modelOptionsQueryKey } from '@/lib/model-options'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearSettledClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting } from '@/store/compaction'
+import { setRunningDaybreak } from '@/store/daybreak-running'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts } from '@/store/prompts'
@@ -267,6 +268,10 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       if (typeof payload?.yolo === 'boolean') {
         setYoloActive(payload.yolo)
       }
+    }
+
+    if (typeof payload?.daybreak_active === 'boolean') {
+      setRunningDaybreak([sessionId, payload.stored_session_id], payload.daybreak_active)
     }
 
     if (sessionId && (hasStatePatch || payload?.usage)) {

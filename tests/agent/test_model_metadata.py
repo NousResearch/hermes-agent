@@ -742,6 +742,27 @@ class TestCodexOAuthContextLength:
             live, _fresh = mm._fetch_codex_oauth_context_lengths_with_source(_codex_jwt("fake-token"))
         assert live == {"gpt-5.6-luna": 272_000}
 
+    def test_access_programs_are_published_before_the_context_entry(self):
+        """Same invariant for the Daybreak access-program map: a fresh context entry is the readiness
+        proof codex_access_programs() trusts, so the programs from that fetch must already be there."""
+        import agent.model_metadata as mm
+
+        programs: dict = {}
+
+        class _ContextCache(dict):
+            def __setitem__(self, key, value):
+                assert key in programs, "context entry published before its access programs"
+                super().__setitem__(key, value)
+
+        ok = MagicMock(status_code=200)
+        ok.json.return_value = {"models": [{"slug": "gpt-6-sol", "context_window": 272_000,
+                                            "available_access_programs": {"cyber": ["daybreak_blue"]}}]}
+        with patch.object(mm, "_codex_oauth_context_cache", _ContextCache()), \
+             patch.object(mm, "_codex_oauth_access_programs_cache", programs), \
+             patch("agent.model_metadata.model_metadata_http.get", return_value=ok):
+            mm._fetch_codex_oauth_context_lengths_with_source(_codex_jwt("fake-token"))
+        assert list(programs.values()) == [{"gpt-6-sol": ["daybreak_blue"]}]
+
 
     @pytest.mark.parametrize("slug", ["gpt-5.6-sol-900k"])
     def test_fallback_table_resolution_also_bumped(self, slug):

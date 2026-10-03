@@ -333,6 +333,46 @@ describe('ModelSettings', () => {
     await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith({ agent: { service_tier: 'fast' } }))
   })
 
+  it('offers Ultrafast as a profile-default speed and a Daybreak default on an eligible subscription model', async () => {
+    getGlobalModelInfo.mockResolvedValue({ provider: 'openai-codex', model: 'gpt-6-astra-900k' })
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          name: 'ChatGPT or Codex Subscription',
+          slug: 'openai-codex',
+          models: ['gpt-6-astra-900k'],
+          authenticated: true,
+          capabilities: { 'gpt-6-astra-900k': { reasoning: true, fast: true, ultrafast: true, daybreak: true } }
+        }
+      ]
+    })
+    getHermesConfigRecord.mockResolvedValue({ agent: { reasoning_effort: 'medium', service_tier: 'priority' } })
+
+    renderModelSettings()
+
+    // One speed choice instead of two competing switches; the current Priority tier reads as Fast.
+    const speed = await screen.findByRole('combobox', { name: 'Speed' })
+    expect(speed.textContent).toBe('Fast')
+    fireEvent.click(speed)
+    expect((await screen.findAllByRole('option')).map(option => option.textContent)).toEqual(
+      expect.arrayContaining(['Standard', 'Fast', 'Ultrafast'])
+    )
+    fireEvent.click(await screen.findByRole('option', { name: 'Ultrafast' }))
+    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith({ agent: { service_tier: 'ultrafast' } }))
+
+    fireEvent.click(await screen.findByRole('switch', { name: 'Daybreak' }))
+    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith({ agent: { daybreak: true } }))
+  })
+
+  it('keeps the plain Fast switch and no Daybreak default where the model offers neither', async () => {
+    renderModelSettings()
+    await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
+
+    expect(await screen.findByRole('switch')).toBeTruthy()
+    expect(screen.queryByRole('combobox', { name: 'Speed' })).toBeNull()
+    expect(screen.queryByRole('switch', { name: 'Daybreak' })).toBeNull()
+  })
+
   it('hides the reasoning/speed defaults when the main model reports no capabilities', async () => {
     getGlobalModelOptions.mockResolvedValueOnce({
       providers: [

@@ -1013,3 +1013,53 @@ class TestConflictMarkerFlag:
         prose.write_text("print('<<<<<<< not a conflict')\n", encoding="utf-8")
         assert "conflict_blocks" not in json.loads(read_file_tool(str(prose)))
 
+
+
+class TestKanbanReadLimit:
+    @patch("tools.file_tools._get_file_ops")
+    def test_kanban_default_truncated_read_returns_guard_error(self, mock_get, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_kanban")
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "1|line\n"
+        result_obj.to_dict.return_value = {
+            "content": "1|line\n",
+            "total_lines": 876,
+            "truncated": True,
+            "hint": "Use offset=501 to continue reading",
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import _handle_read_file, READ_FILE_SCHEMA
+        result = json.loads(_handle_read_file({"path": "/tmp/big.txt"}, task_id="t_kanban"))
+
+        assert "error" in result
+        assert "Kanban worker safety" in result["error"]
+        assert result["truncated"] is True
+        assert result["content_returned"] is False
+        assert "content" not in result
+        assert mock_ops.read_file.call_args.args[1:] == (1, READ_FILE_SCHEMA["parameters"]["properties"]["limit"]["default"])
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_kanban_explicit_truncated_read_still_returns_page(self, mock_get, monkeypatch):
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_kanban")
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "1|line\n"
+        result_obj.to_dict.return_value = {
+            "content": "1|line\n",
+            "total_lines": 876,
+            "truncated": True,
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import _handle_read_file
+        result = json.loads(
+            _handle_read_file({"path": "/tmp/big.txt", "limit": 500}, task_id="t_kanban")
+        )
+
+        assert "error" not in result
+        assert result["content"] == "1|line\n"
+        assert result["truncated"] is True

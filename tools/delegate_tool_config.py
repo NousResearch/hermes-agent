@@ -112,11 +112,43 @@ def _get_independent_completions() -> bool:
     completion messages that land as each finishes. Off = one consolidated message when the whole call is done."""
     return is_truthy_value(_cfg().get("independent_completions", False))
 
+class WorktreeIsolationError(RuntimeError):
+    """Raised when delegated worktree isolation is requested in strict (fail-closed) mode but fails."""
+
+
 def _get_worktree_isolation() -> bool:
     """delegation.worktree_isolation (bool, default False): each child gets its own
     git worktree off the parent's HEAD so parallel children never contend for one
-    working copy. Git-only and local-backend-only; otherwise silently ignored."""
-    return bool(_cfg().get("worktree_isolation", False))
+    working copy. Git-only and local-backend-only; otherwise silently ignored.
+    Also returns True if delegation.worktree_isolation is 'strict', or if
+    delegation.worktree_isolation_strict is enabled."""
+    if is_truthy_value(os.environ.get("HERMES_WORKTREE_ISOLATION_STRICT", "")):
+        return True
+    cfg = _cfg()
+    val = cfg.get("worktree_isolation", False)
+    if is_truthy_value(val):
+        return True
+    if isinstance(val, str) and val.strip().lower() == "strict":
+        return True
+    if is_truthy_value(cfg.get("worktree_isolation_strict", False)):
+        return True
+    return False
+
+
+def _get_worktree_isolation_strict() -> bool:
+    """delegation.worktree_isolation_strict (bool, default False): when True,
+    worktree isolation failure raises WorktreeIsolationError, blocking child launch
+    (fail-closed), instead of silently degrading to shared workspace (fail-open).
+    Also enabled by delegation.worktree_isolation: 'strict'."""
+    if is_truthy_value(os.environ.get("HERMES_WORKTREE_ISOLATION_STRICT", "")):
+        return True
+    cfg = _cfg()
+    if is_truthy_value(cfg.get("worktree_isolation_strict", False)):
+        return True
+    val = cfg.get("worktree_isolation")
+    if isinstance(val, str) and val.strip().lower() == "strict":
+        return True
+    return False
 
 def _get_max_async_children() -> int:
     """Concurrency cap for background delegations == delegation.max_concurrent_children. At capacity a new async

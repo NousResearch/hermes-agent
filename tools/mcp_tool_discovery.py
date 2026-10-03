@@ -800,17 +800,29 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     probed_servers: List[_core.MCPServerTask] = []
 
     async def _probe_all():
-        coros = [asyncio.wait_for(_connect_server(name, cfg),
-                                  timeout=cfg.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
-                 for name, cfg in enabled.items()]
-        outcomes = await asyncio.gather(*coros, return_exceptions=True)
-        for name, outcome in zip(enabled, outcomes):
-            if isinstance(outcome, Exception):
-                logger.debug("Probe: failed to connect to '%s': %s", name, outcome)
-                continue
-            probed_servers.append(outcome)
-            result[name] = [(t.name, getattr(t, "description", "") or "") for t in outcome._tools]
-        await asyncio.gather(*(s.shutdown() for s in probed_servers), return_exceptions=True)
+        async def _probe_one(name: str, cfg: dict) -> None:
+            try:
+                server = await asyncio.wait_for(
+                    _connect_server(name, cfg),
+                    timeout=cfg.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                logger.debug("Probe: failed to connect to '%s': %s", name, exc)
+                return
+            probed_servers.append(server)
+            try:
+                result[name] = [(t.name, getattr(t, "description", "") or "")
+                                for t in server._tools]
+            except Exception as exc:
+                logger.debug("Probe: failed to list tools from '%s': %s", name, exc)
+
+        try:
+            await asyncio.gather(
+                *(_probe_one(name, cfg) for name, cfg in enabled.items()),
+                return_exceptions=True)
+        finally:
+            await asyncio.gather(*(s.shutdown() for s in probed_servers), return_exceptions=True)
 
     try:
         _loop._run_on_mcp_loop(_probe_all, timeout=120)

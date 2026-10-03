@@ -90,6 +90,38 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     return entry.response
 
 
+def describe_wait_outcome(clarify_id: str, response, timeout: float) -> str:
+    """Explain why a :func:`wait_for_response` returned no answer.
+
+    ``wait_for_response`` collapses three very different situations into the
+    same ``None``/``""``, and the caller then has to render a reason for the
+    agent. Guessing "timed out" is wrong in two of the three cases:
+
+    * the deadline genuinely expired            -> the user was silent,
+    * the entry was cancelled by session cleanup -> the CARD IS STILL ON THE
+      USER'S SCREEN and the question is unanswered, not declined,
+    * ``timeout <= 0`` (unlimited) can never expire, so a falsy response there
+      is ALWAYS a cancellation, never silence.
+
+    Reporting a cancellation as "user did not respond within 0m" is what made
+    an unanswered approval card look like a decision the user had passed on.
+    Returns the sentinel string to hand back to the agent.
+    """
+    if response:
+        return str(response)
+    try:
+        unlimited = timeout is None or float(timeout) <= 0.0
+    except (TypeError, ValueError):
+        unlimited = False
+    if unlimited:
+        return (
+            "[clarify was cancelled before the user answered — the card may "
+            "still be on their screen. Do NOT treat this as a decision or as "
+            "silence; re-ask if the answer is still needed.]"
+        )
+    return f"[user did not respond within {int(float(timeout) / 60)}m]"
+
+
 def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
     """Unblock the waiter on ``clarify_id``; False if already resolved/expired/unknown."""
     with _lock:

@@ -100,14 +100,14 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
     lines = [f"📈 {bold}{snapshot.title}{bold}", f"Provider: {snapshot.provider}{plan}"]
     for window in snapshot.windows:
         if window.used_percent is None:
-            base = f"{window.label}: unavailable"
+            base = f"{window.label}: {window.detail}" if window.detail else f"{window.label}: unavailable"
         else:
             used = float(window.used_percent)
             base = f"{window.label}: {max(0, round(100 - used))}% remaining ({max(0, round(used))}% used)"
+            if window.detail:
+                base += f" • {window.detail}"
         if window.reset_at:
             base += f" • resets {_format_reset(window.reset_at)}"
-        elif window.detail:
-            base += f" • {window.detail}"
         lines.append(base)
     lines.extend(snapshot.details)
     if snapshot.unavailable_reason:
@@ -647,9 +647,111 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     return _snapshot("openrouter", "credits_api", windows, details)
 
 
+def _fetch_copilot_account_usage(
+    base_url: Optional[str] = None, api_key: Optional[str] = None
+) -> Optional[AccountUsageSnapshot]:
+    raw_token = (api_key or "").strip()
+    if raw_token.lower().startswith("token "):
+        raw_token = raw_token[6:].strip()
+    elif raw_token.lower().startswith("bearer "):
+        raw_token = raw_token[7:].strip()
+    if not raw_token:
+        try:
+            from hermes_cli.copilot_auth import resolve_copilot_token
+            raw_token, _ = resolve_copilot_token()
+        except Exception:
+            raw_token = ""
+    if not raw_token:
+        try:
+            from hermes_cli.models import _resolve_copilot_catalog_api_key
+            raw_token = _resolve_copilot_catalog_api_key()
+        except Exception:
+            raw_token = ""
+    raw_token = (raw_token or "").strip()
+    if not raw_token:
+        return None
+
+    headers = {
+        "Authorization": f"token {raw_token}",
+        "Accept": "application/json",
+        "User-Agent": "GitHubCopilotChat/0.26.7",
+        "Editor-Version": "vscode/1.104.1",
+    }
+    url = "https://api.github.com/copilot_internal/user"
+    try:
+        payload = _get_json(url, headers, timeout=10.0)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (401, 403):
+            return _snapshot(
+                "copilot", "copilot_user_api", [], [],
+                unavailable_reason=f"Copilot credentials rejected by GitHub API (HTTP {exc.response.status_code}).",
+            )
+        return _snapshot(
+            "copilot", "copilot_user_api", [], [],
+            unavailable_reason=f"Copilot API returned HTTP {exc.response.status_code}.",
+        )
+    except Exception:
+        return _snapshot(
+            "copilot", "copilot_user_api", [], [],
+            unavailable_reason="Could not reach the Copilot usage API.",
+        )
+
+    plan = _title_case_slug(payload.get("access_type_sku"))
+    global_reset = _parse_dt(payload.get("quota_reset_date"))
+    quota_snapshots = payload.get("quota_snapshots")
+    if not isinstance(quota_snapshots, dict):
+        return _snapshot("copilot", "copilot_user_api", [], [], plan=plan)
+
+    windows: list[AccountUsageWindow] = []
+
+    for key, entry in quota_snapshots.items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("has_quota") is False:
+            continue
+
+        label = _title_case_slug(key) or key
+        remaining = entry.get("remaining")
+        credits_used = entry.get("credits_used")
+        pct_remaining = entry.get("percent_remaining")
+
+        used_percent: Optional[float] = None
+        if _is_finite_num(pct_remaining):
+            used_percent = max(0.0, min(100.0, 100.0 - float(pct_remaining)))
+        elif _is_finite_num(remaining) and _is_finite_num(credits_used) and (float(remaining) + float(credits_used)) > 0:
+            total = float(remaining) + float(credits_used)
+            used_percent = max(0.0, min(100.0, (float(credits_used) / total) * 100.0))
+
+        reset_at = _parse_dt(entry.get("quota_reset_date") or entry.get("reset_date")) or global_reset
+
+        detail_str: Optional[str] = None
+        if _is_finite_num(remaining) and _is_finite_num(credits_used):
+            rem_val = int(remaining) if float(remaining).is_integer() else remaining
+            used_val = int(credits_used) if float(credits_used).is_integer() else credits_used
+            tot_val = rem_val + used_val
+            detail_str = f"{rem_val}/{tot_val} remaining"
+        elif _is_finite_num(remaining):
+            rem_val = int(remaining) if float(remaining).is_integer() else remaining
+            detail_str = f"{rem_val} remaining"
+
+        windows.append(
+            AccountUsageWindow(
+                label=label,
+                used_percent=used_percent,
+                reset_at=reset_at,
+                detail=detail_str,
+            )
+        )
+
+    return _snapshot("copilot", "copilot_user_api", windows, [], plan=plan)
+
+
 _USAGE_FETCHERS: dict[str, Callable[[Optional[str], Optional[str]], Optional[AccountUsageSnapshot]]] = {
     "openai-codex": _fetch_codex_account_usage, "anthropic": _fetch_anthropic_account_usage,
     "openrouter": _fetch_openrouter_account_usage,
+    "copilot": _fetch_copilot_account_usage,
+    "github-copilot": _fetch_copilot_account_usage,
+    "github_copilot": _fetch_copilot_account_usage,
 }
 
 

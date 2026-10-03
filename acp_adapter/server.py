@@ -993,7 +993,12 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             with state.runtime_lock:
                 state.is_running = False
                 state.current_prompt_text = ""
-            await self._drain_queued_prompts(state, session_id, conn)
+            if state.cancel_event and state.cancel_event.is_set():
+                # The client is waiting on this prompt's ``cancelled`` answer; draining inline would
+                # hold it behind a whole queued turn. Queued prompts still run, after the response.
+                self._schedule_soon(lambda: self._drain_queued_prompts(state, session_id, conn))
+            else:
+                await self._drain_queued_prompts(state, session_id, conn)
 
         usage = None
         if any(result.get(k) is not None for k in ("prompt_tokens", "completion_tokens", "total_tokens")):

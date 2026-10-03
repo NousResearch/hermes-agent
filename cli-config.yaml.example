@@ -844,6 +844,7 @@ compression:
 # lost — the full result is on disk and readable with read_file.
 #
 # tool_budget:
+#   result_size_chars: 100000       # generic per-result spillover threshold (lowering only)
 #   mcp_result_size_chars: 50000   # per-result spillover threshold for mcp_* tools
 
 # =============================================================================

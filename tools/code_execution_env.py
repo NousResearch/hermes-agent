@@ -161,13 +161,16 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
         runtime_venv = _validated_runtime_venv(child_env)
         if runtime_venv is not None:
             from pathlib import Path
-            from pm.environments import site_packages
+            from pm.environments import pth_dirs, site_packages
             candidate = site_packages(runtime_venv)
             # Restore only a dependency path the launcher actually supplied, not a newly
             # selected generation that this still-running interpreter has never loaded.
             if any(_same_path(Path(entry), candidate)
                    for entry in child_env.get("PYTHONPATH", "").split(os.pathsep) if entry):
-                _runtime_path = str(candidate)
+                # The generation's .pth directories ride along: this child runs Hermes's own
+                # interpreter without running activate_dependencies, so it needs the same
+                # overlay the launcher exports or `import pywintypes` fails (#121692).
+                _runtime_path = os.pathsep.join([str(candidate), *pth_dirs(candidate)])
     _strip_hermes_owned_pythonpath(child_env)
     _existing_pp = child_env.get("PYTHONPATH", "")
     _pp_parts = [tmpdir]

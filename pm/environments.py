@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import locale
 import os
 import re
 import shlex
@@ -270,6 +271,58 @@ def site_packages(venv: Path) -> Path:
     return venv / f"lib/python{version[0]}.{version[1]}/site-packages"
 
 
+def pth_dirs(site_dir: Path) -> list[str]:
+    """The path entries *site_dir*'s ``.pth`` files contribute to ``sys.path``.
+
+    ``site.addsitedir()`` runs those files; a child that only inherits
+    ``PYTHONPATH`` never does. pywin32 ships ``win32``/``win32\\lib`` that way, so
+    ``import pywintypes`` (MCP SDK, portalocker) resolves in the process that
+    activated the environment and fails in every child it spawns. Path lines
+    only: an ``import`` line is code, not a path (#126195 family). Mirrors
+    ``site.addpackage``: a line counts when its target exists (an ``.egg``/``.zip``
+    is importable through zipimport, not a directory), and a file that is not
+    UTF-8 falls back to the locale encoding instead of aborting activation.
+    """
+    try:
+        pth_files = sorted(site_dir.glob("*.pth"))
+    except OSError:
+        return []
+    found: list[str] = []
+    for pth in pth_files:
+        try:
+            lines = pth.read_text(encoding="utf-8-sig").splitlines()
+        except UnicodeDecodeError:
+            try:
+                lines = pth.read_text(encoding=locale.getencoding()).splitlines()
+            except (OSError, UnicodeDecodeError):
+                continue
+        except OSError:
+            continue
+        for line in lines:
+            entry = line.strip()
+            if not entry or entry.startswith("#") or entry.startswith("import"):
+                continue
+            candidate = site_dir / entry
+            if candidate.exists():
+                resolved = str(candidate)
+                if resolved not in found:
+                    found.append(resolved)
+    return found
+
+
+def child_pythonpath_entries(project_root: Path, selected: Path) -> list[str]:
+    """The ``PYTHONPATH`` a child needs to import what this process imports.
+
+    ``activate_dependencies`` gives the current process the selected tree through
+    ``site.addsitedir``; children only ever see the exported string. Exporting
+    ``site_dir`` alone silently drops every directory its ``.pth`` files add, so
+    the parent resolves pywintypes and the child raises ModuleNotFoundError
+    (#121692). Same entries, same order, plus the ``.pth`` directories.
+    """
+    entries = [str(project_root.resolve()), str(selected), *pth_dirs(selected)]
+    return list(dict.fromkeys(entries))
+
+
 def running_from_selected_environment(project_root: Path) -> bool:
     """Does this process run on the environment PM selected for the install (base venv or committed
     generation)?
@@ -354,7 +407,7 @@ def activate_dependencies(project_root: Path) -> None:
     site.addsitedir(str(selected))
     sys.path[:] = [str(project_root.resolve()), str(selected),
                    *[entry for entry in sys.path if Path(entry).resolve() != selected.resolve()]]
-    os.environ["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()), str(selected)])
+    os.environ["PYTHONPATH"] = os.pathsep.join(child_pythonpath_entries(project_root, selected))
     os.environ.pop("VIRTUAL_ENV", None)
     executable_dir = venv_bin_dir(environment)
     # The venv's own `hermes`/`hermes-acp` console scripts are editable installs bound to
@@ -377,8 +430,9 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     env.pop("VIRTUAL_ENV", None)
     # Nothing committed: the child's own hermes_bootstrap decides (a bare store Python refuses),
     # rather than inheriting the pre-PM in-tree venv from here.
-    env["PYTHONPATH"] = os.pathsep.join([str(project_root.resolve()),
-                                         *([str(site_packages(environment))] if environment else [])])
+    env["PYTHONPATH"] = os.pathsep.join(
+        child_pythonpath_entries(project_root, site_packages(environment)) if environment
+        else [str(project_root.resolve())])
     # The child-process sentinel. Its VALUE is the installed-state file this
     # environment was composed against, so a consumer learns that it inherited
     # an activated shell and which checkout/profile that shell came from. Its

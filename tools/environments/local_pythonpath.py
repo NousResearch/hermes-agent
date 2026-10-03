@@ -92,7 +92,12 @@ def _validated_runtime_venv(env: dict) -> Path | None:
 def _get_hermes_site_packages(env: dict) -> list[Path]:
     """Exact site-packages dirs owned by the Hermes runtime (cached):
     ``site.getsitepackages()`` with a ``sys.prefix`` fallback, plus a validated
-    Windows base-interpreter launch's ``VIRTUAL_ENV/Lib/site-packages``."""
+    Windows base-interpreter launch's ``VIRTUAL_ENV/Lib/site-packages``.
+
+    A runtime tree's ``.pth`` directories ride along: activation exports them on
+    ``PYTHONPATH`` for children (#121692), and a descendant that is not listed as
+    owned would survive the strip and load a foreign interpreter's pywin32 (#74817).
+    """
     local = _state()
     if local._hermes_site_packages is None:
         result: list[Path] = []
@@ -111,10 +116,11 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
 
     runtime_venv = _validated_runtime_venv(env)
     if runtime_venv is not None:
-        from pm.environments import site_packages
+        from pm.environments import pth_dirs, site_packages
         runtime_site_packages = site_packages(runtime_venv)
-        if not any(_same_path(runtime_site_packages, existing) for existing in result):
-            result.append(runtime_site_packages)
+        for owned in (runtime_site_packages, *(Path(p) for p in pth_dirs(runtime_site_packages))):
+            if not any(_same_path(owned, existing) for existing in result):
+                result.append(owned)
     return result
 
 

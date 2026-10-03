@@ -675,12 +675,24 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
         lambda **_: {"PATH": os.environ.get("PATH", ""),
                      "PYTHONPATH": str(tmp_path / "kept-by-sanitizer")},
     )
+    # Deterministic fallback (#127016): no committed generation here, so the pin
+    # restores one known active runtime dir instead of whatever this checkout's
+    # real install state happens to hold.
+    fallback = tmp_path / "fallback-deps"
+    fallback.mkdir(exist_ok=True)
+    monkeypatch.setattr(
+        worker_env_mod, "_committed_dependency_site_packages", lambda _root: None
+    )
+    monkeypatch.setattr(
+        worker_env_mod, "_active_runtime_site_packages", lambda: [fallback]
+    )
     spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
     repo_root = Path(scheduler.__file__).resolve().parent.parent
 
     assert scheduler._launch_external_cron_worker(job) is True
     entries = spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
-    assert entries == [str(repo_root), str(tmp_path / "kept-by-sanitizer")]
+    assert entries == [str(repo_root), str(fallback), str(tmp_path / "kept-by-sanitizer")]
+    assert str(tmp_path / "raw-environ-only") not in entries
 
     # Wheel / pipx layout: repo_root == purelib -> untouched.
     monkeypatch.setattr(worker_env_mod, "_installed_purelib", lambda: repo_root)
@@ -715,11 +727,12 @@ def _commit_generation(repo_root: Path, name: str, *, with_site_packages: bool) 
     return venv
 
 
-def test_pin_restores_the_committed_generation_site_packages(tmp_path):
+def test_pin_restores_the_committed_generation_site_packages(tmp_path, monkeypatch):
     """#122222: the sanitizer drops the generation ``activate_dependencies`` put on our
     ``sys.path``, and the worker inherits the store Python, which owns no dependencies. The
     pin hands the child PM's committed generation -- after the checkout, before the entries
-    the sanitizer kept -- and invents nothing when no generation is committed."""
+    the sanitizer kept -- and falls back to the active runtime site-packages (#127016)
+    when no generation is committed, inventing nothing only when neither exists."""
     import cron.scheduler_worker_env as worker_env_mod
     import pm.environments
 
@@ -735,8 +748,20 @@ def test_pin_restores_the_committed_generation_site_packages(tmp_path):
         str(repo_root), str(selected), str(tmp_path / "kept"),
     ]
 
-    # A runner that owns its dependencies has no committed generation: tree only.
+    # No committed generation: fall back to the active runtime site-packages so a
+    # bare store Python worker still finds third-party deps like `ruamel`.
     pm.environments.runtime_facts_path(repo_root).unlink()
+    fallback_dir = tmp_path / "fallback-site-packages"
+    fallback_dir.mkdir()
+    monkeypatch.setattr(
+        worker_env_mod, "_active_runtime_site_packages", lambda: [fallback_dir]
+    )
+    assert worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root) == {
+        "PYTHONPATH": os.pathsep.join([str(repo_root), str(fallback_dir)])
+    }
+
+    # Neither committed nor active: tree only, nothing invented.
+    monkeypatch.setattr(worker_env_mod, "_active_runtime_site_packages", lambda: [])
     assert worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root) == {
         "PYTHONPATH": str(repo_root)
     }
@@ -761,10 +786,16 @@ def test_marked_worker_boots_dependencies_before_cron_jobs(marked):
     children do not inherit it. An unmarked importer (the gateway already booted through
     ``hermes_bootstrap``) is never re-booted."""
     import cron.worker_bootstrap as worker_bootstrap
+    from cron.scheduler_worker_env import _active_runtime_site_packages
 
     repo_root = Path(worker_bootstrap.__file__).resolve().parent.parent
     env = {k: v for k, v in os.environ.items() if k != worker_bootstrap.WORKER_MARKER}
-    env["PYTHONPATH"] = str(repo_root)
+    # The mocked boot below records but does not activate, so the probe needs the
+    # same dependency dirs the real worker pin provides (#127016): repo root plus
+    # this process's active runtime site-packages, or `import cron` dies with
+    # `ModuleNotFoundError: ruamel` before the assertion runs.
+    fallbacks = [str(p) for p in _active_runtime_site_packages()]
+    env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([str(repo_root), *fallbacks]))
     if marked:
         env[worker_bootstrap.WORKER_MARKER] = "1"
     child = subprocess.run(

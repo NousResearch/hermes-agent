@@ -32,7 +32,14 @@ import {
 } from '@/lib/icons'
 import { runtimeReadinessDisplay, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { resolveSessionTimerSince } from '@/lib/session-timer-since'
-import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import {
+  cacheHitLabel,
+  contextBarLabel,
+  LiveDuration,
+  sessionCostLabel,
+  tokensPerSecondLabel,
+  usageContextLabel
+} from '@/lib/statusbar'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { resolveVersionStatus } from '@/lib/version-status'
@@ -337,6 +344,7 @@ export function useStatusbarItems({
   // Both ride the same usage payload the context meter does (session.usage
   // ticks mid-turn, message.complete after) — no extra RPC, no polling.
   const cacheHit = cacheHitLabel(currentUsage)
+  const sessionCost = sessionCostLabel(currentUsage)
   const tokensPerSecond = tokensPerSecondLabel(currentUsage)
 
   // Dial the viewed profile directly: the ambient `requestGateway` is the
@@ -704,6 +712,14 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
+        icon: <span aria-hidden="true" className="text-[0.625rem] font-semibold">$</span>,
+        id: 'session-cost',
+        label: sessionCost || '—',
+        title: 'Session cost in USD',
+        toggleLabel: 'Session cost',
+        variant: 'text'
+      },
+      {
         icon: <Zap className="size-3" />,
         id: 'tokens-per-second',
         label: tokensPerSecond || '—',
@@ -755,6 +771,7 @@ export function useStatusbarItems({
       currentUsage.compressions,
       gaugeUsage,
       sessionStartedAt,
+      sessionCost,
       gatewayState,
       systemResourcesItem,
       terminalShowing,

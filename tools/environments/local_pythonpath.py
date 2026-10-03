@@ -89,10 +89,40 @@ def _validated_runtime_venv(env: dict) -> Path | None:
         return None
 
 
+def _launch_runtime_site_packages() -> tuple[Path, ...]:
+    """Site-packages this process was launched on, captured from ``sys.path`` once
+    at import. The activation prologue puts the selected generation's
+    site-packages there (``pm.environments`` activation), and it stays for the
+    process lifetime; a backend that outlives an environment switch would
+    otherwise stop recognizing it once ``facts.json`` names a newer generation."""
+    root = Path(__file__).resolve().parents[2]
+    try:
+        from pm.environments import install_state_dir
+        generations = install_state_dir(root) / "environments"
+        resolved_generations = generations.resolve()
+        captured = []
+        for entry in sys.path:
+            candidate = Path(entry)
+            try:
+                if candidate.resolve().is_relative_to(resolved_generations) \
+                        and candidate.name in ("site-packages", "dist-packages"):
+                    if not any(_same_path(candidate, existing) for existing in captured):
+                        captured.append(candidate)
+            except OSError:
+                continue
+        return tuple(captured)
+    except Exception:
+        return ()
+
+
+_LAUNCH_SITE_PACKAGES: tuple[Path, ...] = _launch_runtime_site_packages()
+
+
 def _get_hermes_site_packages(env: dict) -> list[Path]:
     """Exact site-packages dirs owned by the Hermes runtime (cached):
-    ``site.getsitepackages()`` with a ``sys.prefix`` fallback, plus a validated
-    Windows base-interpreter launch's ``VIRTUAL_ENV/Lib/site-packages``."""
+    ``site.getsitepackages()`` with a ``sys.prefix`` fallback, a validated
+    Windows base-interpreter launch's ``VIRTUAL_ENV/Lib/site-packages``, and the
+    PM generations this process was launched on (``sys.path`` capture)."""
     local = _state()
     if local._hermes_site_packages is None:
         result: list[Path] = []
@@ -115,6 +145,9 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
         runtime_site_packages = site_packages(runtime_venv)
         if not any(_same_path(runtime_site_packages, existing) for existing in result):
             result.append(runtime_site_packages)
+    for launch_sp in _LAUNCH_SITE_PACKAGES:
+        if not any(_same_path(launch_sp, existing) for existing in result):
+            result.append(launch_sp)
     return result
 
 

@@ -10859,10 +10859,17 @@ async function testDesktopConnectionConfig(input: any = {}) {
     mintTicket: url => mintGatewayWsTicket(url, testHeaders)
   })
 
-  // Skip the WS leg only when the runtime genuinely lacks a WebSocket (so an
-  // older Electron/Node never fails the test spuriously); Electron's main
-  // process ships a global WebSocket on every supported version.
-  if (wsUrl && typeof globalThis.WebSocket === 'function') {
+  // The WS leg is skipped when there is nothing to probe with: `wsUrl` is
+  // null for a token-mode gateway with no token (resolveTestWsUrl's genuine
+  // skip; nothing to authenticate with), and `globalThis.WebSocket` guards
+  // an older Electron/Node that genuinely lacks a WebSocket, though every
+  // supported Electron main process ships one. Either way, `wsVerified`
+  // reports whether the transport the app actually uses was proven, so
+  // callers (the atomic config-apply rollback) never mistake a skipped leg
+  // for a verified one.
+  const wsVerified = Boolean(wsUrl) && typeof globalThis.WebSocket === 'function'
+
+  if (wsVerified) {
     const probe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket, headers: testHeaders })
 
     if (!probe.ok) {
@@ -10876,7 +10883,8 @@ async function testDesktopConnectionConfig(input: any = {}) {
   return {
     ok: true,
     baseUrl,
-    version: status?.version || null
+    version: status?.version || null,
+    wsVerified
   }
 }
 

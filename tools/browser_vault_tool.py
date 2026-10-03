@@ -61,10 +61,14 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     embed secret values — the fallback places the expression in subprocess
     argv. Use :func:`_eval_js_secret` for secret-bearing expressions.
     """
+    from tools.browser_tool import _last_session_key
+
+    # Hybrid routing can leave the task's last navigation on a local sidecar.
+    effective = _last_session_key(task_id)
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY
 
-        supervisor = SUPERVISOR_REGISTRY.get(task_id)
+        supervisor = SUPERVISOR_REGISTRY.get(effective)
         if supervisor is not None:
             sup = supervisor.evaluate_runtime(expression)
             if sup.get("ok"):
@@ -77,10 +81,8 @@ def _eval_js(task_id: str, expression: str) -> Dict[str, Any]:
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("vault fill: supervisor eval unavailable (%s)", exc)
 
-    from tools.browser_tool import _last_session_key
     from tools.browser_tool_session import _run_browser_command
 
-    effective = _last_session_key(task_id)
     result = _run_browser_command(effective, "eval", [expression])
     if not result.get("success"):
         return {"success": False, "error": result.get("error", "eval failed")}
@@ -95,21 +97,22 @@ def _ensure_supervisor(task_id: str):
     for the packaged Chromium's endpoint (``get cdp-url``: same daemon, same reaper) and attach.
     Returns None when no endpoint is reachable; the fill then refuses rather than touching argv."""
     from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from tools.browser_tool import _last_session_key
 
-    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    effective = _last_session_key(task_id)
+    supervisor = SUPERVISOR_REGISTRY.get(effective)
     if supervisor is not None:
         return supervisor
-    from tools.browser_tool import _last_session_key
     from tools.browser_tool_cdp import _get_dialog_policy_config, _resolve_cdp_override
     from tools.browser_tool_session import _run_browser_command
 
-    res = _run_browser_command(_last_session_key(task_id), "get", ["cdp-url"])
+    res = _run_browser_command(effective, "get", ["cdp-url"])
     cdp_url = str(((res or {}).get("data") or {}).get("cdpUrl") or "") if (res or {}).get("success") else ""
     if not cdp_url:
         return None
     policy, timeout_s = _get_dialog_policy_config()
     try:
-        return SUPERVISOR_REGISTRY.get_or_start(task_id=task_id, cdp_url=_resolve_cdp_override(cdp_url),
+        return SUPERVISOR_REGISTRY.get_or_start(task_id=effective, cdp_url=_resolve_cdp_override(cdp_url),
                                                 dialog_policy=policy, dialog_timeout_s=timeout_s)
     except Exception as exc:
         logger.debug("vault fill: supervisor attach to local session failed (%s)", exc)

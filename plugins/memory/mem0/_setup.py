@@ -140,11 +140,12 @@ def build_oss_config(flags: dict[str, str]) -> tuple[dict, dict[str, str]]:
 def _write_env(env_path: Path, env_writes: dict[str, str]) -> None:
     env_path.parent.mkdir(parents=True, exist_ok=True)
     # utf-8-sig like the canonical .env readers: a BOM'd first line would miss the key match and get duplicated.
-    existing_lines = env_path.read_text(encoding="utf-8-sig").splitlines() if env_path.exists() else []
+    # surrogateescape both ways: a cp1252 .env neither aborts setup nor has its other values corrupted.
+    existing_lines = env_path.read_text(encoding="utf-8-sig", errors="surrogateescape").splitlines() if env_path.exists() else []
     keys = [line.split("=", 1)[0].strip() if "=" in line and not line.startswith("#") else None for line in existing_lines]
     new_lines = [f"{k}={env_writes[k]}" if k in env_writes else line for k, line in zip(keys, existing_lines)]
     new_lines += [f"{k}={v}" for k, v in env_writes.items() if k not in keys]
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8", errors="surrogateescape")
 
 
 def _activate_provider(config: dict) -> None:

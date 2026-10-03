@@ -85,7 +85,7 @@ interface HookProps {
 function renderConversation(
   overrides: {
     onInterrupt?: () => void
-    pendingResponse?: () => { id: string; pending: boolean; text: string } | null
+    pendingResponse?: () => { id: string; pending: boolean; text: string; turnKey?: string } | null
     transcript?: string
   } = {}
 ) {
@@ -158,7 +158,10 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     micHandle.stop.mockResolvedValue(null)
   })
 
-  afterEach(cleanup)
+  afterEach(() => {
+    $autoSpeakReplies.set(false)
+    cleanup()
+  })
 
   it('arms the barge monitor during generation (before any reply audio exists)', async () => {
     const { hook } = renderConversation()
@@ -171,6 +174,41 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     await waitFor(() => expect(hook.result.current.status).toBe('thinking'))
     // busy=true + thinking → the full-duplex monitor must be live.
     await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+  })
+
+  it('keeps feeding the same speech session after hydration rewrites the reply id', async () => {
+    $autoSpeakReplies.set(true)
+    let response: { id: string; pending: boolean; text: string; turnKey: string } | null = null
+    const append = vi.fn()
+    const finish = vi.fn()
+    const session = {
+      append,
+      done: new Promise<'completed'>(() => undefined),
+      finish
+    }
+    startSpeechStreamMock.mockResolvedValueOnce(session as never)
+
+    const { hook, onBusyChange } = renderConversation({ pendingResponse: () => response })
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await enterThinking(hook)
+
+    response = { id: 'assistant-stream-1', pending: true, text: 'One.', turnKey: 'session:0' }
+    act(() => {
+      onBusyChange.current(false)
+      onBusyChange.current(true)
+    })
+    await waitFor(() => expect(append).toHaveBeenCalledWith('One.'))
+
+    response = { id: 'durable-42', pending: true, text: 'One. Two. Three.', turnKey: 'session:0' }
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 200))
+    })
+
+    expect(append).toHaveBeenCalledWith(' Two. Three.')
+    expect(finish).not.toHaveBeenCalled()
   })
 
   it('never arms the barge monitor when voice.barge_in is false (#126708)', async () => {

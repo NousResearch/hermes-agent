@@ -16,3 +16,13 @@ export function setLargePasteAttachmentThreshold(value: number): void {
   $largePasteAttachmentThreshold.set(threshold)
   persistString(KEY, threshold === LARGE_PASTE_ATTACHMENT_THRESHOLD ? null : String(threshold))
 }
+
+if (typeof window !== 'undefined') {
+  // Other windows share storage, but each renderer owns its own atom. Received
+  // changes update only the atom so they cannot trigger a persistence loop.
+  window.addEventListener('storage', event => {
+    if (event.key === KEY || event.key === null) {
+      $largePasteAttachmentThreshold.set(normalizeLargePasteAttachmentThreshold(storedString(KEY)))
+    }
+  })
+}

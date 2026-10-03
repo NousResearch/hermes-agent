@@ -150,6 +150,36 @@ describe('large-paste preference in the real composer', () => {
     expect(composerPlainText(editor)).toBe(goal)
   })
 
+  it('applies a storage change from another window to the next real paste', async () => {
+    const attach = vi.fn(async () => true)
+    const { container } = render(<Harness onAttachPastedText={attach} />)
+    const editor = container.querySelector<HTMLElement>(`[data-slot="${RICH_INPUT_SLOT}"]`)!
+    const key = 'hermes.desktop.large-paste-attachment-threshold.v1'
+
+    for (const [value, text] of [
+      ['50000', goal],
+      ['0', 'a'.repeat(100_001)]
+    ] as const) {
+      localStorage.setItem(key, value)
+      await act(async () => {
+        window.dispatchEvent(new StorageEvent('storage', { key }))
+        editor.textContent = ''
+        pasteInto(editor, text)
+      })
+      expect(attach).not.toHaveBeenCalled()
+      expect(composerPlainText(editor)).toBe(text)
+    }
+
+    localStorage.removeItem(key)
+    await act(async () => {
+      window.dispatchEvent(new StorageEvent('storage', { key }))
+      editor.textContent = ''
+      pasteInto(editor, goal)
+    })
+    expect(attach).toHaveBeenCalledExactlyOnceWith(goal)
+    expect(composerPlainText(editor)).toBe('')
+  })
+
   it('falls back to inline insertion when attachment creation fails', async () => {
     const attach = vi.fn(async () => false)
     const { container } = render(<Harness onAttachPastedText={attach} />)

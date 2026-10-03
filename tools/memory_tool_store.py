@@ -409,6 +409,9 @@ class MemoryStore:
         return self._batch(target, operations, commit=False)
 
     def _batch(self, target: str, operations: List[Dict[str, Any]], *, commit: bool) -> Dict[str, Any]:
+        from tools.memory_tool import _memory_target_error
+        if target_error := _memory_target_error(self, target, operations):
+            return target_error
         if not operations:
             return _error("operations list is empty.")
         ops = [op or {} for op in operations]

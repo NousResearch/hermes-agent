@@ -227,9 +227,7 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
     """``(outcome, result_json)``: ``rejected`` when refused or held before touching the store."""
     if content is None and new_text is not None:
         content = new_text
-    # Strict providers send JSON null for optional fields; treat as omitted.
-    target = "memory" if target is None else target
-    target_error = _memory_target_error(store, target)
+    target_error = _memory_target_error(store, target, operations)
     if target_error is not None:
         return "rejected", json.dumps(target_error)
     if operations:
@@ -292,12 +290,26 @@ def check_memory_requirements() -> bool:
     return flags[0] or flags[1]
 
 
-def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str, Any]]:
-    """Return a shared validation error for an invalid or disabled target."""
-    if target not in {"memory", "user"}:
+def _memory_target_error(
+    store: MemoryStore, target: str | None, operations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Validate one explicit store before writing, staging, or replaying a batch."""
+    if target is None:
+        return {"success": False, "error": (
+            "Missing required target. Retry with target='memory' or target='user' at the top level. "
+            "For a batch, remove target from every operation; use separate calls for different stores. "
+            "Nothing was written or staged.")}
+    if not isinstance(target, str) or target not in {"memory", "user"}:
         from tools.registry import _bound_error_text
         return {"success": False,
                 "error": _bound_error_text(f"Invalid memory target '{target}'. Use 'memory' or 'user'.")}
+    if isinstance(operations, list):
+        for index, op in enumerate(operations, 1):
+            if isinstance(op, dict) and "target" in op:
+                return {"success": False, "error": (
+                    f"Operation {index} has a nested target. Retry with target only at the top level "
+                    "and remove it from every operation. Use separate calls for different stores. "
+                    "Nothing was written or staged.")}
     if store.target_enabled(target):
         return None
     label = "USER.md" if target == "user" else "MEMORY.md"
@@ -309,8 +321,8 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     replace/remove applies to exactly its pinned ``matched_entry`` or is refused; a record
     staged before pinning has no verifiable target, so it is refused rather than replayed by
     old_text (which could hit a newer entry the approver never saw)."""
-    action, target = payload.get("action"), payload.get("target", "memory")
-    target_error = _memory_target_error(store, target)
+    action, target = payload.get("action"), payload.get("target")
+    target_error = _memory_target_error(store, target, payload.get("operations"))
     if target_error is not None:
         return target_error
     if any(not op.get("matched_entry") for op in destructive_ops(payload)):
@@ -329,8 +341,10 @@ MEMORY_SCHEMA = {
     "description": (
         "Save durable facts to persistent memory that survive across sessions. Memory is "
         "injected into every future turn, so keep entries compact and high-signal.\n\n"
-        "HOW: make ALL your changes in ONE call via an 'operations' array (each item: "
-        "{action, content?, old_text?}). The batch applies atomically and the char limit is "
+        "HOW: make your changes in ONE call PER STORE via an 'operations' array (each item: "
+        "{action, content?, old_text?}). Always supply target at the top level, never inside "
+        "an operation. Use separate calls for different stores. The batch applies atomically "
+        "and the char limit is "
         "checked only on the FINAL result — so a single call can remove/replace stale entries "
         "to free room AND add new ones, even when an add alone would overflow. The response "
         "reports current/limit chars and confirms completion; one batch call finishes the "
@@ -361,7 +375,7 @@ MEMORY_SCHEMA = {
             "target": {
                 "type": "string",
                 "enum": ["memory", "user"],
-                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
+                "description": "Required at the top level: 'memory' for personal notes, 'user' for user profile. Applies to every operation in the call; never put target inside an operation."
             },
             "content": {
                 "type": "string",
@@ -431,7 +445,7 @@ registry.register(
     toolset="memory",
     schema=MEMORY_SCHEMA,
     handler=lambda args, **kw: memory_tool(
-        action=args.get("action", ""), target=args.get("target", "memory"), store=kw.get("store"),
+        action=args.get("action", ""), target=args.get("target"), store=kw.get("store"),
         **{k: args.get(k) for k in ("content", "old_text", "new_text", "operations")}),
     check_fn=check_memory_requirements,
     emoji="🧠",

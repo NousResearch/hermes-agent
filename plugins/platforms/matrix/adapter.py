@@ -453,6 +453,18 @@ def _looks_like_matrix_media_filename(text: str) -> bool:
     return _looks_like_transport_filename(text, ("audio/", "video/"), _MATRIX_MEDIA_FILENAME_EXTS, True)
 
 
+def _looks_like_matrix_voice_filename(text: str) -> bool:
+    """Recognize recordings sent as plain m.audio by some Matrix clients."""
+    candidate = str(text or "").strip()
+    if not candidate or Path(candidate).name != candidate:
+        return False
+    path = Path(candidate)
+    if path.stem.lower().replace("-", "_") != "voice_message":
+        return False
+    guessed_type, _ = mimetypes.guess_type(candidate)
+    return bool(guessed_type and guessed_type.startswith("audio/"))
+
+
 def _is_bare_media_filename(msgtype: str, body: str) -> bool:
     """True when a media event body is only the uploaded filename for its msgtype."""
     if msgtype == "m.image":
@@ -2281,7 +2293,8 @@ class MatrixAdapter(BasePlatformAdapter):
         if msgtype == "m.image":
             return MessageType.PHOTO, event_mimetype or "image/png", False
         if msgtype == "m.audio":
-            is_voice = has_voice_marker(source_content)
+            is_voice = has_voice_marker(source_content) or _looks_like_matrix_voice_filename(
+                source_content.get("filename", ""))
             return (MessageType.VOICE if is_voice else MessageType.AUDIO), event_mimetype or "audio/ogg", is_voice
         if msgtype == "m.video":
             return MessageType.VIDEO, event_mimetype or "video/mp4", False

@@ -113,17 +113,20 @@ class ConnectorClient:
         payload = self._post(wire.CONNECTOR_CONNECTIONS_PATH, body, retries=0)
         return wire.ConnectorConnectionsResponse.model_validate(payload).model_dump()
 
-    def list_connectors(self, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> list[dict[str, Any]]:
-        """Every page of the session's toolkit list, each typed whole. ``timeout`` applies per page: the
-        watcher bounds it by the operation's remaining deadline so a stalled page cannot hold the
-        operation open."""
+    def list_connectors(self, *, timeout: float = DEFAULT_TIMEOUT_SECONDS, retries: int = 0) -> list[dict[str, Any]]:
+        """Every page of the session's toolkit list, each typed whole. ``timeout`` applies per page:
+        callers bound it so a stalled page cannot hold the caller open (the watcher passes the
+        operation's remaining deadline, capped at the read cap; the status action passes the read
+        cap directly). ``retries`` defaults to 0: a second attempt re-spends the full timeout, so
+        the read could outlive the deadline it was bounded by."""
         items: list[dict[str, Any]] = []
         cursor: Optional[str] = None
         for _ in range(20):
             path = f"{wire.CONNECTORS_PATH}?limit=50"
             if cursor:
                 path += f"&cursor={cursor}"
-            page = self._parse(wire.ConnectorListResponse, self._request("GET", path, None, timeout=timeout),
+            page = self._parse(wire.ConnectorListResponse, self._request("GET", path, None, timeout=timeout,
+                                                                         retries=retries),
                                "connector list page")
             items.extend(item.model_dump(by_alias=True) for item in page.items)
             cursor = page.next_cursor
@@ -137,7 +140,10 @@ class ConnectorClient:
         """One account's row; ``None`` when the gateway no longer knows it. A 429 raises ``RateLimited``.
         ``timeout`` is the watcher's remaining deadline, so a stalled read cannot outlive its operation."""
         try:
-            payload = self._request("GET", f"{wire.CONNECTOR_ACCOUNTS_PATH}/{connection_id}", None, timeout=timeout)
+            # Never retry: a second attempt re-spends the full timeout, so the read could outlive
+            # the operation deadline it was bounded by. The next tick is the retry.
+            payload = self._request("GET", f"{wire.CONNECTOR_ACCOUNTS_PATH}/{connection_id}", None,
+                                  timeout=timeout, retries=0)
         except GatewayUnavailable as exc:
             if exc.code == "connection_not_found":
                 return None

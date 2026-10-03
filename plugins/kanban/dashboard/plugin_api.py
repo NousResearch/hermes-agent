@@ -35,6 +35,7 @@ from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_diagnostics as kd
+from hermes_cli.kanban_block_action import build_block_action, reason_from_events
 from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES, _collision_free_path, _safe_attachment_name
 
 log = logging.getLogger(__name__)
@@ -172,8 +173,13 @@ _CARD_SUMMARY_PREVIEW_CHARS = 200
 
 
 def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None,
-               current_run_started_at: Optional[int] = None) -> dict[str, Any]:
+               current_run_started_at: Optional[int] = None,
+               block_reason: Optional[str] = None) -> dict[str, Any]:
     d = asdict(task)
+    d["block_action"] = (
+        build_block_action(task, reason=block_reason).to_dict()
+        if task.status == "blocked" else None
+    )
     # Derived age metrics so the UI can colour stale cards without client deltas.
     try:
         d["age"] = kanban_db.task_age(task)
@@ -185,6 +191,13 @@ def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None,
     # start; after a retry the run clock must tick from the fresh run).
     d["current_run_started_at"] = current_run_started_at
     return d
+
+
+def _block_reason_map(conn: sqlite3.Connection, tasks: list[kanban_db.Task]) -> dict[str, Optional[str]]:
+    """Resolve current block reasons for many cards with one event query."""
+    task_ids = [task.id for task in tasks if task.status == "blocked"]
+    events_by_task = kanban_db.list_events_for_tasks(conn, task_ids)
+    return {task_id: reason_from_events(events) for task_id, events in events_by_task.items()}
 
 
 def _attachment_dict(a: kanban_db.Attachment) -> dict[str, Any]:
@@ -316,10 +329,12 @@ def get_board(
         # One query for the active run's start per card (avoids N+1); the run
         # clock ticks from this, not the task's first-ever start.
         run_start_map = kanban_db.current_run_started_ats(conn, [t.id for t in tasks])
+        block_reason_map = _block_reason_map(conn, tasks)
         for t in tasks:
             full = summary_map.get(t.id)
             d = _task_dict(t, latest_summary=(full[:_CARD_SUMMARY_PREVIEW_CHARS] if full else None),
-                           current_run_started_at=run_start_map.get(t.id))
+                           current_run_started_at=run_start_map.get(t.id),
+                           block_reason=block_reason_map.get(t.id))
             d["link_counts"] = link_counts.get(t.id, {"parents": 0, "children": 0})
             d["comment_count"] = comment_counts.get(t.id, 0)
             d["progress"] = progress.get(t.id)  # None when the task has no children
@@ -379,7 +394,8 @@ def get_task(
         # Drawer returns the FULL summary (cards on /board carry a 200-char preview).
         task_d = _task_dict(
             task, latest_summary=kanban_db.latest_summary(conn, task_id),
-            current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id))
+            current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id),
+            block_reason=reason_from_events(kanban_db.list_events(conn, task_id)))
         links = _links_for(conn, task_id)
         child_summaries = kanban_db.latest_summaries(conn, links["children"])
         children = filter(None, (kanban_db.get_task(conn, cid) for cid in links["children"]))

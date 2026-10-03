@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 
 from gateway.config import Platform
 from gateway.kanban_watchers_common import (
@@ -131,7 +133,8 @@ def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, m
     assert adapter.handled[0].source.thread_id == "20197"
 
 
-def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
+@pytest.mark.parametrize("profile", ["personal", "work", "systems"])
+def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch, profile):
     """A sub stamped with the gateway's own named profile uses self.adapters.
 
     Regression for #71340: on a standalone (non-multiplex) gateway running a
@@ -139,7 +142,7 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
     multiplex secondary, find no _profile_adapters entry, fail closed, and
     rewind the claim forever — silent zero-delivery.
     """
-    db_path = tmp_path / "actionable-block.db"
+    db_path = tmp_path / f"actionable-block-{profile}.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     kb.init_db()
     reason = "AGE-39 — https://linear.example/AGE-39 — publishing verified."
@@ -151,7 +154,7 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
             task_id=tid,
             platform="telegram",
             chat_id="chat-1",
-            notifier_profile="main",
+            notifier_profile=profile,
         )
         kb.block_task(conn, tid, reason=reason, kind="needs_input")
     finally:
@@ -159,7 +162,7 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
 
     adapter = RecordingAdapter()
     runner = _make_runner(adapter)
-    runner._active_profile_name = lambda: "main"
+    runner._active_profile_name = lambda: profile
 
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
@@ -167,6 +170,57 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
     message = adapter.sent[0]["text"]
     assert tid in message
     assert "blocked" in message
+    assert "Disposition: Matt action required" in message
+    assert "Required action: AGE-39" in message
+    assert "Owner: Matt" in message
+    assert "Reply format: Reply with the requested decision or input in plain text." in message
+
+
+def test_notifier_adds_action_contract_only_to_current_block_event(tmp_path, monkeypatch):
+    db_path = tmp_path / "current-block-event.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="approval", assignee="publisher")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.block_task(conn, tid, reason="Old failure", kind="transient")
+        assert kb.unblock_task(conn, tid)
+        kb.block_task(conn, tid, reason="Current decision", kind="needs_input")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 2
+    assert "Disposition:" not in adapter.sent[0]["text"]
+    assert "Disposition: Matt action required" in adapter.sent[1]["text"]
+    assert "Required action: Current decision" in adapter.sent[1]["text"]
+
+
+def test_notifier_states_when_block_needs_no_action_from_matt(tmp_path, monkeypatch):
+    db_path = tmp_path / "internal-block.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="internal recovery", assignee="systems")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.block_task(conn, tid, reason="Repair the worker lease", kind="transient")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    assert "No action needed from Matt" in adapter.sent[0]["text"]
+    assert "Disposition: Stale/recovery" in adapter.sent[0]["text"]
 
 
 def test_non_dispatch_gateway_claims_only_its_profile_subscriptions(

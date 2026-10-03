@@ -249,7 +249,7 @@ class TestStdioPgroupReaping:
              patch("tools.mcp_tool.time.sleep"):
             _kill_orphaned_mcp_children()
 
-        mock_killpg.assert_not_called()
+        assert not [call for call in mock_killpg.call_args_list if call.args[1] != 0]
         mock_kill.assert_not_called()
 
     def test_kill_orphaned_signals_when_start_time_matches(self):
@@ -293,6 +293,8 @@ class TestStdioPgroupReaping:
             _kill_orphaned_mcp_children()
 
         mock_killpg.assert_any_call(fake_pid, signal.SIGTERM)
+        mock_killpg.assert_any_call(fake_pid, 0)
+        mock_killpg.assert_any_call(fake_pid, signal.SIGKILL)
 
     def test_kill_orphaned_without_baseline_keeps_legacy_behaviour(self):
         """No recorded start time (macOS / capture raced exit) -> best-effort killpg."""

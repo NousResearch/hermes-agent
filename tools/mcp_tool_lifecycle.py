@@ -357,7 +357,19 @@ def _kill_orphaned_mcp_children(include_active: bool = False, server_name: Optio
     sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
     from gateway.status import _pid_exists  # ``os.kill(pid, 0)`` is NOT a no-op on Windows
     for pid, owner in pids.items():
-        if _pid_exists(pid):  # survived SIGTERM
+        # A reaped leader is absent from /proc even while its children keep the original
+        # process group alive. Probe that group before deciding whether SIGKILL is needed.
+        # Require the spawn-time start tick: without it, retain the legacy per-pid check
+        # rather than risk escalating against a recycled group on another platform.
+        pgid = pgids.get(pid)
+        group_alive = False
+        if pgid is not None and pgid != my_pgid and pid in starts and hasattr(os, "killpg"):
+            try:
+                os.killpg(pgid, 0)  # windows-footgun: ok — POSIX-only, guarded
+                group_alive = True
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        if _pid_exists(pid) or group_alive:  # leader or descendants survived SIGTERM
             _signal_mcp_process(pid, sigkill, owner, pgids.get(pid), my_pgid, starts.get(pid))
             logger.warning("Force-killed MCP process %d (%s) after SIGTERM timeout", pid, owner)
     # These groups are reaped. Release them last, so a crash partway through the SIGTERM/SIGKILL

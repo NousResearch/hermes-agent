@@ -1940,7 +1940,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     // recorded route — same contract as the sleep/wake reconnect: neither the
     // active profile nor main's foreground route may retarget the primary.
     const lastCall = desktop.getConnection.mock.calls.at(-1) ?? []
-    expect(lastCall[0] ?? 'default').toBe('default')
+    expect(lastCall[0]).toBe('default')
     expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(3)
     expect(oldPrimary.readyState).toBe(FakeWebSocket.CLOSED)
     expect(backgroundSocket.readyState).toBe(FakeWebSocket.OPEN)
@@ -2176,7 +2176,8 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     const reconnectCalls = desktop.getConnection.mock.calls.slice(callsBeforeDrop)
     expect(reconnectCalls.some(args => (args[0] ?? '').trim() === 'coder')).toBe(false)
-    expect(reconnectCalls.some(args => (args[0] ?? 'default') === 'default')).toBe(true)
+    expect(reconnectCalls.every(args => args[0] === 'default')).toBe(true)
+    expect(reconnectCalls.length).toBeGreaterThan(0)
 
     const primaryReconnectSockets = FakeWebSocket.instances
       .slice(socketsBeforeDrop)
@@ -2749,6 +2750,64 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(FakeWebSocket.instances.length).toBeGreaterThan(socketCountBefore)
     expect($gatewayState.get()).toBe('open')
   })
+
+  it.each([false, true])(
+    'primary reconnect preserves its source while a secondary is foregrounded (registry=%s)',
+    async registryScoped => {
+      const primary = { ...remotePrimaryConn, registryScoped }
+      const secondary = { ...coderConn, profile: 'default', registryScoped: true }
+      let foreground: { connectionId: string | null; profile: string; registryScoped: boolean } | null = null
+
+      const desktop = {
+        ...fakeDesktop(),
+        setActiveConnectionRoute: vi.fn(route => {
+          foreground = route
+        }),
+        // Main's rule (electron/desktop-profile resolveDesktopConnectionRequest):
+        // a profile-less request follows the sender's foreground route, an
+        // explicit profile keeps the legacy route.
+        getConnection: vi.fn(async (profile?: null | string) =>
+          !profile?.trim() && foreground?.registryScoped && foreground.connectionId === secondary.connectionId
+            ? secondary
+            : primary
+        ),
+        getConnectionFor: vi.fn(async ({ connectionId }: { connectionId: string; profile: string }) =>
+          connectionId === secondary.connectionId ? secondary : primary
+        ),
+        getGatewayWsUrlFor: vi.fn(async ({ connectionId }: { connectionId: string; profile: string }) =>
+          connectionId === secondary.connectionId ? secondary.wsUrl : primary.wsUrl
+        )
+      }
+
+      ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+      render(<Harness />)
+      await flushAsync()
+      const primarySocket = FakeWebSocket.instances[0]
+      expect(primarySocket.url).toBe(primary.wsUrl)
+      let opening!: Promise<boolean>
+      act(() => {
+        opening = ensureGatewayForAgent(secondary.connectionId, secondary.profile)
+      })
+      await flushAsync()
+      await opening
+      expect(foreground).toMatchObject({ connectionId: secondary.connectionId, registryScoped: true })
+      expect(isActivePrimary()).toBe(false)
+      act(() => primarySocket.drop())
+      await advanceBackoff()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(primary.wsUrl)
+      expect($connection.get()?.connectionId).toBe(secondary.connectionId)
+      expect(isActivePrimary()).toBe(false)
+
+      // Explicit connection apply must still follow main's rewritten foreground
+      // route, and replace the reconnect target rather than pinning it forever.
+      act(() => connectionApplied?.())
+      await flushAsync()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(secondary.wsUrl)
+      act(() => FakeWebSocket.instances.at(-1)!.drop())
+      await advanceBackoff()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(secondary.wsUrl)
+    }
+  )
 })
 
 describe('window-state IPC before the first connection publishes (#108641)', () => {
@@ -2787,61 +2846,3 @@ describe('window-state IPC before the first connection publishes (#108641)', () 
     expect($connection.get()?.windowButtonPosition).toBeNull()
   })
 })
-
-it.each([false, true])(
-  'primary reconnect preserves its source while a secondary is foregrounded (registry=%s)',
-  async registryScoped => {
-    // Keep Electron's Node-only dependency graph outside the renderer TS project.
-    const resolverModule = '../../../../electron/desktop-profile'
-    const { resolveDesktopConnectionRequest } = await import(resolverModule)
-    const primary = { ...remotePrimaryConn, registryScoped }
-    const secondary = { ...coderConn, profile: 'default', registryScoped: true }
-    let foreground: { connectionId: string | null; profile: string; registryScoped: boolean } | null = null
-
-    const desktop = {
-      ...fakeDesktop(),
-      setActiveConnectionRoute: vi.fn(route => {
-        foreground = route
-      }),
-      getConnection: vi.fn(async (profile?: null | string) => {
-        const route = resolveDesktopConnectionRequest(profile, foreground, 'default')
-
-        return route.connectionId === secondary.connectionId ? secondary : primary
-      }),
-      getConnectionFor: vi.fn(async ({ connectionId }: { connectionId: string; profile: string }) =>
-        connectionId === secondary.connectionId ? secondary : primary
-      ),
-      getGatewayWsUrlFor: vi.fn(async ({ connectionId }: { connectionId: string; profile: string }) =>
-        connectionId === secondary.connectionId ? secondary.wsUrl : primary.wsUrl
-      )
-    }
-
-    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
-    render(<Harness />)
-    await flushAsync()
-    const primarySocket = FakeWebSocket.instances[0]
-    expect(primarySocket.url).toBe(primary.wsUrl)
-    let opening!: Promise<boolean>
-    act(() => {
-      opening = ensureGatewayForAgent(secondary.connectionId, secondary.profile)
-    })
-    await flushAsync()
-    await opening
-    expect(foreground).toMatchObject({ connectionId: secondary.connectionId, registryScoped: true })
-    expect(isActivePrimary()).toBe(false)
-    act(() => primarySocket.drop())
-    await advanceBackoff()
-    expect(FakeWebSocket.instances.at(-1)?.url).toBe(primary.wsUrl)
-    expect($connection.get()?.connectionId).toBe(secondary.connectionId)
-    expect(isActivePrimary()).toBe(false)
-
-    // Explicit connection apply must still follow main's rewritten foreground
-    // route, and replace the reconnect target rather than pinning it forever.
-    act(() => connectionApplied?.())
-    await flushAsync()
-    expect(FakeWebSocket.instances.at(-1)?.url).toBe(secondary.wsUrl)
-    act(() => FakeWebSocket.instances.at(-1)!.drop())
-    await advanceBackoff()
-    expect(FakeWebSocket.instances.at(-1)?.url).toBe(secondary.wsUrl)
-  }
-)

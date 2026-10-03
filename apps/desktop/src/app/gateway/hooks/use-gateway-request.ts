@@ -158,7 +158,7 @@ export function useGatewayRequest() {
       try {
         return await gateway.request<T>(method, params, timeoutMs, signal)
       } catch (error) {
-        if (!isGatewayTransportError(error) || !isDispatchRouteActive()) {
+        if (!isGatewayTransportError(error)) {
           throw error
         }
 
@@ -168,6 +168,9 @@ export function useGatewayRequest() {
         // sources.
         const recovered = isActivePrimary() ? await ensureGatewayOpen() : await ensureActiveGatewayOpen()
 
+        // Recovery follows the CURRENT route (ensureGatewayOpen resolves
+        // profile-less through main's foreground route, unlike the boot hook's
+        // own-route reconnect), so replay only on the socket that was dispatched.
         if (!isDispatchRouteActive() || (recovered && recovered !== gateway)) {
           throw error
         }

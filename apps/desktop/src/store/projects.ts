@@ -16,8 +16,15 @@ import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesk
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
+import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import { revealFile } from '@/store/file-actions'
-import { $gateway, activeGateway, activeGatewayConnectionId, ensureActiveGatewayOpen } from '@/store/gateway'
+import {
+  $gateway,
+  activeGateway,
+  activeGatewayConnectionId,
+  ensureActiveGatewayOpen,
+  isActivePrimary
+} from '@/store/gateway'
 import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import {
@@ -339,10 +346,22 @@ function isRetryableProjectTreeReadError(error: unknown): boolean {
   return message.includes('request timed out') || message.includes('gateway connection closed')
 }
 
-interface ActiveProjectsContext {
+interface ProjectRowOwner {
   connectionId: null | string
+  // `local` served as an active registry SECONDARY: its bare rows would
+  // resolve to the window primary, so they need the owner tag.
+  stampLocal: boolean
+}
+
+interface ActiveProjectsContext extends ProjectRowOwner {
   gateway: HermesGateway
   profile: string
+}
+
+function projectRowOwner(): ProjectRowOwner {
+  const connectionId = activeGatewayConnectionId()
+
+  return { connectionId, stampLocal: connectionId === 'local' && !isActivePrimary() }
 }
 
 function stillOnProjectsContext(context: ActiveProjectsContext): boolean {
@@ -351,7 +370,7 @@ function stillOnProjectsContext(context: ActiveProjectsContext): boolean {
 
 // Writes follow the selected gateway/profile even if the sidebar is showing
 // All profiles. That filter changes the view, not the destination.
-function stillOnWritableProjectOwner(context: ActiveProjectsContext): boolean {
+function stillOnWritableProjectOwner(context: Omit<ActiveProjectsContext, 'stampLocal'>): boolean {
   return (
     activeGateway() === context.gateway &&
     normalizeProfileKey($activeGatewayProfile.get()) === context.profile &&
@@ -360,7 +379,7 @@ function stillOnWritableProjectOwner(context: ActiveProjectsContext): boolean {
 }
 
 async function activeProjectsContext(profile = projectProfile()): Promise<ActiveProjectsContext> {
-  const connectionId = activeGatewayConnectionId()
+  const { connectionId, stampLocal } = projectRowOwner()
 
   if (!profile || profile === ALL_PROFILES) {
     throw new Error('Projects are unavailable while viewing all profiles')
@@ -376,7 +395,7 @@ async function activeProjectsContext(profile = projectProfile()): Promise<Active
     throw new Error('Active Hermes profile changed while connecting')
   }
 
-  return { connectionId, gateway, profile }
+  return { connectionId, gateway, profile, stampLocal }
 }
 
 function applyPayload(payload: ProjectsPayload): void {
@@ -431,26 +450,37 @@ const PROJECT_TREE_REQUEST_TIMEOUT_MS = 60_000
 
 let projectTreeRefreshGeneration = 0
 
-// Like REST session-list rows, tree-only rows need the exact registry owner.
-// Tag copies at the response boundary; never derive ownership when clicked.
-function tagProjectSessionConnection(project: SidebarProjectTree, connectionId: null | string): SidebarProjectTree {
-  if (!connectionId) {
+// Like REST session-list rows, tree-only rows need their registry owner, stamped
+// at the response boundary rather than derived on click. The canonical stamper
+// owns the rules: a row that already names an owner is never re-owned, and
+// `local` stays bare so the primary keeps the legacy profile door (#94166).
+// The one addition is `local` as a registry secondary (see ProjectRowOwner).
+function stampProjectSessions(sessions: SessionInfo[], owner: ProjectRowOwner): SessionInfo[] {
+  if (owner.connectionId !== 'local') {
+    return stampRowsWithOwningConnection(sessions, owner.connectionId)
+  }
+
+  return owner.stampLocal
+    ? sessions.map(session => (session.connection_id?.trim() ? session : { ...session, connection_id: 'local' }))
+    : sessions
+}
+
+function tagProjectSessionConnection(project: SidebarProjectTree, owner: ProjectRowOwner): SidebarProjectTree {
+  if (!owner.connectionId || (owner.connectionId === 'local' && !owner.stampLocal)) {
     return project
   }
 
-  const tag = (session: SessionInfo): SessionInfo => ({ ...session, connection_id: connectionId })
-
   return {
     ...project,
-    ...(project.previewSessions ? { previewSessions: project.previewSessions.map(tag) } : {}),
+    ...(project.previewSessions ? { previewSessions: stampProjectSessions(project.previewSessions, owner) } : {}),
     repos: project.repos.map(repo => ({
       ...repo,
-      groups: repo.groups.map(group => ({ ...group, sessions: group.sessions.map(tag) }))
+      groups: repo.groups.map(group => ({ ...group, sessions: stampProjectSessions(group.sessions, owner) }))
     }))
   }
 }
 
-function applyProjectTreePayload(res: ProjectTreePayload, connectionId: null | string): void {
+function applyProjectTreePayload(res: ProjectTreePayload, owner: ProjectRowOwner): void {
   const scoped = new Set(res.scoped_session_ids ?? [])
   // The tree refreshes on every sessions.changed and window focus, and most of
   // those answers are unchanged. Keep unchanged nodes by reference so the
@@ -458,7 +488,7 @@ function applyProjectTreePayload(res: ProjectTreePayload, connectionId: null | s
   $projectTree.set(
     replaceEqualDeep(
       $projectTree.get(),
-      (res.projects ?? []).map(project => tagProjectSessionConnection(project, connectionId))
+      (res.projects ?? []).map(project => tagProjectSessionConnection(project, owner))
     )
   )
   $activeProjectId.set(res.active_id ?? null)
@@ -514,7 +544,7 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
       return
     }
 
-    applyProjectTreePayload(res, context.connectionId)
+    applyProjectTreePayload(res, context)
     markProjectsRpcSuccess()
   } catch (err) {
     if (generation === projectTreeRefreshGeneration && stillOnProjectsContext(context)) {
@@ -549,7 +579,7 @@ export async function refreshProjectTree(): Promise<void> {
 // the REST fan-out reads every profile's databases directly instead of asking
 // us to hold a backend open per profile just to draw lanes.
 async function refreshProjectTreeAcrossProfiles(): Promise<void> {
-  const connectionId = activeGatewayConnectionId()
+  const owner = projectRowOwner()
   const generation = ++projectTreeRefreshGeneration
   $projectTreeLoading.set(true)
 
@@ -564,12 +594,12 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
     if (
       generation !== projectTreeRefreshGeneration ||
       $profileScope.get() !== ALL_PROFILES ||
-      activeGatewayConnectionId() !== connectionId
+      activeGatewayConnectionId() !== owner.connectionId
     ) {
       return
     }
 
-    applyProjectTreePayload(res, connectionId)
+    applyProjectTreePayload(res, owner)
     markProjectsRpcSuccess()
   } catch (err) {
     markProjectsRpcFailure(err)
@@ -641,7 +671,7 @@ export async function fetchProjectSessions(
     }
 
     return dropRemovedProjectSessions(
-      res.project ? tagProjectSessionConnection(res.project, context.connectionId) : null,
+      res.project ? tagProjectSessionConnection(res.project, context) : null,
       removalSnapshot
     )
   } catch (error) {

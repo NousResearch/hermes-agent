@@ -132,6 +132,22 @@ export function _resetConnectionsForTests(): void {
   $pendingConnectionId.set(null)
 }
 
+// A connection switch is a new-chat intent on THAT source: keep the registry
+// identity with the profile so the next create names local::x / <source>::x
+// exactly, never a bare profile string. An older explicit agent route must not
+// override the selected source. The silent boot restore is not a user choice,
+// so it keeps a route the user pinned (gateway-group +) while it was in flight.
+function rehomeNewChatDraft(profile: string, keepExplicitRoute = false): void {
+  $newChatProfile.set(profile)
+
+  if (!keepExplicitRoute) {
+    $newChatRoute.set(null)
+  }
+
+  captureNewChatSource()
+  requestFreshSession()
+}
+
 export function setConnectionsRegistry(registry: DesktopConnectionsRegistry): void {
   $connectionsRegistry.set(registry)
 }
@@ -402,14 +418,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
 
   if (pendingTarget === null && currentConnectionId === connectionId && currentProfile === targetProfile) {
     $showAllProfiles.set(false)
-    $newChatProfile.set(targetProfile)
-    // A connection switch is a new-chat intent on THAT source: keep the
-    // registry identity with the profile so the next create names local::x /
-    // <source>::x exactly, never a bare profile string.
-    // An older explicit agent route must not override the selected source.
-    $newChatRoute.set(null)
-    captureNewChatSource()
-    requestFreshSession()
+    rehomeNewChatDraft(targetProfile)
     await rememberConnection(connectionId)
 
     return
@@ -545,11 +554,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
         $showAllProfiles.set(false)
       }
 
-      $newChatProfile.set(targetProfile)
-      // An older explicit agent route must not override the selected source.
-      $newChatRoute.set(null)
-      captureNewChatSource()
-      requestFreshSession()
+      rehomeNewChatDraft(targetProfile, restoreOnBoot)
       await refreshActiveProfile()
     }
   } catch (error) {

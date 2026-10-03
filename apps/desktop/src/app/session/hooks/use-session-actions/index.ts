@@ -1501,7 +1501,16 @@ export function useSessionActions({
 
       // Preserve this resolved source for later prompt/approval RPCs too;
       // otherwise an untagged row falls back to its bare profile after resume.
-      if (!ownerRoute && !storedForProfile?.connection_id && sessionOwner && typeof sessionOwner === 'object') {
+      // Only for a row the ambient source actually returned: an id that did not
+      // resolve (deep link, routed restore) proves nothing about its owner, and
+      // a persisted hint would pin it to whichever source was in front.
+      if (
+        !ownerRoute &&
+        storedForProfile &&
+        !storedForProfile.connection_id &&
+        sessionOwner &&
+        typeof sessionOwner === 'object'
+      ) {
         setSessionOwnerHint(storedSessionId, sessionOwner)
       }
 

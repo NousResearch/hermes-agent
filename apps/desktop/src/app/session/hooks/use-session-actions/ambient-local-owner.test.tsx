@@ -163,6 +163,28 @@ describe('untagged resume ambient owner', () => {
     }
   )
 
+  it('does not remember the foreground source for a session it could not resolve', async () => {
+    const primary = { connectionState: 'open', request: vi.fn(async (method: string) => rpcResult(method)) }
+    gateways.setPrimaryGateway(primary as never, 'default')
+    gateways.setPrimaryGatewayConnection(descriptor('home'))
+    setConnection(descriptor('home'))
+    await gateways.ensureGatewayForAgent('local', 'default')
+    expect(gateways.isActivePrimary()).toBe(false)
+    // No listed row and no reachable detail endpoint: the owner is unknown.
+    setSessions([])
+    let resume!: Resume
+    render(
+      <Harness
+        onReady={ready => {
+          resume = ready
+        }}
+      />
+    )
+    await act(() => resume('stored', true))
+
+    expect(getSessionOwnerHint('stored')).toBeUndefined()
+  })
+
   it.each([false, true])(
     'preserves the profile-only door on a local primary (registryScoped=%s)',
     async registryScoped => {

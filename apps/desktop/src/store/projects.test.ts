@@ -59,6 +59,7 @@ vi.mock('@/store/gateway', () => ({
   $gateway: atom(null),
   activeGateway: vi.fn(),
   activeGatewayConnectionId: vi.fn(() => null),
+  isActivePrimary: vi.fn(() => true),
   ensureActiveGatewayOpen: vi.fn()
 }))
 

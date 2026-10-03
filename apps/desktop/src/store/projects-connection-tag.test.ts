@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import { hermesApi } from '@/hermes'
-import { $gateway, activeGateway, activeGatewayConnectionId } from '@/store/gateway'
+import { $gateway, activeGateway, activeGatewayConnectionId, isActivePrimary } from '@/store/gateway'
 import { $activeGatewayProfile, setShowAllProfiles } from '@/store/profile'
 import { $sessions } from '@/store/session'
 import { sessionOwnerRouteFromRow } from '@/store/session-request-router'
@@ -15,6 +15,7 @@ vi.mock('@/store/gateway', () => ({
   $gateway: atom(null),
   activeGateway: vi.fn(),
   activeGatewayConnectionId: vi.fn(),
+  isActivePrimary: vi.fn(),
   ensureActiveGatewayOpen: vi.fn()
 }))
 vi.mock('@/i18n', () => ({ translateNow: (key: string) => key }))
@@ -48,8 +49,10 @@ function treeProject(): SidebarProjectTree {
   }
 }
 
-function selectConnection(connectionId: string | null) {
+// Default topology: Home is the window primary, so `local` is a secondary.
+function selectConnection(connectionId: string | null, primary = connectionId !== 'local') {
   vi.mocked(activeGatewayConnectionId).mockReturnValue(connectionId)
+  vi.mocked(isActivePrimary).mockReturnValue(primary)
 }
 
 function rows(project: SidebarProjectTree) {
@@ -143,6 +146,38 @@ describe('project session connection provenance', () => {
 
     for (const row of rows($projectTree.get()[0])) {
       expect(sessionOwnerRouteFromRow(row)).toEqual({ connectionId: 'local', profile: 'coder' })
+    }
+  })
+
+  it('leaves This device rows bare on the primary path (legacy profile door)', async () => {
+    const project = treeProject()
+    connect(vi.fn().mockResolvedValue({ projects: [project], project, scoped_session_ids: [] }))
+    selectConnection('local', true)
+
+    await refreshProjectTree()
+    const hydrated = await fetchProjectSessions(project.id)
+
+    for (const row of [...rows($projectTree.get()[0]), ...rows(hydrated!)]) {
+      expect(row).not.toHaveProperty('connection_id')
+      expect(sessionOwnerRouteFromRow(row)).toBeUndefined()
+    }
+  })
+
+  it.each(['home', 'local'])('never re-owns a row that already names its connection (%s active)', async active => {
+    const project = treeProject()
+
+    for (const row of rows(project)) {
+      row.connection_id = 'elsewhere'
+    }
+
+    vi.mocked(hermesApi).mockResolvedValue({ projects: [project], scoped_session_ids: [] })
+    selectConnection(active)
+    setShowAllProfiles(true)
+
+    await refreshProjectTree()
+
+    for (const row of rows($projectTree.get()[0])) {
+      expect(sessionOwnerRouteFromRow(row)).toEqual({ connectionId: 'elsewhere', profile: 'default' })
     }
   })
 

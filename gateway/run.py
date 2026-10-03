@@ -73,6 +73,15 @@ _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 _GATEWAY_HYGIENE_PLATFORM = "gateway_hygiene"
 
+# The one retry status Telegram delivers instead of dropping (see _prepare_gateway_status_message):
+# it explains a long visible silence. Shared with the noise pattern below so the two cannot drift —
+# every other surface still treats it as noise.
+_RATE_LIMIT_WAIT_PATTERN = (
+    r"(?:⏱️\s*)?rate\s+limited\.\s+waiting\s+\d+(?:\.\d+)?s"
+    r"(?:\s+\(attempt\s+\d+/\d+\))?\.{0,3}"
+)
+_RATE_LIMIT_WAIT_STATUS_RE = re.compile(_RATE_LIMIT_WAIT_PATTERN, re.IGNORECASE)
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
     r"auxiliary\s+.+\s+failed"
@@ -97,7 +106,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|compressed\s+~[\d,]+\s+(?:→|->)\s+~[\d,]+\s+tokens,\s+retrying"
     r"|context\s+reduced\s+to\s+[\d,]+\s+tokens\s+\(was\s+[\d,]+\),\s+retrying"
     r"|session\s+compressed\s+\d+\s+times"
-    r"|rate\s+limited\.\s+waiting\s+\d"
+    rf"|{_RATE_LIMIT_WAIT_PATTERN}"
     r"|retrying\s+in\s+\d"
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
@@ -738,6 +747,13 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
+    # Telegram-only exception to the noise filter below: a rate-limit wait is the one retry status
+    # that explains a LONG visible silence, so suppressing it reads as the bot having died. Returns
+    # before the provider-error rewrite too — "Rate limited. Waiting 30.0s" is already the concise
+    # form; the generic provider-failure reply would be strictly less informative here.
+    if (_gateway_platform_value(platform) == "telegram"
+            and _RATE_LIMIT_WAIT_STATUS_RE.fullmatch(text)):
+        return f"⚠️ {text}"
     # Opt-in `compression.progress_notices` lets ROUTINE (template-derived) progress through; other noise stays.
     if _TELEGRAM_NOISY_STATUS_RE.search(text) and not (
         _gateway_compression_progress_notices_enabled() and _COMPRESSION_PROGRESS_STATUS_RE.search(text)

@@ -31,16 +31,16 @@ def test_separator_is_space_middot_space():
 @pytest.mark.parametrize(
     "subject, model, reasoning, expected, length",
     [
-        (SUBJECT, "glm-5.3", "medium", f"{SUBJECT} \u00b7 glm-5.3 \u00b7 r3", 35),
+        (SUBJECT, "glm-5.3", "medium", f"{SUBJECT} \u00b7 glm-5.3 \u00b7 medium", 39),
         (SUBJECT, "glm-5.3", None, f"{SUBJECT} \u00b7 glm-5.3", 30),
         (SUBJECT, "space-bunny-free", None, f"{SUBJECT} \u00b7 space-bunny-free", 39),
-        ("", "glm-5.3", "high", "glm-5.3 \u00b7 r4", 12),
+        ("", "glm-5.3", "high", "glm-5.3 \u00b7 high", 14),
         (
             LONG_SUBJECT,
             "glm-5.3",
             "max",
             "Investigate why the ingest job silently truncates the final CSV export when "
-            "the upst\u2026 \u00b7 glm-5.3 \u00b7 r6",
+            "the ups\u2026 \u00b7 glm-5.3 \u00b7 max",
             100,
         ),
     ],
@@ -58,7 +58,7 @@ def test_worked_examples(subject, model, reasoning, expected, length):
 @pytest.mark.parametrize("index, effort", list(enumerate(VALID_REASONING_EFFORTS, start=1)))
 def test_every_effort_maps_to_documented_ordinal(index, effort):
     assert REASONING_ORDINALS[effort] == index
-    assert compose_group_title(SUBJECT, "glm-5.3", effort).endswith(f" \u00b7 r{index}")
+    assert compose_group_title(SUBJECT, "glm-5.3", effort).endswith(f" \u00b7 {effort}")
 
 
 def test_ordinal_map_is_exactly_the_documented_scale():
@@ -76,7 +76,7 @@ def test_ordinal_map_is_exactly_the_documented_scale():
 
 def test_all_seven_efforts_produce_a_tag():
     for effort in VALID_REASONING_EFFORTS:
-        assert f" \u00b7 r" in compose_group_title(SUBJECT, "glm-5.3", effort)
+        assert f" \u00b7 {effort}" in compose_group_title(SUBJECT, "glm-5.3", effort)
 
 
 @pytest.mark.parametrize("reasoning", [None, "", "bogus", "disabled", "off", "none", "r0"])
@@ -113,7 +113,7 @@ def test_only_the_leading_provider_segment_is_stripped():
 
 def test_bare_provider_prefix_with_empty_remainder_does_not_crash():
     assert compose_group_title(SUBJECT, "provider/", None) == SUBJECT
-    assert compose_group_title(SUBJECT, "provider/", "high") == f"{SUBJECT} \u00b7 r4"
+    assert compose_group_title(SUBJECT, "provider/", "high") == f"{SUBJECT} \u00b7 high"
 
 
 def test_model_rendered_once_not_twice():
@@ -125,14 +125,14 @@ def test_model_rendered_once_not_twice():
 
 def test_empty_subject_yields_bare_suffix_without_leading_separator():
     got = compose_group_title("", "glm-5.3", "high")
-    assert got == "glm-5.3 \u00b7 r4"
+    assert got == "glm-5.3 \u00b7 high"
     assert not got.startswith(SEPARATOR)
     assert not got.startswith(" ")
 
 
 @pytest.mark.parametrize("subject", ["", "   ", "\t", "\n", " \t\n "])
 def test_whitespace_only_subject_behaves_as_empty(subject):
-    assert compose_group_title(subject, "glm-5.3", "high") == "glm-5.3 \u00b7 r4"
+    assert compose_group_title(subject, "glm-5.3", "high") == "glm-5.3 \u00b7 high"
 
 
 def test_empty_subject_model_and_no_reasoning_is_empty_string():
@@ -151,11 +151,11 @@ def test_subject_only_when_model_and_reasoning_are_empty():
 def test_truncation_fits_the_cap_at_every_effort_level(effort):
     got = compose_group_title(LONG_SUBJECT, "opencode-go/space-bunny-free", effort)
     assert len(got) <= MAX_TITLE_LENGTH
-    ordinal = REASONING_ORDINALS.get(effort or "")
+    word = effort if effort in VALID_REASONING_EFFORTS else ""
     expected_tail = f"{SEPARATOR}space-bunny-free"
-    expected_tail += f" \u00b7 r{ordinal}" if ordinal else ""
+    expected_tail += f" \u00b7 {word}" if word else ""
     assert got == got[: got.rindex("\u2026")] + "\u2026" + expected_tail
-    assert got.endswith("space-bunny-free" + (f" \u00b7 r{ordinal}" if ordinal else ""))
+    assert got.endswith("space-bunny-free" + (f" \u00b7 {word}" if word else ""))
     # rstrip may shorten the result below the cap; never overshoot it
     assert len(got) >= MAX_TITLE_LENGTH - 1
 
@@ -166,14 +166,14 @@ def test_truncation_is_exactly_100_when_nothing_is_rstripped(effort):
     subject = "z" * 200
     got = compose_group_title(subject, "glm-5.3", effort)
     assert len(got) == MAX_TITLE_LENGTH
-    assert got == subject[: 100 - len(f"{SEPARATOR}glm-5.3 \u00b7 r{REASONING_ORDINALS[effort]}") - 1] \
-        + "\u2026" + f"{SEPARATOR}glm-5.3 \u00b7 r{REASONING_ORDINALS[effort]}"
+    assert got == subject[: 100 - len(f"{SEPARATOR}glm-5.3 \u00b7 {effort}") - 1] \
+        + "\u2026" + f"{SEPARATOR}glm-5.3 \u00b7 {effort}"
 
 
 def test_truncation_never_cuts_the_suffix():
     for effort in VALID_REASONING_EFFORTS:
         got = compose_group_title(LONG_SUBJECT, "glm-5.3", effort)
-        assert got.endswith(f" \u00b7 glm-5.3 \u00b7 r{REASONING_ORDINALS[effort]}")
+        assert got.endswith(f" \u00b7 glm-5.3 \u00b7 {effort}")
     assert compose_group_title(LONG_SUBJECT, "glm-5.3", None).endswith(" \u00b7 glm-5.3")
 
 
@@ -200,7 +200,7 @@ def test_ellipsis_charged_to_the_budget():
 def test_subject_under_the_cap_is_verbatim():
     got = compose_group_title(SUBJECT, "glm-5.3", "medium")
     assert "\u2026" not in got
-    assert got == f"{SUBJECT} \u00b7 glm-5.3 \u00b7 r3"
+    assert got == f"{SUBJECT} \u00b7 glm-5.3 \u00b7 medium"
 
 
 def test_subject_only_truncation_when_no_suffix():
@@ -212,15 +212,15 @@ def test_subject_only_truncation_when_no_suffix():
 
 def test_truncation_rstrips_before_the_ellipsis():
     # A space landing exactly at the cut point must not double up with the ellipsis.
-    subject = "a" * 83 + " " + "b" * 20
+    subject = "a" * 82 + " " + "b" * 20
     got = compose_group_title(subject, "glm-5.3", "max")
-    tail = f"{SEPARATOR}glm-5.3 \u00b7 r6"
+    tail = f"{SEPARATOR}glm-5.3 \u00b7 max"
     budget = MAX_TITLE_LENGTH - len(tail) - 1
-    assert budget == 84
+    assert budget == 83
     assert subject[budget - 1] == " "  # the cut slice ends on the space
-    assert got == "a" * 83 + "\u2026" + tail
+    assert got == "a" * 82 + "\u2026" + tail
     assert "\u2026  " not in got  # ellipsis then exactly one separator, not two spaces
-    assert got[len("a" * 83) + 1:] == tail
+    assert got[len("a" * 82) + 1:] == tail
     assert len(got) == 99
 
 
@@ -228,7 +228,7 @@ def test_pathological_model_id_overruns_the_cap_by_design():
     """The suffix is never truncated (contract rule 6), so a model id longer than the cap
     yields an over-cap title rather than a lossy one. Real model ids are far shorter."""
     got = compose_group_title("", "a-very-long-model-name-" * 10, "max")
-    assert got.endswith(" \u00b7 r6")
+    assert got.endswith(" \u00b7 max")
     assert got.startswith("a-very-long-model-name-")
     assert len(got) > MAX_TITLE_LENGTH
 

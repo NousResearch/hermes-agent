@@ -3228,10 +3228,10 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     # row, that path returns without persisting or retiring (recurring is False → new_next is
     # None), leaving a permanent zombie — state stays "scheduled", retention (which only sweeps
     # state=="completed") never catches it, and every tick repeats the ledger query. Retire or
-    # guard first so a spent one-shot can never be skipped past its own retirement. Both guards
-    # no-op for healthy records: the budget guard only fires when completed >= times, and the
-    # grace gate only fires for an overdue slot (a future slot is always below grace).
-    if kind == "once":
+    # guard first so a spent one-shot can never be skipped past its own retirement.
+    # Keep their original due-time precondition: a recurring→once edit may inherit
+    # a spent counter, but the future record must remain available for explicit re-arm.
+    if kind == "once" and not _instant_after(d.next_run_dt, now):
         if _retire_expired_oneshot(d) or _oneshot_dispatch_limit_reached(job, scan):
             return False
     # Intentionally string-exact on raw stored values: trigger_job stamps the SAME isoformat string

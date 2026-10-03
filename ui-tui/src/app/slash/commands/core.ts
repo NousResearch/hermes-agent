@@ -115,6 +115,18 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    help: 'list keyboard shortcuts',
+    name: 'keys',
+    run: (_arg, ctx) => {
+      // Same table /help renders, so a binding added to `hotkeys()` shows up
+      // in both panels instead of drifting (#5511). ponytail: read-only, the
+      // only keybinding surface today is the table; making the bindings
+      // configurable is a separate product decision.
+      ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, [{ rows: hotkeys(), title: t('help.hotkeys') }])
+    }
+  },
+
+  {
     aliases: ['exit'],
     help: 'exit hermes',
     name: 'quit',

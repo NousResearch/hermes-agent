@@ -9980,6 +9980,14 @@ def test_complete_slash_leaves_argument_stages_alone(monkeypatch):
     assert [item["text"] for item in items] == ["collapsed", "cycle"]
 
 
+def test_complete_slash_offers_tui_local_keys_command():
+    """`/keys` lives only in the TUI's local registry, which the gateway popup
+    never reads, so `_SLASH_EXTRAS` is the one surface that makes it findable."""
+    texts = {item["text"] for item in _slash_completions("/k")}
+
+    assert "/keys" in texts
+
+
 def test_config_get_reasoning_renders_dict_form_custom_tier(tmp_path, monkeypatch):
     """`agent.reasoning_effort: {enabled: true, effort: thinking}` (a provider's bespoke tier)
     must read back as the tier name, not `str(dict)`."""

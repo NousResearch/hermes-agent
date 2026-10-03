@@ -17,7 +17,8 @@ _AT_DIRECTIVE_HINTS = [
 _SLASH_EXTRAS = [
     ("/density", "Toggle compact display mode"), ("/details", "Control agent detail visibility"),
     ("/logs", "Show recent gateway log lines"),
-    ("/mouse", "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]")]
+    ("/mouse", "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]"),
+    ("/keys", "List keyboard shortcuts")]
 
 
 def _item(text: str, meta: str, display: str | None = None) -> dict:

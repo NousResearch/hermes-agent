@@ -39,6 +39,13 @@ Hermes runs with a curated `hermes-acp` toolset designed for editor workflows. I
 
 It intentionally excludes things that do not fit typical editor UX, such as messaging delivery and cronjob management.
 
+`clarify` is added when the editor advertises form elicitation
+(`clientCapabilities.elicitation.form` in `initialize`): Hermes then asks its
+question with an ACP `elicitation/create` request in form mode and waits
+`agent.clarify_timeout` (default 3600 s) for the answer. A declined or dismissed form
+reaches the agent as a skipped question. Editors without form elicitation don't
+get the tool, since they have no way to show the question.
+
 The toolset resolves the same way as on the messaging gateway for the same
 platform config. That includes the extras the gateway adds on top of the
 list, such as enabled plugin toolsets, so ACP sessions get those too.

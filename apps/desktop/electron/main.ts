@@ -234,8 +234,8 @@ import {
   modeRemovesUserData,
   registerDesktopUninstallIpc,
   resolveRemovableAppPath,
+  resolveUninstallInvocation,
   shouldRemoveAppBundle,
-  uninstallArgsForMode,
   type UninstallSummaryDetails
 } from './desktop-uninstall'
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
@@ -18955,14 +18955,27 @@ function resolveHermesRuntime() {
 // The IPC boundary applies the baked install policy before either callback.
 // Only self-managed installs use the Python summary or the cleanup script.
 
-function uninstallVenvPython(): string {
-  return getVenvPython(VENV_ROOT)
+function uninstallVenvPython(): string | null {
+  const venvPython: string = getVenvPython(VENV_ROOT)
+
+  return fileExists(venvPython) ? venvPython : null
+}
+
+// PM-managed checkouts carry no venv of their own: the installation launcher
+// owns interpreter and generation selection there, as for the updater's state.db
+// pre-flight and readSourceUpdate.
+function uninstallLauncher(): string | null {
+  if (uninstallVenvPython() || !directoryExists(path.join(ACTIVE_HERMES_ROOT, 'pm'))) {
+    return null
+  }
+
+  return resolveInstallationLauncher(ACTIVE_HERMES_ROOT, IS_WINDOWS, HERMES_HOME)
 }
 
 function fallbackUninstallSummary(): UninstallSummaryDetails {
   return {
     hermes_home: HERMES_HOME,
-    agent_installed: isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(uninstallVenvPython()),
+    agent_installed: isHermesSourceRoot(ACTIVE_HERMES_ROOT) && Boolean(uninstallVenvPython() || uninstallLauncher()),
     gui_installed: true,
     source_built_artifacts: [],
     packaged_app_paths: [],
@@ -18974,10 +18987,14 @@ function fallbackUninstallSummary(): UninstallSummaryDetails {
 }
 
 async function probeUninstallSummary(): Promise<UninstallSummaryDetails> {
-  const py: string = uninstallVenvPython()
+  const venvPython: string | null = uninstallVenvPython()
+  const launcher: string | null = venvPython ? null : uninstallLauncher()
+  const py: string | null = venvPython ?? launcher
   const agentRoot: string = ACTIVE_HERMES_ROOT
 
-  if (!fileExists(py)) {
+  // Node refuses to spawn a .cmd directly (an older launcher can be one); the
+  // fallback summary already reports the agent as installed.
+  if (!py || (IS_WINDOWS && /\.cmd$/i.test(py))) {
     return fallbackUninstallSummary()
   }
 
@@ -18997,7 +19014,7 @@ async function probeUninstallSummary(): Promise<UninstallSummaryDetails> {
     try {
       const child: ChildProcess = spawn(
         py,
-        ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary'],
+        [...(venvPython ? ['-m', 'hermes_cli.main'] : []), 'uninstall', '--gui-summary'],
         hiddenWindowsChildOptions({
           cwd: agentRoot,
           env: { ...process.env, HERMES_HOME, NO_COLOR: '1' },
@@ -19034,48 +19051,43 @@ async function probeUninstallSummary(): Promise<UninstallSummaryDetails> {
 }
 
 async function runDesktopUninstall(mode: string): Promise<DesktopUninstallResult> {
-  let uninstallArgs: string[]
-
-  try {
-    uninstallArgs = uninstallArgsForMode(mode)
-  } catch (error) {
-    return { ok: false, error: 'invalid-mode', message: error.message }
-  }
-
-  const venvPy = uninstallVenvPython()
-
-  if (!fileExists(venvPy)) {
-    return {
-      ok: false,
-      error: 'agent-missing',
-      message: `Can't run the uninstaller: no Hermes agent venv at ${VENV_ROOT}.`
-    }
-  }
-
   // Interpreter choice (Finding 3): lite/full rmtree the venv that holds the
   // running python.exe. On Windows a running .exe is mandatory-locked, so the
   // rmtree must NOT be driven by the venv's own interpreter — use a system
   // Python with PYTHONPATH=<agentRoot> so `import hermes_cli` resolves from
   // source while the venv is torn down. gui-only doesn't touch the venv, so the
   // venv python is fine there. If no system Python exists (the Windows edge
-  // case), fall back to the venv python — gui-only is unaffected; lite/full may
-  // leave venv remnants the user can delete, which we log.
-  let py = venvPy
-  let pythonPath = null
+  // case), fall back to the venv python (or, on a PM-managed install with no
+  // venv, the installation launcher) — gui-only is unaffected; lite/full may
+  // leave locked files the user can delete, which we log.
+  const systemPython: string | null = modeRemovesAgent(mode) ? await findSystemPython() : null
+  let invocation
 
-  if (modeRemovesAgent(mode)) {
-    const sysPy = await findSystemPython()
+  try {
+    invocation = resolveUninstallInvocation({
+      mode,
+      agentRoot: ACTIVE_HERMES_ROOT,
+      venvPython: uninstallVenvPython(),
+      launcher: uninstallLauncher(),
+      systemPython
+    })
+  } catch (error) {
+    return { ok: false, error: 'invalid-mode', message: error.message }
+  }
 
-    if (sysPy) {
-      py = sysPy
-      pythonPath = ACTIVE_HERMES_ROOT
-    } else if (IS_WINDOWS) {
-      rememberLog(
-        '[uninstall] no system Python found for lite/full on Windows; falling back ' +
-          'to the venv python — venv files locked by the running interpreter may ' +
-          'remain and need manual deletion.'
-      )
+  if (!invocation) {
+    return {
+      ok: false,
+      error: 'agent-missing',
+      message: `Can't run the uninstaller: no Hermes agent venv at ${VENV_ROOT} and no installation launcher.`
     }
+  }
+
+  if (modeRemovesAgent(mode) && !systemPython && IS_WINDOWS) {
+    rememberLog(
+      `[uninstall] no system Python found for lite/full on Windows; falling back to ${invocation.program} — ` +
+        'files locked by the running interpreter may remain and need manual deletion.'
+    )
   }
 
   const appPath = resolveRemovableAppPath(process.execPath, process.platform, process.env)
@@ -19095,10 +19107,10 @@ async function runDesktopUninstall(mode: string): Promise<DesktopUninstallResult
 
   const scriptArgs = {
     desktopPid: process.pid,
-    pythonExe: py,
-    pythonPath,
+    pythonExe: invocation.program,
+    pythonPath: invocation.pythonPath,
     agentRoot: ACTIVE_HERMES_ROOT,
-    uninstallArgs,
+    uninstallArgs: invocation.args,
     appPath: removeBundle,
     hermesHome: HERMES_HOME
   }

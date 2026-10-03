@@ -28,6 +28,7 @@ import {
   nativeRemovalInstructions,
   resolveInstallKind,
   resolveRemovableAppPath,
+  resolveUninstallInvocation,
   shouldRemoveAppBundle,
   uninstallArgsForMode
 } from './desktop-uninstall'
@@ -239,7 +240,141 @@ test('buildPosixCleanupScript waits for the PID, runs the uninstall module, remo
   assert.match(script, /export HERMES_HOME='\/home\/x\/\.hermes'/)
 })
 
+// --- resolveUninstallInvocation ---
+
+test('a PM-managed install (no venv) runs the uninstall module through its installation launcher', (): void => {
+  const launcher: string = '/home/x/.hermes/hermes-agent/.hermes/bin/hermes'
+
+  for (const mode of ['gui', 'lite', 'full', 'data']) {
+    assert.deepEqual(
+      resolveUninstallInvocation({
+        mode,
+        agentRoot: '/home/x/.hermes/hermes-agent',
+        venvPython: null,
+        launcher,
+        systemPython: null
+      }),
+      { program: launcher, args: ['--run-module', 'hermes_cli.uninstall', '--mode', mode], pythonPath: null }
+    )
+  }
+
+  // lite/full still prefer a system Python outside the tree being removed (Finding 3).
+  assert.deepEqual(
+    resolveUninstallInvocation({
+      mode: 'full',
+      agentRoot: '/home/x/.hermes/hermes-agent',
+      venvPython: null,
+      launcher,
+      systemPython: '/usr/bin/python3'
+    }),
+    {
+      program: '/usr/bin/python3',
+      args: ['-m', 'hermes_cli.uninstall', '--mode', 'full'],
+      pythonPath: '/home/x/.hermes/hermes-agent'
+    }
+  )
+  // A pre-PM checkout keeps its venv interpreter; with neither there is nothing to run.
+  assert.deepEqual(
+    resolveUninstallInvocation({
+      mode: 'gui',
+      agentRoot: '/h',
+      venvPython: '/h/venv/bin/python',
+      launcher: null,
+      systemPython: null
+    }),
+    { program: '/h/venv/bin/python', args: ['-m', 'hermes_cli.uninstall', '--mode', 'gui'], pythonPath: null }
+  )
+  assert.equal(
+    resolveUninstallInvocation({ mode: 'gui', agentRoot: '/h', venvPython: null, launcher: null, systemPython: null }),
+    null
+  )
+  assert.throws(
+    () => resolveUninstallInvocation({ mode: 'nuke', agentRoot: '/h', venvPython: null, launcher, systemPython: null }),
+    /Unknown uninstall mode/
+  )
+})
+
+test.skipIf(process.platform === 'win32')(
+  'POSIX cleanup on a PM-managed install hands the mode to the launcher and still removes the bundle',
+  async (): Promise<void> => {
+    const root: string = fs.mkdtempSync(path.join(os.tmpdir(), 'uninstall-pm-'))
+    const app: string = path.join(root, 'Hermes.app')
+    const launcher: string = path.join(root, '.hermes', 'bin', 'hermes')
+    const argvFile: string = path.join(root, 'argv.txt')
+    const script: string = path.join(root, 'cleanup.sh')
+
+    try {
+      fs.mkdirSync(app)
+      fs.mkdirSync(path.dirname(launcher), { recursive: true })
+      fs.writeFileSync(launcher, `#!/bin/sh\nprintf '%s\\n' "$@" > ${JSON.stringify(argvFile)}\n`, { mode: 0o755 })
+
+      const invocation = resolveUninstallInvocation({
+        mode: 'gui',
+        agentRoot: root,
+        venvPython: null,
+        launcher,
+        systemPython: null
+      })
+
+      assert.ok(invocation)
+      fs.writeFileSync(
+        script,
+        buildPosixCleanupScript({
+          desktopPid: 0,
+          pythonExe: invocation.program,
+          pythonPath: invocation.pythonPath,
+          agentRoot: root,
+          uninstallArgs: invocation.args,
+          appPath: app,
+          hermesHome: root
+        })
+      )
+      const child: ChildProcess = spawn('bash', [script], { stdio: 'ignore' })
+      await once(child, 'close')
+
+      assert.deepEqual(fs.readFileSync(argvFile, 'utf8').trim().split('\n'), [
+        '--run-module',
+        'hermes_cli.uninstall',
+        '--mode',
+        'gui'
+      ])
+      assert.equal(fs.existsSync(app), false)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }
+)
+
 // --- buildWindowsCleanupScript ---
+
+test('buildWindowsCleanupScript CALLs a .cmd launcher so the bundle removal after it still runs', (): void => {
+  const script: string = buildWindowsCleanupScript({
+    desktopPid: 7,
+    pythonExe: 'C:\\h\\.hermes\\bin\\hermes.cmd',
+    pythonPath: null,
+    agentRoot: 'C:\\h',
+    uninstallArgs: ['--run-module', 'hermes_cli.uninstall', '--mode', 'gui'],
+    appPath: 'C:\\Users\\x\\AppData\\Local\\Programs\\Hermes',
+    hermesHome: 'C:\\h'
+  })
+
+  assert.match(script, /^call "C:\\h\\\.hermes\\bin\\hermes\.cmd" "--run-module" "hermes_cli\.uninstall" "--mode" "gui"$/m)
+  assert.match(script, /:rmloop/)
+  // An .exe (launcher or Python) is run directly, as before.
+  assert.doesNotMatch(
+    buildWindowsCleanupScript({
+      desktopPid: 7,
+      pythonExe: 'C:\\h\\.hermes\\bin\\hermes.exe',
+      pythonPath: null,
+      agentRoot: 'C:\\h',
+      uninstallArgs: ['--run-module', 'hermes_cli.uninstall', '--mode', 'gui'],
+      appPath: null,
+      hermesHome: 'C:\\h'
+    }),
+    /^call /m
+  )
+})
+
 
 test('buildWindowsCleanupScript waits (bounded) for PID, runs uninstall, rmdir bundle', () => {
   const script = buildWindowsCleanupScript({

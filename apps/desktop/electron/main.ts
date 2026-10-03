@@ -14629,13 +14629,14 @@ function hudBounds() {
   return defaultHudBounds(area)
 }
 
-function hudUrl(sessionId, profile) {
+function hudUrl(sessionId, profile, connectionId: null | string = null) {
   // The profile rides the query string next to `win=hud` (BEFORE the '#', so
   // HashRouter never sees it). The HUD renderer's gateway boot reads it and
   // adopts that backend instead of the primary — without it, a HUD opened on a
   // non-primary profile's conversation resolves the session id against the
   // wrong backend and falls back to the default profile's last session.
   return buildHudWindowUrl(sessionId, {
+    connectionId,
     devServer: DEV_SERVER,
     profile,
     rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
@@ -14656,7 +14657,7 @@ function broadcastHudState(open) {
   }
 }
 
-function spawnHudWindow(sessionId, profile) {
+function spawnHudWindow(sessionId, profile, connectionId: null | string = null) {
   const win = new BrowserWindow({
     ...hudBounds(),
     minWidth: 380,
@@ -14778,11 +14779,11 @@ function spawnHudWindow(sessionId, profile) {
   // Same timing as a session window: the profile query is known now, while the
   // renderer cannot announce its route until after preload has already run.
   recordWindowConnectionRoute(win.webContents, {
-    connectionId: null,
+    connectionId: connectionId ?? null,
     profile: localSkinProfileKey(profile ?? primaryProfileKey()),
-    registryScoped: false
+    registryScoped: Boolean(connectionId)
   })
-  loadWindowUrl(win, hudUrl(sessionId, profile), 'HUD')
+  loadWindowUrl(win, hudUrl(sessionId, profile, connectionId), 'HUD')
 
   return win
 }
@@ -14814,8 +14815,26 @@ function destroyHudWindow(win: BrowserWindow) {
   requestHudClose(win)
 }
 
-function openHudWindow(sessionId, profile) {
-  const profileKey = typeof profile === 'string' && profile.trim() ? profile.trim() : null
+function openHudWindow(sessionId, profile, connectionId: null | string = null) {
+  // No explicit route (the modifier-key summon, an older renderer): inherit the
+  // route of the app window the user is actually on. Falling through to the
+  // registry primary sent a HUD summoned from "This device" to a remote
+  // primary that can see neither this desktop nor its apps.
+  const inherited =
+    !connectionId && mainWindow && !mainWindow.isDestroyed()
+      ? windowConnectionRoutes.get(mainWindow.webContents.id)
+      : null
+
+  const profileKey = typeof profile === 'string' && profile.trim() ? profile.trim() : inherited?.profile?.trim() || null
+
+  const connectionKey =
+    typeof connectionId === 'string' && connectionId.trim()
+      ? connectionId.trim()
+      : inherited?.connectionId && (!profile || inherited.profile === profileKey)
+        ? inherited.connectionId
+        : null
+
+  const routeKey = profileKey ? `${connectionKey ?? ''}::${profileKey}` : null
 
   if (hudWindow && !hudWindow.isDestroyed()) {
     // Pointed at another PROFILE: the live renderer is bound to the old
@@ -14824,12 +14843,12 @@ function openHudWindow(sessionId, profile) {
     // (the #82285 fallback). Respawn against the right one. The old window's
     // 'closed' handler sees `hudWindow` already pointing at the replacement,
     // so it neither restores main nor broadcasts a false "closed".
-    if (profileKey && hudProfile !== profileKey) {
+    if (routeKey && hudProfile !== routeKey) {
       const previous = hudWindow
 
       hudSessionId = sessionId || null
-      hudProfile = profileKey
-      hudWindow = spawnHudWindow(sessionId, profileKey)
+      hudProfile = routeKey
+      hudWindow = spawnHudWindow(sessionId, profileKey, connectionKey)
       previous.destroy()
       broadcastHudState(true)
       registerHudSnapShortcut()
@@ -14855,8 +14874,8 @@ function openHudWindow(sessionId, profile) {
 
   hudRestoreMainWindow = Boolean(mainWindow && !mainWindow.isDestroyed())
   hudSessionId = sessionId || null
-  hudProfile = profileKey
-  hudWindow = spawnHudWindow(sessionId, profileKey)
+  hudProfile = routeKey
+  hudWindow = spawnHudWindow(sessionId, profileKey, connectionKey)
   broadcastHudState(true)
   registerHudSnapShortcut()
 

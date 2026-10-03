@@ -203,3 +203,48 @@ class TestChineseReasoningTags:
         from cli import _strip_reasoning_tags
 
         assert _strip_reasoning_tags("<思考>secret</思考>答案") == "答案"
+
+
+class TestMidLineOpenSplitClose:
+    """#128294: a mid-line open tag whose close splits across deltas must not leak the
+    reasoning — the pair is discarded exactly like a same-buffer pair."""
+
+    @pytest.mark.parametrize(
+        "deltas, expected",
+        [
+            (["hello <think>SECRET</thi", "nk> world"], "hello  world"),
+            (["hello <thinking>SECRET</thinki", "ng> world"], "hello  world"),
+            (["hello <reasoning>SECRET</reasoni", "ng> world"], "hello  world"),
+            (["hello <思考>SECRET</思", "考> world"], "hello  world"),
+        ],
+    )
+    def test_split_close_pair_is_discarded(self, deltas, expected) -> None:
+        s = StreamingThinkScrubber()
+        out = _drive(s, deltas)
+        assert "SECRET" not in out
+        assert out == expected
+
+    def test_midline_open_with_close_on_later_delta(self) -> None:
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["hello <think>", "SECRET", "</think>", " world"])
+        assert out == "hello  world"
+
+    def test_unpaired_midline_mention_released_verbatim_at_flush(self) -> None:
+        """No close ever arrives: the prose mention is released exactly as today."""
+        s = StreamingThinkScrubber()
+        text = "Use the <think> element for reasoning"
+        assert _drive(s, [text]) == text
+
+    def test_pathological_unclosed_pending_block_falls_back_to_discard(self) -> None:
+        """A pending block that never closes must not balloon memory: beyond the retain cap
+        the content is discarded instead of retained."""
+        s = StreamingThinkScrubber()
+        out = _drive(s, ["hello <think>", "X" * 9000])
+        assert out == "hello "
+
+    def test_char_by_char_midline_open_split_close(self) -> None:
+        s = StreamingThinkScrubber()
+        deltas = list("hi <think>SECRET</th") + ["ink> done"]
+        out = _drive(s, deltas)
+        assert "SECRET" not in out
+        assert out == "hi  done"

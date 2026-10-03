@@ -182,6 +182,7 @@ def _insert_decomposed_child(
     """
     from hermes_cli.kanban_db import (
         _new_task_id, _canonical_assignee, _append_event,
+        _require_dir_workspace_path,
     )
 
     root_ws_kind = root_row["workspace_kind"] or "scratch"
@@ -194,6 +195,7 @@ def _insert_decomposed_child(
         child_ws_path = root_row["workspace_path"]
     else:
         child_ws_path = None
+    child_ws_path = _require_dir_workspace_path(child_ws_kind, child_ws_path)
     new_id = _new_task_id()
     body = child.get("body")
     conn.execute(

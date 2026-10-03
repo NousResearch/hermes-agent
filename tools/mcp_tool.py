@@ -550,7 +550,7 @@ def _spawn_death_supervisor():
         return subprocess.Popen(
             [sys.executable, supervisor, "--parent-pgid", str(os.getpgid(0))],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=_get_mcp_stderr_log(),
-            start_new_session=True, close_fds=True, text=True)
+            start_new_session=True, close_fds=True, text=True, encoding="utf-8", errors="replace")
     except Exception:
         # Never let supervisor bookkeeping block a real MCP connection: graceful shutdown paths
         # still reap normally; only the ungraceful-exit safety net is lost.

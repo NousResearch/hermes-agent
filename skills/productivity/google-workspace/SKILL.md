@@ -299,7 +299,7 @@ $GAPI docs append DOC_ID --tab TAB_ID --text "..."   # --tab required when the D
 All commands return JSON. Parse with `jq` or read directly. Key fields:
 
 - **Gmail search**: `[{id, threadId, from, to, subject, date, snippet, labels}]`
-- **Gmail get**: `{id, threadId, from, to, subject, date, labels, body}`
+- **Gmail get**: `{id, threadId, from, to, subject, date, labels, body, body_text, body_html, attachments}` (`body` is `body_text` or, if empty, `body_html`; `attachments` is `[{filename, mime_type, attachment_id, size}]`; forwarded `message/rfc822` parts are not descended into)
 - **Gmail send/reply**: `{status: "sent", id, threadId}`
 - **Calendar list**: `[{id, summary, start, end, location, description, htmlLink}]`
 - **Calendar create**: `{status: "created", id, summary, htmlLink}`

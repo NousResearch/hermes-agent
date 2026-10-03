@@ -269,3 +269,43 @@ def test_docs_append_carries_tab_id_and_refuses_ambiguous_writes(api_module, mon
         api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab=None))
     err = json.loads(capsys.readouterr().err)
     assert "tabs" in err and len(err["tabs"]) == 3
+
+
+def _b64(text):
+    import base64
+    return base64.urlsafe_b64encode(text.encode()).decode()
+
+
+def _leaf(mime, text):
+    return {"mimeType": mime, "body": {"data": _b64(text)}}
+
+
+def test_extract_bodies_finds_body_under_mixed_wrapping_alternative(api_module):
+    msg = {"payload": {"mimeType": "multipart/mixed", "parts": [
+        {"mimeType": "multipart/alternative", "parts": [
+            _leaf("text/plain", "plain"), _leaf("text/html", "<p>html</p>")]},
+        {"mimeType": "application/pdf", "filename": "a.pdf",
+         "body": {"attachmentId": "att1", "size": 5}},
+    ]}}
+    assert api_module._extract_bodies(msg) == {"text": "plain", "html": "<p>html</p>"}
+    assert [a["filename"] for a in api_module._extract_attachments(msg)] == ["a.pdf"]
+
+
+def test_forwarded_message_does_not_leak_into_outer_message(api_module):
+    """message/rfc822 parts are other emails: don't mix their bodies or inner
+    attachments into the outer message; the .eml itself still counts once."""
+    forwarded = {"mimeType": "message/rfc822", "filename": "fwd.eml",
+                 "body": {"attachmentId": "eml1", "size": 9},
+                 "parts": [{"mimeType": "multipart/mixed", "parts": [
+                     _leaf("text/plain", "INNER text"),
+                     _leaf("text/html", "<p>INNER</p>"),
+                     {"mimeType": "application/pdf", "filename": "inner.pdf",
+                      "body": {"attachmentId": "att2", "size": 5}},
+                 ]}]}
+    msg = {"payload": {"mimeType": "multipart/mixed", "parts": [
+        _leaf("text/plain", "outer text"), forwarded]}}
+    assert api_module._extract_bodies(msg) == {"text": "outer text", "html": ""}
+    assert [a["filename"] for a in api_module._extract_attachments(msg)] == ["fwd.eml"]
+
+    html_only = {"payload": {"mimeType": "multipart/mixed", "parts": [forwarded]}}
+    assert api_module._extract_bodies(html_only) == {"text": "", "html": ""}

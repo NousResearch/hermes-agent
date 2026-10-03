@@ -220,6 +220,22 @@ class DiscordMediaMixin:
                                     self.name, status, image_url[:80],
                                 )
                                 continue
+                            # Same preflight as the file:// branch above (#50846): an
+                            # oversized downloaded image would 413 the whole chunk too.
+                            _img_size = len(data)
+                            _img_limit = self._discord_upload_limit_bytes(channel)
+                            if _img_size > _img_limit:
+                                logger.warning(
+                                    "[%s] Skipping oversized downloaded image in batch: %s is %.1f MB (limit %.0f MB)",
+                                    self.name, image_url[:80],
+                                    _img_size / (1024 * 1024), _img_limit / (1024 * 1024),
+                                )
+                                skip_notices.append(
+                                    f"⚠️ Skipped an image — "
+                                    f"{_img_size / (1024 * 1024):.1f} MB exceeds Discord's "
+                                    f"{_img_limit / (1024 * 1024):.0f} MB upload limit."
+                                )
+                                continue
                             ext = _image_ext_from_content_type(headers.get("content-type", "image/png"))
                             files.append(_discord_mod.File(_io.BytesIO(data), filename=f"image_{len(files)}.{ext}"))
                         except Exception as dl_err:
@@ -394,6 +410,17 @@ class DiscordMediaMixin:
                 )
                 if status != 200:
                     raise Exception(f"Failed to download {kind}: HTTP {status}")
+                # Same preflight as _send_file_attachment/_reject_oversized_upload (#50846):
+                # an oversized downloaded attachment would 413 rather than upload — fall
+                # back to the base-adapter URL send instead of a doomed round-trip.
+                _limit = self._discord_upload_limit_bytes(channel)
+                if len(data) > _limit:
+                    logger.warning(
+                        "[%s] Downloaded %s is %.1f MB, exceeds Discord's %.0f MB upload limit; "
+                        "falling back to URL send",
+                        self.name, kind, len(data) / (1024 * 1024), _limit / (1024 * 1024),
+                    )
+                    return await fallback(error_metadata)
                 import io
                 file = discord.File(io.BytesIO(data), filename=filename_for(headers))
                 if self._is_forum_parent(channel):

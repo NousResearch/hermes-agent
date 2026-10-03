@@ -345,7 +345,28 @@ def _a2a_tools_available() -> bool:
         if _get_scoped_secret("A2A_PORT"):
             return True
         a2a_cfg = (cfg.get("platforms") or {}).get("a2a") or {}
-        return bool(isinstance(a2a_cfg, dict) and a2a_cfg.get("enabled"))
+        if isinstance(a2a_cfg, dict) and a2a_cfg.get("enabled"):
+            return True
+        # A platform block may live under any of the layers ``merge_platform_sections``
+        # merges (``gateway.platforms.*`` → top-level ``platforms.*`` → ``gateway.<platform>``
+        # subsections) — #109011. Checking only the top-level layer left the client tools
+        # gated off when the operator enabled the inbound platform the way the docs (and
+        # ``hermes gateway setup``) tell them to: ``gateway.platforms.a2a.enabled``.
+        gateway_cfg = cfg.get("gateway")
+        if isinstance(gateway_cfg, dict):
+            # A layer may be list-valued (``gateway.platforms: [telegram, api_server]``),
+            # in which case it carries no platform block to read.
+            layer = gateway_cfg.get("platforms")
+            if isinstance(layer, dict):
+                a2a_cfg = layer.get("a2a") or {}
+                if isinstance(a2a_cfg, dict) and a2a_cfg.get("enabled"):
+                    return True
+            # Third merged layer is the platform block itself (``gateway.a2a:``), not a
+            # layer of platforms — reading it as a layer would look for a nested ``a2a``.
+            a2a_cfg = gateway_cfg.get("a2a") or {}
+            if isinstance(a2a_cfg, dict) and a2a_cfg.get("enabled"):
+                return True
+        return False
     except Exception:  # noqa: BLE001
         return False
 

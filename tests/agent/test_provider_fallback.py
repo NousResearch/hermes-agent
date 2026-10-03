@@ -42,7 +42,24 @@ def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
 
 
 class TestFallbackChainInit:
+    def test_providerless_direct_alias_fallback_expands_to_its_codex_route(self, monkeypatch):
+        from hermes_cli import model_switch
+        from hermes_cli.fallback_config import get_fallback_chain
 
+        monkeypatch.setattr(model_switch, "_ensure_direct_aliases", lambda: None)
+        monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {
+            "lab-flash": model_switch.DirectAlias(
+                "gpt-5.6-luna", "openai-codex",
+                "https://chatgpt.com/backend-api/codex",
+            )
+        })
+
+        assert get_fallback_chain({"fallback_providers": [
+            {"model": "lab-flash"}
+        ]}) == [{
+            "provider": "openai-codex", "model": "gpt-5.6-luna",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }]
 
 
     def test_invalid_entries_filtered(self):

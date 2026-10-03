@@ -2478,6 +2478,41 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Opti
         "capabilities": dict(runtime.get("capabilities") or {})}
 
 
+def _resolve_direct_alias_agent_runtime(model: str) -> Optional[tuple[str, dict]]:
+    """Resolve a configured direct alias into its wire model and complete runtime route.
+
+    Gateway turns supply an explicit model to ``AIAgent`` and therefore bypass
+    CLI startup's alias expansion. Keep model, provider, endpoint, and key as
+    one route: otherwise the provider receives the short alias and rejects it.
+    """
+    requested_model = str(model or "").strip()
+    if not requested_model:
+        return None
+    try:
+        from hermes_cli import model_switch
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        model_switch._ensure_direct_aliases()
+        if requested_model.lower() not in model_switch.DIRECT_ALIASES:
+            return None
+        route = model_switch.resolve_startup_model_route(requested_model)
+        if route is None:
+            raise RuntimeError(f"configured alias {requested_model!r} has no runtime route")
+        runtime = resolve_runtime_provider(
+            requested=route.provider or None,
+            explicit_base_url=route.base_url or None,
+            explicit_api_key=route.api_key or None,
+            target_model=route.model,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Configured model alias {requested_model!r} could not be resolved: {exc}") from exc
+    return route.model, {
+        **_runtime_agent_kwargs(runtime),
+        "request_overrides": dict(runtime.get("request_overrides") or {}),
+        "capabilities": dict(runtime.get("capabilities") or {}),
+    }
+
+
 def _deep_merge_request_overrides(base: Optional[dict], override: Optional[dict]) -> dict:
     """Merge request_overrides dicts, deep-merging nested dictionaries."""
     from hermes_cli.config import _deep_merge

@@ -82,7 +82,7 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
             continue
         provider = str(entry.get("provider") or "").strip()
         model = str(entry.get("model") or "").strip()
-        if not provider or not model:
+        if not model:
             continue
         normalized = {**entry, "provider": provider, "model": model}
         base_url = _normalized_base_url(entry.get("base_url"))
@@ -100,6 +100,35 @@ def _entry_identity(entry: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _resolve_direct_alias_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Expand a direct alias, validating an explicitly declared provider when present."""
+    model = str(entry.get("model") or "").strip()
+    provider = str(entry.get("provider") or "").strip()
+    if not model:
+        return entry
+    try:
+        from hermes_cli import model_switch
+        from hermes_cli.providers import normalize_provider
+
+        model_switch._ensure_direct_aliases()
+        alias = model_switch.DIRECT_ALIASES.get(model.lower())
+        if alias is None or (
+            provider and normalize_provider(alias.provider or "") != normalize_provider(provider)
+        ):
+            return entry
+        resolved_provider, api_key = model_switch.direct_alias_runtime_request(alias)
+    except Exception:
+        logger.debug("Could not resolve fallback model alias %r", model, exc_info=True)
+        return entry
+
+    resolved = {**entry, "model": alias.model, "provider": resolved_provider}
+    if alias.base_url and not resolved.get("base_url"):
+        resolved["base_url"] = alias.base_url.rstrip("/")
+    if api_key and not resolved.get("api_key"):
+        resolved["api_key"] = api_key
+    return resolved
+
+
 def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Return the effective fallback chain merged across old and new config keys.
 
@@ -113,6 +142,10 @@ def get_fallback_chain(config: dict[str, Any] | None) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, str]] = set()
     for key in ("fallback_providers", "fallback_model"):
         for entry in _iter_fallback_entries(config.get(key)):
+            entry = _resolve_direct_alias_entry(entry)
+            if not entry.get("provider"):
+                logger.warning("Ignoring fallback model %r: no provider and no matching alias", entry.get("model"))
+                continue
             identity = _entry_identity(entry)
             if identity not in seen:
                 seen.add(identity)

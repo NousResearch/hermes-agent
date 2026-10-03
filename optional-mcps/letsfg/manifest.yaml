@@ -1,0 +1,52 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: letsfg
+description: 'LetsFG: search and book flights and hotels across airlines and sellers.'
+source: https://letsfg.co/mcp
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: unauthenticated POST returns 401 with a
+# resource_metadata pointer -> RFC 9728 protected-resource metadata ->
+# RFC 8414 AS metadata with registration_endpoint, PKCE S256, public
+# clients allowed); Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://letsfg.co/mcp
+
+auth:
+  type: oauth
+
+# Excluded: the three tools meant for the server's MCP Apps UI (called by
+# the rendered booking/progress cards, not by the model). Hermes has no
+# MCP Apps host, so a text session gets the same data from
+# get_flight_results / get_hotel_results. No telemetry/feedback tools on
+# this server. Booking tools stay enabled by design — see the
+# post_install caution.
+tools:
+  default_excluded:
+    - booking_setup
+    - get_flight_search_status
+    - get_hotel_search_status
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - letsfg
+    - book a flight
+    - hotel booking
+  hosts:
+    - letsfg.co
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to LetsFG
+  (or run `hermes mcp login letsfg`). Approve access, then restart
+  the session so tools load.
+
+  CAUTION: this server books REAL flights and hotels. Payment details
+  are entered on letsfg.co, never in-conversation. Hermes's normal
+  tool-approval flow applies; review bookings before approving.

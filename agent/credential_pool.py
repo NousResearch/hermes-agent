@@ -1030,6 +1030,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # entries" and the caller's 401 retry loop runs unbounded. Reset when a
         # real entry is identified or an escape path returns None.
         self._unmatched_rotation_streak: int = 0
+        # entry.id -> (wall-clock time at which a positive Codex quota-restored
+        # probe was last acted on by lifting that entry's cooldown, the quota
+        # window ``reset_at`` it vouched for).  Guards the probe against its
+        # own false positives; see ``_codex_quota_restored_upstream``.
+        self._codex_probe_honored_at: Dict[str, Tuple[float, Optional[float]]] = {}
 
     # ---- read accessors ---------------------------------------------------
 
@@ -1947,6 +1952,26 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         reset, plan upgrade, OpenAI reset) — issue #43747. Only fires for
         429/quota-shaped errors; the probe is throttled per token (5 min) so
         it is safe on the hot selection path.
+
+        The probe can be WRONG, and a false positive here is expensive.  It
+        reads ``/usage`` window utilisation, which reports below 100% while the
+        account is still being refused for a limit that endpoint does not
+        expose (burst caps, per-model windows).  Because a positive result both
+        lifts the cooldown and is cached for
+        ``CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS``, every selection during that
+        window hands the benched credential straight back: the pool never
+        reaches "no available entries", ``rotate()`` never returns None, and
+        the provider fallback chain (``fallback_providers``) is never reached.
+
+        So a positive probe buys exactly ONE optimistic retry per entry per
+        quota window.  If the account 429s again after we acted on the probe
+        while still inside that window, the probe is demonstrably wrong about
+        this account and we keep the bench, letting the pool empty and
+        provider fallback take over.  The marker is keyed to the window it
+        discredited and is dropped when the entry legitimately returns to
+        ``OK`` (see ``_available_entries``), so a genuine early reopen in a
+        later quota window — one whose 429 stamped a fresh ``reset_at`` — is
+        still detected.
         """
         if self.provider != "openai-codex" or entry.last_status != STATUS_EXHAUSTED:
             return False
@@ -1956,6 +1981,18 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             return False
         token = entry.access_token or ""
         if not token:
+            return False
+        honored = self._codex_probe_honored_at.get(entry.id)
+        if (
+            honored is not None
+            and (entry.last_status_at or 0.0) >= honored[0]
+            and honored[1] == _parse_absolute_timestamp(entry.last_error_reset_at)
+        ):
+            # We already lifted this entry's cooldown on a positive probe for
+            # this quota window and it was re-benched by a later failure in
+            # the same window.  Do not spend another live request on the same
+            # wrong answer.  A fresh 429 stamps a new ``reset_at`` — that
+            # window keeps its own early-reopen detection.
             return False
         try:
             # An exhausted entry is skipped by the refresh chain, so its stored token is usually
@@ -1974,11 +2011,16 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 token = entry.access_token or token
             # The row keeps the canonical URL; a gateway key belongs to its route host (#121486).
             from hermes_cli.auth_codex import _codex_pool_route_base_url
-            return bool(auth_mod._probe_codex_quota_restored(
+            restored = bool(auth_mod._probe_codex_quota_restored(
                 token, base_url=_codex_pool_route_base_url(entry.base_url)))
         except Exception:
             logger.debug("Codex quota-restored probe failed", exc_info=True)
             return False
+        if restored:
+            self._codex_probe_honored_at[entry.id] = (
+                time.time(), _parse_absolute_timestamp(entry.last_error_reset_at)
+            )
+        return restored
 
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
         if entry.auth_type != AUTH_TYPE_OAUTH:
@@ -2120,6 +2162,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 continue
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
+                # True when the cooldown below is being lifted on the strength
+                # of a live probe rather than because it actually elapsed.
+                lifted_by_probe = False
                 # Codex quota windows can reopen EARLY; a throttled live probe
                 # lifts a stale cooldown (issue #43747).
                 if (
@@ -2128,12 +2173,20 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                     and not (clear_expired and self._codex_quota_restored_upstream(entry))
                 ):
                     continue
+                if exhausted_until is not None and now < exhausted_until:
+                    lifted_by_probe = True
                 if clear_expired:
                     # The probe may have rotated this row's single-use token pair: clear the
                     # cooldown on the live row, not on this pre-probe copy.
                     entry = self._find(lambda e, i=entry.id: e.id == i) or entry
                     entry = self._adopt(entry, persist=False, **_MARK_OK)
                     cleared_any = True
+                    if not lifted_by_probe:
+                        # The cooldown actually elapsed, so this entry is
+                        # genuinely healthy again: forget any one-shot Codex
+                        # probe marker and let the next quota window get its
+                        # own early-reopen detection.
+                        self._codex_probe_honored_at.pop(entry.id, None)
             if refresh and self._entry_needs_refresh(entry):
                 if self.provider in _TOKENS_SINGLETON_PROVIDERS:
                     pending_refresh.append(entry)

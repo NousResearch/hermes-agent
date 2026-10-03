@@ -464,6 +464,19 @@ Multiple media attachments sent in quick succession (e.g., dragging several imag
 
 Messages within the same chat are processed serially (one at a time) to maintain conversation coherence. Each chat has its own lock, so messages in different chats are processed concurrently.
 
+### Reply Placement
+
+Replies to messages inside a Feishu topic stay in that topic by default. To keep session continuity while posting bot replies in the main chat timeline instead, set:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      reply_in_thread: false
+```
+
+This affects outbound placement only; inbound topic messages remain associated with their existing Hermes session.
+
 ## Rate Limiting (Webhook Mode)
 
 In webhook mode, the adapter enforces per-IP rate limiting to protect against abuse:

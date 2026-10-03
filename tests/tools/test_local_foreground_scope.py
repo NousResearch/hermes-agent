@@ -102,10 +102,12 @@ def test_scope_is_stopped_even_when_the_group_kill_raises_and_survives_adoption(
     env = local_env.LocalEnvironment()
     proc = _FakeProc(pid=4244)
     proc._hermes_scope_unit = "hermes-fg-4244-1.scope"
+    proc.kill = lambda: stopped.append("parent")  # type: ignore[method-assign]
 
     with pytest.raises(RuntimeError):
         env._kill_process(proc)
-    assert stopped == ["hermes-fg-4244-1.scope"]
+    # The parent is signalled before the cgroup is torn down (tools/AGENTS.md order).
+    assert stopped == ["parent", "hermes-fg-4244-1.scope"]
 
     # Hard exit (no wait allowed): the scope is SIGKILLed without blocking on systemctl.
     spawned: list[list[str]] = []

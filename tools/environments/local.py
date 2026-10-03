@@ -953,8 +953,7 @@ def _kill_process_windows(proc) -> None:
 # #70716 isolates *background* executors in a transient systemd scope. A foreground
 # command still runs inside the gateway's own cgroup, so a memory-heavy foreground
 # build/test can push that cgroup past MemoryHigh/MemoryMax and let systemd-oomd kill the
-# whole messaging control plane — the same failure domain the background fix closed. The
-# wrapper is reused verbatim; only the foreground spawn point is added. Import is
+# whole messaging control plane — the same failure domain the background fix closed. Import is
 # function-local because tools.process_registry imports this module at module level.
 _FOREGROUND_SCOPE_PREFIX = "hermes-fg"
 
@@ -987,7 +986,7 @@ def _foreground_scope_argv(args: list[str], run_env: dict) -> "tuple[list[str], 
     Returns ``(argv, unit_name, run_env)``. The environment is completed with the user-bus
     variables on the scoped path only — the availability probe derives them
     (``systemd_user_bus_env``) so a system-level unit without login variables can still
-    reach the manager, and an ulterior spawn that skipped them would fail where the probe
+    reach the manager, and a later spawn that skipped them would fail where the probe
     succeeded. Every helper used here fails closed, so a fallback leaves the command
     unwrapped (``unit_name is None``).
     """
@@ -1143,24 +1142,26 @@ class LocalEnvironment(BaseEnvironment):
     def _kill_process(self, proc):
         """Kill the entire process group (all children), then the transient scope that
         held them: a double-forked descendant reparented to init still dies with its
-        cgroup when the wrapper's group no longer covers it. Scope teardown must happen
-        even when the group kill raised something that is not an ``OSError`` — the cgroup
-        is the authoritative cleanup, and a leaked transient unit outlives the command.
-        See #70716."""
+        cgroup when the wrapper's group no longer covers it. The scope is stopped only
+        after the parent was signalled (tools/AGENTS.md teardown order), and still when the
+        group kill raised something that is not an ``OSError`` — a leaked transient unit
+        outlives the command. See #70716."""
+        failure = None
         try:
-            try:
-                (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
-            except OSError:  # ProcessLookupError / PermissionError included
-                with contextlib.suppress(Exception):
-                    proc.kill()
-        finally:
-            unit = getattr(proc, "_hermes_scope_unit", None)
-            if unit:
-                from tools.process_registry import _stop_systemd_unit
-                if not _stop_systemd_unit(unit):
-                    logger.debug(
-                        "foreground scope %s could not be reaped; the unit may "
-                        "outlive the command (its cgroup still holds survivors)", unit)
+            (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
+        except Exception as exc:  # OSError (ProcessLookupError / PermissionError) is expected
+            with contextlib.suppress(Exception):
+                proc.kill()
+            failure = None if isinstance(exc, OSError) else exc
+        unit = getattr(proc, "_hermes_scope_unit", None)
+        if unit:
+            from tools.process_registry import _stop_systemd_unit
+            if not _stop_systemd_unit(unit):
+                logger.debug(
+                    "foreground scope %s could not be reaped; the unit may "
+                    "outlive the command (its cgroup still holds survivors)", unit)
+        if failure is not None:
+            raise failure
 
     def _force_kill_process(self, proc):
         """SIGKILL the whole group with no TERM grace or wait: the caller os._exit()s next."""

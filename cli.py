@@ -1242,7 +1242,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         bare = base_cmd.lstrip("/")
         skill_commands = _ensure_skill_commands()
         skill_bundles = get_skill_bundles()
-        quick_commands = self.config.get("quick_commands", {})
+        quick_commands = self.config.get("quick_commands")
+        if not isinstance(quick_commands, dict):
+            quick_commands = {}
         user_args = cmd_original[len(base_cmd):].strip()
         if bare in quick_commands:
             return self._run_quick_command(base_cmd, quick_commands[bare], user_args)

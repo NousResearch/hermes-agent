@@ -693,6 +693,27 @@ class SessionSessionsMixin:
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
+    def clear_system_prompt_if_unchanged(
+        self, session_id: str, *, expected_prompt: str, expected_tool_names: Optional[str],
+    ) -> bool:
+        """Repair only the prompt/pin pair that was inspected, under one write transaction."""
+        def _do(conn):
+            row = conn.execute(
+                "SELECT COALESCE(sp.prompt, s.system_prompt), COALESCE(tp.prompt, s.tool_names) "
+                "FROM sessions s LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash "
+                "LEFT JOIN system_prompts tp ON tp.hash = s.tool_names WHERE s.id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None or tuple(row) != (expected_prompt, expected_tool_names):
+                return False
+            conn.execute(
+                "UPDATE sessions SET system_prompt_hash = NULL, system_prompt = NULL WHERE id = ?",
+                (session_id,),
+            )
+            self._delete_unreferenced_system_prompts(conn)
+            return True
+        return self._execute_write(_do)
+
     def update_session_tool_names(self, session_id: str, pin: Any) -> None:
         """Persist the session's ``tools[]`` pin (JSON-serializable) so a rebuilt AIAgent sends the
         same bytes; ``None`` clears. The array repeats across sessions like a system prompt does, so it

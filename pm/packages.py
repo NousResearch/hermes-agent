@@ -17,7 +17,7 @@ from pm.package import (
     InstallError,
     Package,
     StatePackage,
-    _entry_listing,
+    _missing_reason,
     _probe_reason,
 )
 from pm.registry import register
@@ -1021,7 +1021,7 @@ class Chromium(Package):
     def verify(self, entry: Path, target: str) -> str:
         marker = entry / "INSTALLATION_COMPLETE"
         if not marker.is_file():
-            return f"INSTALLATION_COMPLETE missing under {entry}; {_entry_listing(entry)}"
+            return _missing_reason(marker, entry)
         binary = self.binary(entry, target)
         if binary is None:
             return f"Chromium executable missing under {entry}"

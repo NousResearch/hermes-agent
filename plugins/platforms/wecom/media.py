@@ -15,7 +15,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
 from agent.i18n import t
-from gateway.platforms.base import SendResult, cache_document_from_bytes_async, cache_image_from_bytes_async
+from gateway.platforms.base import (
+    SendResult,
+    cache_document_from_bytes_async,
+    cache_image_from_bytes_async,
+    safe_url_for_log,
+)
 
 logger = logging.getLogger("plugins.platforms.wecom.adapter")
 
@@ -107,14 +112,17 @@ class WeComMediaMixin:
             step = "decrypt"
             raw = self._decrypt_file_bytes(raw, aes_key) if aes_key else raw
         except Exception as exc:
-            logger.debug("[%s] Failed to %s %s from %s: %s", self.name, step, kind, url, exc)
+            logger.warning(
+                "[%s] Failed to %s %s from %s (%s)",
+                self.name, step, kind, safe_url_for_log(url), type(exc).__name__,
+            )
             return None
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
         ext = self._guess_extension(url, content_type, fallback=self._detect_image_ext(raw))
         # Images: never forward the CDN's generic octet-stream label — downstream classifiers
         # reject non-image MIMEs; derive it from the resolved extension instead.
         image_mime = content_type if content_type.startswith("image/") else ""
-        return await self._store_media(kind, raw, ext, image_mime, self._guess_filename(url, headers.get("content-disposition"), content_type), content_type, f" from {url}")
+        return await self._store_media(kind, raw, ext, image_mime, self._guess_filename(url, headers.get("content-disposition"), content_type), content_type, f" from {safe_url_for_log(url)}")
 
     async def _store_media(self, kind, raw, ext, image_mime, filename, doc_mime, origin) -> Optional[Tuple[str, str]]:
         """Cache bytes as an image (``kind == "image"``) or a document; returns (path, mime)."""
@@ -183,7 +191,7 @@ class WeComMediaMixin:
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         from plugins.platforms.wecom import adapter as _adapter_mod
         if not is_safe_url(url):
-            raise ValueError(f"Blocked unsafe URL (SSRF protection): {url[:80]}")
+            raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
         if not _adapter_mod.HTTPX_AVAILABLE:
             raise RuntimeError("httpx is required for WeCom media download")
         client = self._http_client or create_ssrf_safe_async_client(timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]})

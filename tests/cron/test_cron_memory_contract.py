@@ -37,7 +37,7 @@ Tests drive the REAL ``cron.scheduler.run_job`` path and capture the actual
 kwargs the scheduler passes to AIAgent (patched at ``run_agent.AIAgent``,
 matching tests/cron/test_scheduler.py's pattern). The ON direction (default
 skip_memory=False, memory not denylisted, per-job memory toolset kept) is
-already pinned by tests/cron/test_scheduler.py::test_run_job_*memory*; this
+already pinned by tests/cron/test_scheduler.py::TestRunJobSessionPersistence::test_run_job_memory_enabled_in_cron; this
 module pins the OFF direction and the "no per-job knob" rule.
 """
 

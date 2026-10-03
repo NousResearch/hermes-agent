@@ -294,6 +294,12 @@ def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[str, str]:
     status = _pc()._run_plugin_git(git_exe, target, "status", "--porcelain", "-z")
     if status.returncode != 0 or not status.stdout.strip():
         return "", ""
+    # Unmerged index entries (an interrupted merge/rebase, or the conflict left by this same
+    # function's own reapply advice after a failed `stash apply`) make `git stash` fail with
+    # "needs merge"; `git reset` drops only the index conflict state, not the tree (see
+    # update_cmd_stash._stash_local_changes_if_needed, which handles the same case).
+    if _pc()._run_plugin_git(git_exe, target, "ls-files", "--unmerged").stdout.strip():
+        _pc()._run_plugin_git(git_exe, target, "reset")
     # `git add -N` entries make `git stash push` fail outright (see update_cmd_stash), so promote them
     # to real staged adds first; the checkout's own local edits are otherwise unstashable.
     from hermes_cli.update_cmd_stash import _intent_to_add_paths

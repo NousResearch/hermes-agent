@@ -1014,7 +1014,13 @@ def _foreground_scope_argv(args: list[str], run_env: dict) -> "tuple[list[str], 
     if scoped == args:
         _warn_foreground_scope_degraded("no systemd-run wrapper could be built")
         return args, None, run_env
-    return scoped, f"{_FOREGROUND_SCOPE_PREFIX}-{suffix}.scope", _pr.systemd_user_bus_env(run_env)
+    # The probe verdict is cached; a user bus lost since then would make systemd-run fail
+    # before the command runs (cron's ``scoped_spawn_lost_user_bus`` race). Run it unwrapped.
+    bus_env = _pr.systemd_user_bus_env(run_env)
+    if "DBUS_SESSION_BUS_ADDRESS" not in bus_env:
+        _warn_foreground_scope_degraded("user D-Bus session is gone")
+        return args, None, run_env
+    return scoped, f"{_FOREGROUND_SCOPE_PREFIX}-{suffix}.scope", bus_env
 
 
 class LocalEnvironment(BaseEnvironment):

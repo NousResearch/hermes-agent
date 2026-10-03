@@ -22,6 +22,7 @@ import {
   setSessionArchived
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { approvalModeForProfile, reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $backgroundStatusBySession, type ComposerStatusItem } from '@/store/composer-status'
@@ -3434,6 +3435,53 @@ describe('branchStoredSession desktop source tagging', () => {
 
     expect(getAllSessionMessages).not.toHaveBeenCalled()
     expect(branchParams).toMatchObject({ session_id: 'live-parent', idempotency_key: expect.any(String) })
+  })
+
+  it("keeps the active profile's approval chip when branching a chat another profile owns", async () => {
+    // All-profiles view: the open chat lives on `bot` while the gateway (and
+    // the status-bar chip keyed by its name) stays on `default`.
+    $activeGatewayProfile.set('default')
+    reconcileApprovalModeForProfile('default', 'manual')
+    setSessions([storedSession({ connection_id: 'local', id: 'stored-parent', message_count: 4, profile: 'bot' })])
+    setMessages([{ id: 'tail-user', role: 'user', parts: [{ type: 'text', text: 'question' }] }])
+
+    vi.mocked(requestGatewayForAgent).mockImplementation((async (
+      _connectionId: string,
+      _profile: string,
+      method: string
+    ) =>
+      method === 'session.branch_whole'
+        ? {
+            session_id: 'branch-runtime',
+            stored_session_id: 'branch-stored',
+            title: 'Branch',
+            message_count: 4,
+            messages_omitted: true,
+            // A live parent's branch carries the full runtime info: the bot
+            // profile's own approvals.mode.
+            info: { approval_mode: 'off' }
+          }
+        : {}) as never)
+
+    let branchCurrentSession: ((messageId?: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        activeSessionId="live-parent"
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={vi.fn(async () => ({}) as never)}
+        selectedStoredSessionId="stored-parent"
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    try {
+      await expect(branchCurrentSession!()).resolves.toBe(true)
+    } finally {
+      vi.mocked(requestGatewayForAgent).mockReset()
+    }
+
+    expect(approvalModeForProfile('default')).toBe('manual')
   })
 
   it('aborts if the active runtime changes while the branch transcript is hydrating', async () => {

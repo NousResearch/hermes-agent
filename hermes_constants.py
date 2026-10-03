@@ -4,6 +4,7 @@ Import-safe, stdlib-only — importable from anywhere without circular-import ri
 """
 
 import contextlib
+import logging
 import os
 import re
 import shutil
@@ -918,11 +919,19 @@ def get_scratch_dir(home: str | Path | None = None, *, prune: bool = True) -> Pa
 def prune_scratch_dir(scratch: Path | None = None, max_idle_hours: float = SCRATCH_MAX_IDLE_HOURS) -> int:
     """Delete top-level scratch entries with no write anywhere in their subtree for
     *max_idle_hours*, reaping processes and git worktree registrations rooted in them
-    first (``hermes_constants_scratch``); return the count removed."""
+    first (``hermes_constants_scratch``); return the count removed.
+
+    The count is logged here rather than dropped (#132401): the per-entry audit lines
+    name what left; this summary is what makes the sweep visible at boot."""
     from hermes_constants_scratch import prune_idle_entries
 
     root = scratch if scratch is not None else get_scratch_dir(prune=False)
-    return prune_idle_entries(root, max_idle_hours, frozenset({_SCRATCH_PRUNE_STAMP}))
+    removed = prune_idle_entries(root, max_idle_hours, frozenset({_SCRATCH_PRUNE_STAMP}))
+    if removed:
+        logging.getLogger(__name__).info(
+            "scratch prune: removed %d idle entry(ies) under %s", removed, root
+        )
+    return removed
 
 
 def _prune_scratch_dir_once(scratch: Path) -> None:

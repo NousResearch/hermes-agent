@@ -11,7 +11,10 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         "desktop", aliases=["gui"], help="Build and launch the native desktop app",
         description="Launch the Hermes Electron desktop app. By default this installs "
             "workspace Node dependencies, builds the current OS's unpacked "
-            "Electron app, then launches that packaged artifact.")
+            "Electron app, then launches that packaged artifact. The pre-launch "
+            "build runs before any window exists, so the first launch after an "
+            "update can take a few minutes with only a stderr notice to show for "
+            "it; wait for it instead of launching repeatedly.")
     gui_parser.add_argument(
         "--source", action="store_true",
         help="Launch via `electron .` against apps/desktop/dist instead of the packaged app")

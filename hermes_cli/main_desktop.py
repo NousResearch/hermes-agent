@@ -1563,6 +1563,19 @@ def _diagnose_esbuild_ignore_scripts(output: Optional[str]) -> None:
     print("    or stage the binary directly: `node node_modules/esbuild/install.js` in apps/desktop.")
 
 
+def _desktop_build_notice(phase: str) -> None:
+    """Announce a multi-minute build phase on stderr before its child starts.
+
+    ``hermes desktop`` is normally started from a launcher with
+    ``Terminal=false`` and no window can exist until the build finishes, so an
+    unannounced pre-build looks exactly like a hang (#127619). stderr (not
+    stdout) is what a desktop launch keeps visible; flush so the notice lands
+    before the child's own output.
+    """
+    print(f"→ {phase}; this can take a few minutes - Hermes Desktop opens when it finishes.",
+          file=sys.stderr, flush=True)
+
+
 def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict,
                            icons: Path | None = None) -> Optional[Path]:
     """Build prepared desktop sources, then publish the verified staged app."""
@@ -1600,8 +1613,10 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
         if stopped:
             print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
     try:
+        _desktop_build_notice(f"Building the desktop {build_label}")
         run_contained(build_cmd, f"Building desktop {build_label}", cwd=desktop_dir, env=build_env)
         if staging_dir is not None:
+            _desktop_build_notice("Packaging the desktop app (electron-builder)")
             run_contained([npm, "run", "builder", "--", "--dir", "--publish", "never",
                            f"-c.directories.output={staging_dir}"], "Packaging the desktop app",
                           cwd=desktop_dir, env=build_env)

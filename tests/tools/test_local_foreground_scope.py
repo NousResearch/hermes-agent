@@ -41,7 +41,7 @@ class _FakeProc:
         return None
 
 
-@pytest.mark.parametrize("case", ["scoped", "not_the_gateway", "no_scope", "no_wrapper"])
+@pytest.mark.parametrize("case", ["scoped", "not_the_gateway", "not_systemd", "no_scope", "no_wrapper"])
 def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, caplog, case):
     seen: dict = {}
     monkeypatch.setattr(local_env.subprocess, "Popen",
@@ -49,6 +49,11 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     monkeypatch.setattr(local_env, "_find_bash", lambda: "/bin/bash")
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: case != "not_the_gateway")
     monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: case != "no_scope")
+    # "not_systemd" = an s6/Docker supervised gateway: no systemd unit, nothing to scope into.
+    if case == "not_systemd":
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+    else:
+        monkeypatch.setenv("INVOCATION_ID", "x")
     monkeypatch.setattr(process_registry, "systemd_user_bus_env",
                         lambda base: {**base, "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1/bus"})
     # Probe said yes; "no_wrapper" = systemd-run is gone from PATH by spawn time.
@@ -71,7 +76,7 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
         assert getattr(proc, "_hermes_scope_unit", None) is None
         assert kwargs["env"] == local_env._make_run_env(env.env)
         # Every fallback after the gateway check is a degraded failure domain, reported once.
-        assert ("share the gateway cgroup" in caplog.text) is (case != "not_the_gateway")
+        assert ("share the gateway cgroup" in caplog.text) is (case in ("no_scope", "no_wrapper"))
         return
     assert argv[0].endswith("systemd-run")
     assert argv[argv.index("--") + 1:] == ["/bin/bash", "-c", "true"]

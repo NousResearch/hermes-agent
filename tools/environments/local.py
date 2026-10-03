@@ -995,6 +995,10 @@ def _foreground_scope_argv(args: list[str], run_env: dict) -> "tuple[list[str], 
     from tools import process_registry as _pr
     if not (_pr._IS_LINUX and _pr._is_supervised_gateway_process()):
         return args, None, run_env
+    # Same gate as ``restart_safe_gateway_child_argv``: only a systemd-managed gateway has a
+    # user manager to scope into; an s6/Docker supervised gateway has none and must not warn.
+    if not os.environ.get("INVOCATION_ID"):
+        return args, None, run_env
     # Past this point the command is *meant* to be isolated, so every fallback is a
     # degraded failure domain and must be reported (once), not silently degraded.
     if not _pr._systemd_run_user_scope_available():

@@ -2481,6 +2481,16 @@ def _update_preflight_handled(args) -> bool:
             **({"channel": args.channel} if getattr(args, "channel", None) else {}),
         )
         return True
+
+    # Windows-compat flags kept parseable for old scripts (#124907): the venv-holder refusal
+    # they were documented to bypass is retired (PM prepares dependency generations instead of
+    # mutating a running venv), so say the no-op out loud instead of letting operators believe
+    # a guard was bypassed.
+    for _flag in ("force", "force_venv"):
+        if getattr(args, _flag, False):
+            print(f"→ --{_flag.replace('_', '-')} is accepted for compatibility and currently does nothing "
+                  "(updates no longer refuse on processes running from the venv).")
+            break
     return False
 
 

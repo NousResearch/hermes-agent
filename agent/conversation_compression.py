@@ -1660,6 +1660,14 @@ def _rebind_session_context(session_id: str) -> None:
         set_session_context(session_id)
 
 
+def _note_tool_guardrail_compaction(agent: Any) -> None:
+    with _swallow("tool guardrail compaction reset failed (ignored)", exc_info=True):
+        guardrails = getattr(agent, "_tool_guardrails", None)
+        note_compaction = getattr(guardrails, "note_compaction", None)
+        if callable(note_compaction):
+            note_compaction()
+
+
 def _adopt_live_compression_child(
     agent: Any, session_db: Any, parent_session_id: str
 ) -> Optional[List[Dict[str, Any]]]:
@@ -1693,6 +1701,7 @@ def _adopt_live_compression_child(
     confirmed = resolver(session_db, parent_session_id)
     if not confirmed or str(confirmed) != child_session_id:
         return None
+    session_changed = agent.session_id != child_session_id
     agent.session_id = child_session_id
     _rebind_session_context(child_session_id)
     _hand_off_metrics_segment(parent_session_id, child_session_id)
@@ -1726,6 +1735,10 @@ def _adopt_live_compression_child(
             agent._memory_manager.on_session_switch(
                 child_session_id, parent_session_id=parent_session_id, reset=False, reason="compression"
             )
+    # This contender also lost its prior tool context, although another agent
+    # committed the rewrite. Re-adopting the same tip earns no additional grace.
+    if session_changed:
+        _note_tool_guardrail_compaction(agent)
     return recovered
 
 
@@ -3551,6 +3564,19 @@ def _finish_compaction_boundary(
         else:
             compressor._verify_compaction_cleared_threshold = True
     _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
+    # The first file read after a committed rewrite is often required to recover
+    # exact state for an in-flight edit. Do not arm this on a rejected/no-op or
+    # failed persistence attempt: only a real boundary invalidates the old tool
+    # context and earns the bounded re-anchoring grace. Agents without a session
+    # DB still have a real in-memory rewrite, so compression_made_progress is the
+    # commit signal for that path.
+    _committed_boundary = (
+        session_commit_succeeded and (bool(_old_sid) or compacted_in_place)
+    ) or (
+        not getattr(agent, "_session_db", None) and compression_made_progress
+    )
+    if _committed_boundary:
+        _note_tool_guardrail_compaction(agent)
     return _compressed_est
 
 

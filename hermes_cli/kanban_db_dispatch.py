@@ -1857,6 +1857,30 @@ def resolve_max_in_progress(configured: Optional[int]) -> Optional[int]:
     return derive_default_max_in_progress()
 
 
+def configured_review_reserved_slots() -> int:
+    """Read ``kanban.review_reserved_slots`` from config, defaulting to 1.
+
+    How many shared-budget slots the ready loop must leave for the review lane
+    when spawnable review work exists. 1 preserves the historic single-slot
+    hold; 0 disables the reservation (reviews then compete for leftover
+    budget only). Never negative.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+        raw = (load_config_readonly() or {}).get("kanban", {}).get(
+            "review_reserved_slots"
+        )
+    except Exception:
+        return 1
+    if raw is None:
+        return 1
+    try:
+        ival = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return ival if ival >= 0 else 1
+
+
 def configured_max_in_progress() -> Optional[int]:
     """Read ``kanban.max_in_progress`` from config, or None when unset/invalid.
 
@@ -2275,15 +2299,16 @@ def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def _any_spawnable_review(
+def _spawnable_review_count(
     conn: sqlite3.Connection,
     review_rows: list[sqlite3.Row],
     *,
     per_profile_cap: Optional[int] = None,
     per_profile_running: Optional[dict[str, int]] = None,
-) -> bool:
-    """Mirror review dispatch gates before reserving ready-lane capacity.
+) -> int:
+    """How many review rows this tick could actually claim.
 
+    Mirror review dispatch gates before reserving ready-lane capacity.
     Unavailable profile metadata retains the historic fail-open behavior. A
     review row that :func:`_dispatch_lane_task` would refuse this tick — its
     assignee already at the per-profile cap, or respawn-guarded — cannot
@@ -2291,9 +2316,10 @@ def _any_spawnable_review(
     otherwise ready task (one such row would pin ``ready_budget`` to 0).
     """
     if not review_rows:
-        return False
+        return 0
     profile_exists = _profile_exists_fn()
     running = per_profile_running or {}
+    count = 0
     for row in review_rows:
         assignee = row["assignee"]
         if not assignee:
@@ -2303,8 +2329,8 @@ def _any_spawnable_review(
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
             continue
         if check_respawn_guard(conn, row["id"], lane="review") is None:
-            return True
-    return False
+            count += 1
+    return count
 
 
 def _resolve_default_assignee(default_assignee: Optional[str]) -> Optional[str]:
@@ -2383,13 +2409,19 @@ def _dispatch_once_locked(
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
     # backlog. When spawnable review work exists and there is any budget, hold
-    # one slot back.
+    # `kanban.review_reserved_slots` slots back — sized to the review work
+    # actually waiting, so a single pending review cannot pin the ready lane to
+    # zero. Reviews then claim from the full budget below.
     ready_budget = spawn_budget
-    if spawn_budget is not None and spawn_budget > 0 and _any_spawnable_review(
-        conn, review_rows,
-        per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
-    ):
-        ready_budget = max(spawn_budget - 1, 0)
+    if spawn_budget is not None and spawn_budget > 0:
+        reserve = configured_review_reserved_slots()
+        if reserve > 0:
+            wanted = _spawnable_review_count(
+                conn, review_rows,
+                per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+            )
+            if wanted:
+                ready_budget = max(spawn_budget - min(wanted, reserve), 0)
     lane_kwargs: dict[str, Any] = dict(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,

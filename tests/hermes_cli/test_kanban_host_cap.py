@@ -360,3 +360,110 @@ def test_review_budget_still_bounded_by_shared_cap(
 
     # Budget 2 total across both lanes, reservation notwithstanding.
     assert len(res.spawned) == 2
+
+
+# ---------------------------------------------------------------------------
+# 4. The reservation is sized to the review work actually waiting
+# ---------------------------------------------------------------------------
+
+
+def test_configured_review_reserved_slots_parsing(monkeypatch):
+    import hermes_cli.config as cfgmod
+
+    cases = [
+        ({"kanban": {"review_reserved_slots": 4}}, 4),
+        ({"kanban": {"review_reserved_slots": "3"}}, 3),
+        ({"kanban": {"review_reserved_slots": 0}}, 0),
+        ({"kanban": {"review_reserved_slots": -1}}, 1),
+        ({"kanban": {"review_reserved_slots": "many"}}, 1),
+        ({"kanban": {}}, 1),
+        ({}, 1),
+    ]
+    for config, expected in cases:
+        monkeypatch.setattr(cfgmod, "load_config_readonly", lambda c=config: c)
+        assert kbd.configured_review_reserved_slots() == expected, config
+
+
+def _with_reserved_slots(monkeypatch, slots: int) -> None:
+    import hermes_cli.config as cfgmod
+
+    monkeypatch.setattr(
+        cfgmod, "load_config_readonly",
+        lambda *a, **k: {
+            "kanban": {"review_dispatch": True, "review_reserved_slots": slots},
+        },
+    )
+
+
+def test_reservation_is_capped_by_the_reviews_actually_waiting(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A 4-slot reservation with one pending review holds ONE slot, not four.
+
+    Reserving the configured number blindly would leave the ready lane idle
+    whenever the review queue is short — the failure the sizing avoids.
+    """
+    _with_reserved_slots(monkeypatch, 4)
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        for title in ("ready-1", "ready-2", "ready-3", "ready-4"):
+            kb.create_task(conn, title=title, assignee="alice")
+        review_id = _park_in_review(conn, "review-me", "reviewer")
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=4,
+        )
+
+    spawned_ids = [task_id for task_id, *_ in res.spawned]
+    assert len(spawned_ids) == 4
+    assert review_id in spawned_ids
+    # 3 ready + 1 review: only the one waiting review withheld a slot.
+    assert len([i for i in spawned_ids if i != review_id]) == 3
+
+
+def test_reservation_keeps_multiple_reviewers_running_under_ready_backlog(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """With 4 slots reserved, 2 waiting reviews + a full ready queue run 2+2.
+
+    Contract: the reservation must scale past one reviewer, or review
+    throughput collapses to one card per reviewer-run under a ready rush.
+    """
+    _with_reserved_slots(monkeypatch, 4)
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        for title in ("ready-1", "ready-2", "ready-3", "ready-4"):
+            kb.create_task(conn, title=title, assignee="alice")
+        reviews = {
+            _park_in_review(conn, f"review-{i}", "reviewer") for i in range(2)
+        }
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=4,
+        )
+
+    spawned_ids = [task_id for task_id, *_ in res.spawned]
+    spawned_reviews = [i for i in spawned_ids if i in reviews]
+    assert len(spawned_ids) == 4
+    assert len(spawned_reviews) == 2
+    assert len([i for i in spawned_ids if i not in reviews]) == 2
+
+
+def test_reserved_slots_zero_disables_the_reservation(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """0 = reviews compete for leftover budget (historic pre-reservation behavior)."""
+    _with_reserved_slots(monkeypatch, 0)
+
+    spawns: list = []
+    with kbc.connect() as conn:
+        for title in ("ready-1", "ready-2"):
+            kb.create_task(conn, title=title, assignee="alice")
+        review_id = _park_in_review(conn, "review-me", "reviewer")
+        res = kbd.dispatch_once(
+            conn, spawn_fn=_fake_spawn_factory(spawns), max_in_progress=2,
+        )
+
+    spawned_ids = [task_id for task_id, *_ in res.spawned]
+    assert len(spawned_ids) == 2
+    assert review_id not in spawned_ids

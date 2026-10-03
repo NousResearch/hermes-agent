@@ -26,7 +26,8 @@ from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome
 from gateway.platforms.event import MessageEvent
 from gateway.response_filters import (
-    display_kind_for_event, is_machinery_display_kind, reply_expected_metadata, silence_allowed,
+    conversation_allows_silence, display_kind_for_event, is_machinery_display_kind,
+    reply_expected_metadata, silence_allowed,
 )
 from gateway.warning_notifications import diagnostic_metadata, diagnostic_turn_muted, diagnostic_wake_muted
 from gateway.session import (
@@ -1523,7 +1524,8 @@ class GatewayTurnMixin:
         # silent; any other human one must not.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
         _silence_reply_expected = agent_result.get("queued_terminal_reply_expected", reply_expected)
-        if _intentional_silence and not silence_allowed(_silence_kind, _silence_reply_expected):
+        if (_intentional_silence and not silence_allowed(_silence_kind, _silence_reply_expected)
+                and not conversation_allows_silence(self._delivery_adapter_for(source), source)):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
@@ -1923,6 +1925,14 @@ class GatewayTurnMixin:
         # Intentional silence is a delivery decision: the [SILENT] turn stays persisted (alternation).
         if _intentional_silence:
             logger.info("Suppressing intentional silence marker for session %s", session_entry.session_id)
+            silence_adapter = self._delivery_adapter_for(source)
+            silence_middleware = getattr(
+                silence_adapter, "conversation_middleware", None
+            )
+            if callable(silence_middleware):
+                silence_middleware().output_suppressed(
+                    event, response, "host_intentional_silence"
+                )
             response = ""
 
         adapter = self._delivery_adapter_for(source)
@@ -2729,7 +2739,17 @@ class GatewayTurnMixin:
             return None
         from gateway.display_config import resolve_display_setting
         _plat_streaming = resolve_display_setting(_load_gateway_config(), _platform_config_key(source.platform), "streaming")
-        if not _scfg.enabled_for(_plat_streaming):
+        _streaming_enabled = _scfg.enabled_for(_plat_streaming)
+        _conversation_adapter = self._delivery_adapter_for(source)
+        _conversation_middleware = getattr(
+            _conversation_adapter, "conversation_middleware", None
+        )
+        if (
+            callable(_conversation_middleware)
+            and _conversation_middleware().buffers_output
+        ):
+            _streaming_enabled = False
+        if not _streaming_enabled:
             return None
         try:
             from gateway.stream_consumer import GatewayStreamConsumer
@@ -3756,7 +3776,8 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            if silence_allowed(turn_ctx.persist_user_display_kind, turn_ctx.reply_expected):
+            if (silence_allowed(turn_ctx.persist_user_display_kind, turn_ctx.reply_expected)
+                    or conversation_allows_silence(adapter, turn_ctx.source)):
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                     session_key or "?",

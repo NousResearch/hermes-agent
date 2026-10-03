@@ -40,7 +40,7 @@ _STASH_HINT = "  Stash or commit your changes, then rerun `hermes update`."
 def _remove_path(path: str, *, ignore_errors: bool = False) -> None:
     """Remove a dir or file; missing paths are a no-op."""
     if os.path.isdir(path):
-        shutil.rmtree(path, ignore_errors=True)
+        shutil.rmtree(path, ignore_errors=ignore_errors)
     elif os.path.exists(path):
         if ignore_errors:
             with suppress(OSError):

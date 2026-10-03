@@ -302,7 +302,10 @@ def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str 
 
 _FILL_JS_TEMPLATE = """(() => {
   const expectedOrigin = __EXPECTED_ORIGIN__;
-  if (window.location.origin !== expectedOrigin) {
+  // Canonical origin comparison: browsers serialize IPv6 hosts with brackets
+  // (https://[2a0e:...]) while server-side normalization stores them without.
+  const canonOrigin = (value) => String(value || "").toLowerCase().split("[").join("").split("]").join("");
+  if (canonOrigin(window.location.origin) !== canonOrigin(expectedOrigin)) {
     return JSON.stringify({ refused: "origin_changed", found: window.location.origin });
   }
   const fills = __FILLS__;

@@ -316,6 +316,101 @@ def test_native_client_uses_x_goog_api_key_and_native_models_endpoint(monkeypatc
     assert response.choices[0].message.content == "hello"
 
 
+_MODEL_RESOURCE_CASES = [
+    pytest.param("gemini-2.5-flash", "models/gemini-2.5-flash", id="bare"),
+    pytest.param(
+        "google/gemini-2.0-flash", "models/gemini-2.0-flash", id="google-prefix"
+    ),
+    pytest.param(
+        "gemini/gemini-2.0-flash", "models/gemini-2.0-flash", id="gemini-prefix"
+    ),
+    pytest.param("models/gemini-2.5-flash", "models/gemini-2.5-flash", id="models"),
+    pytest.param(
+        "tunedModels/custom-gemini-model",
+        "tunedModels/custom-gemini-model",
+        id="tuned-models",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("path", "suffix"),
+    [
+        pytest.param("probe", ":generateContent", id="probe"),
+        pytest.param("sync", ":generateContent", id="sync"),
+        pytest.param(
+            "stream",
+            ":streamGenerateContent?alt=sse",
+            id="stream",
+        ),
+    ],
+)
+@pytest.mark.parametrize(("model", "resource_name"), _MODEL_RESOURCE_CASES)
+def test_gemini_native_paths_build_model_resource_url(
+    monkeypatch, path, suffix, model, resource_name
+):
+    from agent.gemini_native_adapter import GeminiNativeClient, probe_gemini_tier
+
+    recorded = {}
+
+    class RecordingHTTP:
+        status_code = 200
+
+        def post(self, url, **kwargs):
+            recorded["url"] = url
+            return DummyResponse(
+                payload={
+                    "candidates": [
+                        {
+                            "content": {"parts": [{"text": "ok"}]},
+                            "finishReason": "STOP",
+                        }
+                    ],
+                    "usageMetadata": {
+                        "promptTokenCount": 1,
+                        "candidatesTokenCount": 1,
+                        "totalTokenCount": 2,
+                    },
+                }
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def stream(self, method, url, **kwargs):
+            recorded["url"] = url
+            return self
+
+        def iter_text(self):
+            yield 'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}\n\n'
+
+        def close(self):
+            return None
+
+    http = RecordingHTTP()
+    if path == "probe":
+        monkeypatch.setattr(
+            "agent.gemini_native_adapter.httpx.Client", lambda **kwargs: http
+        )
+        assert probe_gemini_tier("AIza-test", model=model) == "paid"
+    else:
+        client = GeminiNativeClient(api_key="AIza-test", http_client=http)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "Hello"}],
+            stream=path == "stream",
+        )
+        if path == "stream":
+            list(response)
+
+    assert recorded["url"] == (
+        f"https://generativelanguage.googleapis.com/v1beta/{resource_name}{suffix}"
+    )
+
+
 
 
 

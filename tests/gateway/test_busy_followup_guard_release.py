@@ -172,6 +172,7 @@ def _gateway(tmp_path, monkeypatch, route, held):
     runner.session_store._db = SessionDB(db_path=tmp_path / "state.db")
     route(runner, monkeypatch, held)
     runner._wire_adapter_handlers(adapter, message_handler=turns)
+    adapter.gateway_runner = runner  # production _create_adapter binds this
     key = adapter._event_session_key(_event("probe"))
     # A returning user: the session exists, so the compression check reads its lock.
     runner.session_store.get_or_create_session(_event("probe").source)
@@ -265,50 +266,63 @@ async def test_followup_stored_before_the_busy_handler_raised_runs_once(
         await adapter.cancel_background_tasks()
 
 
+@pytest.mark.parametrize("swap", ["before_enqueue", "after_enqueue"])
 @pytest.mark.asyncio
-async def test_guard_release_recovers_pending_event_from_replacement_delivery_adapter():
-    """A reconnect handoff must drain the delivery adapter's slot, not the intake adapter twice."""
-    intake = _Adapter()
+async def test_reconnect_during_busy_admission_runs_accepted_followup_once(
+    tmp_path, monkeypatch, swap
+):
+    """A reconnect can replace the delivery adapter while the busy handler awaits, either
+    before it stores the follow-up (it lands in the replacement's slot) or after (it stays in
+    the old adapter's slot).  Either way the accepted follow-up must run exactly once."""
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true")
+    held = _HeldRead(asyncio.get_running_loop())
+    adapter, turns, key = _gateway(tmp_path, monkeypatch, _stock_interrupt, held)
+    runner = adapter.gateway_runner
     replacement = _Adapter()
-    pending = _event("M2")
-    incoming = _event("M1")
-    session_key = intake._event_session_key(incoming)
-    started = []
-    get_calls = []
+    replacement.gateway_runner = runner
+    runner._wire_adapter_handlers(replacement, message_handler=turns)
+    ack_entered, ack_release = asyncio.Event(), asyncio.Event()
 
-    class _Runner:
-        def _delivery_adapter_for(self, source):
-            return replacement
+    async def _ack(*_args, **_kwargs):
+        ack_entered.set()
+        await asyncio.wait_for(ack_release.wait(), timeout=5)
 
-    intake.gateway_runner = _Runner()
-    original_get = replacement.get_pending_message
+    monkeypatch.setattr(runner, "_send_busy_ack_reply", _ack)
+    # Publication syncs voice state; this bare runner has none to sync.
+    monkeypatch.setattr(runner, "_sync_voice_mode_state_to_adapter", lambda _adapter: None)
+    monkeypatch.setattr(runner, "_bind_voice_input_callback", lambda _adapter: None)
+    followup = None
+    try:
+        adapter.hold_reply = "reply to M1"
+        await adapter.handle_message(_event("M1"))
+        await asyncio.wait_for(adapter.reply_held.wait(), timeout=5)
+        first_turn = adapter._session_tasks[key]
+        followup = asyncio.create_task(adapter.handle_message(_event("M2")))
+        await asyncio.wait_for(held.entered.wait(), timeout=5)
+        adapter.release_reply.set()
+        await asyncio.wait_for(asyncio.shield(first_turn), timeout=5)
+        if swap == "before_enqueue":
+            runner._publish_primary_adapter(Platform.SIGNAL, replacement)
+        held.release()
+        await asyncio.wait_for(ack_entered.wait(), timeout=5)
+        if swap == "after_enqueue":
+            assert key in adapter._pending_messages  # accepted into the old adapter's slot
+            runner._publish_primary_adapter(Platform.SIGNAL, replacement)
+        else:
+            assert key in replacement._pending_messages
+        ack_release.set()
+        await asyncio.wait_for(followup, timeout=5)
+        await _run_until_idle(adapter, key)
+        await _run_until_idle(replacement, key)
 
-    def _get_pending(key):
-        get_calls.append(key)
-        return original_get(key)
-
-    replacement.get_pending_message = _get_pending
-
-    def _start(event, key):
-        started.append((event, key))
-        return True
-
-    intake._start_session_processing = _start
-    intake._active_sessions[session_key] = asyncio.Event()
-
-    async def _busy_handler(event, key):
-        replacement._pending_messages[key] = pending
-        intake._active_sessions.pop(key, None)
-        return True
-
-    async def _message_handler(event):
-        return ""
-
-    intake.set_busy_session_handler(_busy_handler)
-    intake.set_message_handler(_message_handler)
-    await intake.handle_message(incoming)
-
-    assert started == [(pending, session_key)]
-    assert get_calls == [session_key]
-    assert session_key not in replacement._pending_messages
-    assert session_key not in intake._pending_messages
+        assert turns.order == ["M1", "M2"]
+        assert not _orphaned(adapter, key) and not _orphaned(replacement, key)
+    finally:
+        held.release()
+        adapter.release_reply.set()
+        ack_release.set()
+        if followup is not None and not followup.done():
+            followup.cancel()
+            await asyncio.gather(followup, return_exceptions=True)
+        await adapter.cancel_background_tasks()
+        await replacement.cancel_background_tasks()

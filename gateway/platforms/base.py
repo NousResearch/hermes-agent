@@ -4138,21 +4138,30 @@ class BasePlatformAdapter(ABC):
             # base path instead (returned False, or raised before storing it) and nothing is
             # queued, start this event.
             if session_key not in self._active_sessions:
-                # Busy admission may queue through the runner's delivery adapter.  That can be a
-                # replacement instance after reconnect, so recover from the adapter that owns the
-                # event rather than reading this intake adapter's slot (and do it exactly once).
-                delivery_adapter = self
+                # Busy admission queues through the delivery adapter resolved when it stored the
+                # event; a reconnect during the handler's later awaits can replace that adapter.
+                # Recover from whichever slot actually holds it — this one, or the replacement —
+                # and start it on that slot's owner. A replacement with a live guard drains its
+                # own slot, so leave that one alone.
+                owners = [self]
                 runner = getattr(self, "gateway_runner", None)
                 if runner is not None:
                     try:
-                        delivery_adapter = runner._delivery_adapter_for(event.source) or self
+                        delivery_adapter = runner._delivery_adapter_for(event.source)
                     except Exception:
+                        delivery_adapter = None
                         logger.debug("[%s] Delivery-adapter lookup failed during pending recovery",
                                      self.name, exc_info=True)
-                orphan = delivery_adapter.get_pending_message(session_key)
-                if orphan is not None:
-                    self._start_session_processing(orphan, session_key)
-                elif not handled:
+                    if (delivery_adapter is not None and delivery_adapter is not self
+                            and session_key not in delivery_adapter._active_sessions):
+                        owners.append(delivery_adapter)
+                orphan = None
+                for owner in owners:
+                    orphan = owner.get_pending_message(session_key)
+                    if orphan is not None:
+                        owner._start_session_processing(orphan, session_key)
+                        break
+                if orphan is None and not handled:
                     event._gateway_accepted = self._start_session_processing(event, session_key)
                     return
             if handled:

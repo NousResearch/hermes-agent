@@ -937,6 +937,11 @@ class ClientLifecycleMixin:
                 apply_custom_provider_extra_headers_to_client_kwargs(self._client_kwargs, base_url)
             except Exception:
                 logger.debug("custom-provider extra_headers skipped", exc_info=True)
+            # Per-run priority rides every rebuild too: a credential swap or route change must not
+            # silently drop the run back to the profile's static extra_headers.
+            from hermes_cli.config_providers import apply_platform_priority_header_to_client_kwargs
+            apply_platform_priority_header_to_client_kwargs(
+                self._client_kwargs, getattr(self, "platform_priority", None))
 
     def _apply_user_default_headers(self) -> None:
         """Merge config ``model.default_headers`` onto the OpenAI client (user wins; WAFs rejecting SDK headers).

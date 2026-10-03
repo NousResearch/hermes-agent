@@ -10,6 +10,7 @@ bodies run on per-handle workers), not per-turn threads.
 import logging
 import os
 import threading
+import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -39,6 +40,8 @@ class DurableTurnLease:
         self.db = db
         self.session_id = session_id  # id at admission; release always targets this row
         self.holder = holder
+        # Wall clock, same as the row's expires_at. A failed refresh must not move it.
+        self._authority_deadline = time.time() + LEASE_TTL_SECONDS
         self.stop = threading.Event()
         self.refresh_interval = float(getattr(agent, "_session_turn_lease_refresh_interval", 60.0))
         self._lock = threading.Lock()
@@ -182,8 +185,15 @@ class DurableTurnLease:
                 _set_interrupt(False, agent._execution_thread_id)
 
     def refresh_tick(self):
-        """One periodic renewal (every ``refresh_interval`` via the shared scheduler); a miss or
-        error interrupts the turn. Returning False stops the timer.
+        """One periodic renewal (every ``refresh_interval`` via the shared scheduler). A real
+        miss (rowcount 0) or a non-lock error interrupts the turn. A SQLite lock is a missed
+        tick only while the next attempt still lands before ``_authority_deadline``. Returning
+        False stops the timer.
+
+        Acquisition reclaims a row once ``expires_at <= now``, even if the old process is
+        alive. Holder-qualified release does not block that path, so a run of lock errors
+        must not keep this turn active up to and past the deadline. A successful renewal
+        is the only thing that moves the deadline.
 
         The holder-qualified UPDATE fences a late refresher from a successor lease. The façade's
         finally sets ``stop`` before releasing, so a holder-fenced miss observed after stop is not
@@ -194,6 +204,7 @@ class DurableTurnLease:
             if self.db.refresh_session_turn_lease(
                 self._current_session_id(), self.holder, ttl_seconds=LEASE_TTL_SECONDS
             ):
+                self._authority_deadline = time.time() + LEASE_TTL_SECONDS
                 return None
             if self.stop.is_set():
                 return False
@@ -201,9 +212,30 @@ class DurableTurnLease:
                 "Lost session turn lease while turn is active: %s", self._current_session_id()
             )
             self._interrupt_turn("Session turn lease lost; stopping to protect the transcript.")
-        except Exception:
+        except Exception as exc:
             if self.stop.is_set():
                 return False
+            from hermes_state_errors import is_sqlite_lock_error
+
+            if is_sqlite_lock_error(exc):
+                now = time.time()
+                # The scheduler will not try again until one interval from now. If that
+                # attempt would meet or pass the row expiry, stop before a successor
+                # can claim it.
+                if now + self.refresh_interval >= self._authority_deadline:
+                    logger.warning(
+                        "Session turn lease refresh stayed locked through its lifetime: %s",
+                        self._current_session_id(),
+                    )
+                    self._interrupt_turn(
+                        "Session turn lease could not be refreshed; stopping to protect the transcript."
+                    )
+                    return False
+                logger.warning(
+                    "Session turn lease refresh hit a SQLite lock; will retry: %s",
+                    self._current_session_id(),
+                )
+                return None
             logger.warning(
                 "Failed to refresh session turn lease: %s", self._current_session_id(), exc_info=True,
             )

@@ -31,6 +31,7 @@ import {
   $sidebarPrFilter,
   $sidebarProfileFilter,
   $sidebarProjectFilter,
+  $sidebarRecencyFilter,
   $sidebarRowMeta,
   $sidebarShowAllSessions,
   $sidebarShowArchived,
@@ -47,10 +48,12 @@ import {
   SIDEBAR_GROUPING_ORDER,
   type SidebarGrouping,
   type SidebarOrdering,
+  type SidebarRecencyFilter,
   type SidebarRowMeta,
   toggleSidebarPrFilter,
   toggleSidebarProfileFilter,
   toggleSidebarProjectFilter,
+  toggleSidebarRecencyFilter,
   toggleSidebarRowMeta,
   toggleSidebarStatusFilter
 } from '@/store/layout'
@@ -173,6 +176,7 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const profileNames = useStore($profiles).map(profile => normalizeProfileKey(profile.name))
   const narrowsByProfile = showAllProfiles && profileNames.length > 1
   const prFilter = useStore($sidebarPrFilter)
+  const recencyFilter = useStore($sidebarRecencyFilter)
   const showArchived = useStore($sidebarShowArchived)
   const filtersActive = useStore($sidebarFiltersActive)
   const viewCustomized = useStore($sidebarViewCustomized)
@@ -206,6 +210,13 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   )
 
   const groupingLabel = groupings.find(option => option.id === grouping)?.label
+
+  // ponytail: hardcoded labels to match the sibling submenus (Grouping /
+  // Ordering / Status are all literals); move to i18n only if asked.
+  const recencyOptions: Option<SidebarRecencyFilter>[] = [
+    { icon: 'history', id: '1d', label: '1 day' },
+    { icon: 'history', id: '2d', label: '2 day' }
+  ]
 
   // Two options are conditional: dragging a row is what picks manual, so it
   // only appears as a way back out once there's a hand-picked order to leave;
@@ -345,6 +356,22 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
                   checked={statusFilter.includes(option.id)}
                   key={option.id}
                   onCheck={() => toggleSidebarStatusFilter(option.id)}
+                  option={option}
+                />
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+
+          {/* Windows over the same clock the rows sort and label by, so
+              "1 day" is the last 24 hours wherever a session shows up. */}
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>Recency</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              {recencyOptions.map(option => (
+                <OptionCheckbox
+                  checked={recencyFilter.includes(option.id)}
+                  key={option.id}
+                  onCheck={() => toggleSidebarRecencyFilter(option.id)}
                   option={option}
                 />
               ))}

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import {
   $sidebarGrouping,
   $sidebarOrdering,
+  $sidebarRecencyFilter,
   $sidebarRowMeta,
   $sidebarShowAllSessions,
   $sidebarViewCustomized,
@@ -13,6 +14,7 @@ import {
   setSidebarShowAllSessions,
   SIDEBAR_GROUPING_ORDER,
   type SidebarGrouping,
+  toggleSidebarRecencyFilter,
   toggleSidebarRowMeta,
   toggleSidebarStatusFilter
 } from './layout'
@@ -107,5 +109,22 @@ describe('the sidebar as it ships', () => {
 
     expect(new Set(visited)).toEqual(new Set(SIDEBAR_GROUPING_ORDER))
     expect($sidebarGrouping.get()).toBe(start)
+  })
+
+  it('narrows by recency, unions the windows, and clears them on reset', () => {
+    toggleSidebarRecencyFilter('1d')
+    toggleSidebarRecencyFilter('2d')
+
+    expect($sidebarRecencyFilter.get()).toEqual(['1d', '2d'])
+    expect($sidebarViewCustomized.get()).toBe(true)
+
+    toggleSidebarRecencyFilter('1d')
+
+    expect($sidebarRecencyFilter.get()).toEqual(['2d'])
+
+    resetSidebarView()
+
+    expect($sidebarRecencyFilter.get()).toEqual([])
+    expect($sidebarViewCustomized.get()).toBe(false)
   })
 })

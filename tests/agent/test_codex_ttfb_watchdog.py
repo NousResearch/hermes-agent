@@ -119,7 +119,9 @@ def test_local_endpoint_ttfb_default_uses_local_stale_ceiling(tmp_path, monkeypa
     kwargs = {"model": "qwen3-27b", "input": "hi"}
 
     assert h._resolve_nonstream_watchdogs(local, kwargs).ttfb_timeout == 600.0
-    assert h._resolve_nonstream_watchdogs(hosted, kwargs).ttfb_timeout == 120.0
+    # Hosted small requests get the agent.codex fast-reconnect target (default 40s), which the
+    # local grace above deliberately does not.
+    assert h._resolve_nonstream_watchdogs(hosted, kwargs).ttfb_timeout == 40.0
 
 
 def test_local_endpoint_ttfb_explicit_env_still_wins(tmp_path, monkeypatch):
@@ -679,3 +681,107 @@ def test_explicit_ttfb_max_seconds_still_caps(tmp_path, monkeypatch):
     wd = h._resolve_nonstream_watchdogs(agent, {"model": "gpt-5.5", "input": huge_input})
 
     assert wd.ttfb_timeout == 90.0, f"explicit cap ignored: {wd.ttfb_timeout}"
+
+
+
+
+def test_ttfb_fires_before_stale_at_default_config(tmp_path, monkeypatch):
+    """Regression for the 07:00 cron stall (hermes-agent Codex hang).
+
+    At the real defaults the no-byte TTFB cutoff (120s) was >= the wall-clock
+    stale timeout (90s), so the blunt stale timer always won: a wedged
+    chatgpt.com/backend-api/codex socket burned the full stale timeout on every
+    retry (90s x 3) before falling back. The fix couples the TTFB cutoff to fire
+    *before* the stale timer (fast reconnect ~40s). This test pins that the
+    no-byte hang is now killed via the ``codex_ttfb_kill`` path well under the
+    90s stale timeout, with NO TTFB/stale env overrides set.
+    """
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    # Real production timers: stale=90s (the implicit default), TTFB unset
+    # (defaults to 120s). No env overrides for either watchdog.
+    monkeypatch.setattr(agent, "_compute_non_stream_stale_timeout", lambda *a, **k: 90.0)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_MAX_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_FAST_RECONNECT_SECONDS", raising=False)
+    # Shrink the fast-reconnect target so the test is quick but still exercises
+    # the real coupling logic (the cutoff is derived from it, not hardcoded).
+    (tmp_path / "config.yaml").write_text("agent:\n  codex:\n    ttfb_fast_reconnect_seconds: 2\n")
+    # Retired knobs must not override the config-only value.
+    monkeypatch.setenv("HERMES_CODEX_TTFB_FAST_RECONNECT_SECONDS", "999")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_BELOW_STALE", "0")
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+
+    stop = {"flag": False}
+
+    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+        # Zero events: simulate the wedged-socket no-byte hang.
+        deadline = time.time() + 60
+        while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
+            time.sleep(0.02)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
+
+    t0 = time.time()
+    try:
+        with pytest.raises(TimeoutError) as excinfo:
+            h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+        elapsed = time.time() - t0
+        assert "TTFB" in str(excinfo.value)
+        # Killed via the fast-reconnect TTFB path, not the 90s stale path.
+        assert "codex_ttfb_kill" in closes
+        assert "stale_call_kill" not in closes
+        # Must reconnect fast (~2s cutoff + 2s join), far under the 90s stale.
+        assert elapsed < 20, f"TTFB did not fire before stale timer: {elapsed:.1f}s"
+    finally:
+        stop["flag"] = True
+
+
+def test_ttfb_below_stale_coupling_disabled_via_config(tmp_path, monkeypatch):
+    """agent.codex.ttfb_below_stale=false restores the legacy behavior: the TTFB
+    cutoff is NOT pulled below the stale timer, so a request whose first event
+    is merely slow is not killed early by the coupling."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setattr(agent, "_compute_non_stream_stale_timeout", lambda *a, **k: 60.0)
+    monkeypatch.delenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", raising=False)
+    (tmp_path / "config.yaml").write_text(
+        "agent:\n  codex:\n    ttfb_below_stale: false\n    ttfb_fast_reconnect_seconds: 1\n")
+    # Aggressive fast-reconnect target would kill at ~1s if the coupling ran;
+    # disabling it means the default 120s TTFB applies and a 2s slow first
+    # event survives.
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+
+    sentinel = SimpleNamespace(ok=True)
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        time.sleep(2.0)
+        return sentinel
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    resp = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": "hi"})
+    assert resp is sentinel
+    assert "codex_ttfb_kill" not in closes
+

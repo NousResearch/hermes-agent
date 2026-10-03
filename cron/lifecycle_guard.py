@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import logging
 import os
+import plistlib
 import re
 import shlex
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from typing import Callable, Iterator, Optional
@@ -697,19 +699,24 @@ def _executed_command_index(segment: list[str]) -> Optional[int]:
     return index if index < len(segment) else None
 
 
-def contains_launchctl_submit_command(command: str) -> bool:
+def contains_launchctl_submit_command(command: str, cwd: Optional[str] = None) -> bool:
     """Detect an executed ``launchctl submit``/``bootstrap``, not quoted text.
 
     Label-independent by design: a NEW job's label is attacker-chosen, so a neutral name defeats any
-    label-anchored regex. Both verbs register a persistent launchd job — never safe in the gateway.
+    label-anchored regex. Both verbs register a persistent launchd job — never safe in the gateway,
+    except a repo-declared inert ``bootstrap`` target (see ``_declared_launchd_target``).
 
-    See #62891.
+    See #62891, #129504.
     """
     for segment in _iter_command_segments(command):
         index = _executed_command_index(segment)
         if index is not None and _executable_name(segment[index]) == "launchctl":
             arguments = segment[index + 1 :]
             if arguments and arguments[0].lower() in {"submit", "bootstrap"}:
+                if arguments[0].lower() == "bootstrap" and _declared_launchd_target(
+                    segment, index, cwd
+                ):
+                    continue
                 return True
     return False
 
@@ -763,11 +770,11 @@ def _lifecycle_command_scan_with_data_exemption(text: str) -> bool:
     return contains_gateway_lifecycle_command(_mask_data_sink_arguments(normalized))
 
 
-def _direct_lifecycle_scan(command: str) -> bool:
+def _direct_lifecycle_scan(command: str, cwd: Optional[str] = None) -> bool:
     """Pure-string direct scans: lifecycle regex (data-exempted) + submit."""
     return (
         _lifecycle_command_scan_with_data_exemption(command)
-        or contains_launchctl_submit_command(command)
+        or contains_launchctl_submit_command(command, cwd=cwd)
     )
 
 
@@ -862,6 +869,231 @@ def _resolve_script_directory(script_path: str) -> Optional[str]:
     return None
 
 
+# --- repo-declared launchd jobs (#129504) -------------------------------------------------------
+
+# Loose gateway substring without word boundaries: catches `myhermes-gateway` where
+# `_HERMES_GATEWAY_LABEL_RE` (with `\b`) would not.
+_DECLARED_GATEWAY_SUBSTRING_RE = re.compile(r"(?i)hermes[.\-]?gateway")
+
+
+def _extract_bootstrap_plist_candidates(segment: list[str], index: int) -> list[str]:
+    """Service paths from ``launchctl bootstrap <domain> <svc> [svc ...]``: every positional token
+    after the domain target. ``launchctl bootstrap`` registers ALL of them, so the guard must
+    validate every one — checking only the last lets ``bootstrap gui/501 <payload> <decoy>`` carve
+    out as safe while launchd installs the payload too."""
+    try:
+        args = segment[index + 1 :]
+    except Exception:
+        return []
+    if not args or args[0].lower() != "bootstrap":
+        return []
+    rest = args[1:]
+    if len(rest) < 2:
+        return []
+    return rest[1:]
+
+
+def _extract_bootstrap_plist_candidate(segment: list[str], index: int) -> Optional[str]:
+    """Candidate plist path from ``launchctl bootstrap <domain> <plist>``: last token after the verb."""
+    candidates = _extract_bootstrap_plist_candidates(segment, index)
+    return candidates[-1] if candidates else None
+
+
+def _resolve_declared_plist_path(candidate: str, cwd: Optional[str]) -> Optional[Path]:
+    """Resolve *candidate* inside *cwd*; None unless a regular file within the workdir."""
+    if not cwd or not candidate:
+        return None
+    raw = _expand_candidate_path(candidate)
+    if raw is None:
+        return None
+    try:
+        base = Path(cwd)
+    except (ValueError, RuntimeError, OSError):
+        return None
+    if not raw.is_absolute():
+        try:
+            raw = base / raw
+        except (ValueError, RuntimeError, OSError):
+            return None
+    try:
+        cwd_resolved = _resolve_lenient(base)
+        plist_resolved = _resolve_lenient(raw)
+        plist_resolved.relative_to(cwd_resolved)
+    except (ValueError, OSError):
+        return None
+    try:
+        if not stat.S_ISREG(os.stat(plist_resolved).st_mode):
+            return None
+    except (OSError, ValueError):
+        return None
+    return plist_resolved
+
+
+def _is_git_tracked_and_clean(plist: Path, cwd: str) -> bool:
+    """True when *plist* is git-tracked and unmodified in the *cwd* worktree."""
+    try:
+        cwd_path = Path(cwd)
+        try:
+            rel = str(plist.relative_to(_resolve_lenient(cwd_path)))
+        except ValueError:
+            return False
+        ls = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", rel],
+            cwd=str(cwd_path),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        if ls.returncode != 0:
+            return False
+        st = subprocess.run(
+            ["git", "status", "--porcelain", "--", rel],
+            cwd=str(cwd_path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+            text=True,
+        )
+        if st.returncode != 0:
+            return False
+        return not (st.stdout or "").strip()
+    except Exception:
+        return False
+
+
+def _load_declared_plist_dict(plist: Path) -> Optional[dict]:
+    """Parse *plist* with ``plistlib.loads``; None on any failure or non-dict root."""
+    try:
+        if os.stat(plist).st_size > _MAX_REFERENCED_SCRIPT_BYTES:
+            return None
+        data = plist.read_bytes()
+        if len(data) > _MAX_REFERENCED_SCRIPT_BYTES:
+            return None
+        parsed = plistlib.loads(data)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _is_single_declared_inert_plist(candidate: str, cwd: str) -> bool:
+    """Whether one bootstrap service path is a repo-declared inert job.
+
+    All must hold: plist is a regular file inside *cwd*, git-tracked and clean, Label equals the
+    filename stem, KeepAlive absent, RunAtLoad absent/False, and no gateway/XPC token in Label,
+    Program or ProgramArguments. Any failure fails closed (False = still blocked).
+    """
+    try:
+        resolved = _resolve_declared_plist_path(candidate, cwd)
+        if resolved is None:
+            return False
+        if not _is_git_tracked_and_clean(resolved, cwd):
+            return False
+        data = _load_declared_plist_dict(resolved)
+        if data is None:
+            return False
+        label = data.get("Label")
+        if not isinstance(label, str) or label != resolved.stem:
+            return False
+        if "KeepAlive" in data:
+            return False
+        run_at_load = data.get("RunAtLoad")
+        if run_at_load is not None and run_at_load is not False:
+            return False
+        tokens: list[str] = []
+        if isinstance(label, str):
+            tokens.append(label)
+        program = data.get("Program")
+        if isinstance(program, str):
+            tokens.append(program)
+        program_args = data.get("ProgramArguments")
+        if isinstance(program_args, (list, tuple)):
+            for item in program_args:
+                if isinstance(item, str):
+                    tokens.append(item)
+        xpc = os.environ.get("XPC_SERVICE_NAME")
+        xpc_name = xpc.strip() if isinstance(xpc, str) and xpc.strip() else ""
+        for token in tokens:
+            if not token:
+                continue
+            if _HERMES_GATEWAY_LABEL_RE.search(token):
+                return False
+            if _DECLARED_GATEWAY_SUBSTRING_RE.search(token):
+                return False
+            lowered = token.lower()
+            if "hermes" in lowered and "gateway" in lowered:
+                return False
+            if xpc_name and (token == xpc_name or xpc_name in token):
+                return False
+        # Split-form laundering (`["hermes", "gateway", "restart"]`): no single token matches,
+        # yet the job executes the gateway lifecycle. Check the joined Program surface too.
+        joined = " ".join(t for t in tokens[1:] if t)
+        if joined:
+            if _HERMES_GATEWAY_LABEL_RE.search(joined):
+                return False
+            if _DECLARED_GATEWAY_SUBSTRING_RE.search(joined):
+                return False
+            lowered = joined.lower()
+            if "hermes" in lowered and "gateway" in lowered:
+                return False
+            if xpc_name and (joined == xpc_name or xpc_name in joined):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _declared_launchd_target(segment: list[str], index: int, cwd: Optional[str]) -> bool:
+    """Whether ``launchctl bootstrap`` at *index* installs only repo-declared inert jobs.
+
+    ``launchctl bootstrap`` registers EVERY service path after the domain target, so the carve-out
+    holds only when ALL of them are declared-safe; any unresolvable/unsafe path fails closed
+    (False = still blocked).
+    """
+    try:
+        if not cwd:
+            return False
+        candidates = _extract_bootstrap_plist_candidates(segment, index)
+        if not candidates:
+            return False
+        return all(_is_single_declared_inert_plist(candidate, cwd) for candidate in candidates)
+    except Exception:
+        return False
+
+
+def _iter_declared_plist_executables(
+    segment: list[str], index: int, cwd: Optional[str]
+) -> Iterator[Path]:
+    """Yield Program/ProgramArguments paths from declared plists so the walk scans them."""
+    try:
+        candidates = _extract_bootstrap_plist_candidates(segment, index)
+        if not candidates:
+            return
+        for candidate in candidates:
+            resolved = _resolve_declared_plist_path(candidate, cwd)
+            if resolved is None:
+                continue
+            data = _load_declared_plist_dict(resolved)
+            if data is None:
+                continue
+            entries: list[str] = []
+            program = data.get("Program")
+            if isinstance(program, str) and program.strip():
+                entries.append(program)
+            program_args = data.get("ProgramArguments")
+            if isinstance(program_args, (list, tuple)):
+                for item in program_args:
+                    if isinstance(item, str) and item.strip():
+                        entries.append(item)
+            plist_parent = str(resolved.parent)
+            for entry in entries:
+                for base in (cwd, plist_parent):
+                    if base is None:
+                        continue
+                    yield from _resolved_or_nothing(entry, base)
+    except Exception:
+        return
+
+
 # --- referenced-script discovery --------------------------------------------------------------
 
 def _iter_option_values(segment: list[str], start: int, option: str) -> Iterator[str]:
@@ -926,6 +1158,15 @@ def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -
         peeled = _peel_transparent_prefixes(segment, index)
         if peeled != index:
             yield from _references_at(segment, peeled, cwd)
+        executed = _executed_command_index(segment)
+        if (
+            executed is not None
+            and _executable_name(segment[executed]) == "launchctl"
+            and len(segment) > executed + 1
+            and segment[executed + 1].lower() == "bootstrap"
+            and _declared_launchd_target(segment, executed, cwd)
+        ):
+            yield from _iter_declared_plist_executables(segment, executed, cwd)
 
 
 def _iter_shell_command_payloads(command: str) -> Iterator[str]:
@@ -1096,7 +1337,7 @@ def _contains_unsafe_gateway_action(
     # Charge BEFORE _direct_lifecycle_scan: every scan in it tokenizes with shlex.
     if not budget.charge_text(command):
         return _budget_exhausted(budget, "text", depth) if executed else False
-    if _direct_lifecycle_scan(command):
+    if _direct_lifecycle_scan(command, cwd=cwd):
         return True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
         return executed
@@ -1208,11 +1449,11 @@ def scan_gateway_lifecycle(
             exc_info=True,
         )
         try:
-            return _direct_lifecycle_scan(command), None
+            return _direct_lifecycle_scan(command, cwd=cwd), None
         except Exception:
             # If even the data-argument masker fails, fall to raw regex + submit scan: stay total.
             return (contains_gateway_lifecycle_command(command)
-                    or contains_launchctl_submit_command(command)), None
+                    or contains_launchctl_submit_command(command, cwd=cwd)), None
 
 
 def contains_gateway_lifecycle_command_or_referenced_script(

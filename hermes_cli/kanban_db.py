@@ -4033,8 +4033,9 @@ def schedule_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Park in ``scheduled`` (waiting on time, not a human; not dispatchable)
-    until ``unblock_task`` re-gates it."""
+    """Park in ``scheduled`` (not dispatchable) until ``unblock_task`` re-gates
+    it. Despite the name, there is no timer or due-date column: the status is
+    released only by a human ``unblock_task`` call, same as ``blocked``."""
     with write_txn(conn):
         params: list[Any] = [task_id]
         sql = """

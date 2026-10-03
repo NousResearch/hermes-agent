@@ -1353,7 +1353,7 @@ Common subcommands:
   `attach <id> <path>`  Attach a local file; `attachments <id>` to list
   `complete <id>…`      Mark task(s) done
   `request-review <id>` Enter first-class review; `request-changes <id> <reason>` returns an active review to its implementer
-  `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
+  `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks it (no timer, human-released); `unblock <id>` to revive
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards
   `assignees`           Known profiles + counts

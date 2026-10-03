@@ -42,6 +42,8 @@ export interface VersionStatusInput {
    * apply mechanism is the caller's concern.
    */
   channel?: 'stable' | 'main'
+  /** Human-readable last-checked label for the cached update reading, when known. */
+  checkedAt?: string
   copy: VersionStatusCopy
   /** Stable channel: the newest release tag, when the check found one. */
   latestTag?: null | string
@@ -58,6 +60,9 @@ export interface VersionStatusInput {
 }
 
 export interface VersionStatusResult {
+  checkedAt?: string
+  /** Secondary text beside the label — the commit sha, when it adds anything. */
+  detail?: string
   /** An update is waiting: callers tint the row with it. */
   hasUpdate: boolean
   label: string
@@ -66,12 +71,32 @@ export interface VersionStatusResult {
   unknown: boolean
 }
 
+/**
+ * The one "Last checked …" label for every update surface (statusbar pills,
+ * command palette). `fetchedAt` is stamped on the failure paths too (renderer
+ * catch fallbacks, the IPC catch, the source-check error results), so it must
+ * never be rendered for a reading that did not actually run — an offline
+ * failure would otherwise read as a fresh check.
+ */
+export function lastCheckedLabel(
+  status: { error?: string; fetchedAt?: number } | null | undefined,
+  lastChecked: (age: string) => string,
+  format: (ms: number) => string
+): string | undefined {
+  if (!status || status.error || !status.fetchedAt) {
+    return undefined
+  }
+
+  return lastChecked(format(status.fetchedAt))
+}
+
 export function resolveVersionStatus({
   applyMessage,
   applying,
   behind = 0,
   branch,
   channel = 'main',
+  checkedAt,
   copy,
   latestTag = null,
   remote,
@@ -114,6 +139,7 @@ export function resolveVersionStatus({
     !busy && available && stable && latestTag && copy.releaseAvailable(latestTag),
     !busy && !stable && behind > 0 && copy.commitsBehind(behind, (client ? branch : 'main') || '...'),
     !busy && available && (stable ? !latestTag : behind <= 0) && copy.update,
+    !busy && checkedAt,
     version && (client ? copy.desktopVersion(version) : copy.backendVersion(version)),
     client && sha && copy.commit(sha),
     // The branch line is main-channel vocabulary; a stable checkout sits on
@@ -124,6 +150,8 @@ export function resolveVersionStatus({
     .join(' · ')
 
   return {
+    checkedAt: !busy ? checkedAt : undefined,
+    detail: client && version && sha && !busy && !remote ? sha : undefined,
     hasUpdate: !busy && available,
     label: busy ? `${base} · ${restarting ? copy.restart : copy.update}` : `${base}${hint}`,
     tooltip: tooltip || undefined,

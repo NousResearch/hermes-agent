@@ -33,9 +33,10 @@ import {
 import { runtimeReadinessDisplay, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { resolveSessionTimerSince } from '@/lib/session-timer-since'
 import { cacheHitLabel, contextBarLabel, LiveDuration, tokensPerSecondLabel, usageContextLabel } from '@/lib/statusbar'
+import { fmtDateTime } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
-import { resolveVersionStatus } from '@/lib/version-status'
+import { lastCheckedLabel, resolveVersionStatus } from '@/lib/version-status'
 import type { ApprovalModeRequester } from '@/store/approval-mode'
 import { copyFilePath, revealFile, shouldOfferLocalReveal } from '@/store/file-actions'
 import { $freeTierStatus, FREE_TIER_MODEL } from '@/store/free-tier'
@@ -394,6 +395,7 @@ export function useStatusbarItems({
       applyMessage: updateApply.message,
       behind: updateStatus?.behind ?? 0,
       branch: updateStatus?.branch,
+      checkedAt: lastCheckedLabel(updateStatus, t.updates.lastChecked, fmtDateTime.format),
       copy,
       remote: connection?.mode === 'remote',
       restarting: updateApply.stage === 'restart',
@@ -421,9 +423,11 @@ export function useStatusbarItems({
     desktopVersion?.appVersion,
     connection?.mode,
     copy,
+    t.updates,
     updateApply.applying,
     updateApply.message,
     updateApply.stage,
+    updateStatus,
     updateStatus?.behind,
     updateStatus?.branch,
     updateStatus?.currentSha,
@@ -441,6 +445,7 @@ export function useStatusbarItems({
       applying,
       applyMessage: backendUpdateApply.message,
       behind: backendUpdateStatus?.behind ?? 0,
+      checkedAt: lastCheckedLabel(backendUpdateStatus, t.updates.lastChecked, fmtDateTime.format),
       copy,
       remote: true,
       restarting: backendUpdateApply.stage === 'restart',
@@ -464,6 +469,8 @@ export function useStatusbarItems({
   }, [
     connection?.mode,
     statusSnapshot?.version,
+    t.updates,
+    backendUpdateStatus,
     backendUpdateStatus?.behind,
     backendUpdateStatus?.updateAvailable,
     backendUpdateApply.applying,

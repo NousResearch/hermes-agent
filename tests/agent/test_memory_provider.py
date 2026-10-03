@@ -173,7 +173,7 @@ class TestMemoryManager:
     def test_oversized_external_prefetch_is_preserved(self, tmp_path):
         mgr = MemoryManager()
         provider = FakeMemoryProvider("external")
-        provider._prefetch_result = "recalled " * 20
+        provider._prefetch_result = "recalled " * 2000
         mgr.add_provider(provider)
 
         result = mgr.prefetch_all("what do you remember?", session_id="session-1")

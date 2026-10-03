@@ -1121,18 +1121,9 @@ class GatewayTurnMixin:
         # conversation silently vanishes. Persist the child transcript first; only then rebind the live
         # entry.
         if _hyg_rotated:
-            # Same false-failure guard as manual /compress: publish_compression_child() wrote the
-            # handoff + cloned foreign tail atomically, so the durable child needs no second
-            # rewrite. rewrite_transcript() here DELETEs those cloned rows (they are absent from
-            # _compressed) and any DB hiccup used to fail the whole rotation fail-closed onto the
-            # already-superseded parent. Probe fails open: False keeps the original rewrite path.
-            if await self.async_session_store.is_published_compression_child(
-                    session_entry.session_id, _hyg_new_sid):
-                _hyg_new_sid_persisted = True
-            else:
-                _hyg_new_sid_persisted = await self.async_session_store.rewrite_transcript(
-                    _hyg_new_sid, _compressed)
-            if not _hyg_new_sid_persisted:
+            # Published child is already durable; a rewrite would drop rows cloned at publish.
+            if not await self.async_session_store.persist_rotated_compression_child(
+                    session_entry.session_id, _hyg_new_sid, _compressed):
                 logger.error(
                     "Session hygiene: failed to persist compressed transcript for rotated session "
                     "%s → %s; keeping the live entry on the original session so the "

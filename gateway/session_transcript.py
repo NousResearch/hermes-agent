@@ -519,11 +519,10 @@ class SessionTranscriptMixin:
         foreign-tail rows) in the SAME transaction that ended the parent with
         ``end_reason='compression'``, so the child transcript is already durable on disk.
 
-        /compress and hygiene rewrite the rotated child AGAIN; when this returns True that second
-        rewrite is redundant AND destructive (the in-memory handoff list lacks the rows cloned
-        during publication) and its failure surfaces as a false "failed to persist compressed
-        transcript" over an already-committed compression. Fails open (False) on any DB error so
-        callers fall back to the rewrite guard exactly as before."""
+        Rewriting such a child is redundant AND destructive: the in-memory handoff lacks the rows
+        cloned during publication, and a failed rewrite reports a false "failed to persist
+        compressed transcript" over a committed compression. Fails open (False) on any DB error so
+        callers fall back to the rewrite."""
         if not parent_session_id or not child_session_id:
             return False
         # The child id is not routed yet; the parent is, and it was ended in the same publish transaction.
@@ -540,6 +539,13 @@ class SessionTranscriptMixin:
         except Exception:
             logger.debug("published-compression-child probe failed for %s", child_session_id, exc_info=True)
             return False
+
+    def persist_rotated_compression_child(
+            self, parent_session_id: str, child_session_id: str, messages: List[Dict[str, Any]]) -> bool:
+        """Make a rotated compression child durable before the live entry is repointed: a published
+        child already is, anything else gets *messages* written by the destructive rewrite."""
+        return (self.is_published_compression_child(parent_session_id, child_session_id)
+                or self.rewrite_transcript(child_session_id, messages))
 
     def has_input_owner(self, session_id: str, owner: str) -> bool:
         """Find this accepted input on the canonical live continuation and its ancestors.

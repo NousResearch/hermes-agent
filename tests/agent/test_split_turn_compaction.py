@@ -456,21 +456,47 @@ def test_assistant_anchor_cannot_retain_a_textless_oversized_turn(
     _assert_tool_pairs_are_complete(messages[cut:])
 
 
-def test_assistant_anchor_still_binds_when_splitting_is_disabled(
-    compressor: ContextCompressor,
+def _reasoning_heavy_small_turn() -> list[dict]:
+    """Under the ceiling on the wire, over it only if stale thinking were charged (BN04 2c)."""
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "older request"},
+        {"role": "assistant", "content": "older turn finished"},
+    ]
+    for index in range(2):
+        group = _tail_group(index)
+        group[0]["reasoning_content"] = "t" * 1200
+        messages.extend(group)
+    messages.append({"role": "user", "content": "keep going"})
+    for index in range(2, 6):
+        messages.extend(_tail_group(index))
+    return messages
+
+
+@pytest.mark.parametrize(
+    ("build", "allow_split_turn"),
+    [
+        # Rolling micro-compaction consumes complete exchanges only (allow_split_turn=False).
+        (_textless_oversized_turn, False),
+        # Stale thinking never reaches the wire on this route, so the escape must price the
+        # region like the walk does (#84371) and not drop a reply that fits (#29824).
+        (_reasoning_heavy_small_turn, True),
+    ],
+)
+def test_assistant_anchor_still_binds(
+    compressor: ContextCompressor, build, allow_split_turn: bool,
 ) -> None:
-    """Rolling micro-compaction consumes complete exchanges only (allow_split_turn=False)."""
-    messages = _textless_oversized_turn()
+    """The #131412 escape fires only for a wire-oversized region with splitting allowed."""
+    messages = build()
     head_end = compressor._protect_head_size(messages)
 
     cut = compressor._find_tail_cut_by_tokens(
-        messages, head_end, token_budget=_TOKEN_BUDGET, allow_split_turn=False,
+        messages, head_end, token_budget=_TOKEN_BUDGET, allow_split_turn=allow_split_turn,
     )
 
     older_closer_idx = next(
         index for index, message in enumerate(messages)
         if message.get("content") == "older turn finished"
     )
-    # Without the split allowance the anchor pulls the cut back to the older turn's
-    # closer, aligned before its preceding tool group; the mid-turn exception never fires.
+    # The anchor pulls the cut back to the older turn's closer, aligned before any tool group.
     assert cut == compressor._align_boundary_backward(messages, older_closer_idx)

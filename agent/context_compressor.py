@@ -12,7 +12,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
 from agent.compression_marker import (
@@ -3185,21 +3185,25 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         ``cut_at_break``. Only the newest assistant turn's thinking is charged (#73624) unless the route
         echoes stale thinking every turn — must agree with the preflight estimate (#84371)."""
         n = len(messages)
-        newest_asst_idx = _last_assistant_index(messages)
-        charge_all_thinking = self._stale_thinking_on_wire()
-        native_budget = self._native_anthropic_budget()
+        price = self._tail_row_pricer(messages)
         accumulated = 0
         cut = n  # start from beyond the end
         for i in range(n - 1, head_end - 1, -1):
-            msg_tokens = (
-                native_budget(messages[i]) if native_budget
-                else _estimate_msg_budget_tokens(messages[i], charge_all_thinking or i == newest_asst_idx)
-            )
+            msg_tokens = price(i)
             if accumulated + msg_tokens > ceiling and (n - i) >= min_tail:
                 return (i if cut_at_break else cut), accumulated
             accumulated += msg_tokens
             cut = i
         return cut, accumulated
+
+    def _tail_row_pricer(self, messages: List[Dict[str, Any]]) -> Callable[[int], int]:
+        """Per-row tail price ``index -> tokens``: the walk's accounting, shared by every gate that sizes a tail region."""
+        newest_asst_idx = _last_assistant_index(messages)
+        charge_all_thinking = self._stale_thinking_on_wire()
+        native_budget = self._native_anthropic_budget()
+        if native_budget:
+            return lambda i: native_budget(messages[i])
+        return lambda i: _estimate_msg_budget_tokens(messages[i], charge_all_thinking or i == newest_asst_idx)
 
     def _prune_boundary(
         self, result: List[Dict[str, Any]], protect_tail_count: int, protect_tail_tokens: int | None,
@@ -5192,9 +5196,8 @@ Write only the summary body. Do not include any preamble or prefix."""
                 asst_anchored_cut < cut_idx
                 and allow_split_turn
                 and any(messages[i].get("tool_calls") for i in range(asst_anchored_cut, cut_idx))
-                and sum(
-                    _estimate_msg_budget_tokens(m) for m in messages[asst_anchored_cut:cut_idx]
-                ) > soft_ceiling
+                # Priced like the walk (#84371): stale thinking the wire never carries must not trip it.
+                and sum(map(self._tail_row_pricer(messages), range(asst_anchored_cut, cut_idx))) > soft_ceiling
             ):
                 if not self.quiet_mode:
                     logger.debug(

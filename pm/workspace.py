@@ -282,7 +282,16 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
                 spec["path"] = (identity / relative).resolve().as_posix()
                 changed = True
         if virtual:
-            document.setdefault("project", {})["name"] = f"hermes-plugin-{key}"
+            project = document.setdefault("project", {})
+            project["name"] = f"hermes-plugin-{key}"
+            # uv rejects any [project] table whose `version` is neither set nor listed in
+            # `project.dynamic` (PEP 621) while parsing the workspace, so a metadata-only
+            # member missing it failed every later `uv lock`. Version is required
+            # metadata: stage the same inert value manifest-only members use. PEP 621
+            # forbids a static version beside a dynamic one, so a member that declares
+            # its version dynamic is left untouched.
+            if "version" not in project and "version" not in project.get("dynamic", ()):
+                project["version"] = "0.0.0"
         if virtual or changed:
             import tomli_w
 

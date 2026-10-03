@@ -1488,6 +1488,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return False, False
         elif self._dedup.contains(message_id):
             return False, False
+        # Every self-identity comparison below (the self-authored check here,
+        # and the other-bot classification further down) needs our own user.
+        # Without a client we cannot recognize ourselves, so a mention of
+        # Hermes would be classified as "another bot" and silently invert the
+        # admission decision. Admit nothing rather than guess, and state the
+        # invariant once instead of relying on an AttributeError escaping the
+        # ingress path.
+        if self._client is None:
+            return False, False
         if message.author == self._client.user:
             return False, False
         if message.type not in {discord.MessageType.default, discord.MessageType.reply}:
@@ -1530,12 +1539,43 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         if not isinstance(message.channel, discord.DMChannel) and (
             message.mentions or raw_self_mention
         ):
-            other_bots_mentioned = any(
-                mentioned.bot and mentioned != self._client.user
-                for mentioned in message.mentions
+            self_user = self._client.user
+            other_bot_mentions = [
+                mentioned for mentioned in message.mentions
+                if mentioned.bot and mentioned != self_user
+            ]
+            other_bots_mentioned = bool(other_bot_mentions)
+
+            # Free-response membership is needed by BOTH guards below, so
+            # resolve it once up front instead of only inside the
+            # ignore_no_mention branch.
+            parent_id = None
+            if hasattr(message.channel, "parent_id") and message.channel.parent_id:
+                parent_id = str(message.channel.parent_id)
+            free_channels = self._discord_free_response_channels()
+            channel_keys = self._discord_channel_keys(message, parent_id)
+            is_free_response_channel = (
+                "*" in free_channels or bool(channel_keys & free_channels)
             )
+
+            # Another bot is mentioned and we are not. Stay silent — UNLESS
+            # this channel explicitly opted into free-response behavior, where
+            # Hermes is meant to respond without being mentioned at all.
+            # Free-response channels routinely carry quoted bot mentions from
+            # migration notes and prior context; suppressing on those dropped
+            # messages the channel was configured to answer. A message that
+            # *begins* with another bot's mention is still the direct-address
+            # case, so it remains suppressed.
             if other_bots_mentioned and not raw_self_mention:
-                return False, False
+                if not is_free_response_channel:
+                    return False, False
+                stripped_content = (message.content or "").lstrip()
+                if any(
+                    stripped_content.startswith(f"<@{mentioned.id}>")
+                    or stripped_content.startswith(f"<@!{mentioned.id}>")
+                    for mentioned in other_bot_mentions
+                ):
+                    return False, False
             ignore_no_mention = _scoped_gate_env("DISCORD_IGNORE_NO_MENTION", "true").lower() in {"true", "1", "yes"}
             if ignore_no_mention and not raw_self_mention and not other_bots_mentioned:
                 # A thread the bot joined is not someone else's conversation, and the other two
@@ -1544,21 +1584,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 # without this a third-party mention in a bot thread is dropped here even though
                 # the same message with no mention at all is admitted. ``thread_require_mention``
                 # still gates multi-bot threads, inside _in_bot_thread().
-                if not self._in_bot_thread(message):
-                    parent_id = None
-                    if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                        parent_id = str(message.channel.parent_id)
-                    free_channels = self._discord_free_response_channels()
-                    channel_keys = self._discord_channel_keys(message, parent_id)
-                    if "*" not in free_channels and not (channel_keys & free_channels):
-                        # Every other silent return in this function is at least guessable from
-                        # the outside; this one is not, and an operator seeing no log line cannot
-                        # tell it apart from the gateway never receiving the event.
-                        logger.debug(
-                            "[%s] admission: dropping message %s — mentions others, not self, "
-                            "not a bot thread, channel not free-response",
-                            self.name, getattr(message, "id", "?"))
-                        return False, False
+                if not self._in_bot_thread(message) and not is_free_response_channel:
+                    # Every other silent return in this function is at least guessable from
+                    # the outside; this one is not, and an operator seeing no log line cannot
+                    # tell it apart from the gateway never receiving the event.
+                    logger.debug(
+                        "[%s] admission: dropping message %s — mentions others, not self, "
+                        "not a bot thread, channel not free-response",
+                        self.name, getattr(message, "id", "?"))
+                    return False, False
         return True, role_authorized
 
     async def _dispatch_discord_message(self, message: Any) -> bool:

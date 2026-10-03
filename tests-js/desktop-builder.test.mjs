@@ -329,3 +329,30 @@ test('typecheck uses scratch state and incomplete prepared inputs fail before pu
   await expect(buildDesktop(input)).rejects.toThrow(/native binding/)
   expect(files(input.out)).toEqual(built)
 }, 30000)
+
+test('every build step child runs with the raised V8 heap flag (#125502)', async () => {
+  // "Zone Allocation failed" on the default ~4 GiB heap: the vite/rolldown
+  // transform needs more than the machine default, and the `build` script must
+  // not rely on the operator exporting NODE_OPTIONS (main-channel updaters
+  // have no shell to inherit it from).
+  const input = fixture()
+  const spawns = []
+  const { buildSourceDesktop } = await import('../apps/desktop/scripts/build.mjs')
+  buildSourceDesktop({ source: input.source, run: (command, args, options) => {
+    spawns.push(options)
+    return undefined
+  } })
+  expect(spawns.length).toBeGreaterThan(0)
+  for (const options of spawns) {
+    expect(options.env.NODE_OPTIONS).toMatch(/--max-old-space-size=16384$/)
+  }
+})
+
+test('buildNodeOptions preserves inherited NODE_OPTIONS byte-identically and puts the heap flag last', async () => {
+  const { buildNodeOptions } = await import('../apps/desktop/scripts/build.mjs')
+  expect(buildNodeOptions('--require "/quoted path/preload.mjs"')).toBe(
+    '--require "/quoted path/preload.mjs" --max-old-space-size=16384')
+  expect(buildNodeOptions('')).toBe('--max-old-space-size=16384')
+  expect(buildNodeOptions('--max-old-space-size=4096')).toBe(
+    '--max-old-space-size=4096 --max-old-space-size=16384')
+})

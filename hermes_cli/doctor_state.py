@@ -663,3 +663,33 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
     for line in duplicate_credential_findings():
         check_warn("Duplicate platform credential across profiles", f"({line})")
         f.manual_issues.append(line)
+
+
+@doctor_check("Cron scheduler check unavailable: {e}")
+def _check_cron_scheduler(should_fix: bool, f: Finding) -> None:
+    """Warn when runnable jobs have no live scheduler for this profile."""
+    from cron.jobs import _current_cron_store, _parse_jobs_file, is_job_runnable
+    from hermes_cli import cron as cron_cli
+
+    jobs_file = _current_cron_store().jobs_file
+    if not jobs_file.is_file():
+        return
+    # Doctor is a probe, not a cron repair: do not call load_jobs(), which can rewrite a
+    # damaged store. Leave diagnosis of malformed jobs to `hermes cron doctor`.
+    data, _ = _parse_jobs_file(jobs_file)
+    jobs = data.get("jobs", []) if isinstance(data, dict) else data
+    if not isinstance(jobs, list):
+        return
+    count = sum(is_job_runnable(job) and job.get("state") != "completed"
+                for job in jobs if isinstance(job, dict))
+    if not count or cron_cli._builtin_gateway_liveness(cleanup_stale=False) is not False:
+        return
+    from hermes_cli.profiles import get_active_profile_name
+    profile = get_active_profile_name()
+    verb = "has" if count == 1 else "have"
+    install = ("hermes gateway install" if profile == "default"
+               else "hermes --profile default gateway install")
+    detail = (f"{count} enabled cron job{'s' if count != 1 else ''} in profile '{profile}' "
+              f"{verb} no scheduler; run {install} or hermes cron status")
+    check_warn(detail)
+    f.manual_issues.append(detail)

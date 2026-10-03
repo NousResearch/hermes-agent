@@ -40,13 +40,14 @@ def _active_cron_provider_name() -> str:
         return "builtin"
 
 
-def _builtin_gateway_liveness() -> Optional[bool]:
+def _builtin_gateway_liveness(*, cleanup_stale: bool = True) -> Optional[bool]:
     """Tri-state readiness of a scheduler serving THIS home (None = probe failed).
 
     A gateway launched from this home proves itself by process liveness. Any other scheduler that
     ticks this home — the host multiplexer for a served profile, or the in-process ticker inside
     ``hermes serve`` / the Desktop backend (#121881) — proves itself only by the fresh heartbeat it
     writes into this home's store. External providers use their own machinery and are exempt.
+    Set cleanup_stale=False for read-only diagnostic probes.
     """
     try:
         if _active_cron_provider_name() != "builtin":
@@ -56,10 +57,12 @@ def _builtin_gateway_liveness() -> Optional[bool]:
         # inside the gateway it must never say "not running"). A crashing probe is "unknown".
         with contextlib.suppress(Exception):
             from gateway.status import is_gateway_runtime_lock_active
-            if is_gateway_runtime_lock_active():
+            if (is_gateway_runtime_lock_active() if cleanup_stale
+                    else is_gateway_runtime_lock_active(cleanup_stale=False)):
                 return True
         from hermes_cli.gateway import find_gateway_pids, named_profile_served_by_running_multiplexer
-        if find_gateway_pids():
+        if (find_gateway_pids() if cleanup_stale
+                else find_gateway_pids(cleanup_stale=False)):
             return True
         from cron.jobs import get_ticker_heartbeat_age, ticker_heartbeat_writer_alive
         if not _ticker_age_is_fresh(get_ticker_heartbeat_age()):

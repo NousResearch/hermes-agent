@@ -1150,7 +1150,7 @@ def _probe_lock_file(handle) -> bool:
             handle.close()
 
 
-def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
+def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None, *, cleanup_stale: bool = True) -> bool:
     """True when some process currently owns the gateway runtime lock."""
     resolved_lock_path = lock_path or _get_gateway_lock_path()
     if _gateway_lock_handle is not None and resolved_lock_path == _get_gateway_lock_path():
@@ -1161,7 +1161,8 @@ def is_gateway_runtime_lock_active(lock_path: Optional[Path] = None) -> bool:
         handle = open(resolved_lock_path, "a+", encoding="utf-8")
     except PermissionError:
         # Stale root-owned lock (see acquire_gateway_runtime_lock): report inactive.
-        _unlink_quietly(resolved_lock_path)
+        if cleanup_stale:
+            _unlink_quietly(resolved_lock_path)
         return False
     return _probe_lock_file(handle)
 
@@ -2098,7 +2099,8 @@ def get_running_pid(
     records and inactive-lock metadata still take the full poison-file cleanup."""
     resolved_pid_path = pid_path or _get_pid_path()
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
-    if is_gateway_runtime_lock_active(resolved_lock_path):
+    if (is_gateway_runtime_lock_active(resolved_lock_path) if cleanup_stale
+            else is_gateway_runtime_lock_active(resolved_lock_path, cleanup_stale=False)):
         records = (
             _read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path),
         )

@@ -3441,6 +3441,7 @@ display:
     aux_failure_label: "المراجعة في الخلفية"
   notice:
     uncompressed_context_overflow: "⚠️ سياق الجلسة (~{tokens} رمزًا) يتجاوز نافذة سياق النموذج (~{context_length} رمزًا) مع تعطيل الضغط (compression.enabled: false). استخدم /compact لضغط السجل أو فعّل الضغط في config.yaml."
+    uncompressed_context_overflow_session_scoped: "⚠️ سياق الجلسة (~{tokens} رمزًا) يتجاوز نافذة سياق النموذج (~{context_length} رمزًا) مع تعطيل الضغط التلقائي لهذه الجلسة. ابدأ جلسة جديدة، أو اضغط السجل من التطبيق الذي يستضيف هذه الجلسة."
 explainer:
   no_reply_prefix: "⚠️ لا رد: "
   empty_response: "لم ينتج {model} ردًا هذه المرة، حتى بعد إعادة المحاولات. أرسل `continue` للمحاولة مجددًا، أو بدّل النموذج عبر /model."

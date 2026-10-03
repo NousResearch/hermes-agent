@@ -3441,6 +3441,7 @@ display:
     aux_failure_label: "athbhreithniú cúlra"
   notice:
     uncompressed_context_overflow: "⚠️ Sáraíonn comhthéacs an tseisiúin (~{tokens} comhartha) fuinneog chomhthéacs an mhúnla (~{context_length} comhartha) agus an comhbhrú díchumasaithe (compression.enabled: false). Úsáid /compact chun an stair a chomhbhrú nó cumasaigh an comhbhrú i config.yaml."
+    uncompressed_context_overflow_session_scoped: "⚠️ Sáraíonn comhthéacs an tseisiúin (~{tokens} comhartha) fuinneog chomhthéacs an mhúnla (~{context_length} comhartha) agus an comhbhrú uathoibríoch díchumasaithe don tseisiún seo. Tosaigh seisiún nua, nó comhbhrú an stair ón aip atá ag óstáil an tseisiúin seo."
 explainer:
   no_reply_prefix: "⚠️ Gan freagra: "
   empty_response: "Níor thug {model} freagra an uair seo, fiú tar éis atrialacha. Seol `continue` chun triail eile a bhaint as, nó athraigh an tsamhail le /model."

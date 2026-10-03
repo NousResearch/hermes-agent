@@ -3441,6 +3441,7 @@ display:
     aux_failure_label: "背景檢閱"
   notice:
     uncompressed_context_overflow: "⚠️ 工作階段上下文（約 {tokens} 個 token）在壓縮已停用（compression.enabled: false）的情況下超出了模型上下文視窗（約 {context_length} 個 token）。請使用 /compact 壓縮歷史記錄，或在 config.yaml 中啟用壓縮。"
+    uncompressed_context_overflow_session_scoped: "⚠️ 工作階段上下文（約 {tokens} 個 token）在此工作階段的自動壓縮已停用的情況下超出了模型上下文視窗（約 {context_length} 個 token）。請開始新的工作階段，或從裝載此工作階段的應用程式壓縮歷史記錄。"
 explainer:
   no_reply_prefix: "⚠️ 沒有回覆： "
   empty_response: "{model} 這次沒有產生回覆，重試後仍然如此。傳送 `continue` 再試一次，或用 /model 切換模型。"

@@ -3441,6 +3441,7 @@ display:
     aux_failure_label: "バックグラウンドレビュー"
   notice:
     uncompressed_context_overflow: "⚠️ セッションのコンテキスト（約{tokens}トークン）が、圧縮が無効（compression.enabled: false）の状態でモデルのコンテキストウィンドウ（約{context_length}トークン）を超えています。/compact で履歴を圧縮するか、config.yaml で圧縮を有効にしてください。"
+    uncompressed_context_overflow_session_scoped: "⚠️ セッションのコンテキスト（約{tokens}トークン）が、このセッションでは自動圧縮が無効の状態でモデルのコンテキストウィンドウ（約{context_length}トークン）を超えています。新しいセッションを開始するか、このセッションをホストしているアプリケーションから履歴を圧縮してください。"
 explainer:
   no_reply_prefix: "⚠️ 応答なし: "
   empty_response: "{model} は再試行後も応答を生成しませんでした。`continue` を送信して再試行するか、/model でモデルを切り替えてください。"

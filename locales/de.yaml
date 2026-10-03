@@ -3441,6 +3441,7 @@ display:
     aux_failure_label: "Hintergrund-Review"
   notice:
     uncompressed_context_overflow: "⚠️ Der Sitzungskontext (~{tokens} Tokens) überschreitet das Kontextfenster des Modells (~{context_length} Tokens), während die Komprimierung deaktiviert ist (compression.enabled: false). Verwenden Sie /compact, um den Verlauf zu komprimieren, oder aktivieren Sie die Komprimierung in config.yaml."
+    uncompressed_context_overflow_session_scoped: "⚠️ Der Sitzungskontext (~{tokens} Tokens) überschreitet das Kontextfenster des Modells (~{context_length} Tokens), während die automatische Komprimierung für diese Sitzung deaktiviert ist. Starten Sie eine neue Sitzung oder komprimieren Sie den Verlauf über die Anwendung, die diese Sitzung hostet."
 explainer:
   no_reply_prefix: "⚠️ Keine Antwort: "
   empty_response: "{model} hat diesmal auch nach mehreren Versuchen keine Antwort erzeugt. Senden Sie `continue`, um es erneut zu versuchen, oder wechseln Sie das Modell mit /model."

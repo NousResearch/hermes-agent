@@ -3441,6 +3441,7 @@ display:
     aux_failure_label: "arka plan incelemesi"
   notice:
     uncompressed_context_overflow: "⚠️ Oturum bağlamı (~{tokens} token) sıkıştırma devre dışıyken (compression.enabled: false) modelin bağlam penceresini (~{context_length} token) aşıyor. Geçmişi sıkıştırmak için /compact kullanın veya config.yaml içinde sıkıştırmayı etkinleştirin."
+    uncompressed_context_overflow_session_scoped: "⚠️ Oturum bağlamı (~{tokens} token) bu oturum için otomatik sıkıştırma devre dışıyken modelin bağlam penceresini (~{context_length} token) aşıyor. Yeni bir oturum başlatın veya bu oturumu barındıran uygulamadan geçmişi sıkıştırın."
 explainer:
   no_reply_prefix: "⚠️ Yanıt yok: "
   empty_response: "{model} bu kez, yeniden denemelere rağmen bir yanıt üretmedi. Tekrar denemek için `continue` gönderin veya /model ile model değiştirin."

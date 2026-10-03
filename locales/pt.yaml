@@ -3441,6 +3441,7 @@ display:
     aux_failure_label: "revisão em segundo plano"
   notice:
     uncompressed_context_overflow: "⚠️ O contexto da sessão (~{tokens} tokens) excede a janela de contexto do modelo (~{context_length} tokens) com a compressão desativada (compression.enabled: false). Use /compact para comprimir o histórico ou ative a compressão em config.yaml."
+    uncompressed_context_overflow_session_scoped: "⚠️ O contexto da sessão (~{tokens} tokens) excede a janela de contexto do modelo (~{context_length} tokens) com a compressão automática desativada para esta sessão. Inicie uma nova sessão ou comprima o histórico a partir da aplicação que hospeda esta sessão."
 explainer:
   no_reply_prefix: "⚠️ Sem resposta: "
   empty_response: "{model} não produziu uma resposta desta vez, mesmo após novas tentativas. Envie `continue` para tentar novamente ou troque de modelo com /model."

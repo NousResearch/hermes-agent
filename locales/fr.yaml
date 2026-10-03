@@ -3758,6 +3758,7 @@ display:
     aux_failure_label: "revue en arrière-plan"
   notice:
     uncompressed_context_overflow: "⚠️ Le contexte de session (~{tokens} tokens) dépasse la fenêtre de contexte du modèle (~{context_length} tokens) alors que la compression est désactivée (compression.enabled: false). Utilisez /compact pour compresser l'historique ou activez la compression dans config.yaml."
+    uncompressed_context_overflow_session_scoped: "⚠️ Le contexte de session (~{tokens} tokens) dépasse la fenêtre de contexte du modèle (~{context_length} tokens) alors que la compression automatique est désactivée pour cette session. Démarrez une nouvelle session ou compressez l'historique depuis l'application qui héberge cette session."
 explainer:
   no_reply_prefix: "⚠️ Pas de réponse : "
   empty_response: "{model} n'a produit aucune réponse cette fois, même après plusieurs tentatives. Envoyez `continue` pour réessayer, ou changez de modèle avec /model."

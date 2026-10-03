@@ -260,12 +260,16 @@ class TestSlashCommandSessionIsolation:
     async def test_slash_command_obeys_message_channel_gates(
             self, adapter, channel_id, extra, dispatched):
         """allowed_channels / ignored_channels gate a slash command like a message in the same
-        conversation: every conversation but a 1:1 DM."""
+        conversation: every conversation but a 1:1 DM. A gated command gets a bare ack, never a
+        "Running /x" promise."""
         adapter.config.extra.update(extra)
-        await adapter._handle_slash_command(
-            {"text": "hello", "user_id": "U123", "channel_id": channel_id, "team_id": "T123"})
+        ack = AsyncMock()
+        await adapter._handle_hermes_command(ack, {
+            "command": "/status", "text": "hello", "user_id": "U123", "channel_id": channel_id,
+            "team_id": "T123"})
 
         assert adapter.handle_message.await_count == (1 if dispatched else 0)
+        assert ("text" in ack.await_args.kwargs) == dispatched
 
 
 class TestSlackWorkspaceCollisionIsolation:

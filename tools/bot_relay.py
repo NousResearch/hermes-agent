@@ -46,9 +46,9 @@ TURN_ATTEMPT_TIMEOUT_SECONDS = 600
 TURN_MAX_ATTEMPTS = 2  # first attempt + the policy-gated re-run
 # Mirrors RELAY_DELIVER_TIMEOUT_MS in apps/desktop/src/plugins/hermes-bots/relay-budget.ts; both test suites pin it.
 DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS = 180
-DESKTOP_DELIVER_TIMEOUT_SECONDS = (
+DESKTOP_DELIVER_TIMEOUT_SECONDS = float(__import__('os').environ.get('HERMES_BOT_RELAY_DELIVER_TIMEOUT_SECONDS',
     TURN_WAIT_SECONDS_FALLBACK + TURN_ATTEMPT_TIMEOUT_SECONDS * TURN_MAX_ATTEMPTS + DESKTOP_DELIVER_SETTLEMENT_MARGIN_SECONDS
-)
+))
 # A claimed envelope still unanswered this long after its claim was taken by a Desktop that died
 # before ``bot_relay.deliver``; the next drain re-offers it, once. The longest a LIVE delivery can
 # be in flight without a reply on disk is the Desktop's own deliver deadline (it posts a

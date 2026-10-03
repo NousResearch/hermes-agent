@@ -32,3 +32,20 @@ test('an already-focused window never pumps the OS foreground path', () => {
   // runs SetForegroundWindow on Windows, dismissing another app's dialog.
   assert.equal(shouldFocusToTakeKeyboard({ isFocused: () => true }), false)
 })
+
+// Native BrowserWindow methods validate their receiver; detached methods fail
+// even when the window is still alive. Exercise both focus states.
+test('focus policy preserves the native window receiver', () => {
+  const window = {
+    focused: false,
+    isFocused() {
+      assert.equal(this, window, 'BrowserWindow method must retain its receiver')
+
+      return this.focused
+    }
+  }
+
+  assert.equal(shouldFocusToTakeKeyboard(window), true)
+  window.focused = true
+  assert.equal(shouldFocusToTakeKeyboard(window), false)
+})

@@ -1141,6 +1141,55 @@ class _BrokenStdout:
         return None
 
 
+def test_write_json_redacts_session_prompt_from_headless_fallback_only(monkeypatch):
+    soul_marker = "SOUL_MARKER_MUST_NEVER_REACH_SERVER_LOGS_9d7f"
+    system_prompt = soul_marker + "\n" + ("private prompt bytes " * 1_000)
+    sid = "headless-log-sid"
+    frame = server._event_frame(
+        "session.info",
+        sid,
+        {
+            "model": "test-model",
+            "provider": "test-provider",
+            "system_prompt": system_prompt,
+        },
+    )
+    out = _ChunkyStdout()
+    monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+    monkeypatch.setattr(server, "_real_stdout", out)
+    monkeypatch.setattr(server, "current_transport", lambda: None)
+    server._sessions.pop(sid, None)
+
+    assert server.write_json(frame) is True
+
+    log_text = "".join(out.parts)
+    logged = json.loads(log_text)
+    assert soul_marker not in log_text
+    assert len(log_text.encode()) < 1_024
+    assert logged["params"]["type"] == "session.info"
+    assert logged["params"]["session_id"] == sid
+    assert logged["params"]["payload"]["model"] == "test-model"
+    assert logged["params"]["payload"]["provider"] == "test-provider"
+
+    class _ClientTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+    client = _ClientTransport()
+    server._sessions[sid] = {"transport": client}
+    try:
+        assert server.write_json(frame) is True
+        assert client.frames == [frame]
+        assert client.frames[0]["params"]["payload"]["system_prompt"] == system_prompt
+        assert soul_marker in json.dumps(client.frames[0])
+    finally:
+        server._sessions.pop(sid, None)
+
+
 def test_write_json_serializes_concurrent_writes(monkeypatch):
     """Assert StdioTransport holds _stdout_lock across the full stream.write.
 

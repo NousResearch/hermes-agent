@@ -81,13 +81,20 @@ def is_autonomous_silence_response(response: Any) -> bool:
     Models reliably bracket ``[SILENT]`` with a short note, so unlike the
     interactive EXACT rule this also suppresses when a marker sits on its own
     first/last line or the bracketed sentinel opens the response (``[SILENT] No
-    changes detected``).  A token buried mid-sentence is still delivered.
+    changes detected``).  A marker whose characters are split by whitespace
+    (``"[\n\nSILENT]"``) still counts.  A token buried mid-sentence is still
+    delivered.
     Shares :data:`LIVE_GATEWAY_SILENT_MARKERS` so the two sets cannot drift.
     """
     stripped = response.strip() if isinstance(response, str) else ""
     if not stripped:
         return False
     lines = [ln for ln in stripped.splitlines() if ln.strip()]
+    # A model can split the sentinel across lines ("[\n\nSILENT]"); collapse ALL whitespace for a
+    # whole-response comparison. Equality with a marker is the only acceptance, so a marker buried
+    # inside real content can never match this branch.
+    if "".join(stripped.upper().split()) in LIVE_GATEWAY_SILENT_MARKERS:
+        return True
     # Bracketed form only for the prefix rule, so a bare "Silent retry succeeded" is NOT swallowed.
     # Same de-punctuating forms as the interactive rule, so ``【静默】`` / ``静默。`` cannot
     # be suppressed in chat yet delivered by cron.

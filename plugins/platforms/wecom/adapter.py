@@ -743,6 +743,67 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return send_error(f"WeCom send failed: {e}")
 
 
+async def _callback_standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
+    """Out-of-process WeCom Callback delivery via the proactive send API.
+
+    Implements the ``standalone_sender_fn`` contract so cron jobs carrying
+    ``deliver=wecom_callback:<user_id>`` and ``send_message(platform=
+    "wecom_callback")`` succeed when they run outside the gateway (#125072).
+    Without this the registry fallback in tools/send_message_tool.py finds no
+    sender and the send fails.
+
+    Deliberately does NOT call ``connect()``: callback delivery is outbound
+    only — the aiohttp application, the bound port and the poll loop exist only
+    to *receive* callbacks, and ``connect()`` refuses outright when the gateway
+    already holds the port. Only the outbound HTTP client is opened, and it is
+    closed again afterwards (also on failure).
+
+    Media is not supported on this path, and is reported rather than dropped:
+    a cron job told its attachment was delivered would be worse than one that
+    fails visibly. ``thread_id``/``force_document`` are genuinely inapplicable
+    to a stateless proactive send and are still discarded.
+    """
+    del thread_id, force_document  # inapplicable to a stateless proactive send
+    if media_files:
+        return send_error(
+            "WeCom Callback standalone send is text-only: "
+            f"{len(media_files)} attachment(s) cannot be delivered out-of-process. "
+            "Send the text without media, or route this through the gateway."
+        )
+    from plugins.platforms.wecom.callback_adapter import (
+        check_wecom_callback_requirements,
+    )
+
+    if not check_wecom_callback_requirements():
+        return send_error(
+            "WeCom Callback requirements not met. Need aiohttp + httpx and "
+            "WECOM_CALLBACK_CORP_ID/WECOM_CALLBACK_CORP_SECRET."
+        )
+    import httpx
+
+    from gateway.platforms._http_client_limits import platform_httpx_limits
+
+    adapter = _build_callback_adapter(pconfig)
+    if not getattr(adapter, "_apps", None):
+        return send_error("WeCom Callback: no callback apps configured")
+    client = httpx.AsyncClient(timeout=20.0, limits=platform_httpx_limits())
+    try:
+        adapter._http_client = client
+        result = await adapter.send(chat_id, message)
+        if not result.success:
+            return send_error(f"WeCom Callback send failed: {result.error}")
+        return {
+            "success": True,
+            "platform": "wecom_callback",
+            "chat_id": chat_id,
+            "message_id": result.message_id,
+        }
+    except Exception as e:
+        return send_error(f"WeCom Callback send failed: {e}")
+    finally:
+        await client.aclose()
+
+
 _MANUAL_SETUP_STEPS = (
     "1. Go to WeCom Application → Workspace → Smart Robot -> Create smart robots",
     "2. Select API Mode",
@@ -848,5 +909,6 @@ def register(ctx) -> None:
         check_fn=check_wecom_callback_requirements, ensure_deps_fn=ensure_wecom_callback_requirements,
         is_connected=_callback_is_connected, validate_config=_callback_is_connected,
         required_env=["WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"],
+        standalone_sender_fn=_callback_standalone_send, max_message_length=2048,
         allowed_users_env="WECOM_CALLBACK_ALLOWED_USERS", allow_all_env="WECOM_CALLBACK_ALLOW_ALL_USERS", **common,
     )

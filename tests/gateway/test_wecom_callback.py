@@ -231,7 +231,11 @@ async def test_oversized_cron_output_is_split_under_the_2048_byte_text_limit():
     adapter._http_client = _Client()
     content = "\n\n".join(f"第{i}段 " + "数据" * 100 for i in range(40))
     payload = DeliveryRouter(GatewayConfig())._cap_oversized_output(adapter, content, "job")
-    result = await adapter.send("test-app:user1", payload)
+    # #125092: callback chat_ids are corp-scoped ("corp_id:user_id", see
+    # _user_app_key) — the app NAME is not a valid prefix. The old "test-app"
+    # prefix only worked because an unresolvable prefix silently fell back to
+    # apps[0]; strict corp resolution now (correctly) rejects it.
+    result = await adapter.send("ww1234567890:user1", payload)
 
     assert result.success
     assert len(sent) > 1 and max(len(s.encode()) for s in sent) <= 2048

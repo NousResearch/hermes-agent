@@ -14,6 +14,9 @@ A small, deterministic Electron suite that guards three issue classes end to end
   - no marker is ever rendered twice, even transiently (in-page
     MutationObserver sampler — the #120005 garble healed on its own in the
     final DOM, so a final-state check alone misses it);
+  - no message is ever rendered out of order, even transiently: the same
+    sampler fails a reply above its own prompt and two messages that swap
+    places between frames;
   - backend stream integrity: each turn's concatenated `message.delta` /
     `reasoning.delta` equals what the provider streamed, and
     `message.complete` equals the final completion.
@@ -21,6 +24,12 @@ A small, deterministic Electron suite that guards three issue classes end to end
     `switch-back-race.spec.ts` forces both orders of "reply completes" vs "the
     switch-back REST hydrate resolves" with gates (no sleeps) under the same
     oracle.
+    `reply-settle-paths.spec.ts` forces the shapes duplicate-reply reports
+    describe: an answer the backend repeats as the final reply (with a
+    review.summary row delivered before its message.complete, #131626), a
+    steer at each point of a tool turn, then reload and switch-back over the
+    folded tool turns. `switch-back-race.spec.ts` runs both orders with a tool
+    turn too (history folds it under its first row, #128809).
     `onboarding-first-chat.spec.ts` starts from a fresh home with no provider:
     the real onboarding (custom endpoint → the fake provider's URL), then the
     first chat, a second turn and a reload under the same oracle, plus

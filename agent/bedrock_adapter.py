@@ -461,6 +461,14 @@ _NON_TOOL_CALLING_PATTERNS = [
 # cachePoint allowlist — inverted policy vs tools: unknown models get NO cache markers (they reject
 # cachePoint). Claude only reaches build_converse_kwargs under bearer auth.
 _CACHE_POINT_PATTERNS = ["anthropic.claude", "amazon.nova"]
+# Converse documents an image inside toolResult.content as "only supported by Amazon Nova and Anthropic
+# Claude 3 and 4 models"; other models reject it with a ValidationException. Later Claude generations get
+# the text note until AWS documents them: a missing image degrades, a rejected request fails the turn.
+# Source (re-check when AWS ships new models):
+# https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolResultContentBlock.html
+_TOOL_RESULT_IMAGE_PATTERNS = [
+    "amazon.nova", "anthropic.claude-3", "anthropic.claude-opus-4", "anthropic.claude-sonnet-4", "anthropic.claude-haiku-4",
+]
 
 
 def _model_supports_tool_use(model_id: str) -> bool:
@@ -468,11 +476,15 @@ def _model_supports_tool_use(model_id: str) -> bool:
     return not any(pattern in model_id.lower() for pattern in _NON_TOOL_CALLING_PATTERNS)
 
 
-def _model_supports_prompt_cache(model_id: str) -> bool:
+def _model_matches(model_id: str, patterns: List[str]) -> bool:
     # An application-inference-profile ARN names no model: match on the wrapped model (cached lookup).
     if _APPLICATION_PROFILE_ARN_RE.search(model_id):
         model_id = _resolve_inference_profile_model_id(model_id)
-    return any(pattern in model_id.lower() for pattern in _CACHE_POINT_PATTERNS)
+    return any(pattern in model_id.lower() for pattern in patterns)
+
+
+def _model_supports_prompt_cache(model_id: str) -> bool:
+    return _model_matches(model_id, _CACHE_POINT_PATTERNS)
 
 
 # --- Server-verdict cachePoint suppression ---
@@ -687,6 +699,21 @@ def _convert_content_to_converse(content) -> List[Dict]:
     return blocks or [dict(_PLACEHOLDER_BLOCK)]
 
 
+_TOOL_RESULT_IMAGE_OMITTED = "[Image not delivered: this model does not accept images inside tool results.]"
+
+
+def _tool_result_blocks(content, images: bool) -> List[Dict]:
+    """Tool message content → ``toolResult.content``. A part list (or ``_multimodal`` envelope) becomes real
+    text/image blocks — JSON-dumping it replayed the base64 payload as text on every later request. Where
+    the model rejects images in tool results, each image becomes a short text note instead."""
+    if isinstance(content, dict) and content.get("_multimodal"):
+        content = content.get("content") or content.get("text_summary") or ""
+    if not isinstance(content, list):
+        return [{"text": _safe_text(content if isinstance(content, str) else json.dumps(content))}]
+    blocks = _convert_content_to_converse(content)
+    return blocks if images else [{"text": _TOOL_RESULT_IMAGE_OMITTED} if "image" in b else b for b in blocks]
+
+
 def _system_blocks(content) -> List[Dict]:
     """System content → text blocks; blank parts are dropped, not placeholder-filled."""
     parts = [content] if isinstance(content, str) else content if isinstance(content, list) else []
@@ -766,9 +793,12 @@ def _assistant_blocks(msg: Dict, content) -> List[Dict]:
     return content_blocks
 
 
-def convert_messages_to_converse(messages: List[Dict]) -> Tuple[Optional[List[Dict]], List[Dict]]:
+def convert_messages_to_converse(
+    messages: List[Dict], *, tool_result_images: bool = False,
+) -> Tuple[Optional[List[Dict]], List[Dict]]:
     """OpenAI messages → ``(system_blocks_or_None, converse_messages)``; tool results become ``toolResult``
-    user blocks. Converse needs strict user/assistant alternation with a user turn first and last:
+    user blocks, carrying image blocks only when ``tool_result_images`` (the model accepts them there).
+    Converse needs strict user/assistant alternation with a user turn first and last:
     same-role neighbours merge, placeholder user turns pad the ends."""
     system_blocks: List[Dict] = []
     converse_msgs: List[Dict] = []
@@ -785,9 +815,8 @@ def convert_messages_to_converse(messages: List[Dict]) -> Tuple[Optional[List[Di
         if role == "system":
             system_blocks.extend(_system_blocks(content))
         elif role == "tool":
-            result_content = content if isinstance(content, str) else json.dumps(content)
             append_turn("user", [{"toolResult": {
-                "toolUseId": msg.get("tool_call_id", ""), "content": [{"text": _safe_text(result_content)}]}}])
+                "toolUseId": msg.get("tool_call_id", ""), "content": _tool_result_blocks(content, tool_result_images)}}])
         elif role == "assistant":
             append_turn("assistant", _assistant_blocks(msg, content) or [dict(_PLACEHOLDER_BLOCK)])
         elif role == "user":
@@ -1009,7 +1038,8 @@ def build_converse_kwargs(
     ``maxTokens`` (model maximum; default stays 4096). cachePoint markers go on system, tools and the
     second-newest message (survives as the tail grows — mirrors Anthropic system_and_3), each only if the
     model supports caching and Bedrock has not rejected that placement."""
-    system_prompt, converse_messages = convert_messages_to_converse(messages)
+    system_prompt, converse_messages = convert_messages_to_converse(
+        messages, tool_result_images=_model_matches(model, _TOOL_RESULT_IMAGE_PATTERNS))
     cache_at = {p for p in CACHE_POINT_PLACEMENTS if cache_point_allowed(model, p)} if _model_supports_prompt_cache(model) else set()
     inference_config: Dict[str, Any] = {} if max_tokens is None else {"maxTokens": max_tokens}
     kwargs: Dict[str, Any] = {"modelId": model, "messages": converse_messages, "inferenceConfig": inference_config}

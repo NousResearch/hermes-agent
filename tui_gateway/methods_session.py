@@ -435,6 +435,10 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         composer_override_profile = {"model": profile_model, "provider": profile_provider}
     now = time.time()
     with _sessions_lock:
+        # A profile delete on this shared backend drains the home's sessions and refuses
+        # new work for it while rmtree runs (#89729): registration is the atomic chokepoint,
+        # so guard here rather than trusting an earlier profile lookup.
+        _assert_profile_registration_allowed(profile_home)
         _sessions[sid] = {
             "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
             "close_on_disconnect": _flag(params, "close_on_disconnect"),

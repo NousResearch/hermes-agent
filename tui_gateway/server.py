@@ -592,6 +592,80 @@ def _profile_home(profile: str | None) -> Path | None:
 _served_profile_homes: set[Path] = set()
 
 
+# ── Profile deletion lifecycle (shared-backend drain, #89729) ────────────────
+# A remote Bot Mode delete lands on the SAME serve process that hosts the profile's
+# live sessions: their agents hold the profile's state.db, run threads and rotating
+# log handles, so rmtree raced live writers and left SQLite FDs on a deleted state.db
+# (the delete-zombie stub). The REST delete wraps profiles.delete_profile in
+# profile_deletion_scope(): new session work for that home fails closed while the
+# scope is held, its live sessions are drained (interrupt + teardown) and clients get
+# session.reclaimed before the filesystem removal begins.
+class ProfileBeingDeletedError(RuntimeError):
+    """A profile home is mid-deletion in this process; new session work must fail closed."""
+
+
+def _profile_home_key(profile_home: "str | os.PathLike | None") -> str:
+    if not profile_home:
+        return ""
+    try:
+        return os.path.normcase(str(Path(profile_home).resolve()))
+    except Exception:
+        return os.path.normcase(os.path.abspath(os.fspath(profile_home)))
+
+
+_profile_deletions: dict[str, int] = {}
+
+
+def _profile_deletion_blocks(profile_home: "str | os.PathLike | None") -> bool:
+    key = _profile_home_key(profile_home)
+    with _sessions_lock:
+        return bool(key and _profile_deletions.get(key, 0) > 0)
+
+
+def _assert_profile_registration_allowed(profile_home: "str | os.PathLike | None") -> None:
+    if _profile_deletion_blocks(profile_home):
+        raise ProfileBeingDeletedError("profile is being deleted")
+
+
+@contextlib.contextmanager
+def profile_deletion_scope(profile_home: "str | os.PathLike"):
+    """Drain and block a profile home's sessions while this process deletes the profile.
+
+    Registration is refused (``ProfileBeingDeletedError``) for the whole scope, so a
+    session.create/resume that raced the delete can never re-open a backend against a
+    directory rmtree is walking. Hold the scope across the entire filesystem removal —
+    ``delete_profile`` handles backends, handles and the tombstone itself.
+    """
+    key = _profile_home_key(profile_home)
+    if not key:
+        raise ValueError("profile home is required")
+
+    with _sessions_lock:
+        _profile_deletions[key] = _profile_deletions.get(key, 0) + 1
+        victims = [
+            sid
+            for sid, session in _sessions.items()
+            if _profile_home_key(session.get("profile_home")) == key
+        ]
+        popped = [_pop_session_by_id(sid) for sid in victims]
+
+    try:
+        for session in popped:
+            if session is not None:
+                # The shared-backend teardown path: join/interrupt the run thread, close
+                # the agent (and its profile state.db handle), finalize. Clients learn
+                # through the session.reclaimed broadcast (end_reason profile_delete).
+                _teardown_popped_session(session, end_reason="profile_delete")
+        yield sum(session is not None for session in popped)
+    finally:
+        with _sessions_lock:
+            remaining = _profile_deletions.get(key, 1) - 1
+            if remaining > 0:
+                _profile_deletions[key] = remaining
+            else:
+                _profile_deletions.pop(key, None)
+
+
 def _profile_scoped(handler):
     """Bind ``params['profile']``'s full runtime scope (HERMES_HOME + secrets + terminal policy) around a
     handler, so config.yaml ``${VAR}`` refs, provider credential checks and ``.env`` writes resolve to
@@ -2751,6 +2825,7 @@ def _init_session(
     explicit_cwd: bool = False):
     now = time.time()
     with _sessions_lock:
+        _assert_profile_registration_allowed(profile_home)
         _sessions[sid] = {
             "agent": agent, "session_key": key, "history": history, "history_lock": threading.Lock(),
             "history_version": 0, "inflight_turn": None, "created_at": now, "last_active": now,
@@ -2888,6 +2963,7 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
             # reattach must leave an in-flight orphan interrupt polling.
             return live
         with _sessions_lock:
+            _assert_profile_registration_allowed(record.get("profile_home"))
             _sessions[sid] = record
             _register_session_cwd(_sessions[sid])
         # A PRIOR runtime for this stored id may still be sentinel-parked with a reap Timer armed; cancel +

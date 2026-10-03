@@ -975,17 +975,40 @@ async def delete_profile_endpoint(name: str):
     A delete whose identity settlement stays pending answers ``ok`` with ``settlement_pending``
     and the retry command: the profile directory is already gone, and folding that state into
     the generic 500 made a dashboard client read a completed delete as a failure (its retry
-    then 404'd)."""
+    then 404'd).
+
+    Inside a shared serve backend this process HOSTS the profile's live sessions: their agents
+    hold its state.db, run threads and log handles, so an unwrapped delete raced its own
+    writers (#89729 delete-zombie). When the gateway module is live in this process, wrap the
+    CLI delete in its ``profile_deletion_scope`` — new session work for that home fails typed
+    5037 while its sessions drain, and clients see ``session.reclaimed`` before rmtree begins.
+    Without the gateway loaded (CLI/dashboard-only process) there are no in-process sessions
+    and the delete runs exactly as before.
+    """
     from hermes_cli import profiles as profiles_mod
+
+    delete = functools.partial(profiles_mod.delete_profile, name, yes=True)
+
+    gateway_server = sys.modules.get("tui_gateway.server")
+    if gateway_server is not None:
+        delete = functools.partial(_delete_under_deletion_scope, gateway_server, _resolve_profile_dir(name), delete)
+
     try:
         with _profile_errors("DELETE /api/profiles/%s failed", name):
             # Polls a running gateway's PID for up to 10 s, then rmtree()s the directory; on the
             # loop that parks every request past the desktop's 10 s WebSocket ready-probe.
-            path = await run_in_threadpool(profiles_mod.delete_profile, name, yes=True)
+            path = await run_in_threadpool(delete)
     except ProfileIdentitySettlementPending as exc:
         return {"ok": True, "path": str(exc.path), "identity_settled": False,
                 "settlement_pending": True, "retry_command": exc.retry_command}
     return {"ok": True, "path": str(path)}
+
+
+def _delete_under_deletion_scope(gateway_server, profile_dir: Path, delete: "Callable[[], Path]") -> Path:
+    """Run the CLI delete inside the in-process gateway's profile-deletion drain (#89729)."""
+    with gateway_server.profile_deletion_scope(profile_dir):
+        return delete()
+
 
 
 @router.get("/api/profiles/{name}/soul")

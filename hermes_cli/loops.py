@@ -29,6 +29,15 @@ DEFAULT_MAX_TICKS = 100
 DEFAULT_SELF_PACED_FLOOR_SECONDS = 60
 DEFAULT_SELF_PACED_CEILING_SECONDS = 15 * 60
 
+# How many cadences an in-flight wakeup claim may outlive its own schedule before drivers treat it
+# as abandoned. A claimed tick whose turn never completed — process died mid-turn, a slash worker
+# that queued the wakeup into a ``_pending_input`` no loop drains, a killed gateway turn — leaves
+# ``awaiting_response`` True forever: ``is_due()`` stays False while ``next_due_at`` rots in the
+# past, so the timer fires ONCE and then goes permanently silent (#102056, #103044). A live turn
+# ends and reschedules its own tick well before the next one is due, so a claim older than two
+# cadences is a lost turn, not a running one: recover it and re-fire.
+STALE_CLAIM_CADENCES = 2
+
 # Completion sentinel the wakeup prompt teaches the agent to emit.
 LOOP_COMPLETE_MARKER = "LOOP_COMPLETE"
 # Marker on its own line, tolerating surrounding whitespace / trailing punctuation.
@@ -226,6 +235,18 @@ class LoopState:
             return f"self-paced{live}"
         return f"every {format_interval(self.interval_seconds)}"
 
+    def claim_is_stale(self, now: Optional[float] = None) -> bool:
+        """True when the in-flight wakeup's turn never completed (``STALE_CLAIM_CADENCES``).
+
+        The claim is the only thing blocking a re-fire while past due, so a lost turn must stop
+        counting as in flight or the loop is dead for good — see the constant's note.
+        """
+        if not self.awaiting_response:
+            return False
+        cadence = self.current_delay or self.interval_seconds or self_paced_floor_seconds()
+        now = time.time() if now is None else now
+        return now - (self.last_fired_at or self.created_at) >= STALE_CLAIM_CADENCES * cadence
+
     def remaining_label(self) -> str:
         if self.status != "active":
             return ""
@@ -383,6 +404,18 @@ def _digest_response(response: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
 
 
+def state_is_due(state: Optional[LoopState], now: Optional[float] = None) -> bool:
+    """Due test on a bare ``LoopState``: active, no LIVE wakeup turn in flight, clock passed.
+
+    The gateway scans persisted ``loop:*`` rows and gates on the state before it builds a
+    ``LoopManager``, so the rule lives here — one place, all drivers (#103044).
+    """
+    if state is None or getattr(state, "status", "active") != "active":
+        return False
+    now = time.time() if now is None else now
+    return now >= state.next_due_at and (not state.awaiting_response or state.claim_is_stale(now))
+
+
 class LoopManager:
     """Per-session /loop state + tick decisions.
 
@@ -495,12 +528,13 @@ class LoopManager:
         return True
 
     def is_due(self, now: Optional[float] = None) -> bool:
-        """Cheap check: active, not mid-wakeup, and the clock has passed."""
-        s = self._state
-        return (
-            s is not None and s.status == "active" and not s.awaiting_response
-            and (now if now is not None else time.time()) >= s.next_due_at
-        )
+        """Cheap check: active, not mid-wakeup, and the clock has passed.
+
+        An abandoned claim (``LoopState.claim_is_stale``) does not hold the loop back: the one
+        turn it was waiting on is gone, so drivers re-fire and re-arm instead of staying silent
+        forever after a single tick (#103044).
+        """
+        return state_is_due(self._state, now)
 
     def fire_tick(self) -> Optional[str]:
         """Claim a due tick; returns the message to inject, or None.
@@ -512,6 +546,8 @@ class LoopManager:
         s = self._state
         if s is None or not self.is_due():
             return None
+        if s.awaiting_response:  # is_due() vouched for it: abandoned, being re-armed now
+            logger.info("LoopManager: re-arming loop %s — wakeup #%d never completed", self.session_id, s.ticks_fired)
         s.ticks_fired += 1
         s.last_fired_at = time.time()
         s.awaiting_response = True
@@ -718,8 +754,8 @@ def dispatch_loop_command(
 
 __all__ = [
     "LoopState", "LoopManager", "parse_loop_args", "parse_interval_token", "format_interval",
-    "response_signals_complete", "goal_blocks_loop_tick", "load_loop", "save_loop", "clear_loop",
+    "response_signals_complete", "goal_blocks_loop_tick", "state_is_due", "load_loop", "save_loop", "clear_loop",
     "list_active_loops", "migrate_loop_to_session", "dispatch_loop_command", "LOOP_COMPLETE_MARKER",
     "WAKEUP_PROMPT_TEMPLATE", "WAKEUP_PROMPT_WITH_UNTIL_TEMPLATE", "DEFAULT_MIN_INTERVAL_SECONDS",
-    "DEFAULT_MAX_TICKS",
+    "DEFAULT_MAX_TICKS", "STALE_CLAIM_CADENCES",
 ]

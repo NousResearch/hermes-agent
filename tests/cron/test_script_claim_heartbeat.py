@@ -634,10 +634,14 @@ def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
     assert cancellation_after[0] >= scheduler._FIRE_CLAIM_HEARTBEAT_GRACE_SECONDS
 
 
-def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
-    """A replacement owner cannot leave the stale ledger recorded as success."""
+def _drive_refused_terminal_write(monkeypatch, deliver):
+    """run_one_job with a successful agent run whose owner-fenced terminal write is refused.
+
+    ``deliver`` is the delivery side effect; the claim is still validated (``heartbeat_fire_claim``
+    True) so the run reaches the terminal bookkeeping, where ``mark_job_run`` reports that the
+    record is no longer ours to mark.
+    """
     import cron.scheduler as scheduler
-    from cron import scheduler_script as sched_script
 
     @contextlib.contextmanager
     def owned_fence(*_args, **_kwargs):
@@ -660,7 +664,7 @@ def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
     )
     monkeypatch.setattr(scheduler, "fire_claim_fence", owned_fence, raising=False)
     monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: "output.md")
-    monkeypatch.setattr(scheduler, "_deliver_result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(scheduler, "_deliver_result", deliver)
     monkeypatch.setattr(scheduler, "mark_job_run", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(scheduler, "finish_execution", finish)
 
@@ -668,9 +672,29 @@ def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
          patch("agent.secret_scope.build_profile_secret_scope", return_value=None), \
          patch("agent.secret_scope.reset_secret_scope"):
         assert scheduler.run_one_job(job) is True
+    assert finish.call_count == 1, finish.call_args_list
+    return finish.call_args.kwargs
 
-    finish.assert_called_once_with(
-        "execution-cas",
-        success=False,
-        error="Fire claim ownership lost before terminal completion.",
-    )
+
+def test_refused_terminal_write_keeps_the_delivered_runs_outcome(monkeypatch):
+    """A notice that already left the process is the run's outcome (#116164).
+
+    ``mark_job_run`` refusing an owner fence means the JOB RECORD is gone/not ours — the ledger
+    row for this attempt must still read as the delivered run, not as an ownership-lost failure.
+    """
+    kwargs = _drive_refused_terminal_write(monkeypatch, deliver=lambda *_a, **_k: None)
+
+    assert kwargs["success"] is True
+    assert kwargs["error"] is None
+
+
+def test_refused_terminal_write_without_a_delivered_notice_stays_fail_closed(monkeypatch):
+    """Nothing reached the channel, so the refused terminal write still records the loss."""
+
+    def deliver(*_args, **_kwargs):
+        raise RuntimeError("smtp down")
+
+    kwargs = _drive_refused_terminal_write(monkeypatch, deliver=deliver)
+
+    assert kwargs["success"] is False
+    assert kwargs["error"] == "Fire claim ownership lost before terminal completion."

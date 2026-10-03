@@ -1286,7 +1286,8 @@ def test_relay_waiter_that_cannot_start_reports_queued_not_failed(tmp_path, monk
     monkeypatch.setattr(terminal_tool_module, "terminal_tool", lambda command, **kwargs: pending)
 
     result = json.loads(bot_mode_dm._try_relay_delivery(root, "researcher", "hello", "default",
-                                                        task_id=None, agent=None))
+                                                        task_id=None, agent=None,
+                                                        viewer=root / "profiles" / "default"))
 
     assert result["status"] == "queued"
     assert "error" not in result
@@ -1398,3 +1399,47 @@ def test_local_turn_relays_utf8_reply_under_a_gbk_default_codec(tmp_path, monkey
 
     assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
     assert reply in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("target", ["@lucky", "Lucky Charm", "lucky-charm"],
+                         ids=["folder-id", "friendly-name", "friendly-slug"])
+def test_a_private_teammate_is_neither_addressable_nor_listed(tmp_path, target):
+    """message_agent answers a private target the way it answers a name that does not exist, by
+    whichever form names it. The friendly-name rows guard the alias map, which covers every profile
+    on disk: a hit on a private agent there must not resolve."""
+    home = _managed_home(tmp_path, teammates=("researcher", "lucky"))
+    with open(home / "profiles" / "lucky" / "profile.yaml", "a", encoding="utf-8") as fh:
+        fh.write("    private: true\ndisplay_name: Lucky Charm\n")
+
+    result = json.loads(bot_mode_dm.message_agent_tool(target=target, message="hi", agent=_FakeAgent(home)))
+
+    assert "error" in result
+    assert result["teammates"] == ["researcher"]
+
+
+@pytest.mark.parametrize(("circle", "target", "delivered"), [
+    ("hobby", "programmer", False),
+    ("hobby", "programmer@mini", False),
+    ("work", "programmer", True),
+    ("work", "programmer@mini", True),
+], ids=["other-circle-bare", "other-circle-connection-qualified", "same-circle-bare",
+        "same-circle-connection-qualified"])
+def test_relay_delivery_obeys_the_callers_circle(tmp_path, monkeypatch, circle, target, delivered):
+    """Cross-machine delivery obeys the caller's circle exactly like the local roster does, by every
+    target form message_agent sends to the relay: nothing is enqueued for a target in another circle.
+    The connection-qualified row guards the route that reaches the relay before local resolution."""
+    _capture_spawn(monkeypatch)
+    home = _managed_home(tmp_path, teammates=("reviewer",))
+    with open(home / "profiles" / "reviewer" / "profile.yaml", "a", encoding="utf-8") as fh:
+        fh.write(f"    circle: {circle}\n")
+    bot_relay.write_remote_roster(home, [
+        {"profile": "programmer", "handle": "programmer", "connection_id": "mini", "connection_label": "mini",
+         "circle": "work"},
+    ])
+
+    result = json.loads(bot_mode_dm.message_agent_tool(
+        target=target, message="hi", agent=_FakeAgent(home / "profiles" / "reviewer")))
+
+    envelopes = bot_relay.claim_pending_envelopes(home)
+    assert [e["target_connection"] for e in envelopes] == (["mini"] if delivered else []), result
+    assert ("error" in result) is not delivered

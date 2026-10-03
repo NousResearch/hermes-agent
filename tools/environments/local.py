@@ -592,8 +592,8 @@ def _find_shell() -> str:
 _SANE_PATH = ("/opt/homebrew/bin:/opt/homebrew/sbin:"
               "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
 
-# Cached directory containing the ``hermes`` console-script.
-# ``_SENTINEL`` distinguishes "not resolved yet" from a resolved ``None``.
+# Cache successful directories containing the ``hermes`` console-script.
+# Misses leave ``_SENTINEL`` intact for retry; tests may inject ``None`` to skip probing.
 _SENTINEL = object()
 _HERMES_BIN_DIR: "str | None | object" = _SENTINEL
 

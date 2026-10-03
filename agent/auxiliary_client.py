@@ -6827,18 +6827,22 @@ def _recover_aux_response_message(response: Any) -> Optional[Any]:
 
 
 def _recover_raw_sse_response(body: str) -> Optional[Any]:
-    """Turn a provider's raw ``data: {...}`` SSE body into a chat completion."""
+    """Turn a provider's raw ``data: {...}`` SSE body into a chat completion.
+
+    Recovery is only successful when the stream contains assistant content or tool calls.
+    Error frames, ``[DONE]`` by itself, and role-only streams must remain invalid so the
+    normal auxiliary recovery ladder can try another provider.
+    """
     content: List[str] = []
+    tool_calls: Dict[int, Dict[str, Any]] = {}
     response_id = model = ""
     finish_reason = None
-    saw_event = False
     for line in body.splitlines():
         line = line.strip()
         if not line.startswith("data:"):
             continue
         payload = line[5:].strip()
         if payload == "[DONE]":
-            saw_event = True
             continue
         try:
             event = json.loads(payload)
@@ -6846,7 +6850,8 @@ def _recover_raw_sse_response(body: str) -> Optional[Any]:
             continue
         if not isinstance(event, dict):
             continue
-        saw_event = True
+        if event.get("error") is not None:
+            return None
         response_id = response_id or str(event.get("id") or "")
         model = model or str(event.get("model") or "")
         for choice in event.get("choices") or []:
@@ -6854,14 +6859,40 @@ def _recover_raw_sse_response(body: str) -> Optional[Any]:
                 continue
             finish_reason = choice.get("finish_reason") or finish_reason
             delta = choice.get("delta") or {}
-            piece = delta.get("content") if isinstance(delta, dict) else None
+            if not isinstance(delta, dict):
+                continue
+            piece = delta.get("content")
             if isinstance(piece, str):
                 content.append(piece)
-    if not saw_event:
+            for fallback_index, tool_call in enumerate(delta.get("tool_calls") or []):
+                if not isinstance(tool_call, dict):
+                    continue
+                index = tool_call.get("index", fallback_index)
+                try:
+                    index = int(index)
+                except (TypeError, ValueError):
+                    continue
+                current = tool_calls.setdefault(index, {
+                    "id": "", "type": "function", "name": "", "arguments": ""})
+                current["id"] = current["id"] or str(tool_call.get("id") or "")
+                current["type"] = tool_call.get("type") or current["type"]
+                function = tool_call.get("function") or {}
+                if isinstance(function, dict):
+                    current["name"] += str(function.get("name") or "")
+                    current["arguments"] += str(function.get("arguments") or "")
+    if not content and not tool_calls:
         return None
+    recovered_tool_calls = [
+        SimpleNamespace(
+            id=call["id"], type=call["type"],
+            function=SimpleNamespace(name=call["name"], arguments=call["arguments"]),
+        )
+        for _, call in sorted(tool_calls.items())
+    ]
     return SimpleNamespace(
         id=response_id, model=model, choices=[SimpleNamespace(
-            message=SimpleNamespace(content="".join(content)), finish_reason=finish_reason or "stop")])
+            message=SimpleNamespace(content="".join(content), tool_calls=recovered_tool_calls or None),
+            finish_reason=finish_reason or "stop")])
 
 
 def _extract_aux_response_text(response: Any) -> str:

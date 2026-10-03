@@ -162,7 +162,14 @@ runtime support on 3.11–3.13. PM selects the managed tool versions from
 installed runtime.
 
 Source builds can require a native compiler and platform development libraries.
-Building Electron from source adds Node native-module requirements. These
+Building Electron from source adds Node native-module requirements: on Linux,
+native modules such as `node-pty` ship no prebuilds and are compiled locally
+by `npm ci`, which needs `make` plus a C++ compiler (`g++`). On a bare
+server/container image install them first — Debian/Ubuntu:
+`sudo apt install -y build-essential`, Fedora: `sudo dnf install -y gcc-c++ make`,
+Arch: `sudo pacman -S --needed base-devel`. Without them `hermes desktop` fails
+inside the npm install with `make: g++: No such file or directory` and prints the
+same hint. These
 build prerequisites do not apply to installing a complete desktop package.
 Linux Chromium also requires system libraries supplied by the distribution.
 

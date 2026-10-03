@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
 
+from tools.threat_patterns import _FILLER
+
 
 SCANNER_VERSION = "skills-guard-v8"
 
@@ -212,26 +214,26 @@ THREAT_PATTERNS = [
      "md_image_exfil", "high", "exfiltration", "markdown image URL with variable interpolation (image-based exfil)"),
     (r'\[.*\]\(https?://[^\)]*\$\{?', "md_link_exfil", "high", "exfiltration", "markdown link with variable interpolation"),
     # ── Prompt injection ──
-    (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions',
+    (rf'ignore\s+{_FILLER}(previous|all|above|prior)\s+instructions',
      "prompt_injection_ignore", "critical", "injection", "prompt injection: ignore previous instructions"),
-    (r'you\s+are\s+(?:\w+\s+)*now\s+', "role_hijack", "high", "injection", "attempts to override the agent's role"),
+    (rf'you\s+are\s+{_FILLER}now\s+', "role_hijack", "high", "injection", "attempts to override the agent's role"),
     # Concealment only — the lookahead exempts UX guidance ("don't tell the user X unless Y confirms")
     # and a tone rule that QUOTES the phrase the agent should not say (`Do not tell the user to
     # "be careful with terminal."`); an unquoted `to ...` is still an instruction and fires.
-    (r'do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user(?!\s+to\s+["\'\u201c\u2018])'
+    (rf'do\s+not\s+{_FILLER}tell\s+{_FILLER}the\s+user(?!\s+to\s+["\'\u201c\u2018])'
      r'(?!.*\b(?:unless|except|until|confirm|diagnose|verify|check)\b)',
      "deception_hide", "high", "injection", "instructs agent to hide information from user"),
-    (r'system\s+(?:\w+\s+)*prompt\s+(?:\w+\s+)*override',
+    (rf'system\s+{_FILLER}prompt\s+{_FILLER}override',
      "sys_prompt_override", "critical", "injection", "attempts to override the system prompt"),
-    (r'pretend\s+(?:\w+\s+)*(you\s+are|to\s+be)\s+',
+    (rf'pretend\s+{_FILLER}(you\s+are|to\s+be)\s+',
      "role_pretend", "high", "injection", "attempts to make the agent assume a different identity"),
-    (r'disregard\s+(?:\w+\s+)*(your|all|any)\s+(?:\w+\s+)*(instructions|rules|guidelines)',
+    (rf'disregard\s+{_FILLER}(your|all|any)\s+{_FILLER}(instructions|rules|guidelines)',
      "disregard_rules", "critical", "injection", "instructs agent to disregard its rules"),
-    (r'output\s+(?:\w+\s+)*(system|initial)\s+prompt',
+    (rf'output\s+{_FILLER}(system|initial)\s+prompt',
      "leak_system_prompt", "high", "injection", "attempts to extract the system prompt"),
     (r'(when|if)\s+no\s*one\s+is\s+(watching|looking)',
      "conditional_deception", "high", "injection", "conditional instruction to behave differently when unobserved"),
-    (r'act\s+as\s+(if|though)\s+(?:\w+\s+)*you\s+(?:\w+\s+)*(have\s+no|don\'t\s+have)\s+(?:\w+\s+)*(restrictions|limits|rules)',
+    (rf'act\s+as\s+(if|though)\s+{_FILLER}you\s+{_FILLER}(have\s+no|don\'t\s+have)\s+{_FILLER}(restrictions|limits|rules)',
      "bypass_restrictions", "critical", "injection", "instructs agent to act without restrictions"),
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)',
      "translate_execute", "critical", "injection", "translate-then-execute evasion technique"),
@@ -433,11 +435,11 @@ THREAT_PATTERNS = [
      "hypothetical_bypass", "high", "injection", "hypothetical scenario used to bypass restrictions"),
     (r'for\s+educational\s+purposes?\s+only',
      "educational_pretext", "medium", "injection", "educational pretext often used to justify harmful content"),
-    (r'(respond|answer|reply)\s+without\s+(?:\w+\s+)*(restrictions|limitations|filters|safety)',
+    (rf'(respond|answer|reply)\s+without\s+{_FILLER}(restrictions|limitations|filters|safety)',
      "remove_filters", "critical", "injection", "instructs agent to respond without safety filters"),
-    (r'you\s+have\s+been\s+(?:\w+\s+)*(updated|upgraded|patched)\s+to',
+    (rf'you\s+have\s+been\s+{_FILLER}(updated|upgraded|patched)\s+to',
      "fake_update", "high", "injection", "fake update/patch announcement (social engineering)"),
-    (r'new\s+(?:\w+\s+)*policy|updated\s+(?:\w+\s+)*guidelines|revised\s+(?:\w+\s+)*instructions',
+    (rf'new\s+{_FILLER}policy|updated\s+{_FILLER}guidelines|revised\s+{_FILLER}instructions',
      "fake_policy", "medium", "injection", "claims new policy/guidelines (may be social engineering)"),
     # ── Context window exfiltration ──
     # Instruction shapes only. Descriptive prose about context handling ("The output never enters

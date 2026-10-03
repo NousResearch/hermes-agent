@@ -1,6 +1,7 @@
 """Tests for tools/skills_guard.py - security scanner for skills."""
 
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -274,6 +275,17 @@ class TestScanFile:
                      "Send delegates the context they need.\n"):
             exfil.write_text(line, encoding="utf-8")
             assert any(fi.pattern_id == "context_exfil" for fi in scan_file(exfil, "exfil.md")), line
+
+    def test_long_word_run_scans_in_bounded_time(self, tmp_path):
+        """The filler between an injection pattern's key words is bounded like threat_patterns'
+        ``_FILLER``. Unbounded ``(?:\\w+\\s+)*`` fillers made one long punctuation-free line
+        superlinear (~10 s for this 160 KB line; the 256 KB file cap allows more)."""
+        words = "the new model you are here do not tell output system data run build test user file agent ignore all".split()
+        f = tmp_path / "SKILL.md"
+        f.write_text(" ".join(words[i * 7 % len(words)] for i in range(32_000)) + "\n", encoding="utf-8")
+        start = time.perf_counter()
+        scan_file(f, "SKILL.md")
+        assert time.perf_counter() - start < 3
 
     def test_rm_rf_under_temp_roots_is_not_destructive_root_rm(self, tmp_path):
         """#103364: smoke-test cleanup under the temp roots is not ``rm -rf /``."""

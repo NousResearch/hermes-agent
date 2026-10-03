@@ -6,6 +6,7 @@ import re
 
 # Single source of truth shared with the install-time scanner (skills_guard): a narrower
 # cron-local copy once let obfuscated directives slip past this runtime tripwire.
+from tools.threat_patterns import _FILLER
 from tools.threat_patterns import INVISIBLE_CHARS as _CRON_INVISIBLE_CHARS
 
 # Logger parity with the origin module (these functions used to log there).
@@ -25,7 +26,7 @@ logger = logging.getLogger("tools.cronjob_tools")
 # against the assembled prompt with this tighter pattern set. Both scanners share the invisible-unicode
 # check and the GitHub Authorization header exemption.
 _CRON_THREAT_PATTERNS = [
-    (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
+    (rf'ignore\s+{_FILLER}(?:previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection"),
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),

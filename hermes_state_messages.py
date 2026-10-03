@@ -23,7 +23,8 @@ from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
 from hermes_state_identity import (
-    _absorbed_uids_json, _restore_identity_columns, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
+    _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none,
+    _tool_call_uids_json)
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
 
@@ -1270,41 +1271,16 @@ class SessionMessagesMixin:
             (session_id, _scrub_surrogates(display_kind)))
 
     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
-        """Historical display identity, including normalized live content from user handoff carriers.
-
-        Tool-payload rows are keyed on their STABLE tool identity, not the payload bytes: a
-        carried-forward row whose result content was summarized or whose call arguments were
-        truncated by a prune is the same logical event (#117750) and must still collapse with
-        its durable original — payload bytes would split it, re-projecting the archived
-        original after the rewritten copy. A tool row names its call (``tool_call_id``); an
-        assistant row's calls each carry an id. Rows without a stable tool identity keep the
-        full content key, so unrelated same-content turns never merge.
-        """
+        """Historical display identity, including normalized live content from user handoff carriers."""
         dedupe_content = row["content"]
         if row["role"] == "user":
             handoff, live_view = split_user_originated_turn({
-                "role": "user", "content": self._decode_content(row["content"]),
-                "display_kind": row["display_kind"],
+                "role": "user", "content": self._decode_content(row["content"]), "display_kind": row["display_kind"],
                 "display_metadata": self._decode_display_metadata(row["display_metadata"])})
             if handoff is not None and live_view is not None:
                 dedupe_content = self._encode_content(live_view.get("content"))
-        if row["role"] == "tool":
-            if row["tool_call_id"]:
-                return (row["role"], None, row["timestamp"],
-                        row["tool_call_id"], row["tool_calls"], row["tool_name"])
-            return (row["role"], dedupe_content, row["timestamp"],
-                    row["tool_call_id"], row["tool_calls"], row["tool_name"])
-        if row["role"] == "assistant" and row["tool_calls"]:
-            try:
-                calls = _parse_tool_calls(row["tool_calls"])
-            except Exception:
-                calls = None
-            call_ids = tuple(coalesce_tool_call_id(tc) for tc in calls or ())
-            if calls and all(call_ids):
-                return (row["role"], None, row["timestamp"],
-                        row["tool_call_id"], call_ids, row["tool_name"])
-        return (row["role"], dedupe_content, row["timestamp"],
-                row["tool_call_id"], row["tool_calls"], row["tool_name"])
+        return _stable_tool_key(row, _parse_tool_calls(row["tool_calls"])) or (
+            row["role"], dedupe_content, row["timestamp"], row["tool_call_id"], row["tool_calls"], row["tool_name"])
 
     def _is_model_only_row(self, row) -> bool:
         """Python twin of :data:`DISPLAY_VISIBLE_SQL`."""

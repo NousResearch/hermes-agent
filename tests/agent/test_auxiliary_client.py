@@ -5252,3 +5252,249 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+    def test_builtin_registry_raises_does_not_suppress_named_custom_lookup(self, monkeypatch):
+        """#76602 (review feedback) — a partial catalog-load failure in the
+        built-in registry must not short-circuit the user-defined
+        provider lookup. The two lookups are now parallel and
+        independent; an exception in one does not suppress the other.
+
+        Before the refactor, ``get_provider`` raising jumped the outer
+        ``except`` to the hardcoded allowlist fallback and never
+        consulted ``_get_named_custom_provider`` — so a configured
+        named provider was still downgraded to ``"custom"`` whenever the
+        built-in catalog failed to load. The user's repro path
+        (Hermes desktop on Windows with a partial / early-startup
+        catalog state) hits this branch.
+        """
+        import agent.auxiliary_client as ac
+
+        def _catalog_raises(_name):
+            raise RuntimeError("built-in catalog unavailable")
+
+        fake_entry = {
+            "name": "AgnesAI",
+            "base_url": "https://api.agnes-ai.cn/v1",
+            "api_key": "sk-agnes-from-config",
+            "model": "agnes-2.5-flash",
+        }
+        with patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            return_value=fake_entry,
+        ), patch(
+            "hermes_cli.providers.get_provider", side_effect=_catalog_raises,
+        ):
+            resolved_provider, _model, base_url, _api_key, _api_mode = (
+                ac._resolve_task_provider_model(
+                    task="vision",
+                    provider="agnes-ai.cn",
+                    model="agnes-2.5-flash",
+                    base_url="https://api.agnes-ai.cn/v1",
+                    api_key=None,
+                )
+            )
+
+        assert resolved_provider == "agnes-ai.cn", (
+            "Built-in registry raising must not suppress the named-custom "
+            "lookup; the user-defined provider must remain named (review "
+            "feedback on #76602 — partial-load failure path)"
+        )
+        assert base_url == "https://api.agnes-ai.cn/v1"
+
+    def test_resolve_vision_provider_client_preserves_named_provider_via_config(self, tmp_path):
+        """#76602 (review feedback) — integration test through the real
+        ``resolve_vision_provider_client`` entry point with a real
+        ``HERMES_HOME`` config.yaml, mirroring the pattern from
+        ``tests/agent/test_auxiliary_named_custom_providers.py``.
+
+        Before the fix the repro in the issue body returned
+        ``('custom', 'no-key-required')`` for this exact config shape;
+        after the fix the named provider is preserved and the inline
+        ``api_key`` from the providers: entry reaches the client.
+        """
+        import hermes_yaml as yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+            "model": {"default": "test-model"},
+            "providers": {
+                "agnes-ai.cn": {
+                    "name": "AgnesAI",
+                    "base_url": "https://api.agnes-ai.cn/v1",
+                    "api_key": "sk-agnes-test",
+                    "model": "agnes-2.5-flash",
+                },
+            },
+        }))
+        import os
+        old_home = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(hermes_home)
+        try:
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            resolved_provider, client, _model = resolve_vision_provider_client(
+                provider="agnes-ai.cn",
+                model="agnes-2.5-flash",
+                base_url="https://api.agnes-ai.cn/v1",
+                api_key=None,
+            )
+        finally:
+            if old_home is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = old_home
+
+        assert resolved_provider == "agnes-ai.cn", (
+            "resolve_vision_provider_client must preserve a named "
+            "user-defined provider + explicit base_url rather than "
+            "downgrading to 'custom' (issue #76602 repro)"
+        )
+        # The inline api_key from the providers: entry must reach the
+        # client — this is what the 'custom' downgrade was losing.
+        assert client.api_key == "sk-agnes-test"
+
+
+# ---------------------------------------------------------------------------
+# Regression coverage for #76602 — auxiliary vision with a custom provider
+# defined in the ``providers:`` section of config.yaml plus an explicit
+# ``base_url`` was being silently downgraded to ``"custom"`` because
+# ``_preserve_provider_with_base_url`` only consulted the built-in
+# provider registry (``hermes_cli.providers.get_provider``). The
+# downgrade routed the call through the bare-custom branch in
+# ``resolve_provider_client`` with no key, producing 401s from
+# auth-required providers (e.g. agnes-ai.cn, nvidia-nim with key_env).
+# The fix also checks ``_get_named_custom_provider`` so a named
+# user-defined provider + explicit base_url stays named through to the
+# named-custom-provider key-resolution branch.
+# ---------------------------------------------------------------------------
+
+
+class TestPreserveNamedCustomProviderWithBaseUrl:
+    """#76602 — _resolve_task_provider_model must keep a user-defined
+    provider named when the call site passes ``provider=<name>`` +
+    ``base_url=...`` (the shape async_call_llm takes after resolving the
+    auxiliary.vision task config). The bare-custom downgrade to the
+    ``"custom"`` string loses the key and produces 401s.
+    """
+
+    def test_user_defined_provider_named_in_config_is_preserved(self, monkeypatch):
+        """A provider name from ``providers:`` survives explicit base_url.
+
+        Before the fix this returned ``("custom", ...)`` → bare-custom
+        branch in ``resolve_provider_client`` → ``no-key-required`` → 401.
+        After the fix it returns ``("agnes-ai.cn", ...)`` so the
+        named-custom-provider branch picks up
+        ``providers.<name>.api_key`` (or the configured ``key_env``).
+        """
+        import agent.auxiliary_client as ac
+
+        fake_entry = {
+            "name": "AgnesAI",
+            "base_url": "https://api.agnes-ai.cn/v1",
+            "api_key": "sk-agnes-test",
+            "model": "agnes-2.5-flash",
+        }
+        with patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            return_value=fake_entry,
+        ), patch(
+            "hermes_cli.providers.get_provider", return_value=None,
+        ):
+            resolved_provider, _model, base_url, _api_key, _api_mode = (
+                ac._resolve_task_provider_model(
+                    task="vision",
+                    provider="agnes-ai.cn",
+                    model="agnes-2.5-flash",
+                    base_url="https://api.agnes-ai.cn/v1",
+                    api_key=None,
+                )
+            )
+
+        assert resolved_provider == "agnes-ai.cn", (
+            "User-defined provider from providers: section must be preserved "
+            "instead of being downgraded to 'custom' (issue #76602)"
+        )
+        assert base_url == "https://api.agnes-ai.cn/v1"
+
+    def test_built_in_provider_with_base_url_still_preserved(self, monkeypatch):
+        """Built-in registry hit still wins — user-defined fallback only
+        fires when the built-in registry missed. This guards against
+        regressing the pre-existing built-in provider behavior.
+        """
+        import agent.auxiliary_client as ac
+
+        with patch(
+            "hermes_cli.providers.get_provider",
+            return_value={"name": "Anthropic", "api_key": "sk-anthropic"},
+        ):
+            resolved_provider, _model, base_url, _api_key, _api_mode = (
+                ac._resolve_task_provider_model(
+                    task="moa_reference",
+                    provider="anthropic",
+                    model="claude-sonnet-4-6",
+                    base_url="https://api.anthropic.com/v1",
+                    api_key="sk-anthropic",
+                )
+            )
+
+        assert resolved_provider == "anthropic"
+        assert base_url == "https://api.anthropic.com/v1"
+
+    def test_unknown_provider_with_base_url_falls_back_to_custom_downgrade(self, monkeypatch):
+        """Provider name not in either registry → keep the existing
+        ``"custom"`` downgrade behavior. Nothing changes for truly
+        anonymous custom endpoints (no name → no key → bare-custom branch
+        handles ``no-key-required`` itself).
+        """
+        import agent.auxiliary_client as ac
+
+        with patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            return_value=None,
+        ), patch(
+            "hermes_cli.providers.get_provider", return_value=None,
+        ):
+            resolved_provider, _model, base_url, _api_key, _api_mode = (
+                ac._resolve_task_provider_model(
+                    task="vision",
+                    provider="some-unknown-gateway",
+                    model="custom-model",
+                    base_url="https://example.com/v1",
+                    api_key="some-token",
+                )
+            )
+
+        # Pre-existing behavior: unknown name + explicit base_url →
+        # downgrade to "custom" so the caller routes through the
+        # bare-custom branch (which uses the explicit api_key).
+        assert resolved_provider == "custom"
+        assert base_url == "https://example.com/v1"
+
+    def test_hardcoded_allowlist_still_works_when_both_registries_unavailable(self, monkeypatch):
+        """If both the built-in registry and the user-defined config are
+        unavailable (e.g. early import path before config is loaded), the
+        existing hardcoded allowlist still returns True for known names —
+        so xai-oauth / qwen-oauth / etc. aren't regressed by the fix.
+        """
+        import agent.auxiliary_client as ac
+
+        def _boom(_name):
+            raise RuntimeError("catalog unavailable")
+
+        with patch(
+            "hermes_cli.runtime_provider._get_named_custom_provider",
+            side_effect=_boom,
+        ), patch(
+            "hermes_cli.providers.get_provider", side_effect=_boom,
+        ):
+            resolved_provider, _model, _base_url, _api_key, _api_mode = (
+                ac._resolve_task_provider_model(
+                    task="moa_reference",
+                    provider="xai-oauth",
+                    model="grok-3",
+                    base_url="https://api.x.ai/v1",
+                    api_key="xai-token",
+                )
+            )
+
+        assert resolved_provider == "xai-oauth"

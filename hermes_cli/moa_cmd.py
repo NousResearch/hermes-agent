@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from hermes_cli.config import load_config, save_config
@@ -25,14 +26,20 @@ def _prompt_choice(title: str, rows: list[str], default: int = 0) -> int:
             return default
 
 
-def _model_options() -> list[dict[str, Any]]:
+def _model_options(current: dict[str, str] | None = None) -> list[dict[str, Any]]:
     payload = build_models_payload(
         # Keep the profile override inside the worker thread so the full sync picker build (config load,
         # pricing, refresh probes) runs off the event loop under the requested profile. Use
         # _config_profile_scope (contextvar only, no skill-module lock) — the payload build can block for
         # 15s on a models.dev cache miss, and _profile_scope's RLock held across that block starves
         # concurrent /api/config and freezes the server (#58576).
-        load_picker_context(),
+        # Retention belongs to this slot, not the profile's main model or endpoint.
+        replace(
+            load_picker_context(),
+            current_provider=(current or {}).get("provider", ""),
+            current_model=(current or {}).get("model", ""),
+            current_base_url="",
+        ),
         # Slot pickers must only offer providers the user can actually call.
         # Including setup-only rows makes an unconfigured canonical provider
         # (usually OpenRouter, due to catalog ordering) become the default.
@@ -41,13 +48,14 @@ def _model_options() -> list[dict[str, Any]]:
         canonical_order=True,
         pricing=True,
         capabilities=True,
+        apply_picker_prefs=True,
         max_models=200)
     providers = payload.get("providers") or []
     return [p for p in providers if p.get("slug") and str(p.get("slug")).strip().lower() != "moa" and p.get("models")]
 
 
 def _pick_slot(current: dict[str, str] | None = None) -> dict[str, str]:
-    providers = _model_options()
+    providers = _model_options(current)
     if not providers:
         raise RuntimeError("No configured model providers found. Run `hermes model` first.")
     current_provider = (current or {}).get("provider", "")

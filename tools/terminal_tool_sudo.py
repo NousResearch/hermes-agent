@@ -254,7 +254,7 @@ def _looks_like_env_assignment(token: str) -> bool:
 
 # One shell word: single-/double-quoted runs (unterminated ok; backslash escapes inside double
 # quotes), a backslash escape (a trailing lone `\` is a plain char), or any non-`;|&()`/space char.
-_SHELL_WORD_RE = re.compile(r"""(?:'[^']*'?|"(?:\\.|[^"])*"?|\\.|[^\s;|&()])*""", re.DOTALL)
+_SHELL_WORD_RE = re.compile(r"""(?:'[^']*'?|"(?:\\.|[^"])*"?|\\.|[^ \t\n;|&()])*""", re.DOTALL)
 
 
 def _read_shell_token(command: str, start: int) -> tuple[str, int]:
@@ -281,7 +281,7 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
         ch = command[i]
         grouped = parens or braces
         was_start = at_start
-        if ch.isspace():
+        if ch in " \t\n":
             kind, end = ("skip" if grouped else "ws"), i + 1
             at_start = at_start or ch == "\n"
         elif ch == "#":
@@ -292,7 +292,7 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
         elif background and ch in "'\"":
             kind, end = "word", _read_shell_token(command, i)[1]
         elif background and (
-            ch in "()" or (ch == "{" and i + 1 < n and command[i + 1].isspace()) or (ch == "}" and braces)
+            ch in "()" or (ch == "{" and i + 1 < n and command[i + 1] in " \t\n") or (ch == "}" and braces)
         ):
             parens = max(0, parens + (ch == "(") - (ch == ")"))
             braces += (ch == "{") - (ch == "}")
@@ -398,7 +398,7 @@ def _rewrite_compound_background(command: str) -> str:
             # `&&` and `&>` never reach here; a `>&` / `<&` fd target (look back past
             # whitespace) is a redirect, anything else is the real background operator.
             j = start - 1
-            while j >= 0 and command[j].isspace():
+            while j >= 0 and command[j] in " \t\n":
                 j -= 1
             if j >= 0 and command[j] in "<>":
                 continue
@@ -413,7 +413,7 @@ def _rewrite_compound_background(command: str) -> str:
         # the inner command. `{` needs a trailing space in bash; the closing `}` needs to be
         # preceded by `;` or `&` — we're providing `&` from the backgrounding.
         insert_pos = chain_end
-        while insert_pos < amp_pos and result[insert_pos].isspace():
+        while insert_pos < amp_pos and result[insert_pos] in " \t\n":
             insert_pos += 1
         # The consumed `&` also separated the compound from any statement that followed
         # on the same line (`A && B & C`); `{ B & } C` is a syntax error, so restore a `;`

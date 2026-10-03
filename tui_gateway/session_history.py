@@ -385,7 +385,7 @@ def _inflight_text(value: Any) -> str:
 
 def _start_inflight_turn(
     session: dict, text: Any, *, display_kind: str | None = None,
-    display_metadata: dict | None = None,
+    display_metadata: dict | None = None, client_turn_id: str | None = None,
 ) -> None:
     now = time.time()
     turn = {
@@ -396,6 +396,8 @@ def _start_inflight_turn(
         turn["display_kind"] = display_kind
     if isinstance(display_metadata, dict):
         turn["display_metadata"] = dict(display_metadata)
+    if isinstance(client_turn_id, str) and client_turn_id:
+        turn["client_turn_id"] = client_turn_id
     session["inflight_turn"] = turn
 
 

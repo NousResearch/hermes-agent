@@ -618,8 +618,25 @@ _TRUNCATION_PARAMS = (
     "truncate_before_user_ordinal", "truncate_before_row_id", "truncate_before_message_id")
 
 
+def _coerce_client_turn_id(rid, params):
+    """``(client_turn_id_or_None, error_response)`` for the idempotency key (#130702).
+
+    Absent/None stays None (backwards compatible). A present value must be a
+    non-empty string (capped at 256 chars); anything else is a client bug
+    (``4004``, same code as the other malformed prompt.submit scalars)."""
+    raw = params.get("client_turn_id")
+    if raw is None:
+        return None, None
+    if not isinstance(raw, str) or not raw.strip():
+        return None, _err(rid, 4004, "client_turn_id must be a non-empty string")
+    if len(raw) > 256:
+        return None, _err(rid, 4004, "client_turn_id must be at most 256 characters")
+    return raw, None
+
+
 def _lock_in_submit_turn(
-    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+    client_turn_id=None):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
@@ -646,7 +663,7 @@ def _lock_in_submit_turn(
         session["last_active"] = time.time()
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
-        _start_inflight_turn(session, text, display_kind=display_kind)
+        _start_inflight_turn(session, text, display_kind=display_kind, client_turn_id=client_turn_id)
     return None, fields
 
 
@@ -677,6 +694,9 @@ def _(rid, params: dict) -> dict:
         mark_speech_interrupted()
     session, err = _sess_nowait(params, rid)
     if err:
+        return err
+    client_turn_id, err = _coerce_client_turn_id(rid, params)
+    if err is not None:
         return err
     from tools.bot_relay import DeliveryAuthor
 
@@ -732,6 +752,23 @@ def _(rid, params: dict) -> dict:
                 break
             if internal_hosted_submit:
                 return _err(rid, 4091, "hosted room member session is busy")
+            # Idempotent retry (#130702): the same client_turn_id while its turn
+            # is still live answers the live status instead of queueing a
+            # duplicate second turn.
+            if client_turn_id is not None:
+                inflight = session.get("inflight_turn")
+                if isinstance(inflight, dict) and inflight.get("client_turn_id") == client_turn_id:
+                    result: dict = {"status": "streaming", "client_turn_id": client_turn_id}
+                    return _ok(rid, result)
+                # Same id still queued (accept→start window, or a compression-
+                # demoted steer): answer the queued status instead of merging a
+                # duplicate into the envelope (#130947). Covers the single slot
+                # and the overflow list.
+                queued_all = [session.get("queued_prompt"), *(session.get("queued_prompts") or [])]
+                for queued in queued_all:
+                    if isinstance(queued, dict) and queued.get("client_turn_id") == client_turn_id:
+                        result = {"status": "queued", "client_turn_id": client_turn_id}
+                        return _ok(rid, result)
             busy_transport = t or session.get("transport")
         if has_truncation:
             # A rewind/edit/restore/regenerate must land as a truncation, never as a
@@ -743,17 +780,24 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
-            display_kind=display_kind)
+            display_kind=display_kind, client_turn_id=client_turn_id)
         if busy_response is not None:
+            if client_turn_id is not None:
+                result_obj = busy_response.get("result")
+                if isinstance(result_obj, dict) and "client_turn_id" not in result_obj:
+                    result_obj["client_turn_id"] = client_turn_id
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
     err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+        client_turn_id)
     if err is not None:
         return err
+    if client_turn_id is not None:
+        survivor_fields["client_turn_id"] = client_turn_id
     if turn_isolation:
         if turn_author:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",

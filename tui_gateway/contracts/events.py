@@ -15,6 +15,8 @@ closed, so a drifted emitter fails the suite (``registry.check_payload`` raises 
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
@@ -55,6 +57,11 @@ class GatewayReadyPayload(Payload):
     change_events: bool
     replay_epoch: str
     heartbeat: bool | None = None  # WebSocket transport only
+    # Capability negotiation (#130702): a mobile client must tell "no recovery
+    # guarantee" (turn_recovery: False) from "guaranteed recovery". Both default
+    # so pre-capability payloads still validate (backwards compatible).
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    protocol: dict[str, Any] | None = None
 
 
 event("gateway.ready", GatewayReadyPayload,

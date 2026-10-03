@@ -2617,6 +2617,7 @@ export interface PromptSubmitParams {
   queued?: boolean | null
   surface?: string | null
   voice_context?: string | null
+  client_turn_id?: string | null
   title_preview?: string | null
   truncate_before_user_ordinal?: number | null
   truncate_before_row_id?: number | null
@@ -2633,6 +2634,7 @@ export interface PromptSubmitResult {
   survivor_user_row_ids?: (number | null)[] | null
   survivor_row_id_map?: Record<string, number | null> | null
   turn_isolation?: boolean | null
+  client_turn_id?: string | null
 }
 export type PromptSubmitStatus = 'streaming' | 'queued' | 'steered' | 'redirected'
 export interface ClipboardPasteParams {
@@ -3058,6 +3060,7 @@ export interface InflightTurn {
   status?: string | null
   recoverable?: boolean | null
   error_surface?: Record<string, unknown> | null
+  client_turn_id?: string | null
 }
 export interface QueuedPrompt {
   user: string
@@ -4503,6 +4506,8 @@ export interface GatewayReadyPayload {
   change_events: boolean
   replay_epoch: string
   heartbeat?: boolean | null
+  capabilities?: Record<string, unknown>
+  protocol?: Record<string, unknown> | null
 }
 /** ``tui_gateway/change_watcher.py::resolve_skin`` — the resolved active skin (``HermesSkin``). ``{}`` when the skin engine failed to load. Colour maps are token → colour string. */
 export interface SkinPayload {

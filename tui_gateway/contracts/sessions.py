@@ -41,6 +41,9 @@ class InflightTurn(Result):
     status: str | None = None
     recoverable: bool | None = None
     error_surface: dict[str, JsonValue] | None = None
+    # Client-supplied turn identity (#130702); absent for turns submitted
+    # without ``client_turn_id``.
+    client_turn_id: str | None = None
 
 
 class QueuedPrompt(Result):

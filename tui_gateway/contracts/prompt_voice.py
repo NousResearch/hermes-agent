@@ -35,6 +35,10 @@ class PromptSubmitParams(SessionParams):
     queued: bool | None = None  # client queue drain — the busy path must hold it, never redirect/steer
     surface: str | None = None  # a ClientSurface value; unknown values clear the surface
     voice_context: str | None = None  # recent spoken transcript, model input only (voice-live)
+    # Client-supplied turn identity for idempotency (#130702): echoed in the
+    # result and retained on the inflight snapshot so a retried submit with the
+    # same id can be recognised as the same turn instead of a new one.
+    client_turn_id: str | None = None
     # Desktop-generated large-paste preview (first ~1000 chars); TITLE input only, never the model turn.
     title_preview: str | None = None
     truncate_before_user_ordinal: int | None = None
@@ -71,6 +75,9 @@ class PromptSubmitResult(Result):
     survivor_user_row_ids: list[int | None] | None = None
     survivor_row_id_map: dict[str, int | None] | None = None
     turn_isolation: bool | None = None
+    # Echo of the client's ``client_turn_id`` (#130702) so a retry can match
+    # the accepted turn; absent when the submit carried none.
+    client_turn_id: str | None = None
 
 
 method("prompt.submit", params=PromptSubmitParams, result=PromptSubmitResult,

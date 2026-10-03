@@ -308,10 +308,13 @@ def main():
     ensure_mcp_discovery_started()
 
     # change_events: clients demote legacy polls; replay_epoch: WS restart detection.
+    # capabilities/protocol: capability negotiation so a mobile client can tell
+    # "no recovery guarantee" (turn_recovery: False) from guaranteed recovery (#130702).
+    from tui_gateway.gateway_capabilities import gateway_ready_payload
     _write_or_exit({
         "jsonrpc": "2.0", "method": "event",
-        "params": {"type": "gateway.ready", "payload": {
-            "skin": resolve_skin(), "change_events": True, "replay_epoch": replay_epoch()}}},
+        "params": {"type": "gateway.ready", "payload": gateway_ready_payload(
+            resolve_skin(), replay_epoch())}}},
         "startup write failed (broken stdout pipe before first event)")
 
     # Live-apply skins Hermes activates mid-conversation.

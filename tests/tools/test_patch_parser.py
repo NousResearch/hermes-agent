@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from tools.patch_parser import (
     OperationType,
     apply_v4a_operations,
@@ -986,3 +988,61 @@ class TestV4ABomRoundTrip:
             self.BOM.encode("utf-8")
         ), "BOM was injected on a plain file"
         assert b"print('world')" in raw
+
+
+class TestDeleteMoveSourcePresence:
+    """Whether a Delete/Move source is there is not whether its text can be read
+    (real ``ShellFileOperations``). The text read was the presence check, so a binary
+    file could be neither deleted nor renamed, and every refusal said "not found"."""
+
+    BLOB = b"\x00\x01\x02\xff" * 64
+
+    @staticmethod
+    def _apply(tmp_path, body):
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+
+        ops, err = parse_v4a_patch(f"*** Begin Patch\n{body}\n*** End Patch\n")
+        assert err is None
+        return apply_v4a_operations(
+            ops, ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path)))
+
+    @pytest.mark.parametrize("dest", [None, "renamed.bin"])
+    def test_binary_file_is_deleted_or_renamed(self, tmp_path, dest):
+        src = tmp_path / "blob.bin"
+        src.write_bytes(self.BLOB)
+
+        result = self._apply(tmp_path, f"*** Move File: {src} -> {tmp_path / dest}" if dest
+                             else f"*** Delete File: {src}")
+
+        assert result.success, result.error
+        assert not src.exists()
+        if dest:
+            assert (tmp_path / dest).read_bytes() == self.BLOB
+
+    @pytest.mark.parametrize("case", ["directory", "binary_move_then_update",
+                                      "image_move_then_update", "image_update_in_place",
+                                      "text_move_to_image_name_then_update"])
+    def test_refusal_names_the_reason_and_changes_nothing(self, tmp_path, case):
+        """A source that is there is never reported absent, and a binary file renamed
+        earlier in the patch has no text for a later Update: that must fail validation,
+        not after the rename has applied. An image reads as binary with no error, and
+        is no more editable as text; nor is text once it sits under an image name."""
+        ext = ".png" if case.startswith("image") else ""
+        src, dst = tmp_path / f"src{ext}", tmp_path / f"dst{ext or '.png' * case.startswith('text')}"
+        content = b"first\nsecond\n" if case.startswith("text") else self.BLOB
+        if case == "directory":
+            src.mkdir()
+            body = f"*** Delete File: {src}"
+        else:
+            src.write_bytes(content)
+            body = (f"*** Update File: {src}\n+appended" if case == "image_update_in_place" else
+                    f"*** Move File: {src} -> {dst}\n*** Update File: {dst}\n+appended")
+
+        result = self._apply(tmp_path, body)
+
+        assert not result.success
+        assert "no files were modified" in result.error and "not found" not in result.error
+        assert src.exists() and not dst.exists()
+        if case != "directory":
+            assert src.read_bytes() == content

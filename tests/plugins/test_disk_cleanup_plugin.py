@@ -722,8 +722,9 @@ class TestEnametoolongNeverRaises:
 
     def test_hook_survives_enametoolong_candidate(self, _isolate_env):
         pi = _load_plugin_init()
-        # one component of ~340 chars: /home/.../kanban.db\nactivity.log\n... (literal backslash-n)
-        giant = "/home/bacimo/.hermes/kanban.db" + "\\n" + "\\n".join(
+        # one >255-char component INSIDE the isolated home (not the real one):
+        # shlex tokens from quoted args with \n escapes can fuse into one giant "path".
+        giant = str(_isolate_env / "kanban.db") + "\\n" + "\\n".join(
             "entry_%03d.log" % i for i in range(30)
         )
         assert max(len(c) for c in giant.split("/")) > 255  # NAME_MAX exceeded
@@ -732,40 +733,57 @@ class TestEnametoolongNeverRaises:
             Path(giant).expanduser().exists()
         assert ei.value.errno == errno.ENAMETOOLONG
 
-        # the hook itself must NOT raise
+        pi._on_pre_tool_call(
+            tool_name="terminal",
+            args={"command": 'printf "%s" ...' % giant},
+            task_id="t1", session_id="s1", tool_call_id="c1",
+        )
+        # the post hook itself must NOT raise on the poisoned candidate
         pi._on_post_tool_call(
             tool_name="terminal",
             args={"command": 'printf "%s" ...' % giant},
             result="",
-            task_id="t1", session_id="s1",
+            task_id="t1", session_id="s1", tool_call_id="c1",
         )
 
     def test_hook_survives_enametoolong_from_result_text(self, _isolate_env):
-        # The regex scans raw result text; a >255-char component under an
-        # EXISTING parent (ENOENT-swallow does not apply) raises ENAMETOOLONG.
+        # The pre-call snapshot touch of a >255-char component under an
+        # EXISTING parent (ENOENT-swallow does not apply) raises ENAMETOOLONG;
+        # the never-raises contract must hold on the pre hook too.
         pi = _load_plugin_init()
         long_dir = _isolate_env / "long"
         long_dir.mkdir()
         long_path = str(long_dir / ("y" * 400))
         assert max(len(c) for c in long_path.split("/")) > 255
+        pi._on_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "ls " + long_path},
+            task_id="t1", session_id="s1", tool_call_id="c2",
+        )
         pi._on_post_tool_call(
             tool_name="terminal",
-            args={"command": "ls"},
+            args={"command": "ls " + long_path},
             result="missing: " + long_path + " (skipped)\n",
-            task_id="t1", session_id="s1",
+            task_id="t1", session_id="s1", tool_call_id="c2",
         )
 
     def test_legitimate_terminal_tracking_still_works(self, _isolate_env):
         # Guard against over-broad fix: a real ephemeral file created by the
-        # command must still be tracked.
+        # command must still be tracked (pre-call snapshot absent -> post sees
+        # it exists -> tracked as test).
         pi = _load_plugin_init()
         p = _isolate_env / "test_from_cmd.py"
+        pi._on_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "touch %s" % p},
+            task_id="t1", session_id="s1", tool_call_id="c3",
+        )
         p.write_text("x")
         pi._on_post_tool_call(
             tool_name="terminal",
             args={"command": "touch %s" % p},
             result="",
-            task_id="t1", session_id="s1",
+            task_id="t1", session_id="s1", tool_call_id="c3",
         )
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         data = json.loads(tracked_file.read_text())

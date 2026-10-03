@@ -20,6 +20,7 @@ from telegram.request import BaseRequest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.event import MessageType
+from plugins.platforms.telegram import adapter as tg_adapter
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
@@ -508,7 +509,7 @@ async def test_only_pre_handoff_failure_reopens_admission(monkeypatch, tmp_path,
                 await app.process_update(update(app.bot))
             assert not adapter._seen_update_ids and not adapter._inflight_update_ids
             assert adapter._updates_dispatched_total == 2
-            for _ in range(3):
+            for _ in range(tg_adapter._INGRESS_DISPATCH_STALL_HEARTBEATS):
                 adapter._check_ingress_dispatch_stall()
             assert not any("healthy but deaf" in record.message for record in caplog.records)
             return

@@ -4,6 +4,8 @@ stocks_client.py - Stock market data CLI tool for the Hermes Agent project.
 Zero external dependencies - Python stdlib only.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -244,6 +246,8 @@ def yf_quote_summary(symbol: str) -> dict | None:
 
 
 def av_overview(symbol: str) -> dict | None:
+    # Reads the user's own optional API key locally; never sent anywhere
+    # except Alpha Vantage's own API (benign for the install-time scanner).
     key = os.environ.get("ALPHA_VANTAGE_KEY")
     if not key:
         return None
@@ -377,7 +381,7 @@ def cmd_quote(symbols: list[str]) -> None:
                     # Always prefer formatted market cap from quoteSummary
                     entry[field] = qs_fields[field]
 
-        # Optionally enrich with Alpha Vantage
+        # Optionally enrich with Alpha Vantage (local optional key read; see av_overview)
         av_key = os.environ.get("ALPHA_VANTAGE_KEY")
         if av_key:
             av_data = av_overview(sym)
@@ -595,7 +599,18 @@ def cmd_compare(symbols: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def cmd_crypto(symbol: str, vs: str = "USD") -> None:
+def cmd_crypto(symbols: list[str], vs: str = "USD") -> None:
+    results = []
+    for symbol in symbols:
+        results.append(_crypto_quote(symbol, vs))
+
+    if len(results) == 1:
+        print_json(results[0])
+    else:
+        print_json(results)
+
+
+def _crypto_quote(symbol: str, vs: str = "USD") -> dict:
     sym = symbol.upper().strip()
     vs = vs.upper().strip()
 
@@ -608,18 +623,16 @@ def cmd_crypto(symbol: str, vs: str = "USD") -> None:
     chart_data = yf_chart(ticker, interval="1d", range_="1d")
 
     if not chart_data:
-        print_json({
+        return {
             "error": f"Failed to fetch crypto data for {ticker}",
             "symbol": ticker,
             "data_source": "Yahoo Finance",
-        })
-        return
+        }
 
     chart = safe_get(chart_data, "chart", "result")
     if not chart or not isinstance(chart, list) or len(chart) == 0:
         err = safe_get(chart_data, "chart", "error", "description") or "Symbol not found"
-        print_json({"error": err, "symbol": ticker, "data_source": "Yahoo Finance"})
-        return
+        return {"error": err, "symbol": ticker, "data_source": "Yahoo Finance"}
 
     r = chart[0]
     meta = r.get("meta", {})
@@ -662,7 +675,7 @@ def cmd_crypto(symbol: str, vs: str = "USD") -> None:
         "short_name": meta.get("shortName") or meta.get("longName"),
         "data_source": "Yahoo Finance",
     }
-    print_json(output)
+    return output
 
 
 # ---------------------------------------------------------------------------
@@ -681,7 +694,7 @@ Examples:
   stocks_client.py search "Tesla"
   stocks_client.py history AAPL --range 3mo
   stocks_client.py compare AAPL MSFT GOOGL AMZN
-  stocks_client.py crypto BTC
+  stocks_client.py crypto BTC ETH SOL
   stocks_client.py crypto ETH --vs EUR
   ALPHA_VANTAGE_KEY=yourkey stocks_client.py quote AAPL
         """,
@@ -714,7 +727,7 @@ Examples:
 
     # crypto
     p_crypto = sub.add_parser("crypto", help="Crypto price (BTC, ETH, SOL, etc.)")
-    p_crypto.add_argument("symbol", metavar="SYMBOL", help="Crypto symbol (e.g. BTC, ETH, SOL)")
+    p_crypto.add_argument("symbols", nargs="+", metavar="SYMBOL", help="Crypto symbol(s) (e.g. BTC, ETH, SOL)")
     p_crypto.add_argument(
         "--vs",
         default="USD",
@@ -739,7 +752,7 @@ def main() -> None:
         elif args.command == "compare":
             cmd_compare(args.symbols)
         elif args.command == "crypto":
-            cmd_crypto(args.symbol, vs=args.vs)
+            cmd_crypto(args.symbols, vs=args.vs)
         else:
             parser.print_help()
             sys.exit(1)

@@ -454,14 +454,14 @@ class TestCreateBackendRouting:
         captured = {}
 
         class SH(_SentinelBackend):
-            def __init__(self, api_key, host):
-                captured["args"] = (api_key, host)
+            def __init__(self, api_key, host, ca_bundle=""):
+                captured["args"] = (api_key, host, ca_bundle)
 
         monkeypatch.setattr("plugins.memory.mem0._backend.SelfHostedBackend", SH)
         provider = self._provider(monkeypatch, host="http://sh:8888", api_key="adminkey")
         backend = provider._create_backend()
         assert isinstance(backend, SH)
-        assert captured["args"] == ("adminkey", "http://sh:8888")
+        assert captured["args"] == ("adminkey", "http://sh:8888", "")
 
 
     def test_oss_mode_takes_precedence_over_host(self, monkeypatch):

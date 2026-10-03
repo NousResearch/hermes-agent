@@ -159,6 +159,7 @@ class Mem0MemoryProvider(MemoryProvider):
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "false", "choices": ["true", "false"]},
+            {"key": "ca_bundle", "description": "PEM CA bundle for a self-hosted server behind a private CA (blank = OS trust store)", "required": False},
         ]
 
     def post_setup(self, hermes_home: str, config: dict) -> None:
@@ -179,7 +180,9 @@ class Mem0MemoryProvider(MemoryProvider):
             from . import _backend
             if self._mode == "oss":
                 return _backend.OSSBackend(self._config.get("oss", {}))
-            return _backend.SelfHostedBackend(self._api_key, self._host) if self._host else _backend.PlatformBackend(self._api_key)
+            if self._host:
+                return _backend.SelfHostedBackend(self._api_key, self._host, ca_bundle=str(self._config.get("ca_bundle") or ""))
+            return _backend.PlatformBackend(self._api_key)
         except Exception as e:
             logger.error("Mem0 backend failed to initialize (%s mode): %s", self._mode, e)
             self._init_error = str(e)

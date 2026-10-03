@@ -649,6 +649,55 @@ class TestSelfHostedBackend:
         assert b._client.headers["x-api-key"] == "adminkey"
         assert "authorization" not in b._client.headers  # NOT the cloud 'Token' scheme
 
+    def test_init_ca_bundle_is_passed_to_the_transport(self, monkeypatch, tmp_path):
+        """A self-hosted server behind a private CA needs its bundle on the transport;
+        without ``ca_bundle`` the default (system-store) verification is untouched."""
+        import shutil
+
+        import certifi  # httpx dependency; any real PEM bundle will do (httpx loads it eagerly)
+
+        bundle = tmp_path / "private-ca.pem"
+        shutil.copyfile(certifi.where(), bundle)
+        seen = []
+        real = httpx.HTTPTransport
+
+        def spy(**kwargs):
+            seen.append(kwargs)
+            return real(**kwargs)
+
+        from agent.ssl_verify import resolve_httpx_verify
+
+        monkeypatch.setattr(httpx, "HTTPTransport", spy)
+        SelfHostedBackend("adminkey", "https://sh:8888", ca_bundle=str(bundle))
+        SelfHostedBackend("adminkey", "https://sh:8888")
+        # The bundle goes through the shared resolver: the context built from it, not the raw path.
+        assert seen[0]["verify"] is resolve_httpx_verify(ca_bundle=str(bundle))
+        assert seen[0]["verify"] is not resolve_httpx_verify()
+        assert seen[1]["verify"] is resolve_httpx_verify()  # no bundle = the OS trust store answer
+
+    def test_ca_bundle_is_in_the_config_schema_without_an_env_var(self):
+        """Discoverable through setup; non-secret config, so no .env mirror."""
+        from plugins.memory.mem0 import Mem0MemoryProvider
+
+        field = {f["key"]: f for f in Mem0MemoryProvider().get_config_schema()}["ca_bundle"]
+        assert not field.get("secret") and not field.get("env_var")
+
+    def test_init_missing_ca_bundle_falls_back_instead_of_raising(self, monkeypatch, tmp_path):
+        """A typo'd bundle path must not raise out of __init__ (the plugin would then disable the
+        whole backend); it warns and uses the OS trust store, like every other resolve_httpx_verify user."""
+        from agent.ssl_verify import resolve_httpx_verify
+
+        seen = []
+        real = httpx.HTTPTransport
+
+        def spy(**kwargs):
+            seen.append(kwargs)
+            return real(**kwargs)
+
+        monkeypatch.setattr(httpx, "HTTPTransport", spy)
+        SelfHostedBackend("adminkey", "https://sh:8888", ca_bundle=str(tmp_path / "missing.pem"))
+        assert seen[0]["verify"] is resolve_httpx_verify()
+
 
     # --- search ----------------------------------------------------------
 

@@ -69,6 +69,12 @@ def _install_kittentts_deps() -> bool:
     return _install_tts_extra("kittentts")
 
 
+def _install_kokoro_deps() -> bool:
+    """Install Kokoro dependencies with user approval. Returns True on success."""
+    _setup._info(None, "Installing kokoro-onnx (~350MB model downloaded on first use, CPU-only)...", None)
+    return _install_tts_extra("kokoro")
+
+
 def _xai_oauth_logged_in_for_setup() -> bool:
     """True iff xAI Grok OAuth credentials are stored locally, so TTS/STT setup can skip the
     API-key prompt for users who logged in via ``hermes model`` -> xAI Grok OAuth."""
@@ -114,7 +120,8 @@ _TTS_PROVIDER_CHOICES = [
     ("mistral", "Mistral Voxtral TTS (multilingual, native Opus, needs API key)"),
     ("gemini", "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)"),
     ("neutts", "NeuTTS (local on-device, free, ~300MB model download)"),
-    ("kittentts", "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)")]
+    ("kittentts", "KittenTTS (local on-device, free, lightweight ~25-80MB ONNX)"),
+    ("kokoro", "Kokoro (local on-device, free, best-in-class ~350MB ONNX, CPU)")]
 # Short label = menu label minus its parenthetical ("Edge TTS", "Mistral Voxtral TTS", ...).
 _TTS_PROVIDER_LABELS = {key: label.split(" (")[0] for key, label in _TTS_PROVIDER_CHOICES}
 # provider -> (env vars that satisfy it, env var to save, prompt, success line, pre-prompt hint)
@@ -139,7 +146,12 @@ _TTS_LOCAL_PROVIDERS = {
     "kittentts": ("kittentts", "KittenTTS",
                   ("KittenTTS is lightweight (~25-80MB, CPU-only, no API key required).",
                    "Voices: Jasper, Bella, Luna, Bruno, Rosie, Hugo, Kiki, Leo"),
-                  "Install KittenTTS now?", _install_kittentts_deps)}
+                  "Install KittenTTS now?", _install_kittentts_deps),
+    "kokoro": ("kokoro_onnx", "Kokoro",
+               ("Kokoro is ~350MB on disk (Kokoro-82M v1.0 ONNX), CPU-only, no API key required.",
+                "Voices: af_heart (default), af_bella, am_michael, bf_emma, ... — "
+                "https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md"),
+               "Install Kokoro now?", _install_kokoro_deps)}
 
 
 def _tts_api_key_step(selected: str) -> str:

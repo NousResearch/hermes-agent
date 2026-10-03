@@ -3,7 +3,7 @@ import { setTtsLease } from '@/hermes'
 // The desktop's speech-output toggles — "Read replies aloud" and voice
 // conversation mode — are the user telling us TTS is about to be needed (or no
 // longer is). The backend turns that into engine lifecycle: acquiring a lease
-// pre-loads the configured provider (a local piper/kittentts model, a lazily
+// pre-loads the configured provider (a local piper/kittentts/kokoro model, a lazily
 // installed SDK) so the first spoken reply starts hot instead of paying the load
 // as dead air; releasing the last lease unloads resident local models.
 //

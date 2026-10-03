@@ -1075,14 +1075,15 @@ DEFAULT_CONFIG = {
     # Text-to-speech. Each provider accepts an optional `max_text_length:` override for the
     # per-request input-character cap; omit to use the provider's documented limit (OpenAI 4096, xAI
     # 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware, Gemini 32000, Edge 5000, Mistral 4000,
-    # NeuTTS/KittenTTS 2000).
+    # NeuTTS/KittenTTS 2000, Kokoro 3000).
     "tts": {
         # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" |
-        # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        # "gemini" | "deepinfra" | "neutts" (local) | "kittentts" (local) | "kokoro" (local) |
+        # "piper" (local)
         "provider": "edge",
-        # Seconds a local engine (Piper, KittenTTS) stays loaded after the last speech toggle
-        # turns off, so a quick re-activation (wake word, voice-chat restart) skips the reload.
-        # 0 unloads immediately.
+        # Seconds a local engine (Piper, KittenTTS, Kokoro) stays loaded after the last speech
+        # toggle turns off, so a quick re-activation (wake word, voice-chat restart) skips the
+        # reload. 0 unloads immediately.
         "keep_warm_seconds": 60,
         "streaming": {
             # Shortest first sentence (chars) spoken on its own by streaming TTS; shorter openers
@@ -1148,6 +1149,18 @@ DEFAULT_CONFIG = {
             # (~/.hermes/cache/piper-voices/), use_cuda, length_scale (2.0 = twice as slow),
             # noise_scale, noise_w_scale, volume, normalize_audio.
             "voice": "en_US-lessac-medium",
+        },
+        "kokoro": {
+            # Voice id from https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md
+            # (prefix a=American f=female, e.g. af_heart, af_bella, am_michael, bf_emma).
+            "voice": "af_heart",
+            # No registered "speed" default on purpose: unset here means the global tts.speed
+            # multiplier applies (the engine's documented third rung). Set tts.kokoro.speed
+            # (0.5-2.0) to override it for Kokoro only; the tool's per-call speed wins over both.
+            # Optional absolute paths; default <hermes home>/share/kokoro/ (auto-downloaded
+            # ~350MB total on first use, Kokoro-82M v1.0 ONNX).
+            "model_path": "",
+            "voices_path": "",
         },
         "deepinfra": {
             "model": "",  # empty = first tts-tagged model from the live catalog

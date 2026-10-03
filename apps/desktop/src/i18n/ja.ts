@@ -921,6 +921,9 @@ export const ja = defineLocale({
           model: 'KittenTTS モデル',
           voice: 'KittenTTS 音声'
         },
+        kokoro: {
+          voice: 'Kokoro 音声'
+        },
         piper: {
           voice: 'Piper 音声'
         }

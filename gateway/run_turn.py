@@ -2212,11 +2212,13 @@ class GatewayTurnMixin:
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
+            # Clear the opener's typing status before retargeting final delivery.
+            await self._hmwa_stop_typing_for_turn(event, source)
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
             # send (bracketed by the adapter against this event) must be ledgered under that
-            # message's id or it collides with an earlier turn's row carrying the same text. Reply
-            # routing is untouched: the anchor still comes from this event.
+            # message's id or it collides with an earlier turn's row carrying the same text.
+            # Cross-thread chains also deliver to the terminal message rather than the opener.
             if isinstance(agent_result, dict):
                 _terminal_inbound = agent_result.get("queued_terminal_inbound_id")
                 if _terminal_inbound:
@@ -2225,8 +2227,26 @@ class GatewayTurnMixin:
                     event.metadata["notification_category"] = agent_result["queued_terminal_notification_category"]
                 if isinstance(agent_result.get("_notification_reply_muted"), bool):
                     event._notification_reply_muted = agent_result["_notification_reply_muted"]
-
-            await self._hmwa_stop_typing_for_turn(event, source)
+                # A deliberate busy redirect wins over the queued chain's initial routing.
+                if ("queued_terminal_thread_id" in agent_result
+                        and getattr(event, "reply_anchor_override", None) is None):
+                    terminal_thread = str(agent_result["queued_terminal_thread_id"] or "")
+                    terminal_anchor = str(agent_result.get("queued_terminal_reply_anchor") or "")
+                    opener_thread = str(getattr(source, "thread_id", None) or "")
+                    # Slack top-level messages have no thread_id: the reply anchor is the thread.
+                    if terminal_thread or opener_thread:
+                        different_thread = terminal_thread != opener_thread
+                    else:
+                        opener_anchor = str(self._reply_anchor_for_event(event) or "")
+                        different_thread = terminal_anchor != opener_anchor
+                    if different_thread:
+                        # An empty override deliberately suppresses the opener's reply anchor.
+                        event.reply_anchor_override = terminal_anchor
+                        # Clear a threaded opener when the terminal message is top-level.
+                        # Keep the pinned routing identity and receiving transport provenance.
+                        from gateway.session_identity import replace_source
+                        source = replace_source(source, thread_id=terminal_thread or None)
+                        event.source = source
 
             if not self._is_session_run_current(_quick_key, run_generation):
                 self._hmwa_discard_stale_result(source, _quick_key, run_generation)
@@ -3977,6 +3997,10 @@ class GatewayTurnMixin:
                 "queued_terminal_notification_category": (
                     (pending_event.metadata or {}).get("notification_category", "result")
                     if pending_event is not None and pending_event.internal else "result"),
+                # The innermost turn owns final delivery routing as well as ledger identity.
+                "queued_terminal_thread_id": getattr(next_source, "thread_id", None),
+                "queued_terminal_reply_anchor": (
+                    next_message_id if pending_event is not None else turn_ctx.event_message_id),
             }
         return merged
 

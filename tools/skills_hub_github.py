@@ -13,6 +13,7 @@ import httpx
 from hermes_cli._subprocess_compat import windows_hide_flags
 from agent.retry_utils import parse_retry_after_seconds
 from tools.skills_guard import TRUSTED_REPOS
+from tools.url_safety import SSRFConnectionBlocked
 from tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _dedupe_by_trust,
     _hermes_tags, _matches_query, _parse_frontmatter, _referenced_support_paths, hub,
@@ -232,10 +233,15 @@ class GitHubSource(SkillSource):
         # repo -> skills.sh.json grouping map; None = fetched, no sidecar.
         self._skillsh_groupings: Dict[str, Optional[Dict[str, str]]] = {}
         self._rate_limited: bool = False
+        self._unreachable: bool = False
 
     @property
     def is_rate_limited(self) -> bool:  # whether the GitHub API rate limit was hit during operations
         return self._rate_limited
+
+    @property
+    def is_unreachable(self) -> bool:  # whether a request ended without an answer (transport error or 5xx)
+        return self._unreachable
 
     def trust_level_for(self, identifier: str) -> str:
         # identifier format: "owner/repo/path/to/skill"
@@ -452,7 +458,9 @@ class GitHubSource(SkillSource):
         Retries rate-limit 403/429 (waiting until ``Retry-After`` / ``X-RateLimit-Reset`` when present,
         capped 60s — one shared limit zeroes every GitHub tap at once during an index build), 5xx, and
         transport errors with exponential backoff. Terminal rate-limit exhaustion flags the instance so
-        an index build fails loud instead of silently shipping zero GitHub skills."""
+        an index build fails loud instead of silently shipping zero GitHub skills; a request that ends
+        without an answer (transport or DNS error, or 5xx) flags ``is_unreachable``, so a failed install is not
+        blamed on the skill being gone."""
         hdrs = headers if headers is not None else self.auth.get_headers()
         backoff = 1.0
         last_resp: Optional[httpx.Response] = None
@@ -463,9 +471,15 @@ class GitHubSource(SkillSource):
                 resp = hub()._skills_hub_http_get(
                     url, params=params, headers=hdrs, timeout=timeout, follow_redirects=True
                 )
+            except SSRFConnectionBlocked:
+                # The guarded client's DNS failure or policy block: retrying can't help and callers already
+                # abort on it, so record that GitHub gave no answer and let it propagate.
+                self._unreachable = True
+                raise
             except httpx.HTTPError as e:
                 logger.debug("GitHub GET %s failed (attempt %d/%d): %s", url, attempt + 1, max_retries, e)
                 if last_attempt:
+                    self._unreachable = True
                     return None
             else:
                 last_resp = resp
@@ -490,6 +504,8 @@ class GitHubSource(SkillSource):
                     logger.debug("GitHub rate limited on %s, waiting %.1fs (attempt %d/%d)",
                                  url, wait, attempt + 1, max_retries)
                 elif not (500 <= resp.status_code < 600) or last_attempt:
+                    if 500 <= resp.status_code < 600:
+                        self._unreachable = True
                     return resp
             time.sleep(wait)
             backoff = min(backoff * 2, 30.0)

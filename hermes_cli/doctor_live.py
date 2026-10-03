@@ -62,7 +62,11 @@ def _launch_browser_probe(timeout: float) -> tuple:
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
-        return (False, "playwright not installed")
+        # The optional Python ``playwright`` module is declared under the
+        # unrelated ``google-meet`` extra; the agent-browser backend bundles
+        # its own runtime and does not need it. A missing optional module is
+        # not a broken Browser setup — skip the direct-Playwright probe.
+        return (None, "skipped — optional Python playwright module not installed; agent-browser backend unaffected")
     with sync_playwright() as p:
         browser = p.chromium.launch(
             channel="chromium", executable_path=chromium_executable(),
@@ -103,6 +107,8 @@ def _probe_browser(timeout: float) -> ProbeResult:
     if not _browser_available():
         return ProbeResult("Browser", "skip", "(not configured)")
     ok, detail = _launch_browser_probe(timeout)
+    if ok is None:
+        return ProbeResult("Browser", "skip", f"({detail})")
     return ProbeResult("Browser", "pass" if ok else "fail", f"({detail})")
 
 

@@ -155,7 +155,9 @@ Hermes now includes the current Matrix room name, room ID, topic, message ID,
 and a Matrix room-boundary note in the agent prompt. `/status` also shows the
 current Matrix room/session scope, and `/resume` will not silently resume a
 named session from another Matrix room unless you explicitly use
-`/resume --cross-room <session name>`.
+`/resume --cross-room <session name>`. `--cross-room` reaches only your own
+Matrix sessions; resuming another user's session needs a configured
+slash-command admin (`allow_admin_from`).
 
 `MATRIX_SESSION_SCOPE=room` controls the room/thread lane. The existing
 `group_sessions_per_user` setting still controls whether users inside that room

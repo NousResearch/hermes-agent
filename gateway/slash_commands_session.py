@@ -366,14 +366,30 @@ class GatewaySessionCommandsMixin:
             return False
         return self._persisted_row_proves_owner(source, row)
 
+    async def _matrix_target_is_callers(self, source: SessionSource, target_id: str,
+                                        origin: Optional[SessionSource]) -> bool:
+        """Whether *target_id* is the caller's OWN Matrix session: the live origin's participant,
+        else the persisted row's ``source``/``user_id``. Fails closed without a caller id."""
+        caller = _sattr(source, "user_id")
+        if not caller:
+            return False
+        if isinstance(origin, SessionSource):
+            return origin.platform == Platform.MATRIX and _sattr(origin, "user_id") == caller
+        try:
+            row = await self._session_db.get_session(target_id) or {}
+        except Exception:
+            return False
+        return str(row.get("source") or "") == Platform.MATRIX.value and str(row.get("user_id") or "") == caller
+
     async def _resume_row_visible(self, source: SessionSource, row: dict, allow_all: bool) -> bool:
         """Whether a listing *row* belongs to the caller's origin (blocks cross-origin enumeration of
-        ids/previews); Matrix is room-scoped, ``--all`` needs a configured admin everywhere."""
+        ids/previews); Matrix is room-scoped (and participant-scoped in a per-user room), ``--all``
+        needs a configured admin everywhere."""
         if allow_all and self._resume_caller_is_admin(source):
             return True
         sid = str(row.get("id") or "")
         if source.platform == Platform.MATRIX:
-            return self._same_matrix_room(source, self._gateway_session_origin_for_id(sid))
+            return self._same_origin_chat(source, self._gateway_session_origin_for_id(sid))
         return await self._resume_target_allowed(source, sid, allow_override=False)
 
     # ------------------------------------------------------------------ /retry, /undo
@@ -865,7 +881,16 @@ class GatewaySessionCommandsMixin:
         caller's own room (Matrix) or platform/user/chat (other adapters)."""
         if source.platform == Platform.MATRIX:
             target_origin = self._gateway_session_origin_for_id(target_id)
-            if self._same_matrix_room(source, target_origin) or allow_cross_room:
+            # Same room AND, for a per-user room key, the same participant (a co-member's session
+            # is theirs, not the room's).
+            if self._same_origin_chat(source, target_origin):
+                return None
+            # --cross-room lifts the ROOM boundary for the caller's own sessions (docs: reach your
+            # project session from another room); it is not authority over another user's session.
+            if not (self._resume_caller_is_admin(source)
+                    or await self._matrix_target_is_callers(source, target_id, target_origin)):
+                return t("gateway.resume.blocked_not_owner", name=name)
+            if allow_cross_room:
                 return None
             if target_origin is None:
                 return t("gateway.resume.matrix_blocked_no_origin", name=name)

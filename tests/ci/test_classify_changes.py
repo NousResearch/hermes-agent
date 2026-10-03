@@ -323,6 +323,11 @@ CASES = {
         _lanes(python=True, python_prod=False, scan=True, e2e=True),
     ),
     "state db → e2e": (["hermes_state_wal.py"], _lanes(python=True, scan=True, e2e=True)),
+    # Code only the e2e suite exercises with real processes: MCP teardown
+    # (#131910) and approval waits under the Codex app-server (#130167) each
+    # merged with e2e skipped and turned main red.
+    "mcp teardown → e2e": (["tools/mcp_tool_lifecycle.py"], _lanes(python=True, scan=True, e2e=True)),
+    "approval wait → e2e": (["tools/approval_human_wait.py"], _lanes(python=True, scan=True, e2e=True)),
     "upgrade suite → e2e_upgrade, not e2e": (
         ["tests/e2e/core/upgrade/pm/test_pm_lifecycle.py"],
         _lanes(python=True, python_prod=False, scan=True, e2e_upgrade=True),

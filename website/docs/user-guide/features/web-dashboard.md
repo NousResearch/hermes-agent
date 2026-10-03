@@ -1151,17 +1151,18 @@ The dashboard reads and writes your `.env` (API keys, secrets) and can run agent
 
 ### In Hermes Desktop
 
-**Settings → Gateways → Remote gateway:**
+Desktop connects through the multi-connection registry, not a dedicated "Remote gateway" form: **Settings → Gateways → Registered gateways → Add connection → Remote gateway**. Authentication offers exactly two controls — **Session token** or **Sign in** — and there are no separate username/password fields on the form:
 
-- **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/hermes` are supported if you front it with a reverse proxy)
-- **Sign in** — the app detects the username/password gateway and shows a **Sign in** button; click it and enter the credentials from step 1
-- **Save and reconnect** — switches the desktop shell onto the remote backend
+- **Session token** — paste the dashboard session token used for REST and WebSocket access. When editing a saved connection, leave the field blank to keep its existing token.
+- **Sign in** (the OAuth path) — the app probes the gateway's advertised providers and labels the action accordingly: a username/password-only backend keeps the generic **Sign in** label, which opens the credential flow (the credentials from step 1); an OAuth backend gets **Sign in with `<provider>`** for its browser flow.
+
+The full walkthrough (naming, probing, the fail-open identity-provider label, and the **Test** button) is in [Desktop → Connecting to a remote backend](../desktop.md#connecting-to-a-remote-backend).
 
 The session refreshes automatically and survives restarts when `HERMES_DASHBOARD_BASIC_AUTH_SECRET` is set on the backend.
 
 ### Environment-variable override
 
-Instead of the in-app setting, you can point the desktop at a backend with an env var before launching it. When `HERMES_DESKTOP_REMOTE_URL` is set, it overrides the saved in-app URL (the Gateway settings panel shows an "env override" badge and disables editing); you still **Sign in** with your username and password from the panel.
+Instead of the in-app setting, you can point the desktop at a backend with an env var before launching it. When `HERMES_DESKTOP_REMOTE_URL` is set, it overrides the saved in-app URL (the Gateways settings panel shows an "env override" badge and disables editing); you still sign in from the Gateways panel as described above.
 
 | Env var | Value |
 |---------|-------|
@@ -1171,7 +1172,7 @@ Instead of the in-app setting, you can point the desktop at a backend with an en
 
 - **"Remote gateway incomplete"** — you haven't entered a remote URL.
 - **Sign-in fails with 401 / "Invalid credentials"** — the username or password doesn't match the backend's `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`. The backend returns the same generic error for unknown user and wrong password, so check both. Confirm the gate with `curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'` — it should report `true` and include `"basic"`.
-- **No "Sign in" button — it asks for a session token instead** — the username/password provider isn't active (`/api/status` won't list `"basic"`). Make sure the username and a password (or password hash) are set and the dashboard process loaded them.
+- **No generic `Sign in` action — the label says "Sign in with your identity provider" instead** — the provider probe failed or returned no providers, so the app kept the fail-open identity-provider label rather than guessing password auth. Check the URL and reachability, then re-open the editor. (The username/password provider being *active* is what keeps the **Sign in** action on the password flow once the probe succeeds.)
 - **Signed out on every restart** — set `HERMES_DASHBOARD_BASIC_AUTH_SECRET` to a stable value; otherwise the signing key is regenerated per boot.
 - **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) instead of a reachable address, or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
 

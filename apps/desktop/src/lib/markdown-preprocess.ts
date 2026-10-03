@@ -849,6 +849,72 @@ function escapeCjkProseDollars(text: string): string {
   return out + text.slice(copiedThrough)
 }
 
+// Verilog/SystemVerilog system functions and macro references are bare `$`
+// followed by an identifier — `$signed`, `$clog2`, `$bits`, `$display`. With
+// `singleDollarTextMath: true`, two of them on one prose line open an inline
+// math span and the intervening HDL is typeset through KaTeX: `<=` (the
+// non-blocking assignment operator) renders as `≤`, and identifiers go
+// math-italic — the reader is shown wrong HDL (#129491).
+const HDL_SYSTEM_FUNCTION_RE = /\$(?=[A-Za-z_][A-Za-z0-9_$]*)/u
+
+/**
+ * Escape the opening `$` of a same-line span that is an HDL system function,
+ * so remark-math reads it as a literal dollar instead of pairing it with a
+ * later `$` and typesetting the HDL between them as one formula (#129491).
+ *
+ * LaTeX has no construct that starts with a literal `$`, so `$` + identifier
+ * is never the start of a real formula. The only case where one must NOT be
+ * escaped is a genuine `$…$` formula whose own opening `$` happens to precede
+ * a letter — `$x + y$`, `$f(x) <= g(x)$`. A formula's CLOSING `$` is what
+ * settles that: it is followed by prose, while the `$` inside `$bits(a) <=
+ * $bits(b)` is itself followed by another identifier, which is a second HDL
+ * token, not a delimiter. So the candidate closer that is also an HDL opener
+ * disqualifies the span and the opening `$` is escaped; the closing one loses
+ * its partner and paints literally.
+ *
+ * An opener with no same-line closer is escaped too: preprocessMarkdown runs
+ * per streaming flush, so the `$` that would have paired with it has not
+ * arrived yet, and escaping early keeps a later flush from wrapping the rest
+ * of the sentence in KaTeX.
+ *
+ * A span left as math is consumed through its closer so that closer is never
+ * rescanned as the next opener — the same handoff escapeCjkProseDollars makes.
+ */
+function escapeHdlSystemFunctionDollars(text: string): string {
+  let out = ''
+  let copiedThrough = 0
+
+  for (let cursor = 0; cursor < text.length; cursor += 1) {
+    // A `$$` run belongs to display math on both sides, and an already escaped
+    // `\$` is prose by construction.
+    if (text[cursor] !== '$' || text[cursor - 1] === '$' || text[cursor + 1] === '$' || isEscapedAt(text, cursor)) {
+      continue
+    }
+
+    if (!text.slice(cursor).match(HDL_SYSTEM_FUNCTION_RE)) {
+      continue
+    }
+
+    const closingIndex = findClosingSingleDollar(text, cursor)
+
+    // A span whose closer is NOT an HDL opener is a genuine formula
+    // ($x + y$): leave it alone and consume through the closer.
+    if (closingIndex !== -1 && !text.slice(closingIndex).match(HDL_SYSTEM_FUNCTION_RE)) {
+      cursor = closingIndex
+
+      continue
+    }
+
+    // Otherwise: no closer, or the closer is another HDL token —
+    // $bits(a) <= $bits(b). Escape the opening $; the closer loses
+    // its partner and renders literally.
+    out += `${text.slice(copiedThrough, cursor)}\\${text[cursor]}`
+    copiedThrough = cursor + 1
+  }
+
+  return out + text.slice(copiedThrough)
+}
+
 /**
  * Moves the `$$` delimiters of a MULTI-LINE display-math block onto their own
  * lines: `$$\begin{aligned}` … `\end{aligned}$$` becomes a `$$`-only line, the
@@ -966,8 +1032,13 @@ function normalizeProseMath(text: string): string {
   // a source of the hugging form: a multi-line `\[…\]` comes out of it as
   // `$$\begin{aligned}…\end{aligned}$$`. Running afterwards catches both the
   // hugging math the model emitted and the hugging math the rewrite produced.
-  const normalized = splitHuggingDisplayMath(normalizeMathDelimiters(normalizeDisplayMathForMarkdown(text)))
-  const cjkEscaped = escapeCjkProseDollars(normalized)
+  // The HDL escape runs FIRST: it is unconditional on `$identifier`, and the
+  // currency/CJK guards below read the span body to classify it — an escaped
+  // `\$bits` opener no longer looks like math to them.
+  const hdlEscaped = escapeHdlSystemFunctionDollars(
+    splitHuggingDisplayMath(normalizeMathDelimiters(normalizeDisplayMathForMarkdown(text)))
+  )
+  const cjkEscaped = escapeCjkProseDollars(hdlEscaped)
 
   return escapeCurrencyDollarsPreservingMath(cjkEscaped)
 }

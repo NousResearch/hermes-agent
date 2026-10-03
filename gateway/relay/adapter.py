@@ -1248,20 +1248,76 @@ class RelayAdapter(BasePlatformAdapter):
         return " ".join(fields)
 
     @staticmethod
-    def _render_context_target(data) -> str:
-        target_id = str(data.get("target_id") or "").strip()
+    def _safe_context_value(value, limit: int = 512) -> str:
+        """Keep resolved Discord fields compact and single-line before relaying them."""
+        text = " ".join(str(value or "").split())
+        if len(text) > limit:
+            return text[: limit - 1].rstrip() + "…"
+        return text
+
+    @classmethod
+    def _render_context_target(cls, data) -> str:
+        target_id = cls._safe_context_value(data.get("target_id"), 128)
         if not target_id:
             return ""
         resolved = data.get("resolved") or {}
-        target = {}
+        target: dict[str, Any] = {}
+        target_kind = ""
         for collection in ("messages", "users", "members"):
             values = resolved.get(collection) if isinstance(resolved, dict) else None
             if isinstance(values, dict) and isinstance(values.get(target_id), dict):
                 target = values[target_id]
+                target_kind = collection
                 break
-        if target.get("content"):
-            return f"target={target_id} content={target['content']}"
-        return f"target={target_id}"
+
+        parts = [f"target={target_id}"]
+        if target_kind == "users":
+            display = target.get("global_name") or target.get("username")
+            username = target.get("username")
+            if display:
+                parts.append(f"user={cls._safe_context_value(display)}")
+            if username and username != display:
+                parts.append(f"username={cls._safe_context_value(username)}")
+        elif target_kind == "members":
+            user = target.get("user") if isinstance(target.get("user"), dict) else {}
+            display = target.get("nick") or user.get("global_name") or user.get("username")
+            if display:
+                parts.append(f"user={cls._safe_context_value(display)}")
+        elif target_kind == "messages":
+            content = cls._safe_context_value(target.get("content"))
+            if content:
+                parts.append(f"content={content}")
+            author = target.get("author") if isinstance(target.get("author"), dict) else {}
+            author_name = author.get("global_name") or author.get("username")
+            if author_name:
+                parts.append(f"author={cls._safe_context_value(author_name)}")
+            attachments = target.get("attachments")
+            filenames = []
+            if isinstance(attachments, list):
+                for attachment in attachments:
+                    if not isinstance(attachment, dict):
+                        continue
+                    name = attachment.get("filename") or attachment.get("url")
+                    if name:
+                        filenames.append(cls._safe_context_value(name, 256))
+            if filenames:
+                parts.append(f"attachments={','.join(filenames)}")
+            embeds = target.get("embeds")
+            embed_values = []
+            if isinstance(embeds, list):
+                for embed in embeds:
+                    if not isinstance(embed, dict):
+                        continue
+                    value = " ".join(
+                        cls._safe_context_value(embed.get(field), 256)
+                        for field in ("title", "description", "url")
+                        if embed.get(field)
+                    )
+                    if value:
+                        embed_values.append(value)
+            if embed_values:
+                parts.append(f"embeds={' | '.join(embed_values)}")
+        return " ".join(parts)
 
     @staticmethod
     def _render_interaction_options(options) -> list:

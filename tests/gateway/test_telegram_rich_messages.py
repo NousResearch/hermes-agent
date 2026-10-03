@@ -832,3 +832,134 @@ async def test_rich_reply_records_and_recovers_text(monkeypatch, tmp_path):
     )
     assert event.reply_to_message_id == "678"
     assert event.reply_to_text == "Your morning briefing: CI is green."
+
+
+# --- Currency protection: paired "$" on one rich line otherwise becomes inline LaTeX ---
+
+
+@pytest.mark.asyncio
+async def test_rich_payload_protects_multiple_currency_amounts():
+    adapter = _make_adapter()
+    content = "| Item | Value |\n|---|---|\n| budget | $2,000–$3,000 |"
+    result = await adapter.send("12345", content)
+    assert result.success is True
+    markdown = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    assert "`$2,000`–`$3,000`" in markdown
+
+
+@pytest.mark.asyncio
+async def test_rich_prose_currency_pair_is_protected():
+    adapter = _make_adapter(extra={"rich_messages": True})
+    content = '| Item | Note |\n|---|---|\n| x | I said "$18,500 collected, 8 payers." Stripe shows $18,588.50 (BGA at $3,000). |'
+    assert (await adapter.send("12345", content)).success
+    markdown = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    assert '"`$18,500` collected, 8 payers." Stripe shows `$18,588.50` (BGA at `$3,000`).' in markdown
+
+
+@pytest.mark.asyncio
+async def test_rich_single_currency_amount_left_alone():
+    adapter = _make_adapter(extra={"rich_messages": True})
+    assert (await adapter.send("12345", "| Item | Note |\n|---|---|\n| x | Total was $18,500 this month. |")).success
+    assert "| x | Total was $18,500 this month. |" in _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+
+
+@pytest.mark.asyncio
+async def test_rich_payload_leaves_math_and_code_currency_alone():
+    adapter = _make_adapter()
+    content = "| Item | Value |\n|---|---|\n| x | `$2,000` and $x^2$ |"
+    result = await adapter.send("12345", content)
+    assert result.success is True
+    markdown = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    assert "`$2,000`" in markdown
+    assert "$x^2$" in markdown
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("math", [
+    "$5$ + $6$ = $11$",
+    "$5.00$ + $6.00$ = $11.00$",
+    "$5x$ + $6y$",
+    "$5/2$ + $6^2$",
+    "$5 + x$ and $6 + y$",
+    "$$5 + 6 = 11$$",
+])
+async def test_rich_currency_preserves_closed_math(math):
+    adapter = _make_adapter(extra={"rich_messages": True})
+    content = f"| Item | Note |\n|---|---|\n| x | Math: {math}. Costs $5 or $6. |"
+    result = await adapter.send("12345", content)
+    assert result.success
+    markdown = _rich_api_kwargs(adapter)["rich_message"]["markdown"]
+    assert math in markdown
+    assert "Costs `$5` or `$6`." in markdown
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["send", "edit", "draft"])
+async def test_dollar_entities_normalized_before_rich_fallback(operation):
+    adapter = _make_adapter(extra={"rich_messages": True, "rich_drafts": True})
+    assert adapter._bot is not None
+    adapter._bot.do_api_request.side_effect = EndPointNotFound("endpoint unavailable")
+    content = "Costs &#36;3,000 or &#x24;15,000. Example: `&#36;5`."
+    if operation == "send":
+        result = await adapter.send("12345", content)
+        sent = adapter._bot.send_message.call_args.kwargs["text"]
+    elif operation == "edit":
+        result = await adapter.edit_message("12345", "1", content, finalize=True)
+        sent = adapter._bot.edit_message_text.call_args.kwargs["text"]
+    else:
+        result = await adapter.send_draft("12345", 1, content)
+        sent = adapter._bot.send_message_draft.call_args.kwargs["text"]
+    assert result.success
+    assert "$3,000" in sent and "$15,000" in sent
+    assert "&#36;5" in sent  # Authored code examples remain literal.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content,amounts", [
+    ("Bought $500 ($AAPL) and $300 ($MSFT) today.", ["$500", "$300"]),
+    ("Costs $5 or $6 per US$ unit.", ["$5", "$6"]),
+    ("Costs $5 or $6 ($2x$ is tax).", ["$5", "$6"]),
+])
+async def test_rich_currency_does_not_mask_financial_prose(content, amounts):
+    adapter = _make_adapter(extra={"rich_messages": True})
+    assert adapter._bot is not None
+    assert (await adapter.send("12345", f"| Item | Note |\n|---|---|\n| x | {content} |")).success
+    markdown = adapter._bot.do_api_request.call_args.kwargs["api_kwargs"]["rich_message"]["markdown"]
+    for amount in amounts:
+        assert f"`{amount}`" in markdown
+    if "$2x$" in content:
+        assert "$2x$" in markdown
+
+
+@pytest.mark.asyncio
+async def test_dollar_entities_preserve_multiple_backtick_code():
+    adapter = _make_adapter(extra={"rich_messages": True})
+    assert adapter._bot is not None
+    content = "| Item | Note |\n|---|---|\n| x | Code: ``&#36;5 and `literal` ``; costs &#36;5 or &#36;6. |"
+    assert (await adapter.send("12345", content)).success
+    markdown = adapter._bot.do_api_request.call_args.kwargs["api_kwargs"]["rich_message"]["markdown"]
+    assert "``&#36;5 and `literal` ``" in markdown
+    assert "costs `$5` or `$6`." in markdown
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ticks", ["`", "``"])
+async def test_stray_backticks_do_not_mask_later_currency(ticks):
+    adapter = _make_adapter(extra={"rich_messages": True})
+    assert adapter._bot is not None
+    content = f"Use the {ticks} character.\n\n| Item | Note |\n|---|---|\n| x | Costs &#36;5 or &#x24;6. Run {ticks}ls{ticks}. |"
+    assert (await adapter.send("12345", content)).success
+    markdown = adapter._bot.do_api_request.call_args.kwargs["api_kwargs"]["rich_message"]["markdown"]
+    assert "Costs `$5` or `$6`." in markdown
+    assert "&#36;" not in markdown and "&#x24;" not in markdown
+    assert f"{ticks}ls{ticks}" in markdown
+
+
+def test_rich_limit_counts_currency_protected_payload():
+    adapter = _make_adapter(extra={"rich_messages": True})
+    # Each protected amount grows by two backticks; the pre-check must count the payload Telegram sees.
+    unit = "$5 or $6 "  # 9 chars raw, 13 protected
+    content = "| Item | Note |\n|---|---|\n| x | " + unit * ((adapter.RICH_MESSAGE_MAX_CHARS - 40) // 9) + " |"
+    assert len(content) <= adapter.RICH_MESSAGE_MAX_CHARS
+    assert len(adapter._rich_message_payload(content)["markdown"]) > adapter.RICH_MESSAGE_MAX_CHARS
+    assert not adapter._content_fits_rich_limits(content)

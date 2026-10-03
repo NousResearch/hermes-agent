@@ -71,7 +71,8 @@ def _validation_error(message: str, *, path: str, constraint: str, parameters: A
         hint="Retry tool_call with 'arguments' matching the parameters schema above.")
 
 
-def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str]:
+def validate_deferred_call_args(name: str, args: Dict[str, Any],
+                                schema: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Validate ``tool_call`` arguments against the deferred tool's schema. Models invoke
     deferred tools "blind" (schema unseen) and omit required args; without this, the opaque
     downstream failure makes cheap models loop. Required-field probe first, then the same
@@ -83,8 +84,9 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
     ``arguments: object`` bridge. See #5149.
     """
     try:
-        from tools.registry import registry as _registry
-        schema = _registry.get_schema(name)
+        if schema is None:
+            from tools.registry import registry as _registry
+            schema = _registry.get_schema(name)
         if not isinstance(schema, dict):
             return None
         fn = schema.get("function") if schema.get("type") == "function" else schema

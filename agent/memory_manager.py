@@ -637,6 +637,10 @@ class MemoryManager:
     def get_all_tool_names(self) -> set:
         return set(self._tool_to_provider)
 
+    def get_tool_owner_names(self) -> Dict[str, str]:
+        """Owning provider name per routed tool; Tool Search groups deferred tools by it."""
+        return {name: provider.name for name, provider in self._tool_to_provider.items()}
+
     def has_tool(self, tool_name: str) -> bool:
         return tool_name in self._tool_to_provider
 

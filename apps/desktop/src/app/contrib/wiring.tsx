@@ -910,7 +910,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           startFreshSessionDraft()
         }
 
-        requestVoiceConversationStart()
+        requestVoiceConversationStart(payload?.start_new_session === false ? selectedStoredSessionIdRef.current : null)
 
         return
       }

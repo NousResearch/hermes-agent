@@ -88,11 +88,15 @@ export const $composerTerminalSelections = atom<Record<string, string>>({})
 // Latched because opening a fresh session may remount the main composer before
 // it can start voice. Session-tile composers deliberately never consume this.
 export const $voiceConversationStartRequest = atom(0)
+export const $voiceConversationStartSessionId = atom<string | null>(null)
 let nextVoiceStartRequest = 0
 let handledVoiceStartRequest = 0
 export const createComposerAttachmentOccurrenceId = (): string => crypto.randomUUID()
 
-export const requestVoiceConversationStart = (): void => $voiceConversationStartRequest.set(++nextVoiceStartRequest)
+export const requestVoiceConversationStart = (sessionId?: string | null): void => {
+  $voiceConversationStartSessionId.set(sessionId ?? null)
+  $voiceConversationStartRequest.set(++nextVoiceStartRequest)
+}
 
 export const takeVoiceConversationStart = (current: number): boolean => {
   if (current <= handledVoiceStartRequest) {

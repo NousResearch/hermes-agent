@@ -263,7 +263,17 @@ _CONTEXT_OVERFLOW_PATTERNS = (
     # Together/Fireworks-style: "Input length 131393 exceeds the maximum allowed input length of 131040
     # tokens."  No other pattern in this list matches that wording. (port of anomalyco/opencode#37848)
     "maximum allowed input length",
+    # DeepInfra: "requested input length 135000 exceeds maximum input length 131072" (opencode#52132).
+    "exceeds maximum input length",
+    # HF Text Generation Inference (Together et al.): "`inputs` tokens + `max_new_tokens` must be
+    # <= 131073" — plural "inputs" dodges every "input token" entry above (opencode#52133).
+    "`inputs` tokens + `max_new_tokens`",
 )
+
+# Invalid-key rejections some providers return as HTTP 400 instead of 401: xAI's generic
+# ``invalid-argument`` ("Incorrect API key provided"), Google's ``INVALID_ARGUMENT`` with
+# ``details[].reason == API_KEY_INVALID`` ("API key not valid") (opencode#52112, #51950).
+_400_AUTH_PATTERNS = ("incorrect api key provided", "api key not valid", "api_key_invalid")
 
 # Last entry: OpenRouter 404 when no endpoint supports tool calling —
 # model_not_found triggers fallback instead of burning retries (#58446).
@@ -1174,6 +1184,11 @@ def _classify_400(c: _Ctx) -> Verdict:
         return _V_MALFORMED_TOOL_ARGS
     if any(p in msg for p in _ROLE_ALTERNATION_PATTERNS):
         return _V_ROLE_ALTERNATION
+    # Invalid API key reported as 400 (xAI ``invalid-argument``, Google ``INVALID_ARGUMENT`` +
+    # ``API_KEY_INVALID``): the credential is bad, so rotate/fall back as a 401 would. Must precede
+    # request-validation and the generic format_error tail, which neither rotate the pool nor name the key.
+    if any(p in msg for p in _400_AUTH_PATTERNS):
+        return _V_AUTH_ROTATE
     # Before overflow: GPT-5's "Unsupported parameter: 'max_tokens'" contains it.
     if any(p in msg for p in _400_VALIDATION_PATTERNS) or code in _400_VALIDATION_CODES:
         return _V_FORMAT_ERROR

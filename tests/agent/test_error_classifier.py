@@ -2166,3 +2166,43 @@ class TestStreamingRenderFormatError:
         e = MockAPIError("Error rendering prompt with jinja template: ...", status_code=500)
         result = classify_api_error(e, provider="lm-studio", model="x")
         assert result.reason != FailoverReason.format_error
+
+
+class TestInvalidKeyAs400:
+    """xAI and Google report a bad API key as HTTP 400, not 401; the credential is still the fault
+    (port of anomalyco/opencode#52112, #51950)."""
+
+    @pytest.mark.parametrize("message, body, provider", [
+        ('Error code: 400 - {"code":"invalid-argument","error":"Incorrect API key provided. You can obtain '
+         'an API key from https://console.x.ai."}',
+         {"code": "invalid-argument", "error": "Incorrect API key provided."}, "xai"),
+        ('Error code: 400 - {"error":{"code":400,"message":"API key not valid. Please pass a valid API key.",'
+         '"status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}',
+         {"error": {"code": 400, "message": "API key not valid. Please pass a valid API key.",
+                    "status": "INVALID_ARGUMENT", "details": [{"reason": "API_KEY_INVALID"}]}}, "gemini"),
+    ])
+    def test_400_invalid_key_rotates_like_401(self, message, body, provider):
+        result = classify_api_error(MockAPIError(message, status_code=400, body=body), provider=provider)
+        assert result.reason == FailoverReason.auth
+        assert result.should_rotate_credential is True
+        assert result.should_compress is False
+
+    def test_unrelated_400_invalid_argument_stays_format_error(self):
+        e = MockAPIError('Error code: 400 - {"code":"invalid-argument","error":"Unknown parameter: foo"}',
+                         status_code=400, body={"code": "invalid-argument", "error": "Unknown parameter: foo"})
+        assert classify_api_error(e, provider="xai").reason == FailoverReason.format_error
+
+
+class TestInputLengthOverflowWordings:
+    """DeepInfra and HF TGI word a context overflow without any 'input token(s)' / 'context length'
+    phrase (port of anomalyco/opencode#52132, #52133)."""
+
+    @pytest.mark.parametrize("message", [
+        'Error code: 400 - {"detail":{"error":"requested input length 135000 exceeds maximum input length 131072"}}',
+        'Error code: 400 - {"error":{"message":"Input validation error: `inputs` tokens + `max_new_tokens` must '
+        'be <= 131073. Given: 140000 `inputs` tokens and 4096 `max_new_tokens`","type":"invalid_request_error"}}',
+    ])
+    def test_400_input_length_rejection_compresses(self, message):
+        result = classify_api_error(MockAPIError(message, status_code=400), provider="custom")
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True

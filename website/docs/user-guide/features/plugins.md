@@ -781,6 +781,12 @@ file's `if __name__ == "__main__":` self-test block is capped at **caution**
 finding inside it (destructive commands, provider-shaped keys such as `sk-…`)
 and the same token anywhere above the guard keep full severity.
 
+Install output (`node_modules/`, `venv/`, `.venv/`, `__pycache__/`, tool
+caches) is skipped while it is untracked, so `npm ci` or a local environment
+never changes the verdict. A file the plugin's Git repository **tracks** under
+one of those directories was committed by the author and is scanned like any
+other file — a plugin's `__init__.py` can import from them.
+
 Scanning is on by default; disable it in `config.yaml`:
 
 ```yaml

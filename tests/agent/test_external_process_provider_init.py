@@ -97,3 +97,25 @@ def test_should_stream_is_off_for_any_external_process_profile(monkeypatch):
 
     assert _should_stream(make("acme-acp")) is False
     assert _should_stream(make("acme-http")) is True
+
+
+def test_external_process_profile_opting_into_streaming_streams(monkeypatch):
+    """An external-process profile that declares ``supports_streaming`` leaves the
+    non-streaming path (#125095): its client returns a real stream iterator, so the main loop
+    gets per-chunk stale detection instead of the wall-clock reasoning floor killing healthy
+    long responses. ACP-style profiles that leave the flag unset keep today's behavior."""
+    from agent.turn_api_call import _should_stream
+    from providers.base import ProviderProfile
+
+    profiles = {
+        name: ProviderProfile(name=name, auth_type="external_process", supports_streaming=opts_in)
+        for name, opts_in in (("acme-directsdk", True), ("acme-acp", False))
+    }
+    monkeypatch.setattr("providers.get_provider_profile", lambda name: profiles.get(name))
+    make = lambda provider, base_url="https://proxy.example.invalid/v1": SimpleNamespace(  # noqa: E731
+        provider=provider, base_url=base_url, _has_stream_consumers=lambda: True)
+
+    assert _should_stream(make("acme-directsdk")) is True
+    assert _should_stream(make("acme-acp")) is False
+    # The acp:// transport scheme stays non-streaming even for an opted-in profile.
+    assert _should_stream(make("acme-directsdk", base_url="acp://acme")) is False

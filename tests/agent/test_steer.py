@@ -903,3 +903,328 @@ class TestLegacyHiddenPlaceholderWireSubstitution:
         wire = agent.client.chat.completions.create.call_args.kwargs["messages"]
         wire_assistants = [m for m in wire if m.get("role") == "assistant"]
         assert wire_assistants[0]["content"] == "visible text"
+    def test_pre_api_drain_does_not_attach_to_prior_turn_tool_result(self):
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+        agent = _bare_agent()
+        old_tool = {"role": "tool", "content": "prior-turn-result", "tool_call_id": "tc_old"}
+        current_user = {"role": "user", "content": "what is this image"}
+        messages = [
+            {"role": "user", "content": "earlier"},
+            {"role": "assistant", "content": "ok", "tool_calls": [
+                {"id": "tc_old", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            old_tool,
+            current_user,
+        ]
+        before_old = dict(old_tool)
+        before_user = dict(current_user)
+        agent.steer("This resembles Markdown's # and ##.")
+        _inject_steer_after_newest_tool_result(
+            agent, messages, agent._drain_pending_steer(), current_turn_user_idx=3,
+        )
+        assert messages == [
+            messages[0], messages[1], old_tool, current_user,
+        ]  # no insert before current user
+        assert old_tool == before_old and current_user == before_user
+        assert agent._pending_steer == "This resembles Markdown's # and ##."
+        assert all(m.get("display_kind") != "steer" for m in messages)
+
+    def test_pre_api_drain_still_injects_after_in_turn_tool(self):
+        """Prior-turn tool + in-turn tool: steer lands after the current tool, not the old one."""
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+
+        agent = _bare_agent()
+        old_tool = {"role": "tool", "content": "prior-turn-result", "tool_call_id": "tc_old"}
+        current_user = {"role": "user", "content": "what is this image"}
+        current_tool = {"role": "tool", "content": "in-turn-result", "tool_call_id": "tc_new"}
+        messages = [
+            {"role": "user", "content": "earlier"},
+            {"role": "assistant", "content": "ok", "tool_calls": [
+                {"id": "tc_old", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            old_tool,
+            current_user,
+            {"role": "assistant", "content": "looking", "tool_calls": [
+                {"id": "tc_new", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            current_tool,
+        ]
+        before_old = dict(old_tool)
+        before_current_tool = dict(current_tool)
+        agent.steer("focus on the caption")
+        _inject_steer_after_newest_tool_result(
+            agent, messages, agent._drain_pending_steer(), current_turn_user_idx=3,
+        )
+        assert messages[-2] is current_tool
+        assert messages[-1]["role"] == "user"
+        assert messages[-1].get("display_kind") == "steer"
+        assert STEER_MARKER_OPEN in messages[-1]["content"]
+        assert "focus on the caption" in messages[-1]["content"]
+        assert old_tool == before_old
+        assert current_tool == before_current_tool
+        assert messages[2] is old_tool
+        assert messages[3] is current_user
+        assert agent._pending_steer is None
+
+    def test_pre_api_drain_restashes_when_no_tool_message(self):
+        """If there are no tool results yet (first iteration), the steer
+        should be put back into _pending_steer for the post-tool drain."""
+        agent = _bare_agent()
+        messages = [
+            {"role": "user", "content": "hello"},
+        ]
+        agent.steer("early steer")
+        _pre_api_steer = agent._drain_pending_steer()
+        assert _pre_api_steer == "early steer"
+        # No tool message found — put it back
+        found = False
+        for _si in range(len(messages) - 1, -1, -1):
+            if messages[_si].get("role") == "tool":
+                found = True
+                break
+        assert not found
+        # Restash
+        agent._pending_steer = _pre_api_steer
+        assert agent._pending_steer == "early steer"
+
+        # Production helper must take the same restash path (not only this
+        # reimplemented search loop).
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+        agent._pending_steer = None
+        agent.steer("early steer")
+        before = list(messages)
+        _inject_steer_after_newest_tool_result(
+            agent, messages, agent._drain_pending_steer(), current_turn_user_idx=0,
+        )
+        assert messages == before
+        assert agent._pending_steer == "early steer"
+
+
+
+class TestSteerMarkerContract:
+    def test_system_prompt_note_describes_the_real_marker(self):
+        """The system-prompt note tells the model which marker to trust; it
+        must reference the exact open/close the injector emits, or the model
+        trusts a marker that never appears (and vice-versa)."""
+        from agent.prompt_builder import STEER_CHANNEL_NOTE, STEER_MARKER_CLOSE
+
+        emitted = format_steer_marker("hi")
+        assert STEER_MARKER_OPEN in emitted and STEER_MARKER_CLOSE in emitted
+        assert STEER_MARKER_OPEN in STEER_CHANNEL_NOTE and STEER_MARKER_CLOSE in STEER_CHANNEL_NOTE
+
+    def test_system_prompt_scopes_freshness_to_unanswered_marker(self):
+        """A delivered marker remains in immutable history on later API calls.
+
+        The freshness contract lives in TWO places and this test pins the
+        split (#95681 diet): the MARKER carries its own replay rule at
+        delivery time ("delivered once at this position", "not a new
+        delivery when replayed"), while the prompt note keeps only the
+        summary clause scoping action to the latest tool results. The
+        detailed only-if-no-later-assistant-message teaching moved out of
+        the prompt because the marker already says it on every delivery.
+        """
+        from agent.prompt_builder import STEER_CHANNEL_NOTE
+
+        assert "latest tool results" in STEER_CHANNEL_NOTE
+        assert "history" in STEER_CHANNEL_NOTE
+
+        emitted = format_steer_marker("deploy once")
+        assert "delivered once at this position" in emitted
+        assert "not a new delivery when replayed" in emitted
+
+    def test_marker_no_longer_uses_the_distrusted_label(self):
+        """Regression: the bare 'User guidance:' line read as tool content and
+        got refused as injection — it must not come back."""
+        assert "User guidance:" not in format_steer_marker("hi")
+
+
+class TestSteerRowIsHumanInput:
+    def test_steer_row_counts_as_a_user_originated_turn(self, tmp_path):
+        """The steer row is typed (renderer label, alternation-repair guard) but it carries full user
+        authority: every "is this human input" predicate — in memory and the DB pick /undo uses — must
+        agree with the anchor-restoration predicate that already accepts it."""
+        from agent.context_compressor import ContextCompressor, is_user_originated_turn
+        from agent.conversation_compression import _is_real_user_message
+        from agent.prompt_builder import steer_user_row
+        from hermes_state import SessionDB
+
+        row = steer_user_row("focus on the error handling")
+        assert _is_real_user_message(row)
+        assert is_user_originated_turn(row)
+        assert ContextCompressor._is_actionable_user_turn(row)
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="first question")
+            db.append_message("s1", role="assistant", content="first answer")
+            db.append_message("s1", role="user", content=row["content"], display_kind=row["display_kind"])
+            recents = db.list_recent_user_messages("s1", limit=5)
+            assert [r["preview"][:5] for r in recents] == ["[OUT-", "first"]
+        finally:
+            db.close()
+
+
+class TestSteerCommandRegistry:
+    def test_steer_in_command_registry(self):
+        """The /steer slash command must be registered so it reaches all
+        platforms (CLI, gateway, TUI autocomplete, Telegram/Slack menus).
+        """
+        from hermes_cli.commands import resolve_command
+
+        cmd = resolve_command("steer")
+        assert cmd is not None
+        assert cmd.name == "steer"
+        assert cmd.category == "Session"
+        assert cmd.args_hint == "<prompt>"
+
+    def test_steer_in_bypass_set(self):
+        """When the agent is running, /steer MUST bypass the Level-1
+        base-adapter queue so it reaches the gateway runner's /steer
+        handler. Otherwise it would be queued as user text and only
+        delivered at turn end — defeating the whole point.
+        """
+        from hermes_cli.commands import ACTIVE_SESSION_BYPASS_COMMANDS, should_bypass_active_session
+
+        assert "steer" in ACTIVE_SESSION_BYPASS_COMMANDS
+        assert should_bypass_active_session("steer") is True
+
+
+if __name__ == "__main__":  # pragma: no cover
+    pytest.main([__file__, "-v"])
+
+
+class TestLegacyHiddenPlaceholderWireSubstitution:
+    """Projection-side half of #88955: rows persisted BEFORE the writer-side
+    ``api_content`` stamp are ``content=""`` + ``display_kind="hidden"`` with
+    no sidecar. The send-time projection must give the WIRE copy the neutral
+    ``[response interrupted]`` payload so legacy sessions converge instead of
+    re-healing forever — while the durable row stays hidden and empty."""
+
+    def _loop_agent(self):
+        from unittest.mock import MagicMock, patch
+
+        from run_agent import AIAgent
+
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        agent.client = MagicMock()
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        return agent
+
+    def test_legacy_empty_hidden_assistant_row_gets_neutral_wire_payload(self):
+        """The projection itself must fill the row — the sanitizer must have
+        NOTHING left to heal (its per-turn warning spam IS the bug)."""
+        from unittest.mock import patch
+
+        import agent.agent_runtime_helpers as _arh
+
+        from tests.agent.test_run_agent import _mock_response
+
+        agent = self._loop_agent()
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="ok", finish_reason="stop"),
+        ]
+        sanitizer_inputs = []
+        _real_repair = _arh.repair_empty_non_final_messages
+
+        def _spy_repair(messages, *a, **k):
+            sanitizer_inputs.append(
+                [
+                    (m.get("role"), m.get("content"))
+                    for m in messages
+                    if isinstance(m, dict)
+                ]
+            )
+            return _real_repair(messages, *a, **k)
+        # Legacy pre-fix row: no api_content sidecar.
+        history = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": "", "display_kind": "hidden"},
+            {"role": "user", "content": "correction", "finish_reason": "stop"},
+            {"role": "assistant", "content": "earlier reply", "finish_reason": "stop"},
+        ]
+
+        with (
+            patch.object(agent, "_flush_messages_to_session_db"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(
+                _arh, "repair_empty_non_final_messages", side_effect=_spy_repair
+            ),
+        ):
+            agent.run_conversation("next question", conversation_history=history)
+
+        # Precondition: the sanitizer actually ran on this call path.
+        assert sanitizer_inputs, "sanitizer was never invoked — test is vacuous"
+        # The projection already filled the legacy row BEFORE sanitization:
+        # every assistant row the sanitizer saw carried payload, so it healed 0.
+        for snapshot in sanitizer_inputs:
+            for role, content in snapshot:
+                if role == "assistant":
+                    assert (content or "").strip(), (
+                        "sanitizer still received an empty assistant row — "
+                        "the re-heal loop is back (#88955)"
+                    )
+
+        wire = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        wire_assistants = [m for m in wire if m.get("role") == "assistant"]
+        legacy = wire_assistants[0]
+        # Substituted on the wire by the projection (not the sanitizer):
+        assert legacy["content"] == "[response interrupted]"
+        assert "display_kind" not in legacy
+        # #81841: never the interrupt scaffold.
+        assert "[This response was interrupted" not in legacy["content"]
+        # Durable history untouched.
+        assert history[1]["content"] == ""
+        assert history[1]["display_kind"] == "hidden"
+        assert "api_content" not in history[1]
+
+    def test_hidden_row_with_tool_calls_or_text_is_not_touched(self):
+        from agent.conversation_loop import _clone_message_for_send  # noqa: F401
+        from unittest.mock import patch
+
+        from tests.agent.test_run_agent import _mock_response
+
+        agent = self._loop_agent()
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="ok", finish_reason="stop"),
+        ]
+        history = [
+            {"role": "user", "content": "start"},
+            {
+                "role": "assistant",
+                "content": "visible text",
+                "display_kind": "hidden",
+                "finish_reason": "stop",
+            },
+            {"role": "user", "content": "more"},
+            {"role": "assistant", "content": "reply", "finish_reason": "stop"},
+        ]
+
+        with (
+            patch.object(agent, "_flush_messages_to_session_db"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("next", conversation_history=history)
+
+        wire = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        wire_assistants = [m for m in wire if m.get("role") == "assistant"]
+        assert wire_assistants[0]["content"] == "visible text"

@@ -11,7 +11,8 @@ import type {
   DesktopConnectionKind,
   DesktopConnectionsRegistry,
   DesktopRegistryConnection,
-  DesktopRegistryConnectionInput
+  DesktopRegistryConnectionInput,
+  DesktopUpdateStatus
 } from '@/global'
 import { useI18n } from '@/i18n'
 import {
@@ -24,6 +25,7 @@ import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, SearchIcon, Te
 import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
+import { $updateStatus } from '@/store/updates'
 
 import { EmptyState, ListRow, Pill, SectionHeading, SettingsBreadcrumbContext, ToggleRow } from './primitives'
 
@@ -82,6 +84,27 @@ function emptyEditor(kind: DesktopConnectionKind): EditorState {
     remoteProfile: '',
     headers: []
   }
+}
+
+/**
+ * The command that updates this connection's install when it declared another tool owns its
+ * updates ('' when it named none), or null when Hermes updates it itself. The local row reads
+ * the Desktop's own update check; other rows use what the last Update all reported.
+ */
+export function externalUpdateCommand(
+  conn: Pick<DesktopRegistryConnection, 'id' | 'kind'>,
+  learned: Record<string, string>,
+  localStatus: DesktopUpdateStatus | null
+): null | string {
+  if (conn.id in learned) {
+    return learned[conn.id]
+  }
+
+  if (conn.kind === 'local' && localStatus?.reason === 'external') {
+    return localStatus.advice || ''
+  }
+
+  return null
 }
 
 /** Dedupe key for a remote/cloud gateway URL: trim, drop trailing slashes, lowercase. */
@@ -231,6 +254,10 @@ export function ConnectionsRegistrySection() {
   const [plainTextConfirm, setPlainTextConfirm] = useState(false)
   const [launchModeBusy, setLaunchModeBusy] = useState(false)
   const [updatingAll, setUpdatingAll] = useState(false)
+  // Rows whose install said another tool owns its updates, keyed by connection id; the value is
+  // that tool's command ('' when it named none). Learned from Update all and the local check.
+  const [externallyManaged, setExternallyManaged] = useState<Record<string, string>>({})
+  const localUpdateStatus = useStore($updateStatus)
   const [searchQuery, setSearchQuery] = useState('')
   const searchInputRef = useRef<HTMLInputElement>(null)
   const pendingSearchTopRef = useRef<null | number>(null)
@@ -512,12 +539,16 @@ export function ConnectionsRegistrySection() {
 
     try {
       const { results } = await bridge.updateAll()
+      const external: Record<string, string> = {}
 
       for (const row of results) {
         if (row.ok) {
           notify({ title: row.label, message: row.detail || s.updateAllDone })
         } else if (row.skipped && row.reason === 'cloud-managed') {
           notify({ title: row.label, message: s.updateSkippedCloud })
+        } else if (row.skipped && row.reason === 'managed-externally') {
+          external[row.connectionId] = row.command || ''
+          notify({ title: row.label, message: s.updateSkippedExternal(row.command || '') })
         } else if (row.skipped && row.reason === 'darwin-drain-unsupported' && row.detail) {
           // A deliberate per-row skip (e.g. a macOS SSH remote whose running
           // serve Desktop cannot safely stop) — informational, not a failure.
@@ -526,12 +557,14 @@ export function ConnectionsRegistrySection() {
           notifyError(new Error(row.error || row.detail || row.reason || row.label), s.updateAllFailed)
         }
       }
+
+      setExternallyManaged(previous => ({ ...previous, ...external }))
     } catch (err) {
       notifyError(err, s.updateAllFailed)
     } finally {
       setUpdatingAll(false)
     }
-  }, [bridge, s.updateAllDone, s.updateAllFailed, s.updateSkippedCloud])
+  }, [bridge, s])
 
   const kindMeta: Record<DesktopConnectionKind, { label: string; desc: string }> = {
     cloud: { desc: s.kindCloudDesc, label: s.kindCloud },
@@ -623,6 +656,7 @@ export function ConnectionsRegistrySection() {
           // Display-only: this connection is a second address for a backend
           // already registered under another entry (same install_id).
           const sameBackendPeer = sameBackendPeerLabel(conn, sortedConnections)
+          const externalCommand = externalUpdateCommand(conn, externallyManaged, localUpdateStatus)
 
           const baseDescription =
             conn.kind === 'ssh'
@@ -673,6 +707,16 @@ export function ConnectionsRegistrySection() {
                     </>
                   )}
                 </div>
+              }
+              below={
+                externalCommand === null ? undefined : (
+                  <p
+                    className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)"
+                    data-testid="connection-update-note"
+                  >
+                    {s.updateSkippedExternal(externalCommand)}
+                  </p>
+                )
               }
               description={
                 sameBackendPeer ? `${baseDescription} · ${s.sameBackendHint(sameBackendPeer)}` : baseDescription

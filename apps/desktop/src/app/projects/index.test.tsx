@@ -37,8 +37,17 @@ vi.mock('@/store/session-dot-state', async importOriginal => {
   return { ...actual, $sessionDotStateById: dotStates.atom }
 })
 
-const { $projects, $projectsOwner, $projectsOwnerKey, $projectsRpcAvailable, $projectTree, $projectTreeOwner } =
-  await import('@/store/projects')
+const {
+  $projects,
+  $projectsOwner,
+  $projectsOwnerKey,
+  $projectsReadStatus,
+  $projectsRpcAvailable,
+  $projectsRpcAvailableByOwner,
+  $projectTree,
+  $projectTreeOwner,
+  $projectTreeReadStatus
+} = await import('@/store/projects')
 
 const { $activeGatewayProfile, setShowAllProfiles } = await import('@/store/profile')
 const { $connection } = await import('@/store/session')
@@ -77,25 +86,38 @@ function renderView(initialPath = '/projects') {
 // The connection identity Electron publishes; the cockpit only reads it.
 const setConnection = (connectionId: string) => $connection.set({ connectionId } as never)
 
-// A successful read leaves the shared caches tagged with the owner it was made
-// for, as the real store does; the fixtures stand in for that owner's answer.
-const listLandsForCurrentOwner = async (): Promise<ProjectsReadOutcome> => {
-  $projectsOwner.set($projectsOwnerKey.get())
+// As the real store does, a read publishes its verdict for the owner it was
+// made for, and a read that landed tags the shared cache with that owner; the
+// fixtures stand in for that owner's answer.
+const listSettles = (outcome: 'complete' | 'failed') => async (): Promise<ProjectsReadOutcome> => {
+  const owner = $projectsOwnerKey.get()
 
-  return 'complete'
+  if (outcome !== 'failed') {
+    $projectsOwner.set(owner)
+  }
+
+  $projectsReadStatus.set({ outcome, owner })
+
+  return outcome
 }
 
-const treeLandsForCurrentOwner = async (): Promise<ProjectsReadOutcome> => {
-  $projectTreeOwner.set($projectsOwnerKey.get())
+const treeSettles = (outcome: 'complete' | 'failed') => async (): Promise<ProjectsReadOutcome> => {
+  const owner = $projectsOwnerKey.get()
 
-  return 'complete'
+  if (outcome !== 'failed') {
+    $projectTreeOwner.set(owner)
+  }
+
+  $projectTreeReadStatus.set({ outcome, owner })
+
+  return outcome
 }
 
 beforeEach(() => {
   setConnection('local')
   projectsStore.fetchProjectSessions.mockResolvedValue(null)
-  projectsStore.refreshProjects.mockImplementation(listLandsForCurrentOwner)
-  projectsStore.refreshProjectTree.mockImplementation(treeLandsForCurrentOwner)
+  projectsStore.refreshProjects.mockImplementation(listSettles('complete'))
+  projectsStore.refreshProjectTree.mockImplementation(treeSettles('complete'))
   $projectsRpcAvailable.set(true)
 })
 
@@ -106,7 +128,10 @@ afterEach(() => {
   $projects.set([])
   $projectTreeOwner.set(null)
   $projectsOwner.set(null)
+  $projectTreeReadStatus.set(null)
+  $projectsReadStatus.set(null)
   $projectsRpcAvailable.set(null)
+  $projectsRpcAvailableByOwner.set({})
   dotStates.atom.set({})
   $connection.set(null)
   $activeGatewayProfile.set('default')
@@ -197,15 +222,15 @@ describe('ProjectsView', () => {
     expect(screen.queryByRole('button', { name: /Kanban|New project|Rename|Delete|Archive/ })).toBeNull()
   })
 
-  it.each<[string, Record<'list' | 'tree', ProjectsReadOutcome>]>([
+  it.each<[string, Record<'list' | 'tree', 'complete' | 'failed'>]>([
     ['the tree read', { list: 'complete', tree: 'failed' }],
     ['both reads', { list: 'failed', tree: 'failed' }],
     ['the list read with no tree yet', { list: 'failed', tree: 'complete' }]
   ])('ends a failed first load of %s in an error state with a retry that recovers in place', async (_label, ok) => {
     // A stale backend probe never answered: availability stays unknown.
     $projectsRpcAvailable.set(null)
-    projectsStore.refreshProjects.mockResolvedValueOnce(ok.list)
-    projectsStore.refreshProjectTree.mockResolvedValueOnce(ok.tree)
+    projectsStore.refreshProjects.mockImplementationOnce(listSettles(ok.list))
+    projectsStore.refreshProjectTree.mockImplementationOnce(treeSettles(ok.tree))
 
     renderView()
 
@@ -216,7 +241,7 @@ describe('ProjectsView', () => {
     projectsStore.refreshProjectTree.mockImplementationOnce(async () => {
       $projectTree.set([atlas])
 
-      return treeLandsForCurrentOwner()
+      return treeSettles('complete')()
     })
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
 
@@ -225,7 +250,7 @@ describe('ProjectsView', () => {
   })
 
   it('keeps cached projects visible with a notice when only the list read fails', async () => {
-    projectsStore.refreshProjects.mockResolvedValueOnce('failed')
+    projectsStore.refreshProjects.mockImplementationOnce(listSettles('failed'))
     $projectTree.set([atlas])
 
     renderView()
@@ -439,7 +464,7 @@ describe('ProjectsView', () => {
   })
 
   it('explains an older backend instead of spinning forever', async () => {
-    $projectsRpcAvailable.set(false)
+    $projectsRpcAvailableByOwner.set({ [$projectsOwnerKey.get()]: false })
 
     renderView()
 

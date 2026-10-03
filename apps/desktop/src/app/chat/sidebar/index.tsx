@@ -102,7 +102,8 @@ import {
   refreshProjects,
   refreshProjectTree,
   refreshWorktrees,
-  scanAndRecordRepos
+  scanAndRecordRepos,
+  takePresentationOnlyGrouping
 } from '@/store/projects'
 import {
   $prBranchBySession,
@@ -848,6 +849,10 @@ export function ChatSidebar({
     }
 
     if (worktreeGroupingActive) {
+      // Grouping switched on by the Projects cockpit's "Show in sidebar" is
+      // presentation only: that transition paints, it doesn't discover.
+      const presentationOnly = takePresentationOnlyGrouping()
+
       void refreshProjects()
 
       // The all-profiles tree is served off every profile's databases at once
@@ -865,7 +870,7 @@ export function ChatSidebar({
       // existing sessions / the backend cache) FIRST, then kick off the heavy
       // home-dir git crawl so newly-discovered repos fold in afterward — instead
       // of the crawl blocking the first render.
-      void refreshProjectTree().finally(() => void scanAndRecordRepos())
+      void refreshProjectTree().finally(() => presentationOnly || void scanAndRecordRepos())
 
       return
     }

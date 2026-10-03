@@ -29,8 +29,21 @@ const { $projectScope, ALL_PROJECTS } = await import('@/store/project-scope')
 const { $sidebarAgentsGrouped, setSidebarAgentsGrouped } = await import('@/store/layout')
 const { $connection } = await import('@/store/session')
 
-const { $projects, $projectsRpcAvailable, $projectTree, refreshProjects, refreshProjectTree } =
-  await import('@/store/projects')
+const {
+  $projects,
+  $projectsOwner,
+  $projectsOwnerKey,
+  $projectsRpcAvailable,
+  $projectsRpcAvailableByOwner,
+  $projectTree,
+  $projectTreeOwner,
+  $projectTreeReadStatus,
+  $projectsReadStatus,
+  deleteProject,
+  refreshProjects,
+  refreshProjectTree,
+  updateProject
+} = await import('@/store/projects')
 
 const { ProjectsView } = await import('.')
 
@@ -41,7 +54,7 @@ interface FakeGateway {
   request: ReturnType<typeof vi.fn<Respond>>
 }
 
-function useGateway(respond: Respond): FakeGateway {
+function openGateway(respond: Respond): FakeGateway {
   const gateway: FakeGateway = { connectionState: 'open', request: vi.fn<Respond>(respond) }
   vi.mocked(gatewayStore.activeGateway).mockReturnValue(gateway as never)
   vi.mocked(gatewayStore.ensureActiveGatewayOpen).mockResolvedValue(gateway as never)
@@ -146,7 +159,12 @@ afterEach(() => {
   vi.clearAllMocks()
   $projectTree.set([])
   $projects.set([])
+  $projectTreeOwner.set(null)
+  $projectsOwner.set(null)
+  $projectTreeReadStatus.set(null)
+  $projectsReadStatus.set(null)
   $projectsRpcAvailable.set(null)
+  $projectsRpcAvailableByOwner.set({})
   setShowAllProfiles(false)
   $activeGatewayProfile.set('default')
   $connection.set(null)
@@ -162,7 +180,7 @@ describe('ProjectsView owner isolation (real store)', () => {
 
     let alphaReads = answersWith(alpha)
 
-    useGateway(
+    openGateway(
       ownerResponder({
         alpha: method => alphaReads(method),
         beta: method => betaReads(method)
@@ -215,7 +233,7 @@ describe('ProjectsView owner isolation (real store)', () => {
 
     // A connection change under the same profile name is a different owner:
     // the new machine's failing reads must not fall back to this one's data.
-    useGateway(() => Promise.reject(new Error('remote read failed')))
+    openGateway(() => Promise.reject(new Error('remote read failed')))
     act(() => setConnection('remote-box'))
     expectNoOwnerText(alpha)
     expect(await screen.findByText("Couldn't load projects")).toBeTruthy()
@@ -232,7 +250,7 @@ describe('ProjectsView "Show in sidebar" (real store)', () => {
     ['a single profile', false],
     ['All Profiles', true]
   ])('only scopes the sidebar in %s — the durable active project is never written', async (_label, allProfiles) => {
-    const gateway = useGateway(ownerResponder({ alpha: answersWith(alpha) }))
+    const gateway = openGateway(ownerResponder({ alpha: answersWith(alpha) }))
     vi.mocked(hermes.hermesApi).mockResolvedValue({ ...treePayload(alpha), errors: [] })
     setShowAllProfiles(allProfiles)
 
@@ -257,7 +275,7 @@ describe('ProjectsView read supersession (real store)', () => {
       'projects.tree': []
     }
 
-    useGateway(method => {
+    openGateway(method => {
       const read = pending[method]
 
       if (!read) {
@@ -322,7 +340,7 @@ describe('ProjectsView All Profiles payload errors (real store)', () => {
   const fanOut = () => vi.mocked(hermes.hermesApi)
 
   beforeEach(() => {
-    useGateway(() => Promise.reject(new Error('All Profiles reads no single gateway')))
+    openGateway(() => Promise.reject(new Error('All Profiles reads no single gateway')))
     setShowAllProfiles(true)
   })
 
@@ -366,5 +384,255 @@ describe('ProjectsView All Profiles payload errors (real store)', () => {
 
     await waitFor(() => expect(screen.queryByText(/Couldn't refresh every project detail/)).toBeNull())
     expect(screen.getByRole('button', { name: /Alpha Atlas/ })).toBeTruthy()
+  })
+})
+
+// Unqualified descriptors (no registry `connectionId`) as Electron publishes
+// them for an env/settings primary: only the endpoint tells them apart.
+const unqualified = (host: string) =>
+  ({
+    baseUrl: `https://${host}:9119`,
+    mode: 'remote',
+    remoteHost: host,
+    token: `${host}-secret-token`,
+    wsUrl: `wss://${host}:9119/api/ws?token=${host}-secret-token`
+  }) as never
+
+const hydratedFor = (fixture: OwnerFixture, title: string) => ({
+  project: {
+    ...fixture.tree,
+    repos: [
+      {
+        groups: [
+          {
+            id: `${fixture.tree.path}::main`,
+            isMain: true,
+            label: 'main',
+            path: fixture.tree.path,
+            sessions: [session(`s-${title}`, title, 30)]
+          }
+        ],
+        id: fixture.tree.path,
+        label: 'atlas',
+        path: fixture.tree.path,
+        sessionCount: 1
+      }
+    ]
+  }
+})
+
+describe('ProjectsView owner isolation across unqualified connections (real store)', () => {
+  it('keeps two backends with no registry id apart across delayed, failed and successful A → B → A reads', async () => {
+    const alphaHost = unqualified('alpha.example.test')
+    const betaHost = unqualified('beta.example.test')
+    const alphaText = [...ownerText(alpha), 'Alpha hydrated chat']
+    const betaText = [...ownerText(beta), 'Beta hydrated chat']
+
+    const expectNone = (texts: string[]) => {
+      for (const text of texts) {
+        expect(screen.queryAllByText(text, { exact: false })).toEqual([])
+      }
+    }
+
+    const serve = (fixture: OwnerFixture, hydrated: string, gate?: Promise<unknown>) =>
+      openGateway(async method => {
+        await gate
+
+        if (method === 'projects.project_sessions') {
+          return hydratedFor(fixture, hydrated)
+        }
+
+        return answersWith(fixture)(method)
+      })
+
+    $activeGatewayProfile.set('default')
+    $connection.set(alphaHost)
+    serve(alpha, 'Alpha hydrated chat')
+    renderView()
+
+    const alphaDetail = await screen.findByRole('region', { name: 'Alpha Atlas' })
+    await waitFor(() => expect(within(alphaDetail).getByText('Alpha hydrated chat')).toBeTruthy())
+
+    // A → B: B's reads are delayed, then fail.
+    const betaFailure = deferred()
+    openGateway(() => betaFailure.promise.then(() => Promise.reject(new Error('beta unreachable'))))
+    act(() => $connection.set(betaHost))
+    expectNone(alphaText)
+    expect(await screen.findByRole('status', { name: 'Loading projects' })).toBeTruthy()
+    expectNone(alphaText)
+
+    await act(async () => betaFailure.resolve())
+    expect(await screen.findByText("Couldn't load projects")).toBeTruthy()
+    expectNone(alphaText)
+
+    // B recovers on Retry — only B's rows.
+    serve(beta, 'Beta hydrated chat')
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    const betaDetail = await screen.findByRole('region', { name: 'Beta Atlas' })
+    await waitFor(() => expect(within(betaDetail).getByText('Beta hydrated chat')).toBeTruthy())
+    expectNone(alphaText)
+
+    // B → A with A's reads delayed: B's rows leave at once.
+    const alphaGate = deferred()
+    serve(alpha, 'Alpha hydrated chat', alphaGate.promise)
+    act(() => $connection.set(alphaHost))
+    expectNone(betaText)
+
+    await act(async () => alphaGate.resolve())
+    const alphaAgain = await screen.findByRole('region', { name: 'Alpha Atlas' })
+    await waitFor(() => expect(within(alphaAgain).getByText('Alpha hydrated chat')).toBeTruthy())
+    expectNone(betaText)
+
+    // The owner identity names the endpoint, never its credentials.
+    expect($projectsOwnerKey.get()).not.toMatch(/secret|token/)
+  })
+})
+
+describe("ProjectsView never shows a departed owner's late write (real store)", () => {
+  it.each([
+    ['a rejected update rolls back', 'update', 'reject'],
+    ['a delete response lands', 'delete', 'resolve'],
+    ['a rejected delete rolls back', 'delete', 'reject']
+  ] as const)('keeps B on B when A’s %s after B loaded', async (_label, write, settle) => {
+    const alphaWrite = deferred<unknown>()
+
+    openGateway((method, params) => {
+      if (method === 'projects.project_sessions') {
+        // B's hydration fails too: only the tree's preview could stand in.
+        return Promise.reject(new Error('hydration failed'))
+      }
+
+      if (params.profile === 'alpha') {
+        return method === 'projects.update' || method === 'projects.delete'
+          ? alphaWrite.promise
+          : answersWith(alpha)(method)
+      }
+
+      return answersWith(beta)(method)
+    })
+
+    renderView()
+    await screen.findByRole('region', { name: 'Alpha Atlas' })
+    await waitFor(() => expect(screen.getByText('Alpha description')).toBeTruthy())
+
+    // A's optimistic write paints at once; its RPC stays in flight.
+    const pendingWrite =
+      write === 'update' ? updateProject('p_atlas', { name: 'Alpha renamed' }) : deleteProject('p_atlas')
+
+    const writeSettled = pendingWrite.catch(() => undefined)
+    await waitFor(() => expect(gatewayStore.activeGateway).toHaveBeenCalled())
+
+    act(() => $activeGatewayProfile.set('beta'))
+    const betaDetail = await screen.findByRole('region', { name: 'Beta Atlas' })
+    await waitFor(() => expect(within(betaDetail).getByText('Beta description')).toBeTruthy())
+
+    await act(async () => {
+      if (settle === 'reject') {
+        alphaWrite.reject(new Error('alpha write failed'))
+      } else {
+        alphaWrite.resolve(listPayload(alpha))
+      }
+
+      await writeSettled
+    })
+
+    expect(await screen.findByRole('region', { name: 'Beta Atlas' })).toBeTruthy()
+    expect(screen.getByText('Beta description')).toBeTruthy()
+    expectNoOwnerText(alpha)
+    expect(screen.queryByText('Alpha renamed')).toBeNull()
+  })
+})
+
+describe('ProjectsView follows background tree reads for its owner (real store)', () => {
+  const profileError = { error: 'database is locked', profile: 'beta' }
+  const fanOut = () => vi.mocked(hermes.hermesApi)
+  const background = (read: () => Promise<unknown>) => act(async () => void (await read()))
+
+  it('warns on background partial and total failures, keeps the last good list, and clears on recovery', async () => {
+    openGateway(() => Promise.reject(new Error('All Profiles reads no single gateway')))
+    setShowAllProfiles(true)
+    fanOut().mockResolvedValueOnce({ ...treePayload(alpha), errors: [] })
+    renderView('/projects')
+
+    expect(await screen.findByRole('button', { name: /Alpha Atlas/ })).toBeTruthy()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Refresh projects' })).toHaveProperty('disabled', false)
+    )
+
+    // A background sync (not the cockpit) reads a partial fan-out.
+    fanOut().mockResolvedValueOnce({ ...treePayload(alpha), errors: [profileError] })
+    await background(refreshProjectTree)
+    expect(await screen.findByText(/Some profiles couldn't be read/)).toBeTruthy()
+
+    // Then every profile fails: last good list stays, never "No projects yet".
+    fanOut().mockResolvedValueOnce({ active_id: null, errors: [profileError], projects: [], scoped_session_ids: [] })
+    await background(refreshProjectTree)
+    expect(await screen.findByText(/Couldn't refresh every project detail/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Alpha Atlas/ })).toBeTruthy()
+    expect(screen.queryByText('No projects yet')).toBeNull()
+
+    // A healthy background read clears every warning on its own.
+    fanOut().mockResolvedValueOnce({ ...treePayload(alpha), errors: [] })
+    await background(refreshProjectTree)
+    await waitFor(() => expect(screen.queryByText(/Couldn't refresh every project detail/)).toBeNull())
+    expect(screen.queryByText(/Some profiles couldn't be read/)).toBeNull()
+    expect(screen.getByRole('button', { name: /Alpha Atlas/ })).toBeTruthy()
+  })
+
+  it("ignores a departed owner's background outcome", async () => {
+    openGateway(ownerResponder({ alpha: answersWith(alpha) }))
+    setShowAllProfiles(true)
+    fanOut().mockResolvedValueOnce({ ...treePayload(alpha), errors: [] })
+    renderView('/projects')
+    await screen.findByRole('button', { name: /Alpha Atlas/ })
+
+    // An All Profiles background read is still in flight when the user picks
+    // a single profile; it then lands with errors.
+    const departed = deferred<unknown>()
+    fanOut().mockReturnValueOnce(departed.promise as never)
+    const pending = refreshProjectTree()
+    act(() => setShowAllProfiles(false))
+    await waitFor(() => expect(gatewayStore.activeGateway).toHaveBeenCalled())
+    expect(await screen.findByRole('button', { name: /Alpha Atlas/ })).toBeTruthy()
+
+    await act(async () => {
+      departed.resolve({ active_id: null, errors: [profileError], projects: [], scoped_session_ids: [] })
+      await pending
+    })
+
+    expect(screen.queryByText(/Couldn't refresh every project detail/)).toBeNull()
+    expect(screen.queryByText(/Some profiles couldn't be read/)).toBeNull()
+    expect(screen.queryByText("Couldn't load projects")).toBeNull()
+    expect(screen.getByRole('button', { name: /Alpha Atlas/ })).toBeTruthy()
+  })
+})
+
+describe('ProjectsView scopes backend capability to its owner (real store)', () => {
+  it("offers B a retry after A's missing project methods, and recovers B in place", async () => {
+    let betaReads: (method: string) => Promise<unknown> = () => Promise.reject(new Error('gateway read failed'))
+
+    openGateway(
+      ownerResponder({
+        alpha: method => Promise.reject(new Error(`unknown method: ${method}`)),
+        beta: method => betaReads(method)
+      })
+    )
+
+    renderView()
+    expect(await screen.findByText('Projects are unavailable')).toBeTruthy()
+
+    // B supports projects but its first reads fail transiently.
+    act(() => $activeGatewayProfile.set('beta'))
+    expect(await screen.findByText("Couldn't load projects")).toBeTruthy()
+    expect(screen.queryByText('Projects are unavailable')).toBeNull()
+
+    betaReads = answersWith(beta)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('region', { name: 'Beta Atlas' })).toBeTruthy()
+
+    // A's own evidence still stands for A.
+    act(() => $activeGatewayProfile.set('alpha'))
+    expect(await screen.findByText('Projects are unavailable')).toBeTruthy()
+    expectNoOwnerText(beta)
   })
 })

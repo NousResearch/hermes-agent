@@ -1302,6 +1302,53 @@ describe('project read result contract', () => {
   })
 })
 
+describe('project tree loading ownership', () => {
+  const treeAnswer = { active_id: null, projects: [], scoped_session_ids: [] }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setShowAllProfiles(false)
+    $activeGatewayProfile.set('default')
+    $projectTreeLoading.set(false)
+  })
+
+  it.each([
+    ['completes', 'complete'],
+    ['fails', 'failed'],
+    ['completes and the owner then moves', 'departed']
+  ] as const)(
+    'a read superseded while connecting never re-raises loading when its replacement %s',
+    async (_label, replacement) => {
+      const request = vi.fn((_method: string, params: Record<string, unknown>) =>
+        replacement === 'failed' && params.profile === 'default'
+          ? Promise.reject(new Error('gateway read failed'))
+          : Promise.resolve(treeAnswer)
+      )
+
+      const gateway = { connectionState: 'open', request }
+      const firstConnect = deferred<typeof gateway>()
+
+      // Read 1 finds no open socket and waits for one; read 2 finds it open.
+      activeGateway.mockReturnValueOnce(null as never).mockReturnValue(gateway as never)
+      vi.mocked(gw.ensureActiveGatewayOpen).mockReturnValueOnce(firstConnect.promise as never)
+
+      const first = refreshProjectTree()
+      const second = refreshProjectTree()
+      await expect(second).resolves.toBe(replacement === 'failed' ? 'failed' : 'complete')
+      expect($projectTreeLoading.get()).toBe(false)
+
+      if (replacement === 'departed') {
+        $activeGatewayProfile.set('profile-b')
+      }
+
+      firstConnect.resolve(gateway)
+
+      await expect(first).resolves.toBe(replacement)
+      expect($projectTreeLoading.get()).toBe(false)
+    }
+  )
+})
+
 describe('tombstone pruning', () => {
   const openGatewayReturning = (scopedIds: string[]) => {
     const gateway = {

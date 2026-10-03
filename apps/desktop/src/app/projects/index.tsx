@@ -21,10 +21,13 @@ import {
   $projects,
   $projectsOwner,
   $projectsOwnerKey,
-  $projectsRpcAvailable,
+  $projectsReadStatus,
+  $projectsRpcAvailableByOwner,
   $projectTree,
   $projectTreeOwner,
+  $projectTreeReadStatus,
   type ProjectsReadOutcome,
+  type ProjectsReadStatus,
   refreshProjects,
   refreshProjectTree,
   showProjectInSidebar
@@ -54,15 +57,6 @@ interface ProjectsViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
-/** The latest settled list/tree read, for the owner (connection + profile
- *  view) it was made under — another owner's failure is not this one's. */
-interface ProjectsLoad {
-  failed: boolean
-  /** An answer landed, but some profiles in it couldn't be read. */
-  incomplete: boolean
-  owner: string
-}
-
 // The Projects cockpit: a first-class page over the existing project caches.
 // It never moves focus on its own — mounting, refreshing, and background tree
 // updates only repaint; the user's clicks are the only navigation.
@@ -81,22 +75,27 @@ export function ProjectsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ..
   const tree = useStore($projectTreeOwner) === owner ? sharedTree : NO_TREE
   const infos = useStore($projectsOwner) === owner ? sharedInfos : NO_INFOS
   const activeProjectId = useStore($activeProjectId)
-  const rpcAvailable = useStore($projectsRpcAvailable)
+  // Only this owner's own evidence: another backend's missing methods say nothing here.
+  const rpcAvailable = useStore($projectsRpcAvailableByOwner)[owner] ?? null
   const dotStates = useStore($sessionDotStateById)
   const removedIds = useStore($removedSessionIds)
   const dismissedAutoProjectIds = useStore($dismissedAutoProjectIds)
   const [query, setQuery] = useState('')
   const [refreshing, setRefreshing] = useState(false)
-  const [load, setLoad] = useState<null | ProjectsLoad>(null)
+  // The owner whose first cockpit read has settled. Until then the page is
+  // loading; after it, the store's published verdicts (whoever triggered the
+  // read — this page, the sidebar, a background sync) say failed/incomplete.
+  const [settledOwner, setSettledOwner] = useState<null | string>(null)
+  const treeStatus = useStore($projectTreeReadStatus)
+  const listStatus = useStore($projectsReadStatus)
   const [sessionsRefreshToken, setSessionsRefreshToken] = useState(0)
   const refreshRun = useRef(0)
 
   // Re-read on mount and whenever the owner changes. Both reads keep the
   // cached atoms on failure and settle (never reject), so every run ends in a
   // ready, empty, or error state — never an open-ended loader. A read another
-  // same-owner refresh took over reports THAT read's outcome. Only the newest
-  // run may publish, and a departed owner's outcome is the next owner's run to
-  // report.
+  // same-owner refresh took over settles with THAT read. Only the newest run
+  // may settle the page, and a departed owner's run leaves it to the next.
   const refresh = useCallback(async () => {
     const run = ++refreshRun.current
     setRefreshing(true)
@@ -111,7 +110,7 @@ export function ProjectsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ..
     setRefreshing(false)
 
     if (list !== 'departed' && tree !== 'departed') {
-      setLoad({ failed: list === 'failed' || tree === 'failed', incomplete: tree === 'incomplete', owner })
+      setSettledOwner(owner)
     }
   }, [allProfiles, owner])
 
@@ -128,7 +127,18 @@ export function ProjectsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ..
     void refresh()
   }, [refresh])
 
-  const loaded = load?.owner === owner ? load : null
+  // A verdict for another owner says nothing about this one; no verdict at all
+  // after a settled run means nothing landed for this owner.
+  const verdict = (status: null | ProjectsReadStatus) => (status?.owner === owner ? status.outcome : 'failed')
+  const treeVerdict = verdict(treeStatus)
+
+  const loaded =
+    settledOwner === owner
+      ? {
+          failed: treeVerdict === 'failed' || (!allProfiles && verdict(listStatus) === 'failed'),
+          incomplete: treeVerdict === 'incomplete'
+        }
+      : null
 
   const projects = useMemo(
     () => cockpitProjects(tree, activeProjectId, dismissedAutoProjectIds),

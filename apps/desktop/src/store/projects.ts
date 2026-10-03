@@ -9,7 +9,7 @@ import {
   projectOwnerBySessionId,
   type SidebarProjectTree
 } from '@/app/chat/sidebar/projects/workspace-groups'
-import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
+import type { HermesConnection, HermesGitBaseBranch, HermesGitBranch } from '@/global'
 import { getHermesConfig, hermesApi, type HermesGateway, type SessionInfo } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
@@ -18,7 +18,7 @@ import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { revealFile } from '@/store/file-actions'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
-import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
+import { $sidebarAgentsGrouped, $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import {
   $activeGatewayProfile,
@@ -70,12 +70,40 @@ export const $projectTreeLoading = atom(false)
 // under an umbrella folder by cwd.
 export const $projectOwnerBySessionId = computed($projectTree, projectOwnerBySessionId)
 
+/** The backend a connection descriptor points at, stable and non-secret. A
+ *  registry id names its source; an unqualified descriptor (an env/settings
+ *  primary has none) is told apart by its endpoint — scheme, host and path
+ *  only, never the token, userinfo or query. `null` is a transition with no
+ *  backend resolved yet, which owns nothing. */
+export function projectsBackendIdentity(connection: HermesConnection | null | undefined): string {
+  if (!connection) {
+    return 'unresolved'
+  }
+
+  const id = connection.connectionId?.trim()
+
+  if (id) {
+    return `id:${id}`
+  }
+
+  let endpoint = ''
+
+  try {
+    const url = new URL(connection.baseUrl)
+    endpoint = `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`
+  } catch {
+    // A descriptor without a parseable endpoint still has its mode and host.
+  }
+
+  return `${connection.mode ?? 'local'}:${endpoint}:${connection.remoteHost ?? ''}`
+}
+
 // Whose caches these are: the connection plus the profile view (one profile,
 // or All Profiles). Project ids repeat across owners (auto-projects are folder
 // paths), so an id alone never says whose project a cached row describes.
 export const $projectsOwnerKey = computed(
   [$connection, $profileScope],
-  (connection, scope) => `${connection?.connectionId ?? ''}\u0000${scope}`
+  (connection, scope) => `${projectsBackendIdentity(connection)}\u0000${scope}`
 )
 // The owner `$projects` / `$projectTree` were last read for. The sidebar paints
 // the shared caches as they stand; a surface that must never show a departed
@@ -87,13 +115,28 @@ export const $projectTreeOwner = atom<null | string>(null)
 // (same semver label, older install). Null until the first probe.
 export const $projectsRpcAvailable = atom<boolean | null>(null)
 
-function markProjectsRpcSuccess(): void {
-  $projectsRpcAvailable.set(true)
+// The same evidence, kept per owner: one backend lacking the projects surface
+// says nothing about the next one, whose transient failure must stay
+// retryable rather than read as "update Hermes".
+export const $projectsRpcAvailableByOwner = atom<Readonly<Record<string, boolean>>>({})
+
+function recordProjectsRpcEvidence(owner: string, available: boolean): void {
+  const evidence = $projectsRpcAvailableByOwner.get()
+
+  if (evidence[owner] !== available) {
+    $projectsRpcAvailableByOwner.set({ ...evidence, [owner]: available })
+  }
 }
 
-function markProjectsRpcFailure(err: unknown): void {
+function markProjectsRpcSuccess(owner = $projectsOwnerKey.get()): void {
+  $projectsRpcAvailable.set(true)
+  recordProjectsRpcEvidence(owner, true)
+}
+
+function markProjectsRpcFailure(err: unknown, owner = $projectsOwnerKey.get()): void {
   if (isMissingRpcMethod(err)) {
     $projectsRpcAvailable.set(false)
+    recordProjectsRpcEvidence(owner, false)
   }
 }
 
@@ -153,9 +196,35 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 // cockpit): grouped mode + the view scope, nothing durable. Unlike
 // `enterProject` it never writes the active-project pointer — in All Profiles
 // that write would land on whichever profile the live gateway serves.
+//
+// Turning grouping on is what makes the mounted sidebar run its repo discovery
+// (`scanAndRecordRepos`, which persists through `projects.record_repos` /
+// `projects.discover_repos`). A grouping switched on HERE is presentation, so
+// the sidebar consumes `takePresentationOnlyGrouping()` and skips discovery for
+// that one transition. The intent lapses as soon as grouping turns off again.
 export function showProjectInSidebar(id: string): void {
+  if (!$sidebarAgentsGrouped.get()) {
+    presentationOnlyGrouping = true
+  }
+
   setSidebarAgentsGrouped(true)
   $projectScope.set(id)
+}
+
+let presentationOnlyGrouping = false
+
+$sidebarAgentsGrouped.listen(grouped => {
+  if (!grouped) {
+    presentationOnlyGrouping = false
+  }
+})
+
+/** True once when the current grouping was switched on by a read-only surface. */
+export function takePresentationOnlyGrouping(): boolean {
+  const presentationOnly = presentationOnlyGrouping
+  presentationOnlyGrouping = false
+
+  return presentationOnly
 }
 
 // The cwd a NEW chat should start in.
@@ -414,11 +483,23 @@ interface ProjectsRead {
   owner: string
 }
 
+/** The verdict of the newest settled read of one cache, for the owner it was
+ *  made for — published whoever asked for the read (the cockpit, the sidebar,
+ *  a background sync), so a page can show a later failure or recovery it
+ *  didn't trigger itself. */
+export interface ProjectsReadStatus {
+  outcome: Exclude<ProjectsReadOutcome, 'departed'>
+  owner: string
+}
+
+export const $projectsReadStatus = atom<null | ProjectsReadStatus>(null)
+export const $projectTreeReadStatus = atom<null | ProjectsReadStatus>(null)
+
 // One tracker per kind of read (list, tree). Only the newest read may publish,
 // but a superseded read is not a success: its caller waits on the read that
 // replaced it (and whatever replaced that), so a background refresh that fails
 // after taking over can't be mistaken for the caller's answer.
-function projectsReadTracker() {
+function projectsReadTracker(status: typeof $projectsReadStatus) {
   let generation = 0
   let latest: null | ProjectsRead = null
 
@@ -427,6 +508,14 @@ function projectsReadTracker() {
   return {
     isCurrent,
     isNewest: (read: number): boolean => read === generation,
+    /** Publish a still-current read's verdict and hand it back to its caller. */
+    settle(read: number, owner: string, outcome: ProjectsReadStatus['outcome']): ProjectsReadOutcome {
+      if (isCurrent(read, owner)) {
+        status.set({ outcome, owner })
+      }
+
+      return outcome
+    },
     start(read: (generation: number, owner: string) => Promise<ProjectsReadOutcome>): Promise<ProjectsReadOutcome> {
       const owner = $projectsOwnerKey.get()
       const outcome = read(++generation, owner)
@@ -444,12 +533,16 @@ function projectsReadTracker() {
         return latest.outcome
       }
 
+      if (read === generation) {
+        status.set({ outcome: 'failed', owner })
+      }
+
       return 'failed'
     }
   }
 }
 
-const projectListReads = projectsReadTracker()
+const projectListReads = projectsReadTracker($projectsReadStatus)
 
 // Pull the full project list + active pointer. Best-effort: a failure (gateway
 // not up yet) leaves the cached atoms intact so the sidebar doesn't flicker.
@@ -477,14 +570,14 @@ async function readProjects(generation: number, owner: string): Promise<Projects
 
     applyPayload(payload)
     $projectsOwner.set(owner)
-    markProjectsRpcSuccess()
+    markProjectsRpcSuccess(owner)
 
-    return 'complete'
+    return projectListReads.settle(generation, owner, 'complete')
   } catch (err) {
     // No context means the connect itself failed (or the owner moved while
     // connecting). Backend may not be ready; keep the last known list.
     if (context && projectListReads.isCurrent(generation, owner) && stillOnProjectsContext(context)) {
-      markProjectsRpcFailure(err)
+      markProjectsRpcFailure(err, owner)
     }
 
     return projectListReads.unpublished(generation, owner)
@@ -507,7 +600,7 @@ const projectTreePreviewLimit = () => ($sidebarShowAllSessions.get() ? 2000 : 3)
 // default.
 const PROJECT_TREE_REQUEST_TIMEOUT_MS = 60_000
 
-const projectTreeReads = projectsReadTracker()
+const projectTreeReads = projectsReadTracker($projectTreeReadStatus)
 
 function applyProjectTreePayload(res: ProjectTreePayload): void {
   const scoped = new Set(res.scoped_session_ids ?? [])
@@ -538,7 +631,9 @@ async function readProjectTreeOn(
 ): Promise<ProjectsReadOutcome> {
   const { gateway, profile } = context
 
-  if (activeGateway() === gateway) {
+  // Only the newest read owns the loading flag: it raises it here and clears
+  // it in `finally`, so an obsolete read can neither raise nor strand it.
+  if (projectTreeReads.isNewest(generation) && activeGateway() === gateway) {
     $projectTreeLoading.set(true)
   }
 
@@ -573,12 +668,12 @@ async function readProjectTreeOn(
 
     applyProjectTreePayload(res)
     $projectTreeOwner.set(owner)
-    markProjectsRpcSuccess()
+    markProjectsRpcSuccess(owner)
 
-    return 'complete'
+    return projectTreeReads.settle(generation, owner, 'complete')
   } catch (err) {
     if (projectTreeReads.isCurrent(generation, owner) && stillOnProjectsContext(context)) {
-      markProjectsRpcFailure(err)
+      markProjectsRpcFailure(err, owner)
     }
 
     return projectTreeReads.unpublished(generation, owner)
@@ -612,6 +707,12 @@ async function readProjectTree(generation: number, owner: string): Promise<Proje
     return projectTreeReads.unpublished(generation, owner)
   }
 
+  // Connecting can outlast a newer read that has already settled; a read that
+  // is no longer current must not take the loading flag (or the RPC) back.
+  if (!projectTreeReads.isCurrent(generation, owner)) {
+    return projectTreeReads.unpublished(generation, owner)
+  }
+
   return readProjectTreeOn(context, generation, owner)
 }
 
@@ -640,19 +741,19 @@ async function readProjectTreeAcrossProfiles(generation: number, owner: string):
     const unread = res.errors?.length ?? 0
 
     if (unread && !res.projects?.length) {
-      return 'failed'
+      return projectTreeReads.settle(generation, owner, 'failed')
     }
 
     applyProjectTreePayload(res)
     $projectTreeOwner.set(owner)
-    markProjectsRpcSuccess()
+    markProjectsRpcSuccess(owner)
 
-    return unread ? 'incomplete' : 'complete'
+    return projectTreeReads.settle(generation, owner, unread ? 'incomplete' : 'complete')
   } catch (err) {
     // A departed All Profiles read must not publish its failure over the
     // newer read (or single-profile scope) that now owns availability.
     if (projectTreeReads.isCurrent(generation, owner)) {
-      markProjectsRpcFailure(err)
+      markProjectsRpcFailure(err, owner)
     }
 
     return projectTreeReads.unpublished(generation, owner)
@@ -1090,22 +1191,39 @@ async function writeProjectIdea(folder: null | string | undefined, idea: string)
 // action; the write reconciles in the background and rolls the whole cache back
 // on failure — the same Apollo-style layer the session list uses.
 
+// A snapshot carries the owner it was taken under and the caches' provenance
+// tags, so a rollback restores data and tags together — and never lands once
+// the window has moved to another owner, whose caches it would overwrite.
 interface ProjectsSnapshot {
   projects: ProjectInfo[]
   tree: SidebarProjectTree[]
   active: null | string
+  owner: string
+  projectsOwner: null | string
+  treeOwner: null | string
 }
 
 const snapshotProjects = (): ProjectsSnapshot => ({
   projects: $projects.get(),
   tree: $projectTree.get(),
-  active: $activeProjectId.get()
+  active: $activeProjectId.get(),
+  owner: $projectsOwnerKey.get(),
+  projectsOwner: $projectsOwner.get(),
+  treeOwner: $projectTreeOwner.get()
 })
 
-const restoreProjects = ({ projects, tree, active }: ProjectsSnapshot): void => {
-  $projects.set(projects)
-  $projectTree.set(tree)
-  $activeProjectId.set(active)
+const stillOnSnapshotOwner = (snap: ProjectsSnapshot): boolean => $projectsOwnerKey.get() === snap.owner
+
+const restoreProjects = (snap: ProjectsSnapshot): void => {
+  if (!stillOnSnapshotOwner(snap)) {
+    return
+  }
+
+  $projects.set(snap.projects)
+  $projectTree.set(snap.tree)
+  $activeProjectId.set(snap.active)
+  $projectsOwner.set(snap.projectsOwner)
+  $projectTreeOwner.set(snap.treeOwner)
 }
 
 // Await an already-applied optimistic write; restore the snapshot if it throws.
@@ -1400,13 +1518,16 @@ export async function deleteProject(id: string): Promise<void> {
   }
 
   await persistOrRollback(snap, async () => {
-    applyPayload(
-      await gatewayRequestOn<ProjectsPayload>(
-        context.gateway,
-        'projects.delete',
-        projectParams({ id }, context.profile)
-      )
+    const payload = await gatewayRequestOn<ProjectsPayload>(
+      context.gateway,
+      'projects.delete',
+      projectParams({ id }, context.profile)
     )
+
+    // A late answer describes the owner the delete was made under.
+    if (stillOnSnapshotOwner(snap)) {
+      applyPayload(payload)
+    }
   })
   void refreshProjectTree()
 }

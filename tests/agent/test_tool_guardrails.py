@@ -478,3 +478,55 @@ def test_execute_code_replay_streak_notice_fires_on_warn_only_desktop_config():
     assert notices[:2] == [None, None]
     assert all(n is not None and "consecutive identical call to execute_code" in n for n in notices[2:]), notices
     assert controller.halt_decision is None, "warn-only surfaces must not halt"
+
+
+def test_non_str_tool_result_hashes_instead_of_raising():
+    # vision_analyze's native path returns a _multimodal envelope dict, not a string.
+    # _result_hash annotated `str | None` and called _sha256(result), which died with
+    # "'dict' object has no attribute 'encode'". The exception escaped as
+    # "Error during OpenAI-compatible API call #N" and the result was dropped without
+    # the model ever seeing it. The hash must stay content-sensitive, not merely
+    # survive: a hash that ignored the payload would make every repeat of one image
+    # look like fresh progress to the no-progress detector.
+    from agent.tool_guardrails import _result_hash
+
+    envelope = {"_multimodal": {"type": "image", "image_url": {"url": "data:image/png;base64,AAA"}}}
+    other = {"_multimodal": {"type": "image", "image_url": {"url": "data:image/png;base64,BBB"}}}
+
+    assert _result_hash(envelope, "vision_analyze") == _result_hash(dict(envelope), "vision_analyze")
+    assert _result_hash(envelope, "vision_analyze") != _result_hash(other, "vision_analyze")
+
+
+def test_result_hash_agrees_across_transports_and_keeps_its_str_contract():
+    # Canonicalisation is what makes the two transports one result, and it must not
+    # change what str and None already hashed to: an absent result and an empty one
+    # have always hashed alike, and a tool returning JSON text must not start looking
+    # like a second, different result.
+    from agent.tool_guardrails import _result_hash
+
+    payload = {"status": "success", "output": "hello", "duration_seconds": 0.5,
+               "kernel": {"execution_count": 7}}
+    assert _result_hash(payload, "execute_code") == _result_hash(json.dumps(payload), "execute_code")
+
+    # Only execute_code's own bookkeeping is dropped, on both transports. For any other
+    # tool those same key names can be real output and must still separate two results.
+    assert _result_hash(payload, "read_file") != _result_hash(
+        {**payload, "duration_seconds": 9.9}, "read_file")
+    assert _result_hash(None) == _result_hash("")
+
+
+def test_vision_analyze_replay_is_detected_as_no_progress():
+    # The same reasoning that puts execute_code in the idempotent set: re-reading one
+    # image with one question returns one answer, so an identical repeat is a replay and
+    # not progress. Without this, five calls on a single image cost five full vision
+    # round-trips and the no-progress detector saw none of them.
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig.from_mapping({}, platform="cli"))
+    args = {"image_url": "a.png", "question": "?"}
+    envelope = {"_multimodal": {"type": "image", "image_url": {"url": "data:image/png;base64,AAA"}}}
+
+    counts = [controller.after_call("vision_analyze", args, dict(envelope)).count for _ in range(3)]
+    assert counts == [1, 2, 3], counts
+    assert controller.after_call(
+        "vision_analyze", args, {"_multimodal": {"type": "image",
+                                                 "image_url": {"url": "data:image/png;base64,BBB"}}},
+    ).count == 1, "a different image is different progress"

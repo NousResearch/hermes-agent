@@ -18,6 +18,11 @@ from agent.tool_result_classification import file_mutation_result_landed, is_gua
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset({
+    # vision_analyze re-asked the same model the same question about the same image
+    # returns the same answer, so an identical repeat is a replay rather than progress.
+    # Off this list the no-progress detector skipped every call: 5 analyses of one image
+    # in a single turn, 4 of them successful, none of them flagged.
+    "vision_analyze",
     "read_file", "search_files", "web_search", "web_extract", "session_search", "skill_view", "skills_list",
     "browser_snapshot", "browser_console", "browser_get_images", "mcp_filesystem_read_file",
     "mcp_filesystem_read_text_file", "mcp_filesystem_read_multiple_files", "mcp_filesystem_list_directory",
@@ -215,10 +220,18 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
     return _canonical_json(args)
 
 
-def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
+def classify_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     """Fallback classifier used only when callers don't pass ``failed``; mirrors
-    ``agent.display._detect_tool_failure`` so the guardrail never disagrees with the CLI's ``[error]`` tag."""
-    if result is None or file_mutation_result_landed(tool_name, result):
+    ``agent.display._detect_tool_failure`` so the guardrail never disagrees with the CLI's ``[error]`` tag.
+
+    ``result`` is ``Any`` because a multimodal tool-result envelope (``vision_analyze``'s
+    native path) reaches here as a dict. A non-str result carries no error text to scan,
+    so it is not a failure — the text probes below are substring tests over JSON that a
+    decoded envelope no longer presents.
+    """
+    if result is None or not isinstance(result, str):
+        return False, ""
+    if file_mutation_result_landed(tool_name, result):
         return False, ""
 
     # A harness REFUSAL of a redundant call (repeated identical read/search) carries
@@ -373,7 +386,7 @@ class ToolCallGuardrailController:
         return allow
 
     def after_call(
-        self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,
+        self, tool_name: str, args: Mapping[str, Any] | None, result: Any,
         *, failed: bool | None = None,
     ) -> ToolGuardrailDecision:
         args = _coerce_args(args)
@@ -436,7 +449,7 @@ class ToolCallGuardrailController:
         return tool_name not in self.config.mutating_tools and tool_name in self.config.idempotent_tools
 
     def observe_call(
-        self, tool_name: str, args: Mapping[str, Any] | None, result: str | None,
+        self, tool_name: str, args: Mapping[str, Any] | None, result: Any,
         *, tool_call_id: str = "", failed: bool = False,
     ) -> IdenticalCallObservation:
         """Track consecutive identical calls; return notice + dedupe stub info.
@@ -617,10 +630,33 @@ def _without_execute_code_metadata(parsed: Any) -> Any:
     return cleaned
 
 
-def _result_hash(result: str | None, tool_name: str = "") -> str:
-    parsed = safe_json_loads(result or "")
-    if parsed is None:
-        return _sha256(result or "")
+def _result_hash(result: Any, tool_name: str = "") -> str:
+    """Stable content hash of a tool result, for ANY result type.
+
+    Tool results are not always strings. ``vision_analyze``'s native path returns a
+    ``_multimodal`` envelope dict on success, and that dict reaches ``after_call``
+    as-is. The ``str | None`` annotation was wrong about reality: ``_sha256(result)``
+    died with ``'dict' object has no attribute 'encode'``, the exception escaped as
+    "Error during OpenAI-compatible API call #N", and the tool result was dropped
+    without the model ever seeing it.
+
+    Non-str results go through ``_canonical_json`` (``default=str``, so it cannot
+    raise) rather than being stringified or swallowed — the hash has to stay
+    content-sensitive, because a content-insensitive hash would make every repeat of
+    the same image look like fresh progress to the no-progress detector. Both
+    transports canonicalise to the same value, so a tool whose result arrives as a
+    JSON string on one path and as a dict on another is seen as one result rather
+    than two, and the ``execute_code`` exclusion applies either way. str and None
+    behaviour is unchanged.
+    """
+    if result is None:
+        return _sha256("")
+    if isinstance(result, str):
+        parsed = safe_json_loads(result)
+        if parsed is None:
+            return _sha256(result)
+    else:
+        parsed = result
     if tool_name == "execute_code":
         parsed = _without_execute_code_metadata(parsed)
     return _sha256(_canonical_json(parsed))

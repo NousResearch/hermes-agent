@@ -197,10 +197,10 @@ def ensure_task_env(task_id: Optional[str] = None):
     """
     from tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
-        _get_env_config, _last_activity, _resolve_container_task_id,
-        _resolve_task_host_cwd, _select_image, _start_cleanup_thread, resolve_task_overrides,
+        _last_activity, _resolve_container_task_id,
+        _resolve_task_host_cwd, _select_image, _start_cleanup_thread, resolve_task_config,
     )
-    config = _get_env_config()
+    config, overrides = resolve_task_config(task_id)
     env_type = config["env_type"]
     if env_type == "local":
         return None
@@ -213,7 +213,7 @@ def ensure_task_env(task_id: Optional[str] = None):
             _last_activity[effective_task_id] = time.time()
         return existing
 
-    image = _select_image(env_type, resolve_task_overrides(task_id), config)
+    image = _select_image(env_type, overrides, config)
 
     _start_cleanup_thread()
 
@@ -226,7 +226,8 @@ def ensure_task_env(task_id: Optional[str] = None):
             return existing
         try:
             new_env = _create_configured_env(
-                config, env_type, image=image, cwd=config["cwd"],
+                config, env_type, image=image,
+                cwd=overrides.get("cwd") or config["cwd"],
                 timeout=config["timeout"], task_id=effective_task_id,
                 host_cwd=_resolve_task_host_cwd(config, task_id),
             )

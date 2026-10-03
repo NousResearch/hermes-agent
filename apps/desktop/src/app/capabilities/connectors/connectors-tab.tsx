@@ -33,16 +33,19 @@ import { HostedConnectorDialog } from './hosted-dialog'
 import { LocalConnectorDialog } from './local-dialog'
 import { RemoveServerConfirm } from './local-slots'
 import { openToolsList, resetOpenedTools } from './tools-summary'
-import type { ConnectorCardModel, ConnectorsFilter, HostedPhase } from './types'
+import type { ConnectorCardModel, ConnectorGroupModel, ConnectorsFilter, HostedPhase } from './types'
 
 const toolsListKey = (card: ConnectorCardModel) => (card.residency === 'local' ? localServerName(card) : card.slug)
 
 export interface ConnectorsTabProps {
   gateway: HermesGateway | null
   profile: ProfileScope
+  /** When supplied, Capabilities owns the one shared SearchField and this
+   *  value becomes the directory's query. */
+  query?: string
 }
 
-export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
+export function ConnectorsTab({ gateway, profile, query }: ConnectorsTabProps) {
   const { t } = useI18n()
   const copy = t.connectorsPage
 
@@ -62,6 +65,14 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
   const [removeServer, setRemoveServer] = useState<null | ConnectorCardModel>(null)
   const [disconnecting, setDisconnecting] = useState<null | ConnectorCardModel>(null)
   const [installing, setInstalling] = useState<null | string>(null)
+
+  useEffect(() => {
+    if (query === undefined) {
+      return
+    }
+
+    setFilter(current => (current.query === query ? current : { ...current, query }))
+  }, [query])
 
   const local = useMemo(
     () =>
@@ -255,6 +266,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         }}
         onVerb={runVerb}
         selectedKey={openKey}
+        showSearch={query === undefined}
       />
 
       {openCard && openCard.ways.hosted === null ? (
@@ -386,7 +398,7 @@ function useOpenFromRoute(cards: readonly ConnectorCardModel[], open: (key: stri
     params.delete('connector')
     params.delete('tool')
 
-    const query = params.toString()
-    navigate({ hash, pathname, search: query ? `?${query}` : '' }, { replace: true })
+    const nextSearch = params.toString()
+    navigate({ hash, pathname, search: nextSearch ? `?${nextSearch}` : '' }, { replace: true })
   }, [cards, hash, navigate, open, pathname, search])
 }

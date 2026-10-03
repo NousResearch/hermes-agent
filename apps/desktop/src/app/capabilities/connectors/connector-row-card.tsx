@@ -86,7 +86,7 @@ export function ConnectorRowCard({
           : 'border-(--ui-stroke-quaternary) bg-(--ui-bg-elevated) hover:bg-(--chrome-action-hover)'
       )}
       data-connector={card.slug}
-      data-slot="connector-row-card"
+      data-state={card.state}
       onFocus={onPrefetch}
       onPointerEnter={onPrefetch}
     >

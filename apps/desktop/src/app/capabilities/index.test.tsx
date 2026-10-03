@@ -108,7 +108,7 @@ beforeEach(() => {
     path: '/skills/web-research/SKILL.md',
     content: '---\nname: web-research\nversion: 1.2.0\nauthor: Nous\n---\n\n# Web Research\n\nDeep research steps.'
   })
-  // Single profile by default → the scope selector stays hidden (>1 gate),
+  // Single profile by default → the Applies to profile pills stay hidden (>1 gate),
   // so existing tests see unchanged single-profile behavior.
   getProfiles.mockResolvedValue({ profiles: [{ name: 'default', is_default: true }] })
 })
@@ -141,12 +141,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     expect(setToolsetEnabled.mock.calls[0].slice(0, 2)).toEqual(['web', false])
   })
 
-  it('scopes Tools config to the profile chosen in the selector', async () => {
-    // Two profiles → the "Configuring:" selector renders. Picking a non-active
-    // profile must re-fetch toolsets scoped to THAT profile.
-    // jsdom's scrollIntoView is missing/non-functional; Radix Select calls it
-    // on open. Force a stub so the dropdown can render in the test env.
-    Element.prototype.scrollIntoView = vi.fn()
+  it('scopes Tools config to the profile chosen in Applies to', async () => {
     getProfiles.mockResolvedValue({
       profiles: [
         { name: 'default', is_default: true },
@@ -164,24 +159,43 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       )
     })
 
-    // The selector appears with >1 profile.
-    const trigger = await screen.findByRole('combobox')
+    // Capabilities uses the same visible profile-pill pattern as Settings.
+    expect(await screen.findByText('Applies to')).toBeTruthy()
+    const researcher = await screen.findByRole('button', { name: 'researcher' })
     await act(async () => {
-      fireEvent.click(trigger)
-    })
-    const option = await screen.findByRole('option', { name: 'researcher' })
-    await act(async () => {
-      fireEvent.click(option)
+      fireEvent.click(researcher)
     })
 
     // Toolsets refetch scoped to the picked profile.
     await waitFor(() => expect(getToolsets).toHaveBeenCalledWith('researcher'))
   })
 
-  it('scopes the Skills tab (and skill toggles) to the profile chosen in the selector', async () => {
-    // The selector is Capabilities-WIDE: picking a profile on the Skills tab
-    // must refetch the skill list scoped to it, and route toggles there too.
-    Element.prototype.scrollIntoView = vi.fn()
+  it('keeps profile scope correct across A → B → A switches', async () => {
+    getProfiles.mockResolvedValue({
+      profiles: [
+        { name: 'default', is_default: true },
+        { name: 'researcher', is_default: false }
+      ]
+    })
+
+    await renderSkills()
+
+    const researcher = await screen.findByRole('button', { name: 'researcher' })
+    await act(async () => {
+      fireEvent.click(researcher)
+    })
+    await waitFor(() => expect(getToolsets).toHaveBeenCalledWith('researcher'))
+
+    const defaultProfile = await screen.findByRole('button', { name: 'default' })
+    await act(async () => {
+      fireEvent.click(defaultProfile)
+    })
+    await waitFor(() => expect(getToolsets).toHaveBeenLastCalledWith('default'))
+  })
+
+  it('scopes the Skills tab (and skill toggles) to the profile chosen in Applies to', async () => {
+    // The profile pills are Capabilities-WIDE: picking a profile on the Skills
+    // tab must refetch the skill list scoped to it, and route toggles there too.
     getProfiles.mockResolvedValue({
       profiles: [
         { name: 'default', is_default: true },
@@ -209,14 +223,9 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       )
     })
 
-    // The selector renders on the Skills tab too (Capabilities-wide).
-    const trigger = await screen.findByRole('combobox')
+    const researcher = await screen.findByRole('button', { name: 'researcher' })
     await act(async () => {
-      fireEvent.click(trigger)
-    })
-    const option = await screen.findByRole('option', { name: 'researcher' })
-    await act(async () => {
-      fireEvent.click(option)
+      fireEvent.click(researcher)
     })
 
     // Skills refetch scoped to the picked profile...
@@ -367,15 +376,15 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await waitFor(() => expect(getSkills).toHaveBeenCalled())
     expect(getSkills.mock.calls[0][0]).toEqual({ connectionId: 'homelab', profile: 'inbox-bot' })
     expect(getToolsets.mock.calls[0][0]).toEqual({ connectionId: 'homelab', profile: 'inbox-bot' })
-    // Pinned scope → no roster/profiles fetch, selector hidden.
+    // Pinned scope → no roster/profiles fetch, profile pills hidden.
     expect(getProfiles).not.toHaveBeenCalled()
   })
 
-  it('offers (connection, profile) scope rows on multi-connection desktops', async () => {
-    // With a v2 registry holding >1 connection, the scope selector lists the
-    // union agent roster — profile + owning device — instead of the local
-    // profiles list, so a selection identifies WHICH gateway's capabilities
-    // are being configured.
+  it('offers profile pills on multi-connection desktops without exposing connection addresses or current markers', async () => {
+    // With a v2 registry holding >1 connection, the scope still routes to the
+    // owning gateway internally, but the UI presents profile names only. The
+    // connection/IP and current-route state are transport details and do not
+    // belong in Applies to.
     const connections = {
       list: vi.fn().mockResolvedValue({
         version: 2,
@@ -383,7 +392,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
         secureTokenStorage: true,
         connections: [
           { id: 'local', kind: 'local', label: 'This device', tokenSet: false, tokenPreview: null },
-          { id: 'homelab', kind: 'remote', label: 'Homelab', tokenSet: true, tokenPreview: '…' }
+          { id: 'homelab', kind: 'remote', label: '192.168.178.94:9120', tokenSet: true, tokenPreview: '…' }
         ]
       })
     }
@@ -400,7 +409,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
         {
           connectionId: 'homelab',
           connectionKind: 'remote',
-          connectionLabel: 'Homelab',
+          connectionLabel: '192.168.178.94:9120',
           profile: 'inbox-bot',
           handle: 'inbox-bot-homelab'
         }
@@ -414,11 +423,38 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
       await renderSkills()
 
       await waitFor(() => expect(getAgentRoster).toHaveBeenCalled())
-      // The selector paints roster rows labeled profile — device.
-      expect(await screen.findByText('default — This device (current)')).toBeTruthy()
+      expect(await screen.findByRole('button', { name: 'default' })).toBeTruthy()
+      expect(await screen.findByRole('button', { name: 'inbox-bot' })).toBeTruthy()
+      expect(screen.queryByText(/192\.168\.178\.94:9120/)).toBeNull()
+      expect(screen.queryByText(/\(current\)/i)).toBeNull()
     } finally {
       delete (window as { hermesDesktop?: unknown }).hermesDesktop
     }
+  })
+
+  it('shows breadcrumb, explanatory copy, and active / available counts', async () => {
+    getSkills.mockResolvedValue([
+      { name: 'one', description: 'One', category: 'test', enabled: true },
+      { name: 'two', description: 'Two', category: 'test', enabled: false }
+    ])
+    getToolsets.mockResolvedValue([toolset(), toolset({ name: 'vision', label: 'Vision', enabled: false })])
+
+    await act(async () => {
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/capabilities?tab=skills']}>
+            <CapabilitiesView />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+    })
+
+    expect(await screen.findByText('Capabilities')).toBeTruthy()
+    expect(
+      screen.getByText('Search the hub to browse installable skills from the official index, GitHub, and community sources.')
+    ).toBeTruthy()
+    expect(await screen.findByRole('button', { name: /Skills.*1 \/ 2/ })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: /Tools.*1 \/ 2/ })).toBeTruthy()
   })
 
   it('lists the built-in optional-skills catalog with Install buttons that route through the hub pipeline', async () => {

@@ -567,6 +567,61 @@ def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
     assert "Updated 1 skill(s)" in sink.getvalue()
 
 
+def test_do_update_installs_the_bundle_fetched_during_update_check(monkeypatch, tmp_path):
+    """A mutable source cannot swap bytes between update review and installation."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+    import tools.skills_hub_install as hub_install
+    from tools.skills_hub_models import SkillBundle
+
+    skills_dir = tmp_path / "skills"
+    installed = skills_dir / "demo-skill"
+    installed.mkdir(parents=True)
+    (installed / "SKILL.md").write_text("installed\n")
+    monkeypatch.setattr(hub, "SKILLS_DIR", skills_dir)
+
+    class MutableSource:
+        def __init__(self):
+            self.fetches = 0
+
+        def source_id(self):
+            return "github"
+
+        def fetch(self, identifier):
+            self.fetches += 1
+            content = "reviewed bytes\n" if self.fetches == 1 else "swapped bytes\n"
+            return SkillBundle(
+                name="demo-skill", files={"SKILL.md": content}, source="github",
+                identifier=identifier, trust_level="community")
+
+    source = MutableSource()
+    lock = type("Lock", (), {
+        "list_installed": lambda self: [{
+            "name": "demo-skill", "identifier": "owner/repo/demo-skill", "source": "github",
+            "install_path": "demo-skill", "content_hash": "old-hash"}],
+        "get_installed": lambda self, name: {
+            "install_path": "demo-skill", "content_hash": "old-hash"},
+    })()
+    monkeypatch.setattr(hub, "HubLockFile", lambda: lock)
+    real_check = hub_install.check_for_skill_updates
+    monkeypatch.setattr(
+        hub_install, "check_for_skill_updates",
+        lambda **kwargs: real_check(lock=lock, sources=[source], **kwargs))
+
+    published = {}
+
+    def fake_install(identifier, *, bundle=None, **kwargs):
+        # Falling back to the source models the old do_install refetch path.
+        chosen = bundle or source.fetch(identifier)
+        published["bytes"] = chosen.files["SKILL.md"]
+
+    monkeypatch.setattr(cli_hub, "do_install", fake_install)
+    do_update(console=Console(file=StringIO(), force_terminal=False, color_system=None), force=True)
+
+    assert source.fetches == 1
+    assert published["bytes"] == "reviewed bytes\n"
+
+
 # ---------------------------------------------------------------------------
 # Stale index entry messages (#3259)
 # ---------------------------------------------------------------------------

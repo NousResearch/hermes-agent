@@ -422,7 +422,9 @@ def display_skill_create_dir() -> str:
 TIER_PROJECT, TIER_LOCAL, TIER_CREATE_DIR, TIER_EXTERNAL = range(4)
 # Leading words of every same-tier refusal (skill_view error, preload/cron label) — one spelling.
 AMBIGUOUS_SKILL_PREFIX = "Ambiguous skill name "
-_WARNED_SHADOWS: Set[str] = set()
+# (shadowed path, *sorted higher-tier paths) already judged: the identity check (it hashes both
+# SKILL.md files) and its one-time warning run once per pairing, not on every catalog resolve.
+_SHADOW_CHECKED: Set[Tuple[str, ...]] = set()
 
 
 def get_skill_search_roots(local: Optional[Path] = None, *, include_project: bool = True) -> List[Tuple[int, Path]]:
@@ -502,11 +504,12 @@ def resolve_skill_catalog(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         if higher or winner[name] not in (None, i):  # lower tier, or an identical same-root copy
             e.update(status="shadowed", load_name=None)
             # A symlink view or byte-identical copy of the winner hides nothing worth a warning.
-            if (higher and str(e["path"]) not in _WARNED_SHADOWS
-                    and not any(provably_same_skill([e["path"], out[j]["path"]]) for j in higher)):
-                _WARNED_SHADOWS.add(str(e["path"]))
-                logger.warning("Skill '%s' at %s is shadowed by a higher-precedence copy "
-                               "(project > local > create_dir > external_dirs)", name, e["path"])
+            key = (str(e["path"]), *sorted(str(out[j]["path"]) for j in higher))
+            if higher and key not in _SHADOW_CHECKED:
+                _SHADOW_CHECKED.add(key)
+                if not any(provably_same_skill([e["path"], out[j]["path"]]) for j in higher):
+                    logger.warning("Skill '%s' at %s is shadowed by a higher-precedence copy "
+                                   "(project > local > create_dir > external_dirs)", name, e["path"])
         elif winner[name] == i:
             e.update(status="unique", load_name=name)
         else:

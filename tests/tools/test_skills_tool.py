@@ -909,7 +909,7 @@ class TestSkillViewCollisionDetection:
                 patch.object(skill_utils, "iter_project_skill_files",
                              lambda d: skill_utils.iter_skill_index_files(d, "SKILL.md")):
             skills_tool_module._SKILLS_CACHE.clear()
-            skill_utils._WARNED_SHADOWS.clear()
+            skill_utils._SHADOW_CHECKED.clear()
             result = json.loads(skill_view(lookup))
             listed = json.loads(skills_list())["skills"]
 

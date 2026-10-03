@@ -25,6 +25,12 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
   `plugins.memory.import_provider_module`, never a `plugins.memory.<name>` import. New
   backends ship as standalone repos implementing the same `MemoryProvider` ABC, discovered through
   the same path, integrated via `hermes memory setup` / `post_setup()`.
+- **Other features that leave core** (Home Assistant platform + toolset, Oct 2026 →
+  `plugin-catalog/homeassistant.yaml`) keep their names/config/env and get a row in
+  `hermes_cli/left_core_migration.py::LEFT_CORE` (catalog plugin + read-only "this home uses it"
+  predicate); `hermes update` and agent/gateway start install the plugin for homes that used it.
+  Core special cases become `PlatformEntry` seams the plugin sets (`trusted_inbound`,
+  `display_tier`, `shared_env_prefixes`), never a name check.
 - **No new third-party-product plugins (June 2026).** Observability/metrics backends, vendor SaaS
   connectors, analytics dashboards, paid-service tie-ins ship as standalone plugin repos
   (`~/.hermes/plugins/` or pip entry point) promoted in Discord `#plugins-skills-and-skins`. Reason:

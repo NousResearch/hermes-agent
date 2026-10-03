@@ -32,6 +32,18 @@ vi.mock('@/store/gateway', async importActual => ({
   requestGatewayForAgent: gatewayMocks.requestGatewayForAgent
 }))
 
+// The question is drawn through the Markdown pipeline, which needs assistant-ui
+// providers this file replaces with a stub. The stand-in keeps the raw text in a
+// marked node, so what is asserted is that the question goes through Markdown
+// rather than plain text, not how it renders.
+vi.mock('@/components/assistant-ui/markdown-text', () => ({
+  MessageTextContent: ({ media, text }: { media?: boolean; text: string }) => (
+    <span data-markdown="" data-media={String(media)}>
+      {text}
+    </span>
+  )
+}))
+
 // The live pending card used to require message-running. Tests that exercise
 // the pending form force that on; the settle-shift case flips it off.
 let messageRunning = true
@@ -901,6 +913,41 @@ describe('ClarifyTool batch card', () => {
         request_id: 'request-single-batch'
       })
     })
+  })
+
+  it('draws a live question as Markdown, so a formatted summary is not shown raw', () => {
+    const summary = '### Acme\n\n**Changes**\n- `sector`: empty → Software\n\nApprove revision 1?'
+
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn() } as never)
+    setClarifyRequest({
+      questions: [{ choices: ['Approve', 'Reject'], multiSelect: false, qid: 'q0', question: summary }],
+      requestId: 'request-1',
+      sessionId: 'session-1'
+    })
+    renderClarify(<ClarifyTool {...liveClarifyProps(['Approve', 'Reject'])} />)
+
+    const node = document.querySelector('[data-clarify-question-text] [data-markdown]')
+
+    expect(node?.textContent).toBe(summary)
+    expect(node?.getAttribute('data-media')).toBe('false')
+  })
+
+  it('draws a settled question as Markdown too', () => {
+    renderClarify(
+      <ClarifyTool
+        {...settledClarifyProps(
+          batchArgs(),
+          JSON.stringify({
+            outcome: 'submitted',
+            responses: [{ choices_offered: ['Yes'], question: '**Apply?**', status: 'answered', user_response: 'Yes' }]
+          }),
+          'clarify-markdown-settled'
+        )}
+      />
+    )
+
+    expect(document.querySelector('[data-markdown]')?.textContent).toBe('**Apply?**')
   })
 
   it('renders the settled batch with all questions and answers', () => {

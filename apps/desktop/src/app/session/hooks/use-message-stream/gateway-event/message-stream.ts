@@ -123,16 +123,17 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     }
 
     updateSessionState(sessionId, state => {
-      // If the user clicked Stop (cancelRun set interrupted=true), don't
-      // let a stale message.start from a chained turn (goal follow-up,
-      // completion drain) or an in-flight LLM response re-arm busy.
-      // The interrupt is user intent — the backend's cooperative cancel
-      // may not have propagated yet, so its events are stale. The turn's
-      // finally block will emit session.info with running=false to clear
-      // busy for real once the agent loop actually exits.
-      if (state.interrupted) {
-        return state
-      }
+      // A message.start is the backend accepting a NEW turn, so it clears
+      // the Stop latch: backend-chained turns (goal follow-ups, completion
+      // drains) never pass the submit path whose seedOptimistic clears
+      // interrupted, and treating their start as stale silently drops the
+      // whole turn (#122723). Stale events of the CANCELLED turn are still
+      // dropped while the latch is set — by the mutateStream, interim, and
+      // complete guards — they just have to arrive before any new start.
+      // ponytail: start-as-new-turn is timing-based, not identity-proved;
+      // a redelivered start for the cancelled turn itself would re-arm.
+      // Per-turn ids on gateway message.* events would make this sound;
+      // until then this is the practical near-term mitigation.
 
       return {
         ...state,

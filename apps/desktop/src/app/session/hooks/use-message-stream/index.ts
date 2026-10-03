@@ -730,6 +730,22 @@ export function useMessageStream({
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
+        // The cancelled turn's own terminal frame can also land *after* a
+        // chained turn was armed: message.start clears the Stop latch
+        // (#122723), so that frame no longer sees `interrupted`. It still
+        // reports status="interrupted" while the local latch is down and a
+        // later turn is live — that combination only happens for the turn the
+        // user already cancelled, whose text cancelRun sealed (#121594).
+        // Painting it here would present the cancelled partial as the live
+        // turn's answer and, with no payload yet streamed for the live turn,
+        // leave its own reply unpainted. Drop the frame and keep the live
+        // turn's state. ponytail: outcome+timing, not identity — a terminal
+        // frame carrying no status cannot be told apart this way; per-turn ids
+        // on gateway message.* events would make it sound.
+        if (!state.interrupted && status === 'interrupted' && state.turnLive) {
+          return state
+        }
+
         // Late completion from an already-cancelled turn: cancelRun has
         // already finalized the bubble (kept the partial text, dropped it if
         // empty). Re-running the dedupe below would replace the partial with

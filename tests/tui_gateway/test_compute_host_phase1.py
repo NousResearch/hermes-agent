@@ -1,12 +1,13 @@
 import io
 import json
 import os
+import signal
 import sys
 import threading
 import time
 
 
-from tui_gateway import compute_host, server
+from tui_gateway import compute_host, host_supervisor as hs, server
 from tui_gateway.compute_host import ComputeHost, _default_workers
 from tui_gateway.host_supervisor import (
     HostSupervisor,
@@ -111,6 +112,108 @@ def test_supervisor_startup_reconcile_pid_reuse_guard(tmp_path, monkeypatch):
     assert result == "pid-reuse-ignored"
     assert killed == []
     assert not registry.exists()
+
+
+class _ExitedProc:
+    pid = 12345
+
+    def __init__(self, code: int) -> None:
+        self.code = code
+
+    def wait(self) -> int:
+        return self.code
+
+
+def test_supervisor_reports_confirmed_cgroup_oom_as_memory_failure(tmp_path, monkeypatch):
+    supervisor = HostSupervisor(registry_path=tmp_path / "host.json", argv=[sys.executable, "-c", ""], autostart=False)
+    proc = _ExitedProc(-signal.SIGKILL)
+    supervisor._proc = proc
+    supervisor._spawn_memory_state = {"oom_kill": 4, "current": 100, "max": 1000, "path": "/slice"}
+    monkeypatch.setattr(hs, "_read_cgroup_memory_state", lambda: {"oom_kill": 5, "current": 900, "max": 1000, "path": "/slice"}, raising=False)
+    monkeypatch.setattr(supervisor, "_remove_registry", lambda: None)
+    failures: list[tuple[str, str]] = []
+    respawns: list[dict] = []
+    monkeypatch.setattr(supervisor, "_fail_pending_turns", lambda *, reason, message: failures.append((reason, message)))
+    monkeypatch.setattr(supervisor, "_maybe_respawn_after_crash", lambda **kw: respawns.append(kw))
+
+    supervisor._wait_for_exit(proc)
+
+    assert failures and failures[0][0] == "oom_kill"
+    assert "exited with code -9" in failures[0][1]
+    assert "oom_kill delta=1" in failures[0][1]
+    assert "memory.current=900" in failures[0][1]
+    assert respawns == [{"exit_reason": "oom_kill", "exit_info": {"exit_code": -9, "oom_kill_delta": 1, "memory": {"oom_kill": 5, "current": 900, "max": 1000, "path": "/slice"}}}]
+
+
+def test_supervisor_plain_sigkill_without_oom_delta_stays_generic_crash(tmp_path, monkeypatch):
+    supervisor = HostSupervisor(registry_path=tmp_path / "host.json", argv=[sys.executable, "-c", ""], autostart=False)
+    proc = _ExitedProc(-signal.SIGKILL)
+    supervisor._proc = proc
+    supervisor._spawn_memory_state = {"oom_kill": 4, "current": 100, "max": 1000, "path": "/slice"}
+    monkeypatch.setattr(hs, "_read_cgroup_memory_state", lambda: {"oom_kill": 4, "current": 900, "max": 1000, "path": "/slice"}, raising=False)
+    monkeypatch.setattr(supervisor, "_remove_registry", lambda: None)
+    failures: list[tuple[str, str]] = []
+    respawns: list[dict] = []
+    monkeypatch.setattr(supervisor, "_fail_pending_turns", lambda *, reason, message: failures.append((reason, message)))
+    monkeypatch.setattr(supervisor, "_maybe_respawn_after_crash", lambda **kw: respawns.append(kw))
+
+    supervisor._wait_for_exit(proc)
+
+    assert failures == [("crash", "compute host exited with code -9")]
+    assert respawns == [{"exit_reason": "crash", "exit_info": {"exit_code": -9}}]
+
+
+def test_supervisor_suppresses_oom_respawn_while_cgroup_still_above_threshold(tmp_path, monkeypatch):
+    supervisor = HostSupervisor(registry_path=tmp_path / "host.json", argv=[sys.executable, "-c", ""], autostart=False)
+    spawns: list[dict] = []
+    monkeypatch.setattr(supervisor, "_spawn_locked", lambda **kw: spawns.append(kw))
+    monkeypatch.setattr(supervisor, "_wait_until_oom_pressure_recedes", lambda _info: False, raising=False)
+
+    supervisor._maybe_respawn_after_crash(exit_reason="oom_kill", exit_info={"memory": {"current": 900, "max": 1000, "path": "/slice"}})
+
+    assert spawns == []
+    assert supervisor._stopped_respawning is True
+
+
+def test_supervisor_respawns_after_confirmed_oom_only_after_pressure_recedes(tmp_path, monkeypatch):
+    supervisor = HostSupervisor(registry_path=tmp_path / "host.json", argv=[sys.executable, "-c", ""], autostart=False)
+    spawns: list[dict] = []
+    monkeypatch.setattr(supervisor, "_spawn_locked", lambda **kw: spawns.append(kw))
+    monkeypatch.setattr(supervisor, "_wait_until_oom_pressure_recedes", lambda _info: True, raising=False)
+
+    supervisor._maybe_respawn_after_crash(exit_reason="oom_kill", exit_info={"memory": {"current": 100, "max": 1000, "path": "/slice"}})
+
+    assert spawns == [{"reason": "oom_recovery"}]
+    assert supervisor._stopped_respawning is False
+
+
+def test_supervisor_oom_respawn_has_separate_finite_budget(tmp_path, monkeypatch):
+    supervisor = HostSupervisor(registry_path=tmp_path / "host.json", argv=[sys.executable, "-c", ""], autostart=False)
+    supervisor._oom_restart_times = [time.monotonic()]
+    spawns: list[dict] = []
+    monkeypatch.setattr(supervisor, "_spawn_locked", lambda **kw: spawns.append(kw))
+    monkeypatch.setattr(supervisor, "_wait_until_oom_pressure_recedes", lambda _info: True, raising=False)
+
+    supervisor._maybe_respawn_after_crash(exit_reason="oom_kill", exit_info={"memory": {"current": 100, "max": 1000}})
+
+    assert spawns == []
+    assert supervisor._stopped_respawning is True
+
+
+def test_supervisor_refuses_manual_start_while_oom_recovery_is_pending(tmp_path, monkeypatch):
+    supervisor = HostSupervisor(registry_path=tmp_path / "host.json", argv=[sys.executable, "-c", ""], autostart=False)
+    supervisor._oom_respawn_pending = True
+    spawns: list[dict] = []
+    monkeypatch.setattr(supervisor, "_spawn_locked", lambda **kw: spawns.append(kw))
+
+    try:
+        supervisor.start()
+    except RuntimeError as exc:
+        assert "deferred after a cgroup OOM" in str(exc)
+    else:
+        raise AssertionError("start() must not bypass a pending OOM recovery gate")
+
+    assert spawns == []
 
 
 def _make_compress_host_session(events: list) -> dict:

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "/sessions": {
+      "targetKind": "existing-ui",
+      "projectId": "b0f9762b-45d9-46e9-adf4-90b66b56eb8f",
+      "baselineDraftId": "63c21887-afb6-4a23-94b7-05325037a5f4",
+      "activeDraftId": "63c21887-afb6-4a23-94b7-05325037a5f4",
+      "designSystemPath": ".superdesign/design-system.md",
+      "contextFiles": [
+        ".superdesign/design-system.md",
+        ".superdesign/init/theme.md",
+        "web/src/index.css",
+        "web/src/App.tsx:480:860",
+        "web/src/pages/SessionsPage.tsx:1500:2198",
+        "web/src/components/ThemeSwitcher.tsx",
+        "web/src/components/ProfileSwitcher.tsx",
+        "web/src/components/SidebarStatusStrip.tsx",
+        "web/src/components/SidebarFooter.tsx"
+      ],
+      "fingerprints": {
+        ".superdesign/design-system.md": "ab2168d6a5efed675271e76f9942c35e796d352224d5f04fba9720734143b2ec",
+        ".superdesign/init/theme.md": "fa113a7a49ff4ed984d5ec904e27640458a9944917ef4003f0ef4b89f005dcbe",
+        "web/src/index.css": "0f65b06e327494f599d59d57cd0633387a0f0bef11be2917a70cc2ffde60690b",
+        "web/src/App.tsx": "5f72d97b2f3c952118df3920fa6075e9c349dc58d16f9cc00df0dbc9839d3b0e",
+        "web/src/pages/SessionsPage.tsx": "a81346b4538397512dc584ee92e43180496c62134231af653c3a36e2f733db54",
+        "web/src/components/ThemeSwitcher.tsx": "4c5181bb0a89bbf0336ecb9dff4d96736f273607a966ea78eb8704327a939d9e",
+        "web/src/components/ProfileSwitcher.tsx": "41e7041948abaeb7ab726a2e10519a16fb1840995eb98394f3cf63dbfc890319",
+        "web/src/components/SidebarStatusStrip.tsx": "0dd142f12b5b9d4d7d5339a6be46cb52825e2be02f81ecc718493393ebd5522d",
+        "web/src/components/SidebarFooter.tsx": "c070c3c534b7b51bef52b1de94cdeca1d6a2e1e8b357016af8115993e29ad306"
+      },
+      "components": [],
+      "drafts": {
+        "63c21887-afb6-4a23-94b7-05325037a5f4": {
+          "title": "Hermes Agent - Codex Graphite Sessions",
+          "visualDirection": "Codex-inspired matte graphite with restrained blue accents",
+          "currentVersion": 2
+        }
+      },
+      "updatedAt": "2026-08-22T17:52:00Z"
+    }
+  }
+}

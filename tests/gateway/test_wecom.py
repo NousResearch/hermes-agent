@@ -473,7 +473,7 @@ class TestInboundMessages:
         )
         adapter._text_batch_delay_seconds = 0  # disable batching for tests
         adapter.handle_message = AsyncMock()
-        adapter._extract_media = AsyncMock(return_value=(["/tmp/test.png"], ["image/png"]))
+        adapter._extract_media = AsyncMock(return_value=(["/tmp/test.png"], ["image/png"], []))
 
         payload = {
             "cmd": "aibot_msg_callback",
@@ -515,7 +515,7 @@ class TestWeComZombieSessionFix:
             )
         )
         adapter.handle_message = AsyncMock()
-        adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._extract_media = AsyncMock(return_value=([], [], []))
 
         payload = {
             "cmd": "aibot_msg_callback",
@@ -729,8 +729,8 @@ class TestAttachmentTextMerge:
 
         async def fake_extract_media(body):
             if body.get("msgtype") == "image":
-                return (["/tmp/x.png"], ["image/png"])
-            return ([], [])
+                return (["/tmp/x.png"], ["image/png"], [])
+            return ([], [], [])
 
         adapter._extract_media = fake_extract_media
 
@@ -759,7 +759,7 @@ class TestAttachmentTextMerge:
         """image-only with no following text → still dispatched on its own
         after the merge window (must not be dropped)."""
         adapter = self._make_adapter(merge_delay=0.15)
-        adapter._extract_media = AsyncMock(return_value=(["/tmp/x.png"], ["image/png"]))
+        adapter._extract_media = AsyncMock(return_value=(["/tmp/x.png"], ["image/png"], []))
 
         await adapter._on_message(self._image_payload("img-1", None))
         adapter.handle_message.assert_not_called()
@@ -784,8 +784,8 @@ class TestAttachmentTextMerge:
             if body.get("msgtype") == "image":
                 counter["n"] += 1
                 n = counter["n"]
-                return ([f"/tmp/x{n}.png"], ["image/png"])
-            return ([], [])
+                return ([f"/tmp/x{n}.png"], ["image/png"], [])
+            return ([], [], [])
 
         adapter._extract_media = fake_extract_media
 
@@ -808,7 +808,7 @@ class TestAttachmentTextMerge:
         """Regression: pure text still flows through the text-batch path and
         dispatches as a single text event."""
         adapter = self._make_adapter()
-        adapter._extract_media = AsyncMock(return_value=([], []))
+        adapter._extract_media = AsyncMock(return_value=([], [], []))
 
         await adapter._on_message(self._text_payload("txt-1", "just text"))
         adapter.handle_message.assert_not_called()

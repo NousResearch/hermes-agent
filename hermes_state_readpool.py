@@ -195,6 +195,12 @@ class _PathReadBudget:
         with self._lock:
             self._members.discard(db)
 
+    def no_permits_outstanding(self) -> bool:
+        """Every permit this budget started with is back in it. ``BoundedSemaphore``
+        publishes no non-destructive count read, and probing with acquire()/release()
+        for one would race the readers being counted, so read the counters it keeps."""
+        return self.permits._value == self.permits._initial_value
+
     def acquire(self, requester: "SessionDB") -> bool:
         """Take a permit for a new read connection, or refuse (caller degrades to the
         locked writer connection). Gates, broadest first: fd headroom, process
@@ -207,6 +213,11 @@ class _PathReadBudget:
         if not self._acquire_process_permit():
             return False
         if self._acquire_path_permit(requester):
+            # Strong ref while the permit is out: the accounting must outlive the handle
+            # that borrowed it, or a collected handle silently hands the NEXT reader on
+            # this path a full ceiling (see _outstanding_budgets).
+            with _read_budgets_lock:
+                _outstanding_budgets.add(self)
             return True
         _process_read_permits.release()
         return False
@@ -215,6 +226,11 @@ class _PathReadBudget:
         """Return one connection's permits. Pairs with a successful acquire()."""
         self.permits.release()
         _process_read_permits.release()
+        with _read_budgets_lock:
+            # Checked under the same lock that acquire() adds under, so this can never
+            # drop a budget some reader is still holding a permit in.
+            if self.no_permits_outstanding():
+                _outstanding_budgets.discard(self)
 
     def _acquire_process_permit(self) -> bool:
         # Another thread may take a freed permit first: legitimate loss, no looping.
@@ -238,6 +254,20 @@ class _PathReadBudget:
 # canonical db path -> permits for that file. Weak values: the budget lives only
 # while some SessionDB on the path holds it, so tmp_path churn can't grow this.
 _read_budgets: "weakref.WeakValueDictionary[str, _PathReadBudget]" = (weakref.WeakValueDictionary())
+
+# ...plus a STRONG ref while any permit is checked out (#126783). A handle dropped without
+# close() must not carry the ledger away with it: the budget would be collected holding a
+# permit for a descriptor that is still open, and the next SessionDB on that path would mint
+# a fresh BoundedSemaphore at the full ceiling — an abandoned handle plus one GC cycle is
+# then enough to exceed the per-file ceiling. Dropped in release(), i.e. exactly when the
+# last permit comes back, so the weak entry above still collects a quiet path as soon as
+# its handles go.
+# ponytail: a permit that is never returned pins its budget for the life of the process,
+# exactly as a stranded permit already shrinks _process_read_permits. That ceiling is the
+# point: reclaiming a permit the moment the sqlite connection object is finalised would need
+# a weakref.finalize per connection, and the ledger's unit is the live descriptor, not the
+# Python wrapper around it.
+_outstanding_budgets: "set[_PathReadBudget]" = set()
 _read_budgets_lock = threading.Lock()
 
 

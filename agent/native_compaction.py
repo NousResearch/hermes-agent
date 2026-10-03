@@ -335,16 +335,18 @@ def prune_pre_checkpoint_items(
             if cost <= user_remaining:
                 retained_reversed.append(item)
                 user_remaining -= cost
-            elif isinstance(item.get("content"), str):
-                truncated = {**item, "content": item["content"][: user_remaining * 4]}
-                if truncated["content"].strip():
-                    retained_reversed.append(truncated)
-                user_remaining = 0
             else:
-                if parts_cost is not None:
-                    head = _truncate_input_text_parts(item["content"], user_remaining)
-                    if any(part["text"].strip() for part in head):
-                        retained_reversed.append({**item, "content": head})
+                content = item["content"]
+                if isinstance(content, str):
+                    head = content[: user_remaining * 4]
+                    keep = bool(head.strip())
+                elif parts_cost is not None:
+                    head = _truncate_input_text_parts(content, user_remaining)
+                    keep = any(part["text"].strip() for part in head)
+                else:
+                    keep = False
+                if keep:
+                    retained_reversed.append({**item, "content": head})
                 # A non-truncatable boundary (e.g. text + image) must not let
                 # an older completed ask replace the newer oversized ask.
                 user_remaining = 0

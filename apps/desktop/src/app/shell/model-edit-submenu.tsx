@@ -11,6 +11,7 @@ import {
   DropdownMenuSubContent
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
+import { OverflowTip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { isThinkingEnabled, reasoningEffortClamp, resolveReasoningEffort } from '@/lib/reasoning-effort'
 
@@ -115,6 +116,7 @@ export function ModelOptionsContent({
   effortWire,
   fastControl,
   isActive,
+  model,
   onSelectModel,
   onSetOptions,
   reasoning
@@ -153,6 +155,12 @@ export function ModelOptionsContent({
     <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
   ) : (
     <>
+      {/* The row's full id: rows truncate it to fit; the submenu shows it. */}
+      <OverflowTip label={model}>
+        <DropdownMenuLabel className="max-w-full truncate px-2.5 pt-2 pb-1 text-[0.625rem] font-normal normal-case tracking-normal text-(--ui-text-tertiary)">
+          {model}
+        </DropdownMenuLabel>
+      </OverflowTip>
       <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.options}</DropdownMenuLabel>
       {showThinkingToggle ? (
         <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>

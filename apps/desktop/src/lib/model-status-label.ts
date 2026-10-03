@@ -60,19 +60,6 @@ export function modelBaseId(model: string): string {
   return slash >= 0 ? trimmed.slice(slash + 1) : trimmed
 }
 
-// Trailing model-id variants that should render as a grayed tag beside the
-// name (e.g. "Opus 4.8" + "Fast") rather than collapsing two distinct ids to
-// the same display name. `-flash` splits look-alike pairs the same way
-// (#118083): models.dev carries both `deepseek-flash` (alias) and
-// `deepseek-v4.1-flash` (full id) for the provider.
-const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/-fast$/i, 'Fast'],
-  [/-flash$/i, 'Flash'],
-  [/-thinking$/i, 'Thinking'],
-  [/-preview$/i, 'Preview'],
-  [/-latest$/i, 'Latest']
-]
-
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
 // Vendors write their own names in casing the model id does not carry, and
@@ -124,7 +111,7 @@ function prettifyBase(base: string): string {
   }
 
   if (/^gpt-/i.test(base)) {
-    return base.replace(/^gpt-/i, 'GPT-')
+    return applyVendorCasing(`GPT-${titleCase(base.replace(/^gpt-/i, '').replace(/-/g, ' '))}`)
   }
 
   // Title-case this branch too: without it `gemini-2.5-pro` rendered as
@@ -136,52 +123,76 @@ function prettifyBase(base: string): string {
   return applyVendorCasing(titleCase(base.replace(/-/g, ' ')))
 }
 
-// Split the trailing suffixes a local id can carry — a variant tag
-// (`…-flash`, `…-fast`) and a GGUF quant (`…-UD-Q4_K_XL`, `…-Q8_0`) — in
-// EITHER order: `…-flash-Q4_K_XL` and `…-Q4_K_XL-flash` are the same model.
-// One decomposition feeds both the catalog rows and the composer pill, so
-// the two screens can never disagree on which variant an id carries.
-function splitTrailingTags(base: string): { base: string; variant: string; quant: string } {
-  let variant = ''
-  let quant = ''
+// GGUF quant of a local id: `…-UD-Q4_K_XL`, `…-Q8_0`, `…-BF16`. The UD
+// prefix is part of the quant and consumed with it.
+const QUANT_ALT = '(?<quant>Q\\d(?:_[A-Z0-9]+)*|IQ\\d(?:_[A-Z0-9]+)*|F16|BF16)'
 
-  for (let progress = true; progress;) {
-    progress = false
+// Trailing words that can follow a quant in a local id (`…-Q4_K_XL-flash`).
+// Only used to recognize the quant's order; the word itself stays in the name.
+const LOCAL_TRAILING_WORDS = new Set(['fast', 'flash', 'thinking', 'preview', 'latest'])
 
-    if (!variant) {
-      for (const [pattern, label] of VARIANT_TAGS) {
-        if (pattern.test(base)) {
-          variant = label
-          base = base.replace(pattern, '')
-          progress = true
+/** Extract the GGUF quant of a local-build id in either order —
+ *  `…-flash-Q4_K_XL` and `…-Q4_K_XL-flash` are the same model. The trailing
+ *  variant word is retained in the base so it renders as part of the name. */
+function splitLocalQuant(base: string): { base: string; quant: string } {
+  let quantMatch = base.match(new RegExp(`^(?<head>.*?)(?:-UD-|-)${QUANT_ALT}$`, 'i'))
 
-          break
-        }
-      }
-    }
+  if (quantMatch && quantMatch.groups) {
+    base = quantMatch.groups.head
+    // Instruct/chat markers are noise once the quant confirmed a local build.
+    base = base.replace(/-(?:Instruct|Chat)(?:-\d{4})?$/i, '')
 
-    if (!quant) {
-      const quantMatch = base.match(/-(?:UD-)?(Q\d(?:_[A-Z0-9]+)*|IQ\d(?:_[A-Z0-9]+)*|F16|BF16)$/i)
+    return { base, quant: quantMatch.groups.quant.split('_')[0].toUpperCase() }
+  }
 
-      if (quantMatch) {
-        quant = quantMatch[1].split('_')[0].toUpperCase()
-        base = base.slice(0, -quantMatch[0].length)
-        // Instruct/chat markers are noise once the quant confirmed a local build.
-        base = base.replace(/-(?:Instruct|Chat)(?:-\d{4})?$/i, '')
-        progress = true
-      }
+  quantMatch = base.match(new RegExp(`^(?<head>.*?)(?:-UD-|-)${QUANT_ALT}-(?<tail>[a-z]+)$`, 'i'))
+
+  if (quantMatch && quantMatch.groups && LOCAL_TRAILING_WORDS.has(quantMatch.groups.tail.toLowerCase())) {
+    return {
+      base: `${quantMatch.groups.head}-${quantMatch.groups.tail}`,
+      quant: quantMatch.groups.quant.split('_')[0].toUpperCase()
     }
   }
 
-  return { base, variant, quant }
+  return { base, quant: '' }
 }
 
-/** Split a model id into a clean display name plus an optional grayed variant
- *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
-export function modelDisplayParts(model: string): { name: string; tag: string } {
-  let { base, variant, quant } = splitTrailingTags(modelBaseId(model))
+/** Format a trailing 8-digit pin as a date (`20251101` → "2025-11-01");
+ *  null when the digits are not a real calendar date. */
+function formatDatePin(digits: string): null | string {
+  const year = Number(digits.slice(0, 4))
+  const month = Number(digits.slice(4, 6))
+  const day = Number(digits.slice(6, 8))
 
-  const tags = [variant, quant].filter(Boolean)
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return null
+  }
+
+  // Date.UTC with day 0 gives the previous month's last day.
+  if (day > new Date(Date.UTC(year, month, 0)).getUTCDate()) {
+    return null
+  }
+
+  const pad = (value: number): string => String(value).padStart(2, '0')
+
+  return `${year}-${pad(month)}-${pad(day)}`
+}
+
+/** Split a model id into a display name plus an optional tag. Identity words
+ *  and date pins stay in the name; only non-identity qualifiers of local ids
+ *  (the GGUF quant) and the context-window route become tags. Rows that still
+ *  render identically get a distinguishing chip from the menu's section-level
+ *  collision fallback. */
+export function modelDisplayParts(model: string): { name: string; tag: string } {
+  let base = modelBaseId(model)
+  const tags: string[] = []
+
+  const { base: quantBase, quant } = splitLocalQuant(base)
+  base = quantBase
+
+  if (quant) {
+    tags.push(quant)
+  }
 
   // Anthropic's `[1m]` route suffix selects the 1M-context window. It is a
   // variant of the same model, so it renders as a tag ("Sonnet 5 · 1M") rather
@@ -193,42 +204,36 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
     base = base.slice(0, -contextWindow[0].length)
   }
 
-  // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.
-  base = base.replace(/-\d{8}$/, '')
+  // A trailing 8-digit date-pin stays visible as text (formatted when it is a
+  // real date, otherwise left for generic prettification): a snapshot id and
+  // its base id must remain distinct rows.
+  const datePin = base.match(/-(\d{8})$/)
+  let pinText = ''
 
-  return { name: prettifyBase(base) || model.trim() || 'No model', tag: tags.join(' ') }
+  if (datePin) {
+    pinText = formatDatePin(datePin[1]) ?? ''
+
+    if (pinText) {
+      base = base.slice(0, -datePin[0].length)
+    }
+  }
+
+  const name = prettifyBase(base) || model.trim() || 'No model'
+
+  return { name: pinText ? `${name} ${pinText}` : name, tag: tags.join(' ') }
 }
 
-/** Friendly one-line model name for menus and the status bar. The variant
- *  tag is part of the name: `…-4.8` vs `…-4.8-thinking` must never collapse
- *  to the same label on any surface (#88597). */
+/** Friendly one-line model name for menus and the status bar. */
 export function displayModelName(model: string): string {
   const { name, tag } = modelDisplayParts(model)
 
   return tag ? `${name} ${tag}` : name
 }
 
-/** The variant tag a model id carries (Fast, Flash, Thinking, Preview,
- *  Latest) — the one taxonomy both the catalog rows and the composer pill
- *  split on, so distinct ids never render as one model listed twice.
- *  Quant and context-window tags stay picker-row detail. Derived from the
- *  same suffix split as `modelDisplayParts`, so a quant-bearing local id
- *  (`…-flash-Q4_K_XL`, `…-Q4_K_XL-flash`) reports the same variant on the
- *  pill as the catalog row shows. */
-export function modelVariantTag(model: string): string {
-  return splitTrailingTags(modelBaseId(model)).variant
-}
-
-/** Composer model-pill label — model name plus its variant tag (Fast, Flash,
- *  …) when one applies, separated by a `·` so the pill reads as
- *  "name · variant" at a glance. The reasoning level is NOT here: it has its
- *  own pill (`ReasoningPill`), so a long model name can no longer push the
- *  effort out of the truncating span. Fast shows when the speed=fast param is
- *  on OR the active model is a `…-fast` variant — never both. */
+/** Composer model-pill label — the model name. The reasoning level has its own
+ *  pill (`ReasoningPill`), and an active speed=fast appends "· Fast". */
 export function formatModelPillLabel(model: string, options?: { fastMode?: boolean }): string {
   const name = modelDisplayParts(model).name
 
-  const tag = model.trim() ? (options?.fastMode ? 'Fast' : modelVariantTag(model)) : ''
-
-  return tag ? `${name} · ${tag}` : name
+  return model.trim() && options?.fastMode ? `${name} · Fast` : name
 }

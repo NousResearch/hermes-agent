@@ -252,6 +252,17 @@ def _posix_roots(roots: List[str]) -> bool:
         not re.match(r"^[A-Za-z]:[\\/]", root) and "\\" not in root for root in roots)
 
 
+def _find_literal_path_expressions(roots: List[str]) -> List[str]:
+    """Escape each search root for find's ``-path`` test, which matches its PATTERN
+    (glob) against the path find echoes — the operand verbatim. The operand reaches
+    the shell already single-quoted; ``-path`` must compare literally, so ``*?[]``
+    in a root's own name need escaping (a directory literally named ``a[1]`` must
+    be excluded by identity, not treated as a character class). Backslashes are
+    left alone: find does not read them as escapes inside a bracket-free pattern,
+    and doubling them would break matching on backslash-shaped roots."""
+    return [re.sub(r"([*?\[\]])", r"\\\1", root) for root in roots]
+
+
 class SearchMixin:
     """File-name and content search via rg with find/grep fallbacks. Requires
     ``_exec``, ``_has_command``, ``_expand_path``, ``_escape_shell_arg``,
@@ -830,9 +841,20 @@ class SearchMixin:
         # indistinguishable from an empty directory - while ``rg --files`` followed the
         # same argument (#116270). Following the operand inside the command is also what
         # covers a link that only exists on the execution host (SSH/container), with no
-        # probe of its own.
-        base = (f"find -H {' '.join(q_roots)} -mindepth 1{protected_prune}{hidden_prune} "
-                f"\\( -type f -o -type d \\) ! -name '.*' -name {self._escape_shell_arg(search_pattern)}")
+        # probe of its own. That contract forbids ``-mindepth 1`` here: with ``-H`` the
+        # followed operand IS depth 0, so it would exclude the root itself — the only
+        # match when the root is a symlink to a file. The root directory itself is
+        # excluded by path identity instead, inside the ``-type d`` arm (the ``-type f``
+        # arm must keep the depth-0 match). ``-path`` matching is literal against the
+        # path as find echoes it, which is the operand verbatim, so the operand needs
+        # its glob metacharacters escaped.
+        root_exemptions = "".join(
+            f" ! -path {self._escape_shell_arg(root)}"
+            for root in _find_literal_path_expressions(find_roots)
+        )
+        base = (f"find -H {' '.join(q_roots)}{protected_prune}{hidden_prune} "
+                f"\\( -type f -o \\( -type d{root_exemptions} \\) \\) "
+                f"! -name '.*' -name {self._escape_shell_arg(search_pattern)}")
         if order == "modified":
             cmd = "set -o pipefail; " + base + f" -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -n {fetch_limit}"
         else:

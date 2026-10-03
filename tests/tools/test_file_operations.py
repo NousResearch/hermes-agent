@@ -451,6 +451,22 @@ class TestSearchFilesIncludesDirectories:
         assert str(visible_dir) in result.files
         assert str(hidden_dir) not in result.files
 
+    def test_find_lane_never_returns_the_search_root_itself(self, tmp_path, monkeypatch):
+        """The root is excluded by path identity — not by ``-mindepth 1``, which
+        would also exclude the depth-0 operand match a symlinked root depends on
+        (#116270) — and a same-named descendant still matches (#54347)."""
+        root = tmp_path / "vault"
+        child = root / "vault"
+        child.mkdir(parents=True)
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
+        result = ops.search("vault", path=str(root), target="files")
+
+        assert result.error is None
+        assert str(child) in result.files
+        assert str(root) not in result.files
+
     def test_target_files_paginates_combined_files_and_directories(self, tmp_path, monkeypatch):
         """Files and directories share one ordering: page slices must compose."""
         root = tmp_path / "repo"

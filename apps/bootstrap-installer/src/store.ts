@@ -347,12 +347,44 @@ export async function cancelInstall(): Promise<void> {
   await invoke('cancel_bootstrap')
 }
 
+/**
+ * Backstop for a launch invoke whose IPC response never arrives (#128804).
+ *
+ * The backend bounds its own work: the desktop-exe probe inside
+ * `launch_hermes_desktop` runs on the blocking pool under a 30s deadline
+ * (`EXE_PROBE_TIMEOUT` in src-tauri/src/bootstrap.rs) and returns a
+ * specific, actionable error on every path. This backstop sits ABOVE that
+ * deadline so the backend's message wins whenever its own timer works; it
+ * only fires when the response itself is lost (the original hang), never
+ * racing the backend's error off the screen.
+ *
+ * A retry after any failure is idempotent: the backend holds a one-shot
+ * launch slot, so a second invoke while the first is still in flight is
+ * refused with its own message instead of spawning a second Hermes.exe.
+ */
+const LAUNCH_INVOKE_BACKSTOP_MS = 35_000
+
 export async function launchHermesDesktop(): Promise<void> {
   if (fakeMode()) {throw new Error('Preview mode — launching is disabled.')}
   const installRoot = $bootstrap.get().installRoot
 
   if (!installRoot) {throw new Error('no install root')}
-  await invoke('launch_hermes_desktop', { installRoot })
+
+  const launch = invoke('launch_hermes_desktop', { installRoot })
+  // The race's losing arm must never surface as an unhandled rejection: the
+  // invoke can settle AFTER the backstop fires (backend merely slow), and an
+  // unhandled rejection in the webview would take the whole window down.
+  // Attaching a no-op handler here keeps the race's verdict the only one the
+  // UI sees.
+  launch.catch(() => {})
+  await Promise.race([
+    launch,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error('The desktop launch request timed out. Please try Launch again.'))
+      }, LAUNCH_INVOKE_BACKSTOP_MS)
+    })
+  ])
 }
 
 export async function openLogDir(): Promise<void> {

@@ -253,11 +253,13 @@ def _flush_one_shot_session_store(cli) -> None:
     if getattr(agent, "_persist_disabled", False):
         return
     # Passing cli.conversation_history keeps resumed messages identity-skipped even when
-    # the failed flush never stamped them.
+    # the failed flush never stamped them. After a turn the CLI rebinds it to the very list
+    # the turn persisted; passed as-is, that would stamp the unsaved turn durable and write nothing.
     try:
         msgs = getattr(agent, "_session_messages", None)
         if isinstance(msgs, list) and msgs and hasattr(agent, "_persist_session"):
-            agent._persist_session(msgs, getattr(cli, "conversation_history", None))
+            history = getattr(cli, "conversation_history", None)
+            agent._persist_session(msgs, None if history is msgs else history)
     except Exception:
         logger.debug("one-shot final session persist retry failed", exc_info=True)
     db = getattr(agent, "_session_db", None) or getattr(cli, "_session_db", None)

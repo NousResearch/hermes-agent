@@ -46,6 +46,10 @@ def test_unjoined_peer_failure_survives_reopen_and_publishes_once_without_consen
     events = hosted_rooms.read_events(gateway.service.db_path, room_id='linked')['events']
     assert [e for e in events if e['kind'] == 'turn.failed'] == failures
     assert tasks.get_task(gateway.service.db_path, task['identity']) == task
+    # End must not wait for a peer that never joined to discard nonexistent output.
+    ended = asyncio.run(call(gateway.owner, 'groups.disband', room_id='linked'))
+    assert isinstance(ended, dict) and ended.get('tombstone'), ended
+    assert hosted_rooms.room_state(gateway.service.db_path, room_id='linked', include_disbanded=True)['disbanded_at'] is not None
 
 
 def test_missing_stale_or_peer_supplied_evidence_cannot_release_output(gateway, monkeypatch):

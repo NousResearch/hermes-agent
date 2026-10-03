@@ -609,6 +609,25 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     origin_session_id TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS delegation_live_subagents (
+    subagent_id TEXT PRIMARY KEY,
+    parent_id TEXT,
+    owner_agent_session_id TEXT,
+    delegation_id TEXT,
+    depth INTEGER NOT NULL,
+    goal TEXT,
+    model TEXT,
+    started_at REAL NOT NULL,
+    status TEXT NOT NULL,
+    tool_count INTEGER NOT NULL DEFAULT 0,
+    last_tool TEXT,
+    owner_pid INTEGER NOT NULL,
+    lease_expires_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_delegation_live_subagents_lease
+    ON delegation_live_subagents(lease_expires_at);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);

@@ -150,12 +150,20 @@ class PerChatUpdateProcessor(BaseUpdateProcessor):
         self._tails[chat.id] = done
         try:
             if prev is not None:
-                await prev
+                # shield: cancelling this waiter must not cancel the predecessor's tail future.
+                await asyncio.shield(prev)
             await coroutine
         finally:
-            done.set_result(None)
-            if self._tails.get(chat.id) is done:
-                del self._tails[chat.id]
+            def release(_prev=None):
+                done.set_result(None)
+                if self._tails.get(chat.id) is done:
+                    del self._tails[chat.id]
+
+            # A cancelled waiter hands its turn on only once its predecessor finishes (per-chat FIFO).
+            if prev is None or prev.done():
+                release()
+            else:
+                prev.add_done_callback(release)
 
     async def initialize(self) -> None:
         pass

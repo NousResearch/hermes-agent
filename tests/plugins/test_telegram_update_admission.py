@@ -809,6 +809,27 @@ async def test_connect_builds_concurrent_update_processor(monkeypatch):
     async with connected(monkeypatch, extra={"max_concurrent_updates": "lots"}) as (adapter, app, delivered):
         assert app.concurrent_updates == 32
 
+    # Cancelling a waiting same-chat update must neither fail its running predecessor nor
+    # let the next update of that chat overtake it.
+    processor, order, gate = app.update_processor, [], asyncio.Event()
+
+    async def handler(name):
+        order.append(f"start {name}")
+        if name == "A":
+            await gate.wait()
+
+    chat = SimpleNamespace(effective_chat=SimpleNamespace(id=1))
+    tasks = []
+    for name in "ABC":
+        tasks.append(asyncio.create_task(processor.process_update(chat, handler(name))))
+        await asyncio.sleep(0.01)
+    tasks[1].cancel()
+    await asyncio.sleep(0.01)
+    gate.set()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert results[0] is None and results[2] is None
+    assert order == ["start A", "start C"]
+
 
 @pytest.mark.asyncio
 async def test_slow_update_does_not_block_other_chats(monkeypatch):

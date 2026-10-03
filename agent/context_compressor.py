@@ -1231,6 +1231,48 @@ def _tool_calls_by_id(messages: List[Dict[str, Any]]) -> Dict[str, tuple]:
     return out
 
 
+# Superseded-path eviction (pass 1.5) keys on the file a tool call touched: these are the tools
+# whose result is the state of one path, and the argument keys that name it. read_file /
+# write_file / patch all declare ``path``; ``file_path`` is the historic spelling.
+_PATH_TOUCH_TOOLS = frozenset({"read_file", "write_file", "patch"})
+_PATH_ARG_KEYS = ("path", "file_path")
+# The ONE canonical prefix for the pass-1.5 back-reference. The emit site and every presence
+# check share it (same contract as ``SKILL_PRUNED_MARKER_PREFIX``), so a rewritten result is
+# never re-rewritten by a later pass and the pass stays idempotent.
+_SUPERSEDED_TOOL_RESULT_PREFIX = "[Superseded tool output"
+
+
+def _superseded_result_reference(path: str) -> str:
+    """The back-reference left in place of an older result for a path a later call touched again."""
+    return (
+        f"{_SUPERSEDED_TOOL_RESULT_PREFIX} — this path was touched again later; "
+        f"see the newest result for {elide(path, 120)}]"
+    )
+
+
+def _tool_result_path(msg: Dict[str, Any], call_id_to_tool: Dict[str, tuple]) -> Optional[str]:
+    """Path the call behind a tool result touched, or None when there is none to key on.
+
+    None for a non-tool row, a tool outside ``_PATH_TOUCH_TOOLS``, missing/corrupt/non-string
+    arguments, and for a row already carrying the pass-1.5 back-reference — that last one joins
+    neither side of the keep-newest scan, which is what keeps the pass idempotent.
+    """
+    if not isinstance(msg, dict) or msg.get("role") != "tool":
+        return None
+    content = msg.get("content")
+    if isinstance(content, str) and content.startswith(_SUPERSEDED_TOOL_RESULT_PREFIX):
+        return None
+    tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), (None, ""))
+    if tool_name not in _PATH_TOUCH_TOOLS:
+        return None
+    args = _json_dict(tool_args)
+    for key in _PATH_ARG_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def _collect_path_mentions(text: str, relevant_files: list[str], *, limit: int = 12) -> None:
     for match in _PATH_MENTION_RE.findall(text):
         _dedupe_append(relevant_files, match.rstrip(".,:;"), limit=limit)
@@ -3232,6 +3274,41 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return pruned
 
     @staticmethod
+    def _evict_superseded_path_results(
+        result: List[Dict[str, Any]], call_id_to_tool: Dict[str, tuple], spared: range = range(0),
+    ) -> int:
+        """Pass 1.5: keep the newest result per touched path, back-reference the older ones.
+
+        The same back-reference move as pass 1, keyed on the file a call touched instead of on byte
+        identity — which is what lets a *stale* copy go even though its content differs from the
+        newer one (the mechanism behind editing from a stale version; 48.1% of (session, path)
+        pairs are touched more than once, 829 redundant ops, worst cases 83x / 54x / 23x). Tail-
+        agnostic like pass 1, so the survivor keeps its place; the unread pending round is spared
+        (#61932), a result whose path cannot be extracted is left alone, and a body no longer than
+        the back-reference itself is left alone too — replacing it would grow the request.
+        """
+        newest: Dict[str, int] = {}
+        for i in range(len(result) - 1, -1, -1):
+            path = _tool_result_path(result[i], call_id_to_tool)
+            if path is not None and path not in newest:
+                newest[path] = i
+        pruned = 0
+        for i in range(len(result) - 1, -1, -1):
+            if i in spared:
+                continue
+            msg = result[i]
+            path = _tool_result_path(msg, call_id_to_tool)
+            if path is None or newest.get(path) == i:
+                continue
+            content = msg.get("content")
+            reference = _superseded_result_reference(path)
+            if not isinstance(content, str) or len(content) <= len(reference):
+                continue
+            result[i] = {**msg, "content": reference}
+            pruned += 1
+        return pruned
+
+    @staticmethod
     def _demote_tool_result_at(
         result: List[Dict[str, Any]], idx: int, call_id_to_tool: Dict[str, tuple[str, str]],
         min_prune_chars: int, protected_skills: Optional[set[str]] = None,
@@ -3250,7 +3327,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             return new_msg is not None
         if (
             not isinstance(content, str) or not content or content == _PRUNED_TOOL_PLACEHOLDER
-            or content.startswith(("[Duplicate tool output", "[screenshot removed"))
+            or content.startswith(
+                ("[Duplicate tool output", "[screenshot removed", _SUPERSEDED_TOOL_RESULT_PREFIX)
+            )
             or _is_summary_stub(content) or len(content) <= min_prune_chars
         ):
             return False
@@ -3352,6 +3431,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         spared = self._spared_pending_tool_round(result)
         prune_boundary = min(prune_boundary, spared.start) if spared else prune_boundary
         pruned = self._dedupe_tool_results(result)
+        # Pass 1.5: a path touched again later supersedes every earlier result for that path —
+        # the stale copy is the one that causes edits from a stale version. Same back-reference
+        # move as pass 1, so it is safe to run tail-agnostically (the newest copy stays put).
+        pruned += self._evict_superseded_path_results(result, call_id_to_tool, spared)
         # Just-loaded / tail-referenced skills keep full skill_view bodies through the ordinary passes.
         # Without this, a skill loaded moments before a compaction can be demoted to metadata while the
         # model still believes its instructions are in context. See #32106.
@@ -3456,13 +3539,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
         ``_prune_old_tool_results`` runs all deterministic passes: (1) dedup byte-identical tool results —
         keeps the newest full copy and back-references older exact duplicates ANYWHERE in the list
-        (including the protected tail), so no unique content is ever lost; (2) summarize non-tail tool
+        (including the protected tail), so no unique content is ever lost; (1.5) keep the newest result per
+        file path a call touched (read_file / write_file / patch) and back-reference older results for that
+        path ANYWHERE in the list — the stale version — sparing the unread pending round and bodies no
+        longer than the back-reference; (2) summarize non-tail tool
         results larger than ``min_prune_chars``; (3) truncate oversized tool_call arguments on non-tail
         assistant messages; (3.5) retire image payloads on all but the newest ``_MAX_KEEP_TOOL_IMAGES``
         image-bearing tool results, except a pending round that fits the hard share (#92699). Only pass (2)'s floor is
-        raised by ``proactive_prune_min_result_chars``; passes (1) and (3) keep their own fixed floors. The
-        recent-tail protection applies to passes (2) and (3); pass (1) is tail-agnostic by design because
-        dedup is lossless.
+        raised by ``proactive_prune_min_result_chars``; passes (1), (1.5) and (3) keep their own fixed floors. The
+        recent-tail protection applies to passes (2) and (3); passes (1) and (1.5) are tail-agnostic by design
+        because both move by back-reference (pass 1.5 to the current version of a file, pass 1 to an identical copy).
         """
         if self.proactive_prune_tokens <= 0 or (
             current_tokens is not None and current_tokens < self.proactive_prune_tokens

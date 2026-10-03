@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useEffect, useRef, useState } from 'react'
 
+import { runSessionRetitle, sessionRetitleMatchesSelection } from '@/app/chat/actions/retitle-session'
 import { openSession } from '@/app/open-session'
 import {
   closeAllTreeTabs,
@@ -358,6 +359,15 @@ function useSessionActions({
           })
         ]
       : []),
+    spec({
+      disabled: !sessionRetitleMatchesSelection(sessionId),
+      icon: 'sparkle',
+      label: r.regenerateTitle,
+      onSelect: async () => {
+        triggerHaptic('selection')
+        await runSessionRetitle({ sessionId })
+      }
+    }),
     spec({
       disabled: !onPin,
       icon: 'pin',

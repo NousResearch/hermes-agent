@@ -530,10 +530,11 @@ _DB_CONNSTR_RE = re.compile(
 # belong to _DB_CONNSTR_RE. 8+ char floor skips short usernames; the class
 # forbids ``/`` so an ``@`` in a path/query (``?q=user@example.com``) never counts.
 # This is the ``git remote set-url origin https://PASSWORD@github.com/...`` shape from issue #6396 — a
-# single opaque credential in the userinfo position with NO ``user:pass`` colon. The colon form
-# ``user:pass@`` is deliberately left to pass through (commit "pass web URLs through unchanged", #34029) and
-# is NOT matched here — the token class forbids ``:``. DB schemes are handled by _DB_CONNSTR_RE above and
-# excluded here. Guards against false positives:
+# single opaque credential in the userinfo position with NO ``user:pass`` colon. The colon form's
+# PASSWORD is masked separately by _redact_userinfo_passwords (issue #125664) — #34029's pass-through
+# was about query-string round-trip tokens (magic links / OAuth callbacks / pre-signed URLs live in
+# the query, never in userinfo), and a userinfo password is a credential, not a workflow token. DB
+# schemes are handled by _DB_CONNSTR_RE above and excluded here. Guards against false positives:
 _URL_BARE_TOKEN_RE = re.compile(
     r"((?:https?|wss?|git|ssh|ftp|ftps|sftp)://)"  # scheme
     r"([^\s:@/]{8,})"                               # bare token (no colon/slash/@), 8+ chars
@@ -562,6 +563,45 @@ _STRICT_URL_PARAM_RE = re.compile(r"([?#&;])([A-Za-z0-9_.~+%\-]+)=([^#&;\s\"'<>]
 # ``//`` — an optional-scheme prefix backtracked O(n²) on long alphanumeric runs
 # (~55s per sub() on a 320KB compaction payload).
 _STRICT_URL_USERINFO_RE = re.compile(r"//[^/\s?#@]+@")
+
+# ``NAME=user:pass`` where NAME carries no secret keyword — an HTTP Basic auth pair is often stored
+# this way (#125664). Shape-only on arbitrary names, so it runs force-only (persistence boundary,
+# debug dumps, session export all pass force=True): ordinary prose/config keeps today's behaviour.
+# Guards against non-secret colon values: the password needs an 8-char floor AND a letter (ports and
+# digit-only tags fail it), the password group is a single token (no whitespace, quotes or ``/`` —
+# so ``registry.example.com:5000/repo`` keeps its path, and an ISO timestamp's ``:00:00`` tail
+# truncates the group to digits), and a version-shaped tail (``24.04-noble``, ``v1.2.3-alpine``)
+# is rejected outright. The value is the WHOLE assignment (``user`` cannot contain ``:``/``@``/``/``),
+# and the ``:(?!//)`` lookahead keeps ``scheme://`` values (``MY_URL=https://example.com``) out.
+# ``user`` must also be at least 2 characters: a single-letter ``user:`` is a Windows drive
+# (``SRC=C:\Users\...``), and masking the whole path as ``SRC=C:***`` at a force boundary is
+# unrecoverable data loss — no real Basic pair has a one-letter user, and a secret-keyword NAME
+# still masks via the ENV pass (#125680 review).
+# ``@`` is not a password character here either: a ``user:pass@host``-shaped value belongs to the
+# userinfo pass below, which knows the f-string ``{...}`` template exemption; excluding it lets that
+# pass see the pure brace expression (``BASIC="user:{pw}@host"`` keeps its template verbatim).
+_BASIC_PAIR_ASSIGN_RE = re.compile(
+    r"(?<![A-Za-z0-9_.\-])([A-Za-z][A-Za-z0-9_.\-]{0,63})=([\"']?)"
+    r"([A-Za-z0-9._~\-]{2,})(?::(?!//)([^\s'\"/:@]+))\2"
+)
+
+# ``24.04-noble`` / ``v1.2.3-alpine`` image tags: digit-led dotted versions, optionally ``v``-prefixed
+# — long and letter-bearing enough to pass the floor, yet never a credential.
+_VERSION_TAG_RE = re.compile(r"^[vV]?\d+(\.\d+)+")
+
+# ``CHECKSUM=sha256:1234…`` digest labels: the hex body is long and letter-bearing, but a hash
+# algorithm name as the ``user`` half marks the pair as an algorithm:digest, not a credential
+# (#125680 review). No real Basic pair has one of these as its username.
+_HASH_ALGO_NAMES = frozenset({
+    "md5", "sha1", "sha224", "sha256", "sha384", "sha512", "sha3-224", "sha3-256",
+    "sha3-384", "sha3-512", "blake2b", "blake2s", "ripemd160", "crc32", "crc32c",
+})
+
+def _is_basic_pair_password(password: str) -> bool:
+    """8+ chars with a letter and not a version-shaped tail — a secret, not a tag or timestamp."""
+    if _VERSION_TAG_RE.search(password):
+        return False
+    return len(password) >= 8 and any(c.isalpha() for c in password)
 
 # Form-urlencoded body: only when the ENTIRE text is a k=v&k=v string.
 _FORM_BODY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*(?:&[A-Za-z_][A-Za-z0-9_.-]*=[^&\s]*)+$")
@@ -858,8 +898,24 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
     return text
 
 
+def _redact_userinfo_passwords(text: str, code_file: bool) -> str:
+    """Mask the password half of ``scheme://user:pass@host`` userinfo (#125664).
+
+    #34029's pass-through was about query-string round-trip tokens (magic links, OAuth callbacks,
+    pre-signed URLs live in the query, never in userinfo); the userinfo password is a credential —
+    the same reasoning #6396 used to mask the bare-token form. Keeps scheme, username and host
+    visible. ``code_file`` keeps a pure ``{...}`` password intact, as _DB_CONNSTR_RE does for
+    f-string templates (#33801)."""
+    def _sub(m):
+        user, sep, password = m.group(2).partition(":")
+        if not sep or (code_file and password.startswith("{") and password.endswith("}")):
+            return m.group(0)
+        return f"{m.group(1)}{user}:***@"
+    return _STRICT_URL_USERINFO_RE.sub(_sub, text)
+
+
 def _redact_url_credentials(text: str, code_file: bool) -> str:
-    """DB connection-string passwords and bare-token URL userinfo (``://`` text only)."""
+    """DB connection-string passwords, bare-token and ``user:pass`` URL userinfo (``://`` text only)."""
     def _redact_db(m):
         # code_file: a pure ``{...}`` password is an f-string template reference
         # (f"postgresql://{user}:{pass}@{host}"), not a literal credential.
@@ -868,7 +924,8 @@ def _redact_url_credentials(text: str, code_file: bool) -> str:
             return m.group(0)
         return f"{m.group(1)}***{m.group(3)}"
     text = _DB_CONNSTR_RE.sub(_redact_db, text)
-    return _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
+    text = _URL_BARE_TOKEN_RE.sub(lambda m: f"{m.group(1)}{_mask_token(m.group(2))}{m.group(3)}", text)
+    return _redact_userinfo_passwords(text, code_file)
 
 
 def _redact_phone(m):
@@ -946,6 +1003,24 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)
+
+    if force and "=" in text:
+        # ``NAME=user:pass`` under an innocuous name (#125664): shape-only, so force-only — every
+        # force=True caller (persistence boundary, debug dumps, session export) is a safety boundary
+        # that must not return raw secrets; ordinary flows keep today's pass-through.
+        def _basic_pair(m):
+            password = m.group(4)
+            if password is None or not _is_basic_pair_password(password):
+                return m.group(0)
+            # ``CHECKSUM=sha256:<hex>``: an algorithm:digest label, not a user:credential pair.
+            if m.group(3).lower() in _HASH_ALGO_NAMES:
+                return m.group(0)
+            # A pure ``{...}`` password is an f-string template reference, not a literal
+            # credential — same #33801 rule _redact_userinfo_passwords applies below.
+            if code_file and password.startswith("{") and password.endswith("}"):
+                return m.group(0)
+            return f"{m.group(1)}={m.group(2)}{m.group(3)}:***{m.group(2)}"
+        text = _BASIC_PAIR_ASSIGN_RE.sub(_basic_pair, text)
 
     if "uthorization" in text or "UTHORIZATION" in text:  # cheapest gate over every casing
         text = _AUTH_HEADER_RE.sub(lambda m: m.group(1) + (m.group(2) or "") + _mask_token(m.group(3)), text)

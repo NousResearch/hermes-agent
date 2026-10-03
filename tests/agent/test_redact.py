@@ -774,10 +774,11 @@ class TestStrictUrlCredentialRedaction:
 class TestBareTokenUserinfoRedaction:
     """Regression tests for #6396 — a bare credential in URL userinfo
     (``scheme://TOKEN@host``, no ``user:pass`` colon) is redacted. This is the
-    git-remote-with-embedded-password shape. The colon form ``user:pass@`` and
-    query-string tokens are deliberately left to pass through (#34029) so
-    magic-link / OAuth round-trip skills keep working — see
-    TestWebUrlsNotRedacted for those invariants.
+    git-remote-with-embedded-password shape. The colon form's password is
+    masked too (#125664, see test_user_pass_form_password_redacted below);
+    query-string tokens are the only userinfo-adjacent shape deliberately left
+    to pass through (#34029) so magic-link / OAuth round-trip skills keep
+    working — see TestWebUrlsNotRedacted for those invariants.
     """
 
     def test_git_remote_bare_password_redacted(self):
@@ -803,10 +804,20 @@ class TestBareTokenUserinfoRedaction:
         assert "ftptoken123456" not in result
 
 
-    def test_user_pass_form_still_passes_through(self):
-        """The ``user:pass@`` colon form must NOT be redacted (#34029)."""
+    def test_user_pass_form_password_redacted(self):
+        """The ``user:pass@`` colon form's PASSWORD is redacted (#125664): #34029's pass-through
+        was about query-string round-trip tokens (magic links / OAuth callbacks live in the query,
+        never in userinfo), and a userinfo password is a credential, not a workflow token — the
+        same reasoning #6396 used for the bare-token form. Username, host and path stay visible."""
         text = "URL: https://user:supersecretpw@host.example.com/path"
-        assert redact_sensitive_text(text) == text
+        result = redact_sensitive_text(text)
+        assert result == "URL: https://user:***@host.example.com/path"
+
+    def test_userinfo_fstring_template_kept_for_code_files(self):
+        """code_file=True keeps a pure ``{...}`` password intact — an f-string template reference,
+        not a literal credential (same rule as _DB_CONNSTR_RE, #33801)."""
+        text = 'url = f"https://{user}:{pw}@host.example.com/path"'
+        assert redact_sensitive_text(text, code_file=True) == text
 
     def test_short_username_not_redacted(self):
         """Short userinfo (git, admin, deploy) below the 8-char floor passes."""
@@ -825,6 +836,112 @@ class TestBareTokenUserinfoRedaction:
             "https://example.com/users/john@doe.com/profile",
         ):
             assert redact_sensitive_text(text) == text
+
+
+class TestUserinfoPasswordRedaction:
+    """#125664: the password half of ``scheme://user:pass@host`` is a credential
+    and is masked on every path (the persistence boundary, force=True debug
+    dumps and the default pass alike); username, host and path stay visible."""
+
+    @pytest.mark.parametrize("force", [False, True])
+    def test_https_userinfo_password_masked(self, force):
+        result = redact_sensitive_text(
+            "https://user:FakeSecret9876@example.com/x", force=force)
+        assert result == "https://user:***@example.com/x"
+
+    def test_git_remote_user_pass_masked(self):
+        """The colon form of the #6396 git-remote shape, where the bug actually
+        surfaced: credentials echoed in a remote URL reached logs verbatim."""
+        text = "git remote set-url origin https://me:hunter2pass@github.com/o/r.git"
+        result = redact_sensitive_text(text, force=True)
+        assert result == "git remote set-url origin https://me:***@github.com/o/r.git"
+
+    def test_userinfo_digit_only_password_also_masked(self):
+        """The userinfo position is structurally a credential slot (a port can
+        only appear after the host), so the password is masked whatever its
+        shape — unlike the bare-token form, no 8-char floor is needed."""
+        assert redact_sensitive_text("https://u:1234@example.com/x", force=True) == "https://u:***@example.com/x"
+
+    def test_query_params_still_pass_through(self):
+        """#34029's actual invariant: round-trip workflow tokens live in the query
+        string and must survive — masking userinfo does not reopen that wound."""
+        text = "GET https://api.example.com/oauth/cb?code=abc123xyz789&state=csrf_ok"
+        assert redact_sensitive_text(text, force=True) == text
+
+
+class TestBasicPairAssignmentRedaction:
+    """#125664: ``NAME=user:pass`` under an innocuous name (an HTTP Basic auth
+    pair is often stored this way) is masked at force=True boundaries. The rule
+    is shape-only on arbitrary names, so it never fires on the default pass."""
+
+    @pytest.mark.parametrize("quoted", [False, True])
+    def test_basic_pair_masked_at_force_boundaries(self, quoted):
+        value = '"user:Xk9fAKEfakeFAKE_fake-12345"' if quoted else "user:Xk9fAKEfakeFAKE_fake-12345"
+        text = f"MY_PROXY_BASIC={value}"
+        result = redact_sensitive_text(text, force=True)
+        expected = 'MY_PROXY_BASIC="user:***"' if quoted else "MY_PROXY_BASIC=user:***"
+        assert result == expected
+
+    def test_basic_pair_passes_on_default_path(self):
+        """No secret keyword in the name and the default pass stays quiet — a
+        shape-only rule on arbitrary names would false-positive in prose/config."""
+        text = "MY_PROXY_BASIC=user:Xk9fAKEfakeFAKE_fake-12345"
+        assert redact_sensitive_text(text) == text
+
+    @pytest.mark.parametrize(
+        ("name", "text"),
+        [
+            ("host:port", "MY_HOST=localhost:8080"),
+            ("url value", "MY_URL=https://example.com"),
+            ("iso timestamp", "TS=2026-01-01T12:00:00"),
+            ("iso timestamp with fraction", "TS=2026-01-01T12:00:00.123456Z"),
+            ("image tag", "IMAGE=python:3.11"),
+            ("letter-bearing image tag", "IMAGE=ubuntu:24.04-noble"),
+            ("v-prefixed image tag", "IMAGE=myapp:v1.2.3-alpine"),
+            ("registry host:port/path", "TARGET=registry.example.com:5000/repo"),
+            ("windows drive path", "SRC=C:\\Users\\admin\\Documents\\report.pdf"),
+            ("windows drive path go cache", "GOMODCACHE=D:\\go\\pkg\\mod"),
+            ("sha256 digest label", "CHECKSUM=sha256:1234567890abcdef1234567890abcdef"),
+            ("docker image digest", "IMAGE=ubuntu@sha256:1234567890abcdef1234567890abcdef"),
+        ],
+    )
+    def test_non_secret_colon_values_pass_through(self, name, text):
+        """The issue's negative controls: colon-bearing values that are not
+        credentials stay untouched even at force=True. The persistence boundary
+        redacts a STORED value — mangling a timestamp tail, an image tag or a
+        registry path here is data loss, not display (#125664 review). A
+        one-letter ``user:`` is a Windows drive and ``sha256:<hex>`` a digest
+        label, not a Basic pair (#125680 review): masking either collapses the
+        whole stored value to ``X:***`` irreversibly."""
+        assert redact_sensitive_text(text, force=True) == text, name
+
+    def test_drive_letter_fix_does_not_lose_real_pairs(self):
+        """The 2-char floor only excludes one-letter usernames; a real stored
+        Basic pair still masks at the force boundary, and a secret-keyword NAME
+        masks on every path via the ENV pass — the shape rule stays a floor."""
+        assert redact_sensitive_text("SRC=ab:Xk9fAKEfakeFAKE_fake-12345", force=True) == "SRC=ab:***"
+        assert redact_sensitive_text("SECRET=j:Xk9fAKEfakeFAKE_fake-12345") == "SECRET=***"
+
+    @pytest.mark.parametrize("code_file", [False, True])
+    def test_fstring_template_password_kept(self, code_file):
+        """``user:{pw}@host`` under an innocuous name: the ``@`` stops the
+        password group at the pure brace expression, and with code_file the
+        #33801 f-string template rule keeps it verbatim — the brace exemption
+        the userinfo pass applies, honored by the assignment pass too."""
+        text = 'BASIC="user:{pw}@host"'
+        assert redact_sensitive_text(text, force=True, code_file=code_file) == text
+
+    def test_long_brace_template_kept_in_code_files(self):
+        """A long ``{...}`` template password in a code file stays verbatim;
+        outside code files the brace expression may be a literal credential."""
+        text = 'PROXY="admin:{secret}@gh"'
+        assert redact_sensitive_text(text, force=True, code_file=True) == text
+
+    def test_secret_keyword_names_unaffected(self):
+        """Names with a secret keyword already mask via the ENV pass on every
+        path; the force-only rule is a floor, not a behaviour change for them."""
+        text = "DB_PASSWORD=FakePassword2026!"
+        assert redact_sensitive_text(text) == "DB_PASSWORD=***"
 
 
 

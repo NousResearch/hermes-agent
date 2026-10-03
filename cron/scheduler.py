@@ -287,6 +287,120 @@ def _log_tick_yield_once(reason: str) -> None:
     _last_yield_log = {"reason": reason, "at": now}
 
 
+def should_escalate_cron_failure(
+    job: dict,
+    error: str | None,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    """Return whether this failure is the circuit's first open transition."""
+    if job.get("no_agent", False):
+        return True
+    if bool((job.get("fire_claim") or {}).get("manual")):
+        return True
+
+    from cron.job_health import (
+        OPEN_THRESHOLD,
+        SERIES_WINDOW_SECONDS,
+        classify_failure,
+        coerce_health,
+        profile_name,
+        record_result,
+    )
+
+    current = job.get("health")
+    # Legacy or hand-written jobs preserve historical per-run alerts until their
+    # first result lazily migrates them into the durable contract.
+    if not isinstance(current, dict):
+        return True
+    current = coerce_health(
+        current,
+        str(job.get("id") or "unknown"),
+        profile_name(_get_hermes_home()),
+    )
+    current_state = current.get("state", "unknown")
+    if job.get("last_delivery_error"):
+        return True
+    if job.get("_model_unreachable"):
+        from cron.unreachable_retry import will_retry
+
+        try:
+            retry_pending = will_retry(job)
+        except Exception:
+            retry_pending = False
+        if not retry_pending:
+            return True
+    if current_state in {"circuit_open", "suppressed"}:
+        return False
+    if current_state == "half_open":
+        prospective_probe = record_result(
+            current,
+            job_id=str(job.get("id") or "unknown"),
+            profile=profile_name(_get_hermes_home()),
+            success=False,
+            error=error,
+            now=now or _hermes_now(),
+            retry_after_seconds=job.get("_quota_hold_seconds"),
+        )
+        return bool(
+            prospective_probe["state"] == "circuit_open"
+            and prospective_probe["failure_fingerprint"]
+            != current.get("failure_fingerprint")
+        )
+
+    repeat = job.get("repeat") or {}
+    repeat_limit = repeat.get("times")
+    if isinstance(repeat_limit, int) and repeat_limit > 0:
+        completed = repeat.get("completed", 0)
+        if isinstance(completed, int) and completed + 1 >= repeat_limit:
+            return True
+
+    schedule = job.get("schedule") or {}
+    kind = schedule.get("kind") if isinstance(schedule, dict) else None
+    observed = now or _hermes_now()
+    execution_seconds = 0.0
+    claim_at = (job.get("fire_claim") or {}).get("at")
+    if claim_at:
+        try:
+            started = datetime.fromisoformat(str(claim_at).replace("Z", "+00:00"))
+            execution_seconds = max(0.0, (observed - started).total_seconds())
+        except (TypeError, ValueError):
+            pass
+    if kind == "once":
+        return True
+    if kind == "interval":
+        cadence = float(schedule.get("minutes") or 0) * 60 + execution_seconds
+        if cadence * (OPEN_THRESHOLD - 1) >= SERIES_WINDOW_SECONDS:
+            return True
+    if kind == "cron":
+        try:
+            from cron.jobs import compute_next_run
+
+            next_run = compute_next_run(schedule, observed.isoformat())
+            if next_run:
+                next_dt = datetime.fromisoformat(next_run.replace("Z", "+00:00"))
+                cadence = (next_dt - observed).total_seconds() + execution_seconds
+                if cadence * (OPEN_THRESHOLD - 1) >= SERIES_WINDOW_SECONDS:
+                    return True
+        except (TypeError, ValueError):
+            pass
+
+    if classify_failure(error)[0] == "auth":
+        return True
+    if current_state == "unknown" and "after fallback attempts" in str(error or ""):
+        return True
+    prospective = record_result(
+        current,
+        job_id=str(job.get("id") or "unknown"),
+        profile=profile_name(_get_hermes_home()),
+        success=False,
+        error=error,
+        now=observed,
+        retry_after_seconds=job.get("_quota_hold_seconds"),
+    )
+    return prospective["state"] == "circuit_open"
+
+
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     """One-line failure notice for chat delivery (full details stay in the run output).
 
@@ -2954,29 +3068,35 @@ def _compose_run_delivery(
         deliver_content = final_response
         _resolve_incidents_for_recovered_job(job)
     else:
-        # Record the job+error signature once; withhold the per-run ping while the operator
-        # already acked it (closed) or was already told (alerted, inside the reminder cooldown).
-        # Best-effort: a ledger failure never breaks delivery.
+        # Transient failures are persisted silently. Notify only when this run first opens the
+        # circuit; failed half-open probes extend the same incident without re-paging.
         incident_acked, failure_incident_id = _upsert_incident_for_failure(
             job, error or "", output_file=output_file
         )
-        if incident_acked:
+        should_notify = (
+            self_removal_delivery_allowed(job["id"])
+            or should_escalate_cron_failure(job, error)
+        )
+        if not should_notify:
             deliver_content = ""
-        elif agent_declared:
+        else:
+            if incident_acked:
+                deliver_content = ""
+            elif agent_declared:
             # The agent already diagnosed the failure in prose; the summarizer's substring
             # heuristics would re-diagnose it ("timed out" -> blame the model service, "401" ->
             # "sign in again") and attach the wrong remediation. Deliver the evidence as-is.
-            from cron.scheduler_failure_copy import generic_failure_notice
-            deliver_content = generic_failure_notice(
-                job.get("name") or job["id"], job["id"], err.strip().rstrip("."),
-            ) + _failure_streak_nudge(job)
-        else:
-            from cron.quota_hold import hold_notice
-            deliver_content = (
-                _summarize_cron_failure_for_delivery(job, error) + _failure_streak_nudge(job)
-                # The one alert on entering a provider-window hold says so (#89376).
-                + hold_notice(job, job.get("_quota_hold_seconds"))
-            )
+                from cron.scheduler_failure_copy import generic_failure_notice
+                deliver_content = generic_failure_notice(
+                    job.get("name") or job["id"], job["id"], err.strip().rstrip("."),
+                ) + _failure_streak_nudge(job)
+            else:
+                from cron.quota_hold import hold_notice
+                deliver_content = (
+                    _summarize_cron_failure_for_delivery(job, error) + _failure_streak_nudge(job)
+                    # The one alert on entering a provider-window hold says so (#89376).
+                    + hold_notice(job, job.get("_quota_hold_seconds"))
+                )
     return deliver_content, blocked_config, blocked_config_silent, incident_acked, failure_incident_id
 
 
@@ -3211,12 +3331,14 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
 
 
 def _deliver_crash_failure(
-    job: dict, err_text: str, *, adapters, loop,
+    job: dict, err_text: str, *, adapters, loop, force: bool = False,
 ) -> tuple[Optional[str], str]:
     """Failure notice for a run that raised out of run_job. Returns (delivery_error, outcome)."""
     normalized_deliver = _normalize_deliver_value(_delivery_lane_value(job, for_failure=True))
-    # Same ack gate as the normal failure delivery: acked signatures stay silent here too.
     incident_acked, failure_incident_id = _upsert_incident_for_failure(job, err_text)
+    if not force and not should_escalate_cron_failure(job, err_text):
+        return None, "suppressed"
+    # Same ack gate as the normal failure delivery: acked signatures stay silent here too.
     if incident_acked:
         return None, "suppressed_acked"
     delivery_error = None
@@ -3477,7 +3599,12 @@ def _run_one_job_body(
             and not _fire_claim_ownership_lost()
         ):
             delivery_error, delivery_outcome = _deliver_crash_failure(
-                job, _err_text, adapters=adapters, loop=loop)
+                job,
+                _err_text,
+                adapters=adapters,
+                loop=loop,
+                force=self_removal_delivery_allowed(job["id"]),
+            )
         try:
             if (
                 not _consume_interrupted_flag(job["id"], execution_token)
@@ -4230,7 +4357,8 @@ def _sweep_mcp_orphans() -> None:
 def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     """Run one due job via the shared ``run_one_job`` body."""
     # Claim only when the worker actually starts, so a queued lease can't expire first.
-    claimed = claim_job_for_fire(job["id"], return_job=True)
+    manual_fire = job.get("manual_run_at") == job.get("next_run_at")
+    claimed = claim_job_for_fire(job["id"], manual=manual_fire, return_job=True)
     if not claimed:
         finish_execution(
             job["execution_id"], success=False, error="Fire claim lost; execution was not started.")

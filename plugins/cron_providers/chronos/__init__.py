@@ -98,6 +98,14 @@ class ChronosCronScheduler(CronScheduler):
                 raise
             self._note_identity_rejected()  # the job is stored; the ticker fires it
 
+    def on_fire_suppressed(self, job_id: str) -> None:
+        """Re-arm the next NAS one-shot when the current callback was circuit-suppressed."""
+        from cron.jobs import get_job
+
+        job = get_job(job_id)
+        if job and job.get("enabled") and job.get("next_run_at"):
+            self._arm_logged(job, f"re-arm job {job_id} after suppression")
+
     def _arm_one_shot(self, job: Dict[str, Any]) -> None:
         """Arm one one-shot at next_run_at (agent computes the time; NAS executes).
         dedup_key=(job_id, fire_at) makes re-arming the same fire a no-op."""

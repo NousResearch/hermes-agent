@@ -202,6 +202,23 @@ def test_fire_due_rearms_next_oneshot(chronos, monkeypatch):
     assert fake.provisions[0]["fire_at"] == "2026-06-18T12:05:00+00:00"
 
 
+def test_suppressed_callback_rearms_next_oneshot(chronos, monkeypatch):
+    prov, fake = chronos
+    monkeypatch.setattr(
+        "cron.jobs.get_job",
+        lambda jid: {
+            "id": jid,
+            "enabled": True,
+            "next_run_at": "2026-06-18T12:06:00+00:00",
+        },
+    )
+
+    prov.on_fire_suppressed("j1")
+
+    assert [p["job_id"] for p in fake.provisions] == ["j1"]
+    assert fake.provisions[0]["fire_at"] == "2026-06-18T12:06:00+00:00"
+
+
 def test_fire_due_rearms_after_claimed_job_failure(chronos, monkeypatch, tmp_path):
     """A claimed attempt is consumed even when the job pipeline reports failure."""
     import cron.executions as executions
@@ -227,6 +244,7 @@ def test_fire_due_forwards_manual_force_to_claim(chronos, monkeypatch):
     """A manual force fire must reach the store claim as force=True."""
     prov, _fake = chronos
     seen = []
+    suppressed = []
     monkeypatch.setattr(
         "cron.jobs.claim_job_for_fire",
         lambda jid, **kw: seen.append(kw) or False,
@@ -235,9 +253,11 @@ def test_fire_due_forwards_manual_force_to_claim(chronos, monkeypatch):
         "cron.executions.create_execution",
         lambda jid, source: {"id": "exec-1"},
     )
+    monkeypatch.setattr(prov, "on_fire_suppressed", suppressed.append)
 
     assert prov.fire_due("j1", force=True) is False
     assert seen == [{"return_job": True, "force": True}]
+    assert suppressed == ["j1"]
 
 
 def test_fire_due_no_rearm_when_job_gone(chronos, monkeypatch):

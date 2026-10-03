@@ -64,7 +64,9 @@ def _claimed_job():
     from cron.jobs import claim_job_for_fire, create_job, get_job
 
     job = create_job(prompt="x", schedule="every 5m", name="105861")
-    assert claim_job_for_fire(job["id"]) is True
+    # Manual runs always emit their terminal result; this test isolates post-delivery
+    # ownership fencing from scheduled-run retry alert suppression.
+    assert claim_job_for_fire(job["id"], manual=True) is True
     job = get_job(job["id"])
     assert isinstance(job.get("fire_claim"), dict) and job["fire_claim"].get("by")
     return job

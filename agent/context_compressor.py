@@ -1703,7 +1703,7 @@ def _sum_web_extract(name, args, content, content_len, line_count):
 def _sum_delegate_task(name, args, content, content_len, line_count):
     goal = _str_arg(args, "goal")
     goal = goal if len(goal) <= 60 else goal[:57] + "..."
-    return f"[delegate_task] '{goal}' ({content_len:,} chars result)"
+    return f"[delegate_task] '{goal}' ({content_len:,} chars result)" + _result_failure_suffix(content)
 
 
 def _sum_execute_code(name, args, content, content_len, line_count):

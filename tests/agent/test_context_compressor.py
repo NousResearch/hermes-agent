@@ -252,6 +252,8 @@ class TestSummarizeToolResultOutcome:
          "[process] poll session=p1 FAILED: exit code 1"),
         # Every MCP/plugin tool falls through to the generic stub.
         ("some_mcp_tool", {"a": 1}, {"error": "boom"}, "[some_mcp_tool] a=1 (17 chars result) FAILED: boom"),
+        ("delegate_task", {"goal": "ship it"}, {"error": "Unknown action"},
+         "[delegate_task] 'ship it' (27 chars result) FAILED: Unknown action"),
     ])
     def test_failed_call_stub_is_marked_failed(self, tool_name, args, payload, expected):
         assert self._stub(tool_name, args, payload) == expected

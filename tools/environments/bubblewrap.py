@@ -114,6 +114,8 @@ ENV_BINDS = "TERMINAL_BUBBLEWRAP_BINDS"
 ENV_MEMORY_MB = "TERMINAL_BUBBLEWRAP_MEMORY_MB"
 ENV_CPU_SECONDS = "TERMINAL_BUBBLEWRAP_CPU_SECONDS"
 ENV_MAX_PROCS = "TERMINAL_BUBBLEWRAP_MAX_PROCS"
+ENV_HOME_ALLOW = "TERMINAL_BUBBLEWRAP_HOME_ALLOW"
+ENV_HIDE = "TERMINAL_BUBBLEWRAP_HIDE"
 # terminal.home_mode, bridged like the keys above. The spellings that
 # hermes_constants.get_subprocess_home treats as "profile".
 ENV_HOME_MODE = "TERMINAL_HOME_MODE"
@@ -169,6 +171,11 @@ class BubblewrapConfig:
     # terminal.home_mode rides along because it decides whether HERMES_HOME/home
     # is the subprocess HOME and so must be bound back over the overlay.
     home_mode: str = DEFAULT_HOME_MODE
+    # terminal.bubblewrap_home_allow: more allowlist units under HOME
+    # (bubblewrap_home.allow_unit). terminal.bubblewrap_hide: more paths to
+    # hide, absolute or relative to HOME.
+    home_allow: tuple[str, ...] = ()
+    hide: tuple[str, ...] = ()
 
 
 def _parse_binds(raw: str) -> tuple[BindMount, ...]:
@@ -188,6 +195,19 @@ def _parse_binds(raw: str) -> tuple[BindMount, ...]:
             raise ValueError(f"{ENV_BINDS} 'dest' must be a string, got {dest!r}")
         binds.append(BindMount(src=src, dest=dest, readonly=bool(entry.get("readonly", True))))
     return tuple(binds)
+
+
+def _parse_string_list(name: str, raw: str) -> tuple[str, ...]:
+    """A JSON list of strings from the env value *raw*; blank gives the empty tuple."""
+    if not raw.strip():
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a JSON list of strings, got {raw!r}") from None
+    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+        raise ValueError(f"{name} must be a JSON list of strings, got {raw!r}")
+    return tuple(parsed)
 
 
 def _parse_limit(name: str, raw: str, default: int) -> int:
@@ -222,17 +242,44 @@ def load_bubblewrap_config(environ: Mapping[str, str] | None = None) -> Bubblewr
         cpu_seconds=_parse_limit(ENV_CPU_SECONDS, env.get(ENV_CPU_SECONDS, ""), DEFAULT_CPU_SECONDS),
         max_procs=_parse_limit(ENV_MAX_PROCS, env.get(ENV_MAX_PROCS, ""), DEFAULT_MAX_PROCS),
         home_mode=env.get(ENV_HOME_MODE, "").strip().lower() or DEFAULT_HOME_MODE,
+        home_allow=_parse_string_list(ENV_HOME_ALLOW, env.get(ENV_HOME_ALLOW, "")),
+        hide=_parse_string_list(ENV_HIDE, env.get(ENV_HIDE, "")),
     )
 
 
-def sensitive_paths(home: str, hermes_home: str) -> tuple[str, ...]:
+def operator_hidden_paths(home: str, items: Iterable[str]) -> tuple[str, ...]:
+    """Real host paths the operator hides through terminal.bubblewrap_hide.
+
+    An item is absolute, starts with ``~/``, or is relative to *home*. An
+    item that names HOME, a parent of it or the root would hide every
+    command's working set and is ignored with a warning.
+    """
+    home = os.path.realpath(os.path.abspath(os.path.expanduser(home)))
+    resolved: list[str] = []
+    for item in items:
+        text = item.strip()
+        if not text:
+            continue
+        if text == "~" or text.startswith("~/"):
+            text = os.path.join(home, text[2:])
+        real = os.path.realpath(text if os.path.isabs(text) else os.path.join(home, text))
+        if _is_within(home, real):
+            logger.warning("Ignoring terminal.bubblewrap_hide entry %r: it covers the home directory", item)
+            continue
+        if real not in resolved:
+            resolved.append(real)
+    return tuple(resolved)
+
+
+def sensitive_paths(home: str, hermes_home: str, extra: Sequence[str] = ()) -> tuple[str, ...]:
     """Real host paths that must stay hidden: the HOME set, HERMES_HOME and HOME/.hermes.
 
     The default HOME/.hermes rides along with the resolved HERMES_HOME so a
     relocated HERMES_HOME (a profile at HOME/.hermes/profiles/<name>) does
     not leave the default home readable; when the two are the same
     directory it is listed once. A missing HOME/.hermes stays in the set
-    and emits no mount (sensitive_overlay_args skips absent paths).
+    and emits no mount (sensitive_overlay_args skips absent paths). *extra* is
+    the operator's own hidden paths (operator_hidden_paths).
 
     Each path goes through os.path.realpath, so an entry that is a symlink
     (a dotfiles repository linking ~/.ssh to ~/dotfiles/ssh) or that sits
@@ -246,7 +293,7 @@ def sensitive_paths(home: str, hermes_home: str) -> tuple[str, ...]:
     """
     home = os.path.abspath(os.path.expanduser(home))
     resolved = list(bubblewrap_home.denied_home_paths(home))
-    for path in (os.path.abspath(os.path.expanduser(hermes_home)), os.path.join(home, DEFAULT_HERMES_HOME_NAME)):
+    for path in (os.path.abspath(os.path.expanduser(hermes_home)), os.path.join(home, DEFAULT_HERMES_HOME_NAME), *extra):
         real = os.path.realpath(path)
         if real not in resolved:
             resolved.append(real)
@@ -897,14 +944,15 @@ class BubblewrapEnvironment(LocalEnvironment):
         self._hermes_home = os.path.realpath(str(get_hermes_home()))
         # Resolved once and kept for the life of the environment: the set
         # never follows a symlink swapped in later.
-        self._hidden_paths = sensitive_paths(self._home, self._hermes_home)
+        self._operator_hidden = operator_hidden_paths(self._home, self._config.hide)
+        self._hidden_paths = sensitive_paths(self._home, self._hermes_home, self._operator_hidden)
         # HOME is default-deny for dot entries. What a sandbox may see is
         # fixed here too: a command cannot widen it by changing PATH.
         self._home_root = bubblewrap_home.resolve_home_root(self._home)
         self._home_allow: tuple[str, ...] = ()
         if self._home_root is not None:
             self._home_allow = bubblewrap_home.resolve_allowlist(
-                self._home_root, os.environ.get("PATH", ""), (),
+                self._home_root, os.environ.get("PATH", ""), self._config.home_allow,
                 denied_names=bubblewrap_home.denied_home_names(self._home_root),
                 denied_paths=self._hidden_paths,
             )
@@ -1049,7 +1097,7 @@ class BubblewrapEnvironment(LocalEnvironment):
             for bind in self._config.binds if not bind.readonly
         ]
         for label, bound in writable:
-            for path in bubblewrap_home.denied_home_paths(self._home):
+            for path in (*bubblewrap_home.denied_home_paths(self._home), *self._operator_hidden):
                 if path == bound or not _is_within(path, bound) or os.path.lexists(path):
                     continue
                 if _is_within(root, bound) and _is_within(path, root):

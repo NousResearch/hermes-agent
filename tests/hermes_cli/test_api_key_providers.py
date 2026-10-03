@@ -1038,3 +1038,154 @@ class TestRuntimeAlibabaRegionalAndTokenPlan:
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "atp-key"
         assert result["base_url"] == "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+
+
+# =============================================================================
+# IO Intelligence (io.net) provider tests (added by feat/add-ionet-provider)
+# =============================================================================
+
+class TestIonetProvider:
+    """Tests for IO Intelligence — io.net's OpenAI-compatible open-models API."""
+
+    def test_ionet_profile_loads(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("io-net")
+        assert profile is not None
+        assert profile.name == "io-net"
+        assert profile.display_name == "IO Intelligence"
+        assert profile.base_url == "https://api.intelligence.io.solutions/api/v1"
+        assert "IONET_API_KEY" in profile.env_vars
+
+    def test_ionet_alias_resolves(self):
+        from providers import get_provider_profile
+        for alias in ("ionet", "io-intelligence", "io_net"):
+            profile = get_provider_profile(alias)
+            assert profile is not None
+            assert profile.name == "io-net"
+
+    def test_ionet_registered_in_provider_registry(self):
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        assert "io-net" in PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY["io-net"]
+        assert pconfig.auth_type == "api_key"
+        assert pconfig.inference_base_url == "https://api.intelligence.io.solutions/api/v1"
+
+    def test_ionet_runtime_resolves_chat_completions(self, monkeypatch):
+        monkeypatch.setenv("IONET_API_KEY", "io-key")
+        monkeypatch.delenv("IONET_BASE_URL", raising=False)
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="io-net")
+        assert result["provider"] == "io-net"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "io-key"
+        assert result["base_url"] == "https://api.intelligence.io.solutions/api/v1"
+
+    def test_ionet_models_dev_env_var_honored(self, monkeypatch):
+        monkeypatch.setenv("IOINTELLIGENCE_API_KEY", "io-key")
+        monkeypatch.delenv("IONET_BASE_URL", raising=False)
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="ionet")
+        assert result["provider"] == "io-net"
+        assert result["api_key"] == "io-key"
+
+    def test_ionet_provider_def_env_order(self):
+        from hermes_cli.providers import get_provider
+        pdef = get_provider("io-net")
+        assert pdef is not None
+        # Documented precedence: IONET_API_KEY outranks models.dev's IOINTELLIGENCE_API_KEY.
+        assert pdef.api_key_env_vars == ("IONET_API_KEY", "IOINTELLIGENCE_API_KEY")
+
+    def test_ionet_static_aliases_registered(self):
+        from hermes_cli.models import _KNOWN_PROVIDER_NAMES
+        for name in ("io-net", "ionet", "io-intelligence", "io_net"):
+            assert name in _KNOWN_PROVIDER_NAMES
+
+    def test_ionet_env_vars_in_optional_env_vars(self):
+        from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
+        assert "IONET_API_KEY" in OPTIONAL_ENV_VARS
+        assert "IOINTELLIGENCE_API_KEY" in OPTIONAL_ENV_VARS
+        assert "IONET_BASE_URL" in OPTIONAL_ENV_VARS
+
+    def test_ionet_url_maps_to_provider(self):
+        from agent.model_metadata import _URL_TO_PROVIDER
+        assert _URL_TO_PROVIDER.get("api.intelligence.io.solutions") == "io-net"
+
+    def test_ionet_not_mapped_to_models_dev(self):
+        """io-net model/pricing data comes from the live io.net /models probe and the curated
+        offline list, never from the models.dev registry. Pin that io-net stays absent from the
+        models.dev provider map so a future edit cannot silently switch the data source."""
+        from agent.models_dev import PROVIDER_TO_MODELS_DEV
+        assert "io-net" not in PROVIDER_TO_MODELS_DEV
+
+    def test_ionet_aux_model_from_profile(self):
+        from agent.auxiliary_client import _get_aux_model_for_provider
+        assert _get_aux_model_for_provider("io-net") == "zai-org/GLM-5.3-Flash"
+
+    def test_ionet_pricing_cache(self, monkeypatch):
+        """_fetch_ionet_pricing should convert /models per-token prices and cache on the base URL."""
+        from hermes_cli import models as models_mod
+        from hermes_cli import models_pricing
+        monkeypatch.setenv("IONET_API_KEY", "io-test-key")
+        monkeypatch.delenv("IONET_BASE_URL", raising=False)
+        models_pricing._pricing_cache.pop("https://api.intelligence.io.solutions/api/v1", None)
+
+        call_count = {"n": 0}
+        fake_payload = {
+            "data": [
+                {
+                    "id": "org/model",
+                    "input_token_price": 6.066e-07,
+                    "output_token_price": 1.0386e-06,
+                    "cache_read_token_price": 3.033e-07,
+                }
+            ]
+        }
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                import json as _json
+                return _json.dumps(fake_payload).encode()
+
+        def fake_urlopen(req, timeout=None):
+            call_count["n"] += 1
+            assert req.full_url == "https://api.intelligence.io.solutions/api/v1/models"
+            assert "Bearer io-test-key" in req.headers.get("Authorization", "")
+            return _FakeResp()
+
+        monkeypatch.setattr(
+            models_mod, "_urlopen_model_catalog_request", fake_urlopen
+        )
+
+        first = models_pricing._fetch_ionet_pricing()
+        assert first["org/model"]["prompt"] == str(6.066e-07)
+        assert first["org/model"]["completion"] == str(1.0386e-06)
+        assert first["org/model"]["input_cache_read"] == str(3.033e-07)
+        assert call_count["n"] == 1
+
+        # Second call returns cached result without re-hitting the network.
+        second = models_pricing._fetch_ionet_pricing()
+        assert second == first
+        assert call_count["n"] == 1
+
+        # force_refresh bypasses the cache.
+        models_pricing._fetch_ionet_pricing(force_refresh=True)
+        assert call_count["n"] == 2
+
+    def test_ionet_pricing_registered(self, monkeypatch):
+        from hermes_cli import models_pricing
+        monkeypatch.delenv("IONET_BASE_URL", raising=False)
+        assert models_pricing._PRICING_FETCHERS["io-net"] is models_pricing._fetch_ionet_pricing_for_provider
+        assert models_pricing._STATIC_PRICING_SCOPES["io-net"] is models_pricing._ionet_pricing_scope
+        assert models_pricing.pricing_cache_scope("io-net") == "https://api.intelligence.io.solutions/api/v1"
+
+    def test_ionet_curated_models_match_profile_fallbacks(self):
+        """The static offline tier mirrors the profile's fallback_models (setup-flow fallback)."""
+        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+        from providers import get_provider_profile
+        assert list(_PROVIDER_MODELS["io-net"]) == list(get_provider_profile("io-net").fallback_models)

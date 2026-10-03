@@ -81,6 +81,22 @@ def test_migrate_home_installs_the_catalog_plugin_once(tmp_path):
     assert calls == ["homeassistant"] and said == []
 
 
+def test_migration_keeps_a_toolset_off_where_core_had_it_off(tmp_path):
+    """Core's homeassistant toolset was on only where a platform's saved list (or default composite)
+    carried it; as a plugin toolset it is on everywhere not in known_plugin_toolsets."""
+    from hermes_cli.tools_config import _enabled_plugin_toolsets
+    home = _home(tmp_path, env="HASS_TOKEN=abc\n", config=(
+        "platform_toolsets:\n  telegram: [web, terminal, file]\n  discord: [hermes-discord]\n"
+        "  slack: [web, homeassistant]\n"))
+    lcm.migrate_home(home, install=lambda n: {"ok": True}, say=lambda m: None)
+    config = lcm._read_config(home)
+    enabled = {p: bool(_enabled_plugin_toolsets(config, p, sel, {"homeassistant"})) for p, sel in {
+        "telegram": ["web", "terminal", "file"], "discord": ["hermes-discord"], "slack": ["web", "homeassistant"],
+        "cli": ["hermes-cli"], "webhook": ["hermes-webhook"], "acp": ["hermes-acp"]}.items()}
+    assert enabled == {"telegram": False, "discord": True, "slack": True, "cli": True,
+                       "webhook": False, "acp": False}
+
+
 def test_migrate_home_reports_a_failed_install_with_the_command(tmp_path):
     home = _home(tmp_path, env="HASS_TOKEN=abc\n")
     said = []

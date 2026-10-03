@@ -93,6 +93,13 @@ class LeftCoreFeature:
     secret_env: tuple[str, ...] = ()
     # Non-secret settings core kept out of children by default (provider blocklist, Tier 2).
     private_env: tuple[str, ...] = ()
+    # Toolsets the plugin registers. Core resolved them like any built-in toolset (on only where the
+    # platform's saved list or default composite carried them); a plugin toolset is on for every
+    # platform whose known_plugin_toolsets does not name it, so :func:`_keep_toolset_scope` records
+    # them there wherever core had them off.
+    toolsets: tuple[str, ...] = ()
+    # Platforms whose core default composite (``hermes-<platform>``) never carried those toolsets.
+    off_platforms: tuple[str, ...] = ()
 
 
 LEFT_CORE: tuple[LeftCoreFeature, ...] = (
@@ -100,6 +107,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         plugin="homeassistant", label="Home Assistant", in_use=homeassistant_in_use,
         unchanged="HASS_TOKEN/HASS_URL, platforms.homeassistant and the ha_* tool names are unchanged",
         secret_env=("HASS_TOKEN",), private_env=("HASS_URL",),
+        toolsets=("homeassistant",), off_platforms=("acp", "webhook"),
     ),
 )
 
@@ -112,13 +120,66 @@ def plugin_present(plugin: str, home: Path) -> bool:
     return (home / "plugins" / plugin).is_dir()
 
 
+def _core_carried(feature: LeftCoreFeature, selection: list) -> bool:
+    """Whether core resolved *feature*'s toolsets on for a platform selecting *selection*: named
+    directly, or through a ``hermes`` / ``hermes-<platform>`` composite that included them."""
+    def carries(name: str) -> bool:
+        if name in feature.toolsets or name == "hermes":
+            return True
+        return name.startswith("hermes-") and name[len("hermes-"):].replace("-", "_") not in feature.off_platforms
+    return any(carries(str(name)) for name in selection)
+
+
+def _keep_toolset_scope(home: Path, feature: LeftCoreFeature) -> None:
+    """Record *feature*'s toolsets in ``known_plugin_toolsets[platform]`` (= off) for every platform
+    where core had them off: a saved ``platform_toolsets`` list that does not carry them, or no list
+    on an ``off_platforms`` platform. Platforms core resolved them on for are left alone. Runs before
+    any install, automatic or the user's own, so the plugin never turns them on where the user had
+    scoped them out. Idempotent; raises when config.yaml cannot be read or written."""
+    if not feature.toolsets:
+        return
+    from hermes_cli.config import atomic_config_write, read_user_config_raw
+    from hermes_cli.toolset_validation import parse_platform_toolsets_value
+    path = home / "config.yaml"
+    config = read_user_config_raw(path)
+    saved = config.get("platform_toolsets")
+    saved = saved if isinstance(saved, dict) else {}
+    selections = {str(p): parse_platform_toolsets_value(v) for p, v in saved.items()}
+    for platform in feature.off_platforms:
+        selections.setdefault(platform, None)
+    known = config.get("known_plugin_toolsets")
+    known = known if isinstance(known, dict) else {}
+    changed = False
+    for platform, selection in selections.items():
+        if selection is None and platform not in feature.off_platforms:
+            continue  # no (valid) saved list: core's default composite carried the toolsets
+        if selection is not None and _core_carried(feature, selection):
+            continue
+        current = known.get(platform) if isinstance(known.get(platform), list) else []
+        missing = [ts for ts in feature.toolsets if ts not in current]
+        if missing:
+            known[platform] = sorted({*map(str, current), *missing})
+            changed = True
+    if changed:
+        config["known_plugin_toolsets"] = known
+        atomic_config_write(path, config)
+
+
 def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = False) -> list[LeftCoreFeature]:
     """Rows *home* uses whose plugin is not installed and that the catalog ships (a catalog miss is
-    reported through *say*). Read-only."""
+    reported through *say*). Writes only the toolset scope (:func:`_keep_toolset_scope`); a row whose
+    scope cannot be recorded is reported and skipped, never installed unscoped."""
     from hermes_cli.memory_provider_migration import catalog_source
     out = []
     for feature in LEFT_CORE:
         if plugin_present(feature.plugin, home) or not feature.in_use(home, process_env=process_env):
+            continue
+        try:
+            _keep_toolset_scope(home, feature)
+        except Exception as exc:
+            say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which was not "
+                f"installed: its per-platform toolset selection could not be kept ({exc}). Run "
+                f"`{_install_command(feature.plugin, home)}` and check `hermes tools`.")
             continue
         if catalog_source(feature.plugin) is None:
             say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this "

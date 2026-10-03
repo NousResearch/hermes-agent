@@ -1,6 +1,7 @@
 """Git trampoline recovery; branch updates use the real target-identity suite."""
 
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -127,3 +128,63 @@ class TestGitTrampolineSelfHeal:
         assert candidates[1] == (
             profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
         )
+
+
+def test_pm_workspace_uses_managed_checkout_for_updates(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    install_root = tmp_path / "install"
+    workspace.mkdir()
+    (install_root / ".git").mkdir(parents=True)
+    monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", workspace)
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(install_root))
+
+    assert update_cmd._update_project_root() == install_root
+
+
+def test_plain_update_command_uses_managed_root_for_git_execution(tmp_path, monkeypatch):
+    """The apply path must not select Git from one root and run it in another."""
+    workspace = tmp_path / "workspace"
+    install_root = tmp_path / "install"
+    workspace.mkdir()
+    (install_root / ".git").mkdir(parents=True)
+    main = update_cmd._m()
+    monkeypatch.setattr(main, "PROJECT_ROOT", workspace)
+    monkeypatch.setenv("HERMES_INSTALL_ROOT", str(install_root))
+
+    monkeypatch.setattr(update_cmd, "git_operation_in_progress", lambda root: None)
+    monkeypatch.setattr(update_cmd, "_resolve_update_options", lambda *_: SimpleNamespace(
+        gw_input_fn=None, assume_yes=True, keep_stash=False, switch_branch=False,
+        discard_local_changes=False, no_gateway_restart=False))
+    monkeypatch.setattr(update_cmd, "_begin_update_receipt_and_plan", lambda *_: None)
+    monkeypatch.setattr(update_cmd, "_run_pre_update_backup", lambda *_: None)
+    monkeypatch.setattr(update_cmd, "_record_pre_update_backup_outcome", lambda *_: None)
+    monkeypatch.setattr(update_cmd, "_record_snapshot_stage", lambda *_: None)
+    monkeypatch.setattr(update_cmd, "_pause_windows_gateways_for_update", lambda: None)
+    monkeypatch.setattr(main, "_desktop_packaged_executable", lambda *_: None)
+    monkeypatch.setattr(main, "_desktop_dist_exists", lambda *_: False)
+    monkeypatch.setattr(main, "_installed_desktop_apps", lambda: [])
+    monkeypatch.setattr(update_cmd, "_map_ssl_cert_file_for_git", lambda *_: None)
+    monkeypatch.setattr(update_cmd, "_ensure_non_trampoline_git", lambda command: command)
+    monkeypatch.setattr(update_cmd, "_discard_lockfile_churn", lambda *_: None)
+    monkeypatch.setattr(update_cmd, "_normalize_managed_eol", lambda *_: None)
+    monkeypatch.setattr(update_cmd, "_get_origin_url", lambda *_: "https://github.com/NousResearch/hermes-agent.git")
+    monkeypatch.setattr(update_cmd, "_source_completion_request", lambda *args: {})
+    monkeypatch.setattr(update_cmd, "_source_update_channel", lambda *_: "main")
+
+    class ReachedGitFetch(Exception):
+        pass
+
+    def fetch(_runner, _git_cmd, _args, root):
+        assert root == install_root
+        raise ReachedGitFetch
+
+    monkeypatch.setattr("hermes_cli.gitlock.fetch_with_partial_clone_recovery", fetch)
+    monkeypatch.setattr("hermes_cli.gitlock.is_partial_clone_pack_objects_crash", lambda *_: False)
+
+    args = SimpleNamespace(
+        yes=True, keep_stash=False, switch_branch=False, no_gateway_restart=False,
+        pre_update_version=None, branch="main", channel=None)
+    with pytest.raises(ReachedGitFetch):
+        update_cmd._cmd_update_impl(args, gateway_mode=False)
+
+    assert main.PROJECT_ROOT == install_root

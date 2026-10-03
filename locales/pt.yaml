@@ -792,6 +792,8 @@ gateway:
     no_command: "O comando rápido '/{command}' não tem comando definido."
     unsupported_type: "O comando rápido '/{command}' tem um tipo não suportado (suportados: 'exec', 'alias')."
     no_target: "O comando rápido '/{command}' não tem destino definido."
+    blocked: "Comando rápido '/{command}' bloqueado: {reason}. Use o agente para comandos perigosos."
+    guard_unavailable: "Comando rápido indisponível: módulo de segurança de aprovação não importável (fail-closed)."
   unknown_command: "Comando desconhecido `/{command}`. Digite /commands para ver os disponíveis ou reenvie sem a barra inicial para mandar como mensagem comum."
   session:
     auto_reset_notice: "◐ Sessão reiniciada após ser interrompida. Histórico da conversa limpo.\nUse /resume para navegar e restaurar uma sessão anterior.\n"
@@ -3201,6 +3203,8 @@ cli:
     no_output: "O comando não retornou saída"
     timed_out: "O comando rápido excedeu o tempo limite (30s)"
     error: "Erro no comando rápido: {error}"
+    blocked: "Comando rápido '{command}' bloqueado: {reason}. Use o agente para comandos perigosos"
+    guard_unavailable: "Comando rápido indisponível: módulo de segurança de aprovação não importável"
   reload_mcp:
     title: "⚠️  /reload-mcp — Aviso de invalidação do cache de prompt"
     detail: "Recarregar os servidores MCP reconstrói o conjunto de ferramentas desta sessão e\ninvalida o cache de prompt do fornecedor. A próxima mensagem\nreenviará todos os tokens de entrada (pode ser caro em modelos de contexto longo\nou de raciocínio intenso)."

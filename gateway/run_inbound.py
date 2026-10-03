@@ -1064,7 +1064,21 @@ class GatewayInboundMixin:
 
     async def _hm_run_exec_quick_command(self, command: str, exec_cmd: str) -> str:
         """Run a ``type: exec`` quick command in the gateway process (30 s cap, sanitized env — the
-        gateway process has every API key in os.environ; output is redacted too)."""
+        gateway process has every API key in os.environ; output is redacted too).
+
+        Same approval screen as the TUI ``shell.exec`` RPC (#16560): a hardline or dangerous
+        snippet is refused before any shell spawns, and a missing safety module blocks rather
+        than bypasses (fail closed)."""
+        try:
+            from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+        except Exception:
+            return t("gateway.quick_command.guard_unavailable")
+        is_hardline, hardline_desc = detect_hardline_command(exec_cmd)
+        if is_hardline:
+            return t("gateway.quick_command.blocked", command=command, reason=f"(hardline) {hardline_desc}")
+        is_dangerous, _, desc = detect_dangerous_command(exec_cmd)
+        if is_dangerous:
+            return t("gateway.quick_command.blocked", command=command, reason=desc)
         try:
             from tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_shell(

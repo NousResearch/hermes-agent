@@ -792,6 +792,8 @@ gateway:
     no_command: "快捷命令 '/{command}' 未定义要执行的命令。"
     unsupported_type: "快捷命令 '/{command}' 的类型不受支持（支持：'exec'、'alias'）。"
     no_target: "快捷命令 '/{command}' 未定义目标。"
+    blocked: "快捷命令 '/{command}' 已被阻止：{reason}。危险命令请使用代理。"
+    guard_unavailable: "快捷命令不可用：无法导入审批安全模块（故障关闭）。"
   unknown_command: "未知命令 `/{command}`。输入 /commands 查看可用命令，或去掉开头的斜杠重新发送，以作为普通消息处理。"
   session:
     auto_reset_notice: "◐ 会话在停止后已重置。对话历史已清空。\n用 /resume 浏览并恢复之前的会话。\n"
@@ -3201,6 +3203,8 @@ cli:
     no_output: "命令没有返回任何输出"
     timed_out: "快捷命令超时（30 秒）"
     error: "快捷命令出错：{error}"
+    blocked: "快捷命令 '{command}' 已被阻止：{reason}。危险命令请使用代理"
+    guard_unavailable: "快捷命令不可用：无法导入审批安全模块"
   reload_mcp:
     title: "⚠️  /reload-mcp — 提示词缓存失效警告"
     detail: "重新加载 MCP 服务器会重建本会话的工具集，\n并使提供方的提示词缓存失效。下一条消息将\n重新发送全部输入 tokens（在长上下文或\n高推理模型上可能开销较大）。"

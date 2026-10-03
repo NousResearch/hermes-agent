@@ -802,6 +802,8 @@ gateway:
     no_command: "A '/{command}' gyorsparancshoz nincs parancs megadva."
     unsupported_type: "A '/{command}' gyorsparancs típusa nem támogatott (támogatott: 'exec', 'alias')."
     no_target: "A '/{command}' gyorsparancshoz nincs cél megadva."
+    blocked: "A(z) '/{command}' gyorsparancs blokkolva: {reason}. Használja az agenta veszélyes parancsokhoz."
+    guard_unavailable: "A gyorsparancs nem érhető el: a jóváhagyási biztonsági modul nem importálható (hiba esetén zár)."
   unknown_command: "Ismeretlen parancs: `/{command}`. A /commands paranccsal megnézheted, mi érhető el, vagy küldd el újra a kezdő perjel nélkül, hogy normál üzenetként menjen."
   session:
     auto_reset_notice: |
@@ -3218,6 +3220,8 @@ cli:
     no_output: "A parancs nem adott kimenetet"
     timed_out: "A gyorsparancs időtúllépésbe futott (30s)"
     error: "Gyorsparancs-hiba: {error}"
+    blocked: "Gyorsparancs '{command}' blokkolva: {reason}. Használja az agenta veszélyes parancsokhoz"
+    guard_unavailable: "A gyorsparancs nem érhető el: a jóváhagyási biztonsági modul nem importálható"
   reload_mcp:
     title: "⚠️  /reload-mcp — figyelmeztetés a prompt-cache érvénytelenítésére"
     detail: "Az MCP-szerverek újratöltése újraépíti a munkamenet eszközkészletét, és\nérvényteleníti a szolgáltató prompt-cache-ét. A következő üzenet újra\nelküldi a teljes bemenetet (hosszú kontextusú vagy erősen érvelő\nmodelleknél drága lehet)."

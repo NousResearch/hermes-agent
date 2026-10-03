@@ -574,9 +574,24 @@ def _dispatch_quick(rid, params, session, name, arg):
     if qc is None:
         return None
     if qc.get("type") == "exec":
+        command = qc.get("command", "")
+        # Same approval screen as shell.exec (#16560): quick_commands are user-authored config,
+        # but this dispatch runs on a socket thread with no human in the loop, so a hardline or
+        # dangerous snippet must be refused before any shell spawns. Fail closed when the safety
+        # module cannot be imported (a broken install is not an approval).
+        try:
+            approval = _tools_mod("tools.approval_detection")
+        except Exception:
+            return _err(rid, 5001, "quick command unavailable: approval safety module not importable")
+        is_hardline, hardline_desc = approval.detect_hardline_command(command)
+        if is_hardline:
+            return _err(rid, 4005, f"blocked (hardline): {hardline_desc}. Use the agent for dangerous commands.")
+        is_dangerous, _, desc = approval.detect_dangerous_command(command)
+        if is_dangerous:
+            return _err(rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands.")
         # Sanitized env: the TUI server process holds every API key in os.environ.
         env = _tools_mod("tools.environments.local").build_subprocess_env()
-        r = subprocess.run(qc.get("command", ""), shell=True, env=env, **_capture_run_kwargs(30))
+        r = subprocess.run(command, shell=True, env=env, **_capture_run_kwargs(30))
         output = _joined_output(r)[:4000]
         output = _tools_mod("agent.redact").redact_sensitive_text(output) if output else output
         if r.returncode != 0:

@@ -792,6 +792,8 @@ gateway:
     no_command: "Für den Schnellbefehl '/{command}' ist kein Befehl definiert."
     unsupported_type: "Der Schnellbefehl '/{command}' hat einen nicht unterstützten Typ (unterstützt: 'exec', 'alias')."
     no_target: "Für den Schnellbefehl '/{command}' ist kein Ziel definiert."
+    blocked: "Schnellbefehl '/{command}' blockiert: {reason}. Verwende den Agenten für gefährliche Befehle."
+    guard_unavailable: "Schnellbefehl nicht verfügbar: Sicherheitsmodul für Genehmigungen nicht importierbar (fail-closed)."
   unknown_command: "Unbekannter Befehl `/{command}`. Geben Sie /commands ein, um die verfügbaren Befehle zu sehen, oder senden Sie die Nachricht ohne führenden Schrägstrich erneut, um sie als normale Nachricht zu senden."
   session:
     auto_reset_notice: "◐ Sitzung nach dem Stopp zurückgesetzt. Konversationsverlauf gelöscht.\nVerwenden Sie /resume, um eine frühere Sitzung zu durchsuchen und wiederherzustellen.\n"
@@ -3201,6 +3203,8 @@ cli:
     no_output: "Befehl hat keine Ausgabe geliefert"
     timed_out: "Zeitüberschreitung beim Schnellbefehl (30s)"
     error: "Fehler im Schnellbefehl: {error}"
+    blocked: "Schnellbefehl '{command}' blockiert: {reason}. Verwende den Agenten für gefährliche Befehle"
+    guard_unavailable: "Schnellbefehl nicht verfügbar: Sicherheitsmodul für Genehmigungen nicht importierbar"
   reload_mcp:
     title: "⚠️  /reload-mcp — Warnung: Prompt-Cache wird invalidiert"
     detail: "Das Neuladen der MCP-Server baut das Tool-Set dieser Sitzung neu auf und\ninvalidiert den Prompt-Cache des Anbieters. Die nächste Nachricht sendet\nalle Eingabe-Tokens erneut (kann bei Modellen mit langem Kontext oder\nhohem Reasoning teuer werden)."

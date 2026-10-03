@@ -1335,6 +1335,8 @@ class GatewayNotificationsMixin:
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
                 metadata=metadata,
             )
+            from gateway.session_context import attach_notification_origin
+            attach_notification_origin(synth_event, evt)
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
                 platform_name, source.chat_id, source.thread_id,
@@ -1675,7 +1677,10 @@ class GatewayNotificationsMixin:
             # A duplicate primary returns None from the dedupe seam; try the next identity so a fresh
             # sibling is never discarded with it.
             delivered = None
+            from gateway.session_context import common_request_origin
+            origin = common_request_origin([evt for _text, evt, _future in entries])
             for _text, candidate_evt, _future in entries:
+                candidate_evt = {**candidate_evt, "request_origin": origin}
                 delivered = await self._deliver_completion_notification(synth_text, candidate_evt)
                 if delivered is not None:
                     break
@@ -1825,6 +1830,9 @@ class GatewayNotificationsMixin:
             "response. If a result does not change the current conclusion, absorb it silently.]"
         )
         consolidated = "\n\n".join([header, *blocks])
+        from gateway.session_context import common_request_origin
+        primary_evt = {**primary_evt, "request_origin": common_request_origin(
+            [primary_evt, *(evt for evt, _claim_id in siblings)])}
         delivered = await self._deliver_completion_notification(
             consolidated, primary_evt, sibling_claims=siblings,
         )

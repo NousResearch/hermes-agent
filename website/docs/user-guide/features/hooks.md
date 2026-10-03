@@ -685,10 +685,27 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 |-----------|------|-------------|
 | `session_id` | `str` | Unique identifier for the current session |
 | `user_message` | `str \| list` | The user's original message for this turn (before any skill injection). A multimodal turn (image or other attachment) is the list of content parts, exactly as sent |
+| `request_origin` | `dict \| None` | Gateway-authenticated original request identity; absent on unbound or unverified turns. See below. |
 | `conversation_history` | `list` | Copy of the full message list (OpenAI format: `[{"role": "user", "content": "..."}]`) |
 | `is_first_turn` | `bool` | `True` if this is the first turn of a new session, `False` on subsequent turns |
 | `model` | `str` | The model identifier (e.g. `"anthropic/claude-sonnet-4.6"`) |
 | `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
+
+**Request origin:** On gateway turns, `request_origin` contains string fields `session_id`,
+`session_key`, `platform`, `chat_id`, `thread_id`, `message_id`, `message_type`, `user_id`,
+`chat_type`, `profile`, and `scope_id`, plus the boolean `internal`. Missing optional source
+fields are empty strings. `message_id` and `message_type` describe the **original trigger**;
+`internal=True` marks a verified asynchronous continuation, not a new text request. The payload
+is copied and checked against the current agent session. It is hook metadata, not injected
+prompt content and not an outbound reply anchor.
+
+Asynchronous delegation persists this identity in its local producer ledger, including recovery
+and chained dispatch. Internal event metadata alone cannot supply authority: the notification
+producer must attest the origin in-process, and its parent, session key and resolved source must
+match. Consolidated notifications expose an origin only when every member identifies the same
+request. Unbound surfaces, legacy producers and rejected identities receive `None`; consumers
+must not substitute notification-text parsing or a previous request in the same chat. This seam
+does not add origin persistence to terminal-process producers or provide gateway runtime handles.
 
 **Fires:** In `agent/turn_context.py` (turn preparation for `run_conversation()` in `agent/conversation_loop.py`), after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 

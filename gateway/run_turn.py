@@ -2052,6 +2052,8 @@ class GatewayTurnMixin:
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
+        from gateway.session_context import bind_request_origin
+        bind_request_origin(event, source, session_entry.session_id, session_key)
         # Self-injected turns (MessageEvent(internal=True)) persist with a DB-only display_kind so
         # UIs render timeline notices, not user bubbles; role/content untouched.
         persist_user_display_kind = display_kind_for_event(event)

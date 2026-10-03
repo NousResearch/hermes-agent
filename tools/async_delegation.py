@@ -85,7 +85,7 @@ _LIVE_STATES = {"running", "stalling", "finalizing"}
 _ACTIVE_STATES = ("running", "stalling")
 # Routing origin persisted at dispatch so a restart-recovered completion can
 # reconstruct a full SessionSource (scope_id drives relay tenant egress).
-_ROUTING_KEYS = ("scope_id", "user_id", "user_name")
+_ROUTING_KEYS = ("scope_id", "user_id", "user_name", "request_origin")
 # Structured stall metadata — additive, present only on stall finalizations.
 _STALL_META_KEYS = ("stalled_after_quiet_seconds", "stall_threshold_seconds", "stall_phase", "stall_grace_seconds")
 # Private stall bookkeeping on the record -> public field in list_async_delegations().
@@ -139,13 +139,20 @@ def _transaction():
     return transaction(_connect())
 
 
-def _capture_routing_origin() -> Dict[str, Any]:
-    """Snapshot scope_id/user_id/user_name on the PARENT thread (the daemon worker
-    has no contextvars) so a restart-replayed completion can rebuild a SessionSource.
-    Best-effort: empty values are omitted."""
+def _capture_routing_origin(parent_session_id: Optional[str] = None, session_key: str = "") -> Dict[str, Any]:
+    """Snapshot routing on the parent thread for restart-replayed completions.
+
+    Request identity additionally requires the dispatcher's explicit parent id/key;
+    the ambient session id may already belong to a newly constructed child.
+    """
     try:
-        from gateway.session_context import get_session_env
-        return {k: v for k in _ROUTING_KEYS if (v := get_session_env(f"HERMES_SESSION_{k.upper()}", ""))}
+        from gateway.session_context import get_request_origin, get_session_env
+        routing: Dict[str, Any] = {k: v for k in _ROUTING_KEYS if k != "request_origin"
+                   if (v := get_session_env(f"HERMES_SESSION_{k.upper()}", ""))}
+        origin = get_request_origin(parent_session_id)
+        if origin and origin["session_key"] == session_key:
+            routing["request_origin"] = origin
+        return routing
     except Exception:  # noqa: BLE001 - routing origin is additive, never fatal
         return {}
 
@@ -747,7 +754,7 @@ def _dispatch_admitted(
         "context": context, "toolsets": list(toolsets) if toolsets else None, "role": role, "model": model,
         "session_key": session_key, "origin_ui_session_id": origin_ui_session_id,
         "origin_session_id": origin_session_id, "parent_session_id": parent_session_id,
-        **_capture_routing_origin(),
+        **_capture_routing_origin(parent_session_id, session_key),
         "status": "running", "dispatched_at": dispatched_at, "completed_at": None,
         "interrupt_fn": interrupt_fn, **({"is_batch": True} if is_batch else {}), "progress_fn": progress_fn,
         "slot_key": slot_key or delegation_id,

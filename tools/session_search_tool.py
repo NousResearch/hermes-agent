@@ -10,6 +10,8 @@ No LLM calls — every shape returns actual DB messages.
 
 import json
 import logging
+
+logger = logging.getLogger(__name__)
 import re
 import time
 from datetime import datetime, timezone
@@ -423,6 +425,71 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
             results.append(entry)
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
+    if not results and title_result is None:
+        # Second-chance OR retry at the TOOL layer. The DB layer's own OR-relax (SessionDB
+        # ``_or_relaxed_query``) only fires when the AND query returns ZERO rows there. On a
+        # long-lived session the AND can match only rows that live in the searcher's OWN live
+        # lineage (narrated query echoes, tool_calls JSON carriers) — rows this filter then
+        # drops in the own-lineage guard — so the DB layer never relaxes and the caller sees
+        # zero despite archived rows (compacted=1) matching individual terms. Re-running the
+        # same filtered pipeline with the terms OR-joined recovers those rows; rank order
+        # still puts rows covering more terms first, and the rewound/carried originals
+        # (active=0, compacted=0) stay excluded by the same SQL as the first pass.
+        from hermes_state import SessionDB as _SessionDB
+        relaxed_query = _quiet(lambda: _SessionDB._or_relaxed_query(query), None,
+                               "OR-relaxed tool-layer retry failed to build query")
+        if relaxed_query and relaxed_query != query:
+            try:
+                # Rank order regardless of the caller's ``sort``: the retry exists to surface
+                # what the first pass missed, and a timestamp ORDER BY would fill the window
+                # with oldest noise before BM25's term-coverage ranking gets a say.
+                relaxed_results, relaxed_err = _loud(lambda: db.search_messages(
+                    query=relaxed_query, role_filter=role_filter or ["user", "assistant"],
+                    exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0,
+                    sort=None, fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts),
+                    "FTS5 search failed: %s", "Search failed")
+                if relaxed_err is None and relaxed_results:
+                    # The caller's own archived history ranks FIRST: the own-lineage guard
+                    # exists to avoid duplicating LIVE context, and these rows (compacted=1)
+                    # left live context by construction — they are exactly what the caller
+                    # cannot see and is looking for. Other sessions keep DB rank order.
+                    relaxed_results = sorted(
+                        relaxed_results,
+                        key=lambda r: (
+                            (r.get("source") or "") in _DEMOTED_SESSION_SOURCES,
+                            0 if current_lineage_root and (
+                                r.get("session_id") == current_lineage_root
+                                or _resolve_lineage(db, r.get("session_id", "")) == current_lineage_root)
+                              else 1,
+                        ))
+                    seen_relaxed: Dict[str, Dict[str, Any]] = {}
+                    relaxed_seen_sessions: set = set()
+                    for r in relaxed_results:
+                        if len(seen_relaxed) >= limit:
+                            break
+                        raw_sid, resolved_sid = r["session_id"], _resolve_lineage(db, r["session_id"])
+                        if raw_sid in excluded_roots or resolved_sid in excluded_roots:
+                            continue
+                        is_compacted_hit = _is_compacted_message(db, r.get("id"))
+                        # Own-lineage live rows stay hidden (same guard); ONLY archived rows
+                        # (compacted=1) of the current lineage may surface — those left live
+                        # context by construction (archive_and_compact), so check the flag
+                        # directly instead of _session_left_live_context.
+                        if current_lineage_root and resolved_sid == current_lineage_root and not is_compacted_hit:
+                            continue
+                        if current_session_id and raw_sid == current_session_id and not is_compacted_hit:
+                            continue
+                        if resolved_sid in relaxed_seen_sessions:
+                            continue
+                        relaxed_seen_sessions.add(resolved_sid)
+                        seen_relaxed[resolved_sid] = {**r, "_lineage_root": resolved_sid}
+                    for lineage_root, match_info in seen_relaxed.items():
+                        entry = _hydrate_hit(db, lineage_root, match_info, "compact")
+                        if entry is not None:
+                            entry["link"] = _session_link(entry["session_id"], link_profile)
+                            results.append(entry)
+            except Exception:
+                logger.debug("own-lineage OR-relaxed retry failed", exc_info=True)
     return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(
         "When referring the user to a session, write its `link` value "
         "verbatim inline mid-sentence (it renders as a titled link) — never "

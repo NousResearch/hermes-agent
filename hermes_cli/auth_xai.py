@@ -145,6 +145,9 @@ def _save_xai_oauth_tokens(
         state, source_path = _load_provider_state_with_source(auth_store, "xai-oauth")
         state = state if state is not None else {}
         state.update(tokens=tokens, last_refresh=last_refresh, auth_mode=auth_mode)
+        # Persisting good tokens resolves any earlier terminal refresh/login failure: drop the stale
+        # marker so auth.json doesn't keep claiming relogin_required alongside a working grant.
+        state.pop("last_auth_error", None)
         if discovery:
             state["discovery"] = discovery
         if redirect_uri:

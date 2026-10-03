@@ -217,6 +217,8 @@ class TestSSHPreflight:
         monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", _fake_establish)
         monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/alice")
         monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_tar_extract_flags",
+                            lambda self: "--no-overwrite-dir")
         monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
         monkeypatch.setattr(ssh_env, "FileSyncManager", lambda **kw: type("M", (), {"sync": lambda self, **k: None})())
 
@@ -258,6 +260,7 @@ def _mock_ssh_runtime(monkeypatch, tmp_path):
         "_establish_connection": MagicMock(),
         "_detect_remote_home": MagicMock(return_value="/home/alice"),
         "_ensure_remote_dirs": MagicMock(),
+        "_detect_tar_extract_flags": MagicMock(return_value="--no-overwrite-dir"),
         "init_session": MagicMock(),
     }
     monkeypatch.setattr(ssh_env.tempfile, "gettempdir", lambda: str(tmp_path))

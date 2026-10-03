@@ -45,7 +45,7 @@ import {
 } from '../../../contrib/hooks/use-background-sync'
 import { isCronRunSessionId, refreshCronRunWriteGate } from '../../../cron/open-cron-run'
 import type { ClientSessionState } from '../../../types'
-import { routeTargetFromToken, sessionContextDrift } from '../session-context-drift'
+import { sessionContextDrift } from '../session-context-drift'
 import type { CreateBackendSessionForSend } from '../use-session-actions/create-overrides'
 import { resolveSessionOwner, resolveSessionProfile } from '../use-session-actions/utils'
 
@@ -815,28 +815,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return false
         }
 
-        // A successful create re-homes selection and route onto the chat it
-        // just minted. A background stream can still retarget the active
-        // runtime ref during that window (#47709). That ref mismatch is not
-        // a user switch when the route, selection, and stored→runtime map
-        // still name this create. A real switch moves route and selection
-        // onto a different chat, and that path still aborts.
+        // createBackendSessionForSend publishes the newly-created runtime as
+        // the active session before returning. Treat any other active runtime
+        // as a real session switch; relying on the still-settling stored-session
+        // map here can reject the first send before prompt.submit (#128867).
         if (activeSessionIdRef.current !== sessionId) {
-          // A background stream retargets only the active runtime (#47709).
-          // Route and selection still name the chat create just minted, and
-          // that stored id still maps to this runtime. That is not a user
-          // switch. A real switch moves the route and selection onto a chat
-          // whose runtime is not the id create returned.
-          const selection = selectedStoredSessionIdRef.current
-          const mapped = selection ? getRuntimeIdForStoredSession(selection) : null
-          const routeTarget = routeTargetFromToken(getRouteToken())
-          const routeAgrees = routeTarget === null || routeTarget === '__new__' || routeTarget === selection
-
-          if (mapped === sessionId && routeAgrees) {
-            activeSessionIdRef.current = sessionId
-          } else {
-            return abortForSessionSwitch(sessionId)
-          }
+          return abortForSessionSwitch(sessionId)
         }
 
         // Re-pin the baseline to the created chat for the rest of the

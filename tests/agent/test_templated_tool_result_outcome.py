@@ -29,6 +29,8 @@ def _stub(tool_name, args, payload):
          "agent exited with code 1"),
         ("process_manage", {"action": "poll", "session_id": "p1"},
          {"status": "exited", "exit_code": 1, "completion_reason": "nonzero_exit"}, "exit code 1"),
+        # Every MCP/plugin tool falls through to the generic stub.
+        ("some_mcp_tool", {"a": 1}, {"error": "boom"}, "boom"),
     ],
 )
 def test_failed_call_stub_is_marked_failed(tool_name, args, payload, reason):

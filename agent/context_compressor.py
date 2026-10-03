@@ -1683,7 +1683,7 @@ def _sum_search_files(name, args, content, content_len, line_count):
 def _sum_browser(name, args, content, content_len, line_count):
     url, ref = args.get("url", ""), args.get("ref", "")
     detail = f" {url}" if url else (f" ref={ref}" if ref else "")
-    return f"[{name}]{detail} ({content_len:,} chars)"
+    return f"[{name}]{detail} ({content_len:,} chars)" + _skill_result_failure_suffix(content)
 
 
 def _sum_web_extract(name, args, content, content_len, line_count):
@@ -1697,7 +1697,7 @@ def _sum_web_extract(name, args, content, content_len, line_count):
         first = "?"
     if isinstance(urls, list) and len(urls) > 1:
         first += f" (+{len(urls) - 1} more)"
-    return f"[web_extract] {first} ({content_len:,} chars)"
+    return f"[web_extract] {first} ({content_len:,} chars)" + _skill_result_failure_suffix(content)
 
 
 def _sum_delegate_task(name, args, content, content_len, line_count):
@@ -1942,6 +1942,7 @@ _TOOL_RESULT_SUMMARIZERS = {
     "skill_manage": _sum_skill_manage,
     "vision_analyze": lambda name, args, content, content_len, line_count: (
         f"[vision_analyze] '{_str_arg(args, 'question')[:50]}' ({content_len:,} chars)"
+        + _skill_result_failure_suffix(content)
     ),
     "memory": _sum_template("[memory] {action} on {target}", action="?", target="?"),
     "todo_list": lambda *a: "[todo] updated task list",
@@ -1973,7 +1974,7 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     if summarizer is not None:
         return summarizer(tool_name, args, content, content_len, line_count)
     first_arg = "".join(f" {k}={str(v)[:40]}" for k, v in list(args.items())[:2])
-    return f"[{tool_name}]{first_arg} ({content_len:,} chars result)"
+    return f"[{tool_name}]{first_arg} ({content_len:,} chars result)" + _skill_result_failure_suffix(content)
 
 
 def _model_threshold_key_rank(key: str, model: str, provider: str) -> "tuple[int, int] | None":

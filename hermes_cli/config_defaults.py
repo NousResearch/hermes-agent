@@ -2375,6 +2375,24 @@ DEFAULT_CONFIG = {
         # merge origin/<target> INTO it after leaving a pre-update-<stamp> tag; a conflict stops the
         # update cleanly. `hermes update --switch-branch` overrides to switch for one run.
         "parked_branch_strategy": "switch",
+        # Opt-in durable lifecycle for source checkouts carrying intentional local
+        # customizations (#128159). off = historical autostash behavior only.
+        # preserve = before source mutation, pin HEAD behind a
+        # refs/hermes-local-preservation/ ref and stash tracked + untracked
+        # content in new entries (pre-existing stashes untouched); fail before
+        # mutation when preservation cannot be verified. Dirty parked branches
+        # configured for update_in_place then update in place instead of
+        # exiting before the stash. Restoration is a separate explicit policy
+        # (local_change_restore_policy), so enabling preservation alone never
+        # silently re-applies edits onto new code.
+        "local_change_preservation": "off",
+        # What preservation does with compatible groups after the base
+        # installation advances. never = keep every group parked with its
+        # recovery handle (explicit `--keep-stash` always forces this).
+        # safe = re-apply a group only when `git stash apply` is clean AND
+        # restored Python passes syntax + critical-import validation;
+        # conflicting or uncertain groups stay parked with reasons.
+        "local_change_restore_policy": "never",
         # Refresh an installed cua-driver during `hermes update` (best-effort, macOS only). Turn off
         # e.g. on non-admin accounts where /Applications isn't writable.
         "refresh_cua_driver": True,

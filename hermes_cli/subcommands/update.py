@@ -66,6 +66,28 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "under the default strategy (switch), which already switches. "
             "Still refuses to touch a dirty tree.")
     update_parser.add_argument(
+        "--preserve-local-changes", action="store_true", default=False,
+        help="Opt in to the durable local-change preservation lifecycle for "
+            "this run (config updates.local_change_preservation: preserve "
+            "enables it persistently): before source mutation, pin HEAD "
+            "behind a refs/hermes-local-preservation/ ref and stash tracked + "
+            "untracked content in new entries without touching pre-existing "
+            "stashes. A dirty checkout configured for update_in_place then "
+            "updates in place instead of exiting before the stash. "
+            "Restoration follows --restore-policy (default never).")
+    update_parser.add_argument(
+        "--no-preserve-local-changes", action="store_true", default=False,
+        help="Disable the preservation lifecycle for this run even when "
+            "updates.local_change_preservation: preserve is configured.")
+    update_parser.add_argument(
+        "--restore-policy", default=None, choices=("never", "safe"),
+        help="What preservation does with compatible groups after the base "
+            "installation advances (default from "
+            "updates.local_change_restore_policy, normally never): never = "
+            "keep every group parked with its recovery handle; safe = "
+            "re-apply a group only when it applies cleanly AND passes syntax "
+            "+ import validation. --keep-stash always forces never.")
+    update_parser.add_argument(
         "--force", action="store_true", default=False,
         help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings. Does NOT bypass the venv-process guard (see --force-venv).",
     )

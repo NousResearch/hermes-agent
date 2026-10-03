@@ -1542,6 +1542,18 @@ export interface UpdateReceiptSummary {
   post_sha: string | null
   post_version: string | null
   fleet_states: string[]
+  /** Local-change preservation lifecycle (#128159): present when the opt-in
+   *  preservation ran. Inactive groups mean "updated with inactive
+   *  customizations" (exit 0, upstream installed) as opposed to a failure. */
+  local_preservation?: {
+    id: string | null
+    upstream_revision: string | null
+    active_groups: string[]
+    inactive_groups: string[]
+    base_ref: string | null
+    restore_policy: string | null
+    keep_stash: boolean | null
+  }
 }
 
 export interface ActionStatusResponse {

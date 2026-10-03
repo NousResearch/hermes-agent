@@ -1006,6 +1006,9 @@ class _CheckoutPlan:
     rollback_branch: str | None = None
     # The switch changed the running code with no new commits to count (commit_count == -1).
     switched_without_new_commits: bool = False
+    # Opt-in durable preservation (#128159); None when the lifecycle is off
+    # or the tree needed nothing preserved.
+    preservation_state: object = None
 
 
 def _apply_parked_branch_guard(
@@ -1054,13 +1057,59 @@ def _apply_parked_branch_guard(
 
 def _prepare_checkout_for_update(
     git_cmd, branch, current_branch, *, is_fork, assume_yes, gateway_mode, gw_input_fn,
-    switch_branch, target_ref=None, _windows_gateway_resume):
+    switch_branch, target_ref=None, _windows_gateway_resume, preserve_requested: bool = False):
     """Parked-branch guard, land on the target, stash, count new commits. Exits when the
     checkout is unsafe to move or the target is missing. ``commit_count`` is 0 when up to
     date, -1 when tips differ but the shallow count is unrecoverable."""
     if target_ref is None:
         target_ref = f"origin/{branch}"
     release_tag = target_ref != f"origin/{branch}"
+    preservation_state = None
+    if preserve_requested and not release_tag:
+        # Opt-in lifecycle (#128159) runs BEFORE the parked-branch guard so a
+        # dirty in-place checkout reaches verified preservation instead of
+        # exiting before the stash. Only the dirty guard is relaxed, and only
+        # when update_in_place is configured: disabled/unverifiable states
+        # still fail closed inside the guard below. Pre-existing stashes are
+        # never touched; preservation fails closed before any mutation.
+        from hermes_cli import update_local_preservation as _pres
+
+        # A previous run's unfinished marker must surface even when this run
+        # cannot preserve (wrong strategy, --switch-branch): otherwise newer
+        # edits on top of it could be stranded by the mutation below.
+        _pres.check_pending_preservation(git_cmd, _m().PROJECT_ROOT)
+        _in_place = False
+        with _best_effort('Could not read updates.parked_branch_strategy: %s'):
+            _in_place = (
+                _updates_config().get("parked_branch_strategy", "switch") == "update_in_place")
+        if _in_place and not switch_branch:
+            if current_branch != branch:
+                _safe, _reason = _m()._assess_parked_branch_switch(
+                    git_cmd, _m().PROJECT_ROOT, current_branch, branch)
+                if _safe is False and _reason == "dirty":
+                    print("→ Local-change preservation requested — preserving before the branch guard...")
+                    _state = _pres.preserve_local_changes(
+                        git_cmd, _m().PROJECT_ROOT, target_ref)
+                    if getattr(_state, "base_ref", ""):
+                        preservation_state = _state
+                        print(f"  ✓ Preserved {branch} work behind {preservation_state.base_ref}")
+            else:
+                # Same-branch dirty trees also benefit from durable refs +
+                # group receipts over the single autostash; preserve when the
+                # tree actually needs it.
+                _status = _git_run(git_cmd, ["status", "--porcelain"], _m().PROJECT_ROOT)
+                _ahead = _git_run(
+                    git_cmd, ["rev-list", "--count", f"{target_ref}..HEAD", "--"],
+                    _m().PROJECT_ROOT)
+                _needs = bool((_status.stdout or "").strip()) or (
+                    _ahead.returncode == 0 and (_ahead.stdout or "").strip() not in ("", "0"))
+                if _needs:
+                    print("→ Local-change preservation requested — preserving before update...")
+                    _state = _pres.preserve_local_changes(
+                        git_cmd, _m().PROJECT_ROOT, target_ref)
+                    if getattr(_state, "base_ref", ""):
+                        preservation_state = _state
+                        print(f"  ✓ Preserved work behind {preservation_state.base_ref}")
     if release_tag:
         # A release lands detached at its exact commit, never merges into or
         # rewrites the user's branch. Branch-policy machinery is main-only.
@@ -1106,7 +1155,8 @@ def _prepare_checkout_for_update(
         return _CheckoutPlan(
             auto_stash_ref=auto_stash_ref, commit_count=0 if head_sha == target_ref else -1,
             in_place_update=True, parked_branch_switched=False,
-            prompt_for_restore=prompt_for_restore, switch_block_reason=None, upstream_checked=True)
+            prompt_for_restore=prompt_for_restore, switch_block_reason=None, upstream_checked=True,
+            preservation_state=preservation_state)
 
     # On shallow checkouts `rev-list --count` can report the entire remote ancestry. The
     # zero/nonzero gate is still sound; treat the shallow NUMBER as unknown and recover it
@@ -1158,7 +1208,8 @@ def _prepare_checkout_for_update(
         parked_branch_switched=parked_branch_switched, prompt_for_restore=prompt_for_restore,
         switch_block_reason=switch_block_reason, upstream_checked=upstream_checked,
         pre_sync_sha=moved_from_sha, rollback_branch=rollback_branch,
-        switched_without_new_commits=switched_without_new_commits)
+        switched_without_new_commits=switched_without_new_commits,
+        preservation_state=preservation_state)
 
 
 @dataclass
@@ -1172,6 +1223,8 @@ class _UpdateOptions:
     switch_branch: bool
     discard_local_changes: bool
     no_gateway_restart: bool = False
+    preserve_requested: bool = False
+    restore_policy: str = "never"
 
 
 def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
@@ -1202,11 +1255,21 @@ def _resolve_update_options(args, gateway_mode: bool) -> _UpdateOptions:
         with _best_effort("Could not read updates.non_interactive_local_changes: %s"):
             _mode = str(_updates_config().get("non_interactive_local_changes", "stash")).lower()
             discard_local_changes = _mode == "discard"
+    # Opt-in preservation lifecycle (#128159): flag wins, config enables
+    # persistently, --no-preserve disables for one run.
+    preserve_requested = False
+    restore_policy = "never"
+    with _best_effort("Could not read updates.local_change_preservation: %s"):
+        from hermes_cli import update_local_preservation as _pres
+
+        preserve_requested = _pres.preservation_enabled(args)
+        restore_policy = _pres.restore_policy(args)
     return _UpdateOptions(
         pre_update_version=pre_update_version,
         gw_input_fn=gw_input_fn, assume_yes=assume_yes, keep_stash=keep_stash,
         switch_branch=switch_branch, discard_local_changes=discard_local_changes,
-        no_gateway_restart=no_gateway_restart)
+        no_gateway_restart=no_gateway_restart,
+        preserve_requested=preserve_requested, restore_policy=restore_policy)
 
 
 def _begin_update_receipt_and_plan(args):
@@ -1379,6 +1442,36 @@ def _finalize_receipt(status: str, debug_message: str) -> None:
         finalize_update_receipt(status)
 
 
+def _settle_preservation_after_update(git_cmd, _plan, *, policy: str, keep_stash: bool) -> None:
+    """Restore preserved groups, write the receipt, and surface parked status.
+
+    Never rolls back the base installation: conflicting groups reset the
+    tree to the clean updated revision and stay parked with recovery
+    handles. A run with inactive groups still exits 0 — the CLI line
+    "Updated with inactive customizations" (and the receipt fact Desktop
+    reads) distinguishes it from a real failure.
+    """
+    state = getattr(_plan, "preservation_state", None)
+    if state is None or not getattr(state, "base_ref", ""):
+        return
+    from hermes_cli import update_local_preservation as _pres
+
+    upstream_revision = _capture_head_sha(git_cmd, _m().PROJECT_ROOT) or state.pre_sha
+    outcome = _pres.restore_preserved_groups(
+        git_cmd, _m().PROJECT_ROOT, state, policy=policy, keep_stash=keep_stash)
+    receipt_path = _pres.write_preservation_receipt(
+        _m().PROJECT_ROOT, state, upstream_revision, outcome,
+        policy=policy, keep_stash=keep_stash)
+    try:
+        import json as _json
+
+        payload = _json.loads(receipt_path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        payload = None
+    _pres.print_preservation_summary(receipt_path, payload)
+    _pres.clear_in_progress_marker(_m().PROJECT_ROOT)
+
+
 def _finish_already_up_to_date(
     git_cmd, branch: str, current_branch: str, _plan, *, gw_input_fn, completion_request: dict) -> None:
     """"Already up to date" path: restore stash/branch, repair the checkout, catch up the fleet.
@@ -1389,6 +1482,11 @@ def _finish_already_up_to_date(
         _m()._restore_stashed_changes(
             git_cmd, _m().PROJECT_ROOT, _plan.auto_stash_ref, prompt_user=_plan.prompt_for_restore,
             input_fn=gw_input_fn)
+    if getattr(_plan, "preservation_state", None) is not None:
+        # No base movement: putting the preserved tree back is just an
+        # undo, so restore even under --keep-stash/never (same rule as the
+        # autostash no-op path above).
+        _settle_preservation_after_update(git_cmd, _plan, policy="safe", keep_stash=False)
     if _plan.parked_branch_switched:
         if _plan.switch_block_reason.startswith("unmerged:"):
             _count = _plan.switch_block_reason.split(":", 1)[1]
@@ -1585,7 +1683,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _plan = _prepare_checkout_for_update(
             git_cmd, branch, current_branch, is_fork=is_fork, assume_yes=assume_yes,
             gateway_mode=gateway_mode, gw_input_fn=gw_input_fn, switch_branch=opts.switch_branch,
-            target_ref=target_ref, _windows_gateway_resume=_windows_gateway_resume)
+            target_ref=target_ref, _windows_gateway_resume=_windows_gateway_resume,
+            preserve_requested=opts.preserve_requested)
         commit_count = _plan.commit_count
 
         if commit_count == 0:
@@ -1612,6 +1711,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             rollback_branch=_plan.rollback_branch,
             sync_upstream=is_fork and branch == "main" and not release_sha, assume_yes=assume_yes,
             in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume)
+        if getattr(_plan, "preservation_state", None) is not None:
+            _settle_preservation_after_update(
+                git_cmd, _plan, policy=opts.restore_policy, keep_stash=opts.keep_stash)
         _apply_pulled_update(
             git_cmd, branch, movement_baseline, _plan,
             _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)

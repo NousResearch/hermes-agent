@@ -739,13 +739,28 @@ def _complete_source_update(request: dict | None) -> None:
     # A head capture that came back empty must not arm an SHA-less record: it names no code the
     # fleet can be proven current on, so the warning could never clear (#125952).
     _write_fleet_restart_pending_marker(expected_sha=request.get("expected_sha") or _current_checkout_sha() or "")
-    result = run_completion(request)
+    try:
+        result = run_completion(request)
+    except KeyboardInterrupt as interrupt:
+        # Ctrl-C after the commit point: the tree is new, so the run is interrupted, never "failed".
+        _completion_receipt.finalize_interrupted_update_receipt("KeyboardInterrupt: interrupted after the code was updated")
+        raise SystemExit(130) from interrupt
     _accept_completion_pm_receipt(result.get("pm_receipt"), request["receipt"]["update_id"])
     token = request["windows_resume"]
     if token is not None and result.get("windows_resume") is not None:
         resumed = dict(result["windows_resume"])
         token.clear()
         token.update(resumed)
+    elif token and token.get("resume_needed") and not result["exit_code"]:
+        # Dependencies owed (A6): the bootstrap child cannot resume paused gateways; this process can.
+        try:
+            _m()._resume_windows_gateways_after_update(token)
+        except Exception as exc:  # noqa: BLE001 — the code is committed (C3)
+            from hermes_cli.update_receipt import amend_terminal_followup, record_followup
+
+            reason = f"Windows gateway recovery failed: {exc}"
+            record_followup("windows_resume", reason)
+            amend_terminal_followup(request["receipt"]["update_id"], "windows_resume", reason)
     if result.get("receipt") is not None:
         current = _completion_receipt._current.get()
         if current is not None:

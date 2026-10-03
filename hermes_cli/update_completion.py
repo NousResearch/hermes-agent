@@ -26,11 +26,11 @@ def _exit_status(code: int) -> int:
     return code if code >= 0 else 128 - code
 
 
-def _failed_result(request: dict, result_path: Path, code: int) -> int:
-    code = _exit_status(code) or 1
+def _write_bootstrap_result(request: dict, result_path: Path, code: int, receipt: dict | None) -> int:
+    """The bootstrap child's answer; windows_resume stays the parent's token (and its atexit net)."""
     _write_json(result_path, {
         "schema": 1, "update_id": request["receipt"]["update_id"], "exit_code": code,
-        "receipt": None, "windows_resume": None, "pm_receipt": request.get("pm_receipt"),
+        "receipt": receipt, "windows_resume": None, "pm_receipt": request.get("pm_receipt"),
     })
     return code
 
@@ -144,6 +144,51 @@ def _read_terminal_receipt(request: dict) -> dict | None:
     return None
 
 
+def _running_record(request: dict) -> dict | None:
+    from hermes_cli.update_receipt import _receipt_dir
+
+    for path in _receipt_dir().glob(f"update_*_{request['receipt']['update_id']}.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if data.get("update_id") == request["receipt"]["update_id"] and data.get("outcome") == "running":
+            data.pop("writer_pid", None)
+            return data
+    return None
+
+
+def _settle_after_commit(request: dict, result_path: Path, step: str, reason: str) -> int:
+    """The tree already moved, so a failure here is owed work, never a failed update (C3, A6).
+
+    Runs in the bootstrap interpreter (stdlib + the new tree) when dependency preparation failed or
+    the prepared child died without a result. The tail obligation stays armed, so the next launch
+    syncs the dependencies and finishes the tail; the run's receipt is a success that names the
+    follow-up, so nothing reports "still on the previous version" while the tree is new.
+    """
+    from hermes_cli import update_receipt
+    from hermes_cli.venv_sync import arm_completion
+
+    try:
+        arm_completion(Path(request["source"]))
+    except OSError as exc:  # the next launch still sees stale dependencies and syncs them
+        print(f"  ⚠ Could not record the owed source-update tail: {exc}")
+    receipt = _read_terminal_receipt(request)  # a prepared child that finalized, then died
+    if receipt is None:
+        # A prepared child that died mid-tail persisted stages the parent's snapshot lacks.
+        _resume_receipt(_running_record(request) or request["receipt"])
+        update_receipt.record_stage("deps" if step == "dependencies" else "build", "failed")
+        update_receipt.record_followup(step, reason, retry="dependencies not installed yet — the next launch retries"
+                                       if step == "dependencies" else "the next launch or `hermes update` retries it")
+        update_receipt.finalize_pending_update_receipt(0, f"{step} owed after the code was updated")
+        receipt = _read_terminal_receipt(request)
+    code = 0 if receipt is not None and receipt.get("outcome") == "success" else 1
+    if code == 0 and request["gateway_mode"]:
+        # The gateway's /update watcher reads this; the code is committed (same as _complete_selected).
+        (Path(request["home"]) / ".update_exit_code").write_text("0", encoding="utf-8")
+    return _write_bootstrap_result(request, result_path, code, receipt)
+
+
 def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
     import pm
     from pm import receipt
@@ -179,7 +224,8 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
     # and dependency graph. No application maintenance runs in this bootstrap.
     code = _exit_status(subprocess.call(command, cwd=root, env=activation_environment(root)))
     if not result_path.exists():
-        return _failed_result(request, result_path, code)
+        return _settle_after_commit(request, result_path, "completion",
+                                    f"the completion process exited {code} without a result")
     return code
 
 
@@ -273,9 +319,10 @@ def _finish(request: dict, result_path: Path) -> int:
     try:
         _complete_selected(request)
     except KeyboardInterrupt:
-        # An operator interrupt is not a step failure; the armed obligations finish the tail.
-        code, reason = 1, "KeyboardInterrupt: completion interrupted"
-        print("✗ Source update completion interrupted; the next launch or `hermes update` finishes it")
+        # An operator interrupt is not a step failure, and the code already moved: the run is
+        # ``interrupted`` (never "failed"), and the armed obligations finish the tail.
+        code, reason = 130, "KeyboardInterrupt: interrupted after the code was updated"
+        update_receipt.finalize_interrupted_update_receipt(reason, exit_code=code)
     except SystemExit as exc:
         if exc.code not in (0, None):
             update_receipt.record_followup("completion", f"completion exited {exc.code}")
@@ -323,14 +370,23 @@ def main() -> int:
         from pm.environments import activate_dependencies
         activate_dependencies(root)
         return _finish(request, result_path)
+    return _bootstrap(request, request_path, result_path)
+
+
+def _bootstrap(request: dict, request_path: Path, result_path: Path) -> int:
+    """Dependency preparation in the parent's interpreter; its failure is a follow-up (A6)."""
     try:
         return _prepare(request, request_path, result_path)
-    except BaseException as exc:
-        # PM failed before application dependencies were ready. Leave the parent
-        # receipt and paused-gateway obligation intact for boundary recovery.
-        print(f"✗ Source update preparation failed: {exc}")
-        code = exc.returncode if isinstance(exc, subprocess.CalledProcessError) else 1
-        return _failed_result(request, result_path, code)
+    except KeyboardInterrupt:
+        _resume_receipt(request["receipt"])
+        from hermes_cli import update_receipt
+        update_receipt.finalize_interrupted_update_receipt(
+            "KeyboardInterrupt: interrupted while installing dependencies", exit_code=130)
+        return _write_bootstrap_result(request, result_path, 130, _read_terminal_receipt(request))
+    except (Exception, SystemExit) as exc:  # noqa: BLE001 — after the commit point nothing fails the update
+        # The code is committed but its dependencies are not (A6): an owed follow-up, exit 0.
+        # Paused Windows gateways stay the parent's to resume (it has the dependencies).
+        return _settle_after_commit(request, result_path, "dependencies", str(exc) or type(exc).__name__)
 
 
 if __name__ == "__main__":

@@ -273,6 +273,75 @@ def test_zip_build_failure_after_swap_is_a_followup(zip_update, monkeypatch, rou
     assert state.token["resume_needed"] is False
 
 
+@pytest.mark.parametrize("route", ["direct", "git-failure"])
+def test_zip_dependency_sync_failure_after_swap_is_a_followup(zip_update, monkeypatch, tmp_path, route):
+    # The dropped "preparation" case, restored at the real seam: PM's dependency sync in the
+    # completion bootstrap fails AFTER the swap. Was pm.InstallError / exit 1 / no receipt, which
+    # the Desktop reads as "still on the previous version" while the tree is new. Contract C3/A6:
+    # exit 0, a ``dependencies`` follow-up, the tail obligation armed, nothing of the tail run.
+    import pm
+    import pm.client
+    from hermes_cli import update_completion
+    from hermes_cli.venv_sync import completion_pending_path
+
+    state = zip_update
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (route == "direct", ["git"], False))
+    monkeypatch.setattr(main, "_warn_orphaned_update_autostashes", lambda *args: None)
+    monkeypatch.setattr(update_cmd, "_should_zip_fallback_on_update_error", lambda exc: True)
+
+    def fail_fetch(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, ["git", "fetch"])
+    monkeypatch.setattr(update_cmd, "_git_run", fail_fetch)
+    monkeypatch.setattr(pm.client, "ensure_tools_for_sync", lambda: None)
+
+    def fail_sync(*args, **kwargs):
+        assert (state.root / "payload.txt").read_text() == "new"
+        raise pm.InstallError("venv", "dependency sync stopped")
+    monkeypatch.setattr(pm, "sync_venv", fail_sync)
+
+    def bootstrap(request):  # the completion child's first interpreter, in-process
+        request = {**request, "bytecode_cache": str(tmp_path / "bytecode")}
+        request_path, result_path = tmp_path / "request.json", tmp_path / "result.json"
+        update_completion._write_json(request_path, request)
+        update_completion._bootstrap(request, request_path, result_path)
+        return json.loads(result_path.read_text())
+    monkeypatch.setattr(update_cmd, "run_completion", bootstrap)
+
+    update_cmd._cmd_update_impl(SimpleNamespace(branch="main", yes=True), gateway_mode=True)
+
+    assert (state.root / "payload.txt").read_text() == "new"
+    receipt = json.loads((state.active / "logs/update_receipts/latest.json").read_text())
+    assert receipt["outcome"] == "success"
+    assert [f["step"] for f in receipt["followups"]] == ["dependencies"]
+    assert completion_pending_path(state.root).is_file()  # the next launch syncs and finishes the tail
+    assert "prepare" not in state.events  # no build/maintenance ran against stale dependencies
+    assert (state.active / ".update_exit_code").read_text() == "0"
+    assert "resume" in state.events and state.token["resume_needed"] is False
+
+
+def test_ctrl_c_after_the_swap_reports_the_new_code_not_a_failure(zip_update, monkeypatch, capsys):
+    # Ctrl-C while the completion child runs: run_completion kills the child group and re-raises.
+    # The tree is new, so the run is ``interrupted`` (never "failed" / "still on the previous
+    # version") and the message says what is owed; a non-zero exit for an interrupt is fine.
+    state = zip_update
+    monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda: (True, ["git"], False))
+    monkeypatch.setattr(main, "_warn_orphaned_update_autostashes", lambda *args: None)
+
+    def interrupted(request):
+        assert (state.root / "payload.txt").read_text() == "new"
+        raise KeyboardInterrupt
+    monkeypatch.setattr(update_cmd, "run_completion", interrupted)
+
+    with pytest.raises(SystemExit) as exc:
+        update_cmd._cmd_update_impl(SimpleNamespace(branch="main", yes=True), gateway_mode=False)
+
+    assert exc.value.code == 130
+    assert "Interrupted after the code was updated: the new code is in place" in capsys.readouterr().out
+    receipt = json.loads((state.active / "logs/update_receipts/latest.json").read_text())
+    assert receipt["outcome"] == "interrupted" and receipt["exit_code"] == 130
+    assert (state.root / "payload.txt").read_text() == "new"
+
+
 @pytest.mark.parametrize("entry", ["payload.txt", "tools"])
 def test_zip_recovers_crashed_backup_before_failed_copy_and_retry(zip_update, monkeypatch, entry):
     import shutil

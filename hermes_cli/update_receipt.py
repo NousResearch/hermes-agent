@@ -310,7 +310,7 @@ def persist_running_receipt() -> None:
 
 
 #: Follow-up steps whose failure leaves the source-update tail owed (``source-completion-pending``).
-TAIL_FOLLOWUPS = frozenset({"launchers", "build", "maintenance", "config_migration", "completion"})
+TAIL_FOLLOWUPS = frozenset({"dependencies", "launchers", "build", "maintenance", "config_migration", "completion"})
 
 
 def record_followup(step: str, reason: str, *, retry: str = "the next launch or `hermes update` retries it") -> None:
@@ -572,6 +572,36 @@ def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason
             clone.data["exit_code"] = int(exit_code)
             _current.set(clone)
     return finalize_update_receipt(outcome, stop_reason=stop_reason)
+
+
+def finalize_interrupted_update_receipt(stop_reason: str, *, exit_code: int = 130) -> Optional[Path]:
+    """Close a run the operator interrupted AFTER the commit point as ``interrupted``. Never raises.
+
+    Not ``failed``: the code already moved, so "still on the previous version" would be false; the
+    armed obligations finish the rest. The run's own on-disk record is preferred when it is further
+    along (the completion child persisted stages this process never saw).
+    """
+    print("⚠ Interrupted after the code was updated: the new code is in place; its remaining steps are owed "
+          "and the next launch or `hermes update` finishes them.", flush=True)
+    current = _current.get()
+    if current is None:
+        return None
+    with suppress(Exception):
+        clone = copy.copy(current)
+        clone.data = copy.deepcopy(current.data)
+        on_disk: dict = {}
+        with suppress(Exception):
+            path = _run_file(_receipt_dir(), current.data)
+            on_disk = json.loads(path.read_text(encoding="utf-8-sig"))
+        if on_disk.get("update_id") == current.data.get("update_id"):
+            if on_disk.get("finished_at"):  # the completion child already closed the run
+                _current.reset(current.current_token)
+                return path
+            on_disk.pop("writer_pid", None)
+            clone.data = on_disk
+        clone.data["exit_code"] = int(exit_code)
+        _current.set(clone)
+    return finalize_update_receipt("interrupted", stop_reason=stop_reason)
 
 
 def _prune_old_receipts(directory: Path) -> None:

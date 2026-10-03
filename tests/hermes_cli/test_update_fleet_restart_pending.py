@@ -559,9 +559,11 @@ def test_interrupt_between_pull_and_restart_leaves_marker(
 
     monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", _interrupt)
 
-    with pytest.raises(KeyboardInterrupt):
+    # Was KeyboardInterrupt: Ctrl-C after the commit point exits 130 as an interrupt, not a failure.
+    with pytest.raises(SystemExit) as exc:
         hermes_main.cmd_update(args)
 
+    assert exc.value.code == 130
     assert update_cmd_fleet._fleet_restart_obligation_armed()
     record = json.loads(host_obligation.host_obligation_path().read_text(encoding="utf-8"))
     assert record["expected_sha"] == "def456"

@@ -269,3 +269,31 @@ def test_docs_append_carries_tab_id_and_refuses_ambiguous_writes(api_module, mon
         api_module.docs_append(types.SimpleNamespace(doc_id="doc1", text="more", tab=None))
     err = json.loads(capsys.readouterr().err)
     assert "tabs" in err and len(err["tabs"]) == 3
+
+
+def test_unescape_shell_text_fields_turns_literal_backslash_n_into_real_newline(api_module):
+    """A terminal-tool-invoked command passes a quoted arg like ``--body "a\\nb"`` — the shell
+    never interprets ``\\n`` inside double quotes as a newline, so the parsed arg literally
+    contains a backslash followed by ``n``. Without unescaping, that two-character sequence
+    ends up verbatim in the Gmail body / calendar description / Doc text instead of a real
+    line break."""
+    args = types.SimpleNamespace(
+        body="line1\\nline2\\tindented",
+        description="desc\\nline",
+        text="doc text\\nmore",
+        other="untouched\\nvalue",
+    )
+    api_module._unescape_shell_text_fields(args)
+    assert args.body == "line1\nline2\tindented"
+    assert args.description == "desc\nline"
+    assert args.text == "doc text\nmore"
+    # Only the known free-text fields are touched.
+    assert args.other == "untouched\\nvalue"
+
+
+def test_unescape_shell_text_fields_ignores_missing_or_non_string_fields(api_module):
+    """A command without --body/--description/--text (e.g. gmail search) has no such
+    attributes at all; the helper must not raise on a Namespace missing them."""
+    args = types.SimpleNamespace(query="is:unread")
+    api_module._unescape_shell_text_fields(args)  # no AttributeError
+    assert args.query == "is:unread"

@@ -2733,11 +2733,18 @@ def run_conversation(
                 approx_tokens=request_pressure_tokens,
                 task_id=effective_task_id,
             )
+            # Remaining pressure, not list identity, decides whether the
+            # compacted (or no-op) transcript is safe to send. Re-measure
+            # from the post-compress messages so a new list that did not
+            # shrink under the window cannot inherit a success from identity.
+            _remaining_pressure = estimate_messages_tokens_rough(messages) + (
+                _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
+            )
             _pre_api_continue = preflight_compression_should_continue_turn(
                 agent,
                 original_messages=_pre_api_input,
                 compressed_messages=messages,
-                request_tokens=request_pressure_tokens,
+                request_tokens=_remaining_pressure,
                 context_length=int(getattr(_compressor, "context_length", 0) or 0),
             )
             if _pre_api_continue == "defer_lock":
@@ -2755,12 +2762,13 @@ def run_conversation(
                 if pending_moa_prepared_request is _moa_prepared_request:
                     pending_moa_prepared_request = None
             elif _pre_api_continue is False:
-                # Timeout/failure no-op left the request at or over the model
-                # window. Do not send that payload as if compaction succeeded.
+                # Remaining pressure is still at or over the model window
+                # (timeout/failure no-op, new-list identity, or insufficient
+                # shrink). Do not send that payload as if compaction succeeded.
                 logger.error(
-                    "Pre-API compression no-op left ~%s request tokens at or "
+                    "Pre-API compression left ~%s request tokens at or "
                     "over context=%s; refusing to send over-limit input",
-                    f"{request_pressure_tokens:,}",
+                    f"{_remaining_pressure:,}",
                     f"{int(getattr(_compressor, 'context_length', 0) or 0):,}",
                 )
                 agent._emit_status(
@@ -2884,6 +2892,48 @@ def run_conversation(
                 )
                 if callable(_warn_fn):
                     _warn_fn(request_pressure_tokens, _ctx_len)
+
+        # Compaction was skipped (cooldown, exhausted attempts, insufficient
+        # progress) or never ran. Remaining pressure still at/over the
+        # resolved window must not reach the provider. Lock-skip and
+        # noisy-estimate deferral keep their established send contracts.
+        if (
+            agent.compression_enabled
+            and not _review_fork_first_request_pending(agent)
+            and not _defer_preflight(request_pressure_tokens)
+            and not compression_skipped_due_to_lock(agent)
+        ):
+            _safe_limit = int(getattr(_compressor, "context_length", 0) or 0)
+            if _safe_limit > 0 and request_pressure_tokens >= _safe_limit:
+                logger.error(
+                    "Pre-API compression unavailable or skipped with ~%s "
+                    "request tokens at or over context=%s; refusing to send "
+                    "over-limit input",
+                    f"{request_pressure_tokens:,}",
+                    f"{_safe_limit:,}",
+                )
+                agent._emit_status(
+                    "❌ Context compression timed out or failed while the "
+                    "request is still over the model window. No messages "
+                    "were dropped, and the over-limit request was not sent. "
+                    "Run /compress to retry, /new for a clean session, or "
+                    "check auxiliary.compression."
+                )
+                api_call_count -= 1
+                agent._api_call_count = api_call_count
+                try:
+                    agent.iteration_budget.refund()
+                except Exception:
+                    pass
+                final_response = (
+                    "Context compression failed while the request is over "
+                    "the model context window. The over-limit request was "
+                    "not sent. Run /compress to retry or /new for a clean "
+                    "session."
+                )
+                failed = True
+                _turn_exit_reason = "compression_timeout_over_limit"
+                break
 
         # Thinking spinner for quiet mode (animated during API call)
         thinking_spinner = None

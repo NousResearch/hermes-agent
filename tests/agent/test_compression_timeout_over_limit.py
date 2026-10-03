@@ -96,3 +96,37 @@ def test_timeout_under_window_may_continue_with_original():
         request_tokens=100_000,
         context_length=272_000,
     ) is True
+
+
+def test_new_list_without_shrink_over_limit_fails_closed():
+    """Dispatch eligibility is remaining pressure, not list identity.
+
+    A new list that still estimates at/over context_length must not be
+    treated as successful compaction. Field/recovery shape: ~302K vs 272K
+    after a copied transcript.
+    """
+    agent = SimpleNamespace(_compression_skipped_due_to_lock=None)
+    original = [{"role": "user", "content": "keep"}]
+    copied = list(original)
+    assert copied is not original
+    assert preflight_compression_should_continue_turn(
+        agent,
+        original_messages=original,
+        compressed_messages=copied,
+        request_tokens=302_000,
+        context_length=272_000,
+    ) is False
+
+
+def test_partial_shrink_still_over_limit_fails_closed():
+    """A smaller new list that remains at/over the window must not send."""
+    agent = SimpleNamespace(_compression_skipped_due_to_lock=None)
+    original = [{"role": "user", "content": "big"}]
+    smaller = [{"role": "user", "content": "smaller-but-still-over"}]
+    assert preflight_compression_should_continue_turn(
+        agent,
+        original_messages=original,
+        compressed_messages=smaller,
+        request_tokens=280_000,
+        context_length=272_000,
+    ) is False

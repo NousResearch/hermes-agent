@@ -29,6 +29,15 @@ from typing import Callable, Mapping, Optional
 # "hermes.desktop" name a packaged launch matches neither rung and lands on the placeholder icon.
 APP_ID = "com.nousresearch.hermes"
 DESKTOP_ENTRY_NAME = f"{APP_ID}.desktop"
+# The window identity a from-source run reports: main.ts calls ``app.setName(displayName)`` and
+# Electron hands that string to the compositor when no baked ``desktopName`` (electron-builder's
+# extraMetadata, packaged builds only) overrides it. GNOME matches a window against the entry by
+# StartupWMClass OR by an ``<app_id>.desktop`` file name, and the two identities disagree between
+# build kinds — the packaged window reports APP_ID, the source-run window reports this name. The
+# file name below carries APP_ID (the packaged rung); StartupWMClass must carry this one, or a
+# source-run window matches neither rung and lands on the placeholder icon (#127856). Mirrors
+# product-identity.cjs's stable ``displayName`` — the value ``Name=`` has always carried.
+DESKTOP_DISPLAY_NAME = "Hermes"
 
 # Entry name written before the app-id rename; a successful install converts it into a hidden
 # alias (NoDisplay=true) so pre-rename taskbar pins keep resolving (see _alias_legacy_desktop_entry).
@@ -578,19 +587,20 @@ def _quote_exec_arg(arg: str) -> str:
 
 
 def render_desktop_entry(exec_command: str, icon: str) -> str:
-    """The app-id entry: identity lives in the file name and ``StartupWMClass``."""
+    """The app-id entry: the file name carries the packaged app id, ``StartupWMClass`` the window
+    identity a source run reports (see DESKTOP_DISPLAY_NAME)."""
     return (
         "[Desktop Entry]\n"
         "Type=Application\n"
-        "Name=Hermes\n"
-        "GenericName=Hermes Desktop\n"
-        "Comment=Launch Hermes Desktop\n"
+        f"Name={DESKTOP_DISPLAY_NAME}\n"
+        f"GenericName={DESKTOP_DISPLAY_NAME} Desktop\n"
+        f"Comment=Launch {DESKTOP_DISPLAY_NAME} Desktop\n"
         f"Exec={exec_command}\n"
         f"Icon={icon}\n"
         "Terminal=false\n"
         "Categories=Utility;\n"
         "StartupNotify=true\n"
-        f"StartupWMClass={APP_ID}\n"
+        f"StartupWMClass={DESKTOP_DISPLAY_NAME}\n"
     )
 
 

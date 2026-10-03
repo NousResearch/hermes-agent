@@ -71,7 +71,12 @@ def _setup_logging() -> None:
                                             datefmt="%Y-%m-%d %H:%M:%S"))
     handler.addFilter(_BenignProbeMethodFilter())
     root = logging.getLogger()
-    root.handlers.clear()
+    # Replace the console handlers but keep Hermes' file-logging queue handler: under
+    # ``hermes acp`` it was attached when hermes_cli.main was imported, and a later
+    # setup_logging() does not re-attach it, so agent.log/errors.log would stay empty.
+    for existing in list(root.handlers):
+        if not getattr(existing, "_hermes_queue", False):
+            root.removeHandler(existing)
     root.addHandler(handler)
     root.setLevel(logging.INFO)
     for noisy in ("httpx", "httpcore", "openai"):

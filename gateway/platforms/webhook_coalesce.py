@@ -66,9 +66,12 @@ class WebhookCoalescer:
     """Debounce-and-supersede buffer. ``dispatch(payload, prompt, delivery_id, **kwargs)`` is the adapter's
     agent-run spawner. Only ever driven from the aiohttp event loop → no locking."""
 
-    def __init__(self, dispatch: Callable[..., Any], render: Callable[[str, dict, str, str], str]):
+    def __init__(self, dispatch: Callable[..., Any], render: Callable[[str, dict, str, str], str],
+                 on_supersede: Optional[Callable[[str, Dict[str, Any]], None]] = None):
         self._dispatch = dispatch
         self._render = render
+        # Told about every event a newer one replaces, so the adapter can retire its durable record.
+        self._on_supersede = on_supersede
         self._pending: Dict[str, PendingEvent] = {}
         self._timers: Dict[str, asyncio.Task] = {}
 
@@ -106,6 +109,8 @@ class WebhookCoalescer:
         if existing is not None:
             logger.info("[webhook] coalesced delivery %s superseded by %s (group=%s, %d events)",
                         existing.delivery_id, delivery_id, group_key, count)
+            if self._on_supersede is not None and existing.delivery_id != delivery_id:
+                self._on_supersede(existing.delivery_id, existing.dispatch_kwargs)
         old = self._timers.pop(group_key, None)
         if old is not None and not old.done():
             old.cancel()

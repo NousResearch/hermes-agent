@@ -24,6 +24,7 @@ import uuid
 from collections import deque
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional
 
 try:
@@ -38,6 +39,8 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.tcp_site import start_tcp_site
+from gateway.platforms import webhook_inbox as inbox
+from gateway.platforms.webhook_inbox import INBOX_DIRNAME, WebhookInbox
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
 from gateway.response_filters import is_autonomous_silence_response
@@ -212,13 +215,19 @@ class WebhookAdapter(BasePlatformAdapter):
         self._seen_deliveries: Dict[_WebhookDeliveryIdentity, float] = {}
         self._idempotency_ttl: int = 3600  # 1 hour
         self._seen_deliveries_next_prune_at: float = 0.0
+        # Durable per-delivery records (gateway/platforms/webhook_inbox.py): accepted work survives a
+        # crash before dispatch, and idempotency + reply envelopes survive a restart.
+        self._inbox = WebhookInbox(self._inbox_root())
+        self._replay_records: List[dict] = []
+        self._load_inbox()
         self._rate_counts: Dict[str, Deque[float]] = {}  # per-route hit timestamps in a fixed window
         self._rate_limit: int = int(extra.get("rate_limit", 30))  # per minute
         self._max_body_bytes: int = int(extra.get("max_body_bytes", 1_048_576))  # 1MB
         self._script_timeout_seconds: int = int(extra.get("script_timeout_seconds", DEFAULT_SCRIPT_TIMEOUT_SECONDS))
         self._route_processor = WebhookRouteProcessor(script_timeout_seconds=self._script_timeout_seconds)
         # Opt-in per-route debounce of rapid same-entity events (route ``coalesce`` block). #92066
-        self._coalescer = WebhookCoalescer(dispatch=self._spawn_agent_run, render=self._render_prompt)
+        self._coalescer = WebhookCoalescer(dispatch=self._spawn_agent_run, render=self._render_prompt,
+                                           on_supersede=self._on_coalesce_superseded)
 
     # --- Lifecycle ---
 
@@ -272,6 +281,7 @@ class WebhookAdapter(BasePlatformAdapter):
         logger.info("[webhook] Listening on %s:%d — routes: %s", self._host or "* (all interfaces, IPv4+IPv6)",
                     self._port, ", ".join(self._routes.keys()) or "(none configured)")
         self._wire_plugin_handlers(None)
+        self._replay_pending_deliveries()
         return True
 
     async def disconnect(self) -> None:
@@ -323,9 +333,111 @@ class WebhookAdapter(BasePlatformAdapter):
         if now < self._seen_deliveries_next_prune_at:
             return
         cutoff = now - self._idempotency_ttl
-        for k in [k for k, t in self._seen_deliveries.items() if t < cutoff]:
+        expired = [k for k, t in self._seen_deliveries.items() if t < cutoff]
+        for k in expired:
             self._seen_deliveries.pop(k, None)
+        if expired:
+            self._delete_inbox_records(expired)
         self._seen_deliveries_next_prune_at = now + min(60.0, max(1.0, self._idempotency_ttl / 10))
+
+    @staticmethod
+    def _inbox_root() -> Path:
+        from hermes_constants import get_hermes_home
+        return get_hermes_home() / "state" / INBOX_DIRNAME
+
+    def _load_inbox(self) -> None:
+        """Restore idempotency, reply envelopes and not-yet-dispatched work before serving requests."""
+        now = time.time()
+        expired = []
+        for record in self._inbox.load():
+            identity = _WebhookDeliveryIdentity.from_parts(record["profile"], record["route"], record["delivery_id"])
+            at = float(record["at"])
+            if record["state"] == inbox.PENDING:
+                # Accepted work that never reached the runner: replayed once connect() has wired the runner,
+                # whatever its age -- the sender was told it was accepted.
+                self._seen_deliveries[identity] = max(at, now - self._idempotency_ttl + 1)
+                self._replay_records.append(record)
+                continue
+            if now - at >= self._idempotency_ttl:
+                expired.append(identity)
+                continue
+            self._seen_deliveries[identity] = at
+            envelope = record.get("envelope")
+            if record["state"] == inbox.STARTED and isinstance(envelope, dict):
+                chat_id = identity.session_chat_id
+                self._delivery_info[chat_id] = envelope
+                self._delivery_info_created[chat_id] = at
+                self._delivery_info_order.append((at, chat_id))
+        for identity in expired:
+            self._inbox.delete(identity.profile, identity.route, identity.delivery_id)
+
+    def _inbox_record(self, identity: _WebhookDeliveryIdentity, state: str, at: float, **fields) -> dict:
+        return {"state": state, "profile": identity.profile, "route": identity.route,
+                "delivery_id": identity.delivery_id, "at": at, **fields}
+
+    def _checkpoint_in_background(self, record: dict) -> None:
+        """Write a post-admission transition on a worker thread without holding up the caller. A lost
+        ``started`` write only means a restart may replay the delivery (at-least-once), never drop it."""
+        async def _write() -> None:
+            try:
+                await asyncio.to_thread(self._inbox.write, record)
+            except Exception:
+                logger.warning("[webhook] could not checkpoint delivery %s as %s", record["delivery_id"],
+                               record["state"], exc_info=True)
+
+        try:
+            task = asyncio.get_running_loop().create_task(_write())
+        except RuntimeError:  # no loop (sync caller in tests/tools): write inline
+            self._inbox.write(record)
+            return
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    def _on_coalesce_superseded(self, delivery_id: str, dispatch_kwargs: dict) -> None:
+        identity = _WebhookDeliveryIdentity.from_parts(dispatch_kwargs.get("profile"),
+                                                       dispatch_kwargs.get("route_name", ""), delivery_id)
+        self._checkpoint_in_background(self._inbox_record(
+            identity, inbox.SUPERSEDED, self._seen_deliveries.get(identity, time.time())))
+
+    def _replay_pending_deliveries(self) -> None:
+        """Re-run deliveries that were accepted but never handed to the runner (crash between the 2xx and
+        dispatch). Each goes through the same post-admission path a live POST takes."""
+        records, self._replay_records = self._replay_records, []
+        for record in records:
+            identity = _WebhookDeliveryIdentity.from_parts(record["profile"], record["route"], record["delivery_id"])
+            route_config = self._routes.get(identity.route)
+            work = record["work"]
+            profile = None if identity.profile == "default" else identity.profile
+            if not route_config or route_config.get("enabled", True) is False:
+                logger.warning("[webhook] dropping replay of delivery %s: route %s is gone or disabled",
+                               identity.delivery_id, identity.route)
+                self._checkpoint_in_background(self._inbox_record(identity, inbox.SUPERSEDED, float(record["at"])))
+                continue
+            logger.info("[webhook] replaying accepted delivery %s on route %s after restart",
+                        identity.delivery_id, identity.route)
+            try:
+                outcome = self._run_admitted(work.get("payload"), str(work.get("prompt", "")), route_config,
+                                             identity.route, profile, str(work.get("event_type", "unknown")),
+                                             identity.delivery_id, float(record["at"]))
+                if asyncio.iscoroutine(outcome):  # deliver-only: nobody awaits a response on replay
+                    task = asyncio.create_task(outcome)
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+            except Exception:
+                logger.exception("[webhook] replay of delivery %s failed; it stays pending", identity.delivery_id)
+
+    def _delete_inbox_records(self, identities: list) -> None:
+        def _delete() -> None:
+            for identity in identities:
+                self._inbox.delete(identity.profile, identity.route, identity.delivery_id)
+
+        try:
+            task = asyncio.get_running_loop().create_task(asyncio.to_thread(_delete))
+        except RuntimeError:
+            _delete()
+            return
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     def _record_rate_limit_hit(self, route_name: str, now: float) -> bool:
         """Return True if route is still within limit after recording this hit."""
@@ -534,6 +646,9 @@ class WebhookAdapter(BasePlatformAdapter):
         logger.info("[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s", event_type,
                     route_name, delivery["deliver"], len(prompt), delivery_id)
         failed = {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id}
+        identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
+        self._checkpoint_in_background(self._inbox_record(
+            identity, inbox.STARTED, self._seen_deliveries.get(identity, time.time())))
         try:
             result = await self._direct_deliver(prompt, delivery)
         except Exception:
@@ -558,6 +673,10 @@ class WebhookAdapter(BasePlatformAdapter):
                          f"(not the schedule).\n\n{prompt}")
         logger.info("[webhook] cron-trigger event=%s route=%s job=%s delivery=%s", event_type, route_name, job_ref,
                     delivery_id)
+
+        identity = _WebhookDeliveryIdentity.from_parts(profile, route_name, delivery_id)
+        self._checkpoint_in_background(self._inbox_record(
+            identity, inbox.STARTED, self._seen_deliveries.get(identity, time.time())))
 
         async def _fire_cron_job() -> None:
             try:
@@ -667,29 +786,49 @@ class WebhookAdapter(BasePlatformAdapter):
         if not self._record_delivery_id(delivery_identity, now):
             logger.info("[webhook] Skipping duplicate delivery %s on route %s", delivery_id, route_name)
             return web.json_response({"status": "duplicate", "delivery_id": delivery_id}, status=200)
+        # Durable admission point: the replayable work is fsynced (on a worker thread) BEFORE the sender
+        # hears 2xx. A crash after this replays it on restart; if the write fails the delivery is
+        # un-seen and the sender gets a retryable 503 instead of a promise we cannot keep.
+        pending = self._inbox_record(delivery_identity, inbox.PENDING, now, work={
+            "payload": payload, "prompt": prompt, "event_type": event_type})
+        try:
+            await asyncio.to_thread(self._inbox.write, pending)
+        except Exception:
+            self._seen_deliveries.pop(delivery_identity, None)
+            logger.exception("[webhook] could not persist delivery %s on route %s", delivery_id, route_name)
+            return _json_error("Could not durably accept delivery; retry", 503)
+        logger.info("[webhook] %s event=%s route=%s prompt_len=%d delivery=%s", request.method, event_type,
+                    route_name, len(prompt), delivery_id)
+        return await self._respond_admitted(
+            self._run_admitted(payload, prompt, route_config, route_name, profile, event_type, delivery_id, now),
+            route_name, event_type, delivery_id)
+
+    @staticmethod
+    async def _respond_admitted(outcome, route_name: str, event_type: str, delivery_id: str) -> "web.Response":
+        if asyncio.iscoroutine(outcome):
+            outcome = await outcome
+        if isinstance(outcome, web.StreamResponse):
+            return outcome
+        status = "coalesced" if outcome == "coalesced" else "accepted"
+        return web.json_response({"status": status, "route": route_name, "event": event_type,
+                                  "delivery_id": delivery_id}, status=202)
+
+    def _run_admitted(self, payload: Any, prompt: str, route_config: dict, route_name: str, profile,
+                      event_type: str, delivery_id: str, now: float):
+        """Post-admission branch shared by a live POST and a restart replay. Returns a response (cron /
+        deliver-only), ``"coalesced"``, the spawned task, or a coroutine producing one of those."""
         if route_config.get("cron_job"):
             return self._handle_cron_trigger(prompt, route_config, route_name, event_type, delivery_id, profile)
         if route_config.get("deliver_only"):
-            return await self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id,
-                                                   profile)
+            return self._handle_deliver_only(prompt, payload, route_config, route_name, event_type, delivery_id,
+                                             profile)
         coalesce = route_config.get("coalesce")
         if isinstance(coalesce, dict) and self._coalescer.enqueue(
                 route_name=route_name, coalesce=coalesce, payload=payload, event_type=event_type, prompt=prompt,
                 delivery_id=delivery_id, now=now, route_config=route_config, profile=profile):
-            return web.json_response({"status": "coalesced", "route": route_name, "event": event_type,
-                                      "delivery_id": delivery_id}, status=202)
-        return self._dispatch_agent_run(request, route_config, route_name, profile, payload, prompt, event_type,
-                                        delivery_id, now)
-
-    def _dispatch_agent_run(self, request, route_config: dict, route_name: str, profile, payload: Any, prompt: str,
-                            event_type: str, delivery_id: str, now: float) -> "web.Response":
-        """Spawn the agent run for one POST and return 202 immediately."""
-        logger.info("[webhook] %s event=%s route=%s prompt_len=%d delivery=%s", request.method, event_type, route_name,
-                    len(prompt), delivery_id)
-        self._spawn_agent_run(payload, prompt, delivery_id, now, route_config=route_config, route_name=route_name,
-                              profile=profile, event_type=event_type)
-        return web.json_response({"status": "accepted", "route": route_name, "event": event_type,
-                                  "delivery_id": delivery_id}, status=202)
+            return "coalesced"
+        return self._spawn_agent_run(payload, prompt, delivery_id, now, route_config=route_config,
+                                     route_name=route_name, profile=profile, event_type=event_type)
 
     def _spawn_agent_run(self, payload: Any, prompt: str, delivery_id: str, now: float, *, route_config: dict,
                          route_name: str, profile, event_type: str) -> "asyncio.Task":
@@ -712,9 +851,19 @@ class WebhookAdapter(BasePlatformAdapter):
             source.profile = profile
         event = MessageEvent(text=prompt, message_type=MessageType.TEXT, source=source, raw_message=payload,
                              message_id=delivery_id)
+        started = self._inbox_record(identity, inbox.STARTED, self._seen_deliveries.get(identity, now),
+                                     envelope=self._delivery_info[session_chat_id])
+
+        async def _hand_off() -> None:
+            # Start the run first, then retire the pending record: a crash in between replays the
+            # delivery (at-least-once) instead of losing it.
+            run = asyncio.ensure_future(self.handle_message(event))
+            self._checkpoint_in_background(started)
+            await run
+
         # The per-delivery session is closed by ``on_processing_complete`` once the run finishes
         # (``handle_message`` is fire-and-forget, so nothing can be closed here).
-        task = asyncio.create_task(self.handle_message(event))
+        task = asyncio.create_task(_hand_off())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
         return task

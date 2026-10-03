@@ -48,7 +48,21 @@ def tcp_keepalive_socket_options() -> list[tuple[int, int, int]]:
 # DNS-over-HTTPS providers: discover Telegram API IPs the (possibly unreachable) local resolver may not
 # return. Bounded so connect() isn't delayed.
 _DOH_TIMEOUT = 4.0
+# The IP-literal entries come first and are the ones that matter during a local-resolver outage: a
+# hostname-addressed provider (dns.google / cloudflare-dns.com) needs the very system DNS that is down in
+# order to bootstrap, so discovery used to log "DoH discovery yielded no usable IPs" precisely when it was
+# needed. 8.8.8.8 / 8.8.4.4 and 1.1.1.1 / 1.0.0.1 serve certificates with those IPs as SANs, so TLS
+# verification stays on. All providers are queried concurrently, so the extra entries add no latency.
 _DOH_PROVIDERS: list[dict] = [
+    {"url": "https://8.8.8.8/resolve", "params": {"name": _TELEGRAM_API_HOST, "type": "A"}, "headers": {}},
+    {
+        "url": "https://1.1.1.1/dns-query", "params": {"name": _TELEGRAM_API_HOST, "type": "A"},
+        "headers": {"Accept": "application/dns-json"}},
+    {"url": "https://8.8.4.4/resolve", "params": {"name": _TELEGRAM_API_HOST, "type": "A"}, "headers": {}},
+    {
+        "url": "https://1.0.0.1/dns-query", "params": {"name": _TELEGRAM_API_HOST, "type": "A"},
+        "headers": {"Accept": "application/dns-json"}},
+    # Hostname-addressed providers kept as an extra leg for networks that block the bare IPs but have DNS.
     {"url": "https://dns.google/resolve", "params": {"name": _TELEGRAM_API_HOST, "type": "A"}, "headers": {}},
     {
         "url": "https://cloudflare-dns.com/dns-query", "params": {"name": _TELEGRAM_API_HOST, "type": "A"},

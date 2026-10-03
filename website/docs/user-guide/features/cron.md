@@ -29,6 +29,8 @@ All of this is available to Hermes itself through the `cronjob_manage` tool, so 
 - **`cron.model` / `cron.model_provider`** — a cron-fleet default: every unpinned job runs on this model, independent of your chat model. Set it once (`hermes config set cron.model <name>`) and switching your chat model with `hermes model` or `/model` never touches your cron fleet.
 - **Main agent model** — when neither of the above is set, a job runs on whatever `hermes model` / `/model` is set to **at the moment it fires**. Change your main model and every unpinned job follows on its next run.
 
+Model names accept the same shorthand as `/model`: a `model_aliases:` entry (`--model fast` stores the alias's model, and its provider and `base_url` when the job pins neither) or a catalog short name on the job's provider (`--model kimi`). The alias expands when the job is created or edited, so the stored job always carries the concrete route; a short name matching several catalog models is refused with the candidate list instead of being stored. `cron.model` resolves the same way at fire time.
+
 Whichever provider a job resolves to, its provider-specific request settings (e.g. `request_overrides` such as `extra_body`/`extra_headers` for custom providers) carry into the scheduled run just like an interactive session.
 
 `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](../../integrations/nous-portal.md).

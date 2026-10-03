@@ -425,6 +425,54 @@ class TestGatewayRuntimeStatus:
                 == 139
             ), cmdline
 
+    def test_unscoped_running_pid_fallback_rejects_sibling_profile_gateway(self, tmp_path, monkeypatch):
+        """Regression (#126287): once the profile lock is gone after an unclean death, the
+        UNSCOPED ``get_running_pid()`` fallback reads this home's ``gateway_state.json``. A
+        record naming a PID that now hosts a SIBLING profile's gateway (Windows recycles PIDs
+        aggressively right after boot, exactly when logon autostart tasks race) must not be
+        reported running: without ``expected_home`` the live command-line check accepted any
+        profile's gateway argv, so the default profile's logon autostart was rejected with
+        "Another gateway instance is already running (PID <sibling's pid>)" and stayed down
+        until a manual start. Stamps cannot save that check — legacy records carry none, and
+        a misrouted write (#56986) can record a foreign PID under this home's stamp."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for record_home in (None, str(tmp_path)):
+            payload = {
+                "pid": 4184,
+                "gateway_state": "running",
+                "kind": "hermes-gateway",
+                "argv": ["pythonw.exe", "-m", "hermes_cli.main", "--profile", "mv", "gateway", "run"],
+            }
+            if record_home is not None:
+                payload["hermes_home"] = record_home
+            (tmp_path / "gateway_state.json").write_text(json.dumps(payload))
+            monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+            monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+            monkeypatch.setattr(
+                status, "_read_process_cmdline",
+                lambda pid: "pythonw.exe -m hermes_cli.main --profile mv gateway run",
+            )
+            assert status.get_running_pid() is None, f"hermes_home={record_home!r}"
+
+    def test_unscoped_running_pid_fallback_still_reports_own_profile_gateway(self, tmp_path, monkeypatch):
+        """The sibling rejection must not over-block: this home's own default (bare) gateway
+        record still resolves through the unscoped fallback — the launch-service gateway whose
+        ``gateway.pid`` is gone while ``gateway_state.json`` is fresh."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(json.dumps({
+            "pid": 9492,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"],
+        }))
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline",
+            lambda pid: "pythonw.exe -m hermes_cli.main gateway run",
+        )
+        assert status.get_running_pid() == 9492
+
 
     def test_command_line_belongs_to_profile_accepts_explicit_default(self):
         """``--profile default`` names THE DEFAULT PROFILE: a hand-written launchd plist that
@@ -1368,7 +1416,10 @@ class TestPlannedStopMarker:
 class TestReadProcessCmdlinePsFallback:
     """Tests for _read_process_cmdline falling back to ps on non-Linux."""
 
+    @pytest.mark.platforms("posix")
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
+        """The ``ps`` fallback branch only exists on non-Windows hosts; on Windows psutil's
+        real process-table answer (or None) is the terminal result."""
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
         # psutil sits between /proc and ps; left real, it reads whatever process holds this pid on the
         # host (CI saw `/usr/sbin/haveged` at 873) and ps is never reached.

@@ -1597,8 +1597,11 @@ def get_runtime_status_running_pid(
 ) -> Optional[int]:
     """Live gateway PID from the runtime status record, or None: the ``get_running_pid()`` fallback
     for launch-service-managed gateways with a fresh ``gateway_state.json`` but no ``gateway.pid``.
-    ``expected_home`` scopes the OS-identity check to another profile's home so a PID recycled onto
-    a different profile's gateway is not reported running for the dead one."""
+    ``expected_home`` scopes the identity check to that home so a PID recycled onto a different
+    profile's gateway is not reported running for the dead one; it defaults to the process home
+    (#126287) — with no scoping the live command-line check accepted ANY profile's gateway argv,
+    so a stale record naming a sibling's PID rejected the real profile's launch as "already
+    running". Pass an explicit ``expected_home`` only when asking about ANOTHER home."""
     payload = runtime if runtime is not None else read_runtime_status()
     if not isinstance(payload, dict):
         return None
@@ -1607,12 +1610,12 @@ def get_runtime_status_running_pid(
     pid = _live_pid_from_record(payload)
     if pid is None:
         return None
-    # The record's hermes_home must match the home asked about (this process unscoped) so a stale
-    # or copied record cannot lend another home's gateway identity; legacy records without the
-    # stamp prove nothing either way and fall through to the live command-line check.
-    if expected_home is None and not _pid_record_belongs_to_current_profile(payload):
-        return None
-    if expected_home is not None and recorded_gateway_home_conflicts(payload, expected_home=expected_home):
+    # The record's hermes_home must not conflict with the home asked about so a stale or copied
+    # record cannot lend another home's gateway identity; legacy records without the stamp prove
+    # nothing either way and fall through to the live command-line check.
+    if expected_home is None:
+        expected_home = _get_process_hermes_home()
+    if recorded_gateway_home_conflicts(payload, expected_home=expected_home):
         return None
     if not _record_matches_live_gateway_pid(payload, pid, expected_home=expected_home):
         return None

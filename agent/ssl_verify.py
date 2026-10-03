@@ -31,6 +31,76 @@ logger = logging.getLogger(__name__)
 _installed: bool | None = None
 
 
+def _truststore_context_with_ca_introspection(truststore: Any) -> type:
+    """Return truststore's context, adding only missing CA introspection methods.
+
+    truststore 0.10.x intentionally leaves these APIs unimplemented. Keep its
+    shipped class untouched: a narrow subclass delegates only methods that
+    raise NotImplementedError to the wrapped stdlib context.
+    """
+    base = truststore.SSLContext
+    probe = base(ssl.PROTOCOL_TLS_CLIENT)
+    shims: dict[str, Any] = {}
+
+    def _cert_store_stats(self: Any) -> dict[str, int]:
+        return self._ctx.cert_store_stats()
+
+    def _get_ca_certs(self: Any, binary_form: bool = False) -> Any:
+        return self._ctx.get_ca_certs(binary_form)
+
+    try:
+        probe.cert_store_stats()
+    except NotImplementedError:
+        shims["cert_store_stats"] = _cert_store_stats
+
+    try:
+        probe.get_ca_certs()
+    except NotImplementedError:
+        shims["get_ca_certs"] = _get_ca_certs
+
+    if not shims:
+        return base
+
+    compat = type(
+        "_HermesTruststoreSSLContext",
+        (base,),
+        {"__module__": base.__module__, **shims},
+    )
+    verified = compat(ssl.PROTOCOL_TLS_CLIENT)
+    verified.cert_store_stats()
+    verified.get_ca_certs()
+    return compat
+
+
+def _inject_truststore(truststore: Any) -> None:
+    """Inject truststore transactionally without mutating its shipped class."""
+    original_public = truststore.SSLContext
+    context_cls = _truststore_context_with_ca_introspection(truststore)
+    truststore_api = None
+    original_api = None
+
+    if context_cls is not original_public:
+        # inject_into_ssl() resolves SSLContext from truststore._api's module
+        # globals, so point that binding at the adapter before calling it.
+        from truststore import _api as truststore_api
+
+        original_api = truststore_api.SSLContext
+        truststore.SSLContext = context_cls
+        truststore_api.SSLContext = context_cls
+
+    try:
+        truststore.inject_into_ssl()
+    except Exception:
+        truststore.SSLContext = original_public
+        if truststore_api is not None:
+            truststore_api.SSLContext = original_api
+        try:
+            truststore.extract_from_ssl()
+        except Exception:
+            pass
+        raise
+
+
 def install_truststore() -> bool:
     """Point every default SSLContext at the OS trust store. Idempotent.
 
@@ -47,7 +117,7 @@ def install_truststore() -> bool:
     try:
         import truststore
 
-        truststore.inject_into_ssl()
+        _inject_truststore(truststore)
         _installed = True
         logger.debug("TLS trust: platform store (truststore)")
     except Exception as exc:  # noqa: BLE001 — never break startup over TLS setup

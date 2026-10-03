@@ -1,59 +1,19 @@
-"""PID-namespace identity for state.db lock/lease holders (the probe-provenance owner).
+"""PID-namespace identity for state.db lock/lease holders.
 
-A ``pid=<n>`` lock holder (compression lock, session turn lease) is written by the
-process that owns it, relative to THAT process's PID namespace.  Readers sharing
-one state.db from a different namespace — two containers on one volume, systemd
-``PrivatePIDs=``, any container-per-process layout — see a disjoint PID set, so
-a sibling's live ``pid=`` reads as absent and the namespace-blind probe (the
-historic ``psutil.pid_exists(pid)``) declares a live holder dead and reclaims
-its unexpired row.  For a session turn lease that ends the sibling's in-flight
-turn ("another Hermes process took over this session"); for a compression lock
-it splits the compression lineage.  The same class applies to the flock holder
-records in ``hermes_state_common`` (``pid=`` recorded by a holder that forks
-then dies).
+A ``pid=<n>`` holder is relative to its writer's PID namespace; a reader in a
+sibling namespace (two containers on one volume, systemd ``PrivatePIDs=``) sees
+a live holder as absent and would reclaim its unexpired row. Holders are
+stamped with ``pidns=<inode of /proc/self/ns/pid>`` and a foreign stamp is
+never probed. Unstamped (pre-upgrade) records differ by policy:
 
-This module owns the identity resolution and the qualification every structured
-holder probe goes through.  It is a leaf: it imports nothing from the
-``hermes_state*`` modules at load time, so ``hermes_state`` and
-``hermes_state_common`` can import it without a cycle.  The identity is the
-``/proc/self/ns/pid`` inode — the kernel's own answer to "which PID namespace am
-I in" — the same identity the namespace-relative work for gateway records and
-scoped locks (issue #123081) resolves for its records.
+* :func:`holder_pid_checkable` — STRICT, for TTL rows (compression locks,
+  turn leases): unstamped defers to its expiry (<= TTL; a false defer
+  self-heals, a false reclaim ends a live turn).
+* :func:`persistent_record_pidns_checkable` — LEGACY, for no-expiry flock
+  records: unstamped keeps probing so orphaned-lock cleanup still works.
 
-Two predicates, one qualification rule, two rollouts.  A record STAMPED with a
-namespace is probed only where the stamp is ours; a foreign stamp is never
-probed (the reader's absence reading says nothing about a process in another
-namespace).  What differs between the predicates is what an UNSTAMPED record —
-written by a build that predates the stamp — defaults to:
-
-* :func:`holder_pid_checkable` — STRICT, for TTL-bounded rows (compression
-  locks, session turn leases).  Unstamped holders are not probed; they defer to
-  their own expiry — at most the remaining TTL (300 s), and a false defer
-  self-heals there.  The asymmetry is deliberate (probe doubt already defers,
-  for the same reason): a false reclaim ends a live sibling's turn and cannot
-  be undone, while a false defer costs a bounded wait.  Strictness is also what
-  makes the fix hold during a mixed-version rollout — the stealer side stops
-  stealing as soon as the READER restarts, no writer restart required.
-
-* :func:`persistent_record_pidns_checkable` — LEGACY ROLLOUT, for records with
-  no expiry (the flock holder records).  An unstamped record keeps main's
-  behavior: those records never expire, so refusing to probe an unstamped one
-  would make it permanently unverifiable and silently disable orphaned-lock
-  cleanup on every install that had not yet restarted — the rollout boundary
-  the namespace-relative-identity work documents for gateway records.
-  Protection begins as writers restart and stamp; a foreign stamp is still
-  never probed.
-
-Tri-state, mirroring how the platform reports other facts:
-
-* ``supported=False`` — the platform has no PID-namespace concept (macOS,
-  Windows).  There is exactly one namespace, so a numeric PID is still
-  evidence and every predicate returns True (main's semantics).
-* ``supported=True`` with an ``id`` — resolved.
-* ``supported=True`` with an ``id`` of None — Linux, but the lookup failed
-  (restricted or unmounted ``/proc``).  A failed lookup is NOT cached and NOT
-  authority: absence of provenance cannot become provenance, so every
-  structured holder is unverifiable and defers.
+Platforms without PID namespaces (macOS, Windows) keep the plain pid probe; a
+failed Linux lookup is not cached and makes every holder unverifiable.
 """
 
 from __future__ import annotations

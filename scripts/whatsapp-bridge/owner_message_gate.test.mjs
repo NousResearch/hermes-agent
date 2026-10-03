@@ -124,3 +124,42 @@ test('disabled flag fires before allowlist check', () => {
   });
   assert.deepEqual(decision, { action: 'drop_disabled' });
 });
+
+test('own self-chat is forwarded as a normal message even when owner forwarding is off', () => {
+  const decision = classifyOwnerMessageGate({
+    fromMe: true,
+    isSelfChat: true,
+    fromOwnerEnabled: false,
+    recentlySent: makeRecentlySent(),
+    allowlistMatches: makeAllowlist([]),
+    messageId: 'M-SELF-1',
+    chatId: '151711213707347@lid',
+  });
+  assert.deepEqual(decision, { action: 'forward_self_chat' });
+});
+
+test('bot reply echoed in own self-chat is still dropped as echo', () => {
+  const decision = classifyOwnerMessageGate({
+    fromMe: true,
+    isSelfChat: true,
+    fromOwnerEnabled: false,
+    recentlySent: makeRecentlySent(['M-BOT-1']),
+    allowlistMatches: makeAllowlist([]),
+    messageId: 'M-BOT-1',
+    chatId: '151711213707347@lid',
+  });
+  assert.deepEqual(decision, { action: 'drop_echo' });
+});
+
+test('fromMe in a non-self chat is unaffected by isSelfChat=false', () => {
+  const decision = classifyOwnerMessageGate({
+    fromMe: true,
+    isSelfChat: false,
+    fromOwnerEnabled: false,
+    recentlySent: makeRecentlySent(),
+    allowlistMatches: makeAllowlist('*'),
+    messageId: 'M-X',
+    chatId: '6281234567890@s.whatsapp.net',
+  });
+  assert.deepEqual(decision, { action: 'drop_disabled' });
+});

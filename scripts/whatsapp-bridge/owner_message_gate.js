@@ -20,6 +20,11 @@
  * Returned actions:
  *   - 'pass'           : non-fromMe, fall through to existing handling
  *   - 'drop_echo'      : fromMe and matches a recently-sent /send id
+ *   - 'forward_self_chat': fromMe, not an echo, and the chat is the
+ *                        account's own self-chat ("Message yourself").
+ *                        Forwarded as a normal inbound message (fromOwner
+ *                        stays false) so a bot paired to the owner's own
+ *                        number can be talked to from that chat.
  *   - 'drop_disabled'  : fromMe but operator hasn't opted into forwarding
  *   - 'drop_allowlist' : fromMe and the *customer chatId* isn't on the
  *                        allowlist (owner-typed reply to a stranger)
@@ -34,12 +39,19 @@ export function classifyOwnerMessageGate({
   allowlistMatches,
   messageId,
   chatId,
+  isSelfChat = false,
 }) {
   if (!fromMe) {
     return { action: 'pass' };
   }
   if (recentlySent && recentlySent.has(messageId)) {
     return { action: 'drop_echo' };
+  }
+  // Self-chat: the owner is talking to the bot through their own number.
+  // Must stay AFTER the echo check so the bot's own replies (which also
+  // arrive as fromMe in this chat) never loop back in.
+  if (isSelfChat) {
+    return { action: 'forward_self_chat' };
   }
   if (!fromOwnerEnabled) {
     return { action: 'drop_disabled' };

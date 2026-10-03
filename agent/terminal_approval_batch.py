@@ -26,6 +26,9 @@ class _CancelledPreparation(Exception):
 
 class _TerminalSlot:
     def __init__(self, batch, parsed, index):
+        from agent.tool_execution_state import _ToolExecutionState
+
+        self.execution_state = _ToolExecutionState()
         self.batch, self.parsed, self.index = batch, parsed, index
         self.ready = threading.Event()
         self.release = threading.Event()
@@ -82,6 +85,7 @@ class _TerminalSlot:
                     batch.agent, **ref.middleware_kwargs(), execute=dispatch.execute,
                     scope_block=pc.scope_block, display_index=self.index + 1,
                     authorization_gate=batch.authorization_gate,
+                    execution_state=self.execution_state,
                 )
         finally:
             self.ready.set()
@@ -138,6 +142,7 @@ class _TerminalBatch:
                     approval._gateway_queues.pop(session_key, None)
             self.pending_approvals.clear()
         for slot in self.slots:
+            slot.execution_state.abandon()
             slot.release.set()
             if slot.future is not None and not slot.future.done():
                 _interrupt_worker_tids(self.agent, slot.tids)

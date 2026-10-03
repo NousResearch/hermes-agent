@@ -160,7 +160,7 @@ _ZIP_MEMBER_READ_ERRORS: tuple[type[BaseException], ...] = (
 # vault.key / vault.json.enc: the local credential vault (agent/vault_store.py)
 # IS included in backups (user-entered secrets, not regenerable — unlike the
 # excluded browser-profile/ snapshot) but must come back owner-only.
-_SECRET_FILE_NAMES = {".env", "auth.json", "state.db", "vault.key", "vault.json.enc"}
+_SECRET_FILE_NAMES = {".env", "auth.json", "state.db", "action_receipts.db", "vault.key", "vault.json.enc"}
 
 # Reserved archive subtree for memory-provider state OUTSIDE HERMES_HOME (e.g. ~/.honcho, via
 # MemoryProvider.backup_paths()), stored and restored relative to the user's home; paths not

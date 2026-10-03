@@ -101,7 +101,7 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
     It also returns ``False``, without touching *dst*, when *src* fails the
     SQLite integrity check.
     """
-    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_cli.backup import verify_sqlite_integrity, _SECRET_FILE_NAMES
 
     # backup() copies pages without validating their contents; its fallback
     # copies bytes even when SQLite rejected the source. Neither may touch the
@@ -128,8 +128,12 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
         dst_conn.close()
         # Restore original file permissions from the snapshot
         try:
-            mode = src.stat().st_mode
-            dst.chmod(mode)
+            mode = 0o600 if dst.name in _SECRET_FILE_NAMES else stat.S_IMODE(src.stat().st_mode)
+            for candidate in (dst, dst.with_name(dst.name + "-wal"), dst.with_name(dst.name + "-shm")):
+                try:
+                    candidate.chmod(mode, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
         except Exception:
             pass
         return True
@@ -194,6 +198,8 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
                 for _sidecar_suffix in ("-wal", "-shm", "-journal"):
                     dst.with_name(dst.name + _sidecar_suffix).unlink(missing_ok=True)
                 shutil.move(str(tmp), str(dst))
+                if dst.name in _SECRET_FILE_NAMES:
+                    dst.chmod(0o600, follow_symlinks=False)
             return True
         except LiveConnectionError as exc2:
             logger.error(
@@ -328,9 +334,13 @@ def _extract_member_atomically(
     # ``_preserve_file_mode`` returns None when the target does not exist (or
     # cannot be stat'd), in which case the umask-derived create-mode applies —
     # the same shape as ``atomic_yaml_write``'s ``create_mode`` fallback.
+    from hermes_cli.backup import _SECRET_FILE_NAMES
+
     mode = _preserve_file_mode(target)
     owner = _preserve_file_owner(target)
-    if mode is None:
+    if target.name in _SECRET_FILE_NAMES:
+        mode = 0o600
+    elif mode is None:
         mode = new_file_mode
     else:
         # Deliberately NOT a faithful mode copy: setuid/setgid are dropped.
@@ -477,8 +487,10 @@ def _import_db_member(
                 "left untouched. Stop the gateway/dashboard processes holding it "
                 "open and re-run the import."
             )
+        from hermes_cli.backup import _SECRET_FILE_NAMES
+
         _restore_file_owner(target, owner)
-        _restore_file_mode(target, mode)
+        _restore_file_mode(target, 0o600 if target.name in _SECRET_FILE_NAMES else mode)
     finally:
         try:
             os.unlink(tmp_name)

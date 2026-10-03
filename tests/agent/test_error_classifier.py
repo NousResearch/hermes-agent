@@ -960,6 +960,23 @@ class TestClassifyApiError:
         )
         assert gated.reason != FailoverReason.reasoning_mandatory
 
+    def test_mistral_reasoning_effort_not_enabled_is_reasoning_mandatory(self):
+        """Mistral rejects the top-level field on codestral-2508 at every effort, ``none`` included,
+        with "reasoning_effort is not enabled for this model" (#119249): the drop-the-reasoning rung,
+        not a format_error abort. The same wording about a non-reasoning feature stays unmatched."""
+        msg = "reasoning_effort is not enabled for this model"
+        assert is_reasoning_field_rejection(msg)
+        result = classify_api_error(MockAPIError(msg, status_code=400), provider="custom", model="codestral-2508")
+        assert result.reason == FailoverReason.reasoning_mandatory
+        assert result.retryable is True and result.should_fallback is False
+        for unrelated in (
+            "Function calling is not enabled for this model",
+            "Invalid model: codestral-2508",
+        ):
+            assert not is_reasoning_field_rejection(unrelated), unrelated
+            other = classify_api_error(MockAPIError(unrelated, status_code=400), provider="custom", model="codestral-2508")
+            assert other.reason != FailoverReason.reasoning_mandatory, unrelated
+
     def test_structured_invalid_reasoning_effort_400_never_compresses(self):
         """A custom Responses relay rejects an unsupported ``reasoning.effort`` with a message-less
         structured 400 (``param`` + ``error_code: invalid_reasoning_effort``, #100536). No wording rule

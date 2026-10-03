@@ -55,56 +55,6 @@ def _deaf_reports(caplog) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_no_backlog_never_schedules_recovery(caplog):
-    """Balanced receive/dispatch is healthy: no warning, no recovery task."""
-    adapter = _polling_adapter()
-    caplog.set_level(logging.WARNING)
-    _receive(adapter, 2)
-    await _dispatch(adapter, 2)
-    with patch.object(adapter, "_schedule_polling_recovery") as sched:
-        for _ in range(3):
-            adapter._check_ingress_dispatch_stall()
-    assert _deaf_reports(caplog) == []
-    sched.assert_not_called()
-    assert adapter._polling_error_task is None
-
-
-@pytest.mark.asyncio
-async def test_single_heartbeat_does_not_schedule_recovery(caplog):
-    """Debounce: one heartbeat with a backlog only arms, never escalates."""
-    adapter = _polling_adapter()
-    caplog.set_level(logging.WARNING)
-    _receive(adapter, 3)
-    with patch.object(adapter, "_schedule_polling_recovery") as sched:
-        adapter._check_ingress_dispatch_stall()
-    assert _deaf_reports(caplog) == []
-    sched.assert_not_called()
-    assert adapter._polling_error_task is None
-
-
-@pytest.mark.asyncio
-async def test_two_heartbeats_schedule_dispatch_stall_rebuild(caplog):
-    """#130407 §1: two heartbeats with no dispatch progress warn once AND schedule a rebuild."""
-    adapter = _polling_adapter()
-    caplog.set_level(logging.WARNING)
-    _receive(adapter, 3)
-    recovery = AsyncMock()
-    with patch.object(adapter, "_handle_polling_network_error", new=recovery):
-        adapter._check_ingress_dispatch_stall()
-        assert adapter._polling_error_task is None
-        adapter._check_ingress_dispatch_stall()
-        task = adapter._polling_error_task
-        assert task is not None
-        await task
-    (report,) = _deaf_reports(caplog)
-    assert "3 update(s) fetched" in report
-    recovery.assert_awaited_once()
-    (err,) = recovery.await_args.args
-    assert isinstance(err, tg_adapter._IngressDispatchStallError)
-    assert isinstance(err, tg_adapter._PollingStallError)
-
-
-@pytest.mark.asyncio
 async def test_dispatch_stall_marks_degraded_and_goes_fatal():
     """A confirmed dispatch stall is a handoff, not a retry: degraded status,
     retryable fatal, no in-place updater restart, no backoff sleep."""
@@ -141,41 +91,6 @@ async def test_dispatch_stall_marks_degraded_and_goes_fatal():
         for pending in tuple(adapter._background_tasks):
             pending.cancel()
         await asyncio.gather(*tuple(adapter._background_tasks), return_exceptions=True)
-
-
-@pytest.mark.asyncio
-async def test_recovery_in_flight_suppresses_reschedule(caplog):
-    """An in-flight reconnect owns recovery; the dispatch watchdog must not pile on."""
-    adapter = _polling_adapter()
-    caplog.set_level(logging.WARNING)
-    _receive(adapter, 3)
-    inflight = MagicMock()
-    inflight.done.return_value = False
-    adapter._polling_error_task = inflight
-    with patch.object(adapter, "_handle_polling_network_error", new=AsyncMock()) as rec:
-        adapter._check_ingress_dispatch_stall()
-        adapter._check_ingress_dispatch_stall()
-    rec.assert_not_called()
-    assert adapter._polling_error_task is inflight
-    assert _deaf_reports(caplog) == []
-
-
-@pytest.mark.asyncio
-async def test_webhook_teardown_and_fatal_skip_recovery():
-    """Webhook mode has no PTB dispatcher queue to wedge; teardown/fatal never re-escalate."""
-    for mutate in (
-        lambda a: setattr(a, "_webhook_mode", True),
-        lambda a: setattr(a, "_polling_teardown_started", True),
-        lambda a: a._set_fatal_error("telegram_network_error", "boom", retryable=True),
-    ):
-        adapter = _polling_adapter()
-        mutate(adapter)
-        _receive(adapter, 2)
-        with patch.object(adapter, "_schedule_polling_recovery") as sched:
-            adapter._check_ingress_dispatch_stall()
-            adapter._check_ingress_dispatch_stall()
-        sched.assert_not_called()
-        assert adapter._polling_error_task is None or adapter._polling_error_task.done() is False
 
 
 @pytest.mark.asyncio

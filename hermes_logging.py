@@ -29,7 +29,8 @@ _logging_initialized = False
 
 # True only when CLH was rejected at import because portalocker cannot take a
 # lock on this Windows box; file handlers then use stdlib rotation (rollover
-# disabled — see the module-header comment) and setup_logging() warns once.
+# rename first, truncate-in-place when the rename fails — see the
+# module-header comment) and setup_logging() warns once.
 _WINDOWS_CLH_FALLBACK = False
 _WINDOWS_CLH_FALLBACK_REASON = ""
 _fallback_warned = False
@@ -91,9 +92,11 @@ if sys.platform == "win32":
         # bundle whose venv never processed pywin32.pth, so `import pywintypes`
         # fails and portalocker's Win32Locker has no msvcrt fallback). CLH
         # would silently drop every record through the suppressed lock-timeout
-        # below; fall back to stdlib rotation instead. Rollover is disabled in
-        # the fallback: multi-process appends make Windows renames fail with
-        # WinError 32, the exact #44873 trap CLH exists to avoid.
+        # below; fall back to stdlib rotation instead. The rollover rename
+        # still runs first, but multi-process appends make Windows renames
+        # fail with WinError 32 — the exact #44873 trap CLH exists to avoid —
+        # so doRollover then truncates in place to keep the file bounded
+        # (#127975) instead of growing without bound.
         from logging.handlers import RotatingFileHandler  # noqa: E402
 
         _WINDOWS_CLH_FALLBACK = True
@@ -389,7 +392,8 @@ def setup_logging(
         _fallback_warned = True
         logging.getLogger("hermes_logging").warning(
             "concurrent-log-handler unavailable on this Windows install (%s); "
-            "file logging fell back to stdlib rotation without rollover.",
+            "file logging fell back to stdlib rotation that truncates in "
+            "place when the rollover rename fails.",
             _WINDOWS_CLH_FALLBACK_REASON or "portalocker probe failed",
         )
 
@@ -556,6 +560,22 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         self._chmod_if_managed()
         return stream
 
+    def _truncate_base_file_in_place(self) -> None:
+        """Reopen ``baseFilename`` truncated, as the bounded fallback rollover.
+
+        Best-effort like ``_reopen_stream``: if the reopen fails the stream is
+        left ``None`` so the next emit bails instead of writing to a stale fd.
+        """
+        if self.stream is not None:
+            _quietly(self.stream.close)
+        self.stream = None  # type: ignore[assignment]
+        original_mode = self.mode
+        try:
+            self.mode = "w"
+            self.stream = self._open()
+        finally:
+            self.mode = original_mode
+
     def doRollover(self):
         # The stdlib rollover opens a fresh baseFilename owned by whichever process crossed
         # maxBytes. With one rotating handler per profile that is usually the long-lived root
@@ -565,7 +585,17 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
             previous = os.stat(self.baseFilename)
         except OSError:
             previous = None
-        super().doRollover()
+        try:
+            super().doRollover()
+        except OSError:
+            # With the portalocker fallback active, sibling Hermes processes keep
+            # append handles on baseFilename, so the rollover rename dies with
+            # WinError 32 — the #44873 trap — and an escaping failure would pin
+            # the file at maxBytes and kill every subsequent record. Truncate in
+            # place instead: the log stays bounded and later emits append again.
+            if not _WINDOWS_CLH_FALLBACK:
+                raise
+            self._truncate_base_file_in_place()
         if previous is not None:
             try:
                 if getattr(os, "geteuid", lambda: -1)() == 0:
@@ -585,9 +615,11 @@ def _new_file_handler(
     """Create the ``logs/`` directory and a configured ``_ManagedRotatingFileHandler``."""
     mkdir_under_hermes_home(path.parent)
     if _WINDOWS_CLH_FALLBACK:
-        # stdlib fallback: no rollover, or the file pins at the size threshold
-        # and every emit re-triggers the WinError 32 rename failure (#44873).
-        max_bytes, backup_count = 0, 0
+        # Windows fallback (#127975): keep the size cap. The rollover rename
+        # still runs first — a single-writer log keeps real archives — and
+        # doRollover truncates in place when sibling append handles make the
+        # rename fail (#44873), instead of growing without bound.
+        backup_count = max(backup_count, 1)
     handler = _ManagedRotatingFileHandler(
         str(path), maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
     )

@@ -891,16 +891,30 @@ async def vision_analyze_tool(
         prepared = await _prepare_image(image_url, task_id, region, validate_decode=False)
         temp_paths.append(prepared.path)
         logger.info("Image ready (%.1f KB)", prepared.size_bytes / 1024)
-        # Send at full resolution first; on a size rejection, downscale and retry.
         logger.info("Converting image to base64...")
         image_data_url = await _run_encode_on_cpu_executor(
             _image_to_base64_data_url, prepared.path, mime_type=prepared.mime)
         logger.info("Image converted to base64 (%.1f KB)", len(image_data_url) / 1024)
         _scale_info: dict = {}
+        # Pre-send budget (#8120). The only downscale this path used to attempt
+        # was gated on the provider REJECTING the payload as too large, so a provider
+        # that was merely slow never tripped it and the full-resolution file rode the
+        # wire until the vision call timed out: a 2268x1500 screenshot left as 13.6 MB
+        # of base64 against a 256 KB budget. Bound every payload up front to the same
+        # budget the native path already applies (long edge AND bytes: a screenshot of
+        # a 4K display is large in pixels while still cheap in bytes, so the long edge
+        # is usually the binding bound), then keep the 20 MB ceiling as a hard stop for
+        # the best-effort resize falling through.
+        embed_target_bytes = _resolve_embed_target_bytes()
+        over_dims = await _run_encode_on_cpu_executor(
+            _image_exceeds_dimension, prepared.path, _EMBED_MAX_DIMENSION)
+        if len(image_data_url) > embed_target_bytes or over_dims:
+            image_data_url = await _resize_prepared(
+                prepared, _scale_info,
+                max_base64_bytes=embed_target_bytes, max_dimension=_EMBED_MAX_DIMENSION,
+                force_jpeg=True)
         if len(image_data_url) > _MAX_BASE64_BYTES:
-            image_data_url = await _resize_prepared(prepared, _scale_info)
-            if len(image_data_url) > _MAX_BASE64_BYTES:
-                raise ValueError(_too_large_message(image_data_url))
+            raise ValueError(_too_large_message(image_data_url))
         debug_call_data["image_size_bytes"] = prepared.size_bytes
         messages = _media_messages(prompt, "image_url", image_data_url)
         logger.info("Processing image with vision model...")

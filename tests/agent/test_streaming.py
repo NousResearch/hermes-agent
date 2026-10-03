@@ -53,13 +53,52 @@ def _make_empty_chunk(model=None, usage=None):
     return SimpleNamespace(choices=[], model=model, usage=usage)
 
 
-def test_null_sse_frame_is_ignored(monkeypatch):
-    from agent.chat_completion_helpers import _iter_provider_stream_chunks
+def test_null_sse_frame_is_ignored_by_chat_completions_loop(monkeypatch):
+    """A null relay frame must be skipped by the real streaming caller."""
+    from agent import chat_completion_helpers as helpers
+    from agent import relay_llm
+    from run_agent import AIAgent
 
-    assert list(_iter_provider_stream_chunks([None, SimpleNamespace(choices=[])])) == [
+    response_chunk = _make_stream_chunk(
+        content="done",
+        finish_reason="stop",
+        model="test-model",
+        usage=SimpleNamespace(prompt_tokens=2, completion_tokens=1),
+    )
+
+    class _FakeRelayStream:
+        final_response = None
+        response = None
+
+        def __iter__(self):
+            return iter([None, response_chunk])
+
+        def close(self):
+            pass
+
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
+        model="test/model",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent.api_mode = "chat_completions"
+    agent._interrupt_requested = False
+    call = helpers._StreamingCall(
+        agent,
+        {"model": agent.model, "messages": [{"role": "user", "content": "hi"}]},
         None,
-        SimpleNamespace(choices=[]),
-    ]
+    )
+
+    monkeypatch.setattr(relay_llm, "stream", lambda *args, **kwargs: _FakeRelayStream())
+
+    response = call._call_chat_completions(stream_attempt_id=call._start_stream_attempt())
+
+    assert response.choices[0].message.content == "done"
+    assert response.choices[0].finish_reason == "stop"
+    assert response.usage.completion_tokens == 1
 
 
 

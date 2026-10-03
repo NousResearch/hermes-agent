@@ -15,6 +15,7 @@ import { HUD_SURFACE } from '@/app/floating-hud'
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
 import { Codicon } from '@/components/ui/codicon'
+import { PANE_TAB_TEXT } from '@/components/ui/pane-tab'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
@@ -174,13 +175,16 @@ function FloatingPane({ pane }: { pane: Contribution }) {
     >
       {/* Header IS the drag handle — the floating equivalent of a tab strip. */}
       <header
-        className="flex shrink-0 cursor-grab items-center justify-between gap-2 px-2.5 py-1.5 text-[0.6875rem] text-(--ui-text-secondary) select-none"
+        className={cn(
+          'flex shrink-0 cursor-grab items-center justify-between gap-2 px-2.5 py-1.5 text-(--ui-text-secondary) select-none',
+          PANE_TAB_TEXT
+        )}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         style={{ touchAction: 'none' }}
       >
-        <span className="truncate font-medium">{pane.title ?? pane.id}</span>
+        <span className="truncate">{pane.title ?? pane.id}</span>
         <button
           className="rounded p-0.5 text-(--ui-text-quaternary) transition-colors hover:text-(--ui-text-primary)"
           data-floating-no-drag=""

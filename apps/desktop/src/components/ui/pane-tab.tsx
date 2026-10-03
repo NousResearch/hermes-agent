@@ -12,10 +12,17 @@ import { cn } from '@/lib/utils'
 export const PANE_TAB_STRIP_LINE_LEFT = 'shadow-[inset_1px_0_0_var(--ui-stroke-tertiary)]'
 export const PANE_TAB_STRIP_LINE_RIGHT = 'shadow-[inset_-1px_0_0_var(--ui-stroke-tertiary)]'
 
+/** Tab title type — on the app's caption step, so tab titles read like the rest
+ *  of the chrome. Shared with surfaces that stand in for a tab (floating pane
+ *  headers). */
+export const PANE_TAB_TEXT = 'text-[length:var(--conversation-caption-font-size)] font-medium'
+
 // Surface tokens become transparent under glass; the body owns the tint.
 // The close-button fade masks the label, so it needs no second surface fill.
-const TAB =
-  'group/tab relative flex shrink-0 items-center border-transparent bg-(--tab-bg) text-[0.6875rem] font-medium [-webkit-app-region:no-drag]'
+const TAB = cn(
+  'group/tab relative flex shrink-0 items-center border-transparent bg-(--tab-bg) [-webkit-app-region:no-drag]',
+  PANE_TAB_TEXT
+)
 
 // Full height: with the strip's rule removed there is no last-pixel row to
 // leave uncovered, so tabs fill the bar and no sliver of gutter shows through.
@@ -206,9 +213,9 @@ interface PaneTabLabelProps extends React.ComponentProps<'button'> {
   as?: 'button' | 'span'
 }
 
-/** Truncating label inside a `PaneTab`. `className` merges into the text span
- *  (e.g. `normal-case tracking-normal` for filenames). On a closeable tab the
- *  text clips instead of ellipsizing, so the hover mask can fade its right edge. */
+/** Truncating label inside a `PaneTab`; `className` merges into the text span.
+ *  On a closeable tab the text clips instead of ellipsizing, so the hover mask
+ *  can fade its right edge. */
 export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(function PaneTabLabel(
   { as = 'span', className, children, ...props },
   ref
@@ -223,7 +230,7 @@ export const PaneTabLabel = React.forwardRef<HTMLElement, PaneTabLabelProps>(fun
     >
       <span
         className={cn(
-          'block min-w-0 truncate font-medium tracking-wide uppercase group-data-[closeable]/tab:text-clip',
+          'block min-w-0 truncate group-data-[closeable]/tab:text-clip',
           className
         )}
       >

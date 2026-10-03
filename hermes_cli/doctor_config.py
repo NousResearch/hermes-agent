@@ -4,7 +4,6 @@ Split out of ``hermes_cli/doctor.py``."""
 from __future__ import annotations
 
 import os
-import shutil
 from hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_fail, check_info, check_ok, check_warn, doctor_check,
     warn_on_error,

@@ -379,7 +379,9 @@ def selected_git_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
 
         return ensure("git", base_env=env).env
     except Exception:
-        _git_fallback_env_cache[cache_key] = dict(env)
+        # Acquisition can fail transiently (for example while PM is refreshing
+        # its lock state). Do not turn one failed probe into a process-lifetime
+        # verdict that managed Git is unavailable.
         return env
 
 

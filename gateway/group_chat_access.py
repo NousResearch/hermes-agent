@@ -32,7 +32,6 @@ from hermes_state_runtime import RuntimeStoreError, _epoch
 
 logger = logging.getLogger(__name__)
 GRANT_PREFIX = 'gateway.messaging.chat.v1:'
-NOTICE_PREFIX = 'gateway.messaging.notices.v1:'  # what a chat was told about its groups (group_chat_notices)
 CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 CODE_TTL_SECONDS = 600
 MAX_PENDING_CODES = 64
@@ -267,6 +266,20 @@ def chat_target(runner, grant: dict):
     return adapter, metadata
 
 
+def private_grant_holds(runner, authority, grant: dict) -> bool:
+    """For a button in a private chat, which names no sender: the chat still has the owner's private
+    grant, and its person is still on the Bot's DM admin list (what ``resolve_chat`` checks)."""
+    from gateway.slash_access import policy_from_extra
+    with authority.db._read_ctx() as conn:
+        current = _load(conn, grant['grant_id'])
+    target = chat_target(runner, grant)
+    if current is None or current['owner'] != grant['owner'] or current['kind'] != 'private' or target is None:
+        return False
+    extra = getattr(getattr(target[0], 'config', None), 'extra', None)
+    policy = policy_from_extra(extra if isinstance(extra, dict) else {}, 'dm')
+    return policy.enabled and current['user_id'] in policy.admin_user_ids
+
+
 # ---- the owner's CLI, over the authenticated control socket --------------------------------
 
 def _view(chat: Chat | dict, profile_id: str) -> dict:
@@ -408,8 +421,7 @@ def _revoke(runner, params, subject, loop):
         current = _load(conn, grant['grant_id'])
         if current is None or current['owner'] != subject:
             raise RuntimeStoreError('unknown_grant')
-        conn.execute('DELETE FROM state_meta WHERE key IN (?,?)',
-                     (GRANT_PREFIX + grant['grant_id'], NOTICE_PREFIX + grant['grant_id']))
+        conn.execute('DELETE FROM state_meta WHERE key=?', (GRANT_PREFIX + grant['grant_id'],))
         from gateway.group_chat_rules import forget_grant
         forget_grant(conn, grant['grant_id'])  # its "always allow" approvals end with it
     authority.db._execute_write(write)

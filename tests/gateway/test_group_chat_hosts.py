@@ -142,7 +142,7 @@ SHARED = {'chat_type': 'group', 'chat': 'team', 'user': 'bob'}
 
 
 def test_without_the_methods_nothing_changes_and_continuing_says_so(setup, monkeypatch):
-    for method in METHODS:  # a gateway that doesn't register them
+    for method in (*METHODS, hosts.AUTOMATIC):  # a gateway that doesn't register them
         monkeypatch.delitem(controls.GROUP_METHODS, method, raising=False)
     connect(setup)
     detail = run(setup, '/group 1')
@@ -496,7 +496,8 @@ def test_a_summary_expires(advertised):
     assert hosts.PROMOTE not in advertised.gateway.methods()
 
 
-def test_help_lists_continue_and_keep_only_where_offered(advertised):
+def test_help_lists_continue_and_keep_only_where_offered(advertised, monkeypatch):
+    monkeypatch.delitem(controls.GROUP_METHODS, hosts.AUTOMATIC, raising=False)
     connect(advertised)
     listed = run(advertised, '/group help')
     assert ('/group N continue — continue a paused group on this computer\n'
@@ -596,8 +597,10 @@ def test_offline_since_reads_as_local_time(offset, pattern):
 # ---- automatic takeover: the readiness line, a host paused to stay safe, and the notices ---------
 
 @pytest.mark.parametrize(('automatic', 'line'), [
-    ({'state': 'ready', 'standby': VPS, 'voters': 3},
+    ({'state': 'ready', 'mode': 'majority', 'standby': VPS, 'voters': 3},
      'Keeps running if a computer goes offline: ready (Home VPS takes over).'),
+    ({'state': 'ready', 'mode': 'careful', 'standby': VPS, 'voters': 2},
+     'Keeps running if a computer goes offline: ready (Home VPS takes over after about 3 minutes).'),
     ({'state': 'not_ready', 'reason': 'voters_offline', 'offline': ['MacBook'], 'standby': None},
      'Not automatic right now: MacBook offline.'),
     ({'state': 'unavailable', 'reason': 'needs_computers', 'needed': 1},
@@ -682,123 +685,64 @@ def test_a_message_to_a_paused_host_is_not_sent_and_says_so(advertised, monkeypa
     assert run(advertised, '/group 1 send hello') == reply
 
 
-@pytest.fixture
-def watched(advertised, monkeypatch):
-    """The owner's private chat and a shared chat, a room log the test writes, and one notice pass."""
-    from gateway import group_chat_notices as notices
-    runner, bot = advertised.runner, advertised.bot
-    runner._adapters_for_profile = lambda profile: {Platform.TELEGRAM: bot} if profile == 'default' else {}
+def test_going_back_after_a_careful_move_is_confirmed_first(advertised):
     connect(advertised)
+    gateway = advertised.gateway
+    gateway.status = hosting('ok', host=VPS, actions=[{'action': 'keep', 'targets': ['inst-mac']}],
+                             moved_in={'from': MAC, 'at': OFFLINE_AT, 'proof_kind': 'evidence'})
+    prompt = '\n'.join([
+        f'Go back to Mac mini? Home VPS pauses now, and the group continues on Mac mini as soon as it’s reachable. '
+        f'Messages sent on Home VPS since {hosts.when(OFFLINE_AT)} are kept separately.',
+        'Reply /group 1 keep Mac mini confirm to go back.'])
+    assert run(advertised, '/group 1 keep Mac mini') == prompt
+    assert run(advertised, '/group 1 keep Studio confirm') == prompt  # only the named computer goes back
+    assert hosts.KEEP not in gateway.methods()
+    assert run(advertised, '/group 1 keep mac mini CONFIRM') == ('Done. Home VPS paused “Research”; it continues '
+                                                               'on Mac mini as soon as it’s reachable.')
+    assert [params for method, params, _ in gateway.calls if method == hosts.KEEP] == [
+        {'room_id': 'mine', 'install_id': 'inst-mac'}]
+    gateway.keep = refused('not_owner')
+    assert run(advertised, '/group 1 keep Mac mini confirm') == hosts.OWNER_ONLY
+    gateway.keep = refused('host_moved')
+    assert run(advertised, '/group 1 keep Mac mini confirm') == ('Couldn’t go back to Mac mini. Send /group 1 to '
+                                                                 'see where things stand.')
+    gateway.status = hosting('ok', host=VPS, actions=[], moved_in={'from': MAC, 'at': OFFLINE_AT})
+    assert run(advertised, '/group 1 keep Mac mini confirm') == (
+        '“Research” wasn’t continued on two computers, so there’s nothing to choose.')
     connect(advertised, **SHARED)
-    log, real = [], controls.dispatch_group_control
-
-    async def logged(connection, method, params, **kwargs):
-        if method == 'groups.log':
-            since = params['since_seq']
-            if since > len(log):
-                raise RuntimeStoreError('invalid_params')
-            events = [e for e in log if e['seq'] > since][:params['limit']]
-            return {'events': events, 'cursor': events[-1]['seq'] if events else since, 'latest_seq': len(log),
-                    'has_more': bool(events) and events[-1]['seq'] < len(log)}
-        return await real(connection, method, params, **kwargs)
-    monkeypatch.setattr(controls, 'dispatch_group_control', logged)
-    advertised.gateway.status = hosting('ok', host=VPS, actions=[])
-
-    def append(kind='authority.transition', **payload):
-        log.append({'seq': len(log) + 1, 'kind': kind, 'payload': payload, 'created_at': time.time()})
-
-    def notify():
-        before = len(bot.sent)
-        asyncio.run(notices.notify_all(runner))
-        return [(chat, text) for chat, text, _ in bot.sent[before:]]
-    return SimpleNamespace(state=advertised, append=append, notify=notify, here=advertised.gateway_id)
+    assert run(advertised, '/group 1 keep Mac mini confirm', **SHARED) == hosts.PRIVATE_ONLY
 
 
-def test_the_owner_hears_once_that_the_group_moved_here_by_itself(watched):
-    watched.append('message.user', text='before the chat ever looked')
-    watched.append(reason='automatic', from_name='Mac mini', to_name='Home VPS', successor_gateway_id=watched.here)
-    assert watched.notify() == []  # history from before the first look stays history
-    watched.append(reason='automatic', from_name='Mac mini', to_name='Home VPS', successor_gateway_id=watched.here,
-                   offline_since=OFFLINE_AT, at_risk=0)
-    assert watched.notify() == [('chat-1', '“Research” moved to Home VPS because Mac mini went offline. '
-                                           'It’s running.')]
-    assert watched.notify() == []
-    watched.append(reason='handover', from_name=None, to_name=None, successor_gateway_id=watched.here)
-    watched.append(reason='manual', from_name='Mac mini', to_name='Home VPS', successor_gateway_id=watched.here)
-    watched.append(reason='automatic', from_name='Home VPS', to_name='MacBook',
-                   successor_gateway_id='install:' + '0' * 32)  # the computer it moved to tells the owner
-    assert watched.notify() == [('chat-1', '“Research” moved to this computer because another computer was '
-                                           'shutting down. It’s running.')]
-
-
-def test_the_owner_hears_once_per_pause_to_stay_safe(watched):
-    gateway = watched.state.gateway
-    assert watched.notify() == []
-    gateway.status = hosting('paused', this=VPS, host=VPS, paused={'reason': 'lost_majority', 'waiting_for': [MAC]})
-    assert watched.notify() == [('chat-1', '“Research” is paused to stay safe: Home VPS can’t reach Mac mini.')]
-    assert watched.notify() == []
-    gateway.status = refused('internal_error')  # can't tell this time: nothing changes
-    assert watched.notify() == []
-    gateway.status = hosting('ok', host=VPS, actions=[])
-    assert watched.notify() == []
-    gateway.status = hosting('paused', this=VPS, host=VPS, paused={'reason': 'lost_majority', 'waiting_for': []})
-    assert watched.notify() == [('chat-1', '“Research” is paused to stay safe: Home VPS can’t reach the other '
-                                           'computers.')]
-    for paused, told in (({'reason': 'no_lease_layer'}, '“Research” is paused to stay safe: Home VPS can’t take '
-                           'part in automatic moves right now. Its connection to the other computers isn’t ready.'),
-                         ({'reason': 'something_new'}, '“Research” is paused to stay safe.')):
-        gateway.status = hosting('ok', host=VPS, actions=[])
-        assert watched.notify() == []
-        gateway.status = hosting('paused', this=VPS, host=VPS, paused=paused)
-        assert watched.notify() == [('chat-1', told)]
-
-
-def test_notices_skip_shared_chats_revoked_chats_copies_and_gateways_without_the_methods(watched, monkeypatch):
-    from gateway import group_chat_notices as notices
-    state, gateway = watched.state, watched.state.gateway
-    gateway.status = hosting('paused', this=VPS, host=VPS, paused={'reason': 'lost_majority', 'waiting_for': [MAC]})
-    saved_notices = ('SELECT key FROM state_meta WHERE substr(key, 1, ?) = ?',
-                     (len(access.NOTICE_PREFIX), access.NOTICE_PREFIX))
-    monkeypatch.delitem(controls.GROUP_METHODS, hosts.STATUS)
-    assert asyncio.run(notices.notify_all(state.runner)) == 0
-    with state.db._read_ctx() as conn:
-        assert conn.execute(*saved_notices).fetchall() == []
-    monkeypatch.setitem(controls.GROUP_METHODS, hosts.STATUS, 'session:read')
+def test_ask_first_turns_automatic_moves_off_for_the_group(advertised, monkeypatch):
+    connect(advertised)
+    calls = []
+    monkeypatch.delitem(controls.GROUP_METHODS, hosts.AUTOMATIC, raising=False)
+    assert run(advertised, '/group 1 ask first') == hosts.UNAVAILABLE
     real = controls.dispatch_group_control
 
-    async def copies(connection, method, params, **kwargs):
-        result = await real(connection, method, params, **kwargs)
-        if method == 'groups.list':
-            result['rooms'] = [{**room, 'copy': True} for room in result['rooms']]
-        return result
-    monkeypatch.setattr(controls, 'dispatch_group_control', copies)
-    assert watched.notify() == [] and hosts.STATUS not in gateway.methods()  # a copy's host reports pauses
-    monkeypatch.setattr(controls, 'dispatch_group_control', real)
-    assert [chat for chat, _ in watched.notify()] == ['chat-1']  # never the shared chat
-    with state.db._read_ctx() as conn:
-        assert len(conn.execute(*saved_notices).fetchall()) == 1
-    granted = access.control_verb(state.runner)({'action': 'list'}, OWNER)['chats']
-    private = next(c['grant'] for c in granted if c['kind'] == 'private')
-    access.control_verb(state.runner)({'action': 'revoke', 'grant': private}, OWNER)
-    with state.db._read_ctx() as conn:
-        assert conn.execute(*saved_notices).fetchall() == []  # what it was told goes with the chat
-    watched.append(reason='automatic', from_name='Mac mini', to_name='Home VPS', successor_gateway_id=watched.here)
-    assert watched.notify() == []
-
-
-def test_the_notice_watcher_runs_while_the_gateway_does(monkeypatch):
-    from gateway import group_chat_notices as notices
-    from gateway.run_startup import GatewayStartupMixin
-    assert '_group_chat_notice_watcher' in GatewayStartupMixin._POST_RECONNECT_WATCHERS
-    passes = []
-    runner = SimpleNamespace(_running=True)
-
-    async def one_pass(target):
-        passes.append(target)
-        if len(passes) == 1:
-            raise RuntimeError('a failed pass is logged, and the next one still runs')
-        target._running = False
-        return 0
-    monkeypatch.setattr(notices, 'notify_all', one_pass)
-    asyncio.run(slash.GroupChatSlashCommandsMixin._group_chat_notice_watcher(runner, interval=0))
-    assert passes == [runner, runner]
+    async def automatic(connection, method, params, **kwargs):
+        if method == hosts.AUTOMATIC:
+            calls.append((params, connection.actor))
+            if 'session:control' not in connection.actor.capabilities:
+                raise RuntimeStoreError('permission_denied')
+            result = automatic.result
+            if isinstance(result, BaseException):
+                raise result
+            return result
+        return await real(connection, method, params, **kwargs)
+    automatic.result = {'room_id': 'mine', 'automatic': False, 'configuration_seq': 7}
+    monkeypatch.setattr(controls, 'dispatch_group_control', automatic)
+    monkeypatch.setitem(controls.GROUP_METHODS, hosts.AUTOMATIC, 'session:control')
+    assert '/group N ask first — ask before the group moves by itself again' in run(advertised, '/group help')
+    assert run(advertised, '/group 1 ask first') == 'Done. “Research” will ask you before moving.'
+    assert calls[0][0] == {'room_id': 'mine', 'enabled': False} and calls[0][1].subject == OWNER
+    automatic.result = {'room_id': 'mine', 'automatic': False, 'configuration_seq': 8, 'pending': True}
+    assert run(advertised, '/group 1 ask first') == 'Turning off… (waiting for the other computers)'
+    automatic.result = refused('not_owner')
+    assert run(advertised, '/group 1 ask first') == hosts.OWNER_ONLY
+    automatic.result = TimeoutError('secret')
+    assert 'couldn’t confirm whether that worked' in run(advertised, '/group 1 ask first')
+    connect(advertised, **SHARED)
+    assert run(advertised, '/group 1 ask first', **SHARED) == hosts.PRIVATE_ONLY
+    assert len(calls) == 4
+    assert run(advertised, '/group 1 ask').startswith('I didn’t understand')

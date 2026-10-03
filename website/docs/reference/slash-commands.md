@@ -301,7 +301,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/commands [page]` | Browse all commands and skills (paginated). |
 | `/approve [session\|always]` | Approve and execute a pending dangerous command. `session` approves for this session only; `always` adds to permanent allowlist. |
 | `/deny` | Reject a pending dangerous command. |
-| `/group [list [page]\|N [send <message>\|stop\|approve <code> once\|always\|deny\|forget <code>\|continue [confirm]\|keep <computer>]\|help]` | Read and control your gateway Group Chats from a chat the owner allowed with `hermes groups allow`. See [Group Chats from messaging](../user-guide/messaging/group-chats.md). |
+| `/group [list [page]\|N [send <message>\|stop\|approve <code> once\|always\|deny\|forget <code>\|continue [confirm]\|keep <computer> [confirm]\|ask first]\|help]` | Read and control your gateway Group Chats from a chat the owner allowed with `hermes groups allow`. See [Group Chats from messaging](../user-guide/messaging/group-chats.md). |
 | `/update` | Update Hermes Agent to the latest version. |
 | `/restart` | Gracefully restart the gateway after draining active runs. When the gateway comes back online, it sends a confirmation to the requester's chat/thread. |
 | `/debug` | Upload debug report (system info + logs) and get shareable links. |

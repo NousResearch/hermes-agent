@@ -34,6 +34,7 @@ STATUS = 'groups.succession.status'
 PREPARE = 'groups.succession.prepare'
 PROMOTE = 'groups.succession.promote'
 KEEP = 'groups.succession.keep'
+AUTOMATIC = 'groups.custody.automatic'
 WAIT_SECONDS = 15.0  # how long a confirmed continue waits for the move to finish before replying
 POLL_SECONDS = 1.0
 SUMMARY_SECONDS = 600  # a confirmation answers the summary shown at most this long ago
@@ -99,23 +100,39 @@ def _owner(status) -> str:
     return safe(_obj(status.get('owner')).get('name'), 64) or 'the group’s owner'
 
 
-def when(value) -> str | None:
-    """A moment in this computer's local time, with its zone: "14:05 CEST", "1 Oct 14:05 CEST"."""
+def _moment(value) -> datetime | None:
     try:
         if type(value) in (int, float) and value > 0:
-            moment = datetime.fromtimestamp(value).astimezone()
-        elif isinstance(value, str):
-            moment = datetime.fromisoformat(value.replace('Z', '+00:00')).astimezone()
-        else:
-            return None
+            return datetime.fromtimestamp(value).astimezone()
+        if isinstance(value, str):
+            return datetime.fromisoformat(value.replace('Z', '+00:00')).astimezone()
     except (ValueError, OverflowError, OSError):
-        return None
+        pass
+    return None
+
+
+def _clock(moment: datetime) -> str:
     now = datetime.now(moment.tzinfo)
-    clock = f'{moment:%H:%M}'
-    if moment.date() != now.date():
-        year = '' if moment.year == now.year else f' {moment.year}'
-        clock = f'{moment.day} {_MONTHS[moment.month - 1]}{year} {clock}'
-    return f'{clock} {moment:%Z}'.strip()
+    if moment.date() == now.date():
+        return f'{moment:%H:%M}'
+    year = '' if moment.year == now.year else f' {moment.year}'
+    return f'{moment.day} {_MONTHS[moment.month - 1]}{year} {moment:%H:%M}'
+
+
+def when(value) -> str | None:
+    """A moment in this computer's local time, with its zone: "14:05 CEST", "1 Oct 14:05 CEST"."""
+    moment = _moment(value)
+    return None if moment is None else f'{_clock(moment)} {moment:%Z}'.strip()
+
+
+def span(start, end) -> str | None:
+    """Two moments: "14:05–14:20 CEST" within a day, else each in full."""
+    first, last = _moment(start), _moment(end)
+    if first is None or last is None:
+        return None
+    if first.date() == last.date() and first.tzname() == last.tzname():
+        return f'{_clock(first)}–{last:%H:%M} {last:%Z}'.strip()
+    return f'{when(start)}–{when(end)}'
 
 
 def _key(text) -> str:
@@ -181,8 +198,10 @@ def readiness(status) -> str | None:
         return 'Moving by itself: turning on… (waiting for the other computers)'
     state = automatic.get('state')
     if state == 'ready':
+        # Careful (two computers): the standby waits out about three minutes of silence first.
+        later = ' after about 3 minutes' if automatic.get('mode') == 'careful' else ''
         return (f'Keeps running if a computer goes offline: ready '
-                f'({computer(automatic.get("standby"), status)} takes over).')
+                f'({computer(automatic.get("standby"), status)} takes over{later}).')
     if state == 'not_ready':
         offline = _names(automatic.get('offline'), status)
         return f'Not automatic right now: {join(offline)} offline.' if offline else 'Not automatic right now.'
@@ -265,6 +284,17 @@ def conflict(status, group: str, g: str, *, may_act: bool) -> str:
     if may_act and names and _targets(status, 'keep'):
         return f'{text} Reply ' + ' or '.join(f'{g} keep {name}' for name in names) + '.'
     return f'{text} Waiting for {_owner(status)} to choose which computer keeps the group.'
+
+
+def ran_on_two(status, group: str) -> str:
+    """The notice after a careful move, once both computers have run the group."""
+    hosts, running = _conflict_hosts(status)
+    names = [computer(h, status) for h in hosts]
+    when_ = span(_obj(status.get('conflict')).get('start'), _obj(status.get('conflict')).get('end'))
+    where = f'both {join(names)}' if len(names) == 2 else join(names) if names else 'two computers'
+    return (f'{group} ran on {where} while they couldn’t reach each other{f" ({when_})" if when_ else ""}. '
+            f'{f"{running} " if running else ""}Choose which one to keep. The other’s messages are kept '
+            'separately.')
 
 
 def host_lines(status, *, group: str, g: str, may_act: bool) -> list[str]:
@@ -636,8 +666,59 @@ async def _promote(cmd, ref, room_id, shown: Summary):
     return str(cmd._uncertain(PROMOTE, ref))  # no state we can read: never guess, never retry
 
 
-async def keep_command(cmd, command):
+def go_back_prompt(status, group: str, g: str) -> str:
+    """The confirmation before going back to the computer a careful move left."""
+    moved_in = _obj(status.get('moved_in'))
+    back = computer(moved_in.get('from'), status)
+    here = computer(status.get('this_install'), status, 'this computer')
+    since = when(moved_in.get('at'))
+    return '\n'.join([
+        f'Go back to {back}? {cap(here)} pauses now, and the group continues on {back} as soon as it’s '
+        f'reachable. Messages sent on {here} since {since or "the move"} are kept separately.',
+        f'Reply {g} keep {back} confirm to go back.'])
+
+
+def go_back_target(status) -> dict | None:
+    """The computer a careful move came from, while the gateway still offers going back to it."""
+    back = _obj(_obj(status.get('moved_in')).get('from'))
+    return back if back.get('install_id') and back['install_id'] in _targets(status, 'keep') else None
+
+
+async def keep_on(connection, room_id, install_id, *, g: str, failed: str) -> None:
+    """``keep`` one computer, through the chat's own principal; refusals in plain words, never retried."""
     from gateway.session_group_controls import dispatch_group_control
+    try:
+        await dispatch_group_control(connection, KEEP, {'room_id': room_id, 'install_id': install_id})
+    except RuntimeStoreError as exc:
+        if exc.reason in {'not_owner', 'permission_denied'}:
+            raise Refused(OWNER_ONLY) from exc
+        raise Refused(PAUSED if exc.reason == 'runtime_coordination_required' else
+                      f'{failed} Send {g} to see where things stand.') from exc
+    except Exception as exc:
+        logger.warning('Group Chat %s from messaging ended without a confirmed outcome', KEEP)
+        raise Refused(f'Hermes couldn’t confirm whether that worked. Send {g} before trying again.') from exc
+
+
+async def ask_first(connection, room_id, *, group: str, g: str) -> str:
+    """Turn automatic moves off for the group: it asks the owner next time."""
+    from gateway.session_group_controls import dispatch_group_control
+    try:
+        result = await dispatch_group_control(connection, AUTOMATIC, {'room_id': room_id, 'enabled': False})
+    except RuntimeStoreError as exc:
+        if exc.reason in {'not_owner', 'permission_denied'}:
+            raise Refused(OWNER_ONLY) from exc
+        raise Refused(PAUSED if exc.reason == 'runtime_coordination_required' else
+                      f'Couldn’t change that for {group}. Send {g} to see where things stand.') from exc
+    except Exception as exc:
+        logger.warning('Group Chat %s from messaging ended without a confirmed outcome', AUTOMATIC)
+        raise Refused(f'Hermes couldn’t confirm whether that worked. Send {g} before trying again.') from exc
+    if _obj(result).get('pending') is True:  # asked for, not yet taken on by the other computers
+        return 'Turning off… (waiting for the other computers)'
+    return f'Done. {group} will ask you before moving.'
+
+
+async def keep_command(cmd, command):
+    """Choose the computer that keeps a group continued on two, or go back after a careful move."""
     room_id = cmd._room_id(command.ref)
     await _allowed(cmd, STATUS, KEEP)
     g = f'{cmd.prefix}group {command.ref}'
@@ -645,11 +726,21 @@ async def keep_command(cmd, command):
     group, _, _ = await _room(cmd, command.ref, room_id)
     if current.get('unavailable_reason') == 'not_owner':
         raise Refused(OWNER_ONLY)
+    wanted = _key(command.text)
     if current.get('state') != 'continued_on_two':
-        raise Refused(f'{group} wasn’t continued on two computers, so there’s nothing to choose.')
+        back = go_back_target(current)
+        if back is None:
+            raise Refused(f'{group} wasn’t continued on two computers, so there’s nothing to choose.')
+        name = computer(back, current)
+        if command.choice != 'confirm' or wanted not in {_key(back.get('name')), _key(safe(back.get('name'))),
+                                                         _key(name)}:
+            return go_back_prompt(current, group, g)
+        await cmd._recheck()
+        await keep_on(cmd.connection, room_id, back['install_id'], g=g, failed=f'Couldn’t go back to {name}.')
+        here = computer(current.get('this_install'), current, 'this computer')
+        return f'Done. {cap(here)} paused {group}; it continues on {name} as soon as it’s reachable.'
     hosts = [h for h in _obj(current.get('conflict')).get('hosts') or ()
              if isinstance(h, dict) and isinstance(h.get('install_id'), str) and h['install_id']]
-    wanted = _key(command.text)
     chosen = [h for h in hosts if wanted and wanted in {
         _key(h.get('name')), _key(safe(h.get('name'))), _key(computer(h, current))}]
     if len(chosen) > 1:
@@ -658,25 +749,27 @@ async def keep_command(cmd, command):
         raise Refused(conflict(current, group, g, may_act=True))
     name = computer(chosen[0], current)
     await cmd._recheck()
-    try:
-        await dispatch_group_control(cmd.connection, KEEP, {'room_id': room_id, 'install_id': chosen[0]['install_id']})
-    except RuntimeStoreError as exc:
-        if exc.reason in {'not_owner', 'permission_denied'}:
-            raise Refused(OWNER_ONLY) from exc
-        raise Refused(PAUSED if exc.reason == 'runtime_coordination_required' else
-                      f'Couldn’t keep {name}. Send {g} to see where things stand.') from exc
-    except Exception as exc:
-        raise cmd._uncertain(KEEP, command.ref) from exc
+    await keep_on(cmd.connection, room_id, chosen[0]['install_id'], g=g, failed=f'Couldn’t keep {name}.')
     others = [computer(h, current) for h in hosts if h is not chosen[0]]
     kept = f' Messages from {join(others)} are kept and shown separately.' if others else ''
     return f'Done. {group} now continues on {name}.{kept}'
 
 
+async def ask_command(cmd, command):
+    """``/group N ask first``: the group asks the owner before it moves again."""
+    room_id = cmd._room_id(command.ref)
+    await _allowed(cmd, AUTOMATIC)
+    group, _, _ = await _room(cmd, command.ref, room_id)
+    await cmd._recheck()
+    return await ask_first(cmd.connection, room_id, group=group, g=f'{cmd.prefix}group {command.ref}')
+
+
 # ---- the notice's numbers ------------------------------------------------------------------------
 
 async def continue_refs(runner, room_id) -> list[tuple]:
-    """``[(adapter, chat_id, metadata, n)]``: the room owner's private chats on this computer, each
-    with the number ``/group n continue`` reaches the room by there (given now if it had none)."""
+    """``[(adapter, chat_id, metadata, n)]``: the room owner's main channel among their private chats
+    here (the home channel when it is one of them, else all of them), each with the number
+    ``/group n continue`` reaches the room by there (given now if it had none)."""
     from gateway.group_chat_access import chat_target, ensure_ref, grants
     from gateway.group_chat_slash import connection_for
     from gateway.session_authorities import all_authorities
@@ -687,6 +780,12 @@ async def continue_refs(runner, room_id) -> list[tuple]:
             continue
         with authority.db._read_ctx() as conn:
             private = [grant for grant in grants(conn) if grant['kind'] == 'private']
+        if private:  # each owner's main channel: the home channel when it is one of their chats
+            from gateway.group_chat_notices import homes_for, main_chats
+            homes, owners = homes_for(runner, authority), {}
+            for grant in private:
+                owners.setdefault(grant['owner'], []).append(grant)
+            private = [grant for owned in owners.values() for grant in main_chats(runner, owned, homes)]
         for grant in private:
             connection = connection_for(authority, grant)
             try:

@@ -107,8 +107,12 @@ def parse(args: str) -> Command:
     if verb == 'continue' and (len(words) == 2 or (len(words) == 3 and words[2].casefold() == 'confirm')):
         return Command('continue', ref, choice='confirm' if len(words) == 3 else '')
     if verb == 'keep':
-        # The computer's name as typed; names can hold spaces ("Mac mini").
-        return Command('keep', ref, text=' '.join(words[2:]))
+        # The computer's name as typed; names can hold spaces ("Mac mini"). "confirm" ends a go-back.
+        name, confirm = words[2:], len(words) > 3 and words[-1].casefold() == 'confirm'
+        return Command('keep', ref, text=' '.join(name[:-1] if confirm else name),
+                       choice='confirm' if confirm else '')
+    if verb == 'ask' and [word.casefold() for word in words[2:]] == ['first']:
+        return Command('ask', ref)
     choice = ' '.join(words[3:]).casefold()
     if verb == 'approve' and len(words) in {4, 5} and choice in {'once', 'deny', 'always', 'always confirm'}:
         return Command('approve', ref, code=words[2].casefold(), choice=choice)
@@ -123,8 +127,8 @@ def approval_code(action: dict) -> str:
     return hashlib.sha256(json.dumps(identity, separators=(',', ':')).encode()).hexdigest()[:6]
 
 
-def help_text(prefix: str, *, hosts: bool = False) -> str:
-    """The command list; ``hosts`` adds continue and keep where the gateway offers them."""
+def help_text(prefix: str, *, hosts: bool = False, automatic: bool = False) -> str:
+    """The command list; ``hosts`` adds continue and keep, ``automatic`` ask first, where offered."""
     g = prefix + 'group'
     lines = ['Group Chats', f'{g} list [page] — your Group Chats',
              f'{g} N — status, approvals and recent messages',
@@ -135,6 +139,8 @@ def help_text(prefix: str, *, hosts: bool = False) -> str:
     if hosts:
         lines += [f'{g} N continue — continue a paused group on this computer',
                   f'{g} N keep <computer> — choose the computer that keeps a group continued on two']
+    if automatic:
+        lines.append(f'{g} N ask first — ask before the group moves by itself again')
     return '\n'.join([*lines, f'{g} help'])
 
 
@@ -287,8 +293,9 @@ class _GroupCommand:
         return room_id
 
     async def _help(self, command):
-        from gateway.group_chat_hosts import PREPARE, PROMOTE, STATUS, advertised
-        return help_text(self.prefix, hosts=await advertised(self, STATUS, PREPARE, PROMOTE))
+        from gateway.group_chat_hosts import AUTOMATIC, PREPARE, PROMOTE, STATUS, advertised
+        return help_text(self.prefix, hosts=await advertised(self, STATUS, PREPARE, PROMOTE),
+                         automatic=await advertised(self, AUTOMATIC))
 
     async def _list(self, command):
         rooms, offset = [], 0
@@ -504,6 +511,10 @@ class _GroupCommand:
     async def _keep(self, command):
         from gateway.group_chat_hosts import keep_command
         return await keep_command(self, command)
+
+    async def _ask(self, command):
+        from gateway.group_chat_hosts import ask_command
+        return await ask_command(self, command)
 
     @staticmethod
     def _preview(event, labels):

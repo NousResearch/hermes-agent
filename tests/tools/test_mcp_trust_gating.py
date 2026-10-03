@@ -332,3 +332,18 @@ class TestAnnotationCaptureAtDiscovery:
         assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace()
         ) is False
+
+    def test_mcp_sdk_snake_case_read_only_hint_supported(self):
+        """MCP 2.0 ToolAnnotations exposes the hint as a snake_case attribute."""
+        from mcp_types import ToolAnnotations
+
+        annotations = ToolAnnotations.model_validate({"readOnlyHint": True})
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=annotations)
+        ) is True
+
+    def test_cached_camel_case_read_only_hint_remains_supported(self):
+        """The JSON schema cache keeps protocol field names rather than SDK attributes."""
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations={"readOnlyHint": True})
+        ) is True

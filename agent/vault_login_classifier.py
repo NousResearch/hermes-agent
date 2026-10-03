@@ -178,6 +178,40 @@ def select_password_fill(
         }
     ]
 
+_RE_SIGNUP_PRIMARY = re.compile(r"\b(?:new|create|choose|set)\s*password\b")
+_RE_SIGNUP_CONFIRM = re.compile(r"\b(?:confirm|repeat|retype|verify)\s*password\b|\bpassword\s*(?:confirmation|again)\b")
+
+def select_signup_fills(controls: List[LoginControl], password: str) -> List[Dict[str, Any]]:
+    """Select only unambiguous signup password fields, never a bare password input."""
+    if not password or any("current-password" in c.autocomplete.lower().split()
+                           for c in controls if c.type.lower() == "password"):
+        return []
+    primary, confirm = [], []
+    for c in controls:
+        if c.type.lower() != "password":
+            continue
+        tokens = c.autocomplete.lower().split()
+        if "current-password" in tokens or "one-time-code" in tokens:
+            continue
+        text = _normalize_text(" ".join((c.name, c.label)))
+        if _RE_SIGNUP_CONFIRM.search(text):
+            confirm.append(c)
+        elif "new-password" in tokens or _RE_SIGNUP_PRIMARY.search(text):
+            primary.append(c)
+    if len(primary) != 1:
+        return []
+    chosen = primary[0]
+    # Two inputs without an HTML form have no evidence that they belong together.
+    if chosen.form_index is None and confirm:
+        return []
+    matches = [c for c in confirm if c.form_index == chosen.form_index]
+    if len(matches) > 1:
+        return []
+    fills = [{"index": chosen.index, "token": "new-password", "value": password}]
+    if matches:
+        fills.append({"index": matches[0].index, "token": "confirm-password", "value": password})
+    return fills
+
 
 def classify_checkout_control(control: LoginControl) -> Optional[ClassifiedLoginControl]:
     """Classify one control as a payment/address fill target (autocomplete token exact match 100,
@@ -309,9 +343,31 @@ _FILL_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
   let filled = 0;
   const norm = (t) => String(t || "").trim().toLowerCase();
-  for (const f of fills) {
-    const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
+  const target = (f) => document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
+  const validSignupTarget = (f, el) => {
+    if (!el || el.type !== "password") return false;
+    const ac = (el.getAttribute("autocomplete") || "").toLowerCase().split(/\\s+/);
+    if (ac.includes("current-password") || ac.includes("one-time-code")) return false;
+    const labelledBy = (el.getAttribute("aria-labelledby") || "").split(/\\s+/).filter(Boolean)
+      .map(id => document.getElementById(id)?.textContent || "").join(" ");
+    const text = [el.name, el.id, el.getAttribute("aria-label"), labelledBy,
+      el.getAttribute("placeholder"), el.getAttribute("title"),
+      ...(el.labels ? Array.from(el.labels, l => l.textContent || "") : [])]
+      .join(" ").toLowerCase().replace(/[_-]+/g, " ");
+    const isConfirm = /\\b(confirm|repeat|retype|verify)\\W*password\\b|\\bpassword\\W*(confirmation|again)\\b/.test(text);
+    if (f.token === "new-password") return !isConfirm && (ac.includes("new-password") || /\\b(new|create|choose|set)\\W*password\\b/.test(text));
+    return isConfirm;
+  };
+  const signupFills = fills.filter((f) => f.token === "new-password" || f.token === "confirm-password");
+  const signupForm = signupFills.length > 1 ? target(signupFills[0])?.form : null;
+  const validSignupForm = signupFills.length < 2 || (!!signupForm && signupFills.every((f) => target(f)?.form === signupForm));
+  const hasCurrentPassword = signupFills.length && Array.from(document.querySelectorAll('input[type=password]'))
+    .some(el => (el.getAttribute("autocomplete") || "").toLowerCase().split(/\\s+/).includes("current-password"));
+  const refusedSignup = signupFills.length && (hasCurrentPassword || !validSignupForm || signupFills.some((f) => !validSignupTarget(f, target(f))));
+  for (const f of refusedSignup ? [] : fills) {
+    const el = target(f);
     if (!el || (f.token === "current-password" && el.type !== "password")) continue;
+    if (signupFills.length && (!validSignupTarget(f, el) || (signupFills.length > 1 && el.form !== signupForm))) break;
     try {
       if (el.tagName === "SELECT") {
         const want = norm(f.value);
@@ -320,6 +376,7 @@ _FILL_JS_TEMPLATE = """(() => {
         continue;
       }
       el.focus();
+      if (signupFills.length && (!validSignupTarget(f, el) || (signupFills.length > 1 && el.form !== signupForm))) break;
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
       // one-time-code split into single-character boxes: f.value is the slice for THIS box (see build_otp_fills)
       if (setter && setter.set) { setter.set.call(el, f.value); } else { el.value = f.value; }

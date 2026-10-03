@@ -119,14 +119,32 @@ class OnePasswordLoginBackend(LoginBackend):
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
         return next((m for m in self.list_items() if m.id == handle), None)
 
+    def _item_get_args(self, item_id: str) -> tuple[str, ...]:
+        """Service-account `op item get` needs the item's vault ID, unlike list.
+
+        Resolve the vault from authenticated item-list metadata rather than
+        guessing a vault name or accepting a caller-supplied vault ID.
+        """
+        if not self._service_token:
+            return ("item", "get", item_id)
+        raw = json.loads(self._run("item", "list", "--categories", "Login", "--format", "json") or "[]")
+        matches = [item for item in raw if isinstance(item, dict) and item.get("id") == item_id]
+        if len(matches) != 1:
+            raise RuntimeError("1Password login is missing or ambiguous")
+        vault = matches[0].get("vault") or {}
+        vault_id = vault.get("id") if isinstance(vault, dict) else None
+        if not isinstance(vault_id, str) or not vault_id:
+            raise RuntimeError("1Password login has no vault ID")
+        return ("item", "get", item_id, "--vault", vault_id)
+
     def resolve_password(self, handle: str) -> str:
         item_id = handle[len(self.prefix):]
-        return self._run("item", "get", item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
+        return self._run(*self._item_get_args(item_id), "--fields", "label=password", "--reveal").rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
         try:
-            code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()
+            code = self._run(*self._item_get_args(handle[len(self.prefix):]), "--otp").strip()
         except Exception:
             return None
         return code if code.isdigit() else None

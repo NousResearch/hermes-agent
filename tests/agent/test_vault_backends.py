@@ -223,6 +223,48 @@ def test_onepassword_multi_url_item_binds_every_saved_web_origin():
     assert _web_origins(["androidapp://com.x"]) == ("androidapp://com.x",)
 
 
+def test_onepassword_service_account_get_uses_vault_from_list(monkeypatch):
+    """`op item get` needs --vault for service accounts; never guess from URL."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    monkeypatch.setattr("agent.secret_scope.get_secret", lambda name, default="": "fixture-token")
+    backend = OnePasswordLoginBackend({"enabled": True})
+    calls = []
+
+    def fake_run(*args):
+        calls.append(args)
+        if args[:2] == ("item", "list"):
+            return json.dumps([{"id": "item123", "vault": {"id": "vault456"}}])
+        return "fixture-password\n" if "--reveal" in args else "123456\n"
+
+    with patch.object(backend, "_run", side_effect=fake_run):
+        assert backend.resolve_password("op:item123") == "fixture-password"
+        assert backend.resolve_otp("op:item123") == "123456"
+    assert calls[1] == ("item", "get", "item123", "--vault", "vault456", "--fields", "label=password", "--reveal")
+    assert calls[3] == ("item", "get", "item123", "--vault", "vault456", "--otp")
+
+
+def test_onepassword_service_account_get_fails_closed_without_vault(monkeypatch):
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    monkeypatch.setattr("agent.secret_scope.get_secret", lambda name, default="": "fixture-token")
+    backend = OnePasswordLoginBackend({"enabled": True})
+    with patch.object(backend, "_run", return_value=json.dumps([{"id": "item123"}])) as run:
+        with pytest.raises(RuntimeError, match="no vault ID"):
+            backend.resolve_password("op:item123")
+        assert run.call_count == 1
+
+
+def test_onepassword_account_session_unchanged(monkeypatch):
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    monkeypatch.setattr("agent.secret_scope.get_secret", lambda name, default="": "")
+    backend = OnePasswordLoginBackend({"enabled": True})
+    with patch.object(backend, "_run", return_value="fixture-password\n") as run:
+        assert backend.resolve_password("op:item123") == "fixture-password"
+    run.assert_called_once_with("item", "get", "item123", "--fields", "label=password", "--reveal")
+
+
 def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     """Vault reads use the same explicit 1Password CLI config location."""
     from agent.vault_backends.onepassword import OnePasswordLoginBackend

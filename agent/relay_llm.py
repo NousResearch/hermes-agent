@@ -936,9 +936,12 @@ def _json_equal(left: Any, right: Any) -> bool:
 
 def _run_awaitable(
     value: Any, *, loop_error: str = "Synchronous Relay LLM execution cannot run on an event-loop thread",
+    timeout: float | None = None,
 ) -> Any:
     if not inspect.isawaitable(value):
         return value
     if _has_running_event_loop():
         raise RuntimeError(loop_error)
+    if timeout is not None and timeout > 0:
+        value = asyncio.wait_for(value, timeout)
     return asyncio.run(value)

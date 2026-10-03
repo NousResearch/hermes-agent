@@ -101,6 +101,12 @@ def _json_equal(left: Any, right: Any) -> bool:
 
 
 def _run_awaitable(value: Any) -> Any:
+    # Keep the Relay funnel bounded too: the regular tool executor's deadline is
+    # bypassed when a managed tool enters this adapter directly.
+    from agent.tool_executor import _resolve_sequential_tool_timeout
+
     return relay_llm._run_awaitable(
-        value, loop_error="Synchronous Hermes Relay tool execution cannot run on an active event-loop thread",
+        value,
+        loop_error="Synchronous Hermes Relay tool execution cannot run on an active event-loop thread",
+        timeout=_resolve_sequential_tool_timeout(),
     )

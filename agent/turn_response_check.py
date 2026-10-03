@@ -170,6 +170,49 @@ def check_api_response(
         compression_attempts = 0
         return _verdict("break")
 
+    if finish_reason == "malformed_function_call":
+        # A rejected HTTP-200 completion still consumed provider tokens. Account
+        # before fallback changes the active model/provider, or terminal return.
+        record_response_usage(
+            agent, response, messages=messages, api_call_count=api_call_count,
+            api_duration=api_duration, compression_attempts=compression_attempts,
+            max_compression_attempts=max_compression_attempts,
+        )
+        normalized = agent._get_transport().normalize_response(response)
+        detail = (normalized.content or "").strip() or "provider rejected a malformed function call"
+        agent._invoke_api_request_error_hook(
+            task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
+            api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
+            error_type="MalformedFunctionCall", error_message=detail, status_code=None,
+            retry_count=retry_count, max_retries=max_retries, retryable=False,
+            reason="malformed_function_call",
+        )
+        if agent._try_activate_fallback():
+            from agent.conversation_loop import _arm_fallback_restart
+            active_system_prompt = _arm_fallback_restart(
+                agent, api_messages, active_system_prompt, _retry,
+            )
+            retry_count = compression_attempts = 0
+            return _verdict("break")
+        agent._flush_status_buffer()
+        final_response = (
+            "The provider rejected a malformed function call from the model. "
+            "This is not a safety refusal. Try again or switch models."
+        )
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        user_content = messages[current_turn_user_idx].get("content", "") if (
+            isinstance(current_turn_user_idx, int) and 0 <= current_turn_user_idx < len(messages)
+        ) else ""
+        agent._save_trajectory(messages, _summarize_user_message_for_log(user_content), False)
+        agent._cleanup_task_resources(effective_task_id)
+        agent._persist_session(messages, conversation_history)
+        return _verdict("return", {
+            "final_response": final_response, "messages": messages,
+            "api_calls": api_call_count, "completed": False, "failed": True,
+            "error": f"malformed_function_call: {detail}",
+            "turn_exit_reason": "malformed_function_call",
+        })
+
     if finish_reason == "length":
         _tv = recover_from_truncation(
             agent, response, finish_reason, _retry, messages=messages,

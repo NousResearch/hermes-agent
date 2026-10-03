@@ -18,6 +18,8 @@ def _append_text(existing: Optional[str], new: Optional[str]) -> Optional[str]:
     return f"{existing}\n{new}" if existing else new
 
 
+
+
 def merge_pending_message_event(
     pending_messages: dict[str, MessageEvent],
     session_key: str,

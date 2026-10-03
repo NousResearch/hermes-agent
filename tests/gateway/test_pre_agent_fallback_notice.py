@@ -95,6 +95,41 @@ def test_credential_resolution_fallback_reaches_agent_notice_not_agent_kwargs():
     assert runner._pre_agent_fallback_notice is None
 
 
+def test_static_channel_failure_completes_turn_with_default_route_notice():
+    from gateway.config import ChannelOverride, GatewayConfig, PlatformConfig
+    from gateway.run_turn_runner import TurnRunner
+
+    runner = _runner_with_real_runtime_resolution()
+    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(
+        channel_overrides={"c": ChannelOverride(model="channel-model", provider="openai-codex")})})
+    ctx = TurnContext(
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="u"),
+        message="hi", history=[], session_id="sid", session_key="test-session-key", user_config={},
+        AIAgent=_RecordingAgent, resolve_display_setting=lambda *_a: False, _run_still_current=lambda: True,
+        _hooks_ref=SimpleNamespace(loaded_hooks=False),
+    )
+
+    def resolve(**kw):
+        if kw.get("requested") == "openai-codex":
+            raise AuthError("quota exhausted", code="codex_rate_limited")
+        return {"provider": "anthropic", "api_key": "fixture", "base_url": "https://default.invalid"}
+
+    with patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
+         patch("hermes_cli.runtime_provider._get_model_config",
+               return_value={"provider": "anthropic", "default": "default-model"}), \
+         patch("gateway.run._load_gateway_config", return_value={}), \
+         patch("gateway.run._resolve_gateway_model", return_value="default-model"):
+        result = TurnRunner(runner, ctx).run_sync()
+
+    assert result["final_response"] == "ok"
+    assert _RecordingAgent.built_kwargs["model"] == "default-model"
+    assert _RecordingAgent.built_kwargs["provider"] == "anthropic"
+    assert "openai-codex/channel-model" in ctx.agent_holder[0]._pending_fallback_notice
+    assert "anthropic/default-model" in ctx.agent_holder[0]._pending_fallback_notice
+    assert "_fallback_notice" not in _RecordingAgent.built_kwargs
+    assert runner._pre_agent_fallback_notice is None
+
+
 def test_model_override_fast_path_clears_stale_notice():
     """The /model-override fast path returns before the pop; a notice stashed by an earlier resolution
     (hygiene, inbound, another session) must not survive to attach to this session's turn."""

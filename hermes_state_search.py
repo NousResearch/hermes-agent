@@ -1236,6 +1236,8 @@ class SessionSearchMixin:
         rather than ``substr()`` from the boundary — the caller dedupes by id, so re-finding a
         match that sits inside the prefix is free, while materializing a multi-KB substring per
         row is not (measured 96 ms against 337 ms on a 46k-tool-row store).
+        ``idx_messages_oversized_tool`` serves both the gate and the ORDER BY, which is why the
+        bound is interpolated below rather than bound.
         ``tool_name``/``tool_calls`` are indexed in full and need no supplement. Degrades the
         FTS query to AND-joined substring terms with quoted phrases kept whole, exactly like
         :meth:`_search_unindexed_gap`.
@@ -1246,9 +1248,12 @@ class SessionSearchMixin:
                  if tok and tok.upper() not in _LIKE_SKIP_TOKENS]
         if not terms:
             return []
-        prefix = FTS_TOOL_CONTENT_PREFIX_CHARS
-        where = ["m.role = 'tool'", "LENGTH(COALESCE(m.content, '')) > ?"]
-        params: list = [prefix]
+        # The bound is INTERPOLATED, not bound: idx_messages_oversized_tool is a partial index
+        # over this same predicate, and SQLite can only prove it applies when both sides carry
+        # the literal. The value is a module constant, never caller input.
+        where = ["m.role = 'tool'",
+                 f"LENGTH(COALESCE(m.content, '')) > {FTS_TOOL_CONTENT_PREFIX_CHARS}"]
+        params: list = []
         for term in terms:
             where.append("m.content LIKE ? ESCAPE '\\'")
             params.append(f"%{_escape_like(term)}%")

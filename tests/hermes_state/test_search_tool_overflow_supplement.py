@@ -107,3 +107,35 @@ def test_tool_name_and_tool_calls_need_no_supplement(db, spy):
     assert [row["id"] for row in db.search_messages(
         "distinctive_tool_name", role_filter=["tool"], limit=1)] == [tool_id]
     assert spy == []
+
+
+def test_partial_index_exists_and_matches_the_shared_bound(db):
+    """``idx_messages_oversized_tool`` must carry the SAME literal as the query.
+
+    A partial index only applies when SQLite can prove the query's WHERE implies the
+    index's, which it cannot do across a bound parameter or a different constant. If the
+    two ever drift the supplement silently falls back to reading every tool row's content.
+    """
+    with db._read_ctx() as conn:
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'idx_messages_oversized_tool'").fetchone()
+    assert sql is not None, "the partial index is missing from SCHEMA_SQL"
+    assert f"> {FTS_TOOL_CONTENT_PREFIX_CHARS}" in sql[0]
+    assert "role = 'tool'" in sql[0]
+
+
+def test_supplement_query_plan_uses_the_partial_index(db):
+    """Pins the optimisation itself: without the index this plan scans on another index."""
+    db.append_message(
+        "session", role="tool", content=_long_message("p", "plan-tail"), tool_name="terminal")
+    with db._read_ctx() as conn:
+        plan = " ".join(
+            row[3] for row in conn.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT m.id FROM messages m JOIN sessions s ON s.id = m.session_id "
+                "WHERE m.role = 'tool' "
+                f"AND LENGTH(COALESCE(m.content, '')) > {FTS_TOOL_CONTENT_PREFIX_CHARS} "
+                "AND m.content LIKE ? ESCAPE '\\' "
+                "ORDER BY m.timestamp DESC LIMIT 20", ("%plan-tail%",)))
+    assert "idx_messages_oversized_tool" in plan, plan

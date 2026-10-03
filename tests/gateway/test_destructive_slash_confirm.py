@@ -9,6 +9,7 @@ immediately.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -145,3 +146,85 @@ async def test_resolve_always_persists_opt_out_and_runs_execute(monkeypatch):
     assert resolved is not None
     assert "✨ fresh" in resolved
     assert "config.yaml" in resolved
+
+
+@pytest.mark.asyncio
+async def test_buzz_top_level_new_can_be_approved_in_its_reply_thread():
+    """A reply to Buzz's text confirmation must resolve the top-level /new prompt."""
+    from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+    from tools import slash_confirm as slash_confirm
+
+    load_plugin_adapter("buzz")
+    buzz = Platform("buzz")
+    runner = _make_runner()
+    runner.adapters[buzz] = runner.adapters[Platform.TELEGRAM]
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    runner._session_key_for_source = build_session_key
+    source = SessionSource(platform=buzz, user_id="u1", chat_id="dm1", chat_type="dm")
+    command = MessageEvent(text="/new", source=source, message_id="buzz-new")
+    top_level_key = build_session_key(source)
+    reply_thread_key = build_session_key(replace(source, thread_id="buzz-new"))
+    slash_confirm.clear(top_level_key)
+    slash_confirm.clear(reply_thread_key)
+    execute = AsyncMock(return_value="✨ fresh")
+
+    await runner._maybe_confirm_destructive_slash(
+        event=command, command="new", title="/new", detail="Discards history.", execute=execute,
+    )
+
+    assert slash_confirm.get_pending(top_level_key) is not None
+    assert slash_confirm.get_pending(reply_thread_key) is not None
+    result = await runner._hm_slash_confirm_reply(
+        MessageEvent(text="/approve", source=replace(source, thread_id="buzz-new"), message_id="approve"),
+        reply_thread_key,
+    )
+
+    assert result == "✨ fresh"
+    execute.assert_awaited_once()
+    assert slash_confirm.get_pending(top_level_key) is None
+    assert slash_confirm.get_pending(reply_thread_key) is None
+
+
+@pytest.mark.asyncio
+async def test_buzz_replacing_top_level_new_invalidates_the_old_confirmation_thread():
+    """A second /new must make the earlier Buzz confirmation thread inert."""
+    from tests.gateway._plugin_adapter_loader import load_plugin_adapter
+    from tools import slash_confirm as slash_confirm
+
+    load_plugin_adapter("buzz")
+    buzz = Platform("buzz")
+    runner = _make_runner()
+    runner.adapters[buzz] = runner.adapters[Platform.TELEGRAM]
+    runner._read_user_config = lambda: {"approvals": {"destructive_slash_confirm": True}}
+    runner._session_key_for_source = build_session_key
+    source = SessionSource(platform=buzz, user_id="u1", chat_id="dm2", chat_type="dm")
+    top_level_key = build_session_key(source)
+    old_thread_key = build_session_key(replace(source, thread_id="buzz-new-1"))
+    new_thread_key = build_session_key(replace(source, thread_id="buzz-new-2"))
+    slash_confirm.clear(top_level_key)
+    slash_confirm.clear(old_thread_key)
+    slash_confirm.clear(new_thread_key)
+    first = AsyncMock(return_value="first")
+    second = AsyncMock(return_value="second")
+
+    await runner._maybe_confirm_destructive_slash(
+        event=MessageEvent(text="/new", source=source, message_id="buzz-new-1"),
+        command="new", title="/new", detail="Discards history.", execute=first,
+    )
+    await runner._maybe_confirm_destructive_slash(
+        event=MessageEvent(text="/new", source=source, message_id="buzz-new-2"),
+        command="new", title="/new", detail="Discards history.", execute=second,
+    )
+
+    assert slash_confirm.get_pending(old_thread_key) is None
+    assert slash_confirm.get_pending(new_thread_key) is not None
+    old_result = await runner._hm_slash_confirm_reply(
+        MessageEvent(text="/approve", source=replace(source, thread_id="buzz-new-1")), old_thread_key,
+    )
+    assert old_result is None
+    first.assert_not_awaited()
+    new_result = await runner._hm_slash_confirm_reply(
+        MessageEvent(text="/approve", source=replace(source, thread_id="buzz-new-2")), new_thread_key,
+    )
+    assert new_result == "second"
+    second.assert_awaited_once()

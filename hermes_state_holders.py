@@ -546,16 +546,20 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
 
     if psutil is None:
         return [(-1, "open-file scan unavailable")]
+
+    # Per-process, not process_iter(attrs): building the info dict eagerly
+    # opens each process's file list and stats every reported path
+    # (open_files → isfile_strict → os.stat), so one process holding an
+    # unstat-able unrelated file — a file that vanished mid-scan, a path
+    # behind a symlink loop, or (in the test suite) a real-home path the
+    # home-IO guard refuses — raises out of the whole iteration and was
+    # read as "unknown holder", deferring every repair / rebuild / vacuum
+    # on the machine. psutil's per-process exceptions become ad_value=None
+    # for as_dict (the same skip), so asking each process directly and
+    # skipping the one that fails preserves that contract instead of
+    # promoting one unrelated file to a machine-wide maintenance lockout.
     try:
-        for process in psutil.process_iter(["pid", "open_files"]):
-            info = process.info
-            pid = int(info["pid"])
-            if pid == os.getpid():
-                continue
-            for opened in info.get("open_files") or ():
-                path = getattr(opened, "path", "")
-                if path and canonical_sqlite_path(os.path.realpath(path)) in watched:
-                    holders.append((pid, path))
+        pids = psutil.pids()
     except Exception as exc:
         logger.warning(
             "Could not prove state.db has no foreign holders; "
@@ -563,6 +567,32 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
             exc,
         )
         holders.append((-1, f"open-file scan failed: {exc}"))
+        return holders
+
+    own_pid = os.getpid()
+    for proc_pid in pids:
+        if proc_pid == own_pid:
+            continue
+        try:
+            opened_files = psutil.Process(proc_pid).open_files()
+        except Exception:
+            continue
+        for opened in opened_files or ():
+            path = getattr(opened, "path", "")
+            if not path:
+                continue
+            # psutil snapshots race the processes they inspect, and one
+            # unresolvable unrelated open file is not evidence of a foreign
+            # state.db holder either: resolving a reported descriptor is
+            # inspection of that descriptor, not I/O against the file it
+            # names (the same principle as the guard's /proc exemption).
+            # Skip the entry and keep scanning.
+            try:
+                watched_path = canonical_sqlite_path(os.path.realpath(path))
+            except Exception:
+                continue
+            if watched_path in watched:
+                holders.append((proc_pid, path))
     return holders
 
 

@@ -111,3 +111,46 @@ def test_windows_restart_manager_scan_sizes_then_excludes_self(monkeypatch, tmp_
     _Api.RmStartSession = _Fn(lambda *_args: 5)
     with pytest.raises(OSError):
         hermes_state_holders._windows_restart_manager_holders(db_path)
+
+
+@pytest.mark.platforms("macos")
+def test_psutil_scan_skips_uninspectable_process_without_deferring(
+    tmp_path, monkeypatch
+):
+    """One uninspectable process must not read as an unknown holder.
+
+    process_iter(attrs) builds each entry's info eagerly, and macOS
+    open_files() stats every reported path while doing it — so one process
+    holding an unstat-able unrelated file (a file that vanished mid-scan,
+    or under the test suite's home-IO guard, a real-home path) aborted the
+    whole scan, and the resulting "unknown holder" deferred every repair,
+    FTS rebuild and vacuum on the machine. Each process is asked directly
+    instead: a process that fails to report is skipped, the same way an
+    uninspectable /proc entry that is not ours to wait on is skipped."""
+    db_path = tmp_path / "state.db"
+    db_path.touch()
+    psutil = pytest.importorskip("psutil")
+
+    class _Uninspectable:
+        def open_files(self):
+            raise OSError("stat failed on an unrelated open file")
+
+    class _Holder:
+        def open_files(self):
+            return [SimpleNamespace(path=str(db_path), fd=3)]
+
+    real_process = psutil.Process
+
+    def _process(pid):
+        if pid == 424242:
+            return _Uninspectable()
+        if pid == 424243:
+            return _Holder()
+        return real_process(pid)
+
+    monkeypatch.setattr(psutil, "pids", lambda: [os.getpid(), 424242, 424243])
+    monkeypatch.setattr(psutil, "Process", _process)
+
+    assert hermes_state_holders.foreign_state_db_holders(db_path) == [
+        (424243, str(db_path))
+    ]

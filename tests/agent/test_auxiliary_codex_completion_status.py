@@ -87,6 +87,7 @@ _CODEX_REASONING_ONLY = SimpleNamespace(
         pytest.param("", "completed", [_message("COMMENTARY", phase="commentary")], None, None, "length", id="commentary-only"),
         pytest.param("", "completed", [_TOOL_CALL], None, None, "tool_calls", id="tool-call"),
         pytest.param("", "incomplete", [_message("PARTIAL")], "max_output_tokens", "PARTIAL", "length", id="token-cap"),
+        pytest.param("", "incomplete", [_TOOL_CALL], "max_output_tokens", None, "tool_calls", id="token-cap-after-tool-call"),
         # Route-sensitive normalization: the issuer comes from the request's route classification.
         pytest.param("https://chatgpt.com/backend-api/codex", "completed", [_CODEX_REASONING_ONLY], None, None, "length",
                      id="codex-reasoning-only"),

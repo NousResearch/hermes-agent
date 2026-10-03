@@ -1708,20 +1708,21 @@ class TestSessionTitle:
         session = db.get_session("s1")
         assert session["title"] is None
 
-    @pytest.mark.parametrize("holder_messages,holder_hidden,holder_ended,yields", [
-        (0, False, True, True),     # ended empty visible ghost yields its title (#81888)
-        (0, False, False, False),   # live empty session (/title before its first turn) keeps it
-        (0, True, True, False),     # hidden empty row (fresh canonical Bot Chat) keeps it
-        (1, False, True, False),    # a real conversation keeps it
+    @pytest.mark.parametrize("holder_has_message,holder_hidden,holder_ended,yields", [
+        (False, False, True, True),    # ended empty visible ghost yields its title (#81888)
+        (False, False, False, False),  # live empty session (/title before its first turn) keeps it
+        (False, True, True, False),    # hidden empty row (fresh canonical Bot Chat) keeps it
+        (True, False, True, False),    # a real conversation keeps it
     ])
-    def test_empty_ghost_session_does_not_block_title(self, db, holder_messages, holder_hidden, holder_ended,
-                                                       yields):
-        """An empty session the user cannot see must not reserve a title (#81888), and the
-        ghost must stay writable afterwards (no partial unique index to trip on append)."""
+    def test_title_conflict_yields_only_to_ended_empty_visible_holder(self, db, holder_has_message, holder_hidden,
+                                                                      holder_ended, yields):
+        """A title holder yields only when it is ended, empty, visible and unarchived (#81888);
+        every other holder still conflicts. The ghost stays writable afterwards (no partial
+        unique index to trip on its first append_message)."""
         db.create_session("ghost", "desktop")
         db.set_session_title("ghost", "Canada")
-        for i in range(holder_messages):
-            db.append_message("ghost", "user", f"m{i}")
+        if holder_has_message:
+            db.append_message("ghost", "user", "m0")
         db.set_session_hidden("ghost", holder_hidden)
         if holder_ended:
             db.end_session("ghost", "user_exit")

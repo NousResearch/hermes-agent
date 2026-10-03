@@ -6055,14 +6055,14 @@ class SlackAdapter(BasePlatformAdapter):
         # The message path's channel gates (_prefilter_inbound, _channel_gate_allows): ignored
         # channels are never touched, and outside allowed_channels only a 1:1 DM is answered. By id
         # alone, so no lookup can drop a control command.
+        is_dm = str(channel_id).startswith("D")
         if self._is_ignored_channel(channel_id):
             logger.debug("[Slack] Ignoring slash command in ignored channel: %s", channel_id)
             return
         allowed_channels = self._slack_allowed_channels()
-        if allowed_channels and not str(channel_id).startswith("D") and channel_id not in allowed_channels:
+        if allowed_channels and not is_dm and channel_id not in allowed_channels:
             logger.debug("[Slack] Ignoring slash command in non-allowed channel: %s", channel_id)
             return
-        is_dm = str(channel_id).startswith("D")
         if is_dm and self._slack_disable_dms():
             logger.info(
                 "[Slack] Ignoring slash command from DM because Slack DMs are disabled: channel=%s user=%s",

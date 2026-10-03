@@ -14,7 +14,7 @@ import pytest
 
 from gateway import hosted_room_driver as driver
 from gateway import hosted_room_discussion as discussion
-from gateway import hosted_rooms
+from gateway import hosted_room_links, hosted_rooms
 from gateway.hosted_room_policy_checkpoint import MAX_ACTIVE_POLICY_EVENTS
 from gateway.hosted_room_peer import (
     GatewayRoomCatalog,
@@ -28,7 +28,10 @@ from tui_gateway.hosted_room_service import (
     _RouteStatusPeerClient,
     _grant_revoke_is_terminal,
 )
-from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
+from tui_gateway.hosted_room_peer_transport import (
+    PeerHostedRoomTransport,
+    PeerMemberRoute,
+)
 from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 
 
@@ -1154,6 +1157,98 @@ def test_registered_peer_route_rehydrates_after_service_restart(tmp_path: Path):
     assert ("room-1", "member-peer") in restarted.peer_clients
 
 
+def test_peer_route_registration_cannot_rebind_roster_member_to_another_installation(
+    tmp_path: Path,
+):
+    db = tmp_path / "state.db"
+    service = HostedRoomService(_server(), db_path=db)
+    catalog_a = GatewayRoomCatalog.from_mapping(
+        catalog_mapping(
+            target_profile="default",
+            installation_id="install-a",
+            persistent_process=True,
+        )
+    )
+    catalog_b = GatewayRoomCatalog.from_mapping(
+        catalog_mapping(
+            target_profile="default",
+            installation_id="install-b",
+            persistent_process=True,
+        )
+    )
+    service.create_room(
+        room_id="room-1",
+        name="Immutable roster",
+        members=[
+            {"member_id": "local", "profile": "default", "handle": "local"},
+            {
+                "member_id": "member-peer",
+                "profile": "default",
+                "handle": "peer-default",
+                "target": {
+                    "kind": "peer",
+                    "peer_id": "peer-a",
+                    "installation_id": "install-a",
+                    "profile": "default",
+                    "capability_digest": catalog_a.catalog_digest,
+                },
+            },
+        ],
+    )
+
+    def route(catalog, grant):
+        return PeerMemberRoute(
+            home_install_id=hosted_rooms.local_authority_gateway_id(),
+            member_id="member-peer",
+            target_install_id=catalog.installation_id,
+            target_profile="default",
+            capability_digest=catalog.catalog_digest,
+            execution_policy_digest=catalog.execution_policy.policy_digest,
+            cancellation_scope_id="cancel-room-1",
+            trace_id="trace-room-1",
+            grant=grant,
+        )
+
+    route_a = route(catalog_a, "grant-a")
+    service.register_peer_route(
+        room_id="room-1",
+        member_id="member-peer",
+        route=route_a,
+        client=_FakePeerClient(),
+        target_url="https://a.example.test",
+        catalog=catalog_a,
+    )
+
+    with pytest.raises(ValueError, match="roster identity"):
+        service.register_peer_route(
+            room_id="room-1",
+            member_id="member-peer",
+            route=route(catalog_b, "grant-b"),
+            client=_FakePeerClient(),
+            target_url="https://b.example.test",
+            catalog=catalog_b,
+        )
+    assert service.peer_routes[("room-1", "member-peer")] == route_a
+    assert hosted_room_links.load_room_links(db)[0].catalog.installation_id == "install-a"
+    transport = service._resolve_member_transport(
+        service.bindings()[0],
+        {"payload": {"target_member_id": "member-peer", "source_event_seq": 1}},
+    )
+    assert isinstance(transport, PeerHostedRoomTransport)
+    assert transport.route == route_a
+
+    renewed_a = route(catalog_a, "grant-a-renewed")
+    service.register_peer_route(
+        room_id="room-1",
+        member_id="member-peer",
+        route=renewed_a,
+        client=_FakePeerClient(),
+        target_url="https://a.example.test",
+        catalog=catalog_a,
+    )
+    assert service.peer_routes[("room-1", "member-peer")] == renewed_a
+
+
 def test_one_corrupt_stored_route_does_not_hide_healthy_peers(tmp_path: Path):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
@@ -1614,6 +1709,7 @@ def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path):
         member_id="member-peer",
         target_install_id="install-peer",
         target_profile="reviewer",
+        capability_digest=catalog.catalog_digest,
         execution_policy_digest=catalog.execution_policy.policy_digest,
         issued_at=now - 3700,
         ttl_seconds=3600,
@@ -1629,6 +1725,7 @@ def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path):
         member_id="member-peer",
         target_install_id="install-peer",
         target_profile="reviewer",
+        capability_digest=catalog.catalog_digest,
         execution_policy_digest=catalog.execution_policy.policy_digest,
         issued_at=now,
         ttl_seconds=3600,
@@ -1762,6 +1859,7 @@ def test_dispatch_refresh_marks_route_for_reauthorization_on_drift(
         member_id="member-peer",
         target_install_id="install-peer",
         target_profile="reviewer",
+        capability_digest=base_catalog.catalog_digest,
         execution_policy_digest=base_catalog.execution_policy.policy_digest,
         issued_at=now - 3500,
         ttl_seconds=3600,

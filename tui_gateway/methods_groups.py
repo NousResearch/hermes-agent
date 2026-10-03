@@ -260,6 +260,7 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
         raise ValueError("ttl_seconds must be between 60 and 86400")
     grant_secret = gateway_room_grant_secret()
     execution_policy = _profile_execution_policy(profile)
+    catalog = _catalog(installation_id, profile, execution_policy)
     token = issue_room_grant(
         grant_secret, grant_id=str(params.get("grant_id") or f"grant-{os.urandom(16).hex()}"),
         room_id=str(params.get("room_id") or ""),
@@ -267,11 +268,11 @@ def _(rid, params: dict, db_path, _catalog=_local_catalog, _expiry=_grant_expiry
         authority_gateway_id=str(params.get("authority_gateway_id") or ""),
         authority_epoch=int(params.get("authority_epoch") or 0),
         member_id=str(params.get("member_id") or ""), target_install_id=installation_id,
-        target_profile=profile, execution_policy_digest=execution_policy["policy_digest"],
+        target_profile=profile, capability_digest=catalog["catalog_digest"],
+        execution_policy_digest=execution_policy["policy_digest"],
         ttl_seconds=ttl)
     claims = decode_room_grant(grant_secret, token, permission="status")
     reserve_peer_room(db_path, claims=claims, expires_at=_expiry(claims))
-    catalog = _catalog(installation_id, profile, execution_policy)
     return _ok(rid, {
         "grant": token, "target_profile": profile, "catalog": catalog,
         "endpoint": catalog["endpoint"]})
@@ -296,7 +297,8 @@ def _(rid, params: dict, db_path, _expiry=_grant_expiry) -> dict:
 def _(rid, params: dict, service) -> dict:
     """Register and probe one scoped target route on the room home."""
     from gateway.hosted_room_peer import (
-        GatewayRoomCatalog, PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION, validate_room_link_url)
+        GatewayRoomCatalog, PROTOCOL_VERSION as ROOM_LINK_PROTOCOL_VERSION,
+        RoomMemberIdentity, validate_room_link_url)
     from gateway.hosted_rooms import local_authority_gateway_id, room_state
     from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient
     from tui_gateway.hosted_room_peer_transport import PeerMemberRoute
@@ -320,10 +322,14 @@ def _(rid, params: dict, service) -> dict:
     expected_scope = {
         "room_id": room_id, "home_install_id": home_install_id,
         "authority_gateway_id": home_room.get("authority_gateway_id"),
-        "member_id": member_id, "target_profile": target_profile}
+        "member_id": member_id}
+    expected_member = RoomMemberIdentity.from_mapping({
+        "member_id": member_id, "target_install_id": catalog.installation_id,
+        "target_profile": target_profile, "capability_digest": catalog.catalog_digest})
     if (any(probe.get(k) != v for k, v in expected_scope.items())
             or int(probe.get("authority_epoch") or 0)
-            != int(home_room.get("authority_epoch") or 0)):
+            != int(home_room.get("authority_epoch") or 0)
+            or RoomMemberIdentity.from_mapping(probe) != expected_member):
         raise ValueError("room grant scope does not match this route")
     route = PeerMemberRoute(
         home_install_id=home_install_id, member_id=member_id,

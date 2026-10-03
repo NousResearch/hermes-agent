@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from gateway.hosted_room_driver import TaskIdentity
-from gateway.hosted_room_peer import HostedMemberDispatch, PROTOCOL_VERSION
+from gateway.hosted_room_peer import (
+    HostedMemberDispatch, PROTOCOL_VERSION, RoomMemberIdentity)
 from tui_gateway.hosted_room_driver import (
     ROOM_SESSION_SOURCE, HostedRoomBinding, InternalSessionRPC, room_session_title)
 
@@ -114,6 +115,14 @@ class PeerMemberRoute:
     trace_id: str
     grant: str
     execution_policy_digest: str = ""
+
+    @property
+    def member_identity(self) -> RoomMemberIdentity:
+        return RoomMemberIdentity.from_mapping({
+            "member_id": self.member_id,
+            "target_install_id": self.target_install_id,
+            "target_profile": self.target_profile,
+            "capability_digest": self.capability_digest})
 
 
 def build_member_dispatch(

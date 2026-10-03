@@ -139,6 +139,7 @@ async def _handle_room_member_invitation(
             grant_id=str(body.get("grant_id") or f"grant-{uuid.uuid4().hex}"),
             **_room_identity(body, coerce=True),
             target_install_id=target_install_id, target_profile=profile,
+            capability_digest=catalog["catalog_digest"],
             execution_policy_digest=execution_policy["policy_digest"], issued_at=time.time(),
             ttl_seconds=ttl, status_ttl_seconds=status_ttl)
         claims = decode_room_grant(self._room_grant_secret(), token, permission="status")
@@ -156,6 +157,7 @@ async def _handle_room_member_capabilities(
     self, request: "web.Request", *, _openai_error, _api_request_profile) -> "web.Response":
     """Verify a scoped grant and return this target's live room catalog."""
     try:
+        from gateway.hosted_room_peer import RoomMemberIdentity
         claims = self._room_grant_claims(request, permission="status")
         profile, installation_id = _local_target(claims, _api_request_profile)
         _, catalog = _local_room_catalog(self, profile, installation_id)
@@ -163,7 +165,7 @@ async def _handle_room_member_capabilities(
         return _room_grant_error_response(exc, _openai_error=_openai_error)
     return web.json_response({
         "object": "hermes.room_member.capabilities", **{k: claims[k] for k in _ROOM_IDENTITY_FIELDS},
-        "target_profile": profile, "catalog": catalog})
+        **RoomMemberIdentity.from_mapping(claims).as_mapping(), "catalog": catalog})
 
 
 async def _handle_room_member_grant_refresh(
@@ -195,6 +197,7 @@ async def _handle_room_member_grant_refresh(
         token = issue_room_grant(
             self._room_grant_secret(), grant_id=f"grant-refresh-{uuid.uuid4().hex}",
             **_room_identity(claims), target_install_id=installation_id, target_profile=profile,
+            capability_digest=claims["capability_digest"],
             execution_policy_digest=execution_policy["policy_digest"],
             permissions=claims["permissions"], issued_at=now, ttl_seconds=dispatch_ttl,
             status_expires_at=hard_expiry)

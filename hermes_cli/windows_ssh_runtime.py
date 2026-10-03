@@ -319,9 +319,13 @@ def process_state(pid: int, creation_time_ns: int, hermes_path: str, spawn_nonce
     # layout — so match "a python running our module" (`-c` bootstrap or plain `-m`). Identity
     # is anchored by the unforgeable creation-time + secret owner-nonce below.
     is_python = os.path.basename(arg0).startswith("python")
+    # Skip interpreter flags (the published launcher's runtime command is `python -I -c ...`).
+    rest = argv[1:]
+    while rest and rest[0].startswith("-") and rest[0] not in ("-c", "-m"):
+        rest = rest[2:] if rest[0] in ("-X", "-W") else rest[1:]
     launches_module = (
-        argv[1:3] == ["-m", "hermes_cli.main"]
-        or (len(argv) > 2 and argv[1] == "-c" and "hermes_cli.main" in argv[2]))
+        rest[:2] == ["-m", "hermes_cli.main"]
+        or (len(rest) > 1 and rest[0] == "-c" and "hermes_cli.main" in rest[1]))
     executable_match = arg0 == expected or (is_python and launches_module)
     try:
         serve = argv.index("serve")

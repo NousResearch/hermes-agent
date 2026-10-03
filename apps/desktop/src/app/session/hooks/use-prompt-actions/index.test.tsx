@@ -34,7 +34,7 @@ import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
 import type { SessionInfo } from '@/types/hermes'
 
 import { clearSingleFlightSessionResumeState } from './single-flight-resume'
-import { SESSION_COMPRESS_TIMEOUT_MS } from './slash'
+import { slashExecTimeoutMs, SESSION_COMPRESS_TIMEOUT_MS } from './slash'
 import type { SubmitTextOptions } from './utils'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
@@ -1294,6 +1294,52 @@ describe('usePromptActions exec fallback error reporting', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+  })
+
+  it('lets the editor-backed /prompt wait beyond the normal gateway timeout', async () => {
+    const requestGateway = vi.fn(async () => ({ output: 'prompt completed after editing' }) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/prompt write a long response in the editor')
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'prompt write a long response in the editor' }),
+      0
+    )
+    expect(slashExecTimeoutMs('prompt')).toBe(0)
+  })
+
+  it('keeps an ordinary wedged slash command bounded so fallback can run', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        throw new Error('slash worker timed out')
+      }
+
+      if (method === 'command.dispatch') {
+        throw new Error('not a quick/plugin/bundle/skill command: debug')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/debug')
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'debug' })
+    )
+    expect(requestGateway).toHaveBeenCalledWith('command.dispatch', expect.anything())
+    expect(slashExecTimeoutMs('debug')).toBeUndefined()
   })
 
   it('surfaces the slash.exec failure when command.dispatch only adds "not a quick/plugin/bundle/skill command"', async () => {

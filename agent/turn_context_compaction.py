@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from agent.context_engine import automatic_compaction_status_message
+from agent.context_engine import ContextEngine as _ContextEngine, automatic_compaction_status_message
 from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     compression_skipped_due_to_lock, conversation_history_after_compression,
@@ -168,7 +168,13 @@ def _idle_compaction(
         agent, messages, out.active_system_prompt or ""
     )
     # Don't summarise a thread already below the post-compression target size.
-    _idle_floor = int(_compressor.threshold_tokens * _compressor.summary_target_ratio)
+    # Post-compression target size: ``summary_target_ratio`` is a ContextEngine field, but read it
+    # defensively: minimal compressor doubles and engines constructed before the field was declared
+    # on the ABC would otherwise raise AttributeError here and abort the turn.
+    _idle_ratio = getattr(_compressor, "summary_target_ratio", _ContextEngine.summary_target_ratio)
+    if not isinstance(_idle_ratio, (int, float)) or isinstance(_idle_ratio, bool):
+        _idle_ratio = _ContextEngine.summary_target_ratio
+    _idle_floor = int(_compressor.threshold_tokens * _idle_ratio)
     _idle_cooldown = getattr(
         _compressor, "get_active_compression_failure_cooldown", lambda: None
     )()
@@ -283,7 +289,11 @@ def _preflight_compression(
             "Skipping preflight compression: rough estimate ~%s >= %s is not anchored on "
             "real usage (last real provider prompt %s); deferring to the next response",
             f"{_preflight_tokens:,}", f"{_compressor.threshold_tokens:,}",
-            f"{_compressor.last_real_prompt_tokens:,}",
+            # ``last_real_prompt_tokens`` is a ContextEngine field, but an engine that implements
+            # ``should_defer_preflight_to_real_usage`` without tracking it (or one constructed before
+            # the field was declared on the ABC) would otherwise raise AttributeError inside this log
+            # call and abort the turn.
+            f"{getattr(_compressor, 'last_real_prompt_tokens', 0) or 0:,}",
         )
     elif _compression_cooldown:
         logger.info(

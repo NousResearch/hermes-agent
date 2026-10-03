@@ -91,7 +91,9 @@ def _mark_entitlement_rejected_model(agent, api_error) -> bool:
     from agent.error_classifier import CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER
     haystack = str(getattr(api_error, "message", "") or api_error).lower()
     if CODEX_ACCOUNT_MODEL_ENTITLEMENT_MARKER not in haystack:
-        return False
+        from agent.error_classifier import _PROVIDER_POLICY_BLOCKED_PATTERNS
+        if not any(p in haystack for p in _PROVIDER_POLICY_BLOCKED_PATTERNS):
+            return False
     provider = str(getattr(agent, "provider", "") or "").strip().lower()
     model = str(getattr(agent, "model", "") or "").strip()
     if not provider or not model:
@@ -106,13 +108,13 @@ def _mark_entitlement_rejected_model(agent, api_error) -> bool:
         return True
     rejected.add((provider, model))
     logger.warning(
-        "Model entitlement rejection: this account is not entitled to %s via %s; "
+        "Model rejection: %s via %s is unavailable for this account/workspace; "
         "treating it as unavailable for this session",
         model, provider,
     )
     agent._buffer_diagnostic_status(
-        f"🚫 This account is not entitled to {model} via {provider}; it will be skipped "
-        "until restart. Switch to an entitled model via /model or `hermes model`."
+        f"🚫 {model} via {provider} is blocked for this account/workspace; it will be skipped "
+        "until restart. Replace it with `hermes fallback` or /model."
     )
     return True
 

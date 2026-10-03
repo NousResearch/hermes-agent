@@ -421,6 +421,7 @@ def relogin_command_hint(provider: Any) -> str:
 
 def nonretryable_copy(
     classified: Any, *, provider: Any, model: Any, summary: str, prefix_suggestion: Optional[str] = None,
+    fallback_route: Any = None,
 ) -> str:
     """Chat copy for a terminal non-retryable rejection (auth, model missing, TLS, generic 4xx)."""
     label = provider_label_for(provider)
@@ -437,6 +438,12 @@ def nonretryable_copy(
     )
     body = template.format(label=label, model=model, home=display_hermes_home(), prefix_hint=prefix_hint,
                            relogin=oauth_relogin_command(provider))
+    if fallback_route:
+        fb_model, fb_provider = fallback_route if isinstance(fallback_route, (tuple, list)) and len(fallback_route) >= 2 else (model, provider)
+        body += (
+            f" The failure was on fallback '{fb_model}' ({fb_provider}), not the primary. "
+            "Remove or replace that fallback entry (`hermes fallback`) so the next primary hiccup does not die the same way."
+        )
     return f"{body}\n\nProvider said: {summary}"
 
 

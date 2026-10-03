@@ -269,21 +269,27 @@ def _request_device_code(
     return data
 
 
-def _nous_device_auth_timeout_message(portal_base_url: str) -> str:
+def _nous_device_auth_timeout_message(portal_base_url: str, expires_in: Optional[int] = None) -> str:
     """Actionable timeout text: the usual cause is Portal sign-in failing in the browser tab.
 
     A bare "Timed out waiting for device authorization" gives the user nothing to act on. The most common
     cause is Portal sign-in failing in the opened browser tab (including the server-side CAPTCHA loop from
-    20605), so point at the Portal login page and the retry command. See #20605.
+    20605), so point at the Portal login page and the retry command. ``expires_in`` (the device code's
+    validity window) is surfaced as the elapsed state so the user knows how long the flow waited before
+    giving up (#98682). See #20605.
     """
     portal = (portal_base_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
-    return (
-        "Timed out waiting for device authorization.\n"
-        "  Portal sign-in is required before the device code can be approved.\n"
-        "  If the browser showed a CAPTCHA / 'You did not pass CAPTCHA' error,\n"
-        "  finish signing in at the Portal in a normal browser tab, then retry:\n"
-        "    hermes portal\n"
-        f"  Portal login: {portal}/login")
+    lines = ["Timed out waiting for device authorization."]
+    if expires_in:
+        lines.append(f"  The device code expired after {int(expires_in)}s without approval.")
+    lines += [
+        "  Portal sign-in is required before the device code can be approved.",
+        "  If the browser showed a CAPTCHA / 'You did not pass CAPTCHA' error,",
+        "  finish signing in at the Portal in a normal browser tab, then retry:",
+        "    hermes portal",
+        f"  Portal login: {portal}/login",
+    ]
+    return "\n".join(lines)
 
 
 def _print_device_code_instructions(
@@ -394,7 +400,8 @@ def _poll_for_token(
             "Token endpoint returned a non-JSON error response"),
         # Enriched at the SOURCE so the CLI login and the dashboard/desktop poller
         # (web_server_oauth._nous_promotion_poller surfaces it to the UI) both inherit the guidance.
-        on_timeout=lambda: TimeoutError(_nous_device_auth_timeout_message(portal_base_url)))
+        on_timeout=lambda: TimeoutError(
+            _nous_device_auth_timeout_message(portal_base_url, expires_in=expires_in)))
 
 
 def _prompt_yes_no(prompt: str, *, default: str) -> bool:

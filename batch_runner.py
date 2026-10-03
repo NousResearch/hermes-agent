@@ -583,9 +583,11 @@ class BatchRunner:
             if not prompt_text:
                 conversations = entry.get("conversations", [])
                 for msg in conversations:
+                    if not isinstance(msg, dict):
+                        continue
                     role = msg.get("role") or msg.get("from")
                     if role in {"user", "human"}:
-                        prompt_text = (msg.get("content") or msg.get("value", "")).strip()
+                        prompt_text = str(msg.get("content") or msg.get("value") or "").strip()
                         break
 
             if prompt_text in completed_prompts:

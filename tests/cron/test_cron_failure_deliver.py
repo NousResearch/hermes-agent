@@ -507,3 +507,44 @@ class TestFailureCompositionHook:
         assert s._compose_cron_failure_notice(
             {"id": "j8"}, "boom", "built-in notice"
         ) == "built-in notice"
+
+    @pytest.mark.parametrize("config", [
+        {"failure_compose": 123},
+        {"failure_compose": ["formatter"], "failure_compose_timeout": 0},
+    ])
+    def test_invalid_configuration_keeps_builtin_notice(self, monkeypatch, config):
+        monkeypatch.setattr(s, "load_config", lambda: {"cron": config})
+
+        assert s._compose_cron_failure_notice(
+            {"id": "j9"}, "boom", "built-in notice"
+        ) == "built-in notice"
+
+    def test_empty_hook_output_keeps_builtin_notice(self, monkeypatch):
+        class Result:
+            returncode = 0
+            stdout = "   "
+            stderr = ""
+
+        monkeypatch.setattr(s, "load_config", lambda: {
+            "cron": {"failure_compose": ["formatter"]}
+        })
+        monkeypatch.setattr(s.subprocess, "run", lambda *args, **kwargs: Result())
+
+        assert s._compose_cron_failure_notice(
+            {"id": "j10"}, "boom", "built-in notice"
+        ) == "built-in notice"
+
+    def test_hook_timeout_keeps_builtin_notice(self, monkeypatch):
+        monkeypatch.setattr(s, "load_config", lambda: {
+            "cron": {"failure_compose": ["formatter"]}
+        })
+
+        def timeout(*args, **kwargs):
+            assert kwargs["timeout"] == 10
+            raise s.subprocess.TimeoutExpired(cmd=["formatter"], timeout=kwargs["timeout"])
+
+        monkeypatch.setattr(s.subprocess, "run", timeout)
+
+        assert s._compose_cron_failure_notice(
+            {"id": "j11"}, "boom", "built-in notice"
+        ) == "built-in notice"

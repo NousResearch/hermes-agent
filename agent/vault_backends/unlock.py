@@ -22,7 +22,8 @@ from typing import Callable, Dict, Optional
 _IDLE_TTL_S = 30 * 60
 
 _lock = threading.Lock()
-_sessions: Dict[tuple[str, str], tuple[str, float]] = {}   # (profile home, backend) → (token, last_used)
+# (profile home, backend) → (token, last_used monotonic, last_used wall clock)
+_sessions: Dict[tuple[str, str], tuple[str, float, float]] = {}
 _callback_tls = threading.local()
 
 UnlockPrompt = Callable[[str, str], str]  # (backend_name, display_name) -> master password ("" = cancelled)
@@ -84,18 +85,29 @@ def set_current_session_id(session_id: Optional[str]) -> None:
     _current_session_tls.sid = session_id
 
 
+def _stamp() -> tuple[float, float]:
+    return time.monotonic(), time.time()
+
+
+def _idle_s(last_mono: float, last_wall: float) -> float:
+    # ``time.monotonic()`` stops while macOS sleeps, so a night with the lid closed would never count
+    # toward the idle TTL; the wall clock keeps running through sleep. The larger of the two decides, so
+    # neither a paused monotonic clock nor a wall clock set backwards can keep an unlock alive.
+    return max(time.monotonic() - last_mono, time.time() - last_wall)
+
+
 def _live(backend: str, *, touch: bool) -> Optional[str]:
     key = _key(backend)
     with _lock:
         entry = _sessions.get(key)
         if entry is None:
             return None
-        token, last = entry
-        if time.monotonic() - last > _IDLE_TTL_S:
+        token, last_mono, last_wall = entry
+        if _idle_s(last_mono, last_wall) > _IDLE_TTL_S:
             del _sessions[key]
             return None
         if touch:
-            _sessions[key] = (token, time.monotonic())
+            _sessions[key] = (token, *_stamp())
         return token
 
 
@@ -116,7 +128,7 @@ def store_session_token(backend: str, token: str, generation: Optional[int] = No
     with _lock:
         if generation is not None and generation != _generation.get(key, 0):
             return False
-        _sessions[key] = (token, time.monotonic())
+        _sessions[key] = (token, *_stamp())
         _owner_session[key] = getattr(_current_session_tls, "sid", None)
         return True
 

@@ -957,6 +957,7 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["runs_idempotency"]["durable"] is True
             assert data["features"]["model_options"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
+            assert data["features"]["detach_on_disconnect_header"] == "X-Hermes-Detach-On-Disconnect"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["model_options"] == {"method": "GET", "path": "/api/model/options"}
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
@@ -1113,6 +1114,69 @@ class TestChatCompletionsEndpoint:
         assert kwargs["requested_model"] == "MiniMax-M3"
         assert kwargs["requested_provider"] == "minimax"
         assert kwargs["model_options"] == model_options
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_detach_on_disconnect_header_reaches_the_writer(self, adapter):
+        """``X-Hermes-Detach-On-Disconnect`` is read off the request and handed to the SSE writer,
+        which is where the disconnect branch decides between detach and interrupt."""
+        seen = {}
+
+        async def _fake_writer(request, completion_id, model, created, stream_q, agent_task,
+                               agent_ref=None, **kwargs):
+            seen.update(kwargs)
+            return web.json_response({"ok": True})
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run,
+                patch.object(adapter, "_write_sse_chat_completion", side_effect=_fake_writer),
+            ):
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}],
+                          "stream": True},
+                    headers={"X-Hermes-Detach-On-Disconnect": "1"},
+                )
+                assert resp.status == 200
+
+        assert seen["detach_on_disconnect"] is True
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_without_the_header_keeps_the_interrupt_contract(self, adapter):
+        """Absent, or explicitly false, is the default: a dropped stream still kills the turn."""
+        seen = {}
+
+        async def _fake_writer(request, completion_id, model, created, stream_q, agent_task,
+                               agent_ref=None, **kwargs):
+            seen.update(kwargs)
+            return web.json_response({"ok": True})
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run,
+                patch.object(adapter, "_write_sse_chat_completion", side_effect=_fake_writer),
+            ):
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                for headers in ({}, {"X-Hermes-Detach-On-Disconnect": "false"},
+                                {"X-Hermes-Detach-On-Disconnect": "nonsense"}):
+                    seen.clear()
+                    resp = await cli.post(
+                        "/v1/chat/completions",
+                        json={"model": "hermes-agent", "messages": [{"role": "user", "content": "hi"}],
+                              "stream": True},
+                        headers=headers,
+                    )
+                    assert resp.status == 200
+                    assert seen["detach_on_disconnect"] is False
 
 
     @pytest.mark.asyncio

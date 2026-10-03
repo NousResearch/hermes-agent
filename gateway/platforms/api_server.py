@@ -74,7 +74,8 @@ _STATIC_FEATURE_FLAGS = {
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
-    "session_key_header": "X-Hermes-Session-Key"}
+    "session_key_header": "X-Hermes-Session-Key",
+    "detach_on_disconnect_header": "X-Hermes-Detach-On-Disconnect"}
 # /v1/capabilities "endpoints" table: name -> (method, path).
 _CAPABILITY_ENDPOINTS = (
     ("health", ("GET", "/health")), ("health_detailed", ("GET", "/health/detailed")),
@@ -712,6 +713,50 @@ async def _abandon_agent_task(
         if await_cancel:
             with suppress(asyncio.CancelledError, Exception):
                 await agent_task
+
+
+# Poll gap of a detached run's drain loop, so a queue that truly ended (EOS consumed by the
+# writer before it failed on its terminal frames) is noticed instead of awaited forever.
+_DETACHED_DRAIN_POLL_SECONDS = 0.5
+
+
+async def _drain_detached_stream(stream_q, agent_task) -> None:
+    """Consume a detached run's delta queue until EOS (or the run ends with the queue empty).
+
+    The SSE writer is gone and ``ThreadSafeAsyncQueue`` is unbounded, so without a consumer a
+    detached turn would retain every delta it emits for the life of the turn. EOS is appended
+    by the spawn's done-callback; the ``done() and empty()`` check also covers a writer that
+    already consumed the sentinel before failing on its terminal frames.
+    """
+    while True:
+        try:
+            item = await asyncio.wait_for(stream_q.get(), timeout=_DETACHED_DRAIN_POLL_SECONDS)
+        except asyncio.TimeoutError:
+            if agent_task.done() and stream_q.empty():
+                return
+            continue
+        if item is None:
+            return
+
+
+async def _detach_agent_task(adapter, agent_task, stream_q, *, run_id: str = "") -> None:
+    """Let an SSE agent run finish after its client disconnected (opt-in detach).
+
+    ``_abandon_agent_task`` is the default contract: the socket dropped, so nobody is reading,
+    so the agent is hard-interrupted and the processes it started are reaped. A client that only
+    lost its *socket* — a phone whose screen locked, a tunnel that dropped — asks for the
+    opposite via ``X-Hermes-Detach-On-Disconnect``: the turn finishes on the server and lands in
+    the session transcript, where the client reads the reply it missed when it comes back.
+
+    So: no interrupt, no process reaping, no task cancellation. Status stays with the spawn's
+    ``on_done`` hook, which retires the run record when the turn actually ends — a detached run
+    is still a live run, and a client that reconnects may poll it by completion id.
+    """
+    drain = asyncio.ensure_future(_drain_detached_stream(stream_q, agent_task))
+    register = getattr(adapter, "_track_background_task", None)
+    if callable(register):
+        register(drain)
+    logger.info("SSE client disconnected; turn %s left running (detached)", run_id or "?")
 
 
 def check_api_server_requirements() -> bool:

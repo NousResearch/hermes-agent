@@ -326,9 +326,10 @@ def _signal_mcp_process(pid: int, sig: int, server_name: str, pgid: Optional[int
                         expected_start: Optional[int] = None, spawn_marker: Optional[str] = None) -> None:
     """Signal a live leader's group when its start time matches the spawn record.
 
-    On Linux, an absent leader leaves a recyclable PGID, so signal only group
-    members carrying this spawn's marker through pidfds. A mismatched live leader
-    is never signalled. Other platforms retain the drift-tolerant upstream guard."""
+    A mismatched live leader may own a recycled PID, so never signal its group.
+    On Linux, a reaped leader leaves an ambiguous PGID: signal only members
+    carrying this spawn's marker through pidfds. Other platforms retain the
+    drift-tolerant start-time guard."""
     current_start = _leader_start_time(pid) if expected_start is not None or spawn_marker else None
     if expected_start is not None:
         if current_start is None:

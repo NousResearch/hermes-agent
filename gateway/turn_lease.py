@@ -12,7 +12,7 @@ CLI-continuity processes are outside this lock; mid-turn rotation alias is close
 import asyncio
 import logging
 import time
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,10 @@ DEFAULT_MAX_LEASES = 512
 # HERMES_TURN_LEASE_TIMEOUT — lease contention is not agent inactivity). Fail-closed but short:
 # never pin a sequential platform updater for minutes.
 DEFAULT_LEASE_WAIT = 5.0
+# A stale-generation holder (its turn was /stop'd or /new'd and is still unwinding a tool call)
+# that keeps the lease longer than this emits ONE structured PHASE=stale_lease_holder line, so a
+# zombie turn blocking the session is greppable instead of being misreported as alias contention.
+STALE_HOLDER_LOG_AFTER = 60.0
 
 
 def _holder_desc(holder: Optional["TurnLeaseToken"]) -> tuple:
@@ -58,12 +62,14 @@ class TurnLeaseToken:
 
 
 class _SessionLease:
-    __slots__ = ("lock", "holder", "acquired_at", "last_used", "pending_acquires")
+    __slots__ = ("lock", "holder", "acquired_at", "last_used", "pending_acquires", "stale_logged")
 
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
         self.holder: Optional[TurnLeaseToken] = None
         self.acquired_at, self.last_used, self.pending_acquires = 0.0, time.time(), 0
+        # One-shot latch for the stale-holder detector; re-armed on release.
+        self.stale_logged = False
 
     @property
     def idle(self) -> bool:
@@ -75,9 +81,26 @@ class SessionTurnLeaseRegistry:
     """Asyncio lease per resolved session_id. Process-local, single-event-loop by design (same
     visibility scope as the routing-key guards it extends); call only from the gateway loop."""
 
-    def __init__(self, max_entries: int = DEFAULT_MAX_LEASES) -> None:
+    def __init__(self, max_entries: int = DEFAULT_MAX_LEASES, *,
+                 is_generation_current: Optional[Callable[[str, int], bool]] = None) -> None:
         self._leases: Dict[str, _SessionLease] = {}
         self._max_entries = max(1, int(max_entries))
+        # Runner predicate (``_is_session_run_current``) answering "is this holder's (routing key,
+        # generation) still the session's current run?". False = the holder was already /stop'd or
+        # /new'd and is merely draining a tool call — a zombie, NOT an alias-key turn. Optional:
+        # with no predicate every holder is treated as live (previous behavior).
+        self._is_generation_current = is_generation_current
+
+    def _holder_is_stale(self, holder: Optional[TurnLeaseToken]) -> bool:
+        """True when ``holder``'s generation is no longer current. Fail-open: no predicate, or a
+        raising one, means LIVE — a predicate bug must never mislabel a running turn."""
+        if holder is None or self._is_generation_current is None:
+            return False
+        try:
+            return not bool(self._is_generation_current(holder.owner_key, holder.generation))
+        except Exception:
+            logger.debug("turn lease currency predicate failed", exc_info=True)
+            return False
 
     def _get_or_create(self, session_id: str) -> _SessionLease:
         if (lease := self._leases.get(session_id)) is None:
@@ -106,13 +129,29 @@ class SessionTurnLeaseRegistry:
         lease = self._get_or_create(session_id)
         token = TurnLeaseToken(session_id, owner_key, int(generation), lease=lease)
         if lease.lock.locked():
-            logger.warning(
-                "turn lease contention on session %s: routing key %s (gen %s) waiting behind "
-                "in-flight turn held by routing key %s (gen %s, held %.0fs) — two routing keys "
-                "are mapped to one session_id (#64934); serializing this turn behind the previous "
-                "turn's flush",
-                session_id, owner_key, generation, *_holder_desc(lease.holder),
-                time.time() - lease.acquired_at if lease.acquired_at else -1.0)
+            held = time.time() - lease.acquired_at if lease.acquired_at else -1.0
+            holder = lease.holder
+            if holder is not None and self._holder_is_stale(holder):
+                # The holder's turn was already stopped; it is draining a tool call and will emit
+                # nothing. Reporting this as alias-key contention sends every reader down the
+                # wrong path, so say what actually happened and make it greppable.
+                logger.warning(
+                    "turn lease held by a STALE turn on session %s: routing key %s (gen %s) is "
+                    "waiting behind routing key %s (gen %s, held %.0fs) whose generation was "
+                    "already invalidated — that turn was stopped and is still draining a tool "
+                    "call, so this is NOT alias-key contention",
+                    session_id, owner_key, generation, holder.owner_key, holder.generation, held)
+                if not lease.stale_logged and held >= STALE_HOLDER_LOG_AFTER:
+                    lease.stale_logged = True
+                    logger.warning("PHASE=stale_lease_holder session=%s key=%s gen=%s held=%.0fs",
+                                   session_id, holder.owner_key, holder.generation, held)
+            else:
+                logger.warning(
+                    "turn lease contention on session %s: routing key %s (gen %s) waiting behind "
+                    "in-flight turn held by routing key %s (gen %s, held %.0fs) — two routing keys "
+                    "are mapped to one session_id (#64934); serializing this turn behind the previous "
+                    "turn's flush",
+                    session_id, owner_key, generation, *_holder_desc(holder), held)
         # Lock.release() wakes a waiter while leaving the lock momentarily unlocked. Count every
         # in-progress acquire across that handoff (even apparently-uncontended ones — wait_for()
         # may schedule them before the lock coroutine runs) so eviction cannot orphan the old
@@ -174,6 +213,7 @@ class SessionTurnLeaseRegistry:
                          "the current holder", token.session_id, token.owner_key, token.generation)
             return False
         lease.holder, lease.acquired_at, lease.last_used = None, 0.0, time.time()
+        lease.stale_logged = False  # re-arm: a LATER zombie on this session must log again
         if lease.lock.locked():
             lease.lock.release()
         return True

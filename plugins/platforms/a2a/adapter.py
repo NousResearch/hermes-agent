@@ -39,6 +39,7 @@ _MIN_ORPHAN_TIMEOUT, _MAX_ORPHAN_TIMEOUT, _WATCHDOG_INTERVAL = 300, 86400, 60
 _MAX_BODY = 1_048_576  # 1MB max request body — prevents DoS via memory exhaustion
 _SSE_KEEPALIVE = 5  # seconds between SSE keepalive comments
 _DEFAULT_DESCRIPTION = "Hermes Agent — a general-purpose agent reachable over A2A."
+_MESSAGES_SEND_PATH = "/api/v1/messages/send"
 
 _ok = protocol.jsonrpc_result
 _err = protocol.jsonrpc_error
@@ -192,8 +193,55 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         scheme = (self.headers.get("X-Forwarded-Proto", "") or "http").split(",")[0].strip()
         return f"{scheme}://{host}/" if host else ""
 
+    def _is_messages_send_route(self) -> bool:
+        return urllib.parse.urlsplit(self.path).path == _MESSAGES_SEND_PATH
+
+    def _rest_error(self, http_code: int, message: str):
+        return self._json(http_code, {"ok": False, "error": message})
+
+    def _handle_messages_send(self, req: Any, identity: str):
+        if not isinstance(req, dict):
+            return self._rest_error(400, "request body must be an object")
+        target, message = req.get("target"), req.get("message")
+        if not isinstance(target, str) or not target.strip():
+            return self._rest_error(400, "target must be a non-empty string")
+        if not isinstance(message, str) or not message.strip():
+            return self._rest_error(400, "message must be a non-empty string")
+        if not self.adapter._rate_limiter.allow(identity):
+            protocol.metrics.rate_limit_triggers += 1
+            return self._rest_error(429, "rate limit exceeded")
+        if not self.adapter._security_context.is_trusted_peer(identity):
+            return self._rest_error(403, f"peer '{identity}' not trusted")
+
+        try:
+            from tools.send_message_tool import send_message_tool
+
+            result_json = send_message_tool({"action": "send", "target": target, "message": message})
+            result = json.loads(result_json)
+        except json.JSONDecodeError:
+            return self._rest_error(502, "invalid JSON from send_message_tool")
+        except Exception as exc:
+            return self._rest_error(500, f"send_message_tool failed: {exc}")
+
+        if not isinstance(result, dict):
+            return self._rest_error(502, "invalid response from send_message_tool")
+        if not result.get("success"):
+            return self._rest_error(502, str(result.get("error") or "message delivery failed"))
+        return self._json(200, {
+            "ok": True,
+            "platform": result.get("platform") or target.partition(":")[0].strip().lower(),
+            "message_id": result.get("message_id"),
+        })
+
     def do_GET(self):  # noqa: N802
         adapter = self.adapter
+        if self._is_messages_send_route():
+            identity = adapter._security_context.authenticate(
+                self.headers.get("Authorization"), self._client_ip()
+            )
+            if identity is None:
+                return self._rest_error(401, "unauthorized")
+            return self._rest_error(405, "method not allowed")
         route = adapter._route_for_path(self.path)
         agent = route["agent"]
         subpath = route["subpath"].rstrip("/") or "/"
@@ -216,14 +264,22 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
         # Identity comes from the credential (or the socket in localhost-only mode) — never the body.
         identity = adapter._security_context.authenticate(self.headers.get("Authorization"), self._client_ip())
         if identity is None:
+            if self._is_messages_send_route():
+                return self._rest_error(401, "unauthorized")
             return self._error(401, None, protocol.ERR_UNAUTHORIZED, "unauthorized")
         try:
             length = int(self.headers.get("Content-Length", 0))
             if length > _MAX_BODY:
+                if self._is_messages_send_route():
+                    return self._rest_error(413, "payload too large")
                 return self._error(413, None, protocol.ERR_PARSE, "payload too large")
             req = json.loads((self.rfile.read(length) if length else b"{}").decode("utf-8"))
         except Exception:
+            if self._is_messages_send_route():
+                return self._rest_error(400, "parse error")
             return self._error(400, None, protocol.ERR_PARSE, "parse error")
+        if self._is_messages_send_route():
+            return self._handle_messages_send(req, identity)
         if not isinstance(req, dict):
             return self._error(400, None, protocol.ERR_INVALID_PARAMS, "JSON-RPC request must be an object")
         req_id, method = req.get("id"), str(req.get("method", ""))

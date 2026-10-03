@@ -248,6 +248,15 @@ hermes-agent/
 `~/.hermes/logs/` (`agent.log` INFO+, `errors.log` WARNING+, `gateway.log`); all
 profile-aware via `get_hermes_home()`. Browse logs with `hermes logs [--follow] [--level] [--session]`.
 
+**A2A gateway HTTP surfaces:** An A2A listener (commonly port 9901) serves inbound JSON-RPC and
+outbound `POST /api/v1/messages/send`, which is equivalent to `hermes send --to TARGET MESSAGE`.
+For example, `{"target":"telegram:#ops","message":"hello"}` returns
+`200 {"ok":true,"platform":"telegram","message_id":"123"}` only on confirmed delivery; a
+delivery failure returns a non-200 response such as
+`502 {"ok":false,"error":"Unknown platform: example"}`. Both REST methods inherit the A2A
+security context: localhost-only mode accepts loopback clients, while remote listeners require the
+configured bearer credential.
+
 **Dependency chain:** `tools/registry.py` (no deps) ← `tools/*.py` (register at import) ←
 `model_tools.py` (discovery) ← `run_agent.py`, `cli.py`, `batch_runner.py`, `environments/`.
 

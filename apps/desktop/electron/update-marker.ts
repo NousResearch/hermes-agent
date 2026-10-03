@@ -205,7 +205,7 @@ export async function processCreateTime(pid: number): Promise<number | null> {
     return null
   }
 
-  if (process.platform !== 'win32' || pid === process.pid) {
+  if (process.platform !== 'win32' || (pid === process.pid && ownCreateTime() !== null)) {
     return processCreateTimeSync(pid)
   }
 
@@ -241,8 +241,12 @@ export function processCreateTimeSync(pid: number): number | null {
     return null
   }
 
-  if (pid === process.pid) {
-    return ownCreateTime()
+  // Electron's own GetProcessTimes; plain Node (tests, tooling) has no
+  // getCreationTime and falls through to CIM like any other pid.
+  const own = pid === process.pid ? ownCreateTime() : null
+
+  if (own !== null) {
+    return own
   }
 
   try {

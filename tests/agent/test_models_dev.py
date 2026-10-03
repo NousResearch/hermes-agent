@@ -99,6 +99,16 @@ class TestProviderMapping:
         assert PROVIDER_TO_MODELS_DEV["xai"] == "xai"
         assert PROVIDER_TO_MODELS_DEV["xai-oauth"] == "xai"
 
+    def test_kimi_providers_map_to_renamed_models_dev_slugs(self):
+        """models.dev renamed the Kimi Code plan provider to kimi-code-plan-global/-cn; the
+        old "kimi-for-coding" provider slug survives there only as a MODEL id, so a stale
+        mapping makes every catalog lookup silently miss (#126224)."""
+        assert PROVIDER_TO_MODELS_DEV["kimi"] == "kimi-code-plan-global"
+        assert PROVIDER_TO_MODELS_DEV["kimi-coding"] == "kimi-code-plan-global"
+        assert PROVIDER_TO_MODELS_DEV["kimi-coding-cn"] == "kimi-code-plan-cn"
+        # Legacy Moonshot API keys serve the moonshotai catalog, not the coding-plan one.
+        assert PROVIDER_TO_MODELS_DEV["moonshot"] == "moonshotai"
+
 
 
 
@@ -119,6 +129,22 @@ class TestLookupModelsDevContext:
     def test_exact_match(self, mock_fetch):
         mock_fetch.return_value = SAMPLE_REGISTRY
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") == 1000000
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_kimi_for_coding_context_via_renamed_provider(self, mock_fetch):
+        """The renamed kimi-code-plan-* catalog carries kimi-for-coding at 1 Mi and its
+        -highspeed sibling at 256K (#126224)."""
+        mock_fetch.return_value = {
+            "kimi-code-plan-global": {
+                "id": "kimi-code-plan-global",
+                "models": {
+                    "kimi-for-coding": {"id": "kimi-for-coding", "limit": {"context": 1048576, "output": 32768}},
+                    "kimi-for-coding-highspeed": {"id": "kimi-for-coding-highspeed", "limit": {"context": 262144}},
+                },
+            },
+        }
+        assert lookup_models_dev_context("kimi-coding", "kimi-for-coding") == 1048576
+        assert lookup_models_dev_context("kimi-coding", "kimi-for-coding-highspeed") == 262144
 
 
 

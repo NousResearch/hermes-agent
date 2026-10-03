@@ -338,6 +338,37 @@ class TestDefaultContextLengths:
                         model, provider="kimi-coding", base_url=base_url
                     ) == 1_048_576
 
+    def test_kimi_for_coding_resolves_to_1mi(self):
+        """kimi-for-coding serves 1 Mi (live /models probe + models.dev kimi-code-plan-*),
+        not the stale 256K "kimi" catch-all (#126224). The canonical endpoint wins even
+        over a persistent-cache entry polluted by the pre-fix resolution; the -highspeed
+        sibling is genuinely 256K and must not be swallowed by the shared prefix."""
+        # Canonical Kimi Coding endpoint: the endpoint-scoped value sits AHEAD of the
+        # persistent cache, so the polluted entry cannot win there.
+        with patch("agent.model_metadata.get_cached_context_length", return_value=262144), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            for base_url in ("https://api.kimi.com/coding", "https://api.kimi.com/coding/v1"):
+                assert get_model_context_length(
+                    "kimi-for-coding", provider="kimi-coding", base_url=base_url
+                ) == 1_048_576
+        # Cold cache / off-endpoint: the hardcoded table entry (not the "kimi" catch-all).
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            for base_url in ("", "https://api.moonshot.ai/v1"):
+                assert get_model_context_length(
+                    "kimi-for-coding", provider="kimi-coding", base_url=base_url
+                ) == 1_048_576
+            # -highspeed is 256K everywhere; the longer key outranks the shared prefix.
+            for base_url in ("https://api.kimi.com/coding", ""):
+                assert get_model_context_length(
+                    "kimi-for-coding-highspeed", provider="kimi-coding", base_url=base_url
+                ) == 262_144
 
     @staticmethod
     def _upstage_ctx(model):

@@ -716,3 +716,54 @@ class TestLightpandaSessionLifecycle:
         dead_owner.write_text(json.dumps({"owner_pid": 2**22 + 7}), encoding="utf-8")
         assert browser_lightpanda.reap_orphaned_lightpanda() == 0
         assert not bad.exists() and not dead_owner.exists()
+
+
+@pytest.mark.platforms("posix")
+class TestBinarySupportsHttpCache:
+    """``--http-cache-dir`` support probe. Lightpanda 0.4.x lists only commands
+    in bare ``help`` output and keeps serve flags in subcommand help
+    (``help serve``); older shapes printed flags at the top level."""
+
+    @staticmethod
+    def _fake(tmp_path, script):
+        path = tmp_path / "lightpanda"
+        path.write_text(script, encoding="utf-8")
+        path.chmod(0o755)
+        from tools import browser_lightpanda
+        browser_lightpanda._binary_supports_http_cache.cache_clear()
+        return str(path), browser_lightpanda
+
+    def test_flag_found_in_subcommand_help(self, tmp_path):
+        binary, bl = self._fake(tmp_path, (
+            "#!/bin/sh\n"
+            'if [ "$1" = "help" ] && [ -z "${2-}" ]; then\n'
+            '  echo "usage: lightpanda <command>"\n'
+            "  exit 0\n"
+            "fi\n"
+            'if [ "$1" = "help" ] && [ "${2-}" = "serve" ]; then\n'
+            '  echo "  --http-cache-dir <PATH>  filesystem cache"\n'
+            "  exit 0\n"
+            "fi\n"
+            "exit 1\n"
+        ))
+        assert bl._binary_supports_http_cache(binary) is True
+
+    def test_flag_found_in_top_level_help(self, tmp_path):
+        binary, bl = self._fake(tmp_path, (
+            "#!/bin/sh\n"
+            'if [ "$1" = "help" ]; then\n'
+            '  echo "  --http-cache-dir <PATH>"\n'
+            "  exit 0\n"
+            "fi\n"
+            "exit 1\n"
+        ))
+        assert bl._binary_supports_http_cache(binary) is True
+
+    def test_flag_absent(self, tmp_path):
+        binary, bl = self._fake(tmp_path, "#!/bin/sh\necho 'usage: lightpanda <command>'\nexit 0\n")
+        assert bl._binary_supports_http_cache(binary) is False
+
+    def test_missing_binary_reports_unsupported(self, tmp_path):
+        from tools import browser_lightpanda
+        browser_lightpanda._binary_supports_http_cache.cache_clear()
+        assert browser_lightpanda._binary_supports_http_cache(str(tmp_path / "absent")) is False

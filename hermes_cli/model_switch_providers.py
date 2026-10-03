@@ -562,7 +562,8 @@ def _entry_api_mode(entry: dict) -> str | None:
 def _entry_credentials(entry: dict, *key_env_keys: str) -> tuple[Any, str, str]:
     """Unminted credential, env fallback, and stable grouping identity."""
     key_env = str(next((entry.get(k) for k in key_env_keys if entry.get(k)), "")).strip()
-    source = build_command_token_provider(entry.get("key_cmd", ""), entry.get("name") or "custom")
+    source = build_command_token_provider(entry.get("key_cmd", ""), entry.get("name") or "custom",
+                                          entry.get("key_cmd_env"))
     if source is not None:
         return source, key_env, source.cache_identity
     inline_api_key = str(entry.get("api_key", "") or "").strip()

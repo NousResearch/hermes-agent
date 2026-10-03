@@ -43,16 +43,44 @@ def materialize_probe_api_key(api_key: object) -> str:
     return token.strip() if isinstance(token, str) else ""
 
 
-def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
+def normalize_key_cmd_env(value: object) -> list[str]:
+    """Declared ``key_cmd_env`` names: the Tier 1 entries one helper may still see."""
+    items = [value] if isinstance(value, str) else (value if isinstance(value, (list, tuple)) else [])
+    return [name.strip() for name in items if isinstance(name, str) and name.strip()]
+
+
+def _mint(command: str, label: str, key_cmd_env: object = None) -> tuple[str, Optional[float]]:
     """Run *command*, returning ``(token, ttl_seconds_or_None)``. The helper runs FOR the profile whose
     provider is being minted: it gets that profile's own env (secrets + HERMES_HOME), never the multiplexer's
-    launch environ — an ``op read`` / ``vault kv get`` helper must sign in as the served profile."""
-    from tools.environments.local import served_profile_child_env
+    launch environ — an ``op read`` / ``vault kv get`` helper must sign in as the served profile. The served
+    profile's ``.env`` overlay re-adds Tier 1 adapter secrets with no second pass, so scrub again before
+    spawning (#126902, the openviking double scrub from #125755); only names the provider declares in
+    ``key_cmd_env`` (e.g. ``GH_TOKEN`` for a ``gh auth token``-style helper) are restored."""
+    try:
+        from tools.environments.local import hermes_subprocess_env, served_profile_child_env
+
+        served = served_profile_child_env(inherit_credentials=True)
+        child_env = hermes_subprocess_env(inherit_credentials=True, base_env=served)
+        wanted = normalize_key_cmd_env(key_cmd_env)
+        if wanted:
+            by_fold = {}
+            for key, val in served.items():
+                by_fold.setdefault(key.upper(), (key, val))
+            for name in wanted:
+                if name.upper() in by_fold:
+                    key, val = by_fold[name.upper()]
+                    child_env[key] = val
+    except Exception as exc:
+        # Never fall back to implicit full-environment inheritance when the
+        # credential-scoped environment cannot be constructed.
+        raise CommandTokenError(
+            f"key_cmd for provider {label!r} could not prepare a credential-scoped environment"
+        ) from exc
 
     try:
         completed = subprocess.run(
             command, shell=True, capture_output=True, text=True, errors="replace", timeout=_MINT_TIMEOUT_SECONDS,
-            env=served_profile_child_env(inherit_credentials=True),
+            env=child_env,
         )
     except subprocess.TimeoutExpired as exc:
         raise CommandTokenError(
@@ -114,9 +142,10 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
 class CommandTokenSource:
     """Callable returning a bearer token, cached until shortly before expiry."""
 
-    def __init__(self, command: str, label: str = "custom") -> None:
+    def __init__(self, command: str, label: str = "custom", key_cmd_env: object = None) -> None:
         self._command = command
         self._label = label or "custom"
+        self._key_cmd_env = normalize_key_cmd_env(key_cmd_env)
         self._lock = threading.Lock()
         self._token = ""
         self._expires_at: float = 0.0
@@ -130,7 +159,7 @@ class CommandTokenSource:
         with self._lock:
             if self._token and time.monotonic() < self._expires_at:
                 return self._token
-            token, ttl = _mint(self._command, self._label)
+            token, ttl = _mint(self._command, self._label, self._key_cmd_env)
             self._token = token
             self._expires_at = time.monotonic() + (
                 max(ttl - _TOKEN_REFRESH_LEEWAY_SECONDS, 5.0) if ttl else _NO_TTL_REFRESH_SECONDS
@@ -142,7 +171,8 @@ class CommandTokenSource:
             return token
 
 
-def build_command_token_provider(key_cmd: str, provider_label: str = "custom") -> Optional[CommandTokenSource]:
+def build_command_token_provider(key_cmd: str, provider_label: str = "custom",
+                                   key_cmd_env: object = None) -> Optional[CommandTokenSource]:
     """A per-request token provider for *key_cmd*, or ``None`` when unset."""
     command = str(key_cmd or "").strip()
-    return CommandTokenSource(command, provider_label) if command else None
+    return CommandTokenSource(command, provider_label, key_cmd_env) if command else None

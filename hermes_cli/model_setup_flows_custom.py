@@ -242,7 +242,8 @@ def _discover_named_custom_models(provider_info: dict, api_key: str, configured_
     )
 
     from agent.command_token_source import build_command_token_provider, materialize_probe_api_key
-    source = build_command_token_provider(provider_info.get("key_cmd", ""), provider_info["name"])
+    source = build_command_token_provider(provider_info.get("key_cmd", ""), provider_info["name"],
+                                          provider_info.get("key_cmd_env"))
     api_key = materialize_probe_api_key(source if source is not None else api_key)
     name, base_url = provider_info["name"], provider_info["base_url"]
     api_mode = provider_info.get("api_mode", "")

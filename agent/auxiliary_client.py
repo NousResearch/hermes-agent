@@ -4802,7 +4802,8 @@ def _named_custom_api_key(custom_entry: Dict[str, Any], provider: str, custom_ba
     custom_key_cmd = str(custom_entry.get("key_cmd", "") or "").strip()
     if custom_key_cmd:
         from agent.command_token_source import build_command_token_provider
-        custom_key = build_command_token_provider(custom_key_cmd, custom_entry.get("name") or provider) or custom_key
+        custom_key = build_command_token_provider(custom_key_cmd, custom_entry.get("name") or provider,
+                                                  custom_entry.get("key_cmd_env")) or custom_key
     if not custom_key:
         with contextlib.suppress(Exception):
             from agent.credential_pool import custom_provider_pool_key_candidates

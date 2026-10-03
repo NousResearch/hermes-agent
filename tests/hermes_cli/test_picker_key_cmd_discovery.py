@@ -16,7 +16,7 @@ def test_picker_command_auth_is_lazy_and_credential_scoped(monkeypatch, route, s
     monkeypatch.setenv("TEST_GATEWAY_KEY", "stale")
     mints, probes = [], []
 
-    def mint(command, label):
+    def mint(command, label, key_cmd_env=None):
         mints.append(command)
         if command == "broken":
             raise RuntimeError("private helper output")
@@ -94,7 +94,7 @@ def test_setup_probe_credentials_never_become_saved_credentials(monkeypatch, rou
     from hermes_cli.main_provider_setup import _named_custom_provider_map
     info = next(iter(_named_custom_provider_map(config_module.load_config()).values()))
 
-    def mint(command, label):
+    def mint(command, label, key_cmd_env=None):
         mints.append(command)
         return "transient-bearer", 3600
 
@@ -123,3 +123,19 @@ def test_setup_probe_credentials_never_become_saved_credentials(monkeypatch, rou
     persisted = saved[route]["gateway"] if route == "providers" else saved[route][0]
     assert persisted["key_cmd"] == entry["key_cmd"]
     assert persisted.get("api_key", "") == static.get("api_key", "")
+
+
+@pytest.mark.parametrize("route", ["providers", "custom_providers"])
+def test_named_custom_map_forwards_key_cmd_env(route):
+    """#127020 P1: the map builder must carry the declared helper-env allowlist, or the
+    ``hermes model`` named-custom flow mints a declared gh-style helper with no ``GH_TOKEN``."""
+    from hermes_cli import config as config_module
+    from hermes_cli.main_provider_setup import _named_custom_provider_map
+
+    entry = {"name": "Gateway", "base_url": "https://gateway.invalid/v1", "key_cmd": "gh auth token",
+             "key_cmd_env": ["GH_TOKEN"], "model": "fallback", "default_model": "fallback"}
+    config = {"model": {"default": "fallback", "provider": "custom"},
+              route: {"gateway": copy.deepcopy(entry)} if route == "providers" else [copy.deepcopy(entry)]}
+    config_module.save_config(config)
+    info = next(iter(_named_custom_provider_map(config_module.load_config()).values()))
+    assert info["key_cmd_env"] == ["GH_TOKEN"]

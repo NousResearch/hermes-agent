@@ -159,6 +159,11 @@ def _match_new_style_provider(requested_norm: str, providers: Dict[str, Any]) ->
         key_cmd = _clean(entry.get("key_cmd", ""))
         if key_cmd:
             result["key_cmd"] = key_cmd
+            from agent.command_token_source import normalize_key_cmd_env
+
+            key_cmd_env = normalize_key_cmd_env(entry.get("key_cmd_env"))
+            if key_cmd_env:
+                result["key_cmd_env"] = key_cmd_env
         # v12 migration writes ``transport``; hand-edited configs may still use ``api_mode``.
         # Accept both or migrated configs silently downgrade to chat_completions.
         _lift_common_custom_fields(
@@ -570,7 +575,8 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     key_cmd = _clean(custom_provider.get("key_cmd", ""))
     if key_cmd and not rp.has_usable_secret(explicit_key):
         from agent.command_token_source import build_command_token_provider
-        token_provider = build_command_token_provider(key_cmd, str(custom_provider.get("name", requested_provider) or "custom"))
+        token_provider = build_command_token_provider(key_cmd, str(custom_provider.get("name", requested_provider) or "custom"),
+                                                      custom_provider.get("key_cmd_env"))
         if token_provider is not None:
             api_key = token_provider
     result = _custom_runtime(rp, base_url, api_key, custom_provider.get("api_mode"),

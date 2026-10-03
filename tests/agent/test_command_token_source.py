@@ -14,6 +14,7 @@ behaviours that make the feature work:
 
 from __future__ import annotations
 
+import sys
 import time
 from types import SimpleNamespace
 
@@ -420,3 +421,61 @@ class TestExplicitCallableSurvivesCustomResolution:
     def test_string_key_is_still_stripped(self, monkeypatch, shape):
         seen = self._resolve(monkeypatch, shape, " sk-x ")
         assert seen.get("api_key") == "sk-x"
+
+
+class TestKeyCmdChildLosesProfileAdapterSecrets:
+    """#126902: a real ``key_cmd`` child under a routed profile.
+
+    The served profile's ``.env`` overlay re-adds Tier 1 adapter secrets with
+    no second pass, so the helper could read bot tokens and dashboard auth.
+    Both halves are pinned: the profile's bot token never reaches the child,
+    and a helper that declares ``key_cmd_env`` still sees that one name.
+    """
+
+    _SECRETS = {
+        "TELEGRAM_BOT_TOKEN": "secret-bot-token",
+        "GH_TOKEN": "secret-gh-token",
+        "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD": "secret-dashboard",
+    }
+
+    @staticmethod
+    def _served_mint(monkeypatch, tmp_path, **mint_kwargs):
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home = tmp_path / "served"
+        home.mkdir()
+        (home / ".env").write_text(
+            "".join(
+                f"{name}={value}\n" for name, value in TestKeyCmdChildLosesProfileAdapterSecrets._SECRETS.items()
+            )
+            + "KEY_CMD_HELPER_CONFIG=profile-prod\n",
+            encoding="utf-8",
+        )
+        probe = tmp_path / "inspect_key_cmd_env.py"
+        probe.write_text(
+            "import os\n"
+            "print('|'.join(os.environ.get(n, '-') for n in (\n"
+            "'TELEGRAM_BOT_TOKEN', 'GH_TOKEN',\n"
+            "'HERMES_DASHBOARD_BASIC_AUTH_PASSWORD', 'KEY_CMD_HELPER_CONFIG')))\n",
+            encoding="utf-8",
+        )
+        for name in (*TestKeyCmdChildLosesProfileAdapterSecrets._SECRETS, "KEY_CMD_HELPER_CONFIG"):
+            monkeypatch.delenv(name, raising=False)
+        override = set_hermes_home_override(str(home))
+        try:
+            token, _ttl = _mint(f'"{sys.executable}" "{probe}"', "dbx", **mint_kwargs)
+        finally:
+            reset_hermes_home_override(override)
+        return token
+
+    def test_adapter_secrets_absent_and_benign_config_kept(self, monkeypatch, tmp_path):
+        assert self._served_mint(monkeypatch, tmp_path) == "-|-|-|profile-prod"
+
+    def test_declared_key_cmd_env_name_is_visible(self, monkeypatch, tmp_path):
+        assert self._served_mint(monkeypatch, tmp_path, key_cmd_env=["GH_TOKEN"]) == (
+            "-|secret-gh-token|-|profile-prod"
+        )
+
+    def test_builder_forwards_key_cmd_env(self, monkeypatch, tmp_path):
+        source = build_command_token_provider("printf scoped-token", "dbx", ["GH_TOKEN"])
+        assert source is not None and source._key_cmd_env == ["GH_TOKEN"]

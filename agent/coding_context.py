@@ -420,7 +420,44 @@ def _git(cwd: Path, *args: str) -> str:
 
     See #66037.
     """
-    return bounded_git_probe(["git", "-C", str(cwd), *args], timeout=_GIT_TIMEOUT)
+    eol = _effective_autocrlf(cwd)
+    prefix = ["-c", f"core.autocrlf={eol}"] if eol else []
+    return bounded_git_probe(["git", "-C", str(cwd), *prefix, *args], timeout=_GIT_TIMEOUT)
+
+
+_EOL_VALUES = frozenset({"true", "false", "input"})
+
+
+def _effective_autocrlf(cwd: Path) -> str:
+    """The ``core.autocrlf`` the user's own git sees in this checkout, else ``""``.
+
+    The probe env blanks global/system config (GHSA-7x36-8jrh-v4pw), which on
+    Git for Windows also strips the platform ``core.autocrlf=true`` default:
+    the probe then compares raw CRLF worktree bytes against LF blobs and
+    counts line-ending churn as modifications (#108513). Pinning back the
+    effective value restores exactly what the blanking removed — nothing is
+    pinned when the value is unset, so POSIX behavior is unchanged.
+
+    Read with the ambient environment on purpose: under the blanked env the
+    value is always empty. ``git config --get`` never touches the index, so
+    no repo-configured fsmonitor/hook can run. Only true/false/input pass
+    through (argv, never shell); anything else counts as unset.
+    """
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(cwd), "config", "--get", "core.autocrlf"],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT,
+        )
+    except Exception:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    value = (proc.stdout or "").strip().lower()
+    return value if value in _EOL_VALUES else ""
 
 
 def _parse_status(porcelain: str) -> tuple[dict[str, str], dict[str, int]]:

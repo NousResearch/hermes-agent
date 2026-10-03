@@ -433,7 +433,7 @@ deliver_outcome() { # the truth-determining half: swap bundles / gate the relaun
     mac_swap
   else
     linux_gate
-    if [ "$GATE" != "relaunch" ] && [ "$FINAL_CODE" -eq 0 ]; then
+    if [ "$GATE" != "relaunch" ] && [ "$FINAL_CODE" -eq 0 ] && [ -z "$DONE_NOTE" ]; then
       DONE_NOTE="$GATE_MSG"
       log "no relaunch ($GATE): $GATE_MSG"
     fi
@@ -817,6 +817,30 @@ cd "$INSTALL_ROOT" || {
   log "$FINAL_MSG"; exit 3
 }
 export PYTHONUNBUFFERED=1
+# Packaged-shell pre-gate (#118070): a system-package shell (AppImage/deb/rpm)
+# lives outside this checkout, so `hermes update` below can replace the
+# backend but never the running GUI — updating anyway strands Desktop on a
+# newer backend the old shell cannot answer (approvals/clarify go dark).
+# Refuse BEFORE touching the backend; the compatible backend stays live and
+# the result carries the skew repair message. Dev/checkout runs (target
+# inside INSTALL_ROOT, e.g. a node_modules electron) keep today's flow — the
+# post-update skew warning still applies to them.
+# ponytail: path-prefix heuristic; per-manager repair commands if it misfires.
+if [ "$(uname)" != "Darwin" ] && [ -n "$RELAUNCH_TARGET" ]; then
+  linux_gate
+  if [ "$GATE" = "skew" ]; then
+    case "$(readlink -m -- "$RELAUNCH_TARGET")" in
+      "$(readlink -m -- "$INSTALL_ROOT")"/*) ;;
+      *)
+        log "packaged shell ($RELAUNCH_TARGET): refusing backend update, keeping the compatible backend"
+        FINAL_CODE=0
+        DONE_NOTE="The desktop app package (AppImage/deb/rpm) was not changed and cannot be updated by this flow. Nothing was changed: the compatible backend is still live. Update the hermes-desktop system package first, then re-run the update."
+        ;;
+    esac
+  fi
+  GATE=""; GATE_MSG=""
+  [ -n "$DONE_NOTE" ] && exit 0
+fi
 # The takeover children (hermes update -> _update_takeover/update_finish and
 # the PM sync / build stages they drive) publish their stages back into the
 # shim's UI through this file; without a watching UI the variable is simply

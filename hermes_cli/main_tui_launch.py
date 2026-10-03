@@ -353,7 +353,8 @@ def _launch_tui(
     provider: Optional[str] = None, toolsets: object = None, skills: object = None,
     verbose: Optional[bool] = None, quiet: bool = False, query: Optional[str] = None,
     image: Optional[str] = None, worktree: bool = False, checkpoints: bool = False,
-    pass_session_id: bool = False, max_turns: Optional[int] = None, accept_hooks: bool = False):
+    pass_session_id: bool = False, max_turns: Optional[int] = None, accept_hooks: bool = False,
+    reasoning: Optional[str] = None):
     """Replace current process with the TUI."""
     from hermes_cli.main import PROJECT_ROOT
     tui_dir = PROJECT_ROOT / "ui-tui"
@@ -443,6 +444,15 @@ def _launch_tui(
     env.pop("HERMES_TUI_RESUME", None)
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
+    # Same discipline for --reasoning: the gateway reads HERMES_TUI_REASONING as the reasoning
+    # fallback for sessions the TUI creates, so a stale exported value must not leak in.
+    env.pop("HERMES_TUI_REASONING", None)
+    if reasoning and str(reasoning).strip():
+        env["HERMES_TUI_REASONING"] = str(reasoning).strip()
+        if resume_session_id:
+            print(
+                "Note: --reasoning applies to new sessions only; the resumed session keeps its "
+                "stored reasoning setting.", file=sys.stderr)
 
     argv, cwd = _make_tui_argv(tui_dir, tui_dev)
     code: Optional[int] = None

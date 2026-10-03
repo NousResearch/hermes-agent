@@ -1878,6 +1878,7 @@ def cmd_chat(args):
             tui_dev=getattr(args, "tui_dev", False),
             native_mode=getattr(args, "tui_native", False) or None,
             model=getattr(args, "model", None),
+            reasoning=getattr(args, "reasoning", None),
             accept_hooks=getattr(args, "accept_hooks", False),
             **passthrough,
         )

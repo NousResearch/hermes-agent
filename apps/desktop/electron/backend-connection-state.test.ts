@@ -235,3 +235,19 @@ test('distinguishes a pending connection attempt from a cached settled descripto
   assert.equal(state.getPromise(), connection.promise)
   assert.equal(state.getPendingPromise(), null)
 })
+
+
+test('readiness belongs to the current process and survives renderer retry checks', () => {
+  const state = createBackendConnectionState<FakeProcess, string>()
+  const attempt = state.startAttempt()
+  state.setPromise(attempt, Promise.resolve('current'))
+  const owner = state.attachProcess(attempt, { id: 'current' })
+  assert.ok(owner)
+
+  assert.equal(state.isProcessReady(), false)
+  assert.equal(state.markProcessReady(owner), true)
+  assert.equal(state.isProcessReady(), true)
+
+  state.invalidate()
+  assert.equal(state.isProcessReady(), false)
+})

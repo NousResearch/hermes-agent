@@ -667,7 +667,13 @@ def _unattended_deny(command: str, ctx: _Unattended) -> dict | None:
             f"so this command cannot be silently allowed — and {ctx.clause}. "
             f"Find an alternative approach, install tirith, or set approvals.{ctx.cfg_key}: approve in config.yaml.")}
     if tirith.get("action") in ("block", "warn"):
-        return block(_format_tirith_description(tirith))
+        # Same permanent-key check the pattern half above uses: an operator who put the finding's
+        # key in command_allowlist means the same thing here as it does interactively. Only a
+        # configured key qualifies — unattended mode has no session grant to consult.
+        findings = tirith.get("findings") or []
+        rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
+        if not _is_permanently_approved(f"tirith:{rule_id}"):
+            return block(_format_tirith_description(tirith))
     return None
 
 

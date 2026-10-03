@@ -4,7 +4,9 @@ from unittest.mock import patch
 
 from agent.side_question import (
     SIDE_QUESTION_TASK,
+    _FORK_PROMPT,
     answer_side_question,
+    clear_side_exchanges,
     render_history_for_side_question,
     trim_snapshot_for_fork,
 )
@@ -119,7 +121,7 @@ class TestForkPath:
     def test_prefers_fork_when_parent_agent_given(self):
         seen = {}
 
-        def fake_fork(parent, question, history):
+        def fake_fork(parent, question, history, prior=None):
             seen["parent"] = parent
             seen["question"] = question
             return "fork answer"
@@ -194,3 +196,73 @@ class TestForkPath:
         assert "which file?" in calls["user_message"]
         assert calls["write_origin"] == "side_question"
         assert calls.get("shutdown") and calls.get("closed")
+
+
+class TestSideConversationMemory:
+    """A follow-up /btw sees the earlier side exchanges; the replayed snapshot stays a verbatim
+    prefix (cache parity) with the side turns appended after it, never spliced in."""
+
+    SNAPSHOT = [
+        {"role": "user", "content": "fix foo.py"},
+        {"role": "assistant", "content": "fixed"},
+    ]
+
+    def _ask(self, question, session_id, answer):
+        replays = []
+
+        def fake_fork(parent, question, history, prior=None):
+            from agent.side_question import _fork_user_message, _prior_as_messages
+            replays.append((_fork_user_message(question, prior or []), list(history) + _prior_as_messages(prior or [])))
+            return answer
+
+        with patch("agent.side_question._answer_via_fork", side_effect=fake_fork), \
+             patch("agent.side_question._answer_via_oneshot") as oneshot:
+            out = answer_side_question(question, self.SNAPSHOT, parent_agent=object(),
+                                       main_runtime={"session_id": session_id})
+        oneshot.assert_not_called()
+        return out, replays[0]
+
+    def test_follow_up_replays_prior_exchange_after_the_snapshot(self):
+        sid = "btw-mem-followup"
+        clear_side_exchanges(sid)
+        try:
+            _, (first_msg, first_replay) = self._ask("which file?", sid, "foo.py")
+            assert first_replay == self.SNAPSHOT
+            assert first_msg == f"{_FORK_PROMPT}\n\nSide question: which file?"
+
+            _, (second_msg, second_replay) = self._ask("and which line?", sid, "line 3")
+            assert second_replay[: len(self.SNAPSHOT)] == self.SNAPSHOT  # verbatim prefix
+            assert second_replay[len(self.SNAPSHOT):] == [
+                {"role": "user", "content": first_msg},  # byte-identical to what the fork was sent
+                {"role": "assistant", "content": "foo.py"},
+            ]
+            assert second_msg == "Side question (follow-up): and which line?"
+            # Another session shares nothing.
+            _, (_, other_replay) = self._ask("which file?", "btw-mem-other", "bar.py")
+            assert other_replay == self.SNAPSHOT
+        finally:
+            clear_side_exchanges(sid)
+            clear_side_exchanges("btw-mem-other")
+
+    def test_clear_forgets_the_side_conversation_and_feeds_the_oneshot_fallback(self):
+        sid = "btw-mem-clear"
+        clear_side_exchanges(sid)
+        try:
+            self._ask("which file?", sid, "foo.py")
+            captured = {}
+
+            def fake_run_oneshot(**kwargs):
+                captured.update(kwargs)
+                return "line 3"
+
+            with patch("agent.oneshot.run_oneshot", side_effect=fake_run_oneshot):
+                answer_side_question("and which line?", self.SNAPSHOT, main_runtime={"session_id": sid})
+            assert "Q: which file?" in captured["user_input"] and "A: foo.py" in captured["user_input"]
+
+            msg = answer_side_question("clear", [], main_runtime={"session_id": sid})
+            assert msg.startswith("Side conversation cleared (2 ")
+            _, (msg_after, replay_after) = self._ask("which file?", sid, "foo.py")
+            assert replay_after == self.SNAPSHOT
+            assert msg_after.startswith(_FORK_PROMPT)
+        finally:
+            clear_side_exchanges(sid)

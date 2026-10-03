@@ -389,6 +389,40 @@ def test_requirements_deps_present_but_no_audio_hint(monkeypatch):
     assert "audio device" in r["hint"] or "microphone" in r["hint"].lower()
 
 
+def test_requirements_engine_present_audio_io_missing_lazy_allowed(monkeypatch):
+    """Engine extra installed, audio-io missing, lazy installs allowed → arm anyway
+    so the engine constructor's ``_ensure_dep()`` can install audio-io on first arm.
+
+    Regression (#127340): ``mic_ok`` only allowed the lazy path when the ENGINE
+    was missing, so the audio probe's import failure blocked arming before
+    ``_ensure_dep`` could ever run — wake word never armed and the hint blamed
+    the microphone instead of the missing extra."""
+    def _boom():
+        raise AssertionError("audio probe must not run while audio-io is missing")
+
+    _voice_loop_ready(monkeypatch)
+    monkeypatch.setattr(ww, "_audio_available", _boom)
+    monkeypatch.setattr(pm, "available", lambda f: f != "audio-io")
+    monkeypatch.setattr(pm_ensure, "lazy_installs_allowed", lambda: True)
+    r = ww.check_wake_word_requirements({"provider": "openwakeword", "capture": "local"})
+    assert r["available"] is True
+    assert r["deps_available"] is True
+    assert r["hint"] == ""
+
+
+def test_requirements_engine_present_audio_io_missing_lazy_disabled(monkeypatch):
+    """Same but lazy installs disabled → unavailable with an audio-io install
+    hint, not the misleading 'working audio device' one."""
+    _voice_loop_ready(monkeypatch)
+    monkeypatch.setattr(ww, "_audio_available", lambda: False)
+    monkeypatch.setattr(ww, "_local_input_device_ready", lambda: False)
+    monkeypatch.setattr(pm, "available", lambda f: f != "audio-io")
+    monkeypatch.setattr(pm_ensure, "lazy_installs_allowed", lambda: False)
+    r = ww.check_wake_word_requirements({"provider": "openwakeword", "capture": "local"})
+    assert r["available"] is False
+    assert "hermes pm install --extra audio-io" in r["hint"]
+
+
 # ── openWakeWord engine (pyopen-wakeword; bundled model, no runtime fetch) ──
 
 

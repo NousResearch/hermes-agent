@@ -369,16 +369,21 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
     else:
         feature = "wake-openwakeword"
     deps_ok = pm.available(feature)
+    # Local capture needs the audio-io extra (sounddevice + numpy) on top of
+    # the engine. A missing audio-io is installable the same way a missing
+    # engine is, so while lazy installs are on it must defer to the installer
+    # instead of failing the probe. Client capture never consults it.
+    audio_io_ok = pm.available("audio-io")
     platform_ok = deps_ok or supported(feature)
     lazy_ok = lazy_installs_allowed()
     # The audio probe imports sounddevice + numpy — two of the very packages
     # the lazy installer would fetch — so it can only be trusted once the
-    # feature's deps are installed. On a fresh install (deps missing, lazy
-    # installs allowed) we defer the mic check: the engine constructors call
-    # ``pm.ensure_import()`` and the stream-open surfaces any real audio
+    # engine and audio-io deps are installed. On a fresh install (deps missing,
+    # lazy installs allowed) we defer the mic check: the engine constructors
+    # call ``pm.ensure_import()`` and the stream-open surfaces any real audio
     # problem. Gating ``available`` on the probe here made the lazy-install
     # path unreachable (the probe always failed before ensure() could run).
-    audio_ok = _audio_available() if deps_ok else False
+    audio_ok = _audio_available() if deps_ok and audio_io_ok else False
     key_ok = True
     # The full wake loop is wake → record → STT → agent → TTS. Arming without
     # either end configured gives a mic that hears you and then does nothing
@@ -398,7 +403,9 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
         hint = "Set PORCUPINE_ACCESS_KEY (free key at https://console.picovoice.ai)."
     elif not deps_ok and not lazy_ok:
         hint = install_hint(feature)
-    elif deps_ok and not audio_ok and resolve_capture_mode(cfg) == "local":
+    elif deps_ok and not audio_io_ok and not lazy_ok and resolve_capture_mode(cfg) == "local":
+        hint = install_hint("audio-io")
+    elif deps_ok and audio_io_ok and not audio_ok and resolve_capture_mode(cfg) == "local":
         hint = "Microphone capture needs sounddevice + numpy and a working audio device."
     elif not stt_ok or not tts_ok:
         missing = " and ".join(
@@ -413,8 +420,10 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
     if capture_mode == "client":
         mic_ok = deps_ok or lazy_ok
     else:
-        mic_ok = (deps_ok and audio_ok) or (not deps_ok and lazy_ok)
-        if deps_ok and not audio_ok and not hint:
+        # A missing engine OR a missing audio-io defers to the lazy installer
+        # (``_ensure_dep`` installs audio-io once local capture is resolved).
+        mic_ok = (deps_ok and audio_ok) or ((not deps_ok or not audio_io_ok) and lazy_ok)
+        if deps_ok and audio_io_ok and not audio_ok and not hint:
             hint = ("No local microphone on this backend. Remote desktop can stream "
                     "the client mic — set wake_word.capture: client or use a desktop "
                     "build with client-capture wake support.")
@@ -422,7 +431,7 @@ def check_wake_word_requirements(cfg: Optional[Dict[str, Any]] = None, *,
     return {
         "available": platform_ok and key_ok and stt_ok and tts_ok and mic_ok, "provider": provider,
         "deps_available": deps_ok, "audio_available": audio_ok,
-        "local_input_available": _local_input_device_ready() if deps_ok else False,
+        "local_input_available": _local_input_device_ready() if deps_ok and audio_io_ok else False,
         "capture": capture_mode, "access_key_set": key_ok, "stt_available": stt_ok, "tts_available": tts_ok,
         "phrase": wake_phrase(cfg), "hint": hint,
     }

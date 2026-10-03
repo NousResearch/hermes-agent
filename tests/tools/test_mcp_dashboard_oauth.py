@@ -94,6 +94,27 @@ def test_dashboard_flow_accepts_only_one_concurrent_callback():
     assert sorted(outcomes) == ["accepted", "rejected"]
 
 
+def test_dashboard_flow_warns_on_superseded_authorization_url(caplog):
+    """A second authorization URL on the same flow is a mid-consent restart."""
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="flow-supersede",
+        server_name="reports",
+        profile=None,
+        hermes_home="/tmp/hermes-test",
+        redirect_uri="https://agent.example/mcp/oauth/callback/flow-supersede",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="tools.mcp_dashboard_oauth"):
+        asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=old"))
+        caplog.clear()
+        asyncio.run(flow.publish_authorization_url("https://idp.example/authorize?state=new"))
+
+    assert "replacing expected_state" in caplog.text
+    assert flow.expected_state == "new"
+
+
 @pytest.mark.usefixtures("require_mcp_2_sdk")
 def test_mcp_oauth_helpers_use_dashboard_flow_without_loopback_port():
     # _build_client_metadata validates through the SDK's OAuthClientMetadata model.

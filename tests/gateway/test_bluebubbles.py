@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -583,3 +583,118 @@ class TestBlueBubblesGateBeforeDownload:
         assert response.status == 200
         assert download.await_count == downloads
         assert len(handled) == handled_count
+
+
+# ---------------------------------------------------------------------------
+# Regression for #122949: text sends that are not replies must also carry
+# method=private-api when the private API is live. The method-less legacy
+# path stalls (30 s ReadTimeout, nothing delivered) on helper-only setups.
+# ---------------------------------------------------------------------------
+
+class TestBlueBubblesPrivateApiMethod:
+    def _adapter(self, monkeypatch, private_api=True, helper=True):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = private_api
+        adapter._helper_connected = helper
+
+        async def fake_resolve(chat_id):
+            return "iMessage;+;chat-123"
+
+        async def fake_api_post(path, payload):
+            fake_api_post.payloads.append(payload)
+            return {"status": 200, "data": {"guid": "msg-guid-1"}}
+
+        fake_api_post.payloads = []
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_plain_send_carries_private_api_method(self, monkeypatch):
+        """Non-reply sends (cron delivery, send_message) must not fall back to
+        the legacy method-less path when the private API is live."""
+        adapter = self._adapter(monkeypatch)
+        result = await adapter.send("chat-1", "hello world")
+        assert result.success
+        assert len(adapter._api_post.payloads) == 1
+        assert adapter._api_post.payloads[0]["method"] == "private-api"
+        assert "selectedMessageGuid" not in adapter._api_post.payloads[0]
+
+    @pytest.mark.asyncio
+    async def test_reply_send_keeps_reply_fields(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        result = await adapter.send("chat-1", "hello world", reply_to="orig-guid")
+        assert result.success
+        payload = adapter._api_post.payloads[0]
+        assert payload["method"] == "private-api"
+        assert payload["selectedMessageGuid"] == "orig-guid"
+        assert payload["partIndex"] == 0
+
+    @pytest.mark.asyncio
+    async def test_every_chunk_of_multi_paragraph_send_carries_method(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        result = await adapter.send("chat-1", "first bubble\n\nsecond bubble")
+        assert result.success
+        assert len(adapter._api_post.payloads) == 2
+        assert all(p["method"] == "private-api" for p in adapter._api_post.payloads)
+
+    @pytest.mark.asyncio
+    async def test_send_without_private_api_keeps_legacy_payload(self, monkeypatch):
+        """Servers without the private API keep the method-less payload."""
+        adapter = self._adapter(monkeypatch, private_api=False)
+        result = await adapter.send("chat-1", "hello world")
+        assert result.success
+        assert "method" not in adapter._api_post.payloads[0]
+
+    @pytest.mark.asyncio
+    async def test_first_message_to_new_handle_carries_method(self, monkeypatch):
+        """A brand-new chat has no message history, so a method-less /chat/new
+        request is exactly what the server routes to the legacy AppleScript path
+        — the cold-start form of the #122949 stall. This branch is only reached
+        when the private API is live, so the payload must carry the method."""
+        adapter = self._adapter(monkeypatch)
+
+        async def fake_resolve(chat_id):
+            return None  # no chat for this handle yet
+
+        payloads: list = []
+
+        async def fake_post_message(path, payload):
+            payloads.append((path, payload))
+            return SendResult(success=True, message_id="new-chat-msg")
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+        monkeypatch.setattr(adapter, "_post_message", fake_post_message)
+        result = await adapter.send("+15551230000", "hello first time")
+        assert result.success
+        path, payload = payloads[0]
+        assert path == "/api/v1/chat/new"
+        assert payload["method"] == "private-api"
+
+    @pytest.mark.asyncio
+    async def test_attachment_carries_method_when_private_api_live(self, monkeypatch, tmp_path):
+        """Media rides the same discriminator server-side (sendAttachmentRules,
+        absent → AppleScript); unrouted attachments stall on helper-only setups
+        while the caption riding them is correctly routed."""
+        adapter = self._adapter(monkeypatch)
+        file_path = tmp_path / "media.bin"
+        file_path.write_bytes(b"media-payload")
+        captured = {}
+
+        class MockResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"status": 200, "data": {"guid": "att-guid-1"}}
+
+        class MockClient:
+            async def post(self, url, *, files, data, timeout):
+                captured.update(url=url, data=data)
+                return MockResponse()
+
+        adapter.client = MockClient()
+        result = await adapter._send_attachment("chat-1", str(file_path), filename="media.bin")
+        assert result.success
+        assert "/api/v1/message/attachment" in captured["url"]
+        assert captured["data"]["method"] == "private-api"

@@ -110,6 +110,11 @@ def refresh_agent_mcp_tools(
     slot (schemas still refresh), a still-registered tool whose ``check_fn`` merely flapped is
     carried forward (``check_fn`` gates exposure, never invocation), a deregistered tool is
     dropped, new tools append at the tail. The caller owns the prompt-cache contract."""
+    # Restricted agents freeze their reviewed schemas and dispatch scope (_skip_mcp_refresh).
+    # turn_context honours the flag between turns, but compaction and explicit reloads call
+    # this function directly, so honour it here too: never widen a frozen snapshot.
+    if getattr(agent, "_skip_mcp_refresh", False):
+        return set()
     from model_tools import get_tool_definitions
     from tools.registry import registry
     enabled, disabled = _resolve_refresh_toolsets(agent, enabled_override, disabled_override)

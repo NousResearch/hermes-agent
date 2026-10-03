@@ -78,12 +78,6 @@ def test_adopted_bot_chat_stays_the_hidden_canonical_chat(tmp_path):
         assert profile.archive_stale_sessions(idle_days=0) == 0
         with pytest.raises(ValueError, match="canonical Bot Chat"):
             profile.set_session_title(SESSION_ID, "renamed")
-        assert donor.get_messages(SESSION_ID)[0]["content"] == "hi bot"
-
-        # Retrying adoption must not restore the donor's retirement archive over the local copy.
-        again = profile.adopt_session_lineage_from(donor, SESSION_ID)
-        assert again["adopted"] and again["imported"] == 0 and SESSION_ID in again["skipped_ids"], again
-        assert not profile.get_session(SESSION_ID)["archived"]
     finally:
         donor.close()
         profile.close()

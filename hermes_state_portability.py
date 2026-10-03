@@ -64,12 +64,7 @@ _IMPORT_INT_COLS = (
     "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "api_call_count",
 )
 _IMPORT_FLOAT_COLS = ("ended_at", "estimated_cost_usd", "actual_cost_usd")
-# Durable user decisions, not live runtime state: a restore that drops ``pinned`` hands the "keep"
-# session to the next startup prune and the stale-archive sweep, the two things the pin opts out of.
-# ``hidden`` is what makes an adopted Bot Mode chat canonical: without it the chat shows in every
-# listing, loses its rename guard and becomes a stale-archive candidate. auto_archived marks an
-# archive as the idle sweep's: without it a restored sweep archive reads as the user's and a resume
-# never brings the chat back.
+# Flags a restore must keep: pinned/hidden/auto_archived drive the prune, listings and resume-unarchive.
 _IMPORT_FLAG_COLS = ("archived", "auto_archived", "pinned", "hidden")
 
 

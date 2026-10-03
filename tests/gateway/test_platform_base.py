@@ -36,6 +36,158 @@ def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
     assert base.validate_media_delivery_path(str(path)) is None
 
 
+class TestHomeCredentialFileMediaDenial:
+    """Known HOME secret files must not inherit native attachment trust (#99182)."""
+
+    @pytest.mark.parametrize("name", [".netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials"])
+    @pytest.mark.parametrize("trust", ["default", "home-allow", "cache"])
+    @pytest.mark.parametrize("strict", [False, True])
+    @pytest.mark.parametrize("alias", ["direct", "symlink", "hardlink"])
+    def test_secret_identity_is_denied_but_neighbor_delivers(self, tmp_path, monkeypatch, name, trust, strict, alias):
+        import gateway.platforms.base as base
+
+        home = tmp_path / "home" / "alice"
+        home.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(home / ".hermes"))
+        monkeypatch.setattr(base, "_HERMES_HOME", home / ".hermes")
+        monkeypatch.setattr(base, "_HERMES_ROOT", home / ".hermes")
+        monkeypatch.setattr(base, "MEDIA_DELIVERY_SAFE_ROOTS", ())
+        # Scratch fixtures on a root-run host sit below /root. Remove only this
+        # ancestor collision; keep every specific credential/system denial.
+        monkeypatch.setattr(base, "_MEDIA_DELIVERY_DENIED_PREFIXES", tuple(
+            p for p in base._MEDIA_DELIVERY_DENIED_PREFIXES if p != "/root"))
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1" if strict else "0")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        if trust == "home-allow":
+            monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(home))
+        elif trust == "cache":
+            monkeypatch.setattr(base, "MEDIA_DELIVERY_SAFE_ROOTS", (home,))
+        secret = home / name
+        secret.write_bytes(b"placeholder credential bytes\n")
+        ordinary = home / (name + "backup")
+        ordinary.write_bytes(b"ordinary artifact\n")
+
+        if alias != "direct":
+            alias_dir = home / ".hermes" / "cache" / "documents" if trust == "cache" else home / "exports"
+            alias_dir.mkdir(parents=True)
+            path = alias_dir / "report.txt"
+            if alias == "symlink":
+                path.symlink_to(secret)
+            else:
+                os.link(secret, path)
+            secret = path
+            if trust == "cache":
+                monkeypatch.setattr(base, "MEDIA_DELIVERY_SAFE_ROOTS", (home, alias_dir))
+
+        assert base.validate_media_delivery_path(str(ordinary)) == str(ordinary.resolve())
+        assert BasePlatformAdapter.filter_media_delivery_paths([
+            (str(secret), False), (str(ordinary), True),
+        ]) == [(str(ordinary.resolve()), True)]
+        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{secret}\nMEDIA:{ordinary}")
+        assert BasePlatformAdapter.filter_media_delivery_paths(media) == [(str(ordinary.resolve()), False)]
+        assert BasePlatformAdapter.filter_local_delivery_paths([str(secret), str(ordinary)]) == [str(ordinary.resolve())]
+
+
+    @pytest.mark.parametrize("strict", [False, True])
+    def test_delivery_controls_preserve_profiles_paths_and_errors(self, tmp_path, monkeypatch, strict):
+        from pathlib import Path
+        import gateway.platforms.base as base
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home = tmp_path / "home"
+        root = home / ".hermes"
+        root.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setattr(base, "_HERMES_HOME", root)
+        monkeypatch.setattr(base, "_HERMES_ROOT", root)
+        monkeypatch.setattr(base, "MEDIA_DELIVERY_SAFE_ROOTS", ())
+        # Model the own-system-home exception without writing into /root itself.
+        monkeypatch.setattr(base, "_MEDIA_DELIVERY_DENIED_PREFIXES", (
+            *(p for p in base._MEDIA_DELIVERY_DENIED_PREFIXES if p != "/root"), str(home)))
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1" if strict else "0")
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        for name in ("report.pdf", "chart.png", "notes.txt", "netrc", "my.npmrc.example", "gitcredentials.txt"):
+            path = home / name
+            path.write_bytes(b"ordinary artifact\n")
+            assert base.validate_media_delivery_path(str(path)) == str(path.resolve())
+        for rel in (".ssh/id_rsa", ".aws/credentials", ".gnupg/secring.gpg", ".kube/config",
+                    ".docker/config.json", ".config/gh/hosts.yml", ".azure/token", ".gcloud/token",
+                    "Library/Keychains/login.keychain"):
+            path = home / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"placeholder credential bytes\n")
+            assert BasePlatformAdapter.filter_media_delivery_paths([(str(path), False)]) == []
+        loop = home / "loop.txt"
+        loop.symlink_to(loop)
+        for path in ("", "relative.txt", str(home / "missing.txt"), str(home), str(loop), "/bad\x00.txt"):
+            assert base.validate_media_delivery_path(path) is None
+
+        profiles = [root / "profiles" / name for name in ("alpha", "beta")]
+        for profile in profiles:
+            profile.mkdir(parents=True)
+            # Scoped policy is read from this REAL config, not a mocked policy getter.
+            (profile / "config.yaml").write_text(
+                f"gateway:\n  strict: {str(strict).lower()}\n  trust_recent_files: true\n")
+            cache = profile / "cache" / "documents"
+            cache.mkdir(parents=True)
+            ordinary = cache / "report.txt"
+            ordinary.write_bytes(b"ordinary artifact\n")
+            os.link(ordinary, cache / "ordinary-link.txt")
+            (cache / "ordinary-symlink.txt").symlink_to(ordinary)
+            (profile / ".env").write_bytes(b"placeholder credential bytes\n")
+        for profile in (profiles[0], profiles[1], profiles[0]):
+            token = set_hermes_home_override(profile)
+            try:
+                cache = profile / "cache" / "documents"
+                names = ("report.txt", "ordinary-link.txt", "ordinary-symlink.txt")
+                expected = [(str((cache / name).resolve()), False) for name in names]
+                assert BasePlatformAdapter.filter_media_delivery_paths([
+                    (str(profile / ".env"), False), *[(str(cache / name), False) for name in names],
+                ]) == expected
+                secret = home / ".netrc"
+                secret.write_bytes(b"placeholder credential bytes\n")
+                alias = cache / "secret-alias.txt"
+                os.link(secret, alias)
+                assert BasePlatformAdapter.filter_media_delivery_paths([(str(alias), False)]) == []
+                # Replacing the store must not leave a stale inode-denial cache.
+                secret.unlink()
+                secret.write_bytes(b"replacement placeholder\n")
+                assert base.validate_media_delivery_path(str(alias)) == str(alias.resolve())
+                alias.unlink()
+                secret.unlink()
+            finally:
+                reset_hermes_home_override(token)
+
+        # Metadata only: a missing/looping/inaccessible known store must not break
+        # unrelated deliveries. Candidate stat failures still fail closed.
+        stat = Path.stat
+        calls = []
+        ordinary = home / "notes.txt"
+        def counted_stat(path, *args, **kwargs):
+            if path == home / ".netrc":
+                calls.append(path)
+                raise PermissionError("fixture store inaccessible")
+            if path == ordinary or path.parent == home and path.name in base._MEDIA_DELIVERY_DENIED_HOME_FILES:
+                calls.append(path)
+            return stat(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "stat", counted_stat)
+        assert base.validate_media_delivery_path(str(ordinary)) == str(ordinary.resolve())
+        # At most two candidate checks + five fixed stores + optional recency stat;
+        # this does not grow with artifacts or traverse credential directories.
+        assert len(calls) <= 8
+        def vanished_stat(path, *args, **kwargs):
+            if path == ordinary:
+                raise FileNotFoundError("fixture candidate disappeared")
+            return stat(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "stat", vanished_stat)
+        assert base.validate_media_delivery_path(str(ordinary)) is None
+
+
 class TestInboundMediaSizeCap:
     """gateway.max_inbound_media_bytes caps inbound media buffered into RAM (#13145)."""
 

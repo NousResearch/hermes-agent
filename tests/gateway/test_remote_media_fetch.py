@@ -56,6 +56,56 @@ def test_sandbox_artifact_is_fetched_but_credentials_and_symlinks_to_them_are_no
     assert remote_env.fetched == ["/home/agent/out/report.txt", "/home/agent/out/report.txt"]
 
 
+@pytest.mark.parametrize("name", [".netrc", ".pgpass", ".npmrc", ".pypirc", ".git-credentials"])
+@pytest.mark.parametrize("home", ["/root", "/home/agent", None])
+def test_remote_fallback_cannot_deliver_home_secret_files(remote_env, name, home):
+    """The real filter's remote retry must not undo the host's HOME-file denial."""
+    remote_env._remote_home = home
+    prefix = home or "/home/agent"
+    secret = prefix + "/" + name
+    ordinary = secret + "backup"
+    alias = prefix + "/out/secret-alias.txt"
+    remote_env.files = {secret: b"placeholder credential bytes\n", ordinary: b"ordinary artifact\n"}
+    remote_env.links = {alias: secret}
+    delivered = BasePlatformAdapter.filter_media_delivery_paths([
+        (secret, False), (alias, False), (ordinary, True),
+    ])
+    assert [(Path(path).read_bytes(), voice) for path, voice in delivered] == [(b"ordinary artifact\n", True)]
+    assert remote_env.fetched == [ordinary]
+
+
+@pytest.mark.parametrize("spelling", ["{}", '"{}"', "'{}'", "`{}`", "{},"])
+def test_remote_retry_cannot_override_local_secret_inode_denial(remote_env, tmp_path, monkeypatch, spelling):
+    import os
+    import gateway.platforms.base as base
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    secret = home / ".git-credentials"
+    secret.write_bytes(b"placeholder credential bytes\n")
+    cache = base.DOCUMENT_CACHE_DIR
+    cache.mkdir(parents=True)
+    alias = cache / "report.txt"
+    os.link(secret, alias)
+    remote_env._remote_home = str(home)
+    # The scratch host path is also the synthetic remote namespace here; isolate
+    # only its /root ancestor collision and require a successful remote control.
+    monkeypatch.setattr(media_fetch, "_DENIED_PREFIXES", tuple(
+        path for path in media_fetch._DENIED_PREFIXES if str(path) != "/root"))
+    remote_env.links = {}
+    # A remote namespace collision must not turn a rejected HOST inode into
+    # a trusted cache copy. A genuinely host-missing artifact still fetches.
+    remote_only = str(home / "out" / "remote-only.txt")
+    remote_env.files = {str(alias): b"placeholder credential bytes\n", remote_only: b"ordinary artifact\n"}
+    delivered = BasePlatformAdapter.filter_media_delivery_paths([
+        (spelling.format(alias), False), (remote_only, True),
+    ])
+    assert [(Path(path).read_bytes(), voice) for path, voice in delivered] == [(b"ordinary artifact\n", True)]
+    assert remote_env.fetched == [remote_only]
+
+
 def test_local_backend_and_strict_mode_do_not_fetch(monkeypatch, tmp_path, remote_env):
     """Strict mode keeps its recency gate: a fetched copy would land in an allowlisted root and skip it."""
     monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")

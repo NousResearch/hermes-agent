@@ -11,8 +11,10 @@ name: Rust tests
 # process tree whose grandchild inherits the parent's stdout, and their fixture
 # is `#[cfg(unix)]`; the Windows half of that same contract is covered by
 # `-SelfTestPipeDrain` in scripts/desktop-update/windows.ps1 on the Windows
-# lane. A Windows runner here would compile them out and report green over zero
-# coverage.
+# lane. A Windows runner for those would compile them out and report green
+# over zero coverage — which is exactly why the Windows job below exists only
+# now that the crate carries real `#[cfg(windows)]` tests (#75422): each lane
+# runs the half of the stage-tree contract the other compiles out.
 
 on:
   workflow_call:
@@ -72,5 +74,32 @@ jobs:
 
       # --lib only: the integration/bin targets would need a built frontend
       # (vite dist) that this lane deliberately does not produce.
+      - name: cargo test
+        run: cargo test --lib
+
+  bootstrap-installer-windows:
+    name: cargo test (bootstrap installer, windows)
+    # Runs the crate's `#[cfg(windows)]` stage-tree tests (update.rs, #75422),
+    # which the Linux job above compiles out — and which no other PR lane
+    # compiles at all. The unix-only tests compile out here in turn.
+    runs-on: windows-latest-32-core
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: apps/bootstrap-installer/src-tauri
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      # Same cache shape as the Linux job; Tauri on Windows links the
+      # preinstalled WebView2, so no extra system dependencies are needed.
+      - name: Restore cargo cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/bootstrap-installer/src-tauri/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('apps/bootstrap-installer/src-tauri/Cargo.toml') }}
+
       - name: cargo test
         run: cargo test --lib

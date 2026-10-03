@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 from tools import interrupt as tool_interrupt
@@ -22,6 +22,18 @@ from tools.file_operations_common import ExecuteResult, SearchMatch, SearchResul
 _MACOS_TCC_PROTECTED_HOME_DIRS = (
     "Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures",
 )
+# Since Catalina /Users is firmlinked to the APFS Data volume: the same home
+# directory (same st_dev/st_ino) is also reachable below this mount point.
+_MACOS_DATA_VOLUME = Path("/System/Volumes/Data")
+
+
+def _macos_home_spellings(home_path: Path) -> List[Path]:
+    """``$HOME`` and its Data-volume spelling, so a search of ``/`` (which walks
+    ``/System/Volumes/Data`` too) cannot reach a protected folder by the back door."""
+    try:
+        return [home_path, Path("/") / home_path.relative_to(_MACOS_DATA_VOLUME)]
+    except ValueError:
+        return [home_path, _MACOS_DATA_VOLUME / home_path.relative_to(home_path.anchor)]
 
 
 def _macos_protected_search_exclusions(
@@ -29,9 +41,9 @@ def _macos_protected_search_exclusions(
 ) -> List[str]:
     """Protected home dirs (relative to ``path``) below a broad macOS search root.
 
-    Only an ANCESTOR search (``$HOME``, ``/Users``) gets exclusions, so recursive
-    tools never trigger unattended TCC prompts; a search rooted inside a
-    protected dir stays allowed.
+    Only an ANCESTOR search (``$HOME``, ``/Users``, ``/``) gets exclusions, so
+    recursive tools never trigger unattended TCC prompts; a search rooted inside
+    a protected dir stays allowed.
     """
     if (platform or sys.platform) != "darwin":
         return []
@@ -41,13 +53,14 @@ def _macos_protected_search_exclusions(
     root = Path(os.path.normpath(str(root)))
     home_path = Path(os.path.normpath(str(Path(home or Path.home()).expanduser())))
     exclusions: List[str] = []
-    for dirname in _MACOS_TCC_PROTECTED_HOME_DIRS:
-        try:
-            relative = (home_path / dirname).relative_to(root)
-        except ValueError:
-            continue
-        if relative.parts:
-            exclusions.append(relative.as_posix())
+    for home_spelling in _macos_home_spellings(home_path):
+        for dirname in _MACOS_TCC_PROTECTED_HOME_DIRS:
+            try:
+                relative = (home_spelling / dirname).relative_to(root)
+            except ValueError:
+                continue
+            if relative.parts:
+                exclusions.append(relative.as_posix())
     return exclusions
 
 
@@ -246,6 +259,26 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     )
 
 
+def _respell_under_root(path: str, spellings: List[tuple[str, str]]) -> str:
+    """``path`` re-rooted from the longest matching physical root to that root as the
+    caller spelled it (``./x`` for ``.``, as unscoped rg prints); ``spellings`` is
+    longest-first and unmatched paths are kept."""
+    for physical, spelled in spellings:
+        if path == physical or path.startswith(physical.rstrip("/") + "/"):
+            rest = posixpath.relpath(path, physical)
+            return spelled if rest == "." else posixpath.join(spelled, rest)
+    return path
+
+
+def _respell_search_result(result: SearchResult, respell: Callable[[str], str]) -> SearchResult:
+    """Re-root every path of a scoped content search (matches, files, counts)."""
+    for match in result.matches:
+        match.path = respell(match.path)
+    result.files = [respell(path) for path in result.files]
+    result.counts = {respell(path): count for path, count in result.counts.items()}
+    return result
+
+
 def _posix_roots(roots: List[str]) -> bool:
     """Darwin-only: every root is POSIX-shaped (no drive letter / backslash)."""
     return sys.platform == "darwin" and all(
@@ -333,7 +366,7 @@ class SearchMixin:
     # --- native rg transport (local POSIX) --------------------------------------
 
     def _run_rg_native(self, argv: List[str], fetch_limit: int, timeout: int,
-                       merge_stderr: bool = False) -> ExecuteResult:
+                       merge_stderr: bool = False, cwd: Optional[str] = None) -> ExecuteResult:
         """Run ``argv`` (shell-quoted rg words) natively and stop reading after
         ``fetch_limit`` lines — the ``| head -n`` of the shell pipeline without the
         two bash spawns. ``shlex.split`` undoes the escaping the builders apply for
@@ -345,7 +378,7 @@ class SearchMixin:
         search (diagnostics feed the error message), discarded (``2>/dev/null``) for
         file lists and probes."""
         from tools.environments.local import _kill_process_group_posix, _make_run_env
-        cwd = getattr(self.env, "cwd", None) or self.cwd
+        cwd = cwd or getattr(self.env, "cwd", None) or self.cwd
         args = shlex.split(" ".join(argv))
         try:
             proc = subprocess.Popen(
@@ -396,16 +429,21 @@ class SearchMixin:
         return ExecuteResult(stdout=stdout, exit_code=0 if bounded.is_set() else proc.returncode)
 
     def _run_rg_bounded(self, words: List[str], fetch_limit: int, timeout: int, *,
-                        merge_stderr: bool = False, native_ok: bool = True,
-                        shell_prefix: str = "") -> ExecuteResult:
+                        merge_stderr: bool = False,
+                        shell_prefix: str = "", cwd: Optional[str] = None) -> ExecuteResult:
         """Run an rg command (shell-quoted words) and keep the first ``fetch_limit``
         lines: natively on a local POSIX host, else through the backend shell as
-        ``<prefix><words> | head -n N``. ``native_ok=False`` keeps a form the native
- lane cannot express (the multi-root ``cd`` prefix); ``shell_prefix`` is shell-only."""
-        if native_ok and self._native_read_enabled():
-            return self._run_rg_native(words, fetch_limit, timeout, merge_stderr=merge_stderr)
+        ``<prefix><words> | head -n N``. An explicit cwd anchors glob matching
+        without changing the session cwd; ``shell_prefix`` is shell-only."""
+        if self._native_read_enabled():
+            return self._run_rg_native(words, fetch_limit, timeout, merge_stderr=merge_stderr, cwd=cwd)
+        command = " ".join(words)
+        if cwd:
+            # LocalEnvironment tracks shell cwd changes: keep this search's
+            # matching base inside a subshell, without moving the session cwd.
+            command = f"(cd {self._escape_shell_arg(cwd)} && {command})"
         stderr = "" if merge_stderr else " 2>/dev/null"
-        return self._exec(f"{shell_prefix}{' '.join(words)}{stderr} | head -n {fetch_limit}", timeout=timeout)
+        return self._exec(f"{shell_prefix}{command}{stderr} | head -n {fetch_limit}", timeout=timeout)
 
     def _quote_executable(self, executable: str) -> str:
         """Quote an executable without leaking controller path semantics."""
@@ -429,7 +467,34 @@ class SearchMixin:
             return []
         from tools import file_operations as _fo  # lazy: _HOME is monkeypatched there
         cwd = getattr(self.env, "cwd", None) or self.cwd
-        return _macos_protected_search_exclusions(path, cwd=cwd, home=_fo._HOME, platform=sys.platform)
+        exclusions = _macos_protected_search_exclusions(path, cwd=cwd, home=_fo._HOME, platform=sys.platform)
+        if exclusions or sys.platform != "darwin":
+            return exclusions
+        return self._macos_exclusions_by_identity(path, cwd, _fo._HOME)
+
+    @staticmethod
+    def _macos_exclusions_by_identity(path: str, cwd: str, home: str) -> List[str]:
+        """Exclusions for a root naming $HOME or an ancestor in ANOTHER spelling (a
+        symlink to it, a case variant on case-insensitive APFS): the string match
+        misses it while rg walks straight into the protected folders. Matched by
+        (st_dev, st_ino) against $HOME's ancestors; stat() of an entry is not
+        TCC-gated, only listing it is."""
+        try:
+            root_stat = os.stat(os.path.join(cwd, os.path.expanduser(path)))
+        except OSError:
+            return []
+        home_path = Path(os.path.normpath(os.path.expanduser(home)))
+        for home_spelling in dict.fromkeys([
+                *_macos_home_spellings(home_path), *_macos_home_spellings(Path(os.path.realpath(home_path)))]):
+            for ancestor in (home_spelling, *home_spelling.parents):
+                try:
+                    same = os.path.samestat(root_stat, os.stat(ancestor))
+                except OSError:
+                    continue
+                if same:
+                    return _macos_protected_search_exclusions(
+                        str(ancestor), home=str(home_spelling), platform="darwin")
+        return []
 
     def _protected_prune_paths(self, path: str) -> List[str]:
         """Absolute-ish protected paths for find's ``-path ... -prune``."""
@@ -465,7 +530,8 @@ class SearchMixin:
 
     @staticmethod
     def _macos_protected_search_warning(paths: List[str]) -> str:
-        skipped = ", ".join(os.path.basename(item) for item in paths)
+        # One name per folder, however many spellings of it were pruned.
+        skipped = ", ".join(dict.fromkeys(os.path.basename(item) for item in paths))
         return ("Skipped macOS protected folders during broad search to avoid "
                 f"an unattended privacy prompt: {skipped}. Search a protected "
                 "folder directly when access is intentional.")
@@ -487,12 +553,35 @@ class SearchMixin:
         root = _normalized_filename_search_root(self.env, path or ".", self.cwd)
         return any(part.startswith(".") and part not in (".", "..") for part in root.replace("\\", "/").split("/"))
 
-    def _rg_exclusion_globs(self, path: str) -> List[str]:
-        """``--glob '!<dir>/**'`` pairs excluding protected dirs from an rg run."""
-        out: List[str] = []
-        for item in self._macos_search_exclusions(path):
-            out.extend(["--glob", self._escape_shell_arg(f"!{item}/**")])
-        return out
+    def _rg_protected_scope(
+            self, roots: List[str]) -> tuple[Optional[str], List[str], List[str], Callable[[str], str]]:
+        """Anchor literal protected-directory globs to one physical working directory.
+
+        rg resolves leading-slash globs against its cwd, not each search operand, and
+        only strips its getcwd() (real case, symlinks resolved) from ABSOLUTE paths, so
+        operands go in relative to the scope and ``respell`` maps each printed path
+        back under the root as the caller spelled it. Prune the entry itself before
+        opendir; a contents-only glob is too late for macOS TCC. Leave remote paths
+        and searches without exclusions untouched.
+        """
+        exclusions = self._effective_macos_search_exclusions(roots)
+        if not exclusions:
+            return None, roots, [], lambda printed: printed
+        cwd = getattr(self.env, "cwd", None) or self.cwd
+        physical_roots = [os.path.realpath(os.path.join(cwd, root)) for root in roots]
+        scope = os.path.commonpath(physical_roots)
+        globs: List[str] = []
+        for _root, _relative, absolute in exclusions:
+            relative = os.path.relpath(os.path.realpath(absolute), scope)
+            # A username/search ancestor may contain glob metacharacters.
+            literal = re.sub(r"([\\*?\[\]{}])", r"\\\1", relative)
+            globs.extend(["--glob", self._escape_shell_arg(f"!/{literal}")])
+        spellings = sorted(zip(physical_roots, roots), key=lambda pair: len(pair[0]), reverse=True)
+
+        def respell(printed: str) -> str:
+            return _respell_under_root(posixpath.normpath(posixpath.join(scope, printed)), spellings)
+
+        return scope, [os.path.relpath(root, scope) for root in physical_roots], globs, respell
 
     def _path_exists_probe(self, path: str) -> ExecuteResult:
         """Existence probe; stdout contains "exists" or "not_found" (or the probe's
@@ -550,12 +639,15 @@ class SearchMixin:
             # One global traversal across roots so modified ordering and pagination
             # are exact; root admission wraps the actual rg/find invocation.
             merged = self._search_files(pattern, existing, limit, offset, order)
+            sub_warnings = [merged.warning] if merged.warning else []
         else:
-            merged = SearchResult()
+            merged, sub_warnings = SearchResult(), []
             for root in existing:
                 sub = self._search_content(pattern, root, file_glob, limit, offset, output_mode, context)
                 if sub.error:
                     return sub
+                if sub.warning:  # zero-match hints / multiline note of that root
+                    sub_warnings.append(sub.warning)
                 merged.matches.extend(sub.matches)
                 merged.files.extend(sub.files)
                 merged.counts.update(sub.counts)
@@ -568,7 +660,7 @@ class SearchMixin:
             note += "; skipped missing: " + ", ".join(missing[:3])
             if len(missing) > 3:
                 note += f" (+{len(missing) - 3} more)"
-        warning_parts = [note]
+        warning_parts = [note, *dict.fromkeys(sub_warnings)]
         if not merged.error:
             protected_paths = [absolute for _r, _rel, absolute in self._effective_macos_search_exclusions(existing)]
             if protected_paths:
@@ -610,6 +702,7 @@ class SearchMixin:
         rg = self._quote_executable(rg_executable)
         has_meta = bool(re.search(r"[.\[\](){}?*+^$\\|]", pattern))
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        scope, operands, exclusions, respell = self._rg_protected_scope([path])
         for flags, template in self._ZERO_MATCH_PROBES:
             if flags == "-F" and not has_meta:
                 continue
@@ -619,15 +712,15 @@ class SearchMixin:
                 glob_expr_probe = f"{glob_expr} {self._search_prune_glob_args()}"
             else:
                 glob_expr_probe = glob_expr
-            probe_words = [rg, flags, "--count-matches", glob_expr_probe,
-                           self._escape_shell_arg(pattern, translate_path=False), self._escape_native_tool_arg(path)]
-            probe = self._run_rg_bounded(probe_words, 50, timeout=30)
+            probe_words = [rg, flags, "--count-matches", glob_expr_probe, *exclusions,
+                           self._escape_shell_arg(pattern, translate_path=False), self._escape_native_tool_arg(operands[0])]
+            probe = self._run_rg_bounded(probe_words, 50, timeout=30, cwd=scope)
             total, per_file = 0, []
             for line in (probe.stdout or "").strip().splitlines():
                 p, _sep, n = line.rpartition(":")
                 if n.isdigit():
                     total += int(n)
-                    per_file.append(p)
+                    per_file.append(respell(p))
             if total > 0:
                 extra = len(per_file) - 5
                 paths = ", ".join(per_file[:5]) + (f" (+{extra} more)" if extra > 0 else "")
@@ -905,27 +998,8 @@ class SearchMixin:
         glob_pattern = f"*{pattern}" if ('/' not in pattern and not pattern.startswith('*')) else pattern
         roots = [path] if isinstance(path, str) else path
         fetch_limit = limit + offset + 1
-        effective_exclusions = self._effective_macos_search_exclusions(roots)
-        scoped_common = None
-        command_roots = roots
-        if len(roots) > 1 and effective_exclusions and _posix_roots(roots):
-            # Several roots: rg globs are root-relative, so cd to the common ancestor
-            # and express roots + exclusions relative to it.
-            cwd = getattr(self.env, "cwd", None) or self.cwd
-            absolute_roots = [
-                posixpath.normpath(root if posixpath.isabs(root) else posixpath.join(cwd, root))
-                for root in roots]
-            scoped_common = posixpath.commonpath(absolute_roots)
-            command_roots = [posixpath.relpath(root, scoped_common) for root in absolute_roots]
-            exclusion_terms = [
-                f"--glob {self._escape_shell_arg(f'!{posixpath.relpath(absolute, scoped_common)}/**')}"
-                for _r, _rel, absolute in effective_exclusions]
-        else:
-            exclusion_terms = [
-                f"--glob {self._escape_shell_arg(f'!{relative}/**')}"
-                for _r, relative, _abs in effective_exclusions]
-        exclusion_globs = " ".join(dict.fromkeys(exclusion_terms))
-        exclusion_args = f" {exclusion_globs}" if exclusion_globs else ""
+        scoped_common, command_roots, exclusion_globs, respell = self._rg_protected_scope(roots)
+        exclusion_args = " " + " ".join(exclusion_globs) if exclusion_globs else ""
         rg_executable = rg_executable or self._resolve_command("rg")
         if not rg_executable:
             return SearchResult(error="File search requires ripgrep (rg).")
@@ -936,18 +1010,15 @@ class SearchMixin:
         rg = self._quote_executable(rg_executable)
         sort_arg = " --sortr=modified" if order == "modified" else ""
         root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
-        cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
         rg_cmd = (f"{rg} --files{sort_arg} -g {self._escape_shell_arg(glob_pattern)}"
                   f"{exclusion_args} -- {root_args}")
-        result = self._run_rg_bounded([rg_cmd], fetch_limit, timeout=60, native_ok=not scoped_common,
-                                      shell_prefix=f"set -o pipefail; {cd_prefix}")
+        result = self._run_rg_bounded([rg_cmd], fetch_limit, timeout=60, cwd=scoped_common,
+                                      shell_prefix="set -o pipefail; ")
         stdout, limit_reason = _search_stdout_and_limit(result)
         all_files = [f for f in stdout.splitlines() if f]
         if scoped_common:
-            all_files = [
-                f if posixpath.isabs(f) else posixpath.normpath(posixpath.join(scoped_common, f))
-                for f in all_files]
+            all_files = [respell(f) for f in all_files]
         bounded_sigpipe = result.exit_code == 141 and len(all_files) >= fetch_limit
         if result.exit_code not in {0, 1, 124} and not bounded_sigpipe:
             if order == "modified":
@@ -1003,7 +1074,7 @@ class SearchMixin:
 
     def _run_search_pipeline(self, cmd_parts: List[str], output_mode: str, limit: int,
                              offset: int, context: int, warning: Optional[str] = None,
-                             line_cap: bool = False) -> SearchResult:
+                             line_cap: bool = False, cwd: Optional[str] = None) -> SearchResult:
         """Run ``cmd_parts | head -n <fetch_limit>`` under pipefail and parse. Extra
         rows report the true total (context mode also emits "--" separators, so
         grab 200 more). pipefail keeps the engine's exit 2 alive across ``| head``
@@ -1019,7 +1090,7 @@ class SearchMixin:
             result = self._exec("set -o pipefail; " + " ".join(parts), timeout=60)
         else:
             result = self._run_rg_bounded(cmd_parts, fetch_limit, timeout=60, merge_stderr=True,
-                                          shell_prefix="set -o pipefail; ")
+                                          shell_prefix="set -o pipefail; ", cwd=cwd)
         return _parse_search_output(result, output_mode, limit, offset, context, warning=warning)
 
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
@@ -1043,19 +1114,22 @@ class SearchMixin:
             cmd_parts.append("--multiline")
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
-        cmd_parts.extend(self._rg_exclusion_globs(path))
+        scope, operands, exclusions, respell = self._rg_protected_scope([path])
         if file_glob:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
+        cmd_parts.extend(exclusions)
         if output_mode in _OUTPUT_MODE_FLAGS:
             cmd_parts.append(_OUTPUT_MODE_FLAGS[output_mode])
         cmd_parts.append(self._escape_shell_arg(pattern, translate_path=False))
         # rg is a native Windows binary (winget/cargo/choco): needs C:/... not MSYS /c/...
-        cmd_parts.append(self._escape_native_tool_arg(path))
+        cmd_parts.append(self._escape_native_tool_arg(operands[0]))
         ml_note = (
             "Pattern contains \\n — multiline mode (-U) was enabled automatically "
             "so the regex can match across line boundaries."
         ) if multiline else None
-        return self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context, warning=ml_note)
+        result = self._run_search_pipeline(cmd_parts, output_mode, limit, offset, context,
+                                           warning=ml_note, cwd=scope)
+        return _respell_search_result(result, respell) if scope else result
 
     def _grep_cmd(self, head: List[str], pattern: str, output_mode: str, context: int,
                   file_glob: Optional[str] = None) -> List[str]:

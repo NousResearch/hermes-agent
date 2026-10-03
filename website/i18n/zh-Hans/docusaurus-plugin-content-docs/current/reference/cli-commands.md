@@ -84,6 +84,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes --version` | 显示版本信息。 |
 | `hermes update` | 拉取最新代码并重新安装依赖。`--check` 预览而不安装；`--backup` 在拉取前对 `HERMES_HOME` 进行快照。 |
 | `hermes uninstall` | 从系统中删除 Hermes。 |
+| `hermes installs` | 列出本机上的其他 Hermes 安装，删除其中一个，或隐藏启动提示。 |
 
 ## `hermes chat`
 
@@ -1259,6 +1260,9 @@ hermes update [--check] [--backup] [--restart-gateway]
 | `hermes --version` | 打印版本信息。 |
 | `hermes update` | 拉取最新变更并重新安装依赖。 |
 | `hermes uninstall [--full] [--yes]` | 删除 Hermes，可选择删除所有 config/数据。 |
+| `hermes installs [list] [--json]` | 列出本机上的所有 Hermes 安装，以及 PATH 上的 `hermes` 启动器，顺序与新终端查找它们的顺序相同。`--json` 还会报告启动提示：`notice.count`（其他安装的数量）、`notice.dismissed` 和 `notice.partial`（在 Windows 上为 true，此时计数不含应用商店软件包）。 |
+| `hermes installs remove <id> [--dry-run] [--yes] [--all-users]` | 删除另一个安装：它的文件夹，以及指向该文件夹的启动器和快捷方式。在 Linux 和 macOS 上，启动器是 `~/.local/bin`、`<home>/bin` 和 `/usr/local/bin` 中属于被删除文件夹的 `hermes`、`hermes-acp` 和 `hermes-agent` 命令。你的数据、用户 PATH、用户环境变量和 gateway 保持不变。正在运行的安装和密封安装会被拒绝。在 Windows 上，像 `Programs\HermesBundled` 这样残留的应用文件夹，只有在不含 `Uninstall*.exe` 文件时才会被删除。如果含有，Hermes 会打印该路径，并把删除交给那个卸载程序。Windows 包安装通过 `Remove-AppxPackage` 为当前用户删除。`--all-users` 为所有用户删除该包，需要以管理员身份运行的终端，Hermes 不会自行提升权限。 |
+| `hermes installs dismiss` | 隐藏启动提示，直到其他安装的集合发生变化。 |
 
 ## 另请参阅
 

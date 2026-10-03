@@ -18,7 +18,6 @@ from hermes_constants import get_hermes_home
 from hermes_cli.debug_redaction import (
     redact_debug_support_error,
     redact_debug_support_text,
-    redact_debug_support_value,
 )
 from utils import atomic_json_write
 
@@ -257,8 +256,8 @@ def _resolve_log_path(log_name: str) -> Optional[Path]:
     return None
 
 
-def _redact_log_text(text: str, *, redact_url_credentials: bool = True) -> str:
-    """Strict support-egress scrub; the compatibility flag is intentionally ignored.
+def _redact_log_text(text: str) -> str:
+    """Strict support-egress scrub (``hermes_cli.debug_redaction``).
 
     Debug/support payloads always use strict URL handling. Ordinary tool output
     retains its separate, less destructive URL policy in ``agent.redact``.
@@ -371,7 +370,7 @@ def _capture_dump(redact: bool = True) -> str:
     with contextlib.redirect_stdout(capture), contextlib.suppress(SystemExit):
         run_dump(SimpleNamespace(show_keys=False))
     text = capture.getvalue()
-    return _redact_log_text(text, redact_url_credentials=True) if redact else text
+    return _redact_log_text(text) if redact else text
 
 
 def collect_debug_report(
@@ -429,20 +428,15 @@ def collect_share_bundle(log_lines: int = 200, redact: bool = True) -> dict[str,
         if full := log_snapshots[name].full_text:
             filename = LOG_FILES.get(name, f"{name}.log")
             bundle[filename] = banner + dump_text + f"\n\n--- full {filename} ---\n" + full
-    if redact:
-        # Final textual boundary: future bundle members cannot bypass the
-        # shared support scrub merely because their collector forgot it.
-        bundle = {label: _redact_log_text(text) for label, text in bundle.items()}
     return bundle
 
 
 def build_nous_bundle(bundle: dict[str, str], redact: bool = True) -> bytes:
     """Gzip a :func:`collect_share_bundle` mapping into the Nous envelope (shape parsed by the
     discord-support viewer — keep it stable)."""
-    files = redact_debug_support_value(bundle) if redact else bundle
     envelope = {"format": _NOUS_BUNDLE_FORMAT, "redacted": bool(redact),
                 "created": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "files": files}
+                "files": bundle}
     return gzip.compress(json.dumps(envelope).encode("utf-8"))
 
 

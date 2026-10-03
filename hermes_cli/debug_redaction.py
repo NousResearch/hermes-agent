@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
-from typing import Any
 from urllib.parse import unquote_plus
 
 from agent.redact import (
     _SENSITIVE_QUERY_PARAMS,
+    REDACTION_UNAVAILABLE,
     SECRET_HEADER_NAME_LIST,
-    is_secret_field_name,
+    redact_sensitive_text,
 )
 
 _REDACTED = "[REDACTED]"
@@ -100,59 +99,6 @@ _SUPPORT_BEARER_RE = re.compile(
     re.IGNORECASE,
 )
 
-_SECRET_FIELD_COMPACT_NAMES = frozenset(
-    {
-        "apikey",
-        "token",
-        "accesstoken",
-        "refreshtoken",
-        "idtoken",
-        "authtoken",
-        "clientsecret",
-        "privatekey",
-        "secretkey",
-        "password",
-        "passwd",
-        "credential",
-        "credentials",
-        "authorization",
-        "bearer",
-        "keymaterial",
-        "rawsecret",
-        "secretvalue",
-        "secretinput",
-    }
-)
-_SECRET_ENV_PARTS = (
-    "apikey",
-    "token",
-    "secret",
-    "password",
-    "passwd",
-    "credential",
-    "authorization",
-    "privatekey",
-    "accesskey",
-)
-_SECRET_ARG_FLAGS = frozenset(
-    {
-        "apikey",
-        "accesstoken",
-        "refreshtoken",
-        "idtoken",
-        "authtoken",
-        "clientsecret",
-        "privatekey",
-        "secretkey",
-        "password",
-        "passwd",
-        "credential",
-        "token",
-        "secret",
-    }
-)
-
-
 def _decoded_compact_name(value: object) -> str:
     text = str(value or "")
     for _ in range(3):
@@ -238,75 +184,15 @@ def redact_debug_support_text(value: object, *, max_chars: int | None = None) ->
     if not text:
         return text
     try:
-        from agent.redact import REDACTION_UNAVAILABLE, redact_for_egress, redact_sensitive_text
-
-        text = redact_for_egress(text)
-        if text == REDACTION_UNAVAILABLE:
-            return text
-        text = redact_sensitive_text(
-            text, force=True, redact_url_credentials=True
-        )
+        text = redact_sensitive_text(text, force=True, redact_url_credentials=True)
         text = _redact_url_params(text)
         text = _redact_headers_and_argv(text)
         text = _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
     except Exception:
-        return "[redaction-unavailable]"
+        return REDACTION_UNAVAILABLE
     return text[:max_chars] if max_chars is not None else text
 
 
 def redact_debug_support_error(error: object) -> str:
     """Render an outward-facing debug/support failure without raw exception data."""
     return redact_debug_support_text(error)
-
-
-def _is_secret_field(key: object, *, parent: str) -> bool:
-    compact = _decoded_compact_name(key)
-    if compact in _SECRET_FIELD_COMPACT_NAMES:
-        return True
-    if parent in {"headers", "extraheaders"}:
-        return compact in _SENSITIVE_HEADER_COMPACT_NAMES
-    if parent == "env":
-        return any(part in compact for part in _SECRET_ENV_PARTS)
-    return is_secret_field_name(key)
-
-
-def _redact_sequence(value: Sequence[Any]) -> list[Any]:
-    items = list(value)
-    output = [redact_debug_support_value(item) for item in items]
-    for index, item in enumerate(items):
-        compact = _decoded_compact_name(item) if isinstance(item, str) else ""
-        if compact in _SECRET_ARG_FLAGS and index + 1 < len(output):
-            output[index + 1] = _REDACTED
-        if compact != "header" or not str(item).lstrip().startswith("--") or index + 1 >= len(items):
-            continue
-        header = str(items[index + 1])
-        if ":" in header:
-            output[index + 1] = redact_debug_support_text(header)
-            continue
-        if _decoded_compact_name(header) not in _SENSITIVE_HEADER_COMPACT_NAMES:
-            continue
-        operand = index + 2
-        if operand < len(items) and str(items[operand]).casefold() in {"bearer", "basic", "digest"}:
-            operand += 1
-        if operand < len(output):
-            output[operand] = _REDACTED
-    return output
-
-
-def redact_debug_support_value(value: Any, *, _parent: str = "") -> Any:
-    """Recursively scrub mappings and argv-like sequences for support serialization."""
-    if isinstance(value, Mapping):
-        output: dict[Any, Any] = {}
-        for key, child in value.items():
-            if _is_secret_field(key, parent=_parent):
-                output[key] = _REDACTED
-            else:
-                output[key] = redact_debug_support_value(
-                    child, _parent=_decoded_compact_name(key)
-                )
-        return output
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        return _redact_sequence(value)
-    if isinstance(value, str):
-        return redact_debug_support_text(value)
-    return value

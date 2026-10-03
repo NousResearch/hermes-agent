@@ -19696,6 +19696,7 @@ app.on('before-quit', event => {
   // overlay-suppression latch must not leak into the next close (#130810).
   if (heldQuitForActiveWork(event)) {
     appQuitting = false
+    quitInProgress = false
     return
   }
 

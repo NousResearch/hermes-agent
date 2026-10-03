@@ -748,6 +748,13 @@ def _set_status_direct(conn: sqlite3.Connection, task_id: str, new_status: str) 
         # dispatcher spawns a child whose upstream work hasn't completed.
         if effective_status == "ready" and not kanban_db._parents_satisfied(conn, task_id):
             return False
+        if prev["status"] == "archived" and effective_status != "archived":
+            # A live card may have reused this idempotency key since the archive; the restored
+            # card yields it (dedupe marker only) instead of tripping the partial UNIQUE index.
+            conn.execute(
+                "UPDATE tasks SET idempotency_key = NULL WHERE id = ? AND idempotency_key IN "
+                "(SELECT idempotency_key FROM tasks WHERE id != ? AND status != 'archived')",
+                (task_id, task_id))
         was_running = prev["status"] == "running"
         reopening_satisfied_parent = prev["status"] in {"done", "archived"} and effective_status not in {"done", "archived"}
         cur = conn.execute(

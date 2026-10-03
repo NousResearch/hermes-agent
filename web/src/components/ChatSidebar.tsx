@@ -74,6 +74,12 @@ const SIDE_CAR_GAVE_UP_MESSAGE =
   "gateway sidecar disconnected — gave up after " +
   `${SIDE_CAR_MAX_RECONNECT_ATTEMPTS} attempts, use Reconnect`;
 
+// How long a freshly opened sidecar connection must stay open before it
+// counts as stable enough to reset the redial budget (#129393). The redial
+// loop's every iteration passed briefly through `open`, so resetting on the
+// open transition itself let the loop dodge the budget forever.
+const SIDE_CAR_STABLE_OPEN_MS = 3_000;
+
 const STATE_LABEL: Record<ConnectionState, string> = {
   idle: 'idle',
   connecting: 'connecting',
@@ -133,7 +139,8 @@ export function ChatSidebar({
   // Sidecar auto-redial budget (#95951). A ref, NOT effect state: the counter
   // must survive the [gw, version] effect re-runs a redial triggers, or the
   // budget resets every attempt and never exhausts.
-  // Reset on a successful open and on scope switches.
+  // Reset only after a connection stays open past the grace window
+  // (SIDE_CAR_STABLE_OPEN_MS), and on scope switches.
   const sidecarRedialAttemptRef = useRef(0)
   const sidecarGaveUpRef = useRef(false)
 
@@ -231,23 +238,45 @@ export function ChatSidebar({
     // deliberately delegates reconnect policy to this connection owner.
     // Bounded exponential backoff — the same shape the PTY pane uses —
     // capped at SIDE_CAR_MAX_RECONNECT_ATTEMPTS; after that the manual
-    // Reconnect affordance stays the only path. A successful open resets
-    // the counter; unmount or a scope switch (version bump) cancels the
-    // pending timer because this effect tears down with the old client.
+    // Reconnect affordance stays the only path. A stable open (held past
+    // SIDE_CAR_STABLE_OPEN_MS) resets the counter; unmount or a scope
+    // switch (version bump) cancels the pending timers because this effect
+    // tears down with the old client.
     let redialTimer: ReturnType<typeof setTimeout> | null = null;
+    // The open→reset grace window (#129393): only a connection that stays
+    // open this long resets the budget and clears a gave-up banner.
+    let graceTimer: ReturnType<typeof setTimeout> | null = null;
     const offRedial = gw.onState((s) => {
       if (s === "open") {
-        sidecarRedialAttemptRef.current = 0;
-        if (sidecarGaveUpRef.current) {
-          sidecarGaveUpRef.current = false;
-          setError((current) =>
-            current === SIDE_CAR_GAVE_UP_MESSAGE ? null : current,
-          );
+        // The connection is up: a still-pending redial would tear the
+        // fresh socket down when it fires (#129393), so drop it.
+        if (redialTimer) {
+          clearTimeout(redialTimer);
+          redialTimer = null;
         }
+        graceTimer = setTimeout(() => {
+          graceTimer = null;
+          if (cancelled) {
+            return;
+          }
+          sidecarRedialAttemptRef.current = 0;
+          if (sidecarGaveUpRef.current) {
+            sidecarGaveUpRef.current = false;
+            setError((current) =>
+              current === SIDE_CAR_GAVE_UP_MESSAGE ? null : current,
+            );
+          }
+        }, SIDE_CAR_STABLE_OPEN_MS);
         return;
       }
       if (s !== "closed" && s !== "error") {
         return;
+      }
+      // The open was too brief to count as stable — cancel its grace
+      // window so this drop still counts against the budget.
+      if (graceTimer) {
+        clearTimeout(graceTimer);
+        graceTimer = null;
       }
       if (cancelled || redialTimer) {
         return;
@@ -302,6 +331,10 @@ export function ChatSidebar({
       if (redialTimer) {
         clearTimeout(redialTimer)
         redialTimer = null
+      }
+      if (graceTimer) {
+        clearTimeout(graceTimer)
+        graceTimer = null
       }
       offRedial()
       offState()

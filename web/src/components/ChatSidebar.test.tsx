@@ -613,3 +613,115 @@ describe('ChatSidebar event socket reconnect', () => {
     expect(FakeWebSocket.instances).toHaveLength(3)
   })
 })
+
+describe('ChatSidebar sidecar redial grace (#129393)', () => {
+  // The file-wide onState mock replays "open" to every new subscription,
+  // which would start a fresh grace window on every rebuild. Capture the
+  // handlers instead and drive the exact state sequence of each scenario.
+  const stateHandlers: Array<(s: string) => void> = []
+  let originalOnState: ((handler: (s: string) => void) => () => void) | undefined
+
+  beforeEach(() => {
+    reloadMocks.maybeReloadForLoopbackWsAuthFailure.mockReturnValue(false)
+    stateHandlers.length = 0
+    originalOnState = gatewayMocks.onState.getMockImplementation()
+    gatewayMocks.onState.mockImplementation((handler: (s: string) => void) => {
+      stateHandlers.push(handler)
+      return () => undefined
+    })
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    gatewayMocks.onState.mockImplementation(originalOnState!)
+    vi.useRealTimers()
+  })
+
+  // Older subscriptions are unmounted for real (cancelled closure) but the
+  // mock keeps them callable, so always drive the latest effect run's
+  // redial owner.
+  const latestHandler = () => stateHandlers[stateHandlers.length - 1]
+
+  async function renderSidebar() {
+    const { ChatSidebar } = await import('./ChatSidebar')
+    await render(<ChatSidebar channel="chat-1" />)
+  }
+
+  /** Advance timers and flush the version-bump rebuild that fires on the tick. */
+  async function advance(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms)
+    })
+  }
+
+  it('does not reset the redial budget when a connection opens briefly', async () => {
+    await renderSidebar()
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(1)
+
+    // Every iteration of the #129393 loop passed briefly through `open`
+    // before the pending redial tore the socket down. The budget must not
+    // reset on those, or it never exhausts and the loop runs forever.
+    for (let round = 0; round < 5; round += 1) {
+      await act(async () => {
+        latestHandler()('open')
+        latestHandler()('closed')
+      })
+      await advance(4_000)
+      expect(gatewayMocks.connect).toHaveBeenCalledTimes(2 + round)
+    }
+
+    // Budget spent: the next drop gives up instead of redialing.
+    await act(async () => {
+      latestHandler()('closed')
+    })
+    await advance(4_000)
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(6)
+    expect(container?.textContent ?? '').toContain('gave up after 5 attempts')
+  })
+
+  it('clears the pending redial timer when the connection opens', async () => {
+    await renderSidebar()
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(1)
+
+    // A drop schedules the backoff redial...
+    await act(async () => {
+      latestHandler()('closed')
+    })
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+    // ...but the connection comes back up before it fires. The timer must
+    // be gone, not left to tear the fresh socket down (#129393).
+    await act(async () => {
+      latestHandler()('open')
+    })
+
+    // Well past the 250ms first-attempt backoff: no version bump, no redial.
+    await advance(4_000)
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(1)
+  })
+
+  it('resets the redial budget once a connection stays open past the grace window', async () => {
+    await renderSidebar()
+
+    // First drop: budget 0 → 1, 250ms backoff.
+    await act(async () => {
+      latestHandler()('closed')
+    })
+    await advance(250)
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(2)
+
+    // Hold the connection open past SIDE_CAR_STABLE_OPEN_MS so the budget
+    // resets to 0.
+    await act(async () => {
+      latestHandler()('open')
+    })
+    await advance(3_000)
+
+    // The next drop backoffs from the start again (250ms, not 500ms).
+    await act(async () => {
+      latestHandler()('closed')
+    })
+    await advance(250)
+    expect(gatewayMocks.connect).toHaveBeenCalledTimes(3)
+  })
+})

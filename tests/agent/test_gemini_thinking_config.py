@@ -40,7 +40,7 @@ def test_enabled_reasoning_never_zeroes_budget_and_non_gemini_gets_nothing():
         config = _build_gemini_thinking_config("gemini-2.5-flash", reasoning)
         assert config is not None
         assert config.get("includeThoughts") is True
-        assert "thinkingBudget" not in config
+        assert config["thinkingBudget"] == 2048
     # Non-Gemini models on the same provider 400 on the field entirely (#17426).
     assert _build_gemini_thinking_config("gpt-4o", {"enabled": False}) is None
     assert _build_gemini_thinking_config("gemma-2b", {"enabled": False}) is None
@@ -51,3 +51,9 @@ def test_snake_case_translation_carries_thinking_budget():
     assert translated == {"include_thoughts": False, "thinking_budget": 0}
     translated = _snake_case_gemini_thinking_config({"includeThoughts": False})
     assert translated == {"include_thoughts": False}
+
+
+def test_gemini_25_effort_maps_to_bounded_thinking_budget():
+    assert _build_gemini_thinking_config("gemini-2.5-flash", {"effort": "low"})["thinkingBudget"] == 1024
+    assert _build_gemini_thinking_config("gemini-2.5-flash", {"effort": "high"})["thinkingBudget"] == 4096
+    assert _build_gemini_thinking_config("gemini-2.5-flash", {"effort": "unknown"})["thinkingBudget"] == 2048

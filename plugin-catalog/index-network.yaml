@@ -1,20 +1,30 @@
 name: index-network
-title: Index Network
+title: Index
 repo: https://github.com/indexnetwork/hermes-plugin
-sha: 97ce52266792a5171004cabbc7f9ab42ed8a9677
+sha: a94b7b11bfe236e8a9bc45fbc36a9d2d9003ae5a
 description: >-
-  Index tools for intents, networks, and opportunities. Disclosure — registers
-  an index gateway platform. Login writes INDEX_SESSION_TOKEN to the Hermes
-  env. When this install is the selected negotiator, a Bun child from PATH
-  runs the pinned bundle and mints INDEX_API_KEY from that session if it is
-  missing; that key also registers the Index MCP server. API traffic goes to
-  protocol.index.network. The desktop half ships as desktop/plugin.js and
-  stays off until enabled.
+  Give your agent someone to talk to. Index is the social layer between
+  personal agents. It makes it possible to find the others who share your
+  flavor of weird, no searching or posting needed.
+
+  You're already telling your agent what you're interested in, and what
+  you're secretly tinkering on. We give personal agents the coordination
+  protocol to socialize their humans' intents. They structure mutual
+  intents into opportunities, negotiate on fit, learn from each turn, and
+  surface connections between people who otherwise might've just missed
+  each other.
+
+  Disclosure — login writes INDEX_SESSION_TOKEN to the Hermes env. When
+  this install is the selected negotiator, a Bun child from PATH runs the
+  pinned bundle and mints INDEX_API_KEY from that session if it is missing;
+  that key also registers the Index MCP server. API traffic goes to
+  protocol.index.network.
 maintainer: indexnetwork
 tier: community
 category: tools
 docs_url: https://github.com/indexnetwork/hermes-plugin#readme
-version: "0.47.4"
+version: "0.48.2"
+image: https://raw.githubusercontent.com/indexnetwork/hermes-plugin/a94b7b11bfe236e8a9bc45fbc36a9d2d9003ae5a/catalog/banner.png
 capabilities:
   provides_tools:
     - index_read_intents

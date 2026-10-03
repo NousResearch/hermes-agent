@@ -6796,6 +6796,102 @@ class TelegramAdapter(BasePlatformAdapter):
         event.message_type = mtype
         logger.info(log_fmt, path)
 
+    def _broker_image_ingress_command(self) -> List[str]:
+        """Return the optional trusted broker image-ingress command.
+
+        The command is deliberately argv-based rather than shell-based.  It receives a JSON
+        description on stdin and returns JSON containing the durable staged ``path`` on stdout.
+        Keeping this opt-in lets the normal Hermes cache remain the safe fallback while the
+        broker-side scheduler owns task creation and storage policy.
+        """
+        raw = (getattr(self.config, "extra", None) or {}).get("broker_image_ingress_command")
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, (list, tuple)) or not raw or not all(isinstance(part, str) and part.strip() for part in raw):
+            return []
+        return [part.strip() for part in raw]
+
+    def _broker_image_ingress_timeout(self) -> float:
+        """Read the bounded timeout for the optional broker image handoff."""
+        import math
+
+        value = self._coerce_float_extra(
+            "broker_image_ingress_timeout_seconds", 30.0, min_value=0.1, max_value=300.0)
+        return value if math.isfinite(value) else 30.0
+
+    def _broker_image_schema(self) -> str:
+        """Return the explicitly configured broker vision schema."""
+        value = (getattr(self.config, "extra", None) or {}).get(
+            "broker_image_schema", "receipt")
+        return value.strip() if value in {"receipt", "image_description"} else "receipt"
+
+    async def _handoff_broker_image(self, msg: Any, cached_path: str, mime: str, kind: str) -> str:
+        """Offer a cached Telegram image to the broker and return its durable path on success.
+
+        The broker command is an integration boundary, not the scheduler itself: it can create a
+        task and atomically stage the input without this adapter knowing the scheduler's database
+        schema.  A failed or malformed handoff never loses the already-cached image.
+        """
+        command = self._broker_image_ingress_command()
+        if not command:
+            return cached_path
+
+        chat = getattr(msg, "chat", None)
+        sender = getattr(msg, "from_user", None)
+        payload = {
+            "source_path": str(cached_path),
+            "mime_type": mime,
+            "kind": kind,
+            "chat_id": getattr(chat, "id", None),
+            "message_id": getattr(msg, "message_id", None),
+            "user_id": getattr(sender, "id", None),
+            "caption": getattr(msg, "caption", None) or "",
+            "media_group_id": getattr(msg, "media_group_id", None),
+            "schema": self._broker_image_schema(),
+        }
+        process = None
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(json.dumps(payload).encode("utf-8")),
+                timeout=self._broker_image_ingress_timeout(),
+            )
+            if process.returncode != 0:
+                detail = stderr.decode("utf-8", errors="replace").strip()
+                raise RuntimeError(f"broker ingress exited {process.returncode}: {detail[:300]}")
+            result = json.loads(stdout.decode("utf-8"))
+            durable_path = result.get("path") if isinstance(result, dict) else None
+            if not isinstance(durable_path, str) or not _Path(durable_path).is_absolute() or not _Path(durable_path).is_file():
+                raise ValueError("broker ingress returned no existing absolute path")
+            logger.info(
+                "[Telegram] Broker-staged user %s at %s (task_id=%s)",
+                kind, durable_path, result.get("task_id") if isinstance(result, dict) else None,
+            )
+            return durable_path
+        except asyncio.CancelledError:
+            if process is not None and process.returncode is None:
+                process.kill()
+                with contextlib.suppress(Exception):
+                    await process.wait()
+            raise
+        except asyncio.TimeoutError:
+            if process is not None and process.returncode is None:
+                process.kill()
+                with contextlib.suppress(Exception):
+                    await process.wait()
+            logger.warning("[Telegram] Broker image ingress timed out for %s; using Hermes cache", kind)
+        except Exception as e:
+            logger.warning(
+                "[Telegram] Broker image ingress failed for %s; using Hermes cache: %s",
+                kind, _redact_telegram_error_text(e),
+            )
+        return cached_path
+
     async def _cache_inbound_document(self, msg, event: MessageEvent) -> bool:
         """Cache a document attachment (image → photo path, video, else generic media + text injection).
         Returns True when the event was already dispatched/routed so the caller must return."""
@@ -6824,10 +6920,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 except ValueError as e:
                     logger.warning("[Telegram] Failed to cache image document: %s", _redact_telegram_error_text(e), exc_info=True)
                     return await self._dispatch_with_text(event, f"Image document '{display}' could not be read as an image.")
+                mime = doc_mime if doc_mime.startswith("image/") else _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg")
+                cached_path = await self._handoff_broker_image(msg, cached_path, mime, "image_document")
                 self._set_cached_media(
-                    event, cached_path, doc_mime if doc_mime.startswith(
-                        "image/"
-                    ) else _TELEGRAM_IMAGE_EXT_TO_MIME.get(image_ext, "image/jpeg"),
+                    event, cached_path, mime,
                     MessageType.PHOTO, "[Telegram] Cached user image-document at %s")
                 await self._route_photo_event(msg, event)
                 return True
@@ -6911,8 +7007,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 file_obj = await msg.photo[-1].get_file()  # PhotoSize list sorted by size; largest last
                 image_bytes = await file_obj.download_as_bytearray()
                 ext = self._ext_from_path(file_obj.file_path, [".png", ".webp", ".gif", ".jpeg", ".jpg"], ".jpg")
+                cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=ext)
+                mime = _TELEGRAM_IMAGE_EXT_TO_MIME.get(ext, "image/jpeg")
+                cached_path = await self._handoff_broker_image(msg, cached_path, mime, "photo")
                 self._set_cached_media(
-                    event, await cache_image_from_bytes_async(bytes(image_bytes), ext=ext), f"image/{ext.lstrip('.')}", event.message_type,
+                    event, cached_path, mime, event.message_type,
                     "[Telegram] Cached user photo at %s")
                 await self._route_photo_event(msg, event)
                 return

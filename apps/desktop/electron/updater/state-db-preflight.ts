@@ -1,6 +1,32 @@
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
+import { promisify } from 'node:util'
 
 import { hiddenWindowsChildOptions } from '../windows-child-options'
+
+const DEFAULT_TIMEOUT_MS = 5 * 60_000
+const MAX_TIMEOUT_MS = 30 * 60_000
+const execFileAsync = promisify(execFile)
+const COPY_RATE_BYTES_PER_SECOND = 5 * 1024 * 1024
+const TIMEOUT_SLACK_MS = 60_000
+
+export function stateDbPreflightTimeoutMs(home: string): number {
+  let bytes = 0
+
+  for (const name of ['state.db', 'state.db-wal']) {
+    try {
+      bytes += fs.statSync(path.join(home, name)).size
+    } catch {
+      // Missing WAL is normal; an unreadable size retains the conservative floor.
+    }
+  }
+
+  return Math.min(MAX_TIMEOUT_MS, Math.max(
+    DEFAULT_TIMEOUT_MS,
+    Math.ceil(bytes / COPY_RATE_BYTES_PER_SECOND) * 1_000 + TIMEOUT_SLACK_MS
+  ))
+}
 
 interface StateDbPreflight {
   python: string | null
@@ -16,8 +42,8 @@ interface StateDbPreflight {
   launcher?: string | null
 }
 
-// Synchronous by design: the caller must not stop the backend before the snapshot.
-export function preflightStateDb({ python, script, home, log, launcher = null }: StateDbPreflight): void {
+// Await completion before stopping the backend, while keeping Electron responsive.
+export async function preflightStateDb({ python, script, home, log, launcher = null }: StateDbPreflight): Promise<void> {
   try {
     const command: string | null = launcher ?? python
 
@@ -37,20 +63,19 @@ export function preflightStateDb({ python, script, home, log, launcher = null }:
       throw new Error('The pre-flight snapshot contains an unsafe Windows command argument.')
     }
 
-    const result: string = execFileSync(
+    const { stdout } = await execFileAsync(
       viaCmd ? (process.env.ComSpec ?? 'cmd.exe') : command,
       viaCmd
         ? ['/d', '/v:off', '/s', '/c', `""${command}" ${args.map((arg: string): string => `"${arg}"`).join(' ')}"`]
         : args,
       hiddenWindowsChildOptions({
         encoding: 'utf8',
-        timeout: 30_000,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: stateDbPreflightTimeoutMs(home),
         windowsVerbatimArguments: viaCmd
       })
     )
 
-    log(`[updates] state.db pre-flight: ${result.trim()}`)
+    log(`[updates] state.db pre-flight: ${stdout.trim()}`)
   } catch (error: unknown) {
     const message =
       `state.db pre-flight failed: ${error instanceof Error ? error.message : String(error)}. ` +

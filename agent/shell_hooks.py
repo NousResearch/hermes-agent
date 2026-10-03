@@ -690,6 +690,49 @@ _RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]
 }
 
 
+def _lower_permission(verdict: Any, reason: Any, updated: Any) -> dict[str, Any]:
+    """A permission verdict (``deny``/``ask``/``allow``) in the flat dialect: ``deny`` blocks, ``ask``
+    is "route to the human" (the Hermes approval-gate escalation), ``allow`` is a no-op (hooks never
+    auto-allow, same ruling as the flat ``decision: approve``) unless it carries a rewrite."""
+    if verdict == "deny":
+        return {"decision": "block", "reason": reason}
+    if verdict == "ask":
+        return {"action": "approve", "message": reason}
+    return {"decision": "modify", "tool_input": updated} if isinstance(updated, dict) else {}
+
+
+def _flatten_reply_dialects(event: str, data: dict[str, Any]) -> dict[str, Any]:
+    """Lower the two other agent-hook reply shapes onto the flat dialect the parsers read.
+
+    The nested shape: ``{"hookSpecificOutput": {"permissionDecision", "permissionDecisionReason",
+    "updatedInput", "additionalContext"}}`` (Stop: nested ``decision: block``). The flat permission shape
+    uses its own keys: ``{"permission", "agent_message", "user_message", "updated_input"}``, ``additional_context``,
+    ``continue: false`` to refuse a submitted prompt, and a stop hook's ``followup_message`` to keep going.
+    Hermes keys already in the reply keep precedence."""
+    nested = data.get("hookSpecificOutput")
+    flat: dict[str, Any] = {}
+    if isinstance(nested, dict):
+        flat = _lower_permission(nested.get("permissionDecision"), nested.get("permissionDecisionReason"),
+                                 nested.get("updatedInput"))
+        if not flat and nested.get("decision") == "block":
+            flat = {"decision": "block", "reason": nested.get("reason")}
+        context = nested.get("additionalContext")
+    elif {"permission", "continue", "additional_context", "followup_message"} & data.keys():
+        # agent_message is the text the model reads on a deny, which is what a Hermes block message is.
+        reason = data.get("agent_message") or data.get("user_message")
+        flat = _lower_permission(data.get("permission"), reason, data.get("updated_input"))
+        if not flat and event == "pre_llm_call" and data.get("continue") is False:
+            flat = {"decision": "block", "reason": reason}
+        if not flat and event == "pre_verify" and data.get("followup_message"):
+            flat = {"action": "continue", "message": data["followup_message"]}
+        context = data.get("additional_context")
+    else:
+        return data
+    if isinstance(context, str) and context.strip():
+        flat["context"] = context
+    return {**flat, **{k: v for k, v in data.items() if k != "hookSpecificOutput"}}
+
+
 def _parse_response(event: str, stdout: str) -> Optional[dict[str, Any]]:
     """Translate stdout JSON into a Hermes wire-shape dict, or ``None``."""
     stdout = (stdout or "").strip()
@@ -700,7 +743,9 @@ def _parse_response(event: str, stdout: str) -> Optional[dict[str, Any]]:
     except json.JSONDecodeError:
         logger.warning("shell hook stdout was not valid JSON (event=%s): %s", event, stdout[:200])
         return None
-    return _RESPONSE_PARSERS.get(event, _parse_context)(data) if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    return _RESPONSE_PARSERS.get(event, _parse_context)(_flatten_reply_dialects(event, data))
 
 
 # --- Allowlist / consent ---

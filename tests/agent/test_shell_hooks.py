@@ -62,6 +62,42 @@ class TestParseResponse:
         assert shell_hooks._parse_response("pre_tool_call", "") is None
         assert shell_hooks._parse_response("pre_tool_call", "   ") is None
 
+    @pytest.mark.parametrize("event, reply, expected", [
+        # Nested reply shape (hookSpecificOutput).
+        ("pre_tool_call", {"hookSpecificOutput": {"permissionDecision": "deny", "permissionDecisionReason": "Blocked by policy"}},
+         {"action": "block", "message": "Blocked by policy"}),
+        # "ask" routes to the human: the Hermes approval-gate escalation, never auto-allow.
+        ("pre_tool_call", {"hookSpecificOutput": {"permissionDecision": "ask", "permissionDecisionReason": "needs a human"}},
+         {"action": "approve", "message": "needs a human"}),
+        ("pre_tool_call", {"hookSpecificOutput": {"permissionDecision": "allow", "updatedInput": {"command": "npm ci"}}},
+         {"action": "modify", "args": {"command": "npm ci"}}),
+        ("pre_tool_call", {"hookSpecificOutput": {"permissionDecision": "allow"}}, None),
+        ("pre_llm_call", {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "Today is Friday"}},
+         {"context": "Today is Friday"}),
+        ("pre_verify", {"hookSpecificOutput": {"decision": "block", "reason": "Tasks incomplete, continue working"}},
+         {"action": "continue", "message": "Tasks incomplete, continue working"}),
+        # Flat permission shape (permission / agent_message / updated_input / continue / followup_message).
+        ("pre_tool_call", {"permission": "deny", "user_message": "Shown to you", "agent_message": "No pushes to main"},
+         {"action": "block", "message": "No pushes to main"}),
+        ("pre_tool_call", {"permission": "ask", "user_message": "Confirm the migration"},
+         {"action": "approve", "message": "Confirm the migration"}),
+        ("pre_tool_call", {"permission": "allow", "updated_input": {"command": "npm ci"}},
+         {"action": "modify", "args": {"command": "npm ci"}}),
+        ("pre_tool_call", {"permission": "allow"}, None),
+        ("pre_llm_call", {"continue": False, "user_message": "Prompt contains a customer ID"},
+         {"action": "block", "message": "Prompt contains a customer ID"}),
+        ("pre_llm_call", {"continue": True, "additional_context": "Branch: main"}, {"context": "Branch: main"}),
+        ("pre_verify", {"followup_message": "Run the formatter, then finish."},
+         {"action": "continue", "message": "Run the formatter, then finish."}),
+        # A Hermes key in the same reply keeps precedence over the lowered one.
+        ("pre_tool_call", {"permission": "allow", "action": "block", "message": "Hermes wins"},
+         {"action": "block", "message": "Hermes wins"}),
+    ])
+    def test_other_agent_reply_shapes_lower_onto_the_flat_dialect(self, event, reply, expected):
+        """Hook scripts written for other agents answer in a nested or a flat permission shape;
+        both used to parse to None here, so a ``deny`` let the tool run."""
+        assert shell_hooks._parse_response(event, json.dumps(reply)) == expected
+
 
 # ── _serialize_payload ────────────────────────────────────────────────────
 

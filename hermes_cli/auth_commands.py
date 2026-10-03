@@ -692,12 +692,12 @@ def auth_status_command(args) -> None:
 
 
 def auth_logout_command(args) -> None:
-    # The built-in path keeps receiving the raw provider id (byte-for-byte
-    # unchanged); the normalized alias is used only for the handler lookup.
-    raw_provider = getattr(args, "provider", None)
-    if dispatch_plugin_auth("logout", args, _normalize_provider(raw_provider or "")):
+    # Normalized like `auth add`/`status`: the store is keyed by canonical id, so a raw
+    # `OpenAI-Codex` cleared nothing yet still reset the config and reported a logout.
+    provider = _normalize_provider(getattr(args, "provider", None) or "") or None
+    if dispatch_plugin_auth("logout", args, provider or ""):
         return
-    auth_mod.logout_command(SimpleNamespace(provider=raw_provider))
+    auth_mod.logout_command(SimpleNamespace(provider=provider))
 
 
 def auth_spotify_command(args) -> None:

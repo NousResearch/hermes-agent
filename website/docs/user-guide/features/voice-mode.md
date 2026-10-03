@@ -179,7 +179,7 @@ Say **"stop"** — and nothing else — to end the voice conversation hands-free
 When TTS is enabled, the agent speaks its reply **sentence-by-sentence** as it generates text — you don't wait for the full response. This works with **every TTS provider**:
 
 1. Buffers text deltas into complete sentences (min 20 chars)
-2. Strips markdown formatting, emoji, and `<think>` blocks
+2. Strips markdown formatting, emoji, `<think>` blocks and fenced code blocks (code stays on screen and is never read aloud)
 3. Plays audio per sentence in real-time — providers with a chunked PCM API (ElevenLabs, OpenAI) stream raw audio for the lowest time-to-first-word; every other provider (including the default Edge) synthesizes and plays each sentence as it completes
 
 The same pipeline runs in the classic CLI, the TUI, and the desktop app. In a desktop voice conversation the reply text is fed **live** into a per-reply speech WebSocket as the model generates it, so speech overlaps generation — one socket and one audio clock per reply, no per-sentence connection gaps.

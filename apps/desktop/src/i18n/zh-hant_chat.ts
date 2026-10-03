@@ -484,6 +484,7 @@ export const zhHantChat = {
     savingImage: '正在儲存圖片',
     zoomIn: '放大',
     zoomOut: '縮小',
+    warmView: 'Warm view',
     resetZoom: '重設縮放',
     imagePreviewFailed: '圖片預覽失敗',
     imageAttach: '附加圖片',

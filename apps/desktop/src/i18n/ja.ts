@@ -4160,6 +4160,7 @@ export const ja = defineLocale({
     savingImage: '画像を保存中',
     zoomIn: '拡大',
     zoomOut: '縮小',
+    warmView: 'Warm view',
     resetZoom: 'ズームをリセット',
     imagePreviewFailed: '画像のプレビューに失敗しました',
     imageAttach: '画像を添付',

@@ -422,6 +422,7 @@ def _import_pillow_for_resize():
 def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
                               max_base64_bytes: int = _RESIZE_TARGET_BYTES,
                               max_dimension: Optional[int] = None,
+                              max_pixels: Optional[int] = None,
                               scale_out: Optional[dict] = None,
                               force_jpeg: bool = False) -> str:
     """Base64 data URL, progressively downscaled with Pillow while over budget.
@@ -438,11 +439,27 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     MB byte cap. force_jpeg: Re-encode as JPEG even for PNG input when a resize is needed. History-reuse
     embeds (#92699) opt in so a text-heavy screenshot keeps its readable resolution and shrinks via JPEG
     quality instead. Images already under both caps are returned unchanged (still PNG).
+    max_pixels: If set, images whose total pixel count (width * height) exceeds this budget are forcibly
+    downscaled even when bytes and the per-side cap are fine. Qwen2.5/3-VL processors (incl. vLLM's
+    Qwen3VLProcessor) reject images above their ``max_pixels`` default (1,505,280) with a 400 (#76505).
+
     """
     file_size = image_path.stat().st_size
     estimated_b64 = (file_size * 4) // 3 + 100  # base64 ~4/3 + data URL header
+    # Total-pixel budget (e.g. Qwen VL max_pixels): a wide-but-short image can
+    # be under the per-side cap yet over the pixel budget (5120x1440 = 7.4M px).
+    exceeds_pixels = False
+    if max_pixels is not None:
+        try:
+            from PIL import Image as _PILQuick
+            with _PILQuick.open(image_path) as _quick_img:
+                _qw, _qh = _quick_img.size
+                if _qw * _qh > max_pixels:
+                    exceeds_pixels = True
+        except Exception:
+            pass  # can't check; Pillow path below will handle or skip
     data_url = None
-    if estimated_b64 <= max_base64_bytes and not (
+    if estimated_b64 <= max_base64_bytes and not exceeds_pixels and not (
         max_dimension is not None and _image_exceeds_dimension(image_path, max_dimension)
     ):
         data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
@@ -477,6 +494,15 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
     def _record_scale(w: int, h: int) -> None:
         if scale_out is not None and (w, h) != orig_dims:
             scale_out.update(orig_width=orig_dims[0], orig_height=orig_dims[1], new_width=w, new_height=h)
+
+    def _dims_ok(w: int, h: int) -> bool:
+        """True if both pixel dimensions and the total-pixel budget are within the limit."""
+        if max_dimension is not None and max(w, h) > max_dimension:
+            return False
+        if max_pixels is not None and w * h > max_pixels:
+            return False
+        return True
+
     for attempt in range(5):
         if attempt > 0:
             # Halve, then re-derive from whichever axis hit the 64px floor so both shrink equally.
@@ -490,7 +516,7 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
             img = img.resize((new_w, new_h), Image.LANCZOS)
             prev_dims = (new_w, new_h)
             logger.info("Resized to %dx%d (attempt %d)", new_w, new_h, attempt)
-        dims_ok = max_dimension is None or max(img.width, img.height) <= max_dimension
+        dims_ok = _dims_ok(img.width, img.height)
         for q in quality_steps:
             buf = BytesIO()
             img.save(buf, format=pil_format, **({} if q is None else {"quality": q}))

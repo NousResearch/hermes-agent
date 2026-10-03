@@ -29,11 +29,16 @@ _PY_EXTS = (".py", ".pyi", ".ipynb")
 _DOC_EXTS = (".md", ".mdx", ".txt", ".rst", ".json", ".yaml", ".yml")
 
 # Shared path_filter predicates. JS-only gating keeps bare `exec(` off Python's exec()
-# and prose; Python-only gating keeps pickle/os.system rules off other languages;
-# the eval rule skips doc/prose files entirely.
-_JS_ONLY = lambda p: p.endswith(_JS_EXTS)  # noqa: E731
-_PY_ONLY = lambda p: p.endswith(_PY_EXTS)  # noqa: E731
-_NOT_DOCS = lambda p: not p.endswith(_DOC_EXTS)  # noqa: E731
+# and prose (its source counterpart in claude-plugins-official carries the same filter);
+# the new Function / DOM-XSS sink rules take _JS_OR_HTML — an inline <script> block in an
+# HTML file is the same live sink as a .js file, so excluding .html would go dark on a
+# payload class the rules used to catch; Python-only gating keeps pickle/os.system rules
+# off other languages; the eval rule skips doc/prose files entirely. Predicates match
+# case-insensitively (A.JS is still JS).
+_JS_ONLY = lambda p: p.lower().endswith(_JS_EXTS)  # noqa: E731
+_JS_OR_HTML = lambda p: p.lower().endswith(_JS_EXTS + (".html", ".htm"))  # noqa: E731
+_PY_ONLY = lambda p: p.lower().endswith(_PY_EXTS)  # noqa: E731
+_NOT_DOCS = lambda p: not p.lower().endswith(_DOC_EXTS)  # noqa: E731
 
 _UNSAFE_DESERIALIZATION_REMINDER = """⚠️ Security Warning: Loading pickle data (or equivalents: cPickle, cloudpickle, dill, marshal, shelve, joblib, pandas.read_pickle, numpy with allow_pickle=True) from untrusted sources allows arbitrary code execution.
 
@@ -152,19 +157,19 @@ SECURITY_PATTERNS = [
     _rule("child_process_exec", _CHILD_PROCESS_EXEC_REMINDER, path_filter=_JS_ONLY, substrings=["child_process.exec", "execSync("], regex=r"(?<![a-zA-Z0-9_\.])exec\("),
     _rule("new_function_injection",
           "\u26a0\ufe0f Security Warning: Using new Function() with string interpolation is a CODE INJECTION vulnerability. If any variable is concatenated or interpolated into the function body string, an attacker controlling that variable can execute arbitrary code. Use safe alternatives: for property access use obj[key] or array.reduce((o, k) => o[k], root); for computation use a safe expression parser. NEVER interpolate untrusted strings into new Function() bodies.",
-          substrings=["new Function"]),
+          path_filter=_JS_OR_HTML, substrings=["new Function"]),
     _rule("eval_injection",
           "⚠️ Security Warning: eval() executes arbitrary code and is a major security risk. Use JSON.parse() for data, ast.literal_eval() for Python literals, or a safe expression parser. If this is safe or is explicitly needed, briefly document that in a comment before continuing.",
           path_filter=_NOT_DOCS, regex=r"(?<![a-zA-Z0-9_\.])eval\("),
     _rule("react_dangerously_set_html",
           "⚠️ Security Warning: dangerouslySetInnerHTML can lead to XSS vulnerabilities if used with untrusted content. Ensure all content is properly sanitized using an HTML sanitizer library like DOMPurify, or use safe alternatives.",
-          substrings=["dangerouslySetInnerHTML"]),
+          path_filter=_JS_OR_HTML, substrings=["dangerouslySetInnerHTML"]),
     _rule("document_write_xss",
           "⚠️ Security Warning: document.write() can be exploited for XSS attacks and has performance issues. Use DOM manipulation methods like createElement() and appendChild() instead.",
-          substrings=["document.write"]),
+          path_filter=_JS_OR_HTML, substrings=["document.write"]),
     _rule("innerHTML_xss",
           "⚠️ Security Warning: Setting innerHTML with untrusted content can lead to XSS vulnerabilities. Use textContent for plain text or safe DOM methods for HTML content. If you need HTML support, consider using an HTML sanitizer library such as DOMPurify.",
-          substrings=[".innerHTML =", ".innerHTML="]),
+          path_filter=_JS_OR_HTML, substrings=[".innerHTML =", ".innerHTML="]),
     _rule("pickle_deserialization", _UNSAFE_DESERIALIZATION_REMINDER, path_filter=_PY_ONLY, regex=r"(?<![a-zA-Z0-9_])pickle\.(loads?|Unpickler)\b|(?<![a-zA-Z0-9_])pkl_load\("),
     _rule("os_system_injection",
           "⚠️ Security Warning: os.system() runs a shell and is a command-injection sink. Use subprocess.run([...]) with a list of arguments instead. If this is safe or is explicitly needed, briefly document that in a comment before continuing.",
@@ -190,10 +195,10 @@ SECURITY_PATTERNS = [
     _rule("pickle_variants_load", _UNSAFE_DESERIALIZATION_REMINDER, regex=r"\b(cPickle|cloudpickle|dill)\.(load|loads)\s*\("),
     _rule("outerHTML_xss",
           "⚠️ Security Warning: Use textContent or sanitize with DOMPurify. outerHTML assignment is an XSS sink equivalent to innerHTML.",
-          substrings=[".outerHTML =", ".outerHTML="]),
+          path_filter=_JS_OR_HTML, substrings=[".outerHTML =", ".outerHTML="]),
     _rule("insertAdjacentHTML_xss",
           "⚠️ Security Warning: Use insertAdjacentText() or sanitize with DOMPurify. insertAdjacentHTML is an XSS sink.",
-          substrings=[".insertAdjacentHTML("]),
+          path_filter=_JS_OR_HTML, substrings=[".insertAdjacentHTML("]),
     _rule("script_src_without_sri",
           '⚠️ Security Warning: Add integrity="sha384-..." crossorigin="anonymous" to external script tags. Loading scripts without Subresource Integrity exposes you to CDN compromise.',
           regex=r"<script\s+(?![^>]{0,400}integrity\s*=)[^>]{0,200}src\s*=\s*[\x22\x27](?:https?:)?//[^\x22\x27]{1,300}[\x22\x27][^>]{0,100}>"),

@@ -123,10 +123,11 @@ def _utc_now_iso() -> str:
 
 def _receipt_dir() -> Path:
     """The receipts dir — a pure path computation, NO mkdir side
-    effect: readers (latest()) must not create state."""
-    from hermes_constants import get_hermes_home
+    effect: readers (latest()) must not create state. The ROOT home, like the
+    updater's receipts (hermes_cli.update_receipt): one dir whatever profile runs."""
+    from hermes_constants import get_default_hermes_root
 
-    return get_hermes_home() / "logs" / "update_receipts"
+    return get_default_hermes_root() / "logs" / "update_receipts"
 
 
 def begin(kind: str) -> contextvars.Token:

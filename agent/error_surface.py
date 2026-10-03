@@ -15,6 +15,7 @@ string sniffing when absent or partial.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -61,11 +62,20 @@ _NON_RETRYABLE_REASONS = {
 _CUSTOM_ENDPOINT_PROVIDERS = {"custom", "local", "llama.cpp", "llamacpp", "ollama", "lmstudio", "vllm"}
 
 # Mid-stream drop markers. Deliberately narrow: our own retry-exhaustion
-# summaries plus the OpenAI SDK's stream-abort errors.
+# summaries plus the OpenAI SDK's stream-abort errors. Each fragment must be
+# unambiguous as a RAW SUBSTRING — a short generic token here silently matches
+# ordinary provider prose and misroutes the layer (see _SSE_TOKEN_RE below).
 _STREAM_DROP_FRAGMENTS = (
     "stream connection", "peer closed connection", "incomplete chunked read",
-    "connection broken", "stream ended prematurely", "sse", "mid-stream",
+    "connection broken", "stream ended prematurely", "mid-stream",
 )
+
+# "sse" must match as a standalone token only: as a bare substring it hits
+# ordinary provider prose ("processed", "surpassed", "dismissed") and
+# misroutes provider-layer failures to the streaming layer.
+# Input is pre-lowered by _looks_like_stream_drop(), so re.IGNORECASE is
+# intentionally omitted — keep the lowering and this pattern in sync.
+_SSE_TOKEN_RE = re.compile(r"\bsse\b")
 
 # Exception top-level modules that mean "API/transport call failed" (vs. a bug
 # in our dispatcher = gateway layer): every SDK family our adapters raise from
@@ -82,7 +92,10 @@ def _is_custom_endpoint(provider: Optional[str]) -> bool:
 
 
 def _looks_like_stream_drop(message: str) -> bool:
-    return any(fragment in message.lower() for fragment in _STREAM_DROP_FRAGMENTS)
+    msg = message.lower()
+    if any(fragment in msg for fragment in _STREAM_DROP_FRAGMENTS):
+        return True
+    return bool(_SSE_TOKEN_RE.search(msg))
 
 
 def _surface(layer: str, code: str, retryable: bool, provider: str = "", model: str = "") -> dict:

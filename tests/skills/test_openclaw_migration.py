@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT_PATH = (
@@ -395,6 +396,58 @@ def test_source_candidate_finds_files_in_custom_workspace(tmp_path: Path):
     assert "soul" in migrated_kinds
     assert "memory" in migrated_kinds
     assert "skill" in migrated_kinds
+
+
+def test_unreadable_custom_workspace_skipped_not_aborted(tmp_path: Path):
+    """``agents.defaults.workspace`` may point at a directory the user can't read (e.g.
+    a stale ``/root/.openclaw/workspace`` from a previous root install when the user
+    now runs as non-root). ``Path.is_dir()`` raises ``PermissionError`` on those, and
+    that used to abort the entire migration before any items were applied (#36831).
+
+    The defensive path: catch ``OSError`` from ``is_dir()`` and treat the workspace
+    as if it weren't configured, so the migration falls back to ``source_candidate()``
+    against ``source_root`` alone.
+    """
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    unreadable_ws = tmp_path / "root-only-workspace"
+
+    source.mkdir()
+    target.mkdir()
+    # Don't create unreadable_ws — Path.is_dir on a non-existent path returns False
+    # rather than raising, so we patch it to raise PermissionError to simulate the
+    # EACCES case.
+
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"workspace": str(unreadable_ws)}}}),
+        encoding="utf-8",
+    )
+
+    real_is_dir = Path.is_dir
+
+    def patched_is_dir(self):
+        # Raise PermissionError for the unreadable workspace path; defer to the real
+        # implementation for everything else so we don't break unrelated assertions.
+        if self == unreadable_ws:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_is_dir(self)
+
+    with patch.object(Path, "is_dir", patched_is_dir):
+        # Construction used to crash here with PermissionError; now it must complete.
+        migrator = mod.Migrator(
+            source_root=source,
+            target_root=target,
+            execute=True,
+            workspace_target=None,
+            overwrite=False,
+            migrate_secrets=False,
+            output_dir=target / "migration-report",
+            selected_options=set(),
+        )
+
+    # The unreadable workspace was skipped (not adopted as _custom_workspace).
+    assert migrator._custom_workspace is None
 
 
 

@@ -880,7 +880,17 @@ class Migrator:
             ws_path = Path(ws).expanduser().resolve()
             # Only use it if it exists and is outside the source_root tree
             # (otherwise the standard relative-path logic already covers it).
-            if ws_path.is_dir():
+            # ``is_dir()`` does an ``os.stat()`` and raises on EACCES; an unreadable
+            # workspace path (e.g. a stale ``/root/.openclaw/workspace`` left over
+            # from a previous root install when the user now runs as non-root)
+            # must not abort the whole migration -- just skip the custom-workspace
+            # fallback and let ``source_candidate()`` resolve from ``source_root``
+            # alone (#36831).
+            try:
+                ws_path_is_dir = ws_path.is_dir()
+            except OSError:
+                ws_path_is_dir = False
+            if ws_path_is_dir:
                 try:
                     ws_path.relative_to(self.source_root)
                 except ValueError:

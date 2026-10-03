@@ -125,9 +125,11 @@ class OptionalSkillSource(SkillSource):
             return self._fetch_from_upstream(upstream, rel_id)
         files: Dict[str, Union[str, bytes]] = {}
         for f in skill_dir.rglob("*"):
-            if f.is_file() and not _skip_bundle_file(f.relative_to(skill_dir).as_posix()):
+            # One spelling for the skip check and the key: bundle keys are POSIX on every OS, the
+            # form `skills_guard.content_hash` reads back off disk (#62310).
+            if f.is_file() and not _skip_bundle_file(rel := f.relative_to(skill_dir).as_posix()):
                 try:
-                    files[str(f.relative_to(skill_dir))] = f.read_bytes()
+                    files[rel] = f.read_bytes()
                 except OSError:
                     continue
         return self._bundle(rel_id, files) if files else None

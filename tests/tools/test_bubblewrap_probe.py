@@ -14,6 +14,7 @@ stays green.
 
 import inspect
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -56,6 +57,7 @@ PRLIMIT = "/usr/bin/prlimit"
 @pytest.fixture(autouse=True)
 def _fresh_probe_cache(monkeypatch):
     monkeypatch.setattr(bubblewrap, "_probed_bwrap_path", None)
+    monkeypatch.setattr(bubblewrap, "_process_limit_scoped", True)
 
 
 @pytest.fixture
@@ -262,11 +264,14 @@ class TestDegradedModePath:
 
 
 class TestEverySpawnIsWrapped:
-    def test_backend_module_spawns_nothing_but_the_probe(self):
+    def test_backend_module_spawns_nothing_but_its_two_probes(self):
         source = inspect.getsource(bubblewrap)
         assert "Popen(" not in source
-        assert source.count("subprocess.run(") == 1
+        assert source.count("subprocess.run(") == 2
         assert "subprocess.run(" in inspect.getsource(run_probe)
+        # The process limit probe runs bwrap itself: it has to, to measure
+        # how the kernel counts inside a sandbox.
+        assert "subprocess.run(" in inspect.getsource(bubblewrap.run_process_limit_probe)
 
     @needs_bwrap
     def test_every_popen_argv_is_the_probe_or_prlimit_then_bwrap(self, sandbox_root, work_dir, monkeypatch):
@@ -298,3 +303,97 @@ class TestEverySpawnIsWrapped:
             assert argv[1:i] and all(a.startswith("--") for a in argv[1:i]), argv
             assert argv[i + 1] == "--unshare-all", argv
             assert "--" in argv
+
+
+class TestProcessLimitProbe:
+    """RLIMIT_NPROC set inside a sandbox counts that sandbox alone only on a
+    kernel that accounts it per user namespace. One probe spawn decides."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(bubblewrap, "_probed_bwrap_path", shutil.which("bwrap") or "/usr/bin/bwrap")
+        monkeypatch.setattr(bubblewrap, "_process_limit_scoped", None)
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(tmp_path / "sandboxes"))
+
+    @staticmethod
+    def _env(tmp_path, **config):
+        work = tmp_path / "work"
+        work.mkdir(exist_ok=True)
+        with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):
+            return bubblewrap.BubblewrapEnvironment(cwd=str(work), timeout=10, config=bubblewrap.BubblewrapConfig(**config))
+
+    def test_probe_sets_a_small_limit_inside_a_sandbox_and_forks_once(self, monkeypatch):
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen["argv"], seen["kwargs"] = argv, kwargs
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(bubblewrap.subprocess, "run", fake_run)
+        assert bubblewrap.run_process_limit_probe("/usr/bin/bwrap", "/usr/bin/prlimit") is True
+        argv = seen["argv"]
+        assert argv[0] == "/usr/bin/bwrap" and "--unshare-all" in argv
+        inner = argv[argv.index("--") + 1:]
+        assert inner[:2] == ["/usr/bin/prlimit", f"--nproc={bubblewrap.PROCESS_LIMIT_PROBE_VALUE}"]
+        assert seen["kwargs"]["timeout"] == bubblewrap.PROBE_TIMEOUT_SECONDS
+
+    @pytest.mark.parametrize("outcome", ["nonzero", "oserror", "timeout"])
+    def test_probe_fails_closed(self, monkeypatch, outcome):
+        def fake_run(argv, **kwargs):
+            if outcome == "oserror":
+                raise OSError("no bwrap")
+            if outcome == "timeout":
+                raise subprocess.TimeoutExpired(argv, 5)
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="sh: Cannot fork")
+
+        monkeypatch.setattr(bubblewrap.subprocess, "run", fake_run)
+        assert bubblewrap.run_process_limit_probe("/usr/bin/bwrap", "/usr/bin/prlimit") is False
+
+    def test_failed_probe_drops_the_process_limit_and_warns_once(self, monkeypatch, tmp_path, caplog):
+        calls = []
+        monkeypatch.setattr(bubblewrap, "run_process_limit_probe", lambda *a: calls.append(a) or False)
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"):
+            envs = [self._env(tmp_path) for _ in range(3)]
+        try:
+            for env in envs:
+                argv = env._wrap_popen_args(["bash"])
+                assert argv[:3] == [env._prlimit_path, f"--as={256 * 1024 * 1024}", "--cpu=30"]
+                assert not any(a.startswith("--nproc") for a in argv)
+                assert argv[-2:] == ["--", "bash"]
+        finally:
+            for env in envs:
+                env.cleanup()
+        assert len(calls) == 1
+        warnings = [r for r in caplog.records if "process limit" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "5.14" in warnings[0].getMessage()
+
+    def test_passed_probe_keeps_the_process_limit_and_runs_once(self, monkeypatch, tmp_path):
+        calls = []
+        monkeypatch.setattr(bubblewrap, "run_process_limit_probe", lambda *a: calls.append(a) or True)
+        envs = [self._env(tmp_path) for _ in range(3)]
+        try:
+            for env in envs:
+                assert any(a.startswith("--nproc=") for a in env._wrap_popen_args(["bash"]))
+        finally:
+            for env in envs:
+                env.cleanup()
+        assert len(calls) == 1
+
+    def test_no_probe_when_max_procs_is_zero(self, monkeypatch, tmp_path):
+        calls = []
+        monkeypatch.setattr(bubblewrap, "run_process_limit_probe", lambda *a: calls.append(a) or True)
+        env = self._env(tmp_path, max_procs=0)
+        try:
+            assert not any(a.startswith("--nproc") for a in env._wrap_popen_args(["bash"]))
+        finally:
+            env.cleanup()
+        assert calls == []
+
+    @needs_bwrap
+    def test_real_probe_passes_on_this_kernel(self):
+        release = tuple(int(part) for part in os.uname().release.split("-")[0].split(".")[:2])
+        if release < (5, 17):
+            pytest.skip("the kernel predates reliable per-namespace process accounting")
+        assert bubblewrap.run_process_limit_probe(shutil.which("bwrap"), shutil.which("prlimit")) is True
+        assert bubblewrap.process_limit_is_scoped(shutil.which("bwrap"), shutil.which("prlimit")) is True

@@ -45,6 +45,7 @@ from tools.environments.local import LocalEnvironment
 def _bwrap_probe_passed(monkeypatch):
     """Unit constructions never spawn: count the process-wide bwrap probe as passed."""
     monkeypatch.setattr(bubblewrap, "_probed_bwrap_path", shutil.which("bwrap") or "/usr/bin/bwrap")
+    monkeypatch.setattr(bubblewrap, "_process_limit_scoped", True)
 
 
 def _bwrap_usable() -> bool:

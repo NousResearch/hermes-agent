@@ -55,6 +55,11 @@ def test_floor_matching_is_vendor_prefix_and_variant_suffix_transparent():
     assert floor("openai/o3-mini") == floor("o3-mini") is not None
     assert floor("gpt-5.6-sol-900k") == floor("gpt-5.6-sol") is not None
     assert floor("thinkingmachines/inkling:free") == floor("thinkingmachines/inkling") is not None
+    # Kimi / Moonshot K2.x + K3 reasoning family (#73337): the family key resolves after
+    # aggregator-prefix strip, the bare Kimi Coding slug matches on `k3`, and both anchor to
+    # the slug start so a look-alike (`k3s`) never over-matches.
+    assert floor("accounts/fireworks/models/kimi-k3") == floor("kimi-k2p6") is not None
+    assert floor("k3") is not None and floor("k3s") is None
     assert floor("openai/gpt-4o") is None
 
 

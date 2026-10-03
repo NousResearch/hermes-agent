@@ -37,3 +37,7 @@ optional_env:
     description: "Default address for cron / notification delivery"
     prompt: "Home address"
     password: false
+  - name: EMAIL_QUOTE_ORIGINAL
+    description: "Quote the received email below replies (true/false, default false)"
+    prompt: "Quote original email in replies"
+    password: false

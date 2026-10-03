@@ -96,7 +96,8 @@ def _board_conn(board: Optional[str]) -> Iterator[tuple[Optional[str], sqlite3.C
     """Resolve the ``board`` query param, open a connection, close it on exit."""
     board = _resolve_board(board)
     with closing(_conn(board=board)) as conn:
-        yield board, conn
+        with kanban_db.scoped_kanban_event_origin("api"):
+            yield board, conn
 
 
 def _with_board_pinned(board: Optional[str], fn: Callable[[], Any]) -> Any:

@@ -489,6 +489,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_kanban_worker_stale_claim` | Observer | After a TTL-expired claim is reclaimed; live-PID extensions don't fire. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `heartbeat_stale`, `retry_status` | Identifiers and claim metadata only. |
 | `on_kanban_task_updated` | Observer | After a committed task-field write outside the claim/complete/block lifecycle (assign, overrides, dashboard editors). Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `changed_fields` | `changed_fields` carries field names only, never values; the named title/body values in the board DB may contain user/project content. |
 | `on_kanban_dispatch_tick` | Observer | Once per dispatcher tick, strictly after the dispatch lock is released; idle and contended ticks fire too. Return ignored. | `board`, `profile_name`, `dry_run`, `outcome`, `result` | `result` is the tick's `DispatchResult` and carries task ids, assignees, and workspace paths. |
+| `on_kanban_event_appended` | Observer | After every committed `task_events` append (created/commented/linked/assigned/archived/..., including CLI-originated writes); batched appends fire once per row in `id` order, rollbacks fire nothing. Bounded by `plugins.hook_callback_timeout`. Return ignored. | `event_id`, `task_id`, `run_id`, `kind`, `payload` (stored JSON text, may be null), `created_at`, `board`, `profile_name`, `origin` (`cli`\|`tool`\|`dispatcher`\|`api`) | `payload` may carry task text, like `task_updated`/`dispatch_tick`. |
 
 ---
 
@@ -1670,6 +1671,7 @@ Five additional observers (RFC #58548) extend the kanban family. All are observe
 - **`on_kanban_worker_stale_claim`** — when a TTL-expired claim is reclaimed; live-PID extensions don't fire. Adds `worker_pid`, `heartbeat_stale`, `retry_status`.
 - **`on_kanban_task_updated`** — after a committed task-field write outside the claim/complete/block lifecycle (`assign_task`, model/reasoning overrides, dashboard editors). Adds `changed_fields` — field names only, never values.
 - **`on_kanban_dispatch_tick`** — once per dispatcher tick, strictly after the dispatch lock is released, including idle and lock-contended ticks. Payload: `board`, `profile_name`, `dry_run`, `outcome`, `result`.
+- **`on_kanban_event_appended`** — after every committed `task_events` append, once per row in `id` order for batched appends. Adds `event_id`, `run_id`, `kind`, `payload` (stored JSON text), `created_at`, `origin` (`cli`/`tool`/`dispatcher`/`api`).
 
 ---
 

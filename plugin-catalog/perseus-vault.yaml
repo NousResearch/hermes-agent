@@ -1,0 +1,20 @@
+name: perseus-vault
+repo: https://github.com/Perseus-Computing-LLC/hermes-plugin-perseus-vault
+sha: c6e693288b5536f0426bb62da8cd6d7b97192410
+version: "1.2.0"
+description: "Perseus Vault memory provider for Hermes Agent: shared MCP-backed long-term memory with session-start prefetch, scoped session-end capture, curated 9-tool MCP surface, optional Authorized Action Receipt (AAR) enforcement for side-effecting tools, and a hash-only Perseus Ledger provenance bridge (fail-open). Per-directory memory banks via .hermes.md / HERMES.md memory_bank: directive."
+maintainer: Perseus-Computing-LLC
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/Perseus-Computing-LLC/hermes-plugin-perseus-vault#readme
+capabilities:
+  provides_tools:
+    - perseus_recall
+    - perseus_remember
+    - perseus_forget
+  provides_hooks:
+    - tool_execution
+  provides_middleware: []
+  requires_env:
+    - PERSEUS_VAULT_MCP_TOKEN

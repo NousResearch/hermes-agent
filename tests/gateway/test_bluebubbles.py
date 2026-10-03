@@ -881,3 +881,35 @@ class TestBlueBubblesWebhookAuth:
         assert calls, "webhook auth must use hmac.compare_digest"
         assert calls[0][0] == b"secret"
         assert calls[0][1] == b"secret"
+
+    @pytest.mark.asyncio
+    async def test_correct_password_reaches_normal_webhook_path(self, monkeypatch):
+        # Positive path: a token that matches the configured secret must not
+        # merely avoid a 401 -- it has to clear the comparator and fall through
+        # to the regular 200 dispatch, so the constant-time check can never
+        # reject (or silently drop) a legitimate BlueBubbles delivery.
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        body = json.dumps({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-auth-1",
+                "text": "authenticated hello",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "chatIdentifier": "user@example.com",
+            },
+        }).encode("utf-8")
+        resp = await adapter._handle_webhook(
+            _FakeWebhookRequest(query={"password": "secret"}, body=body)
+        )
+        await asyncio.sleep(0)
+
+        assert resp.status == 200
+        assert [event.text for event in handled] == ["authenticated hello"]

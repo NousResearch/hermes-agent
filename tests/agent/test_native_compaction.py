@@ -551,6 +551,64 @@ class TestPrunePreCheckpointItems:
         assert users[0] == "x" * 400  # (600-500)*4 chars
         assert out[0]["type"] == "compaction"
 
+    def test_retention_budget_truncates_typed_text_parts_newest_first(self):
+        """#131788: the boundary budget must reach typed input_text parts too, so the
+        newest ask is retained (head-truncated) instead of being skipped whole while an
+        older completed ask survives as the only plaintext user anchor."""
+        from agent.native_compaction import prune_pre_checkpoint_items
+
+        older = {"type": "message", "role": "user",
+                 "content": [{"type": "input_text", "text": "OLD_COMPLETED_ASK"}]}
+        current = {"type": "message", "role": "user",
+                   "content": [{"type": "input_text", "text": "CURRENT_ASK " + "x" * 10000}]}
+        items = [older, current, {"type": "compaction", "encrypted_content": "blob"}]
+        out = prune_pre_checkpoint_items(items, retained_user_token_budget=100)
+        users = [i for i in out if i.get("role") == "user"]
+        assert len(users) == 1
+        kept = users[0]["content"]
+        assert kept[0]["type"] == "input_text"  # part metadata preserved
+        assert kept[0]["text"].startswith("CURRENT_ASK ")
+        assert len(kept[0]["text"]) == 400  # 100 tokens * 4 chars, head-truncated
+        assert users[0]["content"][0] is not current["content"][0]  # input never mutated
+
+    def test_retention_budget_typed_truncation_spans_parts_and_preserves_metadata(self):
+        from agent.native_compaction import prune_pre_checkpoint_items
+
+        big1 = "a" * 300
+        big2 = "b" * 300
+        item = {"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": big1},
+            {"type": "input_text", "text": big2},
+        ]}
+        items = [item, {"type": "compaction", "encrypted_content": "blob"}]
+        out = prune_pre_checkpoint_items(items, retained_user_token_budget=100)
+        users = [i for i in out if i.get("role") == "user"]
+        assert len(users) == 1
+        parts = users[0]["content"]
+        # 400-char budget: first part whole, second part head-truncated to the remainder.
+        assert parts[0]["text"] == big1
+        assert parts[1]["text"] == "b" * 100
+        assert all(p["type"] == "input_text" for p in parts)
+        assert item["content"][0]["text"] == big1  # input item untouched
+
+    def test_retention_budget_oversized_mixed_image_part_skipped_whole(self):
+        """A non-text part opts the item out of typed truncation: oversized mixed content
+        is skipped (no partial text/image split), and an image-only message below it still
+        gets its whole-item one-token retention."""
+        from agent.native_compaction import prune_pre_checkpoint_items
+
+        mixed = {"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "z" * 10000},
+            {"type": "input_image", "image_url": "https://example.invalid/x.png"},
+        ]}
+        image_only = {"type": "message", "role": "user", "content": [
+            {"type": "input_image", "image_url": "https://example.invalid/y.png"},
+        ]}
+        items = [image_only, mixed, {"type": "compaction", "encrypted_content": "blob"}]
+        out = prune_pre_checkpoint_items(items, retained_user_token_budget=100)
+        users = [i for i in out if i.get("role") == "user"]
+        assert users == [image_only]
+
     def test_zero_budget_keeps_only_post_tail(self):
         from agent.native_compaction import prune_pre_checkpoint_items
 

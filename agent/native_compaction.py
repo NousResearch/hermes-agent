@@ -185,6 +185,51 @@ def _has_retainable_image_content(item: Any) -> bool:
     )
 
 
+def _typed_part_text(part: Any) -> Optional[str]:
+    """Direct text field of a typed part (same priority as _extract_item_text), or None."""
+    if isinstance(part, str):
+        return part
+    if isinstance(part, dict):
+        value = next((part[k] for k in ("text", "input_text", "output_text")
+                      if isinstance(part.get(k), str) and part[k]), None)
+        return value
+    return None
+
+
+def _truncate_typed_text_parts(item: Any, char_budget: int) -> Optional[Dict[str, Any]]:
+    """Head-truncate a text-only typed multipart user message within ``char_budget``.
+
+    The boundary-truncation twin of the ``content: str`` slice: typed parts (Codex conversion
+    output) carry the same newest ask, so the retention budget must reach them too (#131788).
+    Only parts whose direct ``text``/``input_text``/``output_text`` field is non-empty
+    participate — any other shape (e.g. ``input_image``) returns None so the image/summary
+    safeguards keep their whole-item behavior. Parts are shallow-copied; the input item is
+    never mutated.
+    """
+    content = item.get("content") if isinstance(item, dict) else None
+    if not isinstance(content, list) or not content:
+        return None
+    truncated_parts: List[Any] = []
+    remaining = max(0, int(char_budget))
+    for part in content:
+        text = _typed_part_text(part)
+        if not text:
+            return None
+        if remaining <= 0:
+            break
+        sliced = text[:remaining]
+        remaining -= len(sliced)
+        if isinstance(part, dict):
+            key = next(k for k in ("text", "input_text", "output_text")
+                       if isinstance(part.get(k), str) and part[k])
+            truncated_parts.append({**part, key: sliced})
+        else:
+            truncated_parts.append(sliced)
+    if not any((_typed_part_text(p) or "").strip() for p in truncated_parts):
+        return None
+    return {**item, "content": truncated_parts}
+
+
 # Canonical provenance check. Deliberately NOT a second heuristic (no underscore-key scan,
 # no ad-hoc headings) — either could promote adversarial content to durable history.
 _is_summary_item = is_compaction_summary_message
@@ -209,8 +254,9 @@ def prune_pre_checkpoint_items(
 
     - The NEWEST contiguous run of checkpoints wins; relative order is preserved.
     - User messages are kept verbatim within ``retained_user_token_budget``; the boundary
-      message is head-truncated when it only partially fits (string content only). A
-      recognized image-only user message is retained whole at one-token cost.
+      message is head-truncated when it only partially fits, for both string and typed
+      text-part content (#131788). A recognized image-only user message is retained whole
+      at one-token cost.
     - Summaries are retained whole within ``retained_summary_token_budget``, never sliced
       (framing would corrupt) and never duplicated.
     - ``item_sources`` (parallel to ``items``) is the raw chat message each item came from.
@@ -299,6 +345,9 @@ def prune_pre_checkpoint_items(
                 truncated = {**item, "content": item["content"][: user_remaining * 4]}
                 if truncated["content"].strip():
                     retained_reversed.append(truncated)
+                user_remaining = 0
+            elif (typed_truncated := _truncate_typed_text_parts(item, user_remaining * 4)) is not None:
+                retained_reversed.append(typed_truncated)
                 user_remaining = 0
 
     result = items[first_cp : last_cp + 1] + list(reversed(retained_reversed)) + items[last_cp + 1 :]

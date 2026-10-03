@@ -6,6 +6,8 @@
 registry window (#102123). ``providers._sync_auth_registry`` now re-admits into both snapshots.
 """
 
+import pytest
+
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -14,16 +16,22 @@ def _profile(name: str) -> ProviderProfile:
     return ProviderProfile(name=name, display_name=name, description="late plugin (direct API)")
 
 
-def test_late_registered_provider_reaches_picker_catalog(monkeypatch):
+@pytest.fixture
+def _seam_generation():
+    # The catalog containers are seam facades: scope the test by restoring the committed
+    # generation, not by swapping in plain copies the seam never publishes to.
+    from hermes_cli import provider_seam
+
+    saved = provider_seam.current()
+    yield
+    provider_seam.restore(saved)
+
+
+def test_late_registered_provider_reaches_picker_catalog(monkeypatch, _seam_generation):
     import hermes_cli.models_catalog_static as catalog
     from hermes_cli.models import list_available_providers
 
     # this module is imported (the snapshot exists) before the registration below
-    monkeypatch.setattr(catalog, "CANONICAL_PROVIDERS", list(catalog.CANONICAL_PROVIDERS))
-    monkeypatch.setattr(catalog, "_canonical_slugs", set(catalog._canonical_slugs))
-    monkeypatch.setattr(catalog, "_PROVIDER_LABELS", dict(catalog._PROVIDER_LABELS))
-    monkeypatch.setattr("hermes_cli.models.CANONICAL_PROVIDERS", catalog.CANONICAL_PROVIDERS)
-    monkeypatch.setattr("hermes_cli.models._PROVIDER_LABELS", catalog._PROVIDER_LABELS)
     slug = "zz-late-plugin-provider"
     assert slug not in {r["id"] for r in list_available_providers()}
 

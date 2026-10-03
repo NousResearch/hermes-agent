@@ -111,17 +111,20 @@ def test_shipped_provider_and_public_model_are_reported_as_is(direct_runtime, tm
             assert dims["model"] == PUBLIC, (name, dims)
 
 
-def test_user_provider_plugin_name_and_model_never_leave(direct_runtime, tmp_path, monkeypatch):
+def test_user_provider_plugin_name_and_model_never_leave(direct_runtime, tmp_path, monkeypatch, request):
     """A ``$HERMES_HOME/plugins/model-providers`` profile joins PROVIDER_REGISTRY under a name (and
     aliases) the user chose: every metric, the provider-setup marker and the snapshot read
     ``custom``/``custom``. An in-tree provider plugin (``deepinfra``) keeps its public name."""
-    from hermes_cli import auth, auth_plugin_providers, models_catalog_static as mcs
+    from hermes_cli import auth, auth_plugin_providers, provider_seam
     from hermes_cli.observability import shared_metrics_catalog as catalog, shared_metrics_setup as setup
     from providers import get_provider_profile
 
-    for mod, attr in ((auth, "PROVIDER_REGISTRY"), (auth_plugin_providers, "PLUGIN_MIRRORED_PROVIDERS"),
-                      (mcs, "CANONICAL_PROVIDERS"), (mcs, "_canonical_slugs"), (mcs, "_PROVIDER_LABELS")):
-        monkeypatch.setattr(mod, attr, type(getattr(mod, attr))(getattr(mod, attr)))  # no registry leak
+    # no registry leak: the registry/catalog containers are seam facades, so scope them by
+    # restoring the committed generation; the plain mirror set is copied as before.
+    saved = provider_seam.current()
+    request.addfinalizer(lambda: provider_seam.restore(saved))
+    monkeypatch.setattr(auth_plugin_providers, "PLUGIN_MIRRORED_PROVIDERS",
+                        set(auth_plugin_providers.PLUGIN_MIRRORED_PROVIDERS))
     home = tmp_path / "hermes-home"
     plugin = home / "plugins" / "model-providers" / "acmecorp-internal"
     plugin.mkdir(parents=True)

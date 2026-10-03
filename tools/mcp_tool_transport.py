@@ -5,6 +5,7 @@ protocol negotiation and initial tool discovery. Split from tools/mcp_tool.py.""
 import logging
 import asyncio
 import os
+import secrets
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
@@ -13,7 +14,7 @@ from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd
 from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
-from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
+from tools.mcp_tool_lifecycle import _SPAWN_MARKER_ENV, _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_spawn_markers, _stdio_starttimes
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
 from tools import mcp_tool_config as _config
@@ -291,7 +292,7 @@ class MCPServerTransportMixin:
 
     # ------------------------------------------------------------------ stdio
 
-    def _track_spawned_children(self, new_pids: Set[int]) -> None:
+    def _track_spawned_children(self, new_pids: Set[int], spawn_marker: str) -> None:
         """Ledger the freshly spawned stdio children (pids, pgids, machine spawn ledger). pgids are
         captured while alive (getpgid fails after exit; the sweep needs them for reparented descendants)."""
         new_pgids: Dict[int, int] = {}
@@ -316,6 +317,7 @@ class MCPServerTransportMixin:
             _stdio_pids.update(dict.fromkeys(new_pids, self.name))
             _stdio_pgids.update(new_pgids)
             _stdio_starttimes.update(new_starts)
+            _stdio_spawn_markers.update(dict.fromkeys(new_pids, spawn_marker))
         # Machine spawn ledger (startup sweeps reap orphans after an unclean exit); best-effort.
         for _pid in new_pids:
             try:
@@ -349,6 +351,7 @@ class MCPServerTransportMixin:
                     if dropped is not None:
                         released_pgids.append(dropped)
                     _stdio_starttimes.pop(pid, None)
+                    _stdio_spawn_markers.pop(pid, None)
         _core._update_death_supervisor("unregister", released_pgids)
 
     async def _run_stdio(self, config: dict):
@@ -366,10 +369,13 @@ class MCPServerTransportMixin:
         # Hash the inputs this attempt spawns with, never a second resolution of them.
         self._resolved_identity = _registration._identity_digest(inputs)
         command, safe_env, stdio_cwd = inputs
+        spawn_marker = secrets.token_hex(16)
+        launch_env = dict(safe_env) if safe_env is not None else os.environ.copy()
+        launch_env[_SPAWN_MARKER_ENV] = spawn_marker
         # OSV malware preflight, then the cached-npx swap (ordering enforced there).
         command, args = await _core._preflight_stdio_command(self.name, command, config.get("args", []))
         server_params = _core.StdioServerParameters(
-            command=command, args=args, env=safe_env or None, cwd=stdio_cwd,
+            command=command, args=args, env=launch_env, cwd=stdio_cwd,
             # Windows pipes can split non-UTF-8 bytes at chunk boundaries; substitute, don't raise.
             encoding_error_handler="replace")
         # Windows has no POSIX parent-death supervisor / killpg safety net (#61059): when this
@@ -405,7 +411,7 @@ class MCPServerTransportMixin:
                 # into the window: they share the TUI's pgid — leaking them would killpg() the TUI.
                 new_pids = _filter_mcp_children(_lifecycle._snapshot_child_pids() - pids_before)
                 if new_pids:
-                    self._track_spawned_children(new_pids)
+                    self._track_spawned_children(new_pids, spawn_marker)
                 self._stdio_child_pids = set(new_pids)  # so in-flight calls fail fast when the child dies
                 async with _core.ClientSession(read_stream, write_stream, **self._session_kwargs()) as session:
                     # Bound the handshake here (``connect_timeout`` only bounds the caller's ``.result()``):

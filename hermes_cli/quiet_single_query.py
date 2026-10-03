@@ -86,6 +86,84 @@ def read_turn_report(path: str, pid: int) -> dict | None:
 REPORTED_TURN_EXIT_GRACE_SECONDS = 2.0
 
 
+def activity_heartbeat_path(report_path: str) -> str:
+    """Path of the activity heartbeat a quiet child refreshes BESIDE its turn report.
+
+    A separate file, never a ``running`` field inside the report: the report is the child's
+    TERMINAL record, and a pre-heartbeat spawner must never mistake a live turn's marker for
+    an outcome — a field it does not know would surface as ``report.get(...)`` misses, a file
+    it does not know is inert. Stamped with the writer's pid like the report, so a stale
+    heartbeat from an earlier child at the same tmp path is never evidence of life.
+    """
+    return f"{report_path}.activity"
+
+
+def start_turn_activity_heartbeat(agent, report_path: str | None, *, poll_seconds: float = 2.0):
+    """Refresh the turn's activity heartbeat while *agent* keeps making progress.
+
+    The spawner (``run_reported_turn``) bounds a delivery turn by IDLE time, not wall-clock —
+    the rule the cron inactivity watchdog already applies to its own agent sessions — and this
+    is the liveness signal it reads. The timestamp is the agent's OWN activity clock
+    (``get_activity_summary()["last_activity_ts"]``, the same source the watchdog samples
+    in-process), so "active" means the same thing on both sides of the subprocess boundary.
+    Returns the stop event, or None when there is nothing to report into (no report path —
+    unbounded spawner — or an agent without an activity clock: no heartbeat means the spawner
+    keeps its wall-clock bound). The first write lands only once the agent has recorded
+    activity: a child wedged before its turn's first event stays under the wall cap.
+    """
+    if not report_path:
+        return None
+    if not callable(getattr(agent, "get_activity_summary", None)):
+        return None  # no activity clock to publish: the spawner keeps its wall-clock bound
+    path = activity_heartbeat_path(report_path)
+    stop = threading.Event()
+
+    def _refresh() -> None:
+        from utils import atomic_json_write
+
+        while not stop.wait(poll_seconds):
+            try:
+                snapshot = agent.get_activity_summary() or {}
+                ts = snapshot.get("last_activity_ts")
+            except Exception:
+                continue  # no evidence yet: stay under the spawner's wall-clock bound
+            if ts is None:
+                continue
+            try:
+                atomic_json_write(path, {"pid": os.getpid(), "ts": float(ts)},
+                                  indent=None, mode=0o600)
+            except Exception:
+                return  # the spawner's tmp lane vanished mid-turn; it falls back to the wall cap
+
+    threading.Thread(target=_refresh, daemon=True, name="quiet-turn-activity").start()
+    return stop
+
+
+def read_activity_heartbeat(report_path: str, pid: int) -> float | None:
+    """The child's last activity timestamp (wall clock), or None while absent, unreadable, or
+    written by another process — silence is never evidence of life."""
+    try:
+        with open(activity_heartbeat_path(report_path), encoding="utf-8") as fh:
+            beat = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(beat, dict) or beat.get("pid") != pid:
+        return None
+    try:
+        return float(beat["ts"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _kill_at_cap(proc, drain, argv: list, timeout: float) -> None:
+    """Hard-interrupt the child at a cap, keeping the kill-window report recovery: a killed
+    child cannot run further, but the turn may have ENDED (and delivered) in the window
+    between the last report check and the kill landing — the caller re-reads the report once
+    and books that instead of misreporting a delivered turn as a timeout."""
+    proc.kill()
+    drain.join(timeout=5.0)
+
+
 def run_reported_turn(argv: list, *, env: MutableMapping[str, str], report_path: str, timeout: float,
                       exit_grace: float | None = REPORTED_TURN_EXIT_GRACE_SECONDS, cwd: str | None = None,
                       encoding: str | None = None) -> subprocess.CompletedProcess:
@@ -127,7 +205,16 @@ def run_reported_turn(argv: list, *, env: MutableMapping[str, str], report_path:
 
     drain = threading.Thread(target=_drain, name=f"quiet-turn-drain-{proc.pid}", daemon=True)
     drain.start()
-    deadline = time.monotonic() + timeout
+    # The cap bounds IDLE time, not wall-clock — the rule the cron inactivity watchdog already
+    # applies to its own agent sessions ("a stalled session is hard-interrupted ... while a
+    # long-but-active job is never cut off"). A child that refreshes the activity heartbeat
+    # beside its turn report keeps the lane alive for as long as it keeps making progress; only
+    # a turn silent for the full cap is killed. A child that never heartbeats (an older build,
+    # or one wedged before its first activity) stays under the original wall-clock bound.
+    idle_deadline = time.monotonic() + timeout
+    wall_deadline = idle_deadline  # until a first heartbeat is seen, the two are the same clock
+    last_beat = read_activity_heartbeat(report_path, proc.pid)
+    heartbeat_seen = last_beat is not None
     report = None
     while True:
         drain.join(timeout=exit_grace if report is not None and exit_grace is not None else 0.25)
@@ -137,15 +224,33 @@ def run_reported_turn(argv: list, *, env: MutableMapping[str, str], report_path:
             break
         # Re-read while waiting for the cap: a follow-up turn rewrites the report with its answer.
         report = read_turn_report(report_path, proc.pid) or report
-        if time.monotonic() >= deadline:
+        beat = read_activity_heartbeat(report_path, proc.pid)
+        if beat is not None:
+            heartbeat_seen = True
+            # Wall clock at the heartbeat write, converted to this loop's monotonic clock by
+            # anchoring the first sample; every later beat moves the idle deadline, never back.
+            if last_beat is None:
+                idle_deadline = time.monotonic() + timeout
+            else:
+                idle_deadline += max(beat - last_beat, 0.0)
+            last_beat = beat
+        now = time.monotonic()
+        if now >= wall_deadline and not heartbeat_seen:
+            # No heartbeat ever: the original wall-clock cap.
+            report = read_turn_report(report_path, proc.pid)
             if report is not None:
                 break
-            proc.kill()
-            drain.join(timeout=5.0)
-            # A killed child cannot run further, but the turn may have ENDED (and delivered)
-            # in the window between the last report check and the kill landing. Re-read once:
-            # a report that appeared means the turn completed — book it instead of
-            # misreporting a delivered turn as a timeout (and never re-notifying).
+            _kill_at_cap(proc, drain, argv, timeout)
+            report = read_turn_report(report_path, proc.pid)
+            if report is not None:
+                break
+            raise subprocess.TimeoutExpired(argv, timeout)
+        if now >= idle_deadline:
+            # A heartbeating turn went silent for the full cap.
+            report = read_turn_report(report_path, proc.pid)
+            if report is not None:
+                break
+            _kill_at_cap(proc, drain, argv, timeout)
             report = read_turn_report(report_path, proc.pid)
             if report is not None:
                 break

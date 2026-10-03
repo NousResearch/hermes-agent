@@ -976,8 +976,6 @@ def _pause_windows_gateways_for_update() -> dict | None:
 
     # Finish discovery and replay preparation BEFORE the first marker/socket write.
     mapped_pids = [pid for pid in running_pids if pid in profile_processes and pid not in service_gateway_pids]
-    for pid in mapped_pids:
-        str(profile_processes[pid].profile), Path(profile_processes[pid].path), int(pid)
     launcher_pids = _m()._venv_launcher_ancestors(mapped_pids)
     service_owned_pids = set(service_gateway_pids)
     for service in service_gateways:

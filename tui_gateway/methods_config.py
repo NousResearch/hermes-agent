@@ -481,6 +481,16 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"ok": False, "error": str(e)})
 
 
+def _redact_client_text(text: str, cap: int) -> str:
+    """Strict-scrub client text, then cap it. The scrub sees a line-aligned window of
+    2x the cap so a key cut by the cap still gets redacted, but an unbounded RPC
+    param cannot make the superlinear scrub run on megabytes."""
+    from hermes_cli.debug_redaction import redact_debug_support_text
+
+    cut = text.find("\n", 2 * cap)
+    return redact_debug_support_text(text if cut < 0 else text[: cut + 1], max_chars=cap)
+
+
 def _safe_client_label(label: str) -> str:
     """Alnum/._- () only, ≤64 chars, dot-runs and leading dots collapsed (no traversal shapes)."""
     safe = "".join(ch for ch in label if ch.isalnum() or ch in "._- ()").strip()[:64]
@@ -498,7 +508,6 @@ def _(rid, params: dict) -> dict:
     ``extra_files`` ({label -> text}), ``log_lines`` (default 200); all force-redacted."""
     try:
         from hermes_cli.debug import build_nous_bundle, collect_share_bundle
-        from hermes_cli.debug_redaction import redact_debug_support_text
         from hermes_cli.diagnostics_upload import share_to_nous
         log_lines = params.get("log_lines")
         if not isinstance(log_lines, int) or not (10 <= log_lines <= 2000):
@@ -507,17 +516,13 @@ def _(rid, params: dict) -> dict:
         # Redact complete client values before applying their support-upload caps.
         error_context = params.get("error_context")
         if isinstance(error_context, str) and error_context.strip():
-            bundle["error-context.txt"] = redact_debug_support_text(
-                error_context.strip(), max_chars=8_000
-            )
+            bundle["error-context.txt"] = _redact_client_text(error_context.strip(), 8_000)
         # Bounded: at most 4 files, 512KB each, sanitized labels — not an arbitrary upload surface.
         extra_files = params.get("extra_files")
         for label, text in list(extra_files.items())[:4] if isinstance(extra_files, dict) else ():
             safe_label = _safe_client_label(label) if isinstance(label, str) else ""
             if safe_label and isinstance(text, str) and text.strip():
-                bundle[f"client/{safe_label}"] = redact_debug_support_text(
-                    text, max_chars=524_288
-                )
+                bundle[f"client/{safe_label}"] = _redact_client_text(text, 524_288)
         res = share_to_nous(build_nous_bundle(bundle, redact=True))
         view_url = res.get("viewUrl") or res.get("view_url")
         upload_id = res.get("id")

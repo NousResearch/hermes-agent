@@ -1,4 +1,4 @@
-"""`hermes sessions optimize|optimize-storage|prune` refuse while another process holds state.db (#110054).
+"""Structural session maintenance refuses while another process holds state.db (#110054).
 
 Running the storage rewrite underneath a fleet of live gateways put every agent into the retired-WAL
 refusal; the command now runs the same fail-closed holder scan doctor/repair use, names each holder as
@@ -97,19 +97,11 @@ def test_store_rewrites_refuse_and_name_the_holder_until_forced(action, state_db
     assert "Refusing" not in capsys.readouterr().out
 
 
-def test_prune_preview_passes_the_delete_waits_for_a_quiet_store(state_db, foreign_holder, capsys):
-    # A preview never rewrites anything, so it is answered even while the holder lives.
-    prune_preview = _args("prune", force=False)
-    prune_preview.dry_run = True
-    prune_preview.yes = False
-    assert sessions_cmd.cmd_sessions(prune_preview) is None
+def test_prune_runs_while_a_gateway_holds_the_store(state_db, foreign_holder, capsys):
+    # Prune uses ordinary SQLite deletes and must remain usable by cron while a gateway is live.
+    prune = _args("prune", force=False)
+    assert sessions_cmd.cmd_sessions(prune) is None
     assert "Refusing" not in capsys.readouterr().out
-    prune_preview.dry_run = False
-    prune_preview.yes = True
-    assert sessions_cmd.cmd_sessions(prune_preview) == 1
-    assert "Refusing `hermes sessions prune`" in capsys.readouterr().out
-    # Control: once the holder exits the same command runs.
-    foreign_holder.stdin.close()
-    foreign_holder.wait(timeout=10)
-    assert sessions_cmd.cmd_sessions(prune_preview) is None
-    assert "Refusing" not in capsys.readouterr().out
+    # Control: structural maintenance is still held-store protected.
+    assert sessions_cmd.cmd_sessions(_args("optimize", force=False)) == 1
+    assert "Refusing `hermes sessions optimize`" in capsys.readouterr().out

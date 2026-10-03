@@ -63,7 +63,7 @@ for the separate MSIX/App Installer package and its update ownership.
 After installation:
 
 ```bash
-source ~/.bashrc    # reload shell (or: source ~/.zshrc)
+source ~/.zshrc     # reload shell — zsh (macOS default); use ~/.bashrc for bash
 hermes              # start chatting!
 ```
 

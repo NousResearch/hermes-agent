@@ -6,6 +6,7 @@ coerce_tool_args() fixes these type mismatches by comparing argument values
 against the tool's JSON Schema before dispatch.
 """
 
+from decimal import Decimal
 from unittest.mock import patch
 
 import model_tools  # noqa: F401 — populates the tool registry the "real schema" tests read
@@ -32,6 +33,22 @@ class TestCoerceNumber:
     def test_negative_integer(self):
         assert _coerce_number("-7") == -7
 
+    def test_integer_result_is_exactly_the_value_written(self):
+        """A quoted ID past float precision (tweet / snowflake / BIGINT key) must never come back as
+        a different integer: any int result equals the number the string denotes, else it stays a string.
+        The result is an int exactly when the string denotes an integer, in any spelling
+        ("9007199254740992.0"), and never for a decimal whose float happens to be integral."""
+        for value in ("1790123456789012345", "-9007199254740993", "1e30", "12345678901234567.0",
+                      "9007199254740992.0", "9.007199254740992e15", "4503599627370496.5"):
+            written = Decimal(value)
+            for integer_only in (True, False):
+                result = _coerce_number(value, integer_only=integer_only)
+                assert isinstance(result, int) == (written == written.to_integral_value()), (
+                    value, integer_only, result)
+                if isinstance(result, int):
+                    assert Decimal(result) == written, (value, integer_only, result)
+                elif integer_only:
+                    assert result == value, (value, result)
 
 
 
@@ -247,3 +264,27 @@ class TestCoerceToolArgsNested:
         args = {"todos": [_json.dumps({"id": "1", "content": "x", "status": "pending"})]}
         result = coerce_tool_args("todo_list", args)
         assert result["todos"][0] == {"id": "1", "content": "x", "status": "pending"}
+
+
+def test_dispatch_restores_renamed_keys_when_the_schema_has_no_top_level_properties():
+    """A tool whose arguments are described only by patternProperties / additionalProperties still
+    has its nested keys renamed for the model ("$eq" -> "_eq"); dispatch must hand the tool the wire
+    keys back, not skip the mapping because the top level lists no properties."""
+    import json
+
+    from tools.registry import registry
+    from tools.schema_sanitizer import sanitize_tool_schemas
+
+    name, toolset, calls = "mcp_probe_pattern_only", "mcp-probe-pattern-only", []
+    params = {"type": "object", "patternProperties": {"^f_": {
+        "type": "object", "properties": {"$eq": {"type": "string"}}}}}
+    registry.register(name=name, toolset=toolset, schema={"name": name, "description": "d", "parameters": params},
+                      handler=lambda args, **kw: calls.append(args) or json.dumps({"ok": True}))
+    try:
+        shown = sanitize_tool_schemas([{"type": "function", "function": {"name": name, "parameters": params}}])
+        (eq_key,) = shown[0]["function"]["parameters"]["patternProperties"]["^f_"]["properties"]
+        model_tools.handle_function_call(function_name=name, function_args={"f_status": {eq_key: "open"}},
+                                         enabled_toolsets=[toolset])
+    finally:
+        registry.deregister(name)
+    assert calls == [{"f_status": {"$eq": "open"}}]

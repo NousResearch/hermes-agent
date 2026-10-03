@@ -8,6 +8,8 @@ conservative: originals are kept whenever a repair is not unambiguous.
 
 import json
 import logging
+import re
+from decimal import Decimal
 from typing import Any, Dict
 
 from tools.registry import registry
@@ -22,18 +24,20 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     if not args or not isinstance(args, dict):
         return args
 
-    schema = registry.get_schema(tool_name)
-    properties = ((schema or {}).get("parameters") or {}).get("properties")
-    if not properties:
-        return args
+    parameters = (registry.get_schema(tool_name) or {}).get("parameters") or {}
 
     # The model saw the SANITIZED schema (provider-illegal property keys were
-    # renamed); map those keys back to the registry's wire names first.
+    # renamed); map those keys back to the registry's wire names first — also
+    # when only patternProperties / additionalProperties / conditionals list them.
     try:
         from tools.schema_sanitizer import unrename_tool_args
-        args = unrename_tool_args(schema.get("parameters"), args)
+        args = unrename_tool_args(parameters, args)
     except Exception:  # pragma: no cover — never break dispatch
         pass
+
+    properties = parameters.get("properties")
+    if not properties:
+        return args
 
     for key, value in list(args.items()):
         prop_schema = properties.get(key)
@@ -143,12 +147,39 @@ def _coerce_value(value: str, expected_type, schema: dict | None = None):
         return None
 
     if isinstance(expected_type, list):
+        # A string the fragment already accepts needs no repair — else the next member always won
+        # ("00123" -> 123, "1.10" -> 1.1, "false" -> False). One its enum/const/pattern/length
+        # rejects still tries the other members ("1" -> 1 for enum [1, 2]).
+        if "string" in expected_type and _string_meets_constraints(value, schema):
+            return value
         return next((r for t in expected_type if (r := _coerce_value(value, t, schema=schema)) is not value), value)
 
     coercer = _SCALAR_COERCERS.get(expected_type)
     if coercer is not None:
         return coercer(value)
     return None if expected_type == "null" and value.strip().lower() == "null" else value
+
+
+def _string_meets_constraints(value: str, schema: dict | None) -> bool:
+    """True when string *value* passes the fragment's string-applicable keywords (enum, const,
+    pattern, minLength, maxLength). A pattern Python cannot compile cannot justify a repair: it passes."""
+    if not isinstance(schema, dict):
+        return True
+    if isinstance(schema.get("enum"), list) and value not in schema["enum"]:
+        return False
+    if "const" in schema and schema["const"] != value:
+        return False
+    if isinstance(schema.get("minLength"), int) and len(value) < schema["minLength"]:
+        return False
+    if isinstance(schema.get("maxLength"), int) and len(value) > schema["maxLength"]:
+        return False
+    pattern = schema.get("pattern")
+    if isinstance(pattern, str):
+        try:
+            return re.search(pattern, value) is not None
+        except re.error:
+            return True
+    return True
 
 
 def _schema_allows_null(schema: dict | None) -> bool:
@@ -184,12 +215,21 @@ def _coerce_json(value: str, expected_python_type: type):
 def _coerce_number(value: str, integer_only: bool = False):
     """Parse *value* as a number; original string on failure, inf/nan, or decimals when integer_only."""
     try:
+        return int(value)  # exact at any size; float() rounds integers past 2**53 to another ID
+    except ValueError:
+        pass
+    try:
         f = float(value)
     except (ValueError, OverflowError):
         return value
     if f != f or f in (float("inf"), float("-inf")):
         return value  # not JSON-serializable
-    return int(f) if f == int(f) else value if integer_only else f
+    # Integral or not is read from the digits written, not from f: from 2**52 on the float has
+    # already rounded ("9007199254740993.0" and "4503599627370496.5" both land on integral floats).
+    written = Decimal(value)  # accepts every spelling float() does
+    if written == written.to_integral_value():
+        return int(written)
+    return value if integer_only else f
 
 
 def _coerce_boolean(value: str):

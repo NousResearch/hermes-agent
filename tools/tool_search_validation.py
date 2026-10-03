@@ -74,8 +74,8 @@ def _validation_error(message: str, *, path: str, constraint: str, parameters: A
 def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str]:
     """Validate ``tool_call`` arguments against the deferred tool's schema. Models invoke
     deferred tools "blind" (schema unseen) and omit required args; without this, the opaque
-    downstream failure makes cheap models loop. Required-field probe first, then the same
-    schema-guided coercion normal dispatch applies, then jsonschema on the repaired copy.
+    downstream failure makes cheap models loop. The same schema-guided coercion normal dispatch
+    applies runs first, then the required-field probe and jsonschema on the repaired copy.
     Missing/malformed schemas, no validator, and external refs all fail OPEN. Returns a JSON
     error string when invalid, ``None`` when the call should dispatch.
 
@@ -91,8 +91,17 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         params = fn.get("parameters") if isinstance(fn, dict) else None
         if not isinstance(params, dict):
             return None
+        # Check the repaired shape dispatch will see: coercion also maps the provider-safe keys
+        # the model was shown ("_filter") back to the wire names ``required`` lists ("$filter").
+        # Copy because coerce_tool_args may normalize in place (dispatch re-coerces canonically).
+        try:
+            from model_tools import coerce_tool_args
+            candidate_args = coerce_tool_args(name, dict(args))
+        except Exception:
+            logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
+            candidate_args = dict(args)
         required = params.get("required")
-        missing = ([r for r in required if isinstance(r, str) and r not in args]
+        missing = ([r for r in required if isinstance(r, str) and r not in candidate_args]
                    if isinstance(required, list) else [])
         if missing:
             return _validation_error(
@@ -103,14 +112,6 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         if _schema_has_external_ref(validation_schema):
             logger.debug("Skipping local deferred-argument validation for %s: external $ref", name)
             return None
-        # Validate the repaired shape dispatch will see; copy because coerce_tool_args may
-        # normalize in place (dispatch re-coerces canonically).
-        try:
-            from model_tools import coerce_tool_args
-            candidate_args = coerce_tool_args(name, dict(args))
-        except Exception:
-            logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
-            candidate_args = dict(args)
         try:
             from jsonschema.exceptions import best_match
             from jsonschema.validators import validator_for

@@ -818,6 +818,38 @@ class TestDeferredCallSchemaProbe:
         assert result["ok"] is True
         assert calls == [{"count": 42}]
 
+    def test_call_written_against_the_described_schema_dispatches_wire_keys(self):
+        """tool_describe shows the sanitized schema (provider-illegal keys renamed, "$filter" -> "_filter").
+        A tool_call using exactly the keys it was shown must pass validation and reach the tool with the
+        registry's wire keys, including keys inside a $ref'd object."""
+        import model_tools
+        from tools.schema_sanitizer import sanitize_tool_schemas
+
+        calls = []
+        name, toolset = "mcp_probe_renamed_keys", "mcp-probe-renamed-keys"
+        params = {
+            "type": "object",
+            "$defs": {"Filter": {"type": "object", "properties": {"@type": {"type": "string"}}}},
+            "properties": {"$filter": {"$ref": "#/$defs/Filter"}, "page[size]": {"type": "integer"}},
+            "required": ["$filter"],
+        }
+        self._register_schema(name, toolset, params, calls)
+        shown = sanitize_tool_schemas(
+            [{"type": "function", "function": {"name": name, "parameters": params}}])[0]["function"]["parameters"]
+        (filter_key,) = shown["required"]
+        (type_key,) = shown["$defs"]["Filter"]["properties"]
+        (size_key,) = set(shown["properties"]) - {filter_key}
+        assert filter_key != "$filter" and type_key != "@type"
+
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {filter_key: {type_key: "zone"}, size_key: "5"}},
+            enabled_toolsets=[toolset],
+        ))
+
+        assert result.get("ok") is True, result
+        assert calls == [{"$filter": {"@type": "zone"}, "page[size]": 5}]
+
     def test_nullable_extension_remains_accepted(self):
         import model_tools
 

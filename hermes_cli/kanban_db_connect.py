@@ -673,11 +673,21 @@ def connect(db_path: Optional[Path] = None, *, board: Optional[str] = None) -> s
     :func:`kanban_db_path` (``HERMES_KANBAN_DB`` -> ``HERMES_KANBAN_BOARD`` ->
     ``<root>/kanban/current`` -> ``default``)."""
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
-    from agent.delegation_context import kanban_path_is_fenced
-    if kanban_path_is_fenced(path):
-        # Reads must not enter schema/backfill write transactions. Never create a
-        # missing board or migrate on a descendant's behalf; the owner initializes it.
-        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    from agent.delegation_context import (
+        is_delegated_child_in_process_context, kanban_path_is_fenced, self_scope_grant,
+    )
+    if not kanban_path_is_fenced(path):
+        pass  # unfenced (owner, or descendant scratch board outside the fenced root)
+    else:
+        # Fenced: reads only, except the ONE writable case — an in-process child
+        # holding a dispatcher-issued grant (its own card's comment/attach rows).
+        # ``_sqlite_connect`` keeps busy_timeout so a concurrent parent write waits
+        # instead of instant-locking. Never init_db / migrations here; missing
+        # schema fails closed.
+        if is_delegated_child_in_process_context() and self_scope_grant() is not None:
+            conn = _sqlite_connect(path)
+        else:
+            conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         conn.text_factory = _kb._lossy_text
         if not _schema_is_present(conn):
@@ -1188,7 +1198,8 @@ def _main_db_file(conn: sqlite3.Connection) -> Optional[str]:
 
 
 @contextlib.contextmanager
-def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
+def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False,
+              self_scoped_task: str | None = None):
     """IMMEDIATE write transaction; a claim CAS inside is atomic — at most one
     concurrent writer succeeds.
 
@@ -1197,8 +1208,13 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     ``add_comment``) opt in — helpers with post-commit side effects
     (``complete_task`` & co.) must never run under an open outer transaction,
     since those side effects would fire while the outer txn can still roll back.
+
+    ``self_scoped_task`` forwards the self-report carve-out to
+    ``_assert_not_delegated_child_mutation``: only the two write paths a
+    delegated child may use on ITS OWN dispatcher-granted task (``add_comment``,
+    ``add_attachment``) pass it. Every other writer keeps failing closed.
     """
-    _kb._assert_not_delegated_child_mutation(_main_db_file(conn))
+    _kb._assert_not_delegated_child_mutation(path=_main_db_file(conn), self_scoped_task=self_scoped_task)
     if getattr(conn, "in_transaction", False):
         if not allow_nested:
             raise RuntimeError(

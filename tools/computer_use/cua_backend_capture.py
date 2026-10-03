@@ -169,12 +169,18 @@ class _CaptureMixin:
         cli_out = self._cli_refetch(name, args, timeout, what, warning, *warning_args) if empty(out) else None
         return cli_out if cli_out is not None and not empty(cli_out) else out
 
-    def list_windows(self) -> List[Dict[str, Any]]:
-        """Visible windows frontmost-first, re-fetching over the CLI transport when MCP returns nothing."""
-        return _sorted_windows(self._fetch_or_refetch(
-            "list_windows", {"on_screen_only": True, "session": self._session_id}, 20.0, "list_windows",
+    def list_windows(self, *, on_screen_only: bool = True, pid: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Windows frontmost-first; optionally include hidden/other-Space windows or restrict to a PID."""
+        args: Dict[str, Any] = {"on_screen_only": on_screen_only, "session": self._session_id}
+        if pid is not None:
+            if (pid := _positive_int(pid)) is None:
+                raise ValueError("list_windows pid must be a positive integer")
+            args["pid"] = pid
+        windows = _sorted_windows(self._fetch_or_refetch(
+            "list_windows", args, 20.0, "list_windows",
             lambda out: not _sorted_windows(out),
             "cua-driver list_windows returned no windows over MCP; re-fetching via CLI transport"))
+        return [w for w in windows if pid is None or w["pid"] == pid]
 
     def _match_windows_for_app(self, windows: List[Dict[str, Any]], app: str) -> List[Dict[str, Any]]:
         """Resolve ``app=``: exact window names, then exact list_apps aliases (Linux ``list_windows`` can
@@ -367,8 +373,9 @@ class _CaptureMixin:
                              window_title="Full screen (composited)", png_bytes_len=png_bytes_len,
                              image_mime_type=image_mime_type, note=_FULL_SCREEN_NOTE)
 
-    def list_apps(self) -> List[Dict[str, Any]]:
-        out = self._session.call_tool("list_apps", {"session": self._session_id})
+    def list_apps(self, *, timeout: float = 30.0) -> List[Dict[str, Any]]:
+        out = self._session.call_tool("list_apps", {"session": self._session_id},
+                                      **({"timeout": timeout} if timeout != 30.0 else {}))
         structured, data = out.get("structuredContent"), out.get("data")
         # structuredContent is canonical; empty lists fall through so a populated compatibility envelope
         # (older drivers, CLI fallback) can still recover, then apps derived from the windows payload.

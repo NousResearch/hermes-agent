@@ -13,7 +13,7 @@ from typing import Any, Dict
 # One consolidated tool with an `action` discriminator keeps the schema compact
 # and the per-turn token cost low. Property groups: capture (mode, app, pid,
 # window_id) / targeting (element, coordinate, button, modifiers) / drag / scroll /
-# set_value / type-key-wait / focus_app / delivery ladder / return shape.
+# set_value / type-key-wait / app lifecycle / delivery ladder / return shape.
 _PROPERTIES: Dict[str, Any] = {
     "action": {
         "type": "string",
@@ -31,6 +31,7 @@ _PROPERTIES: Dict[str, Any] = {
             "wait",
             "list_apps",
             "list_windows",
+            "launch_app",
             "focus_app",
         ],
         "description": (
@@ -62,8 +63,8 @@ _PROPERTIES: Dict[str, Any] = {
     "pid": {
         "type": "integer",
         "description": (
-            "Optional exact process target for action='capture'. Pair with window_id when "
-            "discovery cannot resolve an X11 app."
+            "Optional exact process target for action='capture' (pair with window_id), "
+            "or a PID filter for action='list_windows'."
         ),
     },
     "window_id": {
@@ -71,6 +72,13 @@ _PROPERTIES: Dict[str, Any] = {
         "description": (
             "Optional exact native window target for action='capture'. Pair with pid when an "
             "external cua-driver list_windows lookup has already identified the window."
+        ),
+    },
+    "on_screen_only": {
+        "type": "boolean",
+        "description": (
+            "For action='list_windows': default true. Set false to include hidden/minimized "
+            "windows and windows on other Spaces, including after a launch reports window_ready=false."
         ),
     },
     "element": {
@@ -148,6 +156,48 @@ _PROPERTIES: Dict[str, Any] = {
         ),
     },
     "seconds": {"type": "number", "description": "wait: seconds to pause (max 30)."},
+    "name": {
+        "type": "string",
+        "description": (
+            "For action='launch_app': app display name or executable name. Use `list_apps` first "
+            "when possible and prefer its exact launch identifier."
+        ),
+    },
+    "bundle_id": {
+        "type": "string",
+        "description": "For action='launch_app': macOS bundle ID, or a packaged-app identifier accepted by cua-driver.",
+    },
+    "path": {
+        "type": "string",
+        "description": (
+            "For action='launch_app': exact full executable path. On Windows this takes precedence over name, "
+            "bundle_id, and aumid; launch_path still has the highest precedence."
+        ),
+    },
+    "aumid": {
+        "type": "string",
+        "description": "For action='launch_app': exact Windows App User Model ID for a packaged app.",
+    },
+    "launch_path": {
+        "type": "string",
+        "description": "For action='launch_app': exact launch_path returned by list_apps.",
+    },
+    "additional_arguments": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "For action='launch_app': exact argument vector passed to the executable or packaged app.",
+    },
+    "start_minimized": {
+        "type": "boolean",
+        "description": "For action='launch_app' on Windows: launch minimized without activating the window.",
+    },
+    "wait_timeout": {
+        "type": "number", "minimum": 0, "maximum": 30,
+        "description": (
+            "For action='launch_app': seconds to wait for the app's window (default 10, max 30). "
+            "An accepted launch with meta.window_ready=false must not be repeated automatically."
+        ),
+    },
     "raise_window": {
         "type": "boolean",
         "description": (
@@ -188,14 +238,18 @@ _PROPERTIES: Dict[str, Any] = {
 COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "name": "computer_use",
     "description": (
-        "Drive the desktop via cua-driver — screenshots, mouse, keyboard, scroll, drag — on macOS, "
+        "Drive the desktop via cua-driver — app launch, screenshots, mouse, keyboard, scroll, drag — on macOS, "
         "Windows, and Linux. Input is background-FIRST, not background-only: the default delivery "
         "routes to the target window without stealing the user's cursor or focus (works even on "
         "hidden/minimized windows), and when a result's `verdict` says to escalate you climb — "
         "pixel coordinates, or delivery_mode='foreground' (briefly fronts the window; separate "
         "approval). Each result carries a `verdict` with the next step; follow it — never repeat "
         "confirmed input, and re-capture to verify an unverifiable one before retrying. Workflow: "
-        "action='capture' (mode='som' gives numbered element overlays), then click by `element` "
+        "use list_apps for exact identifiers, then action='launch_app' when the app has no window. "
+        "Launch waits briefly and binds a ready window; capture_after=true captures that exact window. "
+        "If meta.window_ready=false, inspect list_windows(on_screen_only=false) instead of relaunching. Otherwise call action='capture' "
+        "using the returned meta.pid and meta.window_id "
+        "(mode='som' gives numbered element overlays) and click by `element` "
         "index; re-capture after state-changing actions (or pass capture_after=true). Image "
         "captures include a shareable `screenshot_path`; deliver it via the platform's MEDIA "
         "syntax when the user asks to see it — not for captures used only for control."

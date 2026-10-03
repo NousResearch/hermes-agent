@@ -1259,6 +1259,29 @@ if ($script:IsDotSourced) {
     return
 }
 
+# --- Console UTF-8 decode tables ---------------------------------------------
+# Windows PowerShell 5.1 decodes captured native stdout with the legacy OEM
+# code page, so a path resolved by a child process under a non-ASCII profile
+# (C:\Users\Balázs\AppData\Roaming\uv\python\...python.exe) arrives mojibake
+# (UTF-8 'á' 0xC3 0xA1 read as CP437 becomes '├í') and the next & $bootPy
+# fails with "term not recognized" (#124526). Forcing both decode tables to
+# UTF-8 before any native capture makes uv's UTF-8 output survive. The two
+# setters are guarded SEPARATELY: the pipe direction never needs a console,
+# while the console direction throws on a console-less host (redirected CI)
+# — precisely the host that still needs the pipe line — so a single shared
+# try would drop the pipe fix whenever the console setter throws. Skipped
+# under dot-sourcing above, so a test host keeps its own console settings.
+try {
+    $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+} catch {
+    Write-Verbose "[hermes] could not force UTF-8 pipe encoding: $_"
+}
+try {
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+} catch {
+    Write-Verbose "[hermes] could not force UTF-8 console encoding: $_"
+}
+
 # The normalization prologue runs exactly once per real entry, before any
 # switch is honored, so every contract below sees long-form paths.
 Initialize-ResolvedPaths

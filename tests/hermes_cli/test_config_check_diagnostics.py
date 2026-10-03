@@ -76,3 +76,25 @@ def test_config_check_reports_disabled_platform_only_when_runtime_disables_it(tm
         if reported:
             assert "hermes plugins enable platforms/fakechat" in output
         assert "synthetic-test-token" not in output
+
+
+def test_config_check_reports_yaml_structure_issues(tmp_path, monkeypatch, capsys):
+    home = _write_home(tmp_path / "invalid", "timezone: Not/A/Timezone\n")
+    output = _check(home, monkeypatch, capsys)
+    assert "not a valid IANA zone name" in output
+
+
+def test_config_check_profiles_option_reports_named_profile(tmp_path, monkeypatch, capsys):
+    home = _write_home(tmp_path / "default", "")
+    profiles = tmp_path / "profiles" / "research"
+    profiles.mkdir(parents=True)
+    (profiles / "config.yaml").write_text("timezone: Not/A/Timezone\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import hermes_constants as config_home
+    monkeypatch.setattr(config_home, "get_default_hermes_root", lambda: tmp_path)
+    class Args:
+        profiles = True
+    _cmd_config_check(Args())
+    output = capsys.readouterr().out
+    assert "Profile 'research'" in output
+    assert "not a valid IANA zone name" in output

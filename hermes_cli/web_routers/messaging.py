@@ -879,7 +879,7 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
 
     target_profile = body.profile or profile
     if body.enabled:
-        conflict = _multiplex_port_binding_conflict(platform_id, target_profile)
+        conflict = await asyncio.to_thread(_multiplex_port_binding_conflict, platform_id, target_profile)
         if conflict:
             # Reject BEFORE any .env/config.yaml write so the profile stays
             # loadable by the multiplexed gateway.

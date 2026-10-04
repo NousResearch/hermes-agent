@@ -102,25 +102,48 @@ export function renamePublication(staged, out, deps = {}) {
   }
 }
 
-// Never delete the last successful product before a compiler succeeds. The
-// staging and backup directories are siblings so publication stays on one FS.
+// Never delete the last successful product before a compiler succeeds. Keep
+// recovery backups beside out, outside withProduct's auto-cleaned scratch tree.
+// A unique directory keeps a later build from overwriting a retained backup.
 export function publishDirectory(staged, out, { source, rename, sleep } = {}) {
   // The destination may have been occupied while the compiler was running.
   requireOwnedOutput(out, source)
   writeFileSync(path.join(staged, productMarker), productOwner)
-  const backup = `${staged}.previous`
   const previous = existsSync(out)
-  if (previous) renameSync(out, backup)
+  const backupRoot = previous
+    ? mkdtempSync(path.join(path.dirname(out), `.${path.basename(out)}-previous-`))
+    : undefined
+  const backup = backupRoot && path.join(backupRoot, 'product')
+  if (previous) {
+    try {
+      renamePublication(out, backup, { rename, sleep })
+    } catch (error) {
+      rmSync(backupRoot, { recursive: true, force: true })
+      throw error
+    }
+  }
   try {
     renamePublication(staged, out, { rename, sleep })
   } catch (error) {
-    if (previous) renameSync(backup, out)
+    if (previous) {
+      try {
+        renamePublication(backup, out, { rename, sleep })
+      } catch (rollbackError) {
+        // Rethrow the publication error, not the restore error. Expose both
+        // diagnostics and the retained product location for manual recovery.
+        error.rollbackError = rollbackError
+        error.backupPath = backup
+        error.message += `; rollback failed: ${rollbackError.message}; previous product retained at ${backup}`
+        throw error
+      }
+      rmSync(backupRoot, { recursive: true, force: true })
+    }
     throw error
   }
-  if (previous) rmSync(backup, { recursive: true, force: true })
+  if (previous) rmSync(backupRoot, { recursive: true, force: true })
 }
 
-export async function withProduct(out, compile, { source } = {}) {
+export async function withProduct(out, compile, { source, rename, sleep } = {}) {
   requireOwnedOutput(out, source)
   mkdirSync(path.dirname(out), { recursive: true })
   const scratch = mkdtempSync(path.join(path.dirname(out), `.${path.basename(out)}-build-`))
@@ -128,7 +151,7 @@ export async function withProduct(out, compile, { source } = {}) {
   mkdirSync(product)
   try {
     await compile(product, scratch)
-    publishDirectory(product, out, { source })
+    publishDirectory(product, out, { source, rename, sleep })
   } finally {
     rmSync(scratch, { recursive: true, force: true })
   }

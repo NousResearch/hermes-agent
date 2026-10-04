@@ -463,6 +463,12 @@ class FileSyncManager:
             logger.debug("sync_back: skipping upload-only credential file %s", remote_path)
             return 0
 
+        # An archive may include master stores even when they were never mounted.
+        # Apply the canonical deny-list at the final write boundary as well.
+        from tools.credential_files import _credential_read_allowed
+        if not _credential_read_allowed(Path(host_path).resolve(), host_path):
+            return 0
+
         if pushed_hash is not None and os.path.exists(host_path) and _sha256_file(host_path) != pushed_hash:
             logger.warning(
                 "sync_back: conflict on %s — host modified "

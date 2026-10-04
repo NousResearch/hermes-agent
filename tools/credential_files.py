@@ -87,6 +87,20 @@ def register_credential_file(
     if not resolved.is_file():
         logger.debug("credential_files: skipping %s (not found)", resolved)
         return False
+    if not _credential_read_allowed(resolved, relative_path):
+        return False
+
+    container_path = f"{container_base.rstrip('/')}/{relative_path}"
+    _get_registered()[container_path] = str(resolved)
+    if refreshable is True:
+        _get_refreshable().add(str(resolved))
+    else:
+        _get_refreshable().discard(str(resolved))
+    logger.debug("credential_files: registered %s -> %s", resolved, container_path)
+    return True
+
+
+def _credential_read_allowed(resolved: Path, relative_path: str) -> bool:
     # Master credential stores are never mountable, even though they sit inside HERMES_HOME and therefore
     # pass the containment check above. Fails CLOSED: if the canonical guard can't be consulted we refuse
     # the mount rather than risk bind-mounting auth.json into a sandbox. The import lives at module top (no
@@ -107,11 +121,6 @@ def register_credential_file(
                        "not the master key files", relative_path)
         return False
 
-    container_path = f"{container_base.rstrip('/')}/{relative_path}"
-    _get_registered()[container_path] = str(resolved)
-    if refreshable:
-        _get_refreshable().add(str(resolved))
-    logger.debug("credential_files: registered %s -> %s", resolved, container_path)
     return True
 
 
@@ -132,14 +141,14 @@ def register_credential_files(entries: list, container_base: str = "/root/.herme
     return missing
 
 
-def _load_config_files() -> List[Dict[str, str]]:
+def _load_config_files(*, fresh: bool = False) -> List[Dict[str, str]]:
     """Load ``terminal.credential_files`` from config.yaml (cached per profile home: the
     multiplexed gateway must never mount the launch profile's credential files into a
     secondary profile's sandbox)."""
     from hermes_constants import hermes_home_key
     home_key = hermes_home_key()
     cached = _config_files.get(home_key)
-    if cached is not None:
+    if cached is not None and not fresh:
         return cached
 
     result: List[Dict[str, str]] = []
@@ -158,6 +167,8 @@ def _load_config_files() -> List[Dict[str, str]]:
                 "credential_files: rejected absolute config path %r",
                 "credential_files: rejected config path traversal %r (%s)")
             if resolved_path is not None and resolved_path.is_file():
+                if not _credential_read_allowed(resolved_path, rel):
+                    continue
                 entry = _mount(resolved_path, f"/root/.hermes/{rel}")
                 if refreshable:
                     entry["refreshable"] = True
@@ -184,10 +195,11 @@ def get_refreshable_credential_host_paths() -> set[str]:
     paths = set(_get_refreshable())
     paths.update(
         str(entry["host_path"])
-        for entry in _load_config_files()
+        for entry in _load_config_files(fresh=True)
         if entry.get("refreshable") is True
     )
-    return {str(Path(path).resolve()) for path in paths if Path(path).is_file()}
+    return {str(Path(path).resolve()) for path in paths
+            if Path(path).is_file() and _credential_read_allowed(Path(path).resolve(), path)}
 
 
 # --- Skills directory mounts ---
@@ -421,3 +433,5 @@ def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
     _get_registered().clear()
     _get_refreshable().clear()
+    from hermes_constants import hermes_home_key
+    _config_files.pop(hermes_home_key(), None)

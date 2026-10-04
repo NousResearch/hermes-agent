@@ -319,7 +319,7 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
-    from hermes_cli.models import model_supports_fast_mode
+    from hermes_cli.models import model_supports_ultrafast, resolve_fast_mode_overrides
 
     try:
         from agent.models_dev import get_model_capabilities
@@ -330,7 +330,6 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
         slug = row.get("slug") or ""
         caps: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
-
         for model in row.get("models") or []:
             reasoning = True
             if get_model_capabilities is not None and slug:
@@ -341,7 +340,11 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                 except Exception:
                     reasoning = True
 
-            entry: dict[str, Any] = {"fast": bool(model_supports_fast_mode(model)), "reasoning": reasoning}
+            fast = resolve_fast_mode_overrides(
+                model, provider=slug, base_url=row.get("api_url")) is not None
+            entry: dict[str, Any] = {"fast": fast, "reasoning": reasoning}
+            if fast and model_supports_ultrafast(model):
+                entry["ultrafast"] = True
 
             if reasoning and read_reasoning_catalog is not None:
                 try:

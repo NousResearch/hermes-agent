@@ -369,6 +369,19 @@ def _create_thread(
     return json.dumps({"success": True, "thread_id": thread["id"], "name": thread.get("name")})
 
 
+def _send_message(
+    token: str, channel_id: str, content: str, message_id: Optional[str] = None, **_kwargs: Any) -> str:
+    """Send a text message to a channel or thread (channel_id accepts thread IDs)."""
+    text = (content or "").strip()
+    if not text:
+        return json.dumps({"success": False, "error": "Refusing to send empty message"})
+    body: Dict[str, Any] = {"content": text[:2000]}
+    if message_id:
+        body["message_reference"] = {"message_id": message_id}
+    msg = _discord_request("POST", f"/channels/{channel_id}/messages", token, body=body)
+    return json.dumps({"success": True, "message_id": msg.get("id"), "channel_id": msg.get("channel_id")})
+
+
 def _mutation(method: str, path: str, message: str):
     """Body-less write action: ``path``/``message`` are format templates over the action kwargs."""
     def _action(token: str, **kw: Any) -> str:
@@ -405,6 +418,7 @@ _ACTION_MANIFEST = [
     ("unpin_message", _unpin_message, "(channel_id, message_id)", "unpin a message"),
     ("delete_message", _delete_message, "(channel_id, message_id)", "delete a message"),
     ("create_thread", _create_thread, "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("send_message", _send_message, "(channel_id, content)", "send a message to a channel or thread; channel_id accepts thread IDs; optional message_id reply anchor"),
     ("add_role", _add_role, "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", _remove_role, "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -415,7 +429,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
 
 # Two tools share one action table: ``discord`` (core, the participation trio every bot
 # user wants) and ``discord_admin`` (everything else).
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread", "send_message"})
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
 _ADMIN_ACTIONS = {k: v for k, v in _ACTIONS.items() if k not in _CORE_ACTION_NAMES}
 
@@ -480,6 +494,7 @@ _SCHEMA_PROPERTIES: Dict[str, Any] = {
     "message_id": {"type": "string", "description": "Discord message ID."},
     "query": {"type": "string", "description": "Member name prefix to search for (search_members)."},
     "name": {"type": "string", "description": "New thread name (create_thread)."},
+    "content": {"type": "string", "description": "Message text (send_message, max 2000 chars)."},
     "limit": {
         "type": "integer",
         "minimum": 1,
@@ -554,6 +569,7 @@ _ACTION_403_HINT = {
     "unpin_message": f"{_NO_MANAGE_MESSAGES}.",
     "delete_message": f"{_NO_MANAGE_MESSAGES}, or cannot view the channel/message.",
     "create_thread": "Bot lacks CREATE_PUBLIC_THREADS in this channel, or cannot view it.",
+    "send_message": "Bot cannot send in this channel/thread (missing SEND_MESSAGES or VIEW_CHANNEL).",
     "add_role": (
         f"{_ROLE_HIERARCHY} Roles can only be assigned below the bot's own position in the role hierarchy."),
     "remove_role": _ROLE_HIERARCHY,
@@ -581,7 +597,7 @@ def check_discord_tool_requirements() -> bool:
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "name": "", "content": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
 
 
 def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: str, **params: Any) -> str:

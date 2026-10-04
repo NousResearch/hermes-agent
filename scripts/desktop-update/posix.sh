@@ -13,6 +13,10 @@
 #     --install-root <path>    repo checkout (HERMES_HOME/hermes-agent)
 #     [--branch <ref> | --channel stable|canary|main]  default: branch main
 #     --desktop-pid <pid>      the Electron main process to wait out
+#     [--handoff-run <id>]     hand-off protocol 2: adopt ONLY the Desktop's
+#                              bridge marker carrying `run:<id>`
+#     [--marker-op reclaim|withdraw]  the Desktop's marker helper: one verdict
+#                              line on stdout, no update (see marker.sh)
 #     [--relaunch-target <p>]  mac: running .app to swap+reopen;
 #                              linux: running binary (omit = no relaunch)
 #     [--relaunch-cwd <p>]     linux: working directory to restore on relaunch
@@ -29,6 +33,9 @@
 # no renderer exists. No chromium-family browser found = no UI, fine; macOS
 # never opens one (see find_browser).
 #
+# The Desktop reads the next line to pick the hand-off protocol it speaks.
+# hermes-handoff-protocol: 2
+#
 # ORDERING (the durable-truth rule): swap and relaunch are DECIDED AND
 # EXECUTED before the result file is written, the marker is removed, or a
 # terminal event reaches the shim. Nothing user-visible may claim an outcome
@@ -43,7 +50,7 @@ RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_GATEWAY=0
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
 SELF_TEST_TCC_HEAL=0
-HANDOFF_DAEMONIZED=0
+HANDOFF_DAEMONIZED=0 HANDOFF_RUN="" MARKER_OP=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --install-root) INSTALL_ROOT="$2"; shift 2 ;;
@@ -55,6 +62,8 @@ while [ $# -gt 0 ]; do
       esac
       shift 2 ;;
     --desktop-pid) DESKTOP_PID="$2"; shift 2 ;;
+    --handoff-run) HANDOFF_RUN="$2"; shift 2 ;;
+    --marker-op) MARKER_OP="$2"; NO_UI=1; shift 2 ;;
     --relaunch-target) RELAUNCH_TARGET="$2"; shift 2 ;;
     --relaunch-cwd) RELAUNCH_CWD="$2"; shift 2 ;;
     --sandbox-fallback) SANDBOX_FALLBACK=1; shift ;;
@@ -71,6 +80,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ "$SELF_TEST_UI" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
+case "$DESKTOP_PID" in ''|*[!0-9]*) echo "--desktop-pid must be a pid" >&2; exit 64 ;; esac
+[ -z "$HANDOFF_RUN" ] || [[ "$HANDOFF_RUN" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || { echo "--handoff-run must match [A-Za-z0-9._-]{1,128}" >&2; exit 64; }
 [ "$BRANCH_EXPLICIT" -eq 0 ] || [ -z "$CHANNEL" ] || { echo "--branch and --channel are mutually exclusive" >&2; exit 64; }
 TARGET_ARGS=(--branch "$BRANCH")
 [ -z "$CHANNEL" ] || TARGET_ARGS=(--channel "$CHANNEL")
@@ -93,209 +104,57 @@ DONE_NOTE=""  # set when the update succeeded but the app will NOT reopen itself
 # result stays ok:true (contract C3: ok:false only while still on the previous
 # version); each entry reaches the Desktop as a warning.
 WARNINGS=()
-MARKER_BODY=""  # the exact bytes we published; release compares against them
+MARKER_BODY=""  # the claim we published (logging; release judges identity, not bytes)
 MARKER_CLAIMED=0
 APP_REBUILD_FAILED=0
 
-log() { echo "$(date +%Y-%m-%dT%H:%M:%S%z) $1" | tee -a "$LOG" 2>/dev/null; }
-
-# ── process identity (update marker contract C1) ────────────────────────────
-# A pid alone is not an identity: the marker records the owner's creation time
-# (`ct:` unix seconds, 3 decimals) so a reused pid never reads as the owner.
-proc_ct() { # pid -> creation time, or nothing when it cannot be read
-  local pid="$1" stat rest start btime hz lstart secs
-  [ "$pid" -gt 0 ] 2>/dev/null || return 0
-  if [ -r "/proc/$pid/stat" ]; then
-    stat="$(cat "/proc/$pid/stat" 2>/dev/null)" || return 0
-    rest="${stat##*) }"  # comm may hold spaces/parens; fields resume after the last ") "
-    start="$(printf '%s\n' "$rest" | awk '{print $20}')"  # field 22 overall
-    btime="$(awk '/^btime /{print $2}' /proc/stat 2>/dev/null)"
-    hz="$(getconf CLK_TCK 2>/dev/null)"
-    [ -n "$start" ] && [ -n "$btime" ] && [ -n "$hz" ] || return 0
-    awk -v b="$btime" -v s="$start" -v h="$hz" 'BEGIN{printf "%.3f\n", b + s / h}'
-  elif [ "$(uname)" = "Darwin" ]; then
-    # ps prints lstart in local time: render AND parse it in UTC so a DST
-    # fall-back hour cannot shift the identity by 3600 s.
-    lstart="$(TZ=UTC0 LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//;s/ *$//')"
-    [ -n "$lstart" ] || return 0
-    secs="$(TZ=UTC0 LC_ALL=C date -j -f '%a %b %e %T %Y' "$lstart" +%s 2>/dev/null)" || return 0
-    [ -n "$secs" ] && printf '%s.000\n' "$secs"
-  fi
+log() {
+  if [ -n "$MARKER_OP" ]; then echo "$(date +%Y-%m-%dT%H:%M:%S%z) $1" >> "$LOG" 2>/dev/null
+  else echo "$(date +%Y-%m-%dT%H:%M:%S%z) $1" | tee -a "$LOG" 2>/dev/null; fi
 }
 
-pid_alive() { # pid exists and is not a zombie
-  local pid="$1" st
-  [ "$pid" -gt 0 ] 2>/dev/null || return 1
-  st="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
-  [ -n "$st" ] && [ "${st#Z}" = "$st" ]
-}
+# The marker (contract C1/C2 + the A7 lock): parsing, identity, claim, delegate,
+# release and the Desktop's helper ops live in marker.sh.
+MY_PID=$$ MY_CT=""
+# shellcheck source=marker.sh
+. "$SCRIPT_DIR/marker.sh"
 
-ident_state() { # pid recorded-ct -> 0 same process, 1 gone/reused, 2 alive but a ct is unknown
-  local pid="$1" want="${2:-}" have
-  pid_alive "$pid" || return 1
-  [ -n "$want" ] || return 2
-  have="$(proc_ct "$pid")"
-  [ -n "$have" ] || return 2
-  awk -v a="$want" -v b="$have" 'BEGIN{d=a-b; if (d<0) d=-d; exit !(d<=2.0)}'
-}
-
-ident_alive() { # pid recorded-ct -> 0 iff that process may still be running (unknown counts)
-  ident_state "$1" "${2:-}"; [ $? -ne 1 ]
-}
-
-M_PID="" M_STARTED="" M_CT="" M_DPID="" M_DCT=""
-marker_parse() { # marker text -> M_* fields (contract A2). M_PID="" = malformed = dead.
-  local l1 l2 l3 l4
-  { IFS= read -r l1; IFS= read -r l2; IFS= read -r l3; IFS= read -r l4; } <<EOF_MARKER
-$1
-EOF_MARKER
-  l1="${l1#$'\357\273\277'}" l1="${l1%$'\r'}" l2="${l2%$'\r'}" l3="${l3%$'\r'}" l4="${l4%$'\r'}"
-  M_PID="$(printf '%s' "$l1" | tr -d '[:space:]')"
-  M_STARTED="$(printf '%s' "$l2" | tr -d '[:space:]')"
-  M_CT="" M_DPID="" M_DCT=""
-  case "$M_PID" in ''|*[!0-9]*) M_PID="" ;; esac
-  case "$M_STARTED" in ''|*[!0-9]*) M_PID="" M_STARTED="" ;; esac  # line 2 not an integer
-  [[ "$l3" =~ ^ct:([0-9]+(\.[0-9]+)?)$ ]] && M_CT="${BASH_REMATCH[1]}"  # else v1
-  if [[ "$l4" =~ ^delegate:([0-9]+)\ ct:([0-9]+(\.[0-9]+)?)$ ]]; then  # else ignored
-    M_DPID="${BASH_REMATCH[1]}" M_DCT="${BASH_REMATCH[2]}"
-  fi
-}
-
-marker_ident_live() { # pid ct -> 0 iff LIVE: same process, or alive with an unknown ct
-  # inside the 20-minute ceiling from line 2 (A1: unknown must never mean forever).
-  ident_state "$1" "$2"
-  case $? in
-    0) return 0 ;;
-    2) [ $(( $(date +%s) - M_STARTED )) -le 1200 ] ;;
-    *) return 1 ;;
-  esac
-}
-
-marker_live() { # marker text -> 0 iff LIVE (owner OR delegate), per contract C1 rule 3/6
-  marker_parse "$1"
-  [ -n "$M_PID" ] || return 1
-  if [ -n "$M_DPID" ] && marker_ident_live "$M_DPID" "$M_DCT"; then return 0; fi
-  marker_ident_live "$M_PID" "$M_CT"
-}
-
-marker_young_empty() { # A3 fallback writers create then write: a fresh empty file is a claim in flight
-  local mtime
-  [ -f "$MARKER" ] && [ ! -s "$MARKER" ] || return 1
-  mtime="$(stat -c %Y "$MARKER" 2>/dev/null || stat -f %m "$MARKER" 2>/dev/null)" || return 1
-  [ -n "$mtime" ] && [ $(( $(date +%s) - mtime )) -lt 5 ]
-}
-
-marker_publish_new() { # body -> 0 iff we created the marker (never replaces one)
-  local tmp="$MARKER.$$.tmp" rc
-  printf '%s' "$1" > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 2; }
-  ln "$tmp" "$MARKER" 2>/dev/null; rc=$?  # link(2) is an atomic no-replace create
-  rm -f "$tmp" 2>/dev/null
-  return $rc
-}
-
-marker_claim() { # FIRST action of the daemon (contract C2). Sets MARKER_BODY/CLAIMED.
-  # Started with --desktop-pid it only ADOPTS that Desktop's live bridge claim
-  # (A4): no bridge, or anyone else's marker, means the Desktop already gave
-  # up on this hand-off, so the run must not start.
-  local seen attempt ct started adopt_only=0
-  [ "$DESKTOP_PID" -gt 0 ] 2>/dev/null && adopt_only=1
-  ct="$(proc_ct $$)"
-  for attempt in 1 2; do
-    started="$STARTED_AT"
-    MARKER_BODY="$$"$'\n'"$started"$'\n'"${ct:+ct:$ct}"$'\n'
-    [ -n "$ct" ] || MARKER_BODY="$$"$'\n'"$started"$'\n'
-    if [ "$adopt_only" -eq 0 ]; then
-      marker_publish_new "$MARKER_BODY"
-      case $? in
-        0) MARKER_CLAIMED=1; log "claimed update marker (pid $$${ct:+ ct $ct})"; return 0 ;;
-        2) log "WARNING: could not write update marker"; return 0 ;;
-      esac
-    fi
-    if ! seen="$(cat "$MARKER" 2>/dev/null)"; then
-      [ "$adopt_only" -eq 1 ] || continue
-      log "no update marker from the Desktop (pid $DESKTOP_PID): it gave up on this hand-off; exiting without claiming"
-      MARKER_REFUSED_PID="$DESKTOP_PID"; return 1
-    fi
-    if [ -z "$seen" ] && marker_young_empty; then
-      MARKER_REFUSED_PID="unknown"; return 1
-    fi
-    if [ "$adopt_only" -eq 1 ]; then
-      if marker_live "$seen" && [ "$M_PID" = "$DESKTOP_PID" ] && [ -z "$M_DPID" ]; then
-        # The Desktop's bridge claim. One acquisition time for the whole
-        # chain: keep its line 2.
-        started="$M_STARTED" STARTED_AT="$M_STARTED"
-        MARKER_BODY="$$"$'\n'"$started"$'\n'"${ct:+ct:$ct}"$'\n'
-        [ -n "$ct" ] || MARKER_BODY="$$"$'\n'"$started"$'\n'
-        printf '%s' "$MARKER_BODY" > "$MARKER.$$.tmp" 2>/dev/null || { rm -f "$MARKER.$$.tmp"; return 0; }
-        if [ "$(cat "$MARKER" 2>/dev/null)" = "$seen" ] && mv -f "$MARKER.$$.tmp" "$MARKER" 2>/dev/null; then
-          MARKER_CLAIMED=1; log "adopted the Desktop's update marker (desktop pid $DESKTOP_PID -> $$)"; return 0
-        fi
-        rm -f "$MARKER.$$.tmp" 2>/dev/null
-        continue
-      fi
-      log "update marker is not the live bridge claim of desktop pid $DESKTOP_PID: exiting without claiming"
-      MARKER_REFUSED_PID="${M_DPID:-${M_PID:-unknown}}"
-      return 1
-    fi
-    if marker_live "$seen" && [ "$M_PID" != "$$" ]; then
-      MARKER_REFUSED_PID="${M_DPID:-$M_PID}"
-      return 1
-    fi
-    # Dead owner: compare-and-delete the exact bytes judged dead, then retry.
-    if [ "$(cat "$MARKER" 2>/dev/null)" = "$seen" ]; then
-      rm -f "$MARKER" 2>/dev/null
-      log "reclaimed a dead update marker (pid ${M_PID:-?})"
-    fi
-  done
-  MARKER_REFUSED_PID="${M_PID:-unknown}"
-  return 1
-}
-
-marker_release() { # compare-and-delete; never drops a marker whose delegate is LIVE
-  local now
+marker_release() { # A7 rule 5, under the lock. Never while a survivor of the
+  # update still holds the checkout lock (R6): the marker would read free while
+  # that completion still mutates the checkout. Wait it out; past the bound,
+  # leave the marker in place -- dead to every reader, and the Desktop's
+  # reclaim helper refuses to delete it while the checkout lock is held.
+  local waited=0
   [ "$MARKER_CLAIMED" -eq 1 ] && [ "$NO_MARKER_CLEANUP" -eq 0 ] || return 0
-  now="$(cat "$MARKER" 2>/dev/null)" || return 0
-  case "$now"$'\n' in "$MARKER_BODY"*) ;; *) log "leaving update marker: no longer ours"; return 0 ;; esac
-  marker_parse "$now"
-  if [ -n "$M_DPID" ] && marker_ident_live "$M_DPID" "$M_DCT"; then
-    log "leaving update marker: delegate pid $M_DPID (hermes update) is still running"
-    return 0
-  fi
-  [ "$(cat "$MARKER" 2>/dev/null)" = "$now" ] && rm -f "$MARKER" 2>/dev/null
+  while checkout_lock_held; do
+    [ "$waited" -gt 0 ] || log "a process still holds the checkout update lock; keeping the update marker until it exits"
+    if [ "$waited" -ge "$RELEASE_WAIT_S" ]; then
+      log "WARNING: checkout update lock still held after ${waited}s; leaving the update marker"
+      return 0
+    fi
+    sleep 1; waited=$((waited + 1))
+  done
+  marker_locked marker_release_locked
   MARKER_CLAIMED=0
 }
-
-marker_add_delegate() { # pid -> line 4 `delegate:<pid> ct:<ct>` under our claim (C1 rule 6)
-  # Written the moment the update child exists: killed in the second before
-  # that child takes the update lock, this script would otherwise leave a
-  # marker that reads DEAD while the update goes on. Compare-and-swap on our
-  # own lines 1-3; a marker with no ct line (v1) gets no delegate.
-  local pid="$1" ct seen tmp="$MARKER.$$.tmp"
-  [ "$MARKER_CLAIMED" -eq 1 ] || return 0
-  case "$MARKER_BODY" in *$'\n'ct:*) ;; *) return 0 ;; esac
-  ct="$(proc_ct "$pid")"
-  [ -n "$ct" ] || { log "WARNING: no creation time for update pid $pid; marker names no delegate"; return 0; }
-  seen="$(cat "$MARKER" 2>/dev/null)" || return 0
-  case "$seen"$'\n' in "$MARKER_BODY"*) ;; *) log "update marker is no longer ours; no delegate written"; return 0 ;; esac
-  marker_parse "$seen"
-  if [ -n "$M_DPID" ] && [ "$M_DPID" != "$pid" ] && marker_ident_live "$M_DPID" "$M_DCT"; then return 0; fi
-  printf '%sdelegate:%s ct:%s\n' "$MARKER_BODY" "$pid" "$ct" > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
-  if [ "$(cat "$MARKER" 2>/dev/null)" = "$seen" ] && mv -f "$tmp" "$MARKER" 2>/dev/null; then
-    log "update marker names update pid $pid (ct $ct) as its delegate"
-  else
-    rm -f "$tmp" 2>/dev/null
-  fi
-}
+RELEASE_WAIT_S=7200
 
 run_bounded() { # seconds cmd... -> cmd's stdout; 124 when it had to be killed
   local secs="$1" out pid i rc
   shift
   out="$(mktemp "${TMPDIR:-/tmp}/hermes-update-probe.$$.XXXXXX")" || return 1
-  "$@" > "$out" 2>/dev/null < /dev/null &
+  # Its own process group (pgid = pid), so a timeout kills the probe's whole
+  # tree -- a hung `hermes` launcher's python child included, not just the shell.
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'setpgrp(0, 0); exec { $ARGV[0] } @ARGV or exit 127' "$@" > "$out" 2>/dev/null < /dev/null &
+  else
+    "$@" > "$out" 2>/dev/null < /dev/null &
+  fi
   pid=$!
   for ((i = 0; i < secs * 10; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
   if kill -0 "$pid" 2>/dev/null; then
-    kill -KILL "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null
     rm -f "$out" 2>/dev/null
     log "WARNING: probe timed out after ${secs}s: $*"
     return 124
@@ -961,6 +820,13 @@ if [ "$SELF_TEST_UI" -eq 1 ]; then
   exit "$FINAL_CODE"
 fi
 
+# ── the Desktop's marker helper: verdict on stdout, nothing else ────────────
+if [ -n "$MARKER_OP" ]; then
+  trap - EXIT HUP INT QUIT TERM
+  marker_op "$MARKER_OP"
+  exit $?
+fi
+
 # ── the actual job ──────────────────────────────────────────────────────────
 # Everything below is ONE brace group: bash parses a compound command whole
 # before running it, so `hermes update` rewriting this very file (the script
@@ -1056,6 +922,7 @@ fi
 case "$RELAUNCH_TARGET" in *.app) mac_bundle_recover "$RELAUNCH_TARGET" ;; esac
 for _stale in "$INSTALL_ROOT"/venv/bin/*.tcc-heal-old.* "$INSTALL_ROOT"/venv/bin/*.tcc-heal-new.* \
     "${TMPDIR:-/tmp}"/hermes-update-status.[0-9]* "${TMPDIR:-/tmp}"/hermes-update-probe.[0-9]* \
+    "${TMPDIR:-/tmp}"/hermes-update-go.[0-9]* \
     "${TMPDIR:-/tmp}"/hermes-update-ui-[0-9]*-*; do
   [ -e "$_stale" ] || [ -L "$_stale" ] || continue
   case "$_stale" in
@@ -1174,20 +1041,37 @@ run_update() { # streams straight into the log (a killed run keeps its output);
   # OUT = this run's slice of the log. TERM goes back to default for the child
   # so neither it nor anything it starts (gateways) inherits our SIG_IGN.
   # The child runs asynchronously only so its pid can go into the marker
-  # (marker_add_delegate) before it does anything; a HUP/INT/QUIT that lands
-  # meanwhile is handled once it exits, exactly like a foreground child.
-  local offset pid sig
+  # (marker_add_delegate) before it does anything: it waits on a go-file that
+  # is created only AFTER the delegate line is published, and gives up when
+  # this script dies first -- so no instant exists in which the update runs
+  # but the marker names neither a live owner nor a live delegate. A
+  # HUP/INT/QUIT that lands meanwhile is handled once it exits, exactly like a
+  # foreground child.
+  local offset pid sig go="${TMPDIR:-/tmp}/hermes-update-go.$$" refresher
   offset="$(wc -c < "$LOG" 2>/dev/null | tr -d '[:space:]')"
   PENDING_SIGNAL=""
   for sig in HUP INT QUIT; do trap "PENDING_SIGNAL=\${PENDING_SIGNAL:-$sig}" "$sig"; done
-  ( trap - TERM; exec "${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}" ) >> "$LOG" 2>&1 <&0 &
+  rm -f "$go" 2>/dev/null
+  ( trap - TERM
+    while [ ! -e "$go" ]; do kill -0 "$MY_PID" 2>/dev/null || exit 70; sleep 0.05; done
+    exec "${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}" ) >> "$LOG" 2>&1 <&0 &
   pid=$!
   marker_add_delegate "$pid"
+  : > "$go"
+  # An older packaged Desktop judges a marker by line 2 alone and deletes it
+  # 20 minutes in, live owner or not: keep line 2 young while we own it.
+  ( for _ in $(seq 1 100000); do
+      for _ in $(seq 1 60); do sleep 5; kill -0 "$MY_PID" 2>/dev/null || exit 0; done
+      marker_locked marker_refresh_locked
+    done ) >/dev/null 2>&1 &
+  refresher=$!
   while :; do
     wait "$pid"; CODE=$?
     [ "$CODE" -ne 127 ] || break          # not our child any more
     kill -0 "$pid" 2>/dev/null || break   # reaped: CODE is its exit status
   done
+  kill -KILL "$refresher" 2>/dev/null; wait "$refresher" 2>/dev/null
+  rm -f "$go" 2>/dev/null
   for sig in HUP INT QUIT; do trap "on_signal $sig" "$sig"; done
   OUT="$(tail -c +"$(( ${offset:-0} + 1 ))" "$LOG" 2>/dev/null)"
   [ -z "$PENDING_SIGNAL" ] || on_signal "$PENDING_SIGNAL"

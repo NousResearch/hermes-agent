@@ -7123,9 +7123,11 @@ async def _standalone_send(
                             return send_error(f"Discord forum thread upload failed: {e}")
                     else:
                         # No media: JSON POST creates the thread with the text starter.
+                        # All-vanished media keeps the caption as the body — message is ""
+                        # once _media_caption_split moved the whole text into the caption.
                         async with session.post(
                             thread_url, headers=json_headers,
-                            json={"name": thread_name, "message": {"content": message}}, **_req_kw,
+                            json={"name": thread_name, "message": {"content": (caption or message)}}, **_req_kw,
                         ) as resp:
                             data, err = await _standalone_response_json_or_error(resp, "Discord forum thread creation error")
                             if err:

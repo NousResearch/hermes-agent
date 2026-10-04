@@ -180,6 +180,40 @@ def test_forum_media_caption_derives_thread_name_from_caption():
         os.unlink(img)
 
 
+def test_forum_media_all_vanished_keeps_caption_as_body():
+    """When every media file vanishes between validation and upload (TOCTOU),
+    the captioned forum post must still carry the caption text as the starter
+    body — the JSON branch builds it from `message` alone, which is "" once
+    _media_caption_split moved the whole text into the caption."""
+    chat_id = "999000555"
+    _remember_channel_is_forum(chat_id, True)
+    try:
+        session_ctx, calls = _session_with(
+            [_resp(200, {"id": "t7", "message": {"id": "m7"}})]
+        )
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            res = asyncio.run(
+                _standalone_send(
+                    _pconfig(),
+                    chat_id,
+                    "",
+                    media_files=[("/nonexistent/nightly.png", False)],
+                    caption="# Nightly report\n\nBody text",
+                )
+            )
+        assert res["success"] is True
+        assert len(calls) == 1
+        url, json_body, _data = calls[0]
+        assert url.endswith(f"/channels/{chat_id}/threads")
+        # The title comes from the caption AND the body keeps the caption text;
+        # dropping it would send a titled-but-empty post reading as data loss.
+        assert json_body["name"] == "Nightly report"
+        assert json_body["message"]["content"] == "# Nightly report\n\nBody text"
+        assert res.get("warnings"), "the vanished file must still be warned about"
+    finally:
+        _remember_channel_is_forum(chat_id, True)  # leave cache untouched for others
+
+
 def test_forum_text_only_keeps_message_derived_thread_name():
     """Uncaptioned forum posts keep deriving the name from the message itself."""
     chat_id = "999000444"

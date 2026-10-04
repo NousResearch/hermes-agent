@@ -72,6 +72,11 @@ its parent lets a command rename the parent, and the next spawn then
 finds nothing to hide at the old path while the secret is readable under
 the new one.
 
+One set of mounts does grow after construction: the archive files of
+oversized tool results that the host hands to this environment
+(expose_spillover_file). Each is a single file, bound read-only, named
+by the Hermes process and never by a command.
+
 Resource limits are applied by prlimit(1) from util-linux, in two
 places. In front of the bwrap argv above, prlimit sets RLIMIT_AS and
 RLIMIT_CPU on itself and execs bwrap, so those limits are in place before
@@ -273,6 +278,9 @@ def home_replaced_by_bind(home_root: str, binds: Iterable[BindMount]) -> bool:
     return any(_is_within(home_root, bind.dest) and not _same_host_path(bind.src, bind.dest) for bind in binds)
 
 
+# How many archive files of oversized tool results one environment binds.
+SPILLOVER_BIND_MAX = 256
+
 # How many symlinks the walk of one chain follows; the kernel stops at 40.
 DOT_LINK_MAX_HOPS = 40
 
@@ -337,8 +345,8 @@ def staged_data_roots() -> tuple[str, ...]:
     One root of the registry is left out: the archive of oversized tool
     results. It holds the tool output of every session of the profile,
     which can carry secrets, and nothing in it says which session a file
-    belongs to. An oversized result is written into the state dir of the
-    environment instead (see BubblewrapEnvironment.hides_hermes_home).
+    belongs to. An environment shows its commands the archive files it
+    was handed, one by one (BubblewrapEnvironment.expose_spillover_file).
     """
     try:
         from tools import credential_files
@@ -705,6 +713,7 @@ def build_bwrap_args(
     scratch_view: str | None = None,
     scratch_private: str | None = None,
     staged_roots: Sequence[str] = (),
+    staged_files: Sequence[str] = (),
 ) -> list[str]:
     """Build the bwrap argv prefix; the caller appends the shell argv after the trailing ``--``.
 
@@ -720,7 +729,8 @@ def build_bwrap_args(
     *scratch_private* the scratch directory of this environment under
     that path, bound at its own path; without the first two nothing is
     bound. *staged_roots* are the staged data directories under
-    HERMES_HOME, bound back read-only. The listing of the top of
+    HERMES_HOME, bound back read-only, and *staged_files* the single
+    files under it that this environment was handed, bound the same way. The listing of the top of
     HOME is the one input read from the host at each call, so a directory
     made on the host later shows in the next spawn.
     """
@@ -808,6 +818,7 @@ def build_bwrap_args(
     # a command opens them, it does not produce them. The -try form lets a
     # root that is gone from the host drop out instead of failing the spawn.
     late += [("--ro-bind-try", root, root) for root in staged_roots]
+    late += [("--ro-bind-try", path, path) for path in staged_files]
     restored += staged_roots
     if config.home_mode in PROFILE_HOME_MODES:
         profile_home = os.path.join(os.path.abspath(os.path.expanduser(hermes_home)), "home")
@@ -1142,11 +1153,6 @@ class BubblewrapEnvironment(LocalEnvironment):
     their removal on cleanup.
     """
 
-    # Read by tools.tool_result_storage: a command here cannot open a file
-    # under HERMES_HOME/cache/spillover, so an oversized tool result is
-    # written through the environment, into its state dir.
-    hides_hermes_home = True
-
     def __init__(
         self,
         cwd: str = "",
@@ -1205,6 +1211,9 @@ class BubblewrapEnvironment(LocalEnvironment):
         # The spellings of that path a process environment can carry.
         self._scratch_names: tuple[str, ...] = tuple(dict.fromkeys((scratch_as_named, self._scratch_dir)))
         self._staged_roots = staged_data_roots()
+        # Archive files of oversized tool results this environment was
+        # handed (expose_spillover_file), newest last.
+        self._spillover_files: list[str] = []
         # A terminal.bubblewrap_hide entry at or above one of these roots
         # wins: the root is not bound back.
         covered = [root for root in self._staged_roots if any(_is_within(root, path) for path in self._operator_hidden)]
@@ -1603,6 +1612,35 @@ class BubblewrapEnvironment(LocalEnvironment):
             )
         return result
 
+    def expose_spillover_file(self, path: str) -> bool:
+        """Show the commands of this environment one archive of an oversized tool result.
+
+        Called on the host by tools.tool_result_storage when it hands the
+        model the path of an archive. The directory of those archives is
+        not bound, since it holds the tool output of every session of the
+        profile; the files named here are bound read-only, one by one, in
+        every later spawn. Only a regular file directly in that directory
+        is accepted, and a terminal.bubblewrap_hide entry over it wins.
+        The newest SPILLOVER_BIND_MAX files are kept. Returns whether the
+        file is bound.
+        """
+        try:
+            from tools.tool_result_storage import get_spillover_dir
+
+            spillover = os.path.realpath(str(get_spillover_dir()))
+        except Exception:
+            return False
+        real = os.path.realpath(path)
+        if os.path.dirname(real) != spillover or os.path.islink(path) or not os.path.isfile(real):
+            return False
+        if any(_is_within(real, hidden) for hidden in self._operator_hidden):
+            return False
+        if real in self._spillover_files:
+            self._spillover_files.remove(real)
+        self._spillover_files.append(real)
+        del self._spillover_files[:-SPILLOVER_BIND_MAX]
+        return True
+
     def _bwrap_prefix(self, tracked_cwd: str) -> list[str]:
         return build_bwrap_args(
             self._config,
@@ -1619,6 +1657,7 @@ class BubblewrapEnvironment(LocalEnvironment):
             scratch_view=self._scratch_view,
             scratch_private=self._scratch_private,
             staged_roots=self._staged_roots,
+            staged_files=tuple(self._spillover_files),
         )
 
     def _reset_masked_cwd(self) -> str | None:

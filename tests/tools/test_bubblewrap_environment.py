@@ -351,7 +351,7 @@ class TestConstructionTimeMounts:
         # construction as well.
         assert params == [
             "config", "initial_cwd", "state_dir", "home", "hermes_home", "tracked_cwd", "bwrap_path", "hidden_paths",
-            "home_root", "home_allow", "scratch_dir", "scratch_view", "scratch_private", "staged_roots",
+            "home_root", "home_allow", "scratch_dir", "scratch_view", "scratch_private", "staged_roots", "staged_files",
         ]
 
     def test_chdir_follows_tracked_cwd_with_fixed_mounts(self, sandbox_root, work_dir):
@@ -1321,6 +1321,51 @@ class TestStagedRoots:
             assert spillover not in bound
         finally:
             env.cleanup()
+
+    def test_only_a_regular_file_directly_in_the_archive_dir_is_exposed(self, sandbox_root, work_dir, hermes_home, tmp_path):
+        spillover = hermes_home / "cache" / "spillover"
+        (spillover / "sub").mkdir(parents=True)
+        good = spillover / "call_1.txt"
+        good.write_text("x")
+        (spillover / "sub" / "deep.txt").write_text("x")
+        (hermes_home / "auth.json").write_text("x")
+        (spillover / "link.txt").symlink_to(hermes_home / "auth.json")
+        outside = tmp_path / "outside.txt"
+        outside.write_text("x")
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        try:
+            for bad in (spillover / "sub" / "deep.txt", spillover / "link.txt", outside, hermes_home / "auth.json",
+                        spillover / "sub", spillover / "absent.txt", spillover):
+                assert env.expose_spillover_file(str(bad)) is False, bad
+            assert self._ro_binds(env).isdisjoint({str(hermes_home / "auth.json"), str(outside), str(spillover)})
+            assert env.expose_spillover_file(str(good)) is True
+            assert env.expose_spillover_file(str(good)) is True
+            mounts = _mounts(env._wrap_popen_args(["bash"]))
+            assert mounts.count(("--ro-bind-try", str(good), str(good))) == 1
+        finally:
+            env.cleanup()
+
+    def test_exposed_archive_files_are_capped_and_a_hide_entry_wins(self, sandbox_root, work_dir, hermes_home, monkeypatch):
+        spillover = hermes_home / "cache" / "spillover"
+        spillover.mkdir(parents=True)
+        monkeypatch.setattr(bubblewrap, "SPILLOVER_BIND_MAX", 3)
+        files = [spillover / f"call_{i}.txt" for i in range(5)]
+        for file in files:
+            file.write_text("x")
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+            hiding = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(hide=(str(spillover),)))
+        try:
+            for file in files:
+                assert env.expose_spillover_file(str(file))
+            bound = self._ro_binds(env)
+            assert {str(file) for file in files[2:]} <= bound
+            assert bound.isdisjoint({str(file) for file in files[:2]})
+            assert hiding.expose_spillover_file(str(files[0])) is False
+        finally:
+            env.cleanup()
+            hiding.cleanup()
 
     def test_a_root_added_to_the_registry_is_bound(self, sandbox_root, work_dir, hermes_home, monkeypatch):
         from tools import credential_files

@@ -80,16 +80,27 @@ def _prune_spillover_once() -> None:
 
 def _is_host_side_env(env) -> bool:
     """True when this process should write the spill file directly: ``env=None`` (no sandbox
-    yet) or the local backend. Remote backends resolve ``read_file`` inside the sandbox. A
-    local-derived backend that hides HERMES_HOME from its commands is not host-side: the
-    archive under ``cache/spillover`` would be out of their reach."""
+    yet) or the local backend. Remote backends resolve ``read_file`` inside the sandbox."""
     if env is None:
         return True
     try:
         from tools.environments.local import LocalEnvironment
-        return isinstance(env, LocalEnvironment) and not getattr(env, "hides_hermes_home", False)
+        return isinstance(env, LocalEnvironment)
     except Exception:
         return False
+
+
+def _expose_to_env(env, host_path: str) -> None:
+    """Tell a host-side backend which archive its commands may open. A backend that hides
+    ``HERMES_HOME`` from its commands (bubblewrap) shows them only the archives handed to it
+    here, not the ``cache/spillover`` of every session; the others have no such hook."""
+    expose = getattr(env, "expose_spillover_file", None)
+    if not callable(expose):
+        return
+    try:
+        expose(host_path)
+    except Exception as exc:
+        logger.debug("Could not expose %s to the terminal environment: %s", host_path, exc)
 
 
 def _write_to_spillover(content: str, filename: str):
@@ -317,6 +328,7 @@ def maybe_persist_tool_result(content: str, tool_name: str, tool_use_id: str, en
     host_path = _write_to_spillover(persisted_content, filename)
     host_side = _is_host_side_env(env)
     if host_side and host_path is not None:
+        _expose_to_env(env, host_path)
         return _persisted(host_path)
     if not host_side:
         # Remote backend: reference the mounted/synced path when the sandbox can actually read

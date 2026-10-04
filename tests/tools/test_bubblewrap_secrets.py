@@ -1190,22 +1190,40 @@ class TestStagedDataIntegration:
     def test_oversized_tool_result_is_readable_by_the_commands_of_its_own_environment(self, work_dir, hermes_home):
         from tools.tool_result_storage import extract_persisted_path, maybe_persist_tool_result
 
+        spillover = hermes_home / "cache" / "spillover"
+        other = _write(spillover / "call_of_another_session.txt")
         content = "".join(f"line {i} of the result\n" for i in range(4000))
         first = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
         second = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
         try:
             message = maybe_persist_tool_result(content, "terminal", "call_1", env=first, threshold=1000)
             path = extract_persisted_path(message)
-            assert path and not path.startswith(str(hermes_home / "cache" / "spillover"))
-            assert path.startswith(first.get_temp_dir() + os.sep)
+            # The canonical archive path: it outlives the environment.
+            assert path and Path(path).parent == spillover
             assert first.execute(f"wc -c < {path}")["output"].strip() == str(len(content))
             assert first.execute(f"tail -n 1 {path}")["output"].strip() == "line 3999 of the result"
-            # The host-side file tools read the same path.
-            assert Path(path).read_text() == content
-            assert second.execute(f"cat {path} 2>&1 | head -c 200")["output"].count("of the result") == 0
+            assert first.execute(f"printf changed >> {path}")["returncode"] != 0
+            # Of the whole archive this environment sees that one file.
+            assert first.execute(f"ls -A {spillover}")["output"].split() == [Path(path).name]
+            assert MARKER not in first.execute(f"cat {other} 2>&1")["output"]
+            out = second.execute(f"ls -A {spillover} 2>&1; cat {path} 2>&1 | head -c 200")["output"]
+            assert "of the result" not in out and Path(path).name not in out.replace(f"{path}: No such file", "")
         finally:
             first.cleanup()
             second.cleanup()
+        # The reference in the conversation stays good for the host-side file tools.
+        assert Path(path).read_text() == content
+
+    def test_archive_file_pruned_on_the_host_does_not_fail_the_spawn(self, work_dir, hermes_home):
+        archive = _write(hermes_home / "cache" / "spillover" / "call_1.txt", VISIBLE)
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            assert env.expose_spillover_file(str(archive))
+            assert env.execute(f"cat {archive}")["output"].strip() == VISIBLE
+            archive.unlink()
+            assert env.execute("echo ok")["output"].strip() == "ok"
+        finally:
+            env.cleanup()
 
     def test_staged_root_removed_after_construction_does_not_fail_the_spawn(self, work_dir, hermes_home):
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)

@@ -117,13 +117,18 @@ def audit_info(log: logging.Logger, msg: str, *args: object) -> None:
     """
     try:
         log.info(msg, *args)
-        # Delivery check: a handler at INFO level counts only if INFO would actually
-        # be PROCESSED — Python's logger-level filter runs BEFORE handlers, so a root
-        # logger above INFO swallows records even when a low-level handler waits.
+        # Delivery check, tightened per review: a root handler counts as the
+        # durable sink only if it is a FILE handler (agent.log and friends).
+        # A console StreamHandler / NullHandler proves the record was emitted,
+        # not that it reached a durable file — console-only setups must still
+        # get the fallback. Python's logger-level filter runs BEFORE handlers,
+        # so a root logger above INFO swallows records even when a low-level
+        # file handler waits; both conditions must hold.
         root = logging.getLogger()
         root_will_process = logging.INFO >= root.getEffectiveLevel()
         sink_live = root_will_process and any(
-            h.level <= logging.INFO for h in root.handlers
+            h.level <= logging.INFO and isinstance(h, logging.FileHandler)
+            for h in root.handlers
         )
         if sink_live:
             return  # the log file sink is live; no fallback duplication

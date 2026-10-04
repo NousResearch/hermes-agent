@@ -371,7 +371,7 @@ def test_reap_failed_kill_not_reported_as_reaped(tmp_path, audit_records, monkey
 
 
 def test_audit_no_double_write_when_log_sink_live(tmp_path, audit_records, monkeypatch):
-    """When the normal file handler IS live (post-setup), records go only through
+    """When the normal FILE handler IS live (post-setup), records go only through
     the logger — no duplication into the durable sink file."""
     import logging as _logging
 
@@ -385,27 +385,67 @@ def test_audit_no_double_write_when_log_sink_live(tmp_path, audit_records, monke
     audit_home = tmp_path / "audit-home2"
     monkeypatch.setenv("HERMES_HOME", str(audit_home))
 
-    # Post-setup state: an INFO-capable handler exists at the root.
-    live_root = _logging.getLogger("probe-live-sink")
-    live_root.addHandler(_logging.StreamHandler())
+    # Post-setup state: an INFO-capable FILE handler exists at the root
+    # (setup_logging installs a FileHandler; only that class is durable).
+    real_root = _logging.getLogger()
+    saved_handlers = list(real_root.handlers)
+    saved_level = real_root.level
+    agent_log = tmp_path / "agent.log"
+    file_handler = _logging.FileHandler(agent_log, encoding="utf-8")
+    file_handler.setLevel(_logging.INFO)
+    real_root.handlers = [file_handler]
+    real_root.setLevel(_logging.INFO)
+    try:
+        assert prune_scratch_dir(scratch) == 1
+    finally:
+        real_root.handlers = saved_handlers
+        real_root.setLevel(saved_level)
+        file_handler.close()
 
-    class _InfoHandler(_logging.NullHandler):
-        level = _logging.INFO
-
-    import hermes_constants_scratch as scratch_mod
-    real_getlogger = _logging.getLogger
-
-    def getlogger_with_live(name=None):
-        lg = real_getlogger(name)
-        if lg is real_getlogger():
-            lg.addHandler(_InfoHandler())
-        return lg
-
-    monkeypatch.setattr(_logging, "getLogger", getlogger_with_live)
-
-    assert prune_scratch_dir(scratch) == 1
     sink = audit_home / "logs" / "scratch-prune.log"
-    assert not sink.exists(), "record duplicated into durable sink while handler was live"
+    assert not sink.exists(), "record duplicated into durable sink while file handler was live"
+    assert "removed" in agent_log.read_text(encoding="utf-8"), (
+        "record never reached the live file handler"
+    )
+
+
+def test_audit_console_only_handler_still_falls_back(tmp_path, audit_records, monkeypatch):
+    """Regression (review round 3): a console StreamHandler at INFO is NOT a
+    durable sink. The reviewer's full-path probe showed the record emitted to
+    console while neither agent.log nor scratch-prune.log was created — the
+    stated guarantee (every audit line reaches a durable file) was broken.
+    The fallback must fire whenever no FileHandler would capture INFO."""
+    import logging as _logging
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "console-only-lane"
+    entry.mkdir()
+    (entry / "f").write_text("x", encoding="utf-8")
+    _age(entry)
+    _age(entry / "f")
+
+    audit_home = tmp_path / "audit-home3"
+    monkeypatch.setenv("HERMES_HOME", str(audit_home))
+
+    # The exact reviewer state: root at INFO, only a console StreamHandler.
+    real_root = _logging.getLogger()
+    saved_handlers = list(real_root.handlers)
+    saved_level = real_root.level
+    real_root.handlers = [_logging.StreamHandler()]
+    real_root.setLevel(_logging.INFO)
+    try:
+        assert prune_scratch_dir(scratch) == 1
+    finally:
+        real_root.handlers = saved_handlers
+        real_root.setLevel(saved_level)
+
+    sink = audit_home / "logs" / "scratch-prune.log"
+    assert sink.exists(), (
+        "console-only handler satisfied the old check; durable sink never created"
+    )
+    assert "removed" in sink.read_text(encoding="utf-8-sig"), (
+        "audit record missing from durable sink despite console-only logging"
+    )
 
 
 def test_prune_oserror_failure_logged_not_counted(tmp_path, audit_records, monkeypatch):

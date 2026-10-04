@@ -633,9 +633,7 @@ export async function runGroupChatRounds(
 
   // #129443: the driving send's explicit addresses, frozen for the whole
   // drive — mid-drive member handoffs stay the #94478 continuation's job.
-  const startLog = (($groupChats.get()[group] || {}).log || []).filter(
-    (e: GroupMessage) => groupThreadOf(e) === thread
-  )
+  const startLog = (($groupChats.get()[group] || {}).log || []).filter((e: GroupMessage) => groupThreadOf(e) === thread)
 
   const addressedKeys = explicitlyAddressedMemberKeys(startLog, members)
 

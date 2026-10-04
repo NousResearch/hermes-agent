@@ -94,7 +94,7 @@ describe('explicitlyAddressedMemberKeys', () => {
     expect(rounds.explicitlyAddressedMemberKeys(user('fyi, deploy went out'), MEMBERS).size).toBe(0)
   })
 
-  it('never counts a member reply\'s @handoff as a user address', async () => {
+  it("never counts a member reply's @handoff as a user address", async () => {
     const { rounds, membership } = await loadRoom()
 
     const entries: GroupMessage[] = [
@@ -102,9 +102,7 @@ describe('explicitlyAddressedMemberKeys', () => {
       { at: 2, from: { kind: 'member', name: 'builder' }, text: 'on it — @research can you dig in?' } as GroupMessage
     ]
 
-    expect([...rounds.explicitlyAddressedMemberKeys(entries, MEMBERS)]).toEqual([
-      membership.groupMemberKey(MEMBERS[1])
-    ])
+    expect([...rounds.explicitlyAddressedMemberKeys(entries, MEMBERS)]).toEqual([membership.groupMemberKey(MEMBERS[1])])
   })
 })
 

@@ -200,12 +200,7 @@ export async function runGroupRoundMember(
     // discarded by the epoch check right below anyway, so nudging it would
     // burn a model call whose result can never be committed.
     if (context.isCurrent() && reply !== null && isGroupPassText(reply) && context.addressedKeys?.has(memberKey)) {
-      reply = await runVisibleMemberTurn(
-        context,
-        member,
-        `${prompt}${GROUP_ADDRESSED_NUDGE_SUFFIX}`,
-        deltaImages
-      )
+      reply = await runVisibleMemberTurn(context, member, `${prompt}${GROUP_ADDRESSED_NUDGE_SUFFIX}`, deltaImages)
     }
 
     accepted = true

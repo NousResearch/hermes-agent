@@ -9,7 +9,7 @@ fn update_marker_guard_writes_then_removes_on_drop() {
     let marker = dir.join(".hermes-update-in-progress");
 
     {
-        let _g = UpdateMarkerGuard::acquire(marker.clone())
+        let _g = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
             .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
         assert!(marker.exists(), "marker must exist while the guard is held");
         let body = std::fs::read_to_string(&marker).unwrap();
@@ -45,7 +45,7 @@ fn update_marker_guard_drop_is_quiet_when_already_gone() {
     std::fs::create_dir_all(&dir).unwrap();
     let marker = dir.join(".hermes-update-in-progress");
 
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
     // Simulate an external cleanup (e.g. the desktop pruned a marker it
     // judged stale) before our guard drops — Drop must not panic.
@@ -100,7 +100,10 @@ fn acquire_refuses_while_a_live_updater_owns_the_marker() {
         .unwrap_or(0);
     std::fs::write(&marker, format!("{foreign_pid}\n{started_at}")).unwrap();
 
-    let owner = busy(UpdateMarkerGuard::acquire(marker.clone()));
+    let owner = busy(UpdateMarkerGuard::acquire(
+        marker.clone(),
+        &install_root_of(&marker),
+    ));
     assert_eq!(owner.pid, foreign_pid);
 
     // The refused guard must not delete the live owner's marker.
@@ -124,7 +127,7 @@ fn own_pid_v1_prewrite_is_a_previous_incarnation_and_reclaimed() {
     let me = std::process::id();
     std::fs::write(&marker, format!("{me}\n{}", now_secs() - 2)).unwrap();
 
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("a previous incarnation's claim never blocks us"));
     let record = parse_marker(&std::fs::read(&marker).unwrap()).unwrap();
     assert_eq!(record.pid, me);
@@ -165,14 +168,19 @@ fn self_owned_marker_plus_exit_2_heals() {
     std::fs::write(&marker, v2_body(me, 123, ct_of(me))).unwrap();
 
     assert!(
-        should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &marker),
+        should_heal_self_marker_refusal(
+            Some(UPDATE_EXIT_CONCURRENT),
+            &marker,
+            &install_root_of(&marker)
+        ),
         "a child refusing over OUR marker is the #75788 deadlock — must heal"
     );
     // R12: our pid without our creation time is a previous incarnation's claim, not ours.
     std::fs::write(&marker, format!("{me}\n123\n")).unwrap();
     assert!(!should_heal_self_marker_refusal(
         Some(UPDATE_EXIT_CONCURRENT),
-        &marker
+        &marker,
+        &install_root_of(&marker)
     ));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -186,7 +194,11 @@ fn foreign_owned_marker_never_heals() {
     std::fs::write(&marker, format!("{}\n123\n", foreign.id())).unwrap();
 
     assert!(
-        !should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &marker),
+        !should_heal_self_marker_refusal(
+            Some(UPDATE_EXIT_CONCURRENT),
+            &marker,
+            &install_root_of(&marker)
+        ),
         "a foreign owner is a REAL concurrent update — the refusal must stand"
     );
     let _ = foreign.kill();
@@ -199,14 +211,22 @@ fn missing_or_garbage_marker_never_heals() {
     let dir = unique_tmp_dir("heal-garbage");
     let missing = dir.join("never-written");
     assert!(
-        !should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &missing),
+        !should_heal_self_marker_refusal(
+            Some(UPDATE_EXIT_CONCURRENT),
+            &missing,
+            &install_root_of(&missing)
+        ),
         "no marker on disk = the child refused over something else entirely"
     );
 
     let garbage = dir.join(".hermes-update-in-progress");
     std::fs::write(&garbage, "not-a-pid\n123\n").unwrap();
     assert!(
-        !should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &garbage),
+        !should_heal_self_marker_refusal(
+            Some(UPDATE_EXIT_CONCURRENT),
+            &garbage,
+            &install_root_of(&garbage)
+        ),
         "an unparseable marker must not be treated as ours"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -221,7 +241,7 @@ fn non_exit_2_outcomes_never_heal() {
 
     for code in [Some(0), Some(1), Some(3), None] {
         assert!(
-            !should_heal_self_marker_refusal(code, &marker),
+            !should_heal_self_marker_refusal(code, &marker, &install_root_of(&marker)),
             "heal is exit-2-only; exit {code:?} must keep its normal path"
         );
     }
@@ -238,7 +258,7 @@ fn heal_end_to_end_marker_lifecycle() {
     let dir = unique_tmp_dir("heal-e2e");
     let marker = dir.join(".hermes-update-in-progress");
 
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
     assert!(
         marker.exists(),
@@ -248,7 +268,8 @@ fn heal_end_to_end_marker_lifecycle() {
     // Stale child refused over our claim:
     assert!(should_heal_self_marker_refusal(
         Some(UPDATE_EXIT_CONCURRENT),
-        &marker
+        &marker,
+        &install_root_of(&marker)
     ));
 
     // The heal drops the claim exactly as run_update does:
@@ -262,7 +283,8 @@ fn heal_end_to_end_marker_lifecycle() {
     // own exit 2, e.g. a genuinely still-running Hermes, stays terminal).
     assert!(!should_heal_self_marker_refusal(
         Some(UPDATE_EXIT_CONCURRENT),
-        &marker
+        &marker,
+        &install_root_of(&marker)
     ));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -282,7 +304,7 @@ fn acquire_reclaims_a_marker_owned_by_a_dead_pid() {
         .unwrap_or(0);
     std::fs::write(&marker, format!("4294967294\n{started_at}")).unwrap();
 
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("a dead owner must not block acquisition"));
     let body = std::fs::read_to_string(&marker).unwrap();
     assert_eq!(
@@ -311,7 +333,7 @@ fn acquire_reclaims_a_marker_past_the_age_ceiling() {
         .saturating_sub(UPDATE_MARKER_MAX_AGE_SECS + 60);
     std::fs::write(&marker, format!("{}\n{long_ago}", std::process::id())).unwrap();
 
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("a marker past the ceiling must be reclaimable"));
     drop(guard);
     let _ = std::fs::remove_dir_all(&dir);
@@ -533,7 +555,7 @@ fn completed_update_releases_marker_before_guard_drop() {
     std::fs::create_dir_all(&dir).unwrap();
     let marker = dir.join(".hermes-update-in-progress");
 
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("no live owner => acquire must succeed"));
     guard.complete();
 
@@ -575,7 +597,10 @@ fn v2_live_owner_is_never_aged_out() {
     std::fs::write(&marker, &body).unwrap();
 
     // a live v2 owner must not be reclaimed by age
-    let owner = busy(UpdateMarkerGuard::acquire(marker.clone()));
+    let owner = busy(UpdateMarkerGuard::acquire(
+        marker.clone(),
+        &install_root_of(&marker),
+    ));
     assert_eq!(owner.pid, foreign.id());
     assert_eq!(std::fs::read_to_string(&marker).unwrap(), body);
     let _ = foreign.kill();
@@ -592,7 +617,7 @@ fn v2_marker_with_mismatched_creation_time_is_reclaimed() {
     let me = std::process::id();
     std::fs::write(&marker, v2_body(me, now_secs(), ct_of(me) + 100.0)).unwrap();
 
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("a recycled-pid marker must be reclaimable"));
     let body = std::fs::read_to_string(&marker).unwrap();
     let record = parse_marker(body.as_bytes()).expect("reclaimed marker must parse");
@@ -612,7 +637,8 @@ fn marker_claim_child_helper() {
     let Some(path) = std::env::var_os("HERMES_TEST_MARKER_CLAIM_PATH") else {
         return;
     };
-    let code = match UpdateMarkerGuard::acquire(PathBuf::from(path)) {
+    let path = PathBuf::from(path);
+    let code = match UpdateMarkerGuard::acquire(path.clone(), &install_root_of(&path)) {
         Ok(guard) if guard.claimed => {
             // Leave the claim on disk, as a still-running owner would.
             std::mem::forget(guard);
@@ -648,7 +674,7 @@ fn second_claimant_process_is_refused_by_exclusive_publish() {
     // racing a fresh claim is refused and never truncates our bytes.
     let dir = unique_tmp_dir("marker-exclusive");
     let marker = dir.join(".hermes-update-in-progress");
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("fresh acquire must succeed"));
     let ours = std::fs::read(&marker).unwrap();
 
@@ -691,7 +717,7 @@ fn compare_and_delete_spares_changed_bytes() {
     // The guard's release is compare-and-delete too: a marker whose
     // identity lines are no longer ours is someone else's claim.
     let mut foreign = spawn_foreign_holder();
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("fresh acquire must succeed"));
     let theirs = v2_body(foreign.id(), now_secs(), ct_of(foreign.id()));
     std::fs::write(&marker, &theirs).unwrap();
@@ -715,14 +741,14 @@ fn live_delegate_keeps_a_dead_owner_marker_live() {
 
     let owner = live_marker_owner(&marker).expect("live delegate keeps the marker live");
     assert_eq!(owner.pid, foreign.id());
-    assert!(UpdateMarkerGuard::acquire(marker.clone()).is_err());
+    assert!(UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker)).is_err());
     assert_eq!(std::fs::read_to_string(&marker).unwrap(), body);
     std::fs::remove_file(&marker).unwrap();
 
     // A7 rule 5: our release with a LIVE delegate hands the claim to it (rewritten with the
     // delegate as owner, started_at and run line kept); a dead delegate's line never strands
     // our claim.
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("fresh acquire must succeed"));
     let mut ours = std::fs::read_to_string(&marker).unwrap();
     let started = ours.lines().nth(1).unwrap().to_string();
@@ -748,7 +774,7 @@ fn live_delegate_keeps_a_dead_owner_marker_live() {
     let _ = foreign.wait();
     std::fs::remove_file(&marker).unwrap();
 
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("fresh acquire must succeed"));
     let mut ours = std::fs::read_to_string(&marker).unwrap();
     ours.push_str(&delegate); // the delegate is dead now
@@ -1000,7 +1026,14 @@ fn fresh_empty_marker_is_a_claim_in_flight() {
     let dir = unique_tmp_dir("marker-empty-fresh");
     let marker = dir.join(".hermes-update-in-progress");
     std::fs::write(&marker, "").unwrap();
-    assert_eq!(busy(UpdateMarkerGuard::acquire(marker.clone())).pid, 0);
+    assert_eq!(
+        busy(UpdateMarkerGuard::acquire(
+            marker.clone(),
+            &install_root_of(&marker)
+        ))
+        .pid,
+        0
+    );
     assert_eq!(
         std::fs::read(&marker).unwrap(),
         b"",
@@ -1017,7 +1050,7 @@ fn old_empty_marker_is_reclaimed_and_claim_leaves_no_tmp() {
     file.set_modified(SystemTime::now() - Duration::from_secs(10))
         .unwrap();
     drop(file);
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("a 10 s old empty marker is dead"));
     let body = std::fs::read_to_string(&marker).unwrap();
     assert!(body.starts_with(&format!("{}\n", std::process::id())));
@@ -1043,7 +1076,7 @@ fn own_exact_v2_claim_is_adopted_verbatim_and_released() {
     let marker = dir.join(".hermes-update-in-progress");
     let body = v2_body(me, now_secs() - 25 * 60, ct_of(me));
     std::fs::write(&marker, &body).unwrap();
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("own v2 marker must be adopted"));
     assert_eq!(std::fs::read_to_string(&marker).unwrap(), body);
     drop(guard);
@@ -1068,7 +1101,10 @@ fn marker_under_a_regular_file_is_unwritable() {
     let not_a_dir = dir.join("home");
     std::fs::write(&not_a_dir, "x").unwrap();
     let marker = not_a_dir.join(".hermes-update-in-progress");
-    let msg = unwritable_message(UpdateMarkerGuard::acquire(marker.clone()));
+    let msg = unwritable_message(UpdateMarkerGuard::acquire(
+        marker.clone(),
+        &install_root_of(&marker),
+    ));
     assert!(msg.starts_with(&format!(
         "Cannot lock this install for the update: {} is not writable (",
         marker.display()
@@ -1092,7 +1128,7 @@ fn marker_in_a_read_only_dir_is_unwritable() {
             std::fs::write(&marker, body).unwrap();
         }
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let result = UpdateMarkerGuard::acquire(marker.clone());
+        let result = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker));
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(
             unwritable_message(result).contains("is not writable"),
@@ -1124,7 +1160,7 @@ fn claim_sweeps_dead_claimants_tmp_litter() {
     {
         std::fs::write(dir.join(name), "").unwrap();
     }
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("fresh acquire must succeed"));
     for name in dead {
         assert!(!dir.join(name).exists(), "{name} belongs to a dead pid");
@@ -1145,6 +1181,11 @@ fn busy(result: Result<UpdateMarkerGuard, AcquireError>) -> MarkerOwner {
     }
 }
 
+/// The install root a marker guards, laid out as in production: `<HERMES_HOME>/hermes-agent`.
+fn install_root_of(marker: &Path) -> PathBuf {
+    marker.with_file_name("hermes-agent")
+}
+
 fn unique_tmp_dir(tag: &str) -> PathBuf {
     let base = std::env::temp_dir().join(format!(
         "hermes-marker-test-{tag}-{}-{}",
@@ -1156,6 +1197,182 @@ fn unique_tmp_dir(tag: &str) -> PathBuf {
     ));
     std::fs::create_dir_all(&base).unwrap();
     base
+}
+
+// ---- R6: a dead marker is never reclaimed while the checkout lock is held ----
+
+/// Take `lock`'s checkout kernel lock on its OWN open file description, as a process an
+/// earlier `hermes update` started would; held until the returned file is dropped.
+fn hold_checkout_lock(lock: &Path) -> std::fs::File {
+    std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock)
+        .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(rc, 0, "the test takes the free checkout lock");
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+        };
+        use windows_sys::Win32::System::IO::OVERLAPPED;
+        let ok = unsafe {
+            let mut overlapped: OVERLAPPED = std::mem::zeroed();
+            overlapped.Anonymous.Anonymous.Offset = WINDOWS_LOCK_OFFSET;
+            let flags = LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY;
+            LockFileEx(file.as_raw_handle(), flags, 0, 1, 0, &mut overlapped)
+        };
+        assert_ne!(ok, 0, "the test takes the free checkout lock");
+    }
+    file
+}
+
+/// Drop `holder` and wait until the checkout lock reads free. A process another test forks
+/// in parallel shares the holder's open file description (and so the flock) until its exec
+/// closes it; a probe that itself kept the lock would never read free.
+fn release_checkout_lock(holder: std::fs::File, install: &Path) {
+    drop(holder);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while checkout_lock_held(install) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the checkout lock never read free after its holder closed"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn checkout_lock_path_follows_the_git_common_dir() {
+    // update_lock.py::checkout_lock_path: <common git dir>/hermes-update.lock, else
+    // <root>/.hermes-update.lock.
+    let dir = unique_tmp_dir("checkout-lock-path");
+    let plain = dir.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    assert_eq!(
+        checkout_lock_path(&plain),
+        plain.join(".hermes-update.lock")
+    );
+
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(repo.join(".git").join("worktrees").join("wt")).unwrap();
+    assert_eq!(
+        checkout_lock_path(&repo),
+        repo.join(".git").join("hermes-update.lock")
+    );
+
+    // A linked worktree: `.git` is a `gitdir:` file whose target names the shared dir.
+    let worktree = dir.join("wt");
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(worktree.join(".git"), "gitdir: ../repo/.git/worktrees/wt\n").unwrap();
+    std::fs::write(
+        repo.join(".git")
+            .join("worktrees")
+            .join("wt")
+            .join("commondir"),
+        "../..\n",
+    )
+    .unwrap();
+    assert_eq!(
+        checkout_lock_path(&worktree),
+        repo.join(".git").join("hermes-update.lock")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn checkout_lock_held_sees_another_open_file_holding_it() {
+    let dir = unique_tmp_dir("checkout-lock-held");
+    let install = dir.join("hermes-agent");
+    std::fs::create_dir_all(install.join(".git")).unwrap();
+    assert!(
+        !checkout_lock_held(&install),
+        "a missing lock file is not held"
+    );
+    let holder = hold_checkout_lock(&checkout_lock_path(&install));
+    assert!(checkout_lock_held(&install));
+    assert!(
+        checkout_lock_held(&install),
+        "a probe of a held lock leaves it held"
+    );
+    // The probe never keeps the lock: it reads free once the holder closes.
+    release_checkout_lock(holder, &install);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn dead_marker_is_never_reclaimed_while_the_checkout_lock_is_held() {
+    // R6: the marker's owner is dead, but a process its update started still holds the
+    // checkout lock (and still mutates the install). Neither a claimer nor a reader may
+    // delete the marker then: the claim is refused as `held` and the bytes stay on disk.
+    let dir = unique_tmp_dir("marker-dead-held");
+    let marker = dir.join(".hermes-update-in-progress");
+    let install = install_root_of(&marker);
+    std::fs::create_dir_all(install.join(".git")).unwrap();
+    let body = format!("2147483647\n{}\n", now_secs() - 90);
+    std::fs::write(&marker, &body).unwrap();
+    let holder = hold_checkout_lock(&install.join(".git").join("hermes-update.lock"));
+
+    let owner = busy(UpdateMarkerGuard::acquire(marker.clone(), &install));
+    assert!(owner.held, "the refusal names the held checkout");
+    assert_eq!(owner.pid, 0);
+    assert!(owner.age_secs >= 90, "aged by the dead marker's started_at");
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        body,
+        "a claimer never deletes a dead marker while the checkout lock is held"
+    );
+    let owner = live_marker_owner(&marker).expect("a reader reports the held checkout");
+    assert!(owner.held);
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        body,
+        "a reader never deletes a dead marker while the checkout lock is held"
+    );
+
+    release_checkout_lock(holder, &install);
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install)
+        .unwrap_or_else(|_| panic!("once the lock is free the dead marker is reclaimed"));
+    assert_eq!(
+        parse_marker(&std::fs::read(&marker).unwrap()).unwrap().pid,
+        std::process::id()
+    );
+    drop(guard);
+    assert!(!marker.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn self_owned_marker_never_heals_while_the_checkout_lock_is_held() {
+    // An exit 2 over our own claim while some process holds the checkout lock is a real
+    // concurrent update (R6): the refusal stands. The plain (no `.git`) lock path is used.
+    let dir = unique_tmp_dir("heal-held");
+    let marker = dir.join(".hermes-update-in-progress");
+    let install = install_root_of(&marker);
+    let me = std::process::id();
+    std::fs::write(&marker, v2_body(me, 123, ct_of(me))).unwrap();
+    let holder = hold_checkout_lock(&install.join(".hermes-update.lock"));
+
+    assert!(
+        !should_heal_self_marker_refusal(Some(UPDATE_EXIT_CONCURRENT), &marker, &install),
+        "a refusal while the checkout lock is held is legitimate — never heal it"
+    );
+    release_checkout_lock(holder, &install);
+    assert!(should_heal_self_marker_refusal(
+        Some(UPDATE_EXIT_CONCURRENT),
+        &marker,
+        &install
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---- A7: marker mutex (rule 1) and the shared corpus (rule 7) ----
@@ -1205,7 +1422,7 @@ fn marker_mutations_wait_for_the_mutex_another_process_holds() {
         std::thread::sleep(Duration::from_millis(10));
     }
     let started = std::time::Instant::now();
-    let guard = UpdateMarkerGuard::acquire(marker.clone())
+    let guard = UpdateMarkerGuard::acquire(marker.clone(), &install_root_of(&marker))
         .unwrap_or_else(|_| panic!("the dead marker is reclaimed once the mutex is free"));
     assert!(
         started.elapsed() >= Duration::from_millis(900),

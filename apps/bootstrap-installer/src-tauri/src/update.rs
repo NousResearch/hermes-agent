@@ -89,13 +89,11 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
 }
 
 /// The refusal shown when a live update already holds the marker. pid 0 is
-/// a claim still being published (see `marker::inspect_marker`).
+/// a claim still being published (see `marker::inspect_marker_locked`), or,
+/// with `held`, a dead update whose process still holds the checkout (R6).
 fn busy_update_message(owner: &MarkerOwner) -> String {
     let wait = "Wait for it to finish, or close the window or dashboard tab that \
                 started it, then try again.";
-    if owner.pid == 0 {
-        return format!("Another Hermes update is starting right now. {wait}");
-    }
     let mins = owner.age_secs / 60;
     let secs = owner.age_secs % 60;
     let elapsed = if mins > 0 {
@@ -103,6 +101,15 @@ fn busy_update_message(owner: &MarkerOwner) -> String {
     } else {
         format!("{secs}s")
     };
+    if owner.held {
+        return format!(
+            "Another Hermes update is already running (started {elapsed} ago; its owner \
+             exited but a process it started still holds the checkout). {wait}"
+        );
+    }
+    if owner.pid == 0 {
+        return format!("Another Hermes update is starting right now. {wait}");
+    }
     format!(
         "Another Hermes update is already running (PID {}, started {elapsed} ago). {wait}",
         owner.pid
@@ -124,8 +131,10 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // update_lock.py claims it too), so a live foreign owner means another
     // updater — most often a dashboard-spawned `hermes update` — is already
     // mutating this checkout. Refuse instead of running a second one over it.
-    let _update_marker = match UpdateMarkerGuard::acquire(crate::paths::update_in_progress_marker())
-    {
+    let _update_marker = match UpdateMarkerGuard::acquire(
+        crate::paths::update_in_progress_marker(),
+        &install_root,
+    ) {
         Ok(guard) => guard,
         Err(err) => {
             let msg = match err {
@@ -273,6 +282,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
     if legacy_install && should_heal_self_marker_refusal(
         update.exit_code,
         &crate::paths::update_in_progress_marker(),
+        &install_root,
     ) {
         emit_log(
             &app,

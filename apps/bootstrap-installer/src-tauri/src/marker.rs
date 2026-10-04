@@ -81,6 +81,9 @@ const EMPTY_MARKER_GRACE: Duration = Duration::from_secs(5);
 pub(crate) struct MarkerOwner {
     pub(crate) pid: u32,
     pub(crate) age_secs: u64,
+    /// R6: the marker's owner is dead but the install's checkout lock is still held (a process
+    /// that update started is still mutating the checkout), so the marker is kept. pid is 0.
+    pub(crate) held: bool,
 }
 
 /// Parsed marker body.
@@ -273,12 +276,15 @@ fn marker_live_holder(record: &MarkerRecord, world: &World) -> Option<MarkerOwne
         return Some(MarkerOwner {
             pid: record.pid,
             age_secs,
+            held: false,
         });
     }
     match record.delegate {
-        Some((pid, ct)) if identity_live(pid, Some(ct), age_secs, world) => {
-            Some(MarkerOwner { pid, age_secs })
-        }
+        Some((pid, ct)) if identity_live(pid, Some(ct), age_secs, world) => Some(MarkerOwner {
+            pid,
+            age_secs,
+            held: false,
+        }),
         _ => None,
     }
 }
@@ -448,7 +454,7 @@ fn replace_if_unchanged(path: &Path, expected: &[u8], body: &[u8]) -> std::io::R
 /// What is on disk at the marker path.
 enum MarkerState {
     Absent,
-    /// A live holder.
+    /// A live holder, or a dead marker kept because its checkout lock is held (`held`, R6).
     Live(MarkerOwner),
     /// Dead / malformed / recycled / past the ceiling, compare-and-deleted.
     /// Carries the error when the marker could not be read or removed (it
@@ -460,7 +466,9 @@ enum MarkerState {
 /// (A7 rule 1), so the verdict and the delete are one critical section: a claim published by a
 /// lock-respecting process after our read can no longer be deleted on a stale verdict (R3).
 /// A 0-byte marker younger than `EMPTY_MARKER_GRACE` is a claim being written: live as pid 0.
-fn inspect_marker_locked(path: &Path, world: &World) -> MarkerState {
+/// R6: a dead marker is never deleted while `install_root`'s checkout lock is held; it is then
+/// reported `held` (pid 0) — the update it names exited, but a process it started still runs.
+fn inspect_marker_locked(path: &Path, install_root: &Path, world: &World) -> MarkerState {
     let raw = match std::fs::read(path) {
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return MarkerState::Absent,
@@ -473,12 +481,19 @@ fn inspect_marker_locked(path: &Path, world: &World) -> MarkerState {
             .map(|age| MarkerOwner {
                 pid: 0,
                 age_secs: age.as_secs(),
+                held: false,
             })
     } else {
         parse_marker(&raw).and_then(|record| marker_live_holder(&record, world))
     };
     match live {
         Some(owner) => MarkerState::Live(owner),
+        None if checkout_lock_held(install_root) => MarkerState::Live(MarkerOwner {
+            pid: 0,
+            age_secs: parse_marker(&raw)
+                .map_or(0, |record| world.now.saturating_sub(record.started_at)),
+            held: true,
+        }),
         None => MarkerState::Dead(remove_if_unchanged(path, &raw).err()),
     }
 }
@@ -496,11 +511,13 @@ fn empty_marker_age(path: &Path) -> Option<Duration> {
 }
 
 /// Read the marker (under its mutex) and report a live holder, if any; a dead marker is
-/// removed. Test-only view of `inspect_marker_locked`.
+/// removed. Test-only view of `inspect_marker_locked`; the install root is the marker's
+/// `hermes-agent` sibling, as in production (`<HERMES_HOME>/hermes-agent`).
 #[cfg(test)]
 fn live_marker_owner(path: &Path) -> Option<MarkerOwner> {
     let _mutex = lock_marker(path).ok()?;
-    match inspect_marker_locked(path, &World::real()) {
+    let install_root = path.with_file_name("hermes-agent");
+    match inspect_marker_locked(path, &install_root, &World::real()) {
         MarkerState::Live(owner) => Some(owner),
         _ => None,
     }
@@ -522,14 +539,149 @@ fn marker_owned_by_self(path: &Path) -> bool {
 
 /// The exit-2 heal decision (#75788), extracted so the contract is testable.
 ///
-/// True only when BOTH hold: the child exited with the concurrent-update
-/// refusal code, AND the on-disk marker names THIS process. That combination
-/// means the child refused over its own parent's claim — a stale checkout
-/// without handoff recognition — so dropping the claim and retrying once is
-/// safe. Any other owner (live foreign updater, garbage, missing marker) or
-/// any other exit code must leave the refusal untouched.
-pub(crate) fn should_heal_self_marker_refusal(exit_code: Option<i32>, marker_path: &Path) -> bool {
-    exit_code == Some(UPDATE_EXIT_CONCURRENT) && marker_owned_by_self(marker_path)
+/// True only when ALL hold: the child exited with the concurrent-update
+/// refusal code, the on-disk marker names THIS process, and nothing holds
+/// `install_root`'s checkout lock. That combination means the child refused
+/// over its own parent's claim — a stale checkout without handoff
+/// recognition — so dropping the claim and retrying once is safe. Any other
+/// owner (live foreign updater, garbage, missing marker), any other exit
+/// code, or a held checkout lock (R6: another update's process is still
+/// mutating the install, so the refusal is legitimate) must leave the
+/// refusal untouched.
+pub(crate) fn should_heal_self_marker_refusal(
+    exit_code: Option<i32>,
+    marker_path: &Path,
+    install_root: &Path,
+) -> bool {
+    exit_code == Some(UPDATE_EXIT_CONCURRENT)
+        && marker_owned_by_self(marker_path)
+        && !checkout_lock_held(install_root)
+}
+
+/// `hermes_cli/update_lock.py::CHECKOUT_LOCK_NAME` (no checkout) / `GIT_CHECKOUT_LOCK_NAME`.
+const CHECKOUT_LOCK_NAME: &str = ".hermes-update.lock";
+const GIT_CHECKOUT_LOCK_NAME: &str = "hermes-update.lock";
+
+/// `update_lock.py::_WINDOWS_LOCK_OFFSET`: the byte msvcrt locks, far past the holder record.
+#[cfg(windows)]
+const WINDOWS_LOCK_OFFSET: u32 = 1 << 20;
+
+/// `update_lock.py::_git_common_dir`: the repository's common git dir, read from disk. `.git`
+/// is the dir itself, or a `gitdir: <path>` file (linked worktree, submodule) whose target may
+/// name the shared dir in `commondir`. `None` when `root` is no checkout.
+fn git_common_dir(root: &Path) -> Option<PathBuf> {
+    let read = |path: &Path| -> Option<String> {
+        let text = std::fs::read_to_string(path).ok()?;
+        Some(
+            text.strip_prefix('\u{feff}')
+                .unwrap_or(&text)
+                .trim()
+                .to_string(),
+        )
+    };
+    let dot = root.join(".git");
+    let mut gitdir = if dot.is_dir() {
+        dot
+    } else if dot.is_file() {
+        // An absolute target replaces `root`.
+        root.join(read(&dot)?.strip_prefix("gitdir:")?.trim())
+    } else {
+        return None;
+    };
+    let common = gitdir.join("commondir");
+    if common.is_file() {
+        gitdir = gitdir.join(read(&common)?);
+    }
+    Some(normalize_lexically(&gitdir))
+}
+
+/// `os.path.normpath`: drop `.` and fold `..` without touching the filesystem.
+fn normalize_lexically(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                _ => out.push(".."),
+            },
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// `update_lock.py::checkout_lock_path`: the install's checkout kernel lock file.
+fn checkout_lock_path(install_root: &Path) -> PathBuf {
+    match git_common_dir(install_root) {
+        Some(common) => common.join(GIT_CHECKOUT_LOCK_NAME),
+        None => install_root.join(CHECKOUT_LOCK_NAME),
+    }
+}
+
+/// `update_lock.py::checkout_lock_held`: true while some process holds the checkout kernel
+/// lock. The probe takes the lock for one try on a fresh open and drops it; a missing file is
+/// not held. This updater never takes the checkout lock itself, so it is never the holder.
+#[cfg(unix)]
+fn checkout_lock_held(install_root: &Path) -> bool {
+    use std::os::unix::io::AsRawFd;
+
+    let Ok(file) = std::fs::File::open(checkout_lock_path(install_root)) else {
+        return false;
+    };
+    let fd = file.as_raw_fd();
+    if unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        unsafe { libc::flock(fd, libc::LOCK_UN) };
+        return false;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK)
+}
+
+/// Windows: msvcrt's `LK_NBLCK` is a `LockFile` byte-range lock on one byte at
+/// `WINDOWS_LOCK_OFFSET`; `LockFileEx` on the same byte conflicts with it. As in `_try_lock`,
+/// a lock that cannot be taken is held.
+#[cfg(windows)]
+fn checkout_lock_held(install_root: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LockFileEx, UnlockFileEx, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+
+    let Ok(file) = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .open(checkout_lock_path(install_root))
+    else {
+        return false;
+    };
+    let handle = file.as_raw_handle();
+    let at_offset = || unsafe {
+        let mut overlapped: OVERLAPPED = std::mem::zeroed();
+        overlapped.Anonymous.Anonymous.Offset = WINDOWS_LOCK_OFFSET;
+        overlapped
+    };
+    unsafe {
+        let mut overlapped = at_offset();
+        let flags = LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY;
+        if LockFileEx(handle, flags, 0, 1, 0, &mut overlapped) == 0 {
+            return true;
+        }
+        let mut overlapped = at_offset();
+        UnlockFileEx(handle, 0, 1, 0, &mut overlapped);
+    }
+    false
+}
+
+#[cfg(not(any(unix, windows)))]
+fn checkout_lock_held(_install_root: &Path) -> bool {
+    false
 }
 
 /// Process creation time as unix seconds, comparable with the `ct:` values
@@ -815,9 +967,13 @@ impl UpdateMarkerGuard {
     /// claim re-published inside the same hold; a live foreign holder is `Busy`; a claim that is
     /// our exact incarnation is adopted.
     ///
+    /// R6: a dead marker is NOT removed while `install_root`'s checkout lock is held — a process
+    /// the dead update started is still mutating the install — and the refusal is `Busy` with a
+    /// `held` owner.
+    ///
     /// A marker that cannot be written at all is `Unwritable`: the update
     /// refuses rather than run unserialized against other updaters (m8).
-    pub(crate) fn acquire(path: PathBuf) -> Result<Self, AcquireError> {
+    pub(crate) fn acquire(path: PathBuf, install_root: &Path) -> Result<Self, AcquireError> {
         let world = World::real();
         let mut body = format!("{}\n{}\n", world.pid, world.now);
         if let Some(ct) = world.ct {
@@ -848,12 +1004,13 @@ impl UpdateMarkerGuard {
                     return Err(AcquireError::Busy(MarkerOwner {
                         pid: 0,
                         age_secs: 0,
+                        held: false,
                     }))
                 }
                 Err(err) => return Err(unwritable(&marker_mutex_path(&path), &err)),
             };
             let world = World::real();
-            match inspect_marker_locked(&path, &world) {
+            match inspect_marker_locked(&path, install_root, &world) {
                 MarkerState::Live(owner) if owner.pid == world.pid => return Ok(claimed(path)),
                 MarkerState::Live(owner) => return Err(AcquireError::Busy(owner)),
                 MarkerState::Dead(Some(err)) => return Err(unwritable(&path, &err)),
@@ -872,6 +1029,7 @@ impl UpdateMarkerGuard {
         Err(AcquireError::Busy(MarkerOwner {
             pid: 0,
             age_secs: 0,
+            held: false,
         }))
     }
 

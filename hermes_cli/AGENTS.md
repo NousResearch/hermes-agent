@@ -87,11 +87,12 @@ archive_after_days, backup.*`.
 set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_EXTRA_ENV_KEYS`
   (or carrying a `setup_hidden_env` platform suffix) to `.env` via `config_env_routing.py` — the
   file the platform setup flows write — never to the top level of config.yaml.
-- **One writer.** Every write of a `config.yaml` (main or profile) goes through
-  `hermes_cli.config.atomic_config_write` (→ `utils.atomic_roundtrip_yaml_save`, ruamel
-  round-trip merge): comments, key order, quoting and blank lines survive, absent keys are
-  deleted, and the fail-closed unreadable-file guard runs first. `save_config`, `config set/unset`,
-  migrations, plugin bookkeeping, gateway/TUI RPCs and auth resets all reach it; never call
+- **One writer seam.** Every write of a `config.yaml` (main or profile) goes through
+  `hermes_cli.config.atomic_config_write` (refuses deletion by omission) or the explicit
+  `atomic_config_replace` full-state path (→ `utils.atomic_roundtrip_yaml_save`, ruamel
+  round-trip): comments, key order, quoting and blank lines survive, and the fail-closed unreadable-file
+  guard runs first. Deliberate `pop()`/unset/migration paths use `atomic_config_replace`; additive
+  writers stay on `atomic_config_write`. Never call
   `atomic_yaml_write` / `yaml.dump` / `yaml.safe_dump` on a config path — `scripts/check_config_yaml_writers.py`
   (CI lint) rejects it, and `tests/hermes_cli/test_config_yaml_comment_preservation.py` guards each
   path (#92554). The commented example blocks are appended only when the file is created.
@@ -200,8 +201,8 @@ root). Profiles are independent
 islands by design — no live config inheritance; `--clone` copies at creation, minus messaging
 channels (`profile_channels.py`: ownership-based inventory evaluated in the SOURCE's plugin scope —
 adapter-declared keys + canonical/alias prefixes + `GATEWAY_ALLOW*`/`GATEWAY_RELAY_*`; prefixes shared
-with tools (`HASS_`/`TWILIO_`/`EMAIL_`) are stripped only when the source runs that adapter; never a hand
-list). `--clone-channels` opts in and its live-multiplexer refusal lives in `create_profile` (CLI, REST
+with tools (`TWILIO_`/`EMAIL_`, plus a plugin platform's `shared_env_prefixes`) are stripped only when the source runs that adapter; never a hand
+list; a platform that left core keeps its ownership from its `LEFT_CORE` row while the plugin is absent). `--clone-channels` opts in and its live-multiplexer refusal lives in `create_profile` (CLI, REST
 and TUI all go through it). Clones are built in `profiles/.<name>.staging-<pid>` (hidden → invisible to
 `_iter_named_profile_dirs` and the hot-serve rescan) and published by one `os.rename` after the strip;
 symlinked `.env`/`config.yaml` are materialized first so a clone never writes through to its source. Multiplex

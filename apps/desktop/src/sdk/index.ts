@@ -47,6 +47,7 @@ import { onGatewayEvent } from '@/contrib/events'
 import { registry } from '@/contrib/registry'
 import type { WorkspaceMode } from '@/contrib/types'
 import { deleteProfile, getLogs, getStatus, hermesApi, type HermesGateway } from '@/hermes'
+import { traceIdentityChange } from '@/lib/identity-trace'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import {
   $gateway,
@@ -93,10 +94,10 @@ import {
   setResumeExhaustedSessionId,
   setSessionOwnerHint
 } from '@/store/session'
+import { $focusedStoredSessionId } from '@/store/session-focus'
 import {
   $focusedRuntimeId,
   $focusedSessionState,
-  $focusedStoredSessionId,
   $sessionStates,
   $sessionTiles,
   dropTilesForProfile,
@@ -210,6 +211,8 @@ const $focusedSessionProfile = computed(
 export interface PluginProfileRoute {
   connectionId: string
   mode: 'local' | 'remote'
+  /** Electron's authoritative registry primary. Absent on older shells. */
+  primary?: true
   /** Desktop profile used to select the connection route. */
   profile: string
   /** Backend Hermes profile served by that route. */
@@ -1633,6 +1636,10 @@ export const host = {
    *  active instance changes on a profile swap. */
   getGateway: (): HermesGateway | null => $gateway.get(),
 
+  /** Change-only desktop.log line for multi-connection identity diagnostics
+   *  (`[category win=…] tag detail`). Call as `host.traceIdentityChange?.(…)`. */
+  traceIdentityChange,
+
   composer: composerHost,
 
   /** Language packs: `host.i18n.registerAppLocale(id, { endonym, rtl?,
@@ -1769,6 +1776,17 @@ export {
   ModelMenuCloseContext,
   type ModelMenuController
 } from '@/app/shell/model-catalog-menu'
+/** Per-model marks inside that same menu: register a `MODEL_MENU_ROW_AREA`
+ *  data contribution whose `decorate({ provider, model, label })` returns
+ *  `{ icon?, badge? }` (or `null`). Core paints the leading icon slot and a
+ *  trailing badge chip; per slot the first usable answer wins, and a throwing
+ *  decorator is skipped. Never patch the menu's rows yourself. */
+export {
+  MODEL_MENU_ROW_AREA,
+  type ModelMenuRowContext,
+  type ModelMenuRowContribution,
+  type ModelMenuRowDecoration
+} from '@/app/shell/model-menu-row-decorations'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
 /** Canonical raw message renderer: applies Desktop message transforms (including
@@ -2052,6 +2070,8 @@ export type { StatusResponse } from '@/types/hermes'
 export type { GatewayEvent as RpcEvent } from '@hermes/shared'
 /** Bot Screen wire shapes, generated from `tui_gateway/contracts/display.py`. */
 export type { DisplayLease, DisplayObserveResult, DisplayStatus, DisplayThumbnailResult } from '@hermes/shared'
+/** `session.list` / `profiles.list` session rows, generated from `tui_gateway/contracts`. */
+export type { ProfileSessionPreview, SessionListRow } from '@hermes/shared'
 /** THE compact-number formatter — every user-facing count/token figure goes
  *  through here (1230 → "1.2k", 1_500_000 → "1.5M"). Don't hand-roll `/1000`. */
 export { compactNumber } from '@hermes/shared'

@@ -42,6 +42,7 @@ _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
 load_env = late("load_env", "hermes_cli.config")
+_require_token = late("_require_token")
 # Image types GET /api/media serves — extension-allowlisted so an authenticated
 # caller can't pull non-image files through it.
 _MEDIA_CONTENT_TYPES = {
@@ -347,6 +348,68 @@ async def get_media(path: str):
 
     encoded = await asyncio.to_thread(_read_base64_file, target)
     return {"data_url": f"data:{_MEDIA_CONTENT_TYPES[target.suffix.lower()]};base64,{encoded}"}
+
+
+# Remote image URLs an authenticated proxy may fetch for a client that cannot
+# reach the CDN itself (#74564: a Desktop on a restricted network renders an
+# agent-generated FAL image inline; the direct link is blocked, but the GATEWAY
+# hosts a working route to the CDN and already holds the generation credentials).
+# Host-allowlisted + size-capped like the rest of the media surface.
+_MEDIA_PROXY_ALLOWED_HOSTS = (
+    "fal.media", "fal.run", "v3.fal.media", "storage.googleapis.com",
+    "*.fal.media", "*.fal.run",
+)
+_MEDIA_PROXY_TIMEOUT_S = 20.0
+
+
+def _media_proxy_host_allowed(host: str) -> bool:
+    host = host.lower().rstrip(".")
+    return any(
+        host == allowed.lstrip("*.") or (allowed.startswith("*.") and host.endswith(allowed[1:]))
+        for allowed in _MEDIA_PROXY_ALLOWED_HOSTS
+    )
+
+
+@router.get("/api/media/proxy")
+async def proxy_remote_media(url: str, request: Request):
+    """Fetch a remote image URL the gateway can reach but the client cannot
+    (#74564), returning the same ``data_url`` shape as ``/api/media``. Only
+    allowlisted image CDNs; the bytes stay behind the size cap."""
+    _require_token(request)
+    try:
+        parsed = urllib.parse.urlparse((url or "").strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="A remote image URL is required") from exc
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise HTTPException(status_code=400, detail="A remote image URL is required")
+    if not _media_proxy_host_allowed(parsed.hostname):
+        raise HTTPException(status_code=403, detail="Image host not allowed")
+    if not parsed.path or Path(parsed.path).suffix.lower() not in _MEDIA_CONTENT_TYPES:
+        # Generated-image CDN URLs are content-hash paths with no extension;
+        # a missing extension is expected, so only reject explicit non-image
+        # extensions and let content type be sniffed from the response.
+        if Path(parsed.path).suffix and Path(parsed.path).suffix.lower() not in _MEDIA_CONTENT_TYPES:
+            raise HTTPException(status_code=415, detail="Unsupported media type")
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=_MEDIA_PROXY_TIMEOUT_S, follow_redirects=True) as client:
+            response = await client.get(url)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Image fetch failed: {exc}")
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Image fetch returned HTTP {response.status_code}")
+    content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if content_type not in _MEDIA_CONTENT_TYPES.values():
+        raise HTTPException(status_code=415, detail="Unsupported media type")
+    data = response.content
+    if len(data) > _MEDIA_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    encoded = base64.b64encode(data).decode("ascii")
+    return {"data_url": f"data:{content_type};base64,{encoded}"}
 
 
 def _decode_data_url(data_url: str) -> tuple[bytes, str]:
@@ -786,7 +849,7 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
             _raise_fs_backend_error(exc)
         return {"ok": True, "path": target, "byteSize": byte_size}
 
-    target = _fs_path(payload.path)
+    target = _fs_path(payload.path, decode_fallback=False)
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 

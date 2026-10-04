@@ -5,11 +5,9 @@ import subprocess
 import pytest
 
 from hermes_state import SessionDB
-from plugins.memory.honcho.client import HonchoClientConfig
 
 
-@pytest.mark.parametrize("strategy", ["per-repo", "per-directory", "global"])
-def test_seeded_desktop_branch_title_preserves_memory_strategy(monkeypatch, tmp_path, strategy):
+def test_seeded_desktop_branch_title_is_derived_until_the_user_renames(monkeypatch, tmp_path):
     monkeypatch.setattr("hermes_cli.banner.prefetch_update_check", lambda: None)
     from tui_gateway import server
 
@@ -38,22 +36,12 @@ def test_seeded_desktop_branch_title_preserves_memory_strategy(monkeypatch, tmp_
         })
         assert "error" not in response, response
         child = response["result"]["stored_session_id"]
-        cfg = HonchoClientConfig(session_strategy=strategy, workspace_id="shared-memory")
-        expected = cfg.resolve_session_name(cwd=str(project), session_id=child)
-        assert cfg.resolve_session_name(
-            cwd=str(project), session_id=child,
-            session_title=db.get_session_title(child),
-            session_title_source=db.get_session_title_source(child),
-        ) == expected
+        # A DERIVED title is what memory providers skip when naming sessions (the provenance
+        # contract in hermes_state_common); a generated parent title must not arrive as USER/LLM.
         assert db.get_session_title_source(child) == SessionDB.TITLE_SOURCE_DERIVED
         assert db.message_count(child) == len(history)
         # A subsequent explicit rename must retain user authority.
         db.set_session_title(child, "User chosen title")
         assert db.get_session_title_source(child) == SessionDB.TITLE_SOURCE_USER
-        assert cfg.resolve_session_name(
-            cwd=str(project), session_id=child,
-            session_title=db.get_session_title(child),
-            session_title_source=db.get_session_title_source(child),
-        ) == cfg.resolve_session_name(cwd=str(project), session_title="User chosen title")
     finally:
         db.close()

@@ -235,7 +235,7 @@ class TestCaptureLogSnapshotRedaction:
     ):
         """Regression test: redact_sensitive_text short-circuits without force=True.
 
-        If a future refactor drops `force=True` from `_redact_log_text`, this
+        If a future refactor drops `force=True` from `redact_debug_support_text`, this
         test fails immediately. Without `force=True`, the redactor returns the
         input unchanged when HERMES_REDACT_SECRETS=false, and the share-time
         redaction feature ships silently broken for users who opted out of
@@ -286,6 +286,38 @@ class TestCaptureLogSnapshotRedaction:
         # Default threads redact=True to all three captured logs.
         assert _REDACT_FIXTURE_TOKEN not in snaps["agent"].tail_text
         assert _REDACT_FIXTURE_TOKEN not in (snaps["agent"].full_text or "")
+
+    def test_redacts_complete_log_lines_before_applying_byte_limits(
+        self, hermes_home_with_secret
+    ):
+        from hermes_cli.debug import _capture_log_snapshot
+
+        max_bytes = 512
+        raw_window = 8192
+        tail_canary = "r36_REDACTED_tail_boundary_canary_012345"
+        full_canary = "r36_REDACTED_full_boundary_canary_678901"
+        payload = bytearray(b"x" * 12_000)
+
+        # The backwards-read window and the final full-log window each begin
+        # inside a credential field. Truncating first drops ``accessToken=``
+        # while retaining its complete value, which the redactor cannot then
+        # classify. A redacted share must either scrub the complete logical
+        # line before either cap or omit that partial line.
+        for boundary, canary in (
+            (len(payload) - raw_window, tail_canary),
+            (len(payload) - max_bytes, full_canary),
+        ):
+            marker = f"accessToken={canary}".encode()
+            start = boundary - len("accessToken=")
+            payload[start:start + len(marker)] = marker
+
+        (hermes_home_with_secret / "logs" / "agent.log").write_bytes(payload)
+
+        snap = _capture_log_snapshot("agent", tail_lines=1, max_bytes=max_bytes)
+
+        assert tail_canary not in snap.tail_text
+        assert snap.full_text is not None
+        assert full_canary not in snap.full_text
 
 
 
@@ -887,9 +919,10 @@ class TestCollectShareBundle:
 
         assert query_token not in bundle
         assert password not in bundle
-        # Only the credential values go; the URLs stay readable.
+        # Query credentials are masked in place; strict URL redaction masks the
+        # complete userinfo field while preserving the host and port.
         assert "export.csv?token=***&page=2" in bundle
-        assert "alice:***@10.0.0.5:3128" in bundle
+        assert "***:***@10.0.0.5:3128" in bundle
 
 
 

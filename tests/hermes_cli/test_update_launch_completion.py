@@ -56,6 +56,92 @@ def _self_checkout(tmp_path, monkeypatch):
     return root
 
 
+def _committed_checkout(tmp_path, monkeypatch):
+    """A scratch source checkout whose completed stamp names its live HEAD.
+
+    Mirrors a fresh official install: the installer ran the full tail and
+    recorded the tree, so launching at the same commit owes no rebuild.
+    """
+    from hermes_cli import _launchers
+
+    from hermes_cli.source_stamp import write_source_stamp
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\nname='example'\n")
+    (root / ".gitignore").write_text("install-stamp.json\n")
+    for args in (["init"], ["config", "user.email", "test@example.com"],
+                  ["config", "user.name", "test"], ["add", "-A"],
+                  ["commit", "-m", "init"]):
+        subprocess.run(["git", *args], cwd=root, check=True,
+                         capture_output=True, timeout=30)
+    assert write_source_stamp(root)["dirty"] is False
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
+    return root
+
+
+@pytest.mark.parametrize("marker_age, owed", [(-60, False), (60, True)])
+def test_completed_tree_discharges_only_a_marker_older_than_its_stamp(
+        tmp_path, monkeypatch, completion_tail, marker_age, owed):
+    """Fresh install under a preserved home (#123314): a marker armed before the stamp
+    owes no rebuild of the same SHA. One armed after it (a same-commit `hermes update`
+    that failed or was killed) is newer debt and the launch still finishes it."""
+    import pm
+
+    root = _committed_checkout(tmp_path, monkeypatch)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    pending = venv_sync.arm_completion(root)
+    stamped = (root / "install-stamp.json").stat().st_mtime
+    os.utime(pending, (stamped + marker_age, stamped + marker_age))
+    assert venv_sync.prepare_launch(root, []) is None
+    assert len(completion_tail) == (1 if owed else 0)
+    assert not pending.exists()
+
+
+@pytest.mark.parametrize("edited", [False, True])
+def test_pristine_home_provisions_dependencies_without_rebuild(tmp_path, monkeypatch, completion_tail, edited):
+    """Pristine HERMES_HOME on a freshly installed tree (#123314): with no facts the venv
+    needs provisioning, but the stamp names a clean HEAD so no product rebuild is owed.
+    Local edits since the stamp void that proof: the tail runs as before."""
+    import pm
+
+    root = _committed_checkout(tmp_path, monkeypatch)
+    if edited:
+        (root / "pyproject.toml").write_text("[project]\nname='edited'\n")
+    assert not venv_sync.completion_pending_path(root).exists()
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
+    syncs = []
+    monkeypatch.setattr(pm, "sync_venv", lambda *args, **kwargs: syncs.append((args, kwargs)))
+    assert venv_sync.prepare_launch(root, []) == Path(sys.executable)
+    assert len(syncs) == 1
+    assert len(completion_tail) == (1 if edited else 0)
+    assert not venv_sync.completion_pending_path(root).exists()
+
+
+def test_adoption_stamp_never_discharges_an_owed_tail(tmp_path, monkeypatch, completion_tail):
+    """Boot-time adoption stamps HEAD but builds nothing: an unstamped blessed root with a
+    pending marker still owes its tail, on this launch and on every later one."""
+    import pm
+
+    root = _committed_checkout(tmp_path, monkeypatch)
+    blessed = tmp_path / "home/hermes-agent"
+    blessed.parent.mkdir(parents=True)
+    root.rename(blessed)
+    (blessed / "install-stamp.json").unlink()
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
+    pending = venv_sync.arm_completion(blessed)
+    completion_tail.exit_code = 1
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="completion failed"):
+            venv_sync.prepare_launch(blessed, [])
+    assert "adoptedAt" in json.loads((blessed / "install-stamp.json").read_text())
+    assert len(completion_tail) == 2
+    assert pending.exists()
+
+
 @pytest.mark.parametrize("argv", [["--version"], ["-V"], ["--help"], ["-p", "work", "-h"]])
 def test_metadata_query_never_waits_on_source_completion(tmp_path, monkeypatch, argv):
     """`hermes --version` offline must answer from the tree, not run a network-bound sync."""
@@ -75,7 +161,7 @@ def test_failed_completion_tail_is_retried_without_rebuilding_dependencies(tmp_p
     fact = runtime_facts_path(root)
     syncs = []
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: fact.is_file())
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
 
     def sync(extras=None, **kwargs):
         syncs.append(extras)
@@ -95,6 +181,12 @@ def test_failed_completion_tail_is_retried_without_rebuilding_dependencies(tmp_p
     assert len(completion_tail) == 2
 
     completion_tail.exit_code = 0
+    # Age the recorded failure past the backoff window (#122206): a flaky
+    # tail that a plain relaunch fixes is the historical case, but only once
+    # the backoff window has elapsed — fresh failures wait it out.
+    attempts = venv_sync._completion_attempts_path(root)
+    old = 1.0
+    os.utime(attempts, (old, old))
     # Dependencies are already this interpreter's: the tail alone owes no re-exec.
     assert venv_sync.prepare_launch(root, []) is None
     assert len(syncs) == 1 and len(completion_tail) == 3
@@ -114,7 +206,7 @@ def test_prepared_completion_import_does_not_start_another_tail(tmp_path, monkey
     worker.touch()
     venv_sync.arm_completion(root)
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     monkeypatch.setattr(sys, "argv", [str(worker), "--source", str(root), "--finish-update", "--prepared"])
 
     assert venv_sync.prepare_launch(root, sys.argv[1:]) is None
@@ -133,7 +225,7 @@ def test_same_named_script_outside_the_checkout_still_repairs(tmp_path, monkeypa
     foreign.touch()
     venv_sync.arm_completion(root)
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     monkeypatch.setattr(sys, "argv", [str(foreign), "--prepared"])
 
     assert venv_sync.prepare_launch(root, sys.argv[1:]) is None
@@ -149,7 +241,7 @@ def test_completion_tail_output_stays_off_stdout(tmp_path, monkeypatch, completi
     root = _self_checkout(tmp_path, monkeypatch)
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
     monkeypatch.setattr(pm, "sync_venv", lambda *a, **kw: None)
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     venv_sync.prepare_launch(root, [])
     assert completion_tail.kwargs["stdout"] is sys.__stderr__
 
@@ -170,7 +262,7 @@ def test_first_launch_syncs_without_marker_then_uses_completion_fact(tmp_path, m
     fact = runtime_facts_path(root)
     calls = []
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: fact.is_file())
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
 
     def sync(extras=None, **kwargs):
         calls.append((extras, kwargs))
@@ -269,7 +361,7 @@ def test_blessed_legacy_install_is_adopted_before_sync(tmp_path, monkeypatch, co
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
     calls = []
     monkeypatch.setattr(pm, "sync_venv", lambda *args, **kw: calls.append(args))
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     assert venv_sync.prepare_launch(root, []) == Path(sys.executable)
     assert json.loads((root / "install-stamp.json").read_text())["source"] == "adoption"
     assert calls == [(["all"],)]
@@ -305,7 +397,7 @@ def test_live_old_update_blocks_launch_sync(tmp_path, monkeypatch):
     # Fresh post-sync verification children may boot under a live updater.
     from hermes_cli import _launchers
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     assert venv_sync.prepare_launch(root, []) is None
     assert marker.is_file()
 
@@ -355,7 +447,7 @@ def test_supervised_launch_leaves_a_pending_tail_to_the_cli(
     pending.parent.mkdir(parents=True)
     pending.write_text("owed\n")
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     monkeypatch.delenv("HERMES_SUPERVISED_CHILD", raising=False)
     monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
     monkeypatch.setenv(marker, value)
@@ -389,7 +481,7 @@ def test_supervised_launch_with_stale_dependencies_still_syncs(
     syncs = []
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
     monkeypatch.setattr(pm, "sync_venv", lambda *a, **kw: syncs.append(a))
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     monkeypatch.setenv("HERMES_SUPERVISED_CHILD", "1")
 
     venv_sync.prepare_launch(root, ["gateway", "run"])

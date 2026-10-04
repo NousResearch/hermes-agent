@@ -277,7 +277,7 @@ def _external_read_only_message(skill_name: str) -> str:
 
 def is_curation_eligible(skill_name: str, skill_path: Optional[Path] = None) -> bool:
     """Agent-created: yes. Bundled: only with ``curator.prune_builtins``. Hub / external-dir / protected built-ins:
-    never (external owner). Org-shared skills are eligible here but protected from ARCHIVE/DELETE elsewhere."""
+    never (external owner)."""
     if ((skill_path is not None and is_external_skill_path(skill_path)) or is_protected_builtin(skill_name)
             or is_hub_installed(skill_name)):
         return False
@@ -577,15 +577,6 @@ def set_pinned(skill_name: str, pinned: bool) -> bool:
     return _set_field(skill_name, "pinned", bool(pinned))
 
 
-def set_sync(skill_name: str, sync: bool) -> None:
-    """Opt-in ``sync`` flag (read by ``skills_sync_client``); curation-gated so bundled/hub/external can't be marked."""
-    _set_field(skill_name, "sync", bool(sync))
-
-
-def is_sync_enabled(skill_name: str) -> bool:
-    return get_record(skill_name).get("sync") is True
-
-
 def forget(skill_name: str) -> None:
     if skill_name:
         _locked_update(skill_name, lambda d: (None, d.pop(skill_name, None) is not None), "skill_usage.forget(%s) failed: %s")
@@ -685,7 +676,7 @@ def _match_skill_dir(skill_mds: Iterable[Path], skill_name: str) -> Optional[Pat
 
 
 def _find_skill_dir(skill_name: str) -> Optional[Path]:
-    """Skill dir by frontmatter ``name`` (flat or nested); the gated index iterator sees only the active org mirror."""
+    """Skill dir by frontmatter ``name`` (flat or nested)."""
     from agent.skill_utils import iter_skill_index_files
     base = _skills_dir()
     return _match_skill_dir((p for p in iter_skill_index_files(base, "SKILL.md") if not is_external_skill_path(p)),
@@ -713,9 +704,39 @@ def curated_report() -> List[Dict[str, Any]]:
     return [_report_row(n, data.get(n), _persisted=n in data, provenance=provenance(n)) for n in sorted(names)]
 
 
+def is_external_only(skill_name: str) -> bool:
+    """Present under ``skills.external_dirs`` and NOT in the local store (the local copy wins on
+    name clashes, mirroring ``is_agent_created``'s external exclusion). An external-only skill is
+    externally authored: it was mounted, not learned."""
+    return (_find_skill_dir(skill_name) is None and _find_external_skill_dir(skill_name) is not None)
+
+
+def _external_skill_names() -> set:
+    """Frontmatter names of all skills under configured external dirs (one scan per call; the
+    router's set-based provenance uses this instead of a per-skill dir lookup)."""
+    from agent.skill_utils import get_all_skills_dirs
+    names: set = set()
+    for base in get_all_skills_dirs()[1:]:
+        if not base.exists():
+            continue
+        for skill_md in base.rglob("SKILL.md"):
+            if not is_excluded_skill_path(skill_md):
+                names.add(_read_skill_name(skill_md, fallback=skill_md.parent.name))
+    return names
+
+
 def provenance(skill_name: str) -> str:
-    """'hub' | 'bundled' | 'agent' (the latter also covers local manually-authored skills)."""
-    return "hub" if is_hub_installed(skill_name) else "bundled" if is_bundled(skill_name) else "agent"
+    """'hub' | 'bundled' | 'external' | 'agent'.
+
+    'external' covers skills mounted from ``skills.external_dirs`` and absent from the local
+    store — externally authored, not learned from the user (#108032). 'agent' keeps covering
+    agent-authored AND local hand-made skills — the ones the user may edit/delete from the UI
+    (external skills stay foreground-editable in place by design, commit 8c8fc6c1ec; the label
+    split is about origin, not mutability)."""
+    return ("hub" if is_hub_installed(skill_name)
+            else "bundled" if is_bundled(skill_name)
+            else "external" if is_external_only(skill_name)
+            else "agent")
 
 
 def usage_report() -> List[Dict[str, Any]]:

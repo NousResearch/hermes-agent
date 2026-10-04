@@ -869,8 +869,8 @@ class TurnRunner:
                 "Gateway auto-title failure suppressed (not user-visible): %s: %s", task, exc,
             )
             session_id = getattr(agent, "session_id", None)
-            source = ctx.source
             runner = self._runner
+            source = runner._recover_discord_auto_thread_source(ctx.source, ctx.session_key)
             # Both lanes spend a rate-limited platform call per title, so they use the model's title
             # only (TitleCallback); renaming twice burns Discord's 2-per-10-min budget on a throwaway.
             # Relay Discord predicate is shape-only: whether the connector auto-threaded our reply is
@@ -1536,7 +1536,8 @@ class TurnRunner:
         # in Slack threads and reserved by Matrix clients.
         msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
         try:
-            # Mark as approval prompt so WeCom routes through the control lane.
+            # Mark as approval prompt: WeCom routes it through the control lane and Telegram pushes it
+            # in "important" mode (#132516). Never ``notify`` — A2A reads that as the turn-final reply.
             metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",

@@ -7,10 +7,10 @@ Package verification itself remains diagnostic and side-effect free.
 from __future__ import annotations
 
 import os
+import platform
 import shlex
 import shutil
 import subprocess
-from pathlib import Path
 
 
 _INSTALLERS: dict[str, tuple[str, ...]] = {
@@ -26,21 +26,17 @@ _DEBIAN = {"debian", "ubuntu", "linuxmint", "pop", "raspbian", "kali", "elementa
 _RPM = {"rhel", "fedora", "centos", "rocky", "almalinux", "ol", "oracle", "amzn"}
 _ARCH = {"arch", "manjaro", "endeavouros", "garuda", "artix"}
 
+# One attempt per process: every root that depends on node (npm, browser
+# tools) re-stages it after a failure, and each would otherwise re-run the
+# package manager under PM's install lock. A later process retries.
+_ATTEMPT: tuple[bool, str] | None = None
+
 
 def _release_tokens() -> set[str]:
-    fields: dict[str, str] = {}
-    for path in (Path("/etc/os-release"), Path("/usr/lib/os-release")):
-        try:
-            text = path.read_text(encoding="utf-8-sig")
-        except OSError:
-            continue
-        for raw in text.splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            fields[key] = value.strip().strip('"').strip("'")
-        break
+    try:
+        fields = platform.freedesktop_os_release()
+    except OSError:
+        return set()
     blob = f"{fields.get('ID', '')} {fields.get('ID_LIKE', '')}".lower()
     return set(blob.replace(",", " ").split())
 
@@ -89,12 +85,26 @@ def _command_plan(command: tuple[str, ...]) -> tuple[list[str] | None, str, str]
     return None, "", f"as root: {shlex.join(command)}"
 
 
+def _run(argv: list[str]) -> bool:
+    try:
+        return subprocess.run(argv, stdin=subprocess.DEVNULL, timeout=300, check=False).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def try_install_libatomic() -> tuple[bool, str]:
     """Try the distro-native libatomic package; return (attempt_succeeded, hint).
 
     Success means the package-manager command completed successfully. The Node
     smoke probe remains the authority and is always repeated by the caller.
     """
+    global _ATTEMPT
+    if _ATTEMPT is None:
+        _ATTEMPT = _attempt()
+    return _ATTEMPT
+
+
+def _attempt() -> tuple[bool, str]:
     command = _host_install_command()
     if command is None:
         return (
@@ -107,20 +117,11 @@ def try_install_libatomic() -> tuple[bool, str]:
     if argv is None:
         return False, remedy
 
-    env = dict(os.environ)
-    env.setdefault("DEBIAN_FRONTEND", "noninteractive")
-    print(
-        f"→ Node needs libatomic.so.1; trying non-interactive {attempt_display}",
-        flush=True,
-    )
-    try:
-        result = subprocess.run(
-            argv,
-            stdin=subprocess.DEVNULL,
-            env=env,
-            timeout=300,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    print(f"→ Node needs libatomic.so.1; trying non-interactive {attempt_display}", flush=True)
+    if _run(argv):
+        return True, remedy
+    if command[0] != "apt-get":
         return False, remedy
-    return result.returncode == 0, remedy
+    # Minimal Debian/Ubuntu images ship empty package lists.
+    update = argv[: len(argv) - len(command)] + ["apt-get", "update", "-qq"]
+    return _run(update) and _run(argv), remedy

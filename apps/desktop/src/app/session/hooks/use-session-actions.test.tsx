@@ -1,4 +1,4 @@
-import { registryBackendScopeKey } from '@hermes/shared'
+import { type GatewayEventName, registryBackendScopeKey } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
@@ -21,6 +21,7 @@ import {
   type SessionResumeResult,
   setSessionArchived
 } from '@/hermes'
+import { chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
@@ -107,6 +108,7 @@ import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unre
 import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
 import { $retainedTodosBySession, $todosBySession, clearSessionTodos } from '@/store/todos'
 import { loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
+import type { SessionMessage } from '@/types/hermes'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
@@ -114,6 +116,7 @@ import { NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { pinnedOwnerCount, pinnedStoredSessionIdsForOwner, releaseStoredSessionPins } from './session-context-drift'
+import { renderMessageStream } from './use-message-stream/test-harness'
 import { applySessionInfoStatePatch, sessionInfoStatePatch } from './use-message-stream/utils'
 import { captureSteeringSession } from './use-prompt-actions/steering-session'
 import { useSessionActions } from './use-session-actions'
@@ -4279,6 +4282,280 @@ describe('resumeSession warm-cache mapping integrity', () => {
     await resumePromise
     expect($messages.get()).toBe(paintedTranscript)
   })
+
+  it.each(
+    (['cold', 'warm'] as const)
+      .flatMap(mode =>
+        (['matching', 'absent', 'segmented'] as const).flatMap(reasoning =>
+          [false, true].flatMap(multipleCommentary =>
+            [false, true].map(completeBeforeRest => ({
+              mode,
+              reasoning,
+              multipleCommentary,
+              completeBeforeRest,
+              sealedBeforeRest: false
+            }))
+          )
+        )
+      )
+      .concat(
+        (['cold', 'warm'] as const).map(mode => ({
+          mode,
+          reasoning: 'matching' as const,
+          multipleCommentary: false,
+          completeBeforeRest: false,
+          sealedBeforeRest: true
+        }))
+      )
+  )(
+    'does not duplicate a running Codex tool block during $mode history refresh with $reasoning live reasoning (multiple commentary: $multipleCommentary, complete before REST: $completeBeforeRest, sealed before REST: $sealedBeforeRest)',
+    async ({ mode, reasoning, multipleCommentary, completeBeforeRest, sealedBeforeRest }) => {
+      const sid = 'rt-A'
+      const commentary = 'I will compare isolated frontend and backend worktrees.'
+
+      const comments = multipleCommentary
+        ? [commentary, 'The two delegates will use separate directories.']
+        : [commentary]
+
+      const publicText = comments.join('\n\n')
+      const thinking = '**Preparing parallel worktrees**'
+      const privateReasoning = 'PRIVATE RAW ANALYSIS: not authorized for display.'
+      const prompt = 'Investigate the duplicate block.'
+
+      const call = (id: string, name: string, args: Record<string, unknown> = {}) => ({
+        id,
+        type: 'function' as const,
+        function: { name, arguments: JSON.stringify(args) }
+      })
+
+      const tasks = { tasks: [{ goal: 'FRONTEND' }, { goal: 'BACKEND' }] }
+
+      const rows: SessionMessage[] = [
+        { id: 1, role: 'user', content: prompt },
+        {
+          id: 2,
+          role: 'assistant',
+          content: '',
+          reasoning: `${privateReasoning}\n\n${thinking}\n\n${publicText}`,
+          display_reasoning: thinking,
+          display_commentary: comments,
+          codex_message_items: comments.map(text => ({
+            type: 'message',
+            role: 'assistant',
+            phase: 'commentary',
+            content: [{ type: 'output_text', text }]
+          })),
+          tool_calls: [call('read', 'read_file')]
+        },
+        { id: 3, role: 'tool', content: 'read', tool_call_id: 'read' },
+        { id: 4, role: 'assistant', content: '', tool_calls: [call('delegate', 'delegate_task', tasks)] },
+        { id: 5, role: 'tool', content: '{"status":"running"}', tool_call_id: 'delegate' },
+        {
+          id: 6,
+          role: 'assistant',
+          content: '',
+          tool_calls: [call('cmd-1', 'terminal'), call('cmd-2', 'terminal'), call('cmd-3', 'terminal')]
+        },
+        // The history snapshot predates cmd-3's completion.
+        ...[1, 2].map((n): SessionMessage => ({ id: 6 + n, role: 'tool', content: 'ok', tool_call_id: `cmd-${n}` }))
+      ]
+
+      setSessions([storedSession({ id: 'stored-A', message_count: rows.length })])
+      const states = new Map([[sid, { ...clientState('stored-A'), messages: toChatMessages(rows.slice(0, 1)) }]])
+      const stream = renderMessageStream(null, { states })
+
+      const send = (type: GatewayEventName, payload: Record<string, unknown> = {}) =>
+        act(() => stream.handleEvent({ type, payload, session_id: sid }))
+
+      await send('message.start')
+
+      if (reasoning !== 'absent') {
+        await send('reasoning.delta', { text: reasoning === 'segmented' ? '**Preparing' : thinking })
+      }
+
+      for (const text of comments) {
+        await send('message.interim', { text })
+      }
+
+      if (reasoning === 'segmented') {
+        await send('reasoning.delta', { text: ' parallel worktrees**' })
+      }
+
+      await send('tool.start', { name: 'read_file', tool_id: 'read', args: {} })
+      await send('tool.complete', { name: 'read_file', tool_id: 'read', result: 'read' })
+      await send('tool.start', { name: 'delegate_task', tool_id: 'delegate', args: tasks })
+      await send('tool.complete', { name: 'delegate_task', tool_id: 'delegate', result: '{"status":"running"}' })
+
+      for (const n of [1, 2, 3]) {
+        await send('tool.start', { name: 'terminal', tool_id: `cmd-${n}`, args: {} })
+      }
+
+      const persisted = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+      vi.mocked(getLatestSessionMessages).mockReturnValue(persisted.promise)
+
+      const requestGateway = vi.fn(
+        async () =>
+          ({
+            session_id: sid,
+            session_key: 'stored-A',
+            resumed: 'stored-A',
+            messages: [],
+            messages_omitted: true,
+            running: true,
+            info: {},
+            inflight: { user: prompt, assistant: publicText, streaming: true }
+          }) as never
+      )
+
+      let resume!: Parameters<Parameters<typeof ResumeHarness>[0]['onReady']>[0]
+      render(
+        <ResumeHarness
+          onReady={ready => (resume = ready)}
+          requestGateway={requestGateway}
+          runtimeIdByStoredSessionIdRef={{ current: new Map(mode === 'warm' ? [['stored-A', sid]] : []) }}
+          sessionStateByRuntimeIdRef={{ current: states }}
+        />
+      )
+      let refreshing!: Promise<unknown>
+      await act(async () => {
+        refreshing = resume('stored-A', true)
+      })
+      await waitFor(() => expect(getLatestSessionMessages).toHaveBeenCalled())
+
+      // Real stream reducers advance the cached row while the REST read is held.
+      const completeTool = (n: number) =>
+        send('tool.complete', {
+          name: 'terminal',
+          tool_id: `cmd-${n}`,
+          result: 'ok',
+          duration_s: 1.25,
+          summary: 'Command completed.'
+        })
+
+      for (const n of sealedBeforeRest ? [1, 2] : [1, 2, 3]) {
+        await completeTool(n)
+      }
+
+      const sharedTools = () =>
+        states
+          .get(sid)!
+          .messages.flatMap(message => message.parts)
+          .filter(part => part.type === 'tool-call' && part.toolCallId === 'cmd-3')
+
+      if (sealedBeforeRest) {
+        await send('message.interim', { text: 'Waiting for the last command.' })
+        expect(sharedTools()).toHaveLength(1)
+        expect(sharedTools()[0].completedAt).toEqual(expect.any(Number))
+        expect(Object.hasOwn(sharedTools()[0], 'result')).toBe(false)
+      } else {
+        expect(sharedTools()[0]).toMatchObject({
+          result: 'ok',
+          completedAt: expect.any(Number),
+          toolResultMetadata: { duration_s: 1.25, summary: 'Command completed.' }
+        })
+      }
+
+      let completedTool = sharedTools()[0]
+
+      if (multipleCommentary) {
+        await send('reasoning.delta', { text: 'New live-only reasoning must survive.' })
+        await send('message.interim', { text: commentary })
+      }
+
+      await send('tool.start', { name: 'delegate_task', tool_id: 'live-only', args: tasks })
+
+      const complete = async () => {
+        await send('tool.complete', { name: 'delegate_task', tool_id: 'live-only', result: 'finished' })
+        await send('message.delta', { text: 'Comparison complete.' })
+        await send('message.complete', { text: 'Comparison complete.' })
+      }
+
+      if (completeBeforeRest) {
+        await complete()
+        expect(states.get(sid)!.messages.some(message => message.pending)).toBe(false)
+        expect(states.get(sid)!.messages.at(-1)?.completedAt).toEqual(expect.any(Number))
+      }
+
+      const completedAt = states.get(sid)!.messages.at(-1)?.completedAt
+
+      await act(async () => {
+        persisted.resolve({ session_id: 'stored-A', messages: rows })
+        await refreshing
+      })
+
+      if (sealedBeforeRest) {
+        expect(sharedTools()).toHaveLength(1)
+        expect.soft(Object.hasOwn(sharedTools()[0], 'result')).toBe(false)
+
+        const durableOwner = states.get(sid)!.messages.find(message => message.parts.includes(sharedTools()[0]))!
+
+        expect(durableOwner.rowId).toBe(rows[1].id)
+        await completeTool(3)
+        expect(sharedTools()).toHaveLength(1)
+        expect(states.get(sid)!.messages.find(message => message.parts.includes(sharedTools()[0]))?.id).toBe(
+          durableOwner.id
+        )
+        completedTool = sharedTools()[0]
+        expect(completedTool).toMatchObject({
+          result: 'ok',
+          completedAt: expect.any(Number),
+          toolResultMetadata: { duration_s: 1.25, summary: 'Command completed.' }
+        })
+      }
+
+      const messages = states.get(sid)!.messages
+      const tools = messages.flatMap(message => message.parts.filter(part => part.type === 'tool-call'))
+      expect
+        .soft(tools.map(part => part.toolCallId))
+        .toEqual(['read', 'delegate', 'cmd-1', 'cmd-2', 'cmd-3', 'live-only'])
+      expect(tools.filter(part => part.toolCallId === 'cmd-3')).toEqual([
+        expect.objectContaining({
+          result: 'ok',
+          completedAt: completedTool.completedAt,
+          toolResultMetadata: completedTool.toolResultMetadata
+        })
+      ])
+
+      for (const text of comments) {
+        expect
+          .soft(messages.map(chatMessageText).join('\n').split(text))
+          .toHaveLength(multipleCommentary && text === commentary ? 3 : 2)
+      }
+
+      expect(JSON.stringify(messages)).not.toContain(privateReasoning)
+
+      if (multipleCommentary) {
+        expect(JSON.stringify(messages)).toContain('New live-only reasoning must survive.')
+      }
+
+      expect.soft(messages.some(message => message.pending)).toBe(!completeBeforeRest)
+      expect(messages.filter(message => message.role === 'assistant' && !message.parts.length)).toHaveLength(0)
+      expect(
+        messages.some(
+          message =>
+            message.pending && message.parts.some(part => part.type === 'tool-call' && part.toolCallId === 'live-only')
+        )
+      ).toBe(!completeBeforeRest)
+
+      if (completeBeforeRest) {
+        expect(messages.at(-1)?.completedAt).toBe(completedAt)
+      } else {
+        await complete()
+      }
+
+      const settled = states.get(sid)!.messages
+      expect(settled.some(message => message.pending)).toBe(false)
+      expect(settled.map(chatMessageText).join('\n').split('Comparison complete.')).toHaveLength(2)
+      expect(
+        settled
+          .flatMap(message => message.parts)
+          .find(part => part.type === 'tool-call' && part.toolCallId === 'live-only')
+      ).toMatchObject({ result: 'finished' })
+      expect(
+        settled.flatMap(message => message.parts.filter(part => part.type === 'tool-call')).map(part => part.toolCallId)
+      ).toEqual(tools.map(part => part.toolCallId))
+    }
+  )
 
   it('honours a warm cache entry whose stored id matches and refreshes its persisted transcript', async () => {
     // Correctly-wired mapping: 'rt-A' <-> 'stored-A'. The fast-path should trust

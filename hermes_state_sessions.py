@@ -989,6 +989,32 @@ class SessionSessionsMixin:
         )
         return True
 
+    def unarchive_on_activity(self, session_id: str) -> bool:
+        """Re-activate a chat the idle sweep hid, once real user activity lands (#89325).
+
+        The sweep's archive is bookkeeping, not a decision: a conversation still receiving user
+        messages from any channel is live again and must resurface in the default listing on
+        every surface. A deliberately archived lineage is left alone — ``auto_archived`` is the
+        provenance that separates the two (#127019) and :meth:`set_session_archived` is the door
+        that declares the deliberate kind, so inbound traffic can never reverse a user's own
+        archive. True when the sweep's archive was cleared.
+        """
+        if not session_id:
+            return False
+        # Same door the resume path uses (``reopen_session``): one statement, nothing read first —
+        # this runs on every inbound turn, so the common nothing-archived case must stay a single
+        # no-op statement rather than a probe plus a write.
+        def _do(conn) -> bool:
+            # The helper's own boolean is unusable: sqlite reports ``rowcount = -1`` for the
+            # CTE-guarded UPDATE it runs (measured), so a real un-hide already returned False.
+            # Measure the connection's change counter instead. A retry inside ``_execute_write``
+            # can only inflate the delta on a rolled-back attempt, and no caller branches on it.
+            before = conn.total_changes
+            self._unarchive_auto_archived_lineage(conn, session_id)
+            return conn.total_changes > before
+
+        return bool(self._execute_write(_do))
+
     def set_session_pinned(self, session_id: str, pinned: bool) -> bool:
         """Pin/unpin a session and its compression lineage (pins are exempt from the auto_archive sweep).
         Pinning also clears ``hidden``: a pin means "keep this visible", and a hidden+pinned row is

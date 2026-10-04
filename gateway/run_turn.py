@@ -165,6 +165,37 @@ def hygiene_no_commit_reason(agent) -> str:
     return "in-place commit did not complete"
 
 
+async def _unarchive_session_on_activity(session_db: Any, session_id: str) -> bool:
+    """Re-activate a chat the idle sweep hid, once real user activity arrives (#89325).
+
+    Archiving is a soft hide: the session row keeps every message and inbound delivery still
+    routes to it, but the flag hides it from the default session list on every surface (desktop
+    sidebar, TUI, CLI). The sweep's archive is bookkeeping, not a decision — a conversation that
+    receives a real user message from ANY platform channel (WhatsApp, BlueBubbles, Photon,
+    Telegram, ...) is live again and must come back, or it stays hidden forever while messages
+    pile up invisibly.
+
+    The caller gates this on real (non-internal) inbound only: cron deliveries, background
+    process completions and startup-restore replays are system traffic, not user activity. A
+    DELIBERATE archive is a user decision and must survive inbound traffic — ``auto_archived``
+    is the provenance that separates the two (#127019), and the store clears the sweep's stamp
+    only. ``unarchive_recoverable_session`` is still the wrong door here: it resurrects only rows
+    archived by a recoverable *accident* (``ws_orphan_reap`` / ``agent_close``).
+
+    One statement, no read: this runs on every inbound turn from every platform, so probing
+    ``archived`` first would double the cost of the common (nothing-archived) case.
+    ``session_db`` is the async session DB door (``AsyncSessionDB``), which offloads the call to
+    a thread so the event loop never blocks on SQLite. True when the sweep's archive was cleared.
+    """
+    if session_db is None or not session_id:
+        return False
+    try:
+        return bool(await session_db.unarchive_on_activity(session_id))
+    except Exception:
+        logger.debug("auto-unarchive: failed for %s", session_id, exc_info=True)
+        return False
+
+
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
@@ -2050,6 +2081,15 @@ class GatewayTurnMixin:
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
         from gateway.run import _load_gateway_config
+        # Real user activity re-activates a chat the idle sweep hid (#89325): archiving is a soft
+        # hide, so a conversation still receiving messages from any channel (WhatsApp, BlueBubbles,
+        # Photon, Telegram, ...) must resurface in the default session list. Internal/system events
+        # (cron deliveries, background-process completions, startup-restore replays) are not user
+        # activity and keep the flag — the same gate as the touch_activity call at session
+        # resolution above. The store clears the sweep's ``auto_archived`` stamp only, so a
+        # deliberately archived chat is never reversed here.
+        if not getattr(event, "internal", False):
+            await _unarchive_session_on_activity(self._session_db, session_entry.session_id)
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)

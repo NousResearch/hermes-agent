@@ -67,7 +67,7 @@ def test_multi_bot_addressing_survives_real_handlers(media, observe):
 @pytest.mark.parametrize("trigger", [
     "mention", "approval", "prefixed_command", "prefixed_addressed_command", "prefixed_command_argument",
     "repeated_prefix_command", "ordinary_text_prefix", "punctuated_prefix", "other_bot_prefix",
-    "text_mention", "reply", "wake_word", "open", "code", "command", "dm",
+    "shared_command", "text_mention", "reply", "wake_word", "open", "code", "command", "dm",
 ])
 def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
     """Our own handle is still stripped when nobody else is named (clarify answers like ``@bot 2``
@@ -85,6 +85,10 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
         elif trigger == "command":
             msg_type = MessageType.COMMAND
             msg = _group_message("/new@hermes_bot", entities=[SimpleNamespace(type="bot_command", offset=0, length=15)])
+        elif trigger == "shared_command":
+            # Another participant is named, so a closing @hermes_bot stays, as for conversational text.
+            msg_type = MessageType.COMMAND
+            msg = _group_message("/btw what did @ops_bot tell @hermes_bot", entities=_command_entities("/btw what did @ops_bot tell @hermes_bot"))
         elif trigger == "text_mention":
             msg = _group_message("Hermes hello", entities=[SimpleNamespace(type="text_mention", offset=0, length=6, user=SimpleNamespace(id=999))])
         elif trigger in {
@@ -141,7 +145,8 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
                          "ordinary_text_prefix": "explain /model gpt-5", "punctuated_prefix": "! /model gpt-5",
                          "code": "@hermes_bot"}.get(trigger, msg.text)
         assert first.text == expected_text
-        command_cases = {"command": ("new", ""), "prefixed_command": ("status", ""),
+        command_cases = {"command": ("new", ""), "shared_command": ("btw", "what did @ops_bot tell @hermes_bot"),
+                         "prefixed_command": ("status", ""),
                          "prefixed_addressed_command": ("model", "gpt-5"),
                          "prefixed_command_argument": ("btw", "did @hermes_bot answer Alice?\nKeep it short  "),
                          "repeated_prefix_command": ("btw", "did @hermes_bot answer? ")}
@@ -182,6 +187,7 @@ def _command_entities(text):
     ("/btw did @hermes_bot already answer Alice?\nKeep it short", "btw", "did @hermes_bot already answer Alice?\nKeep it short"),
     ("/steer@hermes_bot ask @ops_bot what @hermes_bot missed", "steer", "ask @ops_bot what @hermes_bot missed"),
     ("/kanban@hermes_bot list", "kanban", "list"),
+    ("/model gpt-5 @hermes_bot", "model", "gpt-5"),
     ("/new@hermes_bot", "new", ""),
     ("/help\n", "help", ""),
 ])

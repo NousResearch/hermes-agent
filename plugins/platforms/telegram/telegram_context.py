@@ -30,27 +30,31 @@ def mentions_other_participants(adapter: "TelegramAdapter", message: "Message") 
     return False
 
 
-def _without_own_command_suffix(own: str, text: str) -> str:
-    """``/cmd@own args`` → ``/cmd args``, as the command reads in a DM: handlers that re-read the text
-    (``/kanban``) never see the menu's suffix. The arguments keep every byte."""
+def _own_command_text(own: str, text: str, *, sole_addressee: bool) -> str:
+    """Command text as a DM carries it: the menu's ``/cmd@own`` suffix goes (handlers such as
+    ``/kanban`` re-read the text) and, when we are the sole addressee, so does a closing ``@own``
+    (``/model gpt-5 @own``). The arguments between keep every byte."""
     if not own:
         return text
-    return re.sub(rf"(?i)^(\s*/[^\s@]+)@{re.escape(own)}\b[,:\-]*(?=\s|$)", r"\1", text, count=1)
+    handle = re.escape(own)
+    text = re.sub(rf"(?i)^(\s*/[^\s@]+)@{handle}\b[,:\-]*(?=\s|$)", r"\1", text, count=1)
+    return re.sub(rf"(?i)\s+@{handle}\b[,:\-]*\s*$", "", text) if sole_addressee else text
 
 
 def group_trigger_text(adapter: "TelegramAdapter", message: "Message", text: Optional[str]) -> Optional[str]:
     """Strip our own handle only when we are the sole addressee. With other participants named,
     ``@research_bot , @ops_bot are you both listening?`` must not reach us as ``, @ops_bot …``."""
     own = adapter._current_bot_username()
+    shared = adapter._is_group_chat(message) and mentions_other_participants(adapter, message)
     # MessageEvent parses command arguments; their separator and mentions must stay intact.
     if (text or "").lstrip().startswith("/"):
-        return _without_own_command_suffix(own, text)
-    if adapter._is_group_chat(message) and mentions_other_participants(adapter, message):
+        return _own_command_text(own, text, sole_addressee=not shared)
+    if shared:
         return text
     # A supported mention-prefixed command loses only its leading address(es), not its argument bytes.
     prefix = re.match(rf"(?i)^\s*(?:@{re.escape(own)}\b[,:\-]*\s*)+(?=/)", text or "") if own else None
     if prefix:
-        return _without_own_command_suffix(own, text[prefix.end():])
+        return _own_command_text(own, text[prefix.end():], sole_addressee=True)
     return adapter._clean_bot_trigger_text(text)
 
 

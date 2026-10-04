@@ -3224,10 +3224,9 @@ def _prepare_service_launcher(*, system: bool = False, run_as_user: str | None =
         owner = (uid, username)
     token = set_hermes_home_override(home)
     try:
-        # Publication gate: an inherited HERMES_RUNTIME_DIR must not make a
-        # foreign store look publishable, or the service launcher would boot
-        # a runtime the environment owns instead of this install's (#131745).
-        if resolve_store_python(root, honor_runtime_override=False) is None:
+        # Publication gate: ask what stage_launcher will bind, so an inherited
+        # HERMES_RUNTIME_DIR cannot stand in for this install's store (#131745).
+        if resolve_store_python(root, publication=True) is None:
             return  # Externally owned Nix/developer runtime.
         local = root / ".hermes" / "bin"
         paths = ensure_install_launchers(root, local)

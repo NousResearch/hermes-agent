@@ -632,3 +632,50 @@ def test_runtime_override_still_selects_the_runtime_python(tmp_path, monkeypatch
     selected = _launchers.resolve_store_python(repo)
 
     assert selected == foreign_store / "python-foreign" / "bin" / "python3"
+
+
+def _record_store_python(store: Path, interpreter: Path) -> Path:
+    python = store / "python-fixture" / "bin" / "python3"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(interpreter)
+    (store / "facts.json").write_text(
+        json.dumps({"packages": {"python": {"entry": "python-fixture"}}}), encoding="utf-8")
+    return python
+
+
+@pytest.mark.platforms("posix")
+def test_install_launchers_never_bind_a_fixture_store_under_scratch(tmp_path, monkeypatch):
+    # #131745's layout: a process aimed at an e2e fixture home under the
+    # install's own cache/scratch republishes the real install's launchers.
+    # Idle pruning later deletes that store, and the service exits 127.
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    own = _launchers.resolve_store_python(repo)
+    fixture = home / "cache" / "scratch" / "hermes-e2e-media-overlap-run" / "hermes-home" / "tools"
+    _record_store_python(fixture, interpreter)
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(fixture))
+
+    written = _launchers.ensure_install_launchers(repo, repo / ".hermes" / "bin")
+
+    assert len(written) == len(_launchers.WINDOWS_BIN_LAUNCHERS)
+    for path in written:
+        wrapper = Path(path).read_text(encoding="utf-8-sig")
+        assert "hermes-e2e-media-overlap-run" not in wrapper
+        assert shlex.quote(str(own)) in wrapper
+
+
+@pytest.mark.platforms("posix")
+def test_publication_uses_the_runtime_store_when_the_tree_records_none(tmp_path, monkeypatch):
+    # The desktop source-backend contract keeps its store beside HERMES_HOME
+    # and names it through HERMES_RUNTIME_DIR. A tree with no store of its own
+    # still publishes from that one.
+    repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
+    (home / "tools" / "facts.json").unlink()
+    runtime = tmp_path / "runtime-tools"
+    python = _record_store_python(runtime, interpreter)
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(runtime))
+
+    written = _launchers.ensure_install_launchers(repo, repo / ".hermes" / "bin")
+
+    assert len(written) == len(_launchers.WINDOWS_BIN_LAUNCHERS)
+    for path in written:
+        assert shlex.quote(str(python)) in Path(path).read_text(encoding="utf-8-sig")

@@ -539,6 +539,66 @@ def test_respawn_guard_promotion_clears_stale_rate_limit_text(
         assert kbd.check_respawn_guard(conn, tid) is None
 
 
+def test_respawn_guard_promotion_clears_stale_text_from_blocked(
+    kanban_home, monkeypatch,
+):
+    """Same trap as above, but the card sits in ``blocked`` (dependency wait)
+    when the parent completes: ``recompute_ready``'s blocked branch must clear
+    the stale quota text too, or reverting only that hunk strands the card
+    behind ``blocker_auth`` exactly like the todo path (#126190)."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="a")
+        kb.complete_task(conn, parent, result="parent done")
+        tid = kb.create_task(conn, title="child-stale-rl-blocked", assignee="a")
+        conn.execute(
+            "INSERT INTO task_links (parent_id, child_id) VALUES (?, ?)",
+            (parent, tid),
+        )
+        # Run 1: worker exited rate-limited; the requeue stamped the quota
+        # text WITHOUT counting a failure.
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='rate_limited', status='rate_limited', "
+            "ended_at=? WHERE id=?",
+            (now, run_id),
+        )
+        # Run 2: dependency wait, ended blocked — the card parks in blocked.
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, started_at, outcome, ended_at) "
+            "VALUES (?, 'blocked', ?, 'blocked', ?)",
+            (tid, now + 50, now + 100),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'dependency_wait', '{}', ?)",
+            (tid, now + 100),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='blocked', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "consecutive_failures=1, last_failure_error=? WHERE id=?",
+            ("pid 1 exited rate-limited (quota wall) — requeued "
+             "without counting a failure", tid),
+        )
+        conn.commit()
+
+        # dependency_wait is not a sticky human block, so the parent's
+        # completion promotes through the blocked branch.
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 200)
+        assert kb.recompute_ready(conn) == 1
+        task = kb.get_task(conn, tid)
+        assert task.status == "ready"
+        assert task.last_failure_error is None
+        assert task.consecutive_failures == 1
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
 @pytest.mark.parametrize(
     "error_text, expected",
     [

@@ -1448,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent skakel af"
     standalone_quit: "afgelewer"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Eenmalig goedkeur"
     confirm_always_approve: "Altyd goedkeur"
@@ -2721,6 +2719,7 @@ cli:
       restored: "Toestand herstel vanaf: {snapshot_id}"
       restart_recommended: "Herbegin word aanbeveel sodat gateway-/kontroleskermprosesse die state.db-veranderinge oorneem."
       not_found: "Momentopname nie gevind nie: {snapshot_id}"
+      restore_incomplete: "Momentopname {snapshot_id} is nie volledig herstel nie; sommige lêers is geweier (sien logs)"
       usage_prune: "Gebruik: /snapshot prune [behou-aantal]"
       pruned: "{deleted} ou momentopname(s) gesnoei ({keep} word behou)."
     export:

@@ -71,6 +71,39 @@ def test_first_timeout_retry_names_auto_detect_alternatives():
     assert "'gemini' was auto-detected" in hints[0] and "zai" in hints[0]
 
 
+@pytest.mark.parametrize("requested, router_key, expected", [
+    ("auto", None, "gemini"),
+    ("zai", None, "zai"),
+    ("auto", "OPENAI_API_KEY", "openrouter"),
+    ("auto", "OPENROUTER_API_KEY", "openrouter"),
+])
+def test_timeout_hint_uses_real_runtime_resolution(monkeypatch, requested, router_key, expected):
+    """Resolution provenance survives into the post-failure diagnostic, including early
+    OpenRouter precedence over the first provider-specific registry candidate."""
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.setenv("GLM_API_KEY", "zai-test-key")
+    if router_key:
+        monkeypatch.setenv(router_key, "router-test-key")
+    runtime = resolve_runtime_provider(requested=requested, target_model="test/model")
+    assert runtime["provider"] == expected
+    agent = _hint_agent(runtime["requested_provider"], runtime["provider"])
+    compute_error_backoff(
+        agent, _TIMEOUT_ERR, retry_count=1, max_retries=3,
+        is_rate_limited=False, is_zai_coding_overload=False,
+        base_url=runtime["base_url"], model="test/model",
+    )
+    hints = [line for line in _buffered_lines(agent) if line.startswith("💡")]
+    if requested == "auto":
+        assert len(hints) == 1
+        assert f"'{expected}' was auto-detected" in hints[0]
+        if expected == "openrouter":
+            assert "'gemini' was auto-detected" not in hints[0]
+    else:
+        assert not hints
+
+
 def test_ambiguity_hint_only_on_first_retry():
     agent = _hint_agent("auto", "gemini")
     with patch("hermes_cli.auth.env_key_provider_candidates", return_value=["gemini", "zai"]):
@@ -82,10 +115,11 @@ def test_ambiguity_hint_only_on_first_retry():
     assert not [line for line in _buffered_lines(agent) if line.startswith("💡")]
 
 
-def test_explicit_provider_request_suppresses_ambiguity_hint():
+@pytest.mark.parametrize("requested", ["zai", "", None, "none"])
+def test_explicit_provider_requested_suppresses_ambiguity_hint(requested):
     """The review's first failure mode: an explicitly requested provider must never be told
     "no explicit provider set" (#30797)."""
-    agent = _hint_agent("zai", "zai")
+    agent = _hint_agent(requested, "zai")
     with patch("hermes_cli.auth.env_key_provider_candidates", return_value=["gemini", "zai"]):
         compute_error_backoff(
             agent, _TIMEOUT_ERR, retry_count=1, max_retries=3,

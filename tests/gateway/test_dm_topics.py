@@ -72,8 +72,10 @@ async def test_setup_dm_topics_creates_when_no_thread_id():
     mock_topic = SimpleNamespace(message_thread_id=999)
     adapter._bot.create_forum_topic.return_value = mock_topic
 
-    # Mock the persist method so it doesn't touch the filesystem
+    # Mock the persist method so it doesn't touch the filesystem, and the re-read so the
+    # sandboxed (config-less) HERMES_HOME doesn't wipe the in-memory snapshot under test.
     adapter._persist_dm_topic_thread_id = MagicMock()
+    adapter._reload_dm_topics_from_config = MagicMock()
 
     await adapter._setup_dm_topics()
 
@@ -103,6 +105,7 @@ async def test_setup_dm_topics_mixed_persisted_and_new():
     mock_topic = SimpleNamespace(message_thread_id=777)
     adapter._bot.create_forum_topic.return_value = mock_topic
     adapter._persist_dm_topic_thread_id = MagicMock()
+    adapter._reload_dm_topics_from_config = MagicMock()
 
     await adapter._setup_dm_topics()
 
@@ -112,6 +115,58 @@ async def test_setup_dm_topics_mixed_persisted_and_new():
     assert adapter._dm_topics["333:New"] == 777
     # Only one API call (for "New")
     adapter._bot.create_forum_topic.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_setup_dm_topics_reuses_persisted_ids_after_adapter_rebuild(tmp_path):
+    """A rebuilt adapter must not recreate topics whose thread_ids were persisted after its
+    (startup-time) config snapshot was taken (#132522)."""
+    import hermes_yaml as yaml
+
+    # In-memory snapshot the gateway hands the rebuilt adapter: created on the first run,
+    # still missing the thread_ids the adapter persisted to config.yaml afterwards.
+    adapter = _make_adapter([
+        {
+            "chat_id": 222,
+            "topics": [
+                {"name": "WEBSITE", "icon_color": 7322096},
+                {"name": "CONTENT", "icon_color": 7322096},
+            ],
+        }
+    ])
+    adapter._bot = AsyncMock()
+
+    # config.yaml on disk carries the persisted thread_ids.
+    config_data = {
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "dm_topics": [
+                        {
+                            "chat_id": 222,
+                            "topics": [
+                                {"name": "WEBSITE", "thread_id": 58890},
+                                {"name": "CONTENT", "thread_id": 58892},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    home_dir = tmp_path / "hermes-home"
+    home_dir.mkdir(parents=True)
+    config_file = home_dir / "config.yaml"
+    config_file.write_text(yaml.safe_dump(config_data), encoding="utf-8")
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(home_dir)}):
+        await adapter._setup_dm_topics()
+
+    # No API call: the persisted thread_ids are reused, not duplicated.
+    adapter._bot.create_forum_topic.assert_not_called()
+    assert adapter._dm_topics["222:WEBSITE"] == 58890
+    assert adapter._dm_topics["222:CONTENT"] == 58892
 
 
 # ── _create_dm_topic: error handling ──

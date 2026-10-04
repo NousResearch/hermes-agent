@@ -713,6 +713,11 @@ def _path_env_key(run_env: dict) -> str | None:
     return next((k for k in run_env if k.upper() == "PATH"), None) if _IS_WINDOWS else "PATH"
 
 
+# The launcher publishes six keys, but only these three route a GUI launch: XDG_* are the Bot
+# Desktop profile's private dirs and must not leak into terminal-launched apps (see _make_run_env).
+_DESKTOP_ENV_KEYS = frozenset({"DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS"})
+
+
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping. The process env is
     the LAUNCH profile's; under a routed home override its ``.env`` residue is dropped first
@@ -736,8 +741,16 @@ def _make_run_env(env: dict) -> dict:
     except Exception:
         published = {}
     if published:
-        run_env.update(published)
+        # Only the display-routing keys: the launcher also publishes the desktop's private
+        # XDG_* trio, and a GUI app launched from the terminal must keep reading the user's own
+        # ~/.config state instead of the Bot Screen profile's directories.
+        run_env.update({k: v for k, v in published.items() if k in _DESKTOP_ENV_KEYS})
         run_env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
+        # Same browser pin as runtime.desktop_env(): the image's boot hook exports a headless-shell
+        # AGENT_BROWSER_EXECUTABLE_PATH, and leaving it would draw a browser_tool launch on the
+        # Bot Screen with no window (different binary, one user-data-dir, Chromium singleton).
+        from tools.bot_desktop.browser import env_for_agent
+        env_for_agent(run_env)
     return run_env
 
 

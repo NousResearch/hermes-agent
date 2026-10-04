@@ -44,26 +44,29 @@ def owning_home_root(project_root: Path) -> Path | None:
     Dependency state is scoped per data root (``<root>/installs/<install_key>``), but a source
     checkout -- its launchers, product builds and install stamp -- exists once. A launch under
     another root (a test's temporary ``HERMES_HOME``, a per-task home, a CI service home) borrows
-    it: the root that installed it already holds committed state for it, under the platform
-    default root or the root the checkout sits in (``<root>/hermes-agent``). ``None`` when the
-    active root's state is that state (the owner itself, or one of its profiles), and when no
+    it: the root that installed it already holds committed state for it, under the root the
+    checkout sits in (``<root>/hermes-agent``) or else the platform default root. ``None`` when
+    the active root's state is that state (the owner itself, or one of its profiles), and when no
     such root has state for this checkout -- a fresh install, or a custom root that owns its own
     tree -- so those keep today's behaviour (#123238).
+
+    The root the checkout sits in outranks the platform default: a borrowing launch's own sync
+    leaves ``facts.json`` under the borrower too, and that must never make it the owner.
     """
     from hermes_constants import _get_platform_default_hermes_home
 
     root = Path(project_root).resolve()
     key = install_key(root)
-    active = install_state_dir(root)
-    owners = [candidate for candidate in dict.fromkeys((_get_platform_default_hermes_home(), root.parent))
-              if (candidate / "installs" / key / "facts.json").is_file()]
-    for owner in owners:
-        try:
-            if (owner / "installs" / key).resolve() == active.resolve():
-                return None
-        except OSError:
-            continue
-    return owners[0] if owners else None
+    owner = next((candidate for candidate in (root.parent, _get_platform_default_hermes_home())
+                  if (candidate / "installs" / key / "facts.json").is_file()), None)
+    if owner is None:
+        return None
+    try:
+        if (owner / "installs" / key).resolve() == install_state_dir(root).resolve():
+            return None
+    except OSError:
+        pass
+    return owner
 
 
 def install_state_permission_message(project_root: Path, exc: PermissionError) -> str | None:

@@ -81,6 +81,20 @@ def test_a_fresh_install_and_a_custom_root_keep_their_own_store(tmp_path, monkey
     assert store_root(root) == tmp_path / "data" / "h" / "tools"
 
 
+def test_a_borrowers_own_dependency_state_never_makes_it_the_owner(tmp_path, monkeypatch):
+    """`install.sh --hermes-home <custom>` owns the checkout. The default root launching it borrows,
+    and still borrows after its own dependency sync leaves state for the checkout."""
+    custom = tmp_path / "data" / "h"
+    root = _checkout(tmp_path, monkeypatch, parent=custom)
+    _state(custom, root)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    assert owning_home_root(root) == custom
+
+    _state(tmp_path / ".hermes", root)  # the borrowing launch's own sync
+    assert owning_home_root(root) == custom
+    assert store_root(root) == custom / "tools"
+
+
 def test_a_borrowing_launch_syncs_its_own_dependencies_and_nothing_of_the_checkout(
     tmp_path, monkeypatch, completion_tail
 ):

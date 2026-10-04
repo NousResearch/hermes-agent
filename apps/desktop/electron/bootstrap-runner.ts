@@ -37,6 +37,8 @@ import fs from 'node:fs'
 import https from 'node:https'
 import path from 'node:path'
 
+import { scrubDesktopChildEnv } from './scrub-child-env'
+
 // Relative, not `@hermes/shared/ansi`: the electron bundle is built by esbuild
 // with no tsconfig path resolution (see scripts/bundle-electron-main.mjs).
 import { stripAnsi } from '../../shared/src/ansi'

@@ -107,7 +107,8 @@ test('terminal env scrubs Hermes credentials and retains the operator shell cont
       AWS_ACCESS_KEY_ID: 'operator-aws',
       npm_config_prefix: '/npm',
       NO_COLOR: '1',
-      LC_CTYPE: 'ja_JP.UTF-8'
+      LANG: 'en_US.UTF-8',
+      LC_CTYPE: ''
     },
     '0.17.0'
   )
@@ -117,10 +118,28 @@ test('terminal env scrubs Hermes credentials and retains the operator shell cont
   assert.equal(env.AWS_ACCESS_KEY_ID, 'operator-aws')
   assert.equal(env.npm_config_prefix, undefined)
   assert.equal(env.NO_COLOR, undefined)
-  assert.equal(env.LC_CTYPE, 'ja_JP.UTF-8')
+  assert.equal(env.LC_CTYPE, 'en_US.UTF-8')
   assert.equal(env.COLORTERM, 'truecolor')
   assert.equal(env.TERM, 'xterm-256color')
   assert.equal(env.TERM_PROGRAM, 'Hermes')
   assert.equal(env.TERM_PROGRAM_VERSION, '0.17.0')
   assert.equal(env.HERMES_DESKTOP_TERMINAL, '1')
+})
+
+test('preserves shell-exported provider keys after profile dotenv attribution', () => {
+  const env = buildDesktopServeChildEnv({
+    source: {
+      OPENROUTER_API_KEY: 'shell-export',
+      PROFILE_ONLY_KEY: 'launch-profile-secret'
+    },
+    backendEnv: { PROFILE_ONLY_KEY: 'target-profile-value' },
+    hermesHome: '/home/u/.hermes',
+    terminalCwd: '/work',
+    dashboardSessionToken: 'minted',
+    webDist: '/app/web_dist',
+    scrubCredentials: false
+  })
+
+  assert.equal(env.OPENROUTER_API_KEY, 'shell-export')
+  assert.equal(env.PROFILE_ONLY_KEY, 'target-profile-value')
 })

@@ -1,10 +1,13 @@
 /** Environment maps accepted by Node child-process APIs. */
 export type EnvMap = Record<string, string | undefined>
 
-// Mirrors the credential entries owned by Hermes' provider/tool/messaging
-// registries. Keep unrelated operator credentials (for example NPM_TOKEN),
-// the general AWS chain, and CLAUDE_CODE_OAUTH_TOKEN available to the user's
-// shell; Python applies the same ownership boundary in environments/local.py.
+// Conservative snapshot of Hermes-owned provider/tool/messaging credentials.
+// Keep unrelated operator credentials (for example NPM_TOKEN), the general AWS
+// chain, and CLAUDE_CODE_OAUTH_TOKEN available to the user's shell. This list
+// intentionally does not claim parity with Python's dynamically assembled
+// registry set: profileBackendParentEnv supplies the attribution boundary for
+// Desktop backend children, while this predicate covers known Hermes-owned
+// names and the documented dynamic families below.
 const HERMES_CREDENTIAL_NAMES = new Set([
   'A2A_BEARER_TOKEN',
   'A2A_PEER_TOKENS',
@@ -13,6 +16,7 @@ const HERMES_CREDENTIAL_NAMES = new Set([
   'AI_GATEWAY_API_KEY',
   'ALIBABA_CODING_PLAN_API_KEY',
   'ANTHROPIC_API_KEY',
+  'ANTHROPIC_BASE_URL',
   'ANTHROPIC_TOKEN',
   'API_SERVER_KEY',
   'ARCEEAI_API_KEY',
@@ -49,6 +53,7 @@ const HERMES_CREDENTIAL_NAMES = new Set([
   'GATEWAY_RELAY_ID',
   'GATEWAY_RELAY_SECRET',
   'GEMINI_API_KEY',
+  'GROQ_API_KEY',
   'GH_TOKEN',
   'GITHUB_APP_ID',
   'GITHUB_APP_INSTALLATION_ID',
@@ -98,7 +103,9 @@ const HERMES_CREDENTIAL_NAMES = new Set([
   'OPENCODE_GO_API_KEY',
   'OPENCODE_ZEN_API_KEY',
   'OPENAI_API_KEY',
+  'OPENAI_BASE_URL',
   'OPENROUTER_API_KEY',
+  'PERPLEXITY_API_KEY',
   'OPENVIKING_API_KEY',
   'PARALLEL_API_KEY',
   'PHOTON_PROJECT_SECRET',
@@ -199,7 +206,13 @@ export function scrubDesktopChildEnv(...sources: Array<EnvMap | null | undefined
   return out
 }
 
-export function buildDesktopTerminalEnv(source: EnvMap, appVersion: string): Record<string, string> {
+export function buildDesktopTerminalEnv(
+  source: EnvMap,
+  appVersion: string,
+  platform: NodeJS.Platform = process.platform,
+  localeResolver: (env: { LANG?: string; LC_CTYPE?: string }, platform: NodeJS.Platform) => string = (env, target) =>
+    target === 'darwin' ? 'UTF-8' : env.LANG || 'C.UTF-8'
+): Record<string, string> {
   const env = scrubDesktopChildEnv(source)
 
   for (const key of Object.keys(env)) {
@@ -213,7 +226,7 @@ export function buildDesktopTerminalEnv(source: EnvMap, appVersion: string): Rec
   delete env.COLORFGBG
 
   env.COLORTERM = 'truecolor'
-  env.LC_CTYPE = env.LC_CTYPE || 'UTF-8'
+  env.LC_CTYPE = localeResolver(env, platform)
   env.TERM = 'xterm-256color'
   env.TERM_PROGRAM = 'Hermes'
   env.TERM_PROGRAM_VERSION = appVersion
@@ -231,6 +244,8 @@ export interface DesktopServeChildEnvOptions {
   parentIdentityEnv?: EnvMap
   webDist: string
   readyFile?: string | null
+  /** Source has already been scoped to the target profile's dotenv. */
+  scrubCredentials?: boolean
 }
 
 /** Build the local Desktop backend env and re-add only its freshly minted token. */
@@ -242,9 +257,13 @@ export function buildDesktopServeChildEnv({
   dashboardSessionToken,
   parentIdentityEnv,
   webDist,
-  readyFile
+  readyFile,
+  scrubCredentials = true
 }: DesktopServeChildEnvOptions): Record<string, string> {
-  const env = scrubDesktopChildEnv(source, backendEnv, parentIdentityEnv)
+  const sources = [source, backendEnv, parentIdentityEnv]
+  const env = scrubCredentials
+    ? scrubDesktopChildEnv(...sources)
+    : Object.assign({}, ...sources.map(value => value || {}))
 
   env.HERMES_HOME = hermesHome
   env.TERMINAL_CWD = terminalCwd

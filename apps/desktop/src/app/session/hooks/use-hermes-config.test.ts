@@ -104,6 +104,19 @@ describe('useHermesConfig refreshHermesConfig', () => {
     expect($currentReasoningEffort.get()).toBe('low')
   })
 
+  it("reads a quoted 'off' reasoning effort back as none, not Medium", async () => {
+    // `config.set reasoning off --global` writes the str 'off' into config.yaml; the desktop
+    // must fold it to 'none' like the unquoted words instead of rendering Medium (#90431).
+    mockConfig({ agent: { reasoning_effort: 'off' } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+
+    expect($defaultReasoningEffort.get()).toBe('none')
+  })
+
   it('does not let terminal.cwd replace an inactive selected workspace', async () => {
     setCurrentCwd('/Users/example/repo/.worktrees/feature')
 

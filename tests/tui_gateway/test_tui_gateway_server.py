@@ -10138,6 +10138,31 @@ def test_config_set_reasoning_global_scope_clears_session_override(tmp_path, mon
     assert status["result"]["value"] == "high"
 
 
+def test_config_set_reasoning_off_global_round_trips_to_none(tmp_path, monkeypatch):
+    # `config.set reasoning off` at global scope writes the str 'off' into config.yaml (YAML then
+    # quotes it); the read-back must answer "none" like the unquoted words — the dashboard picker
+    # renders any effort outside its vocabulary as Medium (#90431 read-back half).
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
+    server._sessions["sid"] = _session()
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "off", "scope": "global"},
+        }
+    )
+    assert resp["result"]["value"] == "off"
+
+    # Read back cold (no live session), like the dashboard does at startup: the live agent's
+    # reasoning_config would answer "none" from the session branch and hide the file value.
+    status = server.handle_request(
+        {"id": "2", "method": "config.get", "params": {"session_id": "unused", "key": "reasoning"}}
+    )
+    assert status["result"]["value"] == "none"
+
+
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     agent = types.SimpleNamespace(verbose_logging=False)

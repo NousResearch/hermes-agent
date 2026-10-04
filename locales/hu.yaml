@@ -2498,6 +2498,8 @@ cli:
     column_preview: "Előnézet"
     column_last_active: "Utoljára aktív"
     column_id: "ID"
+    column_directory: "Munkakönyvtár"
+    directory_not_recorded: "(nincs rögzítve)"
     resume_usage: "Folytatáshoz használd: /resume <number>, /resume <session id> vagy /resume <session title>."
     resume_example: "Példa: /resume 2"
     history_empty: "(._.) Még nincs beszélgetési előzmény."

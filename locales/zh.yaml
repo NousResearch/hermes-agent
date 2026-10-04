@@ -2481,6 +2481,8 @@ cli:
     column_preview: "预览"
     column_last_active: "最近活动"
     column_id: "ID"
+    column_directory: "工作目录"
+    directory_not_recorded: "（未记录）"
     resume_usage: "使用 /resume <编号>、/resume <会话 ID> 或 /resume <会话标题> 继续。"
     resume_example: "示例：/resume 2"
     history_empty: "(._.) 还没有对话历史。"

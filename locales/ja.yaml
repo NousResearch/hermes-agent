@@ -2481,6 +2481,8 @@ cli:
     column_preview: "プレビュー"
     column_last_active: "最終アクティブ"
     column_id: "ID"
+    column_directory: "作業ディレクトリ"
+    directory_not_recorded: "(記録なし)"
     resume_usage: "続行するには /resume <number>、/resume <session id>、または /resume <session title> を使用してください。"
     resume_example: "例: /resume 2"
     history_empty: "(._.) まだ会話履歴がありません。"

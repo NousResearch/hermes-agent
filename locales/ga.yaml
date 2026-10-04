@@ -2481,6 +2481,8 @@ cli:
     column_preview: "Réamhamharc"
     column_last_active: "Gníomhach Go Deireanach"
     column_id: "ID"
+    column_directory: "Eolaire oibre"
+    directory_not_recorded: "(gan taifead)"
     resume_usage: "Úsáid /resume <uimhir>, /resume <id seisiúin>, nó /resume <teideal seisiúin> le leanúint ar aghaidh."
     resume_example: "Sampla: /resume 2"
     history_empty: "(._.) Níl aon stair chomhrá ann fós."

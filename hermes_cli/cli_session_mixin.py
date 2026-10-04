@@ -11,6 +11,7 @@ import contextlib
 import os
 import shutil
 import sys
+from io import StringIO
 
 from agent.i18n import t
 from hermes_constants import get_hermes_home
@@ -18,6 +19,8 @@ from hermes_state_ids import new_session_id
 from pathlib import Path
 from rich.console import Console
 from rich.markup import escape as _escape
+from rich.table import Table
+from rich.text import Text
 from typing import Any, Dict, List, Optional
 
 
@@ -344,15 +347,30 @@ class CLISessionMixin:
         else:
             _cli_visible_print(f"  {t('cli.session.recent_header')}")
         _cli_visible_print()
-        _cli_visible_print(
-            f"  {'#':<3} {t('cli.session.column_title'):<32} {t('cli.session.column_preview'):<40} "
-            f"{t('cli.session.column_last_active'):<13} {t('cli.session.column_id')}")
-        _cli_visible_print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+        table = Table(box=None, pad_edge=False, expand=True)
+        table.add_column("#", no_wrap=True)
+        table.add_column(t("cli.session.column_title"), max_width=32, ratio=1)
+        table.add_column(t("cli.session.column_preview"), max_width=40, ratio=1)
+        table.add_column(t("cli.session.column_last_active"), no_wrap=True)
+        table.add_column(t("cli.session.column_id"), no_wrap=True)
+        table.add_column(
+            t("cli.session.column_directory"), min_width=17, ratio=3, overflow="fold")
         for idx, session in enumerate(sessions, start=1):
             title = session.get("title") or "—"
             preview = (session.get("preview") or "")[:38]
             last_active = _relative_time(session.get("last_active"), session_id=session.get("id"))
-            _cli_visible_print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+            # Only the saved cwd identifies this session's workspace. The process cwd can differ.
+            directory = session.get("cwd") or t("cli.session.directory_not_recorded")
+            table.add_row(
+                str(idx), Text(title), Text(preview), Text(last_active),
+                Text(session["id"]), Text(str(directory)))
+        buffer = StringIO()
+        console = Console(
+            file=buffer, width=shutil.get_terminal_size((80, 24)).columns,
+            color_system=None, highlight=False)
+        console.print(table)
+        for line in buffer.getvalue().splitlines():
+            _cli_visible_print(line)
         _cli_visible_print()
         _cli_visible_print(f"  {t('cli.session.resume_usage')}")
         _cli_visible_print(f"  {t('cli.session.resume_example')}")

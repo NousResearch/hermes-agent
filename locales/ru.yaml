@@ -2481,6 +2481,8 @@ cli:
     column_preview: "Превью"
     column_last_active: "Последняя активность"
     column_id: "ID"
+    column_directory: "Рабочий каталог"
+    directory_not_recorded: "(не записан)"
     resume_usage: "Используйте /resume <номер>, /resume <id сеанса> или /resume <заголовок сеанса>, чтобы продолжить."
     resume_example: "Пример: /resume 2"
     history_empty: "(._.) История разговора пока пуста."

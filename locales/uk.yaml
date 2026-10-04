@@ -2481,6 +2481,8 @@ cli:
     column_preview: "Уривок"
     column_last_active: "Остання активність"
     column_id: "ID"
+    column_directory: "Робочий каталог"
+    directory_not_recorded: "(не записано)"
     resume_usage: "Щоб продовжити, використайте /resume <номер>, /resume <id сеансу> або /resume <назва сеансу>."
     resume_example: "Приклад: /resume 2"
     history_empty: "(._.) Історії розмови ще немає."

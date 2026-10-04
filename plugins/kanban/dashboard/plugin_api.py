@@ -1618,7 +1618,7 @@ def get_orchestration_settings():
     profile only for cards with no assignee."""
     cfg = _load_config_or_empty()
     kanban_cfg = (cfg.get("kanban") or {}) if isinstance(cfg, dict) else {}
-    explicit = {k: (kanban_cfg.get(k) or "").strip() for k in _PROFILE_SETTINGS}
+    explicit = {k: str(kanban_cfg.get(k) or "").strip() for k in _PROFILE_SETTINGS}
     resolved = dict(explicit)
     try:
         from hermes_cli import profiles as profiles_mod

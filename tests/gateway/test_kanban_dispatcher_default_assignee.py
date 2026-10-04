@@ -56,3 +56,19 @@ def test_cli_dispatch_keeps_caps_with_numeric_default_assignee(tmp_path, monkeyp
 
     assert seen.get("default_assignee") == "2024"
     assert seen.get("max_in_progress") == 3
+
+
+def test_dashboard_orchestration_endpoint_reads_a_numeric_default_assignee(tmp_path, monkeypatch):
+    """The 4th reader: GET /orchestration 500s on an int default_assignee.
+
+    Unwrapped, so it surfaces as an unhandled 500 rather than a FastAPI error body —
+    and ``useDefaultAssignee()`` reads it every render, so auto-assign is unreachable.
+    """
+    from plugins.kanban.dashboard import plugin_api
+
+    _write_config(tmp_path, monkeypatch)
+
+    settings = plugin_api.get_orchestration_settings()
+
+    assert settings["default_assignee"] == "2024", \
+        "an all-digit profile id must come back as the profile name it spells"

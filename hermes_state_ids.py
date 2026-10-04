@@ -16,17 +16,8 @@ from typing import Optional
 
 SESSION_ID_PATTERN = re.compile(r"^\d{8}_\d{6}_")
 
-# Not every session id is minted by ``new_session_id``. Several first-class surfaces derive an id
-# from something they already have (a job id, a clock, a room hash) so the id itself carries the
-# provenance. Salvage classifies schema-less rows by these shapes, so a surface missing here (a)
-# has its sessions DROPPED by ``hermes sessions recover`` (classify returns None) and (b) poisons
-# layout inference for the WHOLE table via ``parent_session_id``: an ordinary child session of a
-# cron job classifies fine but carries the unrecognised parent id, and one bad sampled value vetoes
-# every candidate layout, which drops recovery onto the positional-guessing fallback. Measured on a
-# real 3,373-session store: 379 rows (11.2%) -- 375 cron + 1 bg + junk -- were silently discarded.
-#
-# Keep each entry anchored on the parts the minting site actually fixes; these are layout sentinels,
-# so a loose pattern costs real wrong-column-mapping safety.
+# Ids that surfaces derive instead of minting via new_session_id; salvage uses them as layout
+# sentinels, so anchor each on what its mint site fixes.
 SESSION_ID_RECOGNIZERS = (
     SESSION_ID_PATTERN,
     # cron/scheduler.py: f"cron_{job_id}_{now:%Y%m%d_%H%M%S}". job_id is uuid4().hex[:12] for jobs

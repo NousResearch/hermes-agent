@@ -297,13 +297,7 @@ def _parse_sql_default(text: str) -> Any:
 
 
 def _is_session_id(value: Any) -> bool:
-    """A cell that can be a session id: any shape this repo's surfaces really mint.
-
-    Not just ``SESSION_ID_PATTERN``. Cron fires, ``/bg`` tasks and hosted rooms derive their ids
-    instead of minting through ``new_session_id``, and those rows are first-class sessions. Missing
-    them here both drops them from salvage and — since one bad value at the id position vetoes a
-    candidate layout — collapses layout inference for the whole table to the positional fallback.
-    """
+    """A cell that can be a session id: any shape in ``SESSION_ID_RECOGNIZERS``."""
     return isinstance(value, str) and is_known_session_id(value)
 
 

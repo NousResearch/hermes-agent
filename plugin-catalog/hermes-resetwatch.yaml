@@ -2,7 +2,7 @@ name: hermes-resetwatch
 repo: https://github.com/Adolanium/hermes-resetwatch
 sha: 870105e4978f42a442493fe0f552dcb6810d136b
 version: "0.2.20"
-description: Track subscription quotas and reset times in Hermes Desktop. Disclosure — probe.py re-executes itself under the Hermes Python interpreter located via HERMES_PYTHON / VIRTUAL_ENV / the parent process.
+description: "Track subscription quotas and reset times in Hermes Desktop. Disclosure — probe.py re-executes itself under the Hermes Python interpreter located via HERMES_PYTHON / VIRTUAL_ENV / the parent process; it reads provider API keys from the Hermes .env, the Vaultwarden plugin's local secret cache (cache/vaultwarden_cache.json, read-only, only when Vaultwarden is the sole enabled secret source) and Docker s6 container env files, plus other coding-assistant CLIs' local logins (including macOS keychain entries), and sends each key only to its own vendor's usage endpoint."
 maintainer: Adolanium
 tier: community
 category: desktop

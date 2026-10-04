@@ -1175,7 +1175,7 @@ def _spawn_gateway_restart_watcher(
         """
     ).strip().format(respawn_cwd_literal=json.dumps(respawn_cwd), respawn_env_literal=json.dumps(respawn_env_overlay),
                      watcher_timeout_literal=json.dumps(GATEWAY_RESTART_WATCHER_TIMEOUT_S),
-                     wait_for_exit_literal=json.dumps(wait_for_exit),
+                     wait_for_exit_literal=repr(wait_for_exit),
                      project_root_literal=json.dumps(str(PROJECT_ROOT)))
 
     watcher_argv = [sys.executable, "-c", watcher, str(old_pid), *run_argv]

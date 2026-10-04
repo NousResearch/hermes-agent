@@ -11,14 +11,34 @@ from hermes_cli.kanban_swarm import (
 )
 
 
-def test_worker_arg_keeps_skill_lists_and_refuses_a_colon_in_the_title():
+def _plant_skill(name: str) -> None:
+    from hermes_constants import get_hermes_home
+
+    dest = get_hermes_home() / "skills" / name
+    dest.mkdir(parents=True)
+    (dest / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: Planted.\n---\n# {name}\n",
+        encoding="utf-8",
+    )
+
+
+def test_worker_arg_keeps_loaded_skills_and_refuses_a_colon_in_the_title():
     """profile:title[:skill,skill] splits on the first two colons. A title
     that itself contains ':' was stored as a skill and the worker exited
-    Unknown skill (#129349)."""
+    Unknown skill (#129349). The third field is a skill list only when every
+    token loads the way ``--skills`` loads it, including a name with a space.
+    """
+    for name in ("requesting-code-review", "humanizer", "deep research"):
+        _plant_skill(name)
+
     spec = parse_worker_arg("planner:Compare options:requesting-code-review,humanizer")
     assert spec.profile == "planner"
     assert spec.title == "Compare options"
     assert spec.skills == ["requesting-code-review", "humanizer"]
+
+    spaced_name = parse_worker_arg("planner:Use the spaced skill:deep research")
+    assert spaced_name.title == "Use the spaced skill"
+    assert spaced_name.skills == ["deep research"]
 
     spaced = parse_worker_arg("planner:Plan the work")
     assert spaced.title == "Plan the work"
@@ -26,6 +46,31 @@ def test_worker_arg_keeps_skill_lists_and_refuses_a_colon_in_the_title():
 
     with pytest.raises(ValueError, match="compare two options"):
         parse_worker_arg("planner:Plan: compare two options")
+    with pytest.raises(ValueError, match="implement"):
+        parse_worker_arg("planner:Step 1: implement")
+
+
+def test_swarm_command_refuses_an_unresolved_skill_before_creating_a_card(capsys):
+    """The CLI entry returns before connect, so a title colon never becomes a card."""
+    import argparse
+
+    from hermes_cli.kanban import _cmd_swarm
+    from hermes_constants import get_hermes_home
+
+    rc = _cmd_swarm(argparse.Namespace(
+        worker=["planner:Step 1: implement"],
+        goal="unused",
+        verifier="reviewer",
+        synthesizer="writer",
+        tenant=None,
+        created_by="orchestrator",
+        priority=0,
+        idempotency_key=None,
+        json=False,
+    ))
+    assert rc == 2
+    assert "implement" in capsys.readouterr().err
+    assert not (get_hermes_home() / "kanban.db").exists()
 
 
 def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path):

@@ -291,20 +291,33 @@ def latest_blackboard(conn: sqlite3.Connection, root_id: str) -> dict[str, Any]:
     return merged
 
 
+def _unresolved_worker_skills(skills: list[str]) -> list[str]:
+    """Skill tokens the worker's ``--skills`` load would treat as missing.
+
+    That load is ``skill_view`` (via ``_load_skill_payload``). A name with a
+    space still resolves when a skill by that name is installed, so whitespace
+    is not the discriminator.
+    """
+    from agent.skill_commands import _load_skill_payload
+
+    return [skill for skill in skills if _load_skill_payload(skill) is None]
+
+
 def parse_worker_arg(raw: str) -> SwarmWorkerSpec:
     """Parse CLI ``--worker profile:title[:skill,skill]`` values.
 
     ``split(":", 2)`` is the grammar, so a ':' inside the title becomes the
-    skill list. A token with whitespace is not a skill name; refuse it here
-    instead of creating a card the worker then blocks on.
+    skill list. Keep that list only when every token loads. Otherwise the
+    card is stored with a skill the worker cannot find, retried once, and
+    blocked (#129349).
     """
     parts = [p.strip() for p in raw.split(":", 2)]
     if len(parts) < 2:
         raise ValueError("worker must be profile:title or profile:title:skill,skill")
     skills = [s.strip() for s in parts[2].split(",") if s.strip()] if len(parts) == 3 and parts[2] else []
-    bad = [skill for skill in skills if any(ch.isspace() for ch in skill)]
-    if bad:
-        shown = ", ".join(repr(skill) for skill in bad)
+    unknown = _unresolved_worker_skills(skills)
+    if unknown:
+        shown = ", ".join(repr(skill) for skill in unknown)
         raise ValueError(
             f"unknown skill(s): {shown}. "
             "worker is profile:title[:skill,skill]; a ':' in the title starts the skill list."

@@ -1,0 +1,28 @@
+name: hermes-pokemon
+repo: https://github.com/sxuff/hermes-pokemon
+sha: 82dcedc36031a64eeb2ef7814c2438fe6eefd022
+version: "0.4.0"
+title: Hermes Pokémon
+description: >-
+  A cozy pixel-art companion garden for Hermes Desktop with three starters,
+  nicknames, fetch, berries, welcome-back greetings, and species-specific habits.
+  Independent fan project bundling CHUNSOFT Pokémon sprites via PMDCollab;
+  artwork is excluded from the source-code MIT license. Uses local plugin
+  storage and read-only focused-session activity, with no runtime network
+  requests, credentials, backend, or model calls.
+maintainer: sxuff
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/sxuff/hermes-pokemon#readme
+screenshots:
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/82dcedc36031a64eeb2ef7814c2438fe6eefd022/docs/images/habitat.png
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/82dcedc36031a64eeb2ef7814c2438fe6eefd022/docs/images/starters.png
+  - https://raw.githubusercontent.com/sxuff/hermes-pokemon/82dcedc36031a64eeb2ef7814c2438fe6eefd022/docs/images/narrow.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

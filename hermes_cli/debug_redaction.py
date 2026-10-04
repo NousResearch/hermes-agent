@@ -118,9 +118,10 @@ _SUPPORT_BEARER_RE = re.compile(
     # Free text has no header boundary to stop at: consume the whole value,
     # inner ``=`` padding included (``abcd1234==x``), not just a key-shaped prefix.
     # An RFC 6750/7235 challenge (``Bearer realm="api"``, ``Bearer error=...``)
-    # is auth-params, not a token: a quoted param or a known param name stays.
+    # is auth-params, not a token: only a known param name stays, so a key-shaped
+    # ``<letters>="..."`` is still scrubbed (fail closed).
     rf"(?P<prefix>\bBearer\s+|\bBasic\s+{_NOT_WORD})"
-    r'(?![A-Za-z_]+="|(?:realm|scope|error|error_description|error_uri)=)'
+    r"(?!(?:realm|scope|error|error_description|error_uri)=)"
     rf"(?=[^\s]{{8}})"
     rf"[{_KEY_CHARS}=]+(?::[{_KEY_CHARS}=]+)*",
     re.IGNORECASE,

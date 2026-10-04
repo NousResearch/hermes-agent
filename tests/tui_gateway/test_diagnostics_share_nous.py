@@ -202,6 +202,7 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
     for leaky, key in (
         ("x-api-key: Bearer abc1234", "abc1234"),
         ("-H 'x-auth-token: *** s3cr3t'", "s3cr3t"),
+        ('Bearer qwertyuiopas="v"', "qwertyuiopas"),
         ("x-api-key: *** qwertyuiopas", "qwertyuiopas"),
         ("--header x-api-key *** abc1234", "abc1234"),
         ("x-api-key: *** " + "q" * 32, "q" * 32),

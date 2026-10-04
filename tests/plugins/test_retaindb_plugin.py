@@ -185,7 +185,8 @@ class TestWriteQueue:
 
     def test_live_writer_retries_failures_and_drains_backlog(self, tmp_path, monkeypatch):
         """Every pending row reaches RetainDB while the writer lives: a failed ingest is retried and
-        a backlog longer than one replay batch drains, with no process restart."""
+        a backlog longer than one replay batch drains, with no process restart. A row whose claim
+        cannot be written (read-only queue file) backs off instead of being retried on every rescan."""
         from plugins.memory import retaindb
         monkeypatch.setattr(retaindb, "_RETRY_STEP", 0.0, raising=False)
         monkeypatch.setattr(retaindb, "_RESCAN_INTERVAL", 0.05, raising=False)
@@ -211,6 +212,25 @@ class TestWriteQueue:
         q.shutdown()
         assert self._pending_count(db_path) == 0
         assert ingested == {f"turn {i}" for i in range(201)}
+
+        monkeypatch.setattr(retaindb, "_RETRY_STEP", 30.0)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("INSERT INTO pending (user_id, session_id, messages_json, created_at) VALUES ('u', 's', '[]', 't')")
+        conn.commit()
+        conn.close()
+        claims, real_execute = [], _WriteQueue._execute
+
+        def read_only_claims(self, sql, params=()):
+            if sql.startswith("UPDATE pending SET claimed_until"):
+                claims.append(1)
+                raise sqlite3.OperationalError("attempt to write a readonly database")
+            return real_execute(self, sql, params)
+
+        monkeypatch.setattr(_WriteQueue, "_execute", read_only_claims)
+        q = _WriteQueue(MagicMock(), db_path)
+        time.sleep(0.5)  # ~10 idle rescans
+        q.shutdown()
+        assert len(claims) == 1
 
     def test_writers_sharing_a_queue_file_ingest_each_row_once(self, tmp_path, monkeypatch):
         """Two writers on one queue file (two gateway sessions of a profile, or CLI + gateway): the second

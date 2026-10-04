@@ -197,6 +197,9 @@ class _WriteQueue:
         self._local = threading.local()  # one cached connection per thread, all tracked in _connections
         self._connections: set[sqlite3.Connection] = set()
         self._connections_lock, self._shutdown_lock, self._shutdown = threading.Lock(), threading.Lock(), False
+        # row id -> (failed claims, retry time): backoff for rows whose claim cannot be written (read-only
+        # file), which therefore cannot carry their backoff in SQLite. Touched only by the writer thread.
+        self._unclaimable: dict[int, tuple[int, float]] = {}
         conn = self._execute("CREATE TABLE IF NOT EXISTS pending (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, "
                              "session_id TEXT, messages_json TEXT, created_at TEXT, last_error TEXT, "
                              "attempts INTEGER NOT NULL DEFAULT 0, claimed_until REAL NOT NULL DEFAULT 0)").connection
@@ -243,17 +246,26 @@ class _WriteQueue:
             self._q.put((cur.lastrowid, user_id, session_id, messages))
 
     def _queue_due_rows(self, *, untried_only: bool = False) -> int:
+        now = time.time()
         due = self._get_conn().execute("SELECT id, user_id, session_id, messages_json FROM pending WHERE claimed_until <= ?"
                                        + (" AND attempts = 0" if untried_only else "") + " ORDER BY id ASC LIMIT 200",
-                                       (time.time(),)).fetchall()
+                                       (now,)).fetchall()
+        due = [row for row in due if self._unclaimable.get(row[0], (0, 0.0))[1] <= now]
         for row_id, user_id, session_id, msgs_json in due:
             self._q.put((row_id, user_id, session_id, json.loads(msgs_json)))
         return len(due)
 
     def _flush_row(self, row_id: int, user_id: str, session_id: str, messages: list) -> None:
         now = time.time()
-        if not self._execute("UPDATE pending SET claimed_until = ? WHERE id = ? AND claimed_until <= ?",
-                             (now + _CLAIM_LEASE, row_id, now)).rowcount:
+        try:
+            claimed = self._execute("UPDATE pending SET claimed_until = ? WHERE id = ? AND claimed_until <= ?",
+                                    (now + _CLAIM_LEASE, row_id, now)).rowcount
+        except sqlite3.Error:
+            failures = self._unclaimable.get(row_id, (0, 0.0))[0] + 1
+            self._unclaimable[row_id] = (failures, now + min(_RETRY_MAX, _RETRY_STEP * failures))
+            raise
+        self._unclaimable.pop(row_id, None)
+        if not claimed:
             return  # already ingested, in flight on another writer, or backing off
         try:
             self._client.ingest_session(user_id, session_id, messages)

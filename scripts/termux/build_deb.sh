@@ -229,9 +229,10 @@ cp -a "$PAYLOAD_ABS/runtime-libs" "$PAYLOAD_ABS/app" "$PAYLOAD_ABS/venv" "$PAYLO
 # AppleDouble files, `.DS_Store`) no matter which payload producer leaked
 # them. Shipped as-is, the on-device text walkers die on the first binary
 # `._*` they read (#126097); the deb is the single exit point, so purge here.
-strays="$(find "$STAGE" \( -name '._*' -o -name '.DS_Store' \) -type f -print -delete)"
-if [ -n "$strays" ]; then
-    log "Purged $(printf '%s\n' "$strays" | wc -l | tr -d ' ') macOS metadata file(s) from the staged tree"
+# Name-based on purpose, matching the install gate in validate_installed.py.
+purged="$(bash "$HERE/purge_macos_metadata.sh" "$STAGE")"
+if [ "$purged" -gt 0 ]; then
+    log "Purged $purged macOS metadata file(s) from the staged tree"
 fi
 python3 "$HERE/payload_facts.py" "$DEST" "$PAYLOAD_ABS/.work/build_set.txt" --tui-product "$TUI_PRODUCT"
 

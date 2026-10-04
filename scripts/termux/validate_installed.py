@@ -90,26 +90,24 @@ def validate_update_refusal(project_root: Path, result: subprocess.CompletedProc
     print("COMMIT_BUILD_UPDATE_REFUSAL_OK" if commit_build else "APT_UPDATE_REFUSAL_OK", flush=True)
 
 
-APPLEDOUBLE_MAGIC = b"\x00\x05\x16\x07"
-
-
 def assert_no_macos_metadata(root: Path) -> None:
     """Fail when a macOS build host leaked xattr sidecars into the installed payload.
 
     Binary `._*` AppleDouble files crash the on-device text walkers that read
-    them as UTF-8 (#126097), and `.DS_Store` entries are Finder noise. Only
-    `._*` files that actually carry the AppleDouble magic count, so a payload
-    legitimately containing a same-named file is not a false alarm.
+    them as UTF-8 (#126097), and `.DS_Store` entries are Finder noise. Any
+    `._*`-named file in a Termux payload is build-host leakage by definition
+    (the Finder/xattr naming convention has no legitimate use there), which
+    keeps this gate symmetric with the name-based build-side purge in
+    purge_macos_metadata.sh.
     """
-    strays: list[str] = []
-    for path in root.rglob("._*"):
-        try:
-            with path.open("rb") as handle:
-                if handle.read(len(APPLEDOUBLE_MAGIC)) == APPLEDOUBLE_MAGIC:
-                    strays.append(str(path.relative_to(root)))
-        except OSError:
-            continue
-    strays.extend(str(path.relative_to(root)) for path in root.rglob(".DS_Store"))
+    strays = [
+        str(path.relative_to(root)) for path in root.rglob("._*") if path.is_file()
+    ]
+    strays.extend(
+        str(path.relative_to(root))
+        for path in root.rglob(".DS_Store")
+        if path.is_file()
+    )
     assert not strays, f"macOS metadata files shipped in the deb: {strays[:10]}"
     print("NO_MACOS_METADATA_OK", flush=True)
 

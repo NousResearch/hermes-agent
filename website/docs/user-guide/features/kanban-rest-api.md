@@ -123,9 +123,13 @@ and the gateway's existing Kanban dispatcher claims and launches it.
 ## Example: parent operation and dependent child work
 
 A dependency link means **the parent is a prerequisite for the child**. The
-example creates a short planning/approval parent, creates two children, links
-the parent to each child, and completes the parent so the dispatcher may pick
-up the children.
+example creates a short planning/approval parent, creates two children that
+name it in `parents`, and completes the parent so the dispatcher may pick up
+the children.
+
+Declare the dependency **in the create request**. A child created with an
+assignee and no parents is `ready` at once, so the dispatcher can claim it
+before a later link request arrives — and linking a running child is refused.
 
 ```bash
 # 1. Create the parent operation.
@@ -141,8 +145,9 @@ PARENT=$(
     }' | jq -r '.task.id'
 )
 
-# 2. Create child tasks. Assignees are ordinary Hermes profile names; the API
-# does not execute them directly.
+# 2. Create child tasks behind the parent: they wait in todo while PARENT is
+# open. Assignees are ordinary Hermes profile names; the API does not execute
+# them directly.
 CHILD_A=$(
   curl -fsS -X POST "$HERMES_URL/api/plugins/kanban/v1/tasks?board=default" \
     -H "$AUTH" -H 'Content-Type: application/json' \
@@ -151,7 +156,8 @@ CHILD_A=$(
       "title": "Process workstream A",
       "body": "Execute the first approved work package.",
       "assignee": "worker-a",
-      "tenant": "catalog-maintenance"
+      "tenant": "catalog-maintenance",
+      "parents": ["'"$PARENT"'"]
     }' | jq -r '.task.id'
 )
 
@@ -163,19 +169,12 @@ CHILD_B=$(
       "title": "Process workstream B",
       "body": "Execute the second approved work package.",
       "assignee": "worker-b",
-      "tenant": "catalog-maintenance"
+      "tenant": "catalog-maintenance",
+      "parents": ["'"$PARENT"'"]
     }' | jq -r '.task.id'
 )
 
-# 3. Add prerequisite links. Each child moves to todo while PARENT is open.
-curl -fsS -X POST \
-  "$HERMES_URL/api/plugins/kanban/v1/tasks/$PARENT/links/$CHILD_A?board=default" \
-  -H "$AUTH"
-curl -fsS -X POST \
-  "$HERMES_URL/api/plugins/kanban/v1/tasks/$PARENT/links/$CHILD_B?board=default" \
-  -H "$AUTH"
-
-# Release the children after the parent approval/planning work is complete.
+# 3. Release the children after the parent approval/planning work is complete.
 curl -fsS -X POST \
   "$HERMES_URL/api/plugins/kanban/v1/tasks/$PARENT/complete?board=default" \
   -H "$AUTH" -H 'Content-Type: application/json' \
@@ -222,11 +221,11 @@ default** — the endpoint returns 404 and `GET /capabilities` omits
 kanban:
   api_expose_transcripts: true
 ```
+
 The setting is per profile, and a transcript is served only when the profile
 that **ran the worker** has it on — a `?profile=` on the request does not
 change whose opt-in counts. With workers in named profiles, set it in each of
 their `config.yaml` files as well as the one serving the API.
-
 
 Every text field goes through the same secret redaction and absolute-path
 removal as the log excerpt. Tool results are capped at 4,000 characters and
@@ -256,8 +255,8 @@ Each message carries `id`, `uid`, `role` (`user`, `assistant`, or `tool`),
 `content`, `reasoning`, `tool_calls` (`id`, `name`, `arguments`),
 `tool_name`, `tool_call_id`, `timestamp`, and `truncated`. The response
 wraps them with `task_id`, `run_id`, `run_status`, `next_after_id`, and
+`has_more`.
 
 `id` is only the paging cursor. When the worker compacts its context mid-run,
 the steps it carries forward are stored again under new ids, so a poller can
 receive a step it already has; `uid` stays the same, so deduplicate on it.
-`has_more`.

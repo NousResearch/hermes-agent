@@ -1069,11 +1069,28 @@ class TestAppendJsonLineRotating:
                 log_path, {"tag": "gateway.start", "i": i, "pad": "x" * 500}, max_bytes=2048
             )
         assert log_path.exists()
-        assert log_path.stat().st_size <= 2048
         rotated = log_path.with_name(log_path.name + ".1")
         assert rotated.exists()
         # The rotated copy holds the earlier records; nothing was lost.
         assert rotated.stat().st_size > 0
+        # The live file is bounded: stdlib rolls *before* the write that would
+        # cross max_bytes, CLH lets one more full record land first, so the
+        # invariant that holds on both backends is "well under 2 × max_bytes",
+        # never the exact <= max_bytes that only stdlib guarantees.
+        assert log_path.stat().st_size <= 2 * 2048
+
+    def test_warns_once_when_fallback_disables_rotation(self, tmp_path, monkeypatch, caplog):
+        import logging as _logging
+
+        log_path = tmp_path / "gateway-exit-diag.log"
+        monkeypatch.setattr(hermes_logging, "_WINDOWS_CLH_FALLBACK", True)
+        monkeypatch.setattr(hermes_logging, "_WINDOWS_CLH_FALLBACK_REASON", "portalocker probe failed")
+        monkeypatch.setattr(hermes_logging, "_exit_diag_fallback_warned", False)
+        with caplog.at_level(_logging.WARNING, logger="hermes_logging"):
+            hermes_logging.append_json_line_rotating(log_path, {"tag": "gateway.start"})
+            hermes_logging.append_json_line_rotating(log_path, {"tag": "gateway.start"})
+        matches = [r.message for r in caplog.records if "rotation is disabled" in r.message]
+        assert len(matches) == 1  # one-shot, not per-write
 
     def test_never_raises_when_handler_construction_fails(self, tmp_path, monkeypatch):
         def _boom(*_args, **_kwargs):

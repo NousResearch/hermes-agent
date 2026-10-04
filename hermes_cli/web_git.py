@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
@@ -30,7 +31,7 @@ _COMMIT_CONTEXT_UNTRACKED_MAX = 80
 _TRUNK_BRANCHES = ("main", "master")
 
 
-def _run(argv: list[str], cwd: str, timeout: int, env: dict) -> subprocess.CompletedProcess | None:
+def _run(argv: list[str], cwd: str | None, timeout: int, env: dict) -> subprocess.CompletedProcess | None:
     """Non-interactive subprocess (stdin nulled, prompts disabled): a credential prompt from
     ``fetch``/``push`` could never be answered from a REST request, so fail fast and surface
     the real auth error in the toast. None when the process could not run at all."""
@@ -386,7 +387,7 @@ def review_commit_context(cwd: str) -> dict:
 # ── ship flow (gh) ───────────────────────────────────────────────────────────
 
 
-def _gh(cwd: str, args: list[str]) -> tuple[bool, str, str]:
+def _gh(cwd: str | None, args: list[str]) -> tuple[bool, str, str]:
     """``(ok, stdout, stderr)`` of ``gh`` in ``cwd``. Never raises on non-zero exit —
     the caller decides what a failure means, and the real reason rides in stderr."""
     if not shutil.which("gh"):
@@ -458,7 +459,45 @@ def _own_pr(key: str, field: dict) -> dict | None:
     return next((n for n in (field.get("nodes") or []) if n and not n.get("isCrossRepository")), None)
 
 
-def review_pr_list(cwd: str, branches: list[str], numbers: list[int] = None) -> dict:
+def review_pr_list(
+    cwd: str, branches: list[str], numbers: list[int] | None = None, urls: list[str] | None = None,
+) -> dict:
+    """Explicit GitHub URLs retain repository identity even without a checkout."""
+    wanted_urls = list(dict.fromkeys(
+        url for url in (urls or []) if isinstance(url, str) and re.fullmatch(
+            r"https://github\.com/[A-Za-z0-9][A-Za-z0-9-]*/(?!\.{1,2}/)[A-Za-z0-9_.][A-Za-z0-9_.-]*/pull/[1-9][0-9]*/?", url,
+        )
+    ))[:_PR_QUERY_BRANCH_CAP]
+    result = (_review_repo_pr_list(cwd, branches, numbers) if branches or numbers
+              else {"ghReady": False, "prs": []})
+    urls_ready = True
+    if wanted_urls:
+        # No cwd or repo probe: gh pr view URL resolves the repository itself.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = pool.map(lambda url: _gh(
+                None, ["pr", "view", url, "--json", _PR_NODE_FIELDS.replace(" ", ",")],
+            ), wanted_urls)
+            for ok, out, _err in results:
+                if not ok:
+                    urls_ready = False
+                    continue
+                result["ghReady"] = True
+                try:
+                    pr = json.loads(out)
+                except json.JSONDecodeError:
+                    urls_ready = False
+                    continue
+                if isinstance(pr, dict) and pr.get("headRefName"):
+                    result["prs"].append(_pr_payload(pr))
+                else:
+                    urls_ready = False
+    # A partial/network failure must not evict previously confirmed badges.
+    result["ghReady"] = result["ghReady"] and urls_ready
+    result["prs"] = list({pr["url"]: pr for pr in result["prs"]}.values())
+    return result
+
+
+def _review_repo_pr_list(cwd: str, branches: list[str], numbers: list[int] | None = None) -> dict:
     """PRs on the given branches (plus any asked for by number) — queried per branch
     rather than paging the repo's newest PRs and hoping ours are in the page."""
     not_ready = {"ghReady": False, "prs": []}

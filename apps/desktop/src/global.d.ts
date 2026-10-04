@@ -529,7 +529,12 @@ declare global {
           // The PR on each of the given branches — plus any known only by
           // number — for badging a list of sessions in one request instead of
           // one `pr view` per checkout.
-          prList: (repoPath: string, branches: string[], numbers?: number[]) => Promise<HermesRepoPullRequests>
+          prList: (
+            repoPath: string,
+            branches: string[],
+            numbers?: number[],
+            urls?: string[]
+          ) => Promise<HermesRepoPullRequests>
           createPr: (repoPath: string) => Promise<{ url: string }>
         }
         // Repo-first discovery: scan bounded roots for git repos (depth-capped).

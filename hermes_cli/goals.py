@@ -1687,10 +1687,19 @@ def run_kanban_goal_loop(
         from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
         affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id}")
         try:
-            verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+            verdict, reason, _parse_failed, _wait, transport_failed = judge_goal(goal_text, last_response)
         finally:
             if affinity_token is not None:
                 reset_affinity_scope(affinity_token)
+        if transport_failed:
+            # Infrastructure failure is not evidence that the worker has more work to do. Returning a
+            # transient outcome lets the dispatcher release the claim with EX_TEMPFAIL and retry after its
+            # provider cooldown, without spending another worker turn or creating a human-input block.
+            _log(
+                f"kanban goal loop: judge transport unavailable at turn {turns_used}/{max_turns}; "
+                "stopping for transient retry"
+            )
+            return _result("transient_infrastructure_failure", f"judge transport unavailable: {reason}")
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")

@@ -6,46 +6,52 @@
  * Desktop. While it names a LIVE owner, a Desktop reopened mid-update must not
  * spawn a backend on the runtime being replaced, and no second update may start.
  *
- * Body (UTF-8, `\n` line ends):
+ * Parsing and judging live in `update-marker-judge.ts` and follow the shared
+ * corpus `tests/fixtures/update_marker_corpus.json` (A7 rules 4 and 7).
  *
- *     <pid>
- *     <started_at unix seconds>
- *     ct:<owner creation time, unix seconds, 3 decimals>     (absent in v1 writers)
- *     delegate:<pid> ct:<creation time>                      (optional, see below)
- *
- * Parsing is positional and identical in every language (contract A2): a
- * leading BOM and `\r\n` are accepted; line 2 must be an integer or the marker
- * is malformed (dead); a line 3 that is not `ct:<n>` makes it v1; a line 4
- * that is not `delegate:<pid> ct:<n>` is ignored.
- *
- * Liveness: a pid that is alive (not a zombie) with a creation time MATCHING
- * the recorded one within 2 s is live regardless of age — a Windows update is
- * routinely 25-40 minutes. A live pid whose creation time is unknown (v1
- * marker, or the probe was refused) is live only inside the legacy 20-minute
- * ceiling (A1): without a creation time nothing else tells a reused pid from
- * the original owner. The marker is LIVE when the owner OR the delegate
- * (`hermes update` running under a hand-off script's claim) is live, so a
- * killed script cannot hide a still-mutating update.
+ * A7 rule 3: this Desktop NEVER deletes or rewrites the marker. Node has no
+ * portable kernel lock, so every read-judge-mutate (reclaim a dead claim,
+ * withdraw a bridge) belongs to the checkout's script helper, which holds the
+ * `<marker>.lock` sidecar for the whole decision (see
+ * `updater/marker-helper.ts`). Electron reads, decides "running / not
+ * running", and may exclusive-create its own bridge or the staged updater's
+ * pre-write — an exclusive create can only succeed where no marker exists.
  *
  * Claims publish a complete body with an exclusive hard link (A3), so a
  * reader never sees a half-written claim; where links are unsupported the
  * O_EXCL fallback can expose an empty file for an instant, and readers treat
  * a 0-byte marker younger than 5 s as live.
- *
- * Deletes are compare-and-delete: re-read the bytes and unlink only when they
- * still equal the bytes judged dead (or the bytes we wrote). A verdict from an
- * earlier read never unlinks a newer claim.
  */
 
 import fs from 'fs'
 import { execFile, execFileSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import path from 'path'
 
-/** Legacy ceiling, applied ONLY to v1 markers (no creation time recorded). */
-export const UPDATE_MARKER_MAX_AGE_MS = 20 * 60 * 1000
+import {
+  CREATE_TIME_TOLERANCE_S,
+  hasForeignLiveIdentity,
+  type JudgeEnv,
+  judgeMarkerText,
+  type MarkerJudgement,
+  RUN_ID_RE,
+  type UpdateMarker,
+  V1_MAX_AGE_S
+} from './update-marker-judge'
 
-/** |recorded - actual| creation-time slack, in seconds (C1 rule 3). */
-export const CREATE_TIME_TOLERANCE_S = 2.0
+export {
+  CREATE_TIME_TOLERANCE_S,
+  type IdentityState,
+  judgeMarkerText,
+  type MarkerJudgement,
+  OWN_CT_EPSILON_S,
+  parseUpdateMarker,
+  type UpdateMarker,
+  V1_MAX_AGE_S
+} from './update-marker-judge'
+
+/** Legacy ceiling, applied ONLY to identities without a comparable creation time. */
+export const UPDATE_MARKER_MAX_AGE_MS = V1_MAX_AGE_S * 1000
 
 /** How long a hand-off script has to take the bridge marker (C2). */
 export const HANDOFF_CLAIM_TIMEOUT_MS = 20_000
@@ -305,89 +311,43 @@ export function formatCreateTime(seconds: number): string {
   return seconds.toFixed(3)
 }
 
-export interface UpdateMarker {
-  pid: number
-  /** Unix seconds (line 2; an integer, or the marker is malformed). */
-  startedAt: number
-  /** Recorded owner creation time; null for a v1 marker. */
-  ct: number | null
-  delegate: { pid: number; ct: number } | null
-}
-
-const INT_LINE_RE = /^\d+$/
-const CT_LINE_RE = /^ct:(\d+(?:\.\d+)?)$/
-const DELEGATE_LINE_RE = /^delegate:(\d+) ct:(\d+(?:\.\d+)?)$/
-
-/**
- * Positional parse, identical in every reader (A2). Null = MALFORMED (dead):
- * line 1 not a pid or line 2 not an integer. A bad line 3 means v1; a bad
- * line 4 is ignored.
- */
-export function parseUpdateMarker(raw: string): UpdateMarker | null {
-  const lines = String(raw)
-    .replace(/^\uFEFF/, '')
-    .split('\n')
-    .map(line => line.trim())
-
-  const [pidLine = '', startedLine = '', ctLine = '', delegateLine = ''] = lines
-
-  if (!INT_LINE_RE.test(pidLine) || !INT_LINE_RE.test(startedLine)) {
-    return null
-  }
-
-  const ct = CT_LINE_RE.exec(ctLine)
-  const delegate = DELEGATE_LINE_RE.exec(delegateLine)
-
-  return {
-    pid: Number(pidLine),
-    startedAt: Number(startedLine),
-    ct: ct ? Number(ct[1]) : null,
-    delegate: delegate ? { pid: Number(delegate[1]), ct: Number(delegate[2]) } : null
-  }
-}
-
 export interface MarkerProbeDeps {
   kill?: typeof process.kill
+  /** Milliseconds since the epoch. */
   now?: () => number
-  maxAgeMs?: number
   processState?: (pid: number) => string | null
   createTime?: CreateTimeProbe
+  /** The pid judged as "us" (A7 rule 4); default this process. */
+  ownPid?: number
 }
 
-/**
- * C1 rule 3 identity of one (pid, recorded ct) pair: `match` = alive with the
- * recorded creation time; `unknown` = alive but no creation time to compare
- * (v1, or the probe was refused); `dead` = gone, a zombie, or a reused pid.
- */
-async function processIdentity(
-  pid: number,
-  recordedCt: number | null,
-  deps: MarkerProbeDeps
-): Promise<'match' | 'unknown' | 'dead'> {
-  if (!isPidAlive(pid, deps.kill) || isZombieState((deps.processState || posixProcessState)(pid))) {
-    return 'dead'
+/** The host's process facts as a judge environment (A7 rule 4). */
+export function hostJudgeEnv(deps: MarkerProbeDeps = {}): JudgeEnv {
+  const createTime = deps.createTime || processCreateTime
+  const ourPid = deps.ownPid ?? process.pid
+
+  return {
+    ourPid,
+    ourCt: () => createTime(ourPid),
+    isAlive: pid => isPidAlive(pid, deps.kill) && !isZombieState((deps.processState || posixProcessState)(pid)),
+    createTime,
+    nowS: (deps.now || Date.now)() / 1000
   }
-
-  if (recordedCt === null) {
-    return 'unknown'
-  }
-
-  const actual = await (deps.createTime || processCreateTime)(pid)
-
-  if (actual === null) {
-    return 'unknown'
-  }
-
-  return Math.abs(actual - recordedCt) <= CREATE_TIME_TOLERANCE_S ? 'match' : 'dead'
 }
 
 export type MarkerInspection =
   | { state: 'absent' }
-  /** `marker` is null for a 0-byte claim still being written (A3). */
-  | { state: 'live'; raw: Buffer; marker: UpdateMarker | null; ageMs: number; livePid: number }
-  | { state: 'dead'; raw: Buffer; marker: UpdateMarker | null }
+  /**
+   * Someone else's update is running (a live identity that is not this
+   * process), or a 0-byte claim is being written (`judgement` null, A3).
+   */
+  | { state: 'live'; raw: Buffer; marker: UpdateMarker | null; ageMs: number; livePid: number; judgement: MarkerJudgement | null }
+  /** A bridge of THIS process incarnation and nothing foreign alive in it. */
+  | { state: 'ours'; raw: Buffer; marker: UpdateMarker; judgement: MarkerJudgement }
+  /** Dead or malformed (`judgement` null for a stale 0-byte file). */
+  | { state: 'dead'; raw: Buffer; marker: UpdateMarker | null; judgement: MarkerJudgement | null }
 
-/** Read and judge the marker without touching it. */
+/** Read and judge the marker. Never touches it. */
 export async function inspectUpdateMarker(hermesHome: string, deps: MarkerProbeDeps = {}): Promise<MarkerInspection> {
   const file = markerPath(hermesHome)
   const now = deps.now || Date.now
@@ -409,76 +369,70 @@ export async function inspectUpdateMarker(hermesHome: string, deps: MarkerProbeD
     }
 
     return ageMs < EMPTY_MARKER_GRACE_MS
-      ? { state: 'live', raw, marker: null, ageMs: Math.max(0, ageMs), livePid: 0 }
-      : { state: 'dead', raw, marker: null }
+      ? { state: 'live', raw, marker: null, ageMs: Math.max(0, ageMs), livePid: 0, judgement: null }
+      : { state: 'dead', raw, marker: null, judgement: null }
   }
 
-  const marker = parseUpdateMarker(raw.toString('utf8'))
+  const judgement = await judgeMarkerText(raw.toString('utf8'), hostJudgeEnv(deps))
+  const { marker } = judgement
 
-  if (!marker) {
-    return { state: 'dead', raw, marker: null }
+  if (!marker || judgement.verdict === 'malformed' || judgement.verdict === 'dead') {
+    return { state: 'dead', raw, marker, judgement }
   }
 
-  const ageMs = now() - marker.startedAt * 1000
-  const withinCeiling = ageMs <= (deps.maxAgeMs ?? UPDATE_MARKER_MAX_AGE_MS)
+  if (hasForeignLiveIdentity(judgement)) {
+    const ownerForeign = judgement.ownerState === 'match' || judgement.ownerState === 'unknown'
+    const livePid = ownerForeign ? marker.pid : (marker.delegate?.pid ?? marker.pid)
 
-  // A1: only a MATCHING creation time is live regardless of age.
-  const isLive = (identity: 'match' | 'unknown' | 'dead') =>
-    identity === 'match' || (identity === 'unknown' && withinCeiling)
-
-  if (isLive(await processIdentity(marker.pid, marker.ct, deps))) {
-    return { state: 'live', raw, marker, ageMs, livePid: marker.pid }
+    return { state: 'live', raw, marker, ageMs: now() - marker.startedAt * 1000, livePid, judgement }
   }
 
-  if (marker.delegate && isLive(await processIdentity(marker.delegate.pid, marker.delegate.ct, deps))) {
-    return { state: 'live', raw, marker, ageMs, livePid: marker.delegate.pid }
-  }
-
-  return { state: 'dead', raw, marker }
-}
-
-/** C1 rule 5: unlink only while the file still holds exactly `expected`. */
-export function compareAndDeleteMarker(hermesHome: string, expected: Buffer | string): boolean {
-  const file = markerPath(hermesHome)
-
-  try {
-    if (!fs.readFileSync(file).equals(Buffer.isBuffer(expected) ? expected : Buffer.from(expected, 'utf8'))) {
-      return false
-    }
-
-    fs.unlinkSync(file)
-
-    return true
-  } catch {
-    return false
-  }
+  return { state: 'ours', raw, marker, judgement }
 }
 
 /**
- * `{ pid, ageMs }` while an update is genuinely running, else null. A dead
- * marker is compare-and-deleted so it cannot strand future launches.
+ * `{ pid, ageMs }` while someone else's update is genuinely running, else
+ * null. Read-only (A7 rule 3): a dead marker is left for the script helper /
+ * the next claimant to reclaim under the lock.
  */
 export async function readLiveUpdateMarker(hermesHome: string, deps: MarkerProbeDeps = {}) {
   const inspection = await inspectUpdateMarker(hermesHome, deps)
 
-  if (inspection.state === 'live') {
-    return {
-      pid: inspection.livePid,
-      ownerPid: inspection.marker?.pid ?? 0,
-      ageMs: inspection.ageMs,
-      startedAt: inspection.marker?.startedAt ?? null
-    }
+  if (inspection.state !== 'live') {
+    return null
   }
 
-  if (inspection.state === 'dead') {
-    compareAndDeleteMarker(hermesHome, inspection.raw)
+  return {
+    pid: inspection.livePid,
+    ownerPid: inspection.marker?.pid ?? 0,
+    ageMs: inspection.ageMs,
+    startedAt: inspection.marker?.startedAt ?? null
   }
-
-  return null
 }
 
-function markerBody(pid: number, startedAt: number, ct: number | null): string {
-  return `${pid}\n${startedAt}\n${ct === null ? '' : `ct:${formatCreateTime(ct)}\n`}`
+function markerBody(pid: number, startedAt: number, ct: number | null, runId?: string | null): string {
+  const ctLine = ct === null ? '' : `ct:${formatCreateTime(ct)}\n`
+  const runLine = runId ? `run:${runId}\n` : ''
+
+  return `${pid}\n${startedAt}\n${ctLine}${runLine}`
+}
+
+/** What an exclusive create found instead of publishing. */
+export interface ExistingMarker {
+  state: 'dead' | 'ours'
+  raw: Buffer
+  /** The run id the existing claim carries (to withdraw a stale bridge of ours). */
+  run: string | null
+}
+
+export interface ClaimResult {
+  ok: boolean
+  body?: string
+  /** Set when a LIVE claim blocks ours. */
+  owner?: { pid: number; ageMs: number } | null
+  /** Set when a dead/malformed claim, or a stale bridge of this process, blocks ours. */
+  existing?: ExistingMarker
+  error?: string
 }
 
 /**
@@ -486,9 +440,9 @@ function markerBody(pid: number, startedAt: number, ct: number | null): string {
  * child IS the updater there, so the marker names its pid AND its creation
  * time. A v2 body takes this path off the v1 20-minute ceiling, lets the
  * updater adopt it as its own claim, and lets the `hermes update` it runs add
- * its delegate line (frozen updaters read only lines 1-2). An unreadable ct
- * falls back to a v1 body. Exclusive publish — a live claim is never
- * overwritten; a dead one is compare-and-deleted first.
+ * its delegate line. Exclusive create ONLY (A7 rule 3): over any existing
+ * marker — live or dead — the pre-write is skipped and the staged updater
+ * claims (and reclaims) for itself.
  */
 export async function writeUpdateMarker(
   hermesHome: string,
@@ -505,18 +459,26 @@ export async function writeUpdateMarker(
   return createMarkerExclusive(hermesHome, markerBody(pid, acquiredAt, ct), deps)
 }
 
-interface ClaimResult {
-  ok: boolean
-  body?: string
-  /** Set when a LIVE claim blocks ours. */
-  owner?: { pid: number; ageMs: number } | null
-  error?: string
+/** Log line for a staged-updater pre-write that was skipped (exclusive create lost). */
+export function describeSkippedPrewrite(result: ClaimResult): string {
+  if (result.owner) {
+    return `an update owned by pid ${result.owner.pid || '(claim being written)'} holds the marker`
+  }
+
+  if (result.existing) {
+    return `a ${result.existing.state} marker exists; the staged updater reclaims it under its own lock`
+  }
+
+  return result.error || 'unknown error'
 }
 
 const TMP_SIBLING_RE = /^\.hermes-update-in-progress\.(\d+)(?:\.\d+)?\.tmp$/
 let tmpSequence = 0
 
-/** Drop publish/CAS tmp siblings whose writer died between write and link/rename. */
+/**
+ * Drop OUR publish tmp siblings (`<marker>.<pid>.<seq>.tmp`) whose writer died
+ * between write and link. Never the marker itself.
+ */
 function reclaimDeadTmpSiblings(hermesHome: string) {
   try {
     for (const name of fs.readdirSync(hermesHome)) {
@@ -591,36 +553,40 @@ function publishExclusive(file: string, body: string): 'published' | 'exists' {
   return 'published'
 }
 
+/**
+ * One exclusive create (A7 rule 2). On EEXIST the existing marker is judged
+ * read-only and reported: a live owner blocks, a dead one / our own stale
+ * bridge is handed back for the caller to route through the script helper.
+ */
 async function createMarkerExclusive(hermesHome: string, body: string, deps: MarkerProbeDeps): Promise<ClaimResult> {
   const file = markerPath(hermesHome)
 
   reclaimDeadTmpSiblings(hermesHome)
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      if (publishExclusive(file, body) === 'published') {
-        return { ok: true, body }
-      }
-    } catch (error: any) {
-      return { ok: false, owner: null, error: error?.message || String(error) }
+  try {
+    if (publishExclusive(file, body) === 'published') {
+      return { ok: true, body }
     }
-
-    const inspection = await inspectUpdateMarker(hermesHome, deps)
-
-    if (inspection.state === 'live') {
-      return { ok: false, owner: { pid: inspection.livePid, ageMs: inspection.ageMs } }
-    }
-
-    if (inspection.state === 'dead') {
-      compareAndDeleteMarker(hermesHome, inspection.raw)
-    }
+  } catch (error: any) {
+    return { ok: false, owner: null, error: error?.message || String(error) }
   }
 
   const inspection = await inspectUpdateMarker(hermesHome, deps)
 
-  return inspection.state === 'live'
-    ? { ok: false, owner: { pid: inspection.livePid, ageMs: inspection.ageMs } }
-    : { ok: false, owner: null, error: 'lost the marker claim race twice' }
+  if (inspection.state === 'live') {
+    return { ok: false, owner: { pid: inspection.livePid, ageMs: inspection.ageMs } }
+  }
+
+  if (inspection.state === 'absent') {
+    // Withdrawn between our create and our read: the caller may retry once.
+    return { ok: false, owner: null, error: 'the marker changed while it was being claimed' }
+  }
+
+  return {
+    ok: false,
+    owner: null,
+    existing: { state: inspection.state, raw: inspection.raw, run: inspection.judgement?.run ?? null }
+  }
 }
 
 function conflictMessage(owner: { pid: number; ageMs: number }): string {
@@ -636,11 +602,33 @@ function conflictMessage(owner: { pid: number; ageMs: number }): string {
   return `An update is already running (PID ${owner.pid}, started ${elapsed} ago). Wait for it to finish, then try again.`
 }
 
+/** A protocol-2 hand-off run id: `desk-<pid>-<base36 ms>-<hex4>` (run-line grammar). */
+export function makeHandoffRunId(pid: number = process.pid, nowMs: number = Date.now()): string {
+  const id = `desk-${pid}-${nowMs.toString(36)}-${randomBytes(2).toString('hex')}`
+
+  if (!RUN_ID_RE.test(id)) {
+    throw new Error(`invalid hand-off run id ${id}`)
+  }
+
+  return id
+}
+
+export interface BridgeClaimResult {
+  ok: boolean
+  body?: string
+  /** A live foreign owner (or a claim being written) refuses the hand-off. */
+  conflict?: { pid: number; ageMs: number; message: string } | null
+  /** A dead/malformed marker or a stale bridge of ours blocks the create (protocol 2: script helper). */
+  existing?: ExistingMarker
+  error?: string
+}
+
 /**
- * C2 bridge claim: the Desktop claims the marker in ITS OWN name (pid +
- * creation time) before spawning the hand-off script. Electron is alive until
- * it quits, so the claim never names a short-lived `cmd.exe`/launcher wrapper.
- * A live foreign owner refuses the hand-off (#75778).
+ * C2 bridge claim, protocol 2 (SPEC 4a): the Desktop exclusive-creates the
+ * marker in ITS OWN name (pid + creation time) with the hand-off `run:` line
+ * before spawning the script. Never reclaims or overwrites anything (A7
+ * rule 3): an existing marker is reported for the caller to route through
+ * the checkout's script helper.
  */
 export async function claimBridgeMarker(
   hermesHome: string,
@@ -648,14 +636,10 @@ export async function claimBridgeMarker(
     pid = process.pid,
     createTime,
     startedAt,
+    runId,
     ...deps
-  }: MarkerProbeDeps & { pid?: number; startedAt?: number } = {}
-): Promise<{
-  ok: boolean
-  body?: string
-  conflict?: { pid: number; ageMs: number; message: string } | null
-  error?: string
-}> {
+  }: MarkerProbeDeps & { pid?: number; startedAt?: number; runId?: string } = {}
+): Promise<BridgeClaimResult> {
   const ct = await (createTime || processCreateTime)(pid)
 
   const acquiredAt =
@@ -663,47 +647,92 @@ export async function claimBridgeMarker(
       ? startedAt
       : Math.floor((deps.now || Date.now)() / 1000)
 
-  const body = markerBody(pid, acquiredAt, ct)
+  const body = markerBody(pid, acquiredAt, ct, runId)
 
   fs.mkdirSync(hermesHome, { recursive: true })
-  const result = await createMarkerExclusive(hermesHome, body, { ...deps, createTime })
+  const result = await createMarkerExclusive(hermesHome, body, { ...deps, createTime, ownPid: deps.ownPid ?? pid })
 
   if (result.ok || !result.owner) {
-    return result
+    return { ok: result.ok, body: result.body, existing: result.existing, error: result.error }
   }
 
   return { ok: false, conflict: { ...result.owner, message: conflictMessage(result.owner) } }
 }
 
+export interface HandoffClaimOptions extends MarkerProbeDeps {
+  /** Protocol 2: the run id passed to the script; the claim must carry it. */
+  runId?: string
+  /** Legacy scripts: the HERMES_UPDATE_STARTED_AT they echo on line 2. */
+  startedAt?: number
+  timeoutMs?: number
+  pollMs?: number
+  sleep?: (ms: number) => Promise<void>
+}
+
 /**
- * C2: the hand-off has started only once the script took the marker — its
- * owner pid is no longer ours. A wrapper's exit code says nothing about
- * whether the script ever ran (#66753: CLM-blocked Add-Type, a missing
- * /usr/bin/python3 for the posix daemonizer).
+ * Whether the marker body proves a LIVE successor took the hand-off (R5,
+ * A7 rule 6). Never the Desktop's own incarnation, never a dead or reused pid.
+ * - protocol 2 (`runId`): line-1 owner verified by pid AND creation time
+ *   (`match`, not `unknown`) and the claim's run == runId;
+ * - legacy (`startedAt`): line-1 owner live (ct verified when recorded, else
+ *   alive inside the v1 ceiling) and line 2 == the startedAt we passed.
+ */
+export async function handoffTakenBy(
+  text: string,
+  desktopPid: number,
+  { runId, startedAt, ...deps }: HandoffClaimOptions
+): Promise<number | null> {
+  const judgement = await judgeMarkerText(text, hostJudgeEnv({ ...deps, ownPid: desktopPid }))
+  const marker = judgement.marker
+
+  if (!marker || marker.pid === desktopPid) {
+    return null
+  }
+
+  if (runId !== undefined) {
+    return judgement.ownerState === 'match' && marker.run === runId ? marker.pid : null
+  }
+
+  const live = judgement.ownerState === 'match' || judgement.ownerState === 'unknown'
+
+  return live && (startedAt === undefined || marker.startedAt === startedAt) ? marker.pid : null
+}
+
+/**
+ * C2 + R5: the hand-off has started only once a LIVE, correlated script
+ * process holds the marker. A wrapper's exit code says nothing about whether
+ * the script ever ran (#66753), and a pid that claimed then died is not a
+ * running update.
  */
 export async function waitForHandoffClaim(
   hermesHome: string,
-  ownPid: number,
+  desktopPid: number,
   {
     timeoutMs = HANDOFF_CLAIM_TIMEOUT_MS,
     pollMs = 200,
     now = Date.now,
-    sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
-  }: { timeoutMs?: number; pollMs?: number; now?: () => number; sleep?: (ms: number) => Promise<void> } = {}
+    sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)),
+    createTime,
+    ...rest
+  }: HandoffClaimOptions = {}
 ): Promise<{ taken: true; pid: number } | { taken: false }> {
   const deadline = now() + timeoutMs
+  // One creation-time probe per pid for this wait (a powershell spawn on Windows).
+  const probe = cachedCreateTimeProbe(createTime)
 
   for (;;) {
-    let marker: UpdateMarker | null = null
+    let text: string | null = null
 
     try {
-      marker = parseUpdateMarker(fs.readFileSync(markerPath(hermesHome), 'utf8'))
+      text = fs.readFileSync(markerPath(hermesHome), 'utf8')
     } catch {
-      marker = null
+      text = null
     }
 
-    if (marker && marker.pid !== ownPid) {
-      return { taken: true, pid: marker.pid }
+    const pid = text ? await handoffTakenBy(text, desktopPid, { ...rest, now, createTime: probe }) : null
+
+    if (pid !== null) {
+      return { taken: true, pid }
     }
 
     if (now() >= deadline) {
@@ -716,7 +745,7 @@ export async function waitForHandoffClaim(
 
 /**
  * Whether a NEW updater hand-off must be refused because a different, live
- * updater owns the marker (#75778). Null when it is safe to spawn.
+ * updater owns the marker (#75778). Null when it is safe to spawn. Read-only.
  */
 export async function updateHandoffConflict(hermesHome: string, deps: MarkerProbeDeps = {}) {
   const owner = await readLiveUpdateMarker(hermesHome, deps)

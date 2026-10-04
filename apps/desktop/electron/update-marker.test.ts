@@ -19,9 +19,9 @@ import { afterEach, test } from 'vitest'
 import {
   cachedCreateTimeProbe,
   claimBridgeMarker,
-  compareAndDeleteMarker,
   EMPTY_MARKER_GRACE_MS,
   formatCreateTime,
+  inspectUpdateMarker,
   isPidAlive,
   markerPath,
   parseUpdateMarker,
@@ -83,30 +83,31 @@ const HAS_CT_PROBE = process.platform === 'linux' || process.platform === 'darwi
 // ---------------------------------------------------------------------------
 
 test('parses v1, v2 and the delegate line; garbage is null', () => {
-  assert.deepEqual(parseUpdateMarker('42\n100\n'), { pid: 42, startedAt: 100, ct: null, delegate: null })
+  assert.deepEqual(parseUpdateMarker('42\n100\n'), { pid: 42, startedAt: 100, ct: null, delegate: null, run: null })
   assert.deepEqual(parseUpdateMarker('42\n100\nct:1700000000.125\ndelegate:77 ct:1700000001.500\n'), {
     pid: 42,
     startedAt: 100,
     ct: 1700000000.125,
-    delegate: { pid: 77, ct: 1700000001.5 }
+    delegate: { pid: 77, ct: 1700000001.5 },
+    run: null
   })
   assert.equal(parseUpdateMarker('not-a-pid\nnonsense'), null)
 })
 
 // A2: one positional parse in every language (Python, Rust, PowerShell, bash, TS).
 test.each([
-  ['BOM + CRLF v2', '\uFEFF42\r\n100\r\nct:5.250\r\n', { pid: 42, startedAt: 100, ct: 5.25, delegate: null }],
+  ['BOM + CRLF v2', '\uFEFF42\r\n100\r\nct:5.250\r\n', { pid: 42, startedAt: 100, ct: 5.25, delegate: null, run: null }],
   ['fractional started_at is MALFORMED', '42\n100.5\nct:5.000\n', null],
   ['missing started_at is MALFORMED', '42\n', null],
   ['garbled started_at is MALFORMED', '42\nsoon\n', null],
-  ['garbage ct => v1', '42\n100\nct:abc\n', { pid: 42, startedAt: 100, ct: null, delegate: null }],
-  ['delegate on line 3 is ignored', '42\n100\ndelegate:77 ct:1.000\n', { pid: 42, startedAt: 100, ct: null, delegate: null }],
-  ['space after delegate: is ignored', '42\n100\nct:1.000\ndelegate: 77 ct:1.000\n', { pid: 42, startedAt: 100, ct: 1, delegate: null }],
-  ['delegate without ct is ignored', '42\n100\nct:1.000\ndelegate:77\n', { pid: 42, startedAt: 100, ct: 1, delegate: null }],
+  ['garbage ct => v1', '42\n100\nct:abc\n', { pid: 42, startedAt: 100, ct: null, delegate: null, run: null }],
+  ['delegate on line 3 is ignored', '42\n100\ndelegate:77 ct:1.000\n', { pid: 42, startedAt: 100, ct: null, delegate: null, run: null }],
+  ['space after delegate: is ignored', '42\n100\nct:1.000\ndelegate: 77 ct:1.000\n', { pid: 42, startedAt: 100, ct: 1, delegate: null, run: null }],
+  ['delegate without ct is ignored', '42\n100\nct:1.000\ndelegate:77\n', { pid: 42, startedAt: 100, ct: 1, delegate: null, run: null }],
   [
     'empty ct line (Python probe failure) + delegate on line 4',
     '42\n100\n\ndelegate:77 ct:2.500\n',
-    { pid: 42, startedAt: 100, ct: null, delegate: { pid: 77, ct: 2.5 } }
+    { pid: 42, startedAt: 100, ct: null, delegate: { pid: 77, ct: 2.5 }, run: null }
   ]
 ])('A2 parse: %s', (_name, body, expected) => {
   assert.deepEqual(parseUpdateMarker(body), expected)
@@ -130,7 +131,7 @@ test.skipIf(!HAS_CT_PROBE)('a LIVE v2 owner past 20 minutes stays live and is NO
   assert.ok(fs.existsSync(markerPath(home)), 'a live owner is never aged out')
 })
 
-test.skipIf(!HAS_CT_PROBE)('a reused pid (creation time mismatch) is dead and compare-deleted (V22)', async () => {
+test.skipIf(!HAS_CT_PROBE)('a reused pid (creation time mismatch) is dead and left for the script (V22, A7 rule 3)', async () => {
   const home = tmpHome('v2-reused')
   const owner = await liveOwner()
   const ct = await processCreateTime(owner.pid)
@@ -138,8 +139,9 @@ test.skipIf(!HAS_CT_PROBE)('a reused pid (creation time mismatch) is dead and co
   // an hour earlier: the original owner died and the OS recycled its pid.
   fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(2)}\nct:${formatCreateTime(ct! - 3600)}\n`)
 
+  const body = fs.readFileSync(markerPath(home), 'utf8')
   assert.equal(await readLiveUpdateMarker(home), null)
-  assert.ok(!fs.existsSync(markerPath(home)), 'a reused-pid marker self-heals')
+  assert.equal(fs.readFileSync(markerPath(home), 'utf8'), body, 'Electron never deletes; the script helper reclaims')
 })
 
 test('a v1 marker (no creation time) keeps the legacy 20-minute ceiling', async () => {
@@ -147,8 +149,8 @@ test('a v1 marker (no creation time) keeps the legacy 20-minute ceiling', async 
   const owner = await liveOwner()
   fs.writeFileSync(markerPath(home), `${owner.pid}\n${Math.floor((Date.now() - UPDATE_MARKER_MAX_AGE_MS) / 1000) - 60}\n`)
 
-  assert.equal(await readLiveUpdateMarker(home), null, 'v1 pid reuse must still self-heal')
-  assert.ok(!fs.existsSync(markerPath(home)))
+  assert.equal(await readLiveUpdateMarker(home), null, 'v1 pid reuse reads as not running')
+  assert.ok(fs.existsSync(markerPath(home)), 'and is left for the script helper (A7 rule 3)')
 })
 
 // A1: Windows refuses creation-time queries for SYSTEM/elevated/other-user
@@ -164,7 +166,7 @@ test('a v2 owner whose creation time is UNREADABLE is live only inside the 20-mi
 
   fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(25)}\nct:1700000000.000\n`)
   assert.equal(await readLiveUpdateMarker(home, { createTime: accessDenied }), null, 'past the ceiling it is dead')
-  assert.ok(!fs.existsSync(markerPath(home)), 'and compare-deleted, so boot is never parked forever')
+  assert.ok(fs.existsSync(markerPath(home)), 'not running, so boot is never parked forever — and left in place (A7 rule 3)')
 })
 
 // A1 on a real Windows host: csrss.exe is a SYSTEM (protected) process whose
@@ -188,7 +190,7 @@ test.runIf(process.platform === 'win32')('Windows reads a SYSTEM process creatio
 
   fs.writeFileSync(markerPath(home), `${pid}\n${minutesAgo(1)}\nct:${formatCreateTime(ct! - 3600)}\n`)
   assert.equal(await readLiveUpdateMarker(home), null)
-  assert.ok(!fs.existsSync(markerPath(home)))
+  assert.ok(fs.existsSync(markerPath(home)), 'left in place (A7 rule 3)')
 })
 
 test('a gate wait probes each pid creation time ONCE (A1: no powershell spawn per poll)', async () => {
@@ -257,23 +259,13 @@ test('dead pid / zombie => no live update; unknown state fails open', async () =
   const home = tmpHome('dead')
   fs.writeFileSync(markerPath(home), `${await deadPid()}\n${minutesAgo(0)}\n`)
   assert.equal(await readLiveUpdateMarker(home), null)
-  assert.ok(!fs.existsSync(markerPath(home)))
+  assert.ok(fs.existsSync(markerPath(home)), 'left in place (A7 rule 3)')
 
   fs.writeFileSync(markerPath(home), `4242\n${minutesAgo(0)}\n`)
   assert.equal(await readLiveUpdateMarker(home, { kill: () => true, processState: () => 'Z' }), null)
 
   fs.writeFileSync(markerPath(home), `4242\n${minutesAgo(0)}\n`)
   assert.ok(await readLiveUpdateMarker(home, { kill: () => true, processState: () => null }))
-})
-
-test('compare-and-delete never removes a claim written after the dead verdict (C1 rule 5)', () => {
-  const home = tmpHome('cas')
-  fs.writeFileSync(markerPath(home), '999999\n1\n')
-  const judgedDead = fs.readFileSync(markerPath(home))
-  fs.writeFileSync(markerPath(home), `${process.pid}\n2\nct:3.000\n`)
-
-  assert.equal(compareAndDeleteMarker(home, judgedDead), false)
-  assert.ok(fs.existsSync(markerPath(home)), 'the newer claim survives')
 })
 
 test('isPidAlive / posixProcessState basics', () => {
@@ -309,10 +301,14 @@ test('the bridge marker names THIS process with its creation time (V4)', async (
     assert.ok(marker.ct !== null && Math.abs(marker.ct - (await processCreateTime(process.pid))!) <= 2)
   }
 
-  assert.ok(await readLiveUpdateMarker(home), 'our own bridge claim reads live')
+  // A bridge of this very process is not someone else's update: the gate's
+  // in-process flags cover the hand-off window, and a stale bridge left by a
+  // failed withdraw must not park this Desktop's own backend restart.
+  assert.equal((await inspectUpdateMarker(home)).state, 'ours')
+  assert.equal(await readLiveUpdateMarker(home), null)
 })
 
-test('the bridge claim refuses a LIVE foreign owner and reclaims a dead one', async () => {
+test('the bridge claim refuses a LIVE foreign owner and reports (never reclaims) a dead one', async () => {
   const home = tmpHome('bridge-conflict')
   const owner = await liveOwner()
   fs.writeFileSync(markerPath(home), `${owner.pid}\n${minutesAgo(30)}\nct:${formatCreateTime((await processCreateTime(owner.pid)) ?? 0)}\n`)
@@ -323,8 +319,13 @@ test('the bridge claim refuses a LIVE foreign owner and reclaims a dead one', as
   assert.match(String(!refused.ok && refused.conflict?.message), /already running/)
   assert.equal(parseUpdateMarker(fs.readFileSync(markerPath(home), 'utf8'))!.pid, owner.pid, 'never overwritten')
 
-  fs.writeFileSync(markerPath(home), `${await deadPid()}\n${minutesAgo(1)}\n`)
-  assert.ok((await claimBridgeMarker(home, { startedAt: 2 })).ok, 'a dead claim is reclaimed')
+  const dead = `${await deadPid()}\n${minutesAgo(1)}\nct:1.000\nrun:desk-1-a-0000\n`
+  fs.writeFileSync(markerPath(home), dead)
+  const blocked = await claimBridgeMarker(home, { startedAt: 2 })
+  assert.equal(blocked.ok, false, 'exclusive create only (A7 rule 3)')
+  assert.equal(blocked.existing?.state, 'dead', 'reported for the script helper to reclaim')
+  assert.equal(blocked.existing?.run, 'desk-1-a-0000')
+  assert.equal(fs.readFileSync(markerPath(home), 'utf8'), dead)
 })
 
 // r1 M1: the staged Tauri updater path pre-writes the marker for the spawned
@@ -345,7 +346,7 @@ test.skipIf(!HAS_CT_PROBE)('writeUpdateMarker names the spawned updater with its
 
 // A3: a claim is never visible half-written, and a 0-byte claim being written
 // by an O_EXCL-only writer is not mistaken for garbage and deleted.
-test('a fresh 0-byte marker reads LIVE and survives; a stale one is reclaimed (A3)', async () => {
+test('a fresh 0-byte marker reads LIVE and survives; a stale one reads dead and is left (A3, A7 rule 3)', async () => {
   const home = tmpHome('empty')
   const file = markerPath(home)
   fs.writeFileSync(file, '')
@@ -357,7 +358,7 @@ test('a fresh 0-byte marker reads LIVE and survives; a stale one is reclaimed (A
   const old = (Date.now() - EMPTY_MARKER_GRACE_MS - 5000) / 1000
   fs.utimesSync(file, old, old)
   assert.equal(await readLiveUpdateMarker(home), null)
-  assert.ok(!fs.existsSync(file))
+  assert.ok(fs.existsSync(file))
 })
 
 test('claims publish by hard link and leave no tmp litter; a dead writer tmp is reclaimed (A3)', async () => {
@@ -391,30 +392,37 @@ test('writeUpdateMarker (staged updater) never overwrites a live claim', async (
 // Hand-off confirmation (C2, desktop V7)
 // ---------------------------------------------------------------------------
 
-test('the hand-off counts as started only when a real script process takes the marker', async () => {
+test('the hand-off counts as started only when a real legacy script process takes the marker', async () => {
   const home = tmpHome('handoff-taken')
-  await claimBridgeMarker(home, { startedAt: 5 })
   const file = markerPath(home)
+  const startedAt = Math.floor(Date.now() / 1000)
 
-  // A real "script": waits, then claims the marker in its own name.
+  // A real old-style "script": waits, then claims the marker in its own name,
+  // echoing HERMES_UPDATE_STARTED_AT on line 2.
   const script = spawn(
     process.execPath,
-    ['-e', `setTimeout(() => { require('fs').writeFileSync(${JSON.stringify(file)}, process.pid + '\\n5\\n'); setInterval(() => {}, 1000) }, 300)`],
+    [
+      '-e',
+      `setTimeout(() => { require('fs').writeFileSync(${JSON.stringify(file)}, process.pid + '\\n${startedAt}\\n'); setInterval(() => {}, 1000) }, 300)`
+    ],
     { stdio: 'ignore' }
   )
 
   children.push(script)
 
-  const taken = await waitForHandoffClaim(home, process.pid, { timeoutMs: 10_000, pollMs: 50 })
+  const taken = await waitForHandoffClaim(home, process.pid, { startedAt, timeoutMs: 10_000, pollMs: 50 })
 
   assert.deepEqual(taken, { taken: true, pid: script.pid })
 })
 
 test('a wrapper that exits 0 without the script ever claiming is NOT a hand-off', async () => {
   const home = tmpHome('handoff-never')
-  await claimBridgeMarker(home, { startedAt: 5 })
+  await claimBridgeMarker(home, { startedAt: 5, runId: 'desk-1-a-0000' })
   const wrapper = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' })
   await new Promise(resolve => wrapper.once('exit', resolve))
 
-  assert.deepEqual(await waitForHandoffClaim(home, process.pid, { timeoutMs: 400, pollMs: 50 }), { taken: false })
+  assert.deepEqual(
+    await waitForHandoffClaim(home, process.pid, { runId: 'desk-1-a-0000', timeoutMs: 400, pollMs: 50 }),
+    { taken: false }
+  )
 })

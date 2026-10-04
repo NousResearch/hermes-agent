@@ -209,8 +209,10 @@ _AT_LINE = """
     def stop_at(fn, text, action, flag=None):
         lines, start = inspect.getsourcelines(fn)
         line = start + next(i for i, t in enumerate(lines) if text in t)
-        def trace(frame, event, arg):
-            if event == "line" and frame.f_code is fn.__code__ and frame.f_lineno == line:
+        def trace(frame, event, arg):  # traces only fn's own frames: the rest runs at full speed
+            if frame.f_code is not fn.__code__:
+                return None
+            if event == "line" and frame.f_lineno == line:
                 if action == "kill":
                     os._exit(71)
                 print("paused", flush=True)

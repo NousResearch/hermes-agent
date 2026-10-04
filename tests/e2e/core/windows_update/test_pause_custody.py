@@ -49,8 +49,10 @@ from hermes_cli import update_pause_record as r
 def stop_at(fn, texts, action, flag=None):
     lines, start = inspect.getsourcelines(fn)
     line = next(start + i for text in texts for i, t in enumerate(lines) if text in t)
-    def trace(frame, event, arg):
-        if event == "line" and frame.f_code is fn.__code__ and frame.f_lineno == line:
+    def trace(frame, event, arg):  # traces only fn's own frames: the rest runs at full speed
+        if frame.f_code is not fn.__code__:
+            return None
+        if event == "line" and frame.f_lineno == line:
             if action == "kill":
                 os._exit(71)
             print("paused", flush=True)
@@ -74,18 +76,41 @@ def _python(machine) -> Path:
     return found[0]
 
 
-def _driver(machine, body: str, *args: str) -> subprocess.Popen:
-    proc = subprocess.Popen([str(_python(machine)), "-c", _DRIVER + body, str(machine.install_dir), *args],
-                            cwd=machine.profile, env=machine.env(), stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW)
+def _driver(machine, name: str, body: str, *args: str) -> tuple[subprocess.Popen, Path]:
+    """The install's python running *body*; its output goes to a transcript (as a launch's would)."""
+    machine._seq += 1
+    log = machine.logs / f"{machine._seq:02d}-driver-{name}.log"
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    with log.open("wb") as fh:
+        proc = subprocess.Popen([str(_python(machine)), "-u", "-c", _DRIVER + body, str(machine.install_dir), *args],
+                                cwd=machine.profile, env=machine.env(), stdin=subprocess.DEVNULL, stdout=fh,
+                                stderr=subprocess.STDOUT, creationflags=flags)
     machine._spawned.append(proc)
-    return proc
+    return proc, log
 
 
-def _run_driver(machine, body: str, *args: str, timeout: float = 300) -> tuple[int, str]:
-    proc = _driver(machine, body, *args)
-    out, _ = proc.communicate(timeout=timeout)
-    return proc.returncode, out.decode("utf-8", "replace")
+def _text(log: Path) -> str:
+    try:
+        return log.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return ""
+
+
+def _await_line(proc: subprocess.Popen, log: Path, line: str, timeout: float = 120) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if line in _text(log).splitlines():
+            return True
+        if proc.poll() is not None:
+            return line in _text(log).splitlines()
+        time.sleep(0.2)
+    return False
+
+
+def _run_driver(machine, name: str, body: str, *args: str, timeout: float = 300) -> tuple[int, str]:
+    proc, log = _driver(machine, name, body, *args)
+    proc.wait(timeout=timeout)
+    return proc.returncode, _text(log)
 
 
 def _records(machine) -> list[Path]:
@@ -104,8 +129,14 @@ def _owed(machine) -> list[dict]:
 
 def _clear(machine) -> None:
     machine.kill_owned()
+    deadline = time.monotonic() + 60
+    while machine.owned_processes() and time.monotonic() < deadline:
+        time.sleep(0.5)
     for path in _records(machine):
         path.unlink(missing_ok=True)
+    # A hard-killed gateway leaves its last ``running`` state behind: the next cell's gateway must
+    # be the one it reads, never a dying pid from this one.
+    (machine.hermes_home / "gateway_state.json").unlink(missing_ok=True)
 
 
 def _running(machine, not_pid: int, timeout: float) -> int | None:
@@ -115,11 +146,19 @@ def _running(machine, not_pid: int, timeout: float) -> int | None:
         return None
 
 
+def _fresh_gateway(machine) -> int:
+    """A real gateway started now (``hermes gateway run``); its pid once it reports running."""
+    (machine.hermes_home / "gateway_state.json").unlink(missing_ok=True)
+    proc = machine.spawn_gateway()
+    pid = int(machine.wait_gateway_running().get("pid") or 0)
+    assert pid and psutil.pid_exists(pid) and proc.poll() is None, fail_with(machine, f"harness: gateway {pid} not up")
+    return pid
+
+
 def _paused_gateway(machine) -> int:
     """A real gateway, then stopped hard: the state a pause left it in. Its (dead) pid."""
-    machine.spawn_gateway()
-    pid = int(machine.wait_gateway_running().get("pid") or 0)
-    machine.kill_owned()
+    pid = _fresh_gateway(machine)
+    _clear(machine)
     return pid
 
 
@@ -130,38 +169,41 @@ def _launch(machine, label: str):
 def _claim_race(machine, out: dict) -> None:
     dead = _paused_gateway(machine)
     # A claim handed back unowned (a launch that could not finish the resume): any launch may take it.
-    out["race_seed"] = _run_driver(machine, f"""
+    out["race_seed"] = _run_driver(machine, "race-seed", f"""
 orphan({{"default": {dead}}})
 won = r.claim(r.record_path())
 r._atomic_write(won[0], {{**won[1], "claimer": r.UNOWNED}})
 """)
     flag = machine.root / "claim-race-go"
-    first = _driver(machine, f"""
+    first, log = _driver(machine, "race-first", f"""
+import psutil
+print("paused pid {dead} alive before recovery:", psutil.pid_exists({dead}), flush=True)
 stop_at(r.claim, {_CLAIM_BOUNDARY}, "park", sys.argv[2])
 r.recover(["status"])
+sys.settrace(None)
+print("left on disk:", sorted(p.name for p in r.record_path().parent.glob(r.RECORD_STEM + "*")), flush=True)
 """, str(flag))
-    assert first.stdout is not None
-    out["race_parked"] = first.stdout.readline().decode("utf-8", "replace").strip()
+    out["race_parked"] = _await_line(first, log, "paused")
     out["race_second"] = _launch(machine, "claim-race-second")
     flag.touch()
-    rest, _ = first.communicate(timeout=600)
-    out["race_first"] = out["race_parked"] + "\n" + rest.decode("utf-8", "replace")
-    out["race_running"] = _running(machine, dead, 120)
+    first.wait(timeout=600)
+    out["race_first"] = _text(log)
+    out["race_running"] = _running(machine, dead, 150)
     out["race_owed"] = _owed(machine)
     _clear(machine)
 
 
 def _publish_crash(machine, out: dict) -> None:
     dead = _paused_gateway(machine)
-    out["publish_seed"] = _run_driver(machine, f'orphan({{"default": {dead}}})')
-    out["publish_kill"] = _run_driver(machine, """
+    out["publish_seed"] = _run_driver(machine, "publish-seed", f'orphan({{"default": {dead}}})')
+    out["publish_kill"] = _run_driver(machine, "publish-kill", """
 adopted, claims = r.adopt_orphans()
 stop_at(r.record_pause, ("release_claims(claims)",), "kill")
 r.record_pause({"resume_needed": True, "profiles": {}}, adopted, claims)
 """)
     out["publish_files"] = [p.name for p in _records(machine)]
     out["publish_launch"] = _launch(machine, "after-publish-crash")
-    out["publish_running"] = _running(machine, dead, 120)
+    out["publish_running"] = _running(machine, dead, 150)
     out["publish_again"] = _launch(machine, "after-publish-crash-2")
     out["publish_owed"] = _owed(machine)
     _clear(machine)
@@ -169,9 +211,8 @@ r.record_pause({"resume_needed": True, "profiles": {}}, adopted, claims)
 
 def _draining(machine, out: dict) -> None:
     # The real gateway keeps running: it was asked to stop and has not exited yet (draining).
-    machine.spawn_gateway()
-    live = int(machine.wait_gateway_running().get("pid") or 0)
-    updater = _driver(machine, f"""
+    live = _fresh_gateway(machine)
+    updater, log = _driver(machine, "drain-updater", f"""
 pid = {live}
 token = {{"resume_needed": True, "profiles": {{"default": pid}}, "identities": {{str(pid): r.identity(pid)["ct"]}}}}
 if hasattr(r, "mark_stop_requested"):
@@ -181,29 +222,34 @@ else:  # the old design has no stop record: write the same fact it would have ne
 print("asked", flush=True)
 time.sleep(600)
 """)
-    assert updater.stdout is not None
-    out["drain_asked"] = updater.stdout.readline().decode("utf-8", "replace").strip()
+    out["drain_asked"] = _await_line(updater, log, "asked")
+    # The updater dies with the stop request on disk (its venv launcher and the interpreter under it).
     subprocess.run(["taskkill", "/PID", str(updater.pid), "/T", "/F"], capture_output=True, timeout=60)
     updater.wait(timeout=60)
+    out["drain_updater"] = _text(log)
     out["drain_live_before"] = psutil.pid_exists(live)
     out["drain_launch_while"] = _launch(machine, "while-draining")
+    out["drain_live_after_launch"] = psutil.pid_exists(live)
     out["drain_owed_while"] = _owed(machine)
-    subprocess.run(["taskkill", "/PID", str(live), "/T", "/F"], capture_output=True, timeout=60)
+    subprocess.run(["taskkill", "/PID", str(live), "/F"], capture_output=True, timeout=60)
+    deadline = time.monotonic() + 30
+    while psutil.pid_exists(live) and time.monotonic() < deadline:
+        time.sleep(0.2)
     out["drain_launch_after"] = _launch(machine, "after-drained")
-    out["drain_running_after"] = _running(machine, live, 120)
+    out["drain_running_after"] = _running(machine, live, 150)
     out["drain_owed_after"] = _owed(machine)
     _clear(machine)
 
 
 def _readiness(machine, out: dict) -> None:
     dead = _paused_gateway(machine)
-    out["ready_seed"] = _run_driver(machine, f"""
+    out["ready_seed"] = _run_driver(machine, "ready-seed", f"""
 orphan({{"default": {dead}, "ghost": {dead}}}, services=["{_MISSING_SERVICE}"],
        expected_services=["{_MISSING_SERVICE}"], restarted_services=[],
        service_profiles={{"{_MISSING_SERVICE}": "svc"}})
 """)
     out["ready_launch"] = _launch(machine, "readiness")
-    out["ready_running"] = _running(machine, dead, 120)
+    out["ready_running"] = _running(machine, dead, 150)
     out["ready_owed"] = _owed(machine)
     _clear(machine)
 
@@ -243,13 +289,13 @@ def _restarts(text: str) -> int:
 def test_a_claim_in_transfer_is_restarted_exactly_once(journey) -> None:
     _no_error(journey, "claim_race")
     m, second = journey["machine"], journey["race_second"]
-    assert journey["race_parked"] == "paused", fail_with(m, f"premise: the first launch never reached the boundary: {journey['race_first']}")
+    first = f"--- first launch (driver) ---\n{journey['race_first']}"
+    assert journey["race_parked"], fail_with(m, f"premise: the first launch never reached the boundary\n{first}")
     restarts = _restarts(journey["race_first"]) + _restarts(second.stdout)
     assert restarts == 1, fail_with(
-        m, f"a set claimed while a second launch ran was restarted {restarts} times\n--- first ---\n"
-           f"{journey['race_first']}", second)
-    assert journey["race_running"], fail_with(m, "the paused gateway did not come back", second)
-    assert journey["race_owed"] == [], fail_with(m, f"a restarted set is still on disk: {journey['race_owed']}", second)
+        m, f"a set claimed while a second launch ran was restarted {restarts} times\n{first}", second)
+    assert journey["race_running"], fail_with(m, f"the paused gateway did not come back\n{first}", second)
+    assert journey["race_owed"] == [], fail_with(m, f"a restarted set is still on disk: {journey['race_owed']}\n{first}", second)
 
 
 def test_an_update_killed_after_publishing_restarts_the_set_once(journey) -> None:
@@ -268,8 +314,10 @@ def test_an_update_killed_after_publishing_restarts_the_set_once(journey) -> Non
 def test_a_draining_gateway_keeps_its_restart_debt_until_it_exits(journey) -> None:
     _no_error(journey, "draining")
     m, during, after = journey["machine"], journey["drain_launch_while"], journey["drain_launch_after"]
-    assert journey["drain_asked"] == "asked" and journey["drain_live_before"], fail_with(
-        m, f"premise: no live gateway with a recorded stop request ({journey['drain_asked']!r})")
+    assert journey["drain_asked"] and journey["drain_live_before"], fail_with(
+        m, f"premise: no live gateway with a recorded stop request\n{journey['drain_updater']}")
+    assert journey["drain_live_after_launch"] and _restarts(during.stdout) == 0, fail_with(
+        m, "a launch restarted (replaced) a gateway that was still draining", during)
     owed = [sorted(t.get("profiles") or {}) for t in journey["drain_owed_while"]]
     assert owed == [["default"]], fail_with(
         m, f"a gateway asked to stop and still running lost its restart debt (owed while draining: {owed})", during)

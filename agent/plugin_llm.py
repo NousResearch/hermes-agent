@@ -12,10 +12,12 @@ gated by the per-plugin ``plugins.entries.<id>.llm.allow_*_override`` trust flag
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import logging
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Union
 
 logger = logging.getLogger(__name__)
@@ -400,6 +402,48 @@ def _resolve_attribution(*, provider_override: Optional[str], model_override: Op
     return provider, route_info.get("model") or model_override or _main_config_value("_read_main_model", "default")
 
 
+@contextlib.contextmanager
+def _plugin_call_scope(profile_home: Optional[str]):
+    """Re-enter the owning profile's scope for one host-owned LLM call (#132887).
+
+    Plugins fire from contexts that never run inside a turn's ``_profile_runtime_scope``
+    (bridge host handlers, background workers, boot-time memory flushes). Under a multiplexed
+    gateway those contexts have no secret scope installed, so the auxiliary runtime resolver's
+    FIRST credential read (``get_secret_str("OPENROUTER_BASE_URL")``, which runs before the
+    trusted ``model.base_url`` rung is consulted) fails closed with ``UnscopedSecretError``.
+    Bind the owning home — captured immutably by the ``PluginManager`` that loaded the plugin —
+    so both the secret scope and config reads resolve against the owning profile instead of
+    crashing. No-op when a scope is already installed (a turn-scoped caller keeps its own
+    binding), when multiplexing is off (single-profile deployments keep os.environ semantics),
+    or when this facade carries no home (test stubs)."""
+    from agent.secret_scope import (
+        build_profile_secret_scope, current_secret_scope, is_multiplex_active,
+        reset_secret_scope, set_secret_scope,
+    )
+    if (
+        not profile_home
+        or not is_multiplex_active()
+        or current_secret_scope() is not None
+    ):
+        yield
+        return
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
+
+    home_token = set_hermes_home_override(profile_home)
+    try:
+        hydrate_profile_secret_sources(Path(profile_home))
+        secret_token = set_secret_scope(
+            build_profile_secret_scope(Path(profile_home)), profile_home=profile_home
+        )
+        try:
+            yield
+        finally:
+            reset_secret_scope(secret_token)
+    finally:
+        reset_hermes_home_override(home_token)
+
+
 def _json_response_format(*, json_mode: bool, json_schema: Optional[Any]) -> Optional[Dict[str, Any]]:
     """``extra_body.response_format``; falls back to ``json_object`` without a
     schema so schema-blind providers still get a hint."""
@@ -437,11 +481,13 @@ class PluginLlm:
         self, *, plugin_id: str, policy_loader: Optional[Callable[[str], _TrustPolicy]] = None,
         sync_caller: Optional[Callable[..., Any]] = None,
         async_caller: Optional[Callable[..., Awaitable[Any]]] = None,
+        profile_home: Optional[str] = None,
     ) -> None:
         self._plugin_id = plugin_id
         self._policy_loader = policy_loader or _resolve_trust_policy
         self._sync_caller = sync_caller
         self._async_caller = async_caller
+        self._profile_home = str(profile_home) if profile_home else None
 
     def complete(
         self, messages: List[Dict[str, Any]], *, provider: Optional[str] = None, model: Optional[str] = None,
@@ -566,18 +612,22 @@ class PluginLlm:
         ``(provider, model, response)``. An injected ``sync_caller`` replaces the
         whole path and receives the call kwargs."""
         if self._sync_caller is not None:
-            return self._sync_caller(**kw)
+            with _plugin_call_scope(self._profile_home):
+                return self._sync_caller(**kw)
         from agent.auxiliary_client import call_llm
         call_kw, route_info = self._host_kwargs(kw)
-        return self._attributed(kw, call_llm(**call_kw), route_info)
+        with _plugin_call_scope(self._profile_home):
+            return self._attributed(kw, call_llm(**call_kw), route_info)
 
     async def _invoke_async(self, kw: Dict[str, Any]) -> tuple[str, str, Any]:
         """Async sibling of :meth:`_invoke_sync` (``async_call_llm`` / ``async_caller``)."""
         if self._async_caller is not None:
-            return await self._async_caller(**kw)
+            with _plugin_call_scope(self._profile_home):
+                return await self._async_caller(**kw)
         from agent.auxiliary_client import async_call_llm
         call_kw, route_info = self._host_kwargs(kw)
-        return self._attributed(kw, await async_call_llm(**call_kw), route_info)
+        with _plugin_call_scope(self._profile_home):
+            return self._attributed(kw, await async_call_llm(**call_kw), route_info)
 
 
 def make_plugin_llm_for_test(*, plugin_id: str, policy: _TrustPolicy, sync_caller: Optional[Callable[..., Any]] = None,

@@ -42,11 +42,11 @@ Verification publishes the final receipt.
 
 Once the tree has moved, `hermes update` exits 0 unless the code itself was rolled back.
 Every completion step is independent: a failed launcher publish, product build (each of
-TUI/web/desktop is attempted even when another failed), profile sync, config migration,
+TUI/web/desktop is attempted even when another failed), config migration,
 bytecode sweep, gateway restart/verification, Windows resume or retired-channel adoption
 prints a `⚠` line and is appended to the receipt's `followups` as `{step, reason}` while the
 receipt's `outcome` stays `"success"`. The step's own obligation stays armed:
-`source-completion-pending` for the tail (launchers, build, maintenance, profile sync, config migration),
+`source-completion-pending` for the tail (launchers, build, maintenance, config migration),
 the host fleet-restart obligation for gateways (the CLI startup warning keeps naming it; an
 owed restart records the pre-update gateways on the obligation, so a gateway that died at boot
 stays owed until it serves the checkout instead of being settled by the gateway-less discharge),
@@ -55,6 +55,16 @@ including the "Already up to date" path, which runs the same completion — retr
 stamped "restarted" for this commit whose fleet is still off the checkout restarts again
 instead of dead-ending. Exit 2 (refused / concurrent) and exit 1 (nothing committed, or
 rolled back) keep their meaning.
+
+Profile sync is best-effort: `_sync_profiles_after_update` prints a per-profile error and
+carries on, so that error is not owed. Only a sync that escapes the step (for example with
+`SystemExit`) becomes a `profile_sync` follow-up and keeps `source-completion-pending` armed.
+
+A Windows gateway resume is attempted once after the commit point: by the completion child, or
+by the parent when dependencies are owed. Its failure is the `windows_resume` follow-up. The
+command's own exit path and its atexit net do not run it again, and a resume they still owe
+(the child never answered) is reported the same way instead of raising. The historical takeover
+completion (`update_finish`) also records the failure as a follow-up and keeps its exit status.
 
 The receipt is durable while the run is open: `begin_update_receipt` writes it as
 `outcome: "running"` to the run's own archive file and `latest.json`, and each stage

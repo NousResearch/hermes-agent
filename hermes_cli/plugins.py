@@ -184,9 +184,9 @@ VALID_HOOKS: Set[str] = {
     # disposition mandates the post-lock re-port), so a slow subscriber can never extend the writer critical
     # section. Kwargs: board: str | None, profile_name: str, dry_run: bool, outcome: "ok" | "skipped_locked"
     # | "idle", result: hermes_cli.kanban_db.DispatchResult (spawned, reclaimed, promoted,
-    # reconciled_orphans, crashed, stale, timed_out, auto_blocked, rate_limited, auto_assigned_default,
-    # respawn_guarded, skipped_per_profile_capped, skipped_unassigned, skipped_nonspawnable,
-    # skipped_locked). Privacy: result carries task ids, assignees, and workspace paths.
+    # reconciled_orphans, crashed, stale, timed_out, auto_blocked, discarded_spawns, rate_limited,
+    # auto_assigned_default, respawn_guarded, skipped_per_profile_capped, skipped_unassigned,
+    # skipped_nonspawnable, skipped_locked). Privacy: result carries task ids, assignees, and workspace paths.
     # Gateway platform-boundary observer hooks (#64176). Observer-only; each callback isolated by
     # invoke_hook. This surface grants no adapter handles or platform actions. Fired today: Telegram
     # "reaction" + "message_edited"; Discord "message_edited", "message_deleted", "thread_created",

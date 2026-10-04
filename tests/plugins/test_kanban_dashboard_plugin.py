@@ -715,6 +715,12 @@ def test_dashboard_confirm_dispatches_expected_patch_body(client):
 def test_bulk_archive(client):
     a = client.post("/api/plugins/kanban/tasks", json={"title": "a"}).json()["task"]
     b = client.post("/api/plugins/kanban/tasks", json={"title": "b"}).json()["task"]
+    # ``ready`` is protected work in flight: park the cards first (the dashboard
+    # archives whatever is NOT in flight).
+    for tid in (a["id"], b["id"]):
+        assert client.patch(
+            f"/api/plugins/kanban/tasks/{tid}", json={"status": "blocked"}
+        ).status_code == 200
     r = client.post("/api/plugins/kanban/tasks/bulk",
                     json={"ids": [a["id"], b["id"]], "archive": True})
     assert r.status_code == 200
@@ -724,6 +730,65 @@ def test_bulk_archive(client):
     ids = {t["id"] for col in board["columns"] for t in col["tasks"]}
     assert a["id"] not in ids
     assert b["id"] not in ids
+
+
+def test_dashboard_archive_stays_unprompted_and_payload_free(client):
+    """The dashboard never asks for or supplies a reason: its archive still
+    works unchanged and writes the historical payload-less ``archived`` event —
+    only the agent tool's ``kanban_archive`` carries provenance."""
+    task = client.post("/api/plugins/kanban/tasks", json={"title": "dup"}).json()["task"]
+    assert client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}", json={"status": "blocked"}
+    ).status_code == 200
+
+    r = client.patch(f"/api/plugins/kanban/tasks/{task['id']}", json={"status": "archived"})
+
+    assert r.status_code == 200, r.text
+    with kbc.connect() as conn:
+        rows = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'archived'",
+            (task["id"],)).fetchall()
+    assert [row[0] for row in rows] == [None], "the dashboard must not invent a reason"
+
+
+def test_archive_refuses_protected_statuses_with_the_shared_reason(client):
+    """The dashboard shares the DB lifecycle's archive policy: a direct archive
+    of ``ready``/``running``/``review`` is a 409 quoting the block/stop-first
+    instruction, and the card is left exactly as it was."""
+    for status in ("ready", "running", "review"):
+        task = client.post(
+            "/api/plugins/kanban/tasks", json={"title": f"flight {status}"}).json()["task"]
+        with kbc.connect() as conn:
+            conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task["id"]))
+            conn.commit()
+
+        r = client.patch(f"/api/plugins/kanban/tasks/{task['id']}", json={"status": "archived"})
+
+        assert r.status_code == 409, r.text
+        detail = r.json()["detail"]
+        assert status in detail and "block" in detail and "Nothing changed" in detail
+        with kbc.connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM tasks WHERE id = ?", (task["id"],)).fetchone()
+            assert row[0] == status, "a refusal must not mutate"
+
+
+def test_bulk_archive_refuses_protected_statuses_with_the_shared_reason(client):
+    """Bulk goes through the same writer, so it cannot bypass the policy either."""
+    task = client.post("/api/plugins/kanban/tasks", json={"title": "in flight"}).json()["task"]
+
+    r = client.post("/api/plugins/kanban/tasks/bulk",
+                    json={"ids": [task["id"]], "archive": True})
+
+    assert r.status_code == 200
+    result = r.json()["results"][0]
+    assert result["ok"] is False
+    assert "block" in result["error"] and "Nothing changed" in result["error"]
+    with kbc.connect() as conn:
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task["id"],)).fetchone()
+        assert row[0] == "ready"
+
 
 def test_bulk_reassign(client):
     a = client.post("/api/plugins/kanban/tasks",

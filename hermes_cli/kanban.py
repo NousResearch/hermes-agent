@@ -359,25 +359,31 @@ def _cmd_create(args: argparse.Namespace) -> int:
     if max_retries is not None and max_retries < 1:
         return _err(f"kanban: --max-retries must be >= 1 (got {max_retries}); "
                     "use 1 to trip on the first failure.", 2)
-    with kbc.connect_closing() as conn:
-        task_id = kb.create_task(
-            conn, title=args.title, body=body, assignee=args.assignee,
-            created_by=args.created_by or _profile_author(),
-            workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
-            project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
-            parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),
-            idempotency_key=getattr(args, "idempotency_key", None),
-            max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
-            max_retries=max_retries, model_override=getattr(args, "model_override", None),
-            provider_override=getattr(args, "provider_override", None),
-            goal_mode=bool(getattr(args, "goal_mode", False)),
-            goal_max_turns=getattr(args, "goal_max_turns", None),
-            completion_contract=getattr(args, "completion_contract", None),
-            initial_status=getattr(args, "initial_status", "running"),
-            creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
-                             if is_dispatcher_owned_worker_context() else None),
-        )
-        task = kb.get_task(conn, task_id)
+    try:
+        with kbc.connect_closing() as conn:
+            task_id = kb.create_task(
+                conn, title=args.title, body=body, assignee=args.assignee,
+                created_by=args.created_by or _profile_author(),
+                workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
+                project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
+                parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),
+                idempotency_key=getattr(args, "idempotency_key", None),
+                max_runtime_seconds=max_runtime, skills=getattr(args, "skills", None) or None,
+                max_retries=max_retries, model_override=getattr(args, "model_override", None),
+                provider_override=getattr(args, "provider_override", None),
+                goal_mode=bool(getattr(args, "goal_mode", False)),
+                goal_max_turns=getattr(args, "goal_max_turns", None),
+                completion_contract=getattr(args, "completion_contract", None),
+                initial_status=getattr(args, "initial_status", "running"),
+                reviewer=getattr(args, "reviewer", None),
+                creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
+                                 if is_dispatcher_owned_worker_context() else None),
+            )
+            task = kb.get_task(conn, task_id)
+    except ValueError as exc:
+        # Profile / skill / reviewer validation runs before any write, so this
+        # is always a clean refusal with nothing persisted.
+        return _err(f"kanban: {exc}", 2)
     if getattr(args, "json", False):
         _print_json(_task_to_dict(task))
     else:
@@ -512,6 +518,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
         field("branch", task.branch_name)
     if task.skills:
         field("skills", ", ".join(task.skills))
+    if task.required_reviewer:
+        field("reviewer", f"{task.required_reviewer} (required — completion gated)")
     if task.model_override:
         _prov = f" (provider: {task.provider_override})" if task.provider_override else ""
         field("model", f"{task.model_override}{_prov}")
@@ -608,7 +616,15 @@ def _cmd_reassign(args: argparse.Namespace) -> int:
     profile = _none_profile(args.profile)
     reclaim = bool(getattr(args, "reclaim", False))
     with kbc.connect_closing() as conn:
-        ok = kb.reassign_task(conn, args.task_id, profile, reclaim_first=reclaim, reason=getattr(args, "reason", None))
+        try:
+            ok = kb.reassign_task(
+                conn, args.task_id, profile, reclaim_first=reclaim,
+                reason=getattr(args, "reason", None),
+            )
+        except ValueError as exc:
+            # Skill / reviewer-gate refusals are raised BEFORE the write txn:
+            # a refusal here always means nothing was persisted.
+            return _err(str(exc))
     return _ok_or_err(
         ok,
         f"cannot reassign {args.task_id} (unknown id, or still running — pass --reclaim to release first)",
@@ -920,7 +936,11 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
-                                        force=bool(getattr(args, "force", False)))
+                                        force=bool(getattr(args, "force", False)),
+                                        review_gate_override=bool(getattr(args, "override_reviewer", False)))
+            except kb.ReviewerGateError as gate_err:
+                fail_msg[tid] = str(gate_err)
+                return False
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "
@@ -985,24 +1005,41 @@ def _cmd_block(args: argparse.Namespace) -> int:
     ids = _bulk_ids(args)
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
+        # ``with_reason`` carries either the refusal evidence (lost race) or the
+        # exact stop blocker when the work could not be proven stopped — a
+        # worker process that survived the stop, or a spawn whose PID was never
+        # published. Both belong in the operator's output.
+        notes: dict = {}
+
+        def op(tid):
+            ok, why = kb.block_task(
+                conn, tid, reason=reason, kind=kind,
+                expected_run_id=_worker_run_id_for(tid), with_reason=True)
+            if why:
+                notes[tid] = why
+            return ok
+
         def ok_msg(tid):
             # Report where it landed: dependency blocks -> todo, tripped unblock-loop breaker -> triage.
             landed = kb.get_task(conn, tid)
             where = landed.status if landed else "blocked"
             if where == "todo":
-                return f"{tid} → todo (dependency wait){suffix}"
-            if kind == "dependency" and where == "blocked":
-                return f"Blocked {tid} as needs_input (no open parent to wait on){suffix}"
-            if where == "triage":
+                msg = f"{tid} → todo (dependency wait){suffix}"
+            elif kind == "dependency" and where == "blocked":
+                msg = f"Blocked {tid} as needs_input (no open parent to wait on){suffix}"
+            elif where == "triage":
                 # Only a typed owner-input block carries a question for a human.
                 verdict = ("needs a human decision" if (landed.block_kind if landed else kind) == "needs_input"
                            else "orchestration attention needed")
-                return f"{tid} → triage (unblock loop detected — {verdict}){suffix}"
-            return f"Blocked {tid}{suffix}"
+                msg = f"{tid} → triage (unblock loop detected — {verdict}){suffix}"
+            else:
+                msg = f"Blocked {tid}{suffix}"
+            note = notes.get(tid)
+            return f"{msg} [!] {note}" if note else msg
 
-        op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(
-            conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id_for(tid)))
-        return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
+        op = _commented(conn, reason, author, "BLOCKED", op)
+        return _bulk_apply(ids, op, ok_msg,
+                           lambda tid: f"cannot block {tid}" + (f": {notes[tid]}" if tid in notes else ""))
 
 
 def _cmd_schedule(args: argparse.Namespace) -> int:
@@ -1129,8 +1166,20 @@ def _cmd_archive(args: argparse.Namespace) -> int:
         if purge_ids:
             return _bulk_apply(purge_ids, lambda tid: kb.delete_archived_task(conn, tid), lambda tid: f"Deleted {tid}",
                                lambda tid: f"cannot delete {tid} (must already be archived)")
-        return _bulk_apply(ids, lambda tid: kb.archive_task(conn, tid),
-                           lambda tid: f"Archived {tid}", lambda tid: f"cannot archive {tid}")
+        # Same shared policy as the DB lifecycle, the dashboard and the agent
+        # tool: protected statuses / a live worker / an in-flight spawn refuse
+        # with the exact reason and change nothing.
+        reasons: dict = {}
+
+        def op(tid):
+            ok, why = kb.archive_task(conn, tid, with_reason=True)
+            if not ok:
+                reasons[tid] = why or f"cannot archive {tid}"
+            return ok
+
+        return _bulk_apply(ids, op,
+                           lambda tid: f"Archived {tid}",
+                           lambda tid: f"cannot archive {tid} — {reasons[tid]}")
 
 
 def _cmd_stats(args: argparse.Namespace) -> int:

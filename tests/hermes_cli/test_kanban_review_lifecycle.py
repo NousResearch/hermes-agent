@@ -651,6 +651,16 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         captured.append(list(task.skills or []))
         return None
 
+    # The hermetic home ships no skill tree, so give it the specialist skill
+    # this card force-loads: create-time validation now rejects any explicitly
+    # named skill the assignee's library cannot resolve.
+    skill_dir = kanban_home / "skills" / "domain-specific-review"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: domain-specific-review\ndescription: test double\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+
     with kbc.connect() as conn:
         task_id = kb.create_task(
             conn,

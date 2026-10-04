@@ -41,6 +41,16 @@ def test_kanban_tools_hidden_without_env_var(monkeypatch, tmp_path):
 # Handler happy paths
 # ---------------------------------------------------------------------------
 
+def _install_profile(home, name):
+    """A live named profile under ``home``: ``config.yaml`` is the identity
+    marker that makes a directory a profile (``named_profile_has_identity``),
+    so ``kanban_create`` / ``kanban_reassign`` resolve it."""
+    profile_dir = home / "profiles" / name
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    (profile_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
+    return profile_dir
+
+
 @pytest.fixture
 def worker_env(monkeypatch, tmp_path):
     """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set
@@ -52,6 +62,11 @@ def worker_env(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    # kanban_create validates its assignee against the profile roster, so the
+    # peer profiles these tests fan out to have to actually exist on disk
+    # (config.yaml is the identity marker that makes a directory a profile).
+    _install_profile(home, "peer")
+    _install_profile(home, "qa")
 
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
@@ -790,7 +805,12 @@ def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker
     ))
 
     assert own["ok"] is True
-    assert "child is already running" in foreign["error"]
+    # The ownership guard now refuses the foreign card BEFORE the DB's
+    # running-child check (defense in depth: link_tasks still rejects a running
+    # child without the owner's trusted run id — covered directly by
+    # tests/hermes_cli/test_kanban_db.py and tests/hermes_cli/test_kanban_cli.py).
+    assert "refusing to mutate" in foreign["error"]
+    assert foreign_child in foreign["error"]
     with kbc.connect() as conn:
         assert kb.parent_ids(conn, worker_env) == [own_parent]
         assert kb.parent_ids(conn, foreign_child) == []
@@ -1274,6 +1294,9 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     # home to avoid mkdir() colliding with the worker's directory.
     home = tmp_path / "gate-home" / ".hermes"
     home.mkdir(parents=True)
+    # The profile root moved with HERMES_HOME, so the peer profile this
+    # test fans out to has to exist under the new root too.
+    _install_profile(home, "peer")
     (home / "config.yaml").write_text(
         "kanban:\n  auto_subscribe_on_create: false\n"
     )

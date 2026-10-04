@@ -262,6 +262,10 @@ def test_complete_task_preserves_dirty_worktree(kanban_home: Path, repo: Path) -
 def test_archive_task_reaps_clean_worktree(kanban_home: Path, repo: Path) -> None:
     with kbc.connect_closing() as conn:
         tid, wt = _worktree_task(conn, repo)
+        # ``ready`` is protected work in flight: park the card first, which is
+        # the documented block-before-archive path.
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (tid,))
         assert kb.archive_task(conn, tid)
     assert not wt.exists()
 

@@ -189,7 +189,13 @@ _SPECS = [
         _arg("--skill", action="append", default=[], dest="skills",
              help="Skill to force-load into the worker (repeatable). The kanban "
                   "lifecycle is already injected automatically. Example: --skill "
-                  "translation --skill github-code-review"),
+                  "translation --skill github-code-review. Every name must resolve "
+                  "in the assignee profile's skill library or the task is refused."),
+        _arg("--reviewer",
+             help="Install a review gate: the named profile (must exist and carry "
+                  "the sdlc-review skill) is persisted as this card's required "
+                  "reviewer. Implementation runs then must finish with "
+                  "`kanban request-review`, which selects it automatically."),
         _arg("--max-retries", type=int, metavar="N",
              help="Per-task override for the consecutive-failure "
                   f"circuit breaker. Trip on the Nth failure — e.g. --max-retries 1 blocks on the "
@@ -303,6 +309,11 @@ _SPECS = [
         _arg("--force", action="store_true",
              help="Override the live-claim guard: complete a running, claimed task "
                   "even without owning its run (closes the worker's run)."),
+        _arg("--override-reviewer", action="store_true",
+             help="Explicit operator recovery for a review-gated card: complete it "
+                  "without the saved reviewer's approval. Audited as a "
+                  "reviewer_gate_overridden event. The normal path is "
+                  "`hermes kanban request-review`."),
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,
@@ -355,10 +366,12 @@ _SPECS = [
         _arg("--json", dest="json", action="store_true", help="Emit machine-readable JSON result"),
     ], help="Manually move one or more todo/blocked tasks to ready (recovery path)"),
     _cmd("archive", [
-        _arg("task_ids", nargs="*", help="Task ids to archive (default mode)"),
+        _arg("task_ids", nargs="*",
+             help="Task ids to archive (default mode). ready/running/review are "
+                  "protected: block the task first, then archive"),
         _arg("--rm", dest="purge_ids", nargs="+",
              help="Permanently delete already-archived task ids from the board"),
-    ], help="Archive one or more tasks"),
+    ], help="Archive tasks (anything except ready/running/review; block those first)"),
     _cmd("tail", [_TASK_ID, _arg("--interval", type=float, default=1.0)], help="Follow a task's event stream"),
     _cmd("dispatch", [
         _arg("--dry-run", action="store_true", help="Don't actually spawn processes; just print what would happen"),

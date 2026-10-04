@@ -1592,6 +1592,48 @@ class TestWriteProfileMetaDurability:
 
 
 # ===================================================================
+# read_profile_meta — never-raises contract for malformed VALUES
+# ===================================================================
+
+class TestReadProfileMetaMalformedRole:
+    """``read_profile_meta`` promises "Never raises — a corrupt file on one profile must
+    not break ``hermes profile list``". Unparseable YAML is already swallowed by
+    ``_load_yaml_dict``; a *parseable* file whose ``role`` VALUE is unhashable must not
+    escape that guard and blow up in the ``PROFILE_ROLES`` membership test."""
+
+    @pytest.mark.parametrize("role_value", [["setup"], {"setup": True}], ids=["list", "dict"])
+    def test_unhashable_role_value_never_raises_and_degrades_to_none(self, tmp_path, role_value):
+        profile_dir = tmp_path / "malformed-role"
+        profile_dir.mkdir()
+        (profile_dir / "profile.yaml").write_text(
+            yaml.safe_dump({"description": "still readable", "role": role_value}),
+            encoding="utf-8",
+        )
+
+        meta = profiles.read_profile_meta(profile_dir)  # the contract: no exception
+
+        assert meta["role"] is None
+        # The guard isolates the bad VALUE: the rest of the document still comes through,
+        # instead of the whole read silently degrading to defaults.
+        assert meta["description"] == "still readable"
+
+    def test_scalar_role_resolution_is_unchanged(self, tmp_path):
+        """Known role keeps resolving to itself, unknown scalar role to ``None`` — the
+        fix must narrow the membership test to hashable scalars, not blank ``role``."""
+        def _read(role_value):
+            # One directory per read: ``read_profile_meta`` memoizes per path.
+            profile_dir = tmp_path / f"scalar-{len(list(tmp_path.iterdir()))}"
+            profile_dir.mkdir()
+            (profile_dir / "profile.yaml").write_text(
+                yaml.safe_dump({"role": role_value}), encoding="utf-8")
+            return profiles.read_profile_meta(profile_dir)["role"]
+
+        assert _read(profiles.SETUP_ROLE) == profiles.SETUP_ROLE
+        assert _read("banana") is None
+        assert _read(None) is None
+
+
+# ===================================================================
 # Edge cases and additional coverage
 # ===================================================================
 

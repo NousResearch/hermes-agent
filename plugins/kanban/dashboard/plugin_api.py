@@ -174,6 +174,9 @@ _CARD_SUMMARY_PREVIEW_CHARS = 200
 def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None,
                current_run_started_at: Optional[int] = None) -> dict[str, Any]:
     d = asdict(task)
+    # Dispatcher-internal spawn stamp, not board state: the API exposes the
+    # durable gate (required_reviewer) but never the per-spawn phase.
+    d.pop("run_phase", None)
     # Derived age metrics so the UI can colour stale cards without client deltas.
     try:
         d["age"] = kanban_db.task_age(task)
@@ -418,6 +421,9 @@ class CreateTaskBody(BaseModel):
     provider_override: Optional[str] = None
     reasoning_effort: Optional[str] = None  # none|minimal|…|ultra; None inherits the profile's level
     project_id: Optional[str] = None  # None inherits the board's scoped project (if any)
+    # Review gate: profile persisted as this card's required reviewer (validated
+    # before any write — a bad profile/skill is a 400 with nothing persisted).
+    reviewer: Optional[str] = None
 
 
 @router.post("/tasks")
@@ -537,6 +543,9 @@ class UpdateTaskBody(BaseModel):
     clear_model_override: bool = False
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    # Explicit operator recovery for a review-gated card: dragging it to 'done'
+    # without the saved reviewer's approval. Audited; omitted = the gate holds.
+    review_gate_override: bool = False
 
 
 class BulkTaskBody(BaseModel):
@@ -555,6 +564,7 @@ class BulkTaskBody(BaseModel):
     clear_model_override: bool = False
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    review_gate_override: bool = False
 
 
 class _StatusRejected(Exception):
@@ -581,7 +591,8 @@ def _drag_to(conn, task_id: str, s: str) -> bool:
 # detection) and ``done`` pass ``force=True``: a dashboard action is a human override of a live worker claim.
 _STATUS_HANDLERS: dict[str, Any] = {
     "done": lambda conn, tid, p: kanban_db.complete_task(
-        conn, tid, result=p.result, summary=p.summary, metadata=p.metadata, force=True),
+        conn, tid, result=p.result, summary=p.summary, metadata=p.metadata, force=True,
+        review_gate_override=bool(getattr(p, "review_gate_override", False))),
     "blocked": lambda conn, tid, p: kanban_db.block_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "scheduled": lambda conn, tid, p: kanban_db.schedule_task(conn, tid, reason=getattr(p, "block_reason", None)),
     "review": lambda conn, tid, p: kanban_db.request_review(
@@ -627,8 +638,9 @@ def _patch_status(conn, task_id: str, payload: UpdateTaskBody, review_assignee_d
     """PATCH status phase: 400 on a rejected verb, 409 when the transition is refused
     (naming the blocking parent(s) for ``ready``/``done``/``review`` so the UI renders an actionable toast)."""
     s = payload.status
+    why = None
     if s == "archived":
-        ok = kanban_db.archive_task(conn, task_id)
+        ok, why = kanban_db.archive_task(conn, task_id, with_reason=True)
     else:
         with _map_errors(400, _StatusRejected, ValueError):
             ok = _apply_status(conn, task_id, s, payload, f"unknown status: {s}")
@@ -636,6 +648,10 @@ def _patch_status(conn, task_id: str, payload: UpdateTaskBody, review_assignee_d
             ok = kanban_db.assign_task(conn, task_id, None)
     if ok:
         return
+    if why:
+        # Shared archive policy: quote its exact refusal (protected status,
+        # live worker, in-flight spawn) instead of a generic 409.
+        raise _conflict(why)
     blockers = _parents_blocking_ready(conn, task_id) if s == "ready" else []
     if blockers:
         names = ", ".join(f"{p['title']!r} ({p['id']}, status={p['status']})" for p in blockers)
@@ -818,8 +834,12 @@ def delete_link(parent_id: str = Query(...), child_id: str = Query(...), board: 
 def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str], entry: dict) -> None:
     """Apply the bulk patch to one task, recording refusals in ``entry`` without aborting the
     remaining ops — except a rejected status verb (``_StatusRejected`` propagates)."""
-    if payload.archive and not kanban_db.archive_task(conn, tid):
-        entry.update(ok=False, error="archive refused")
+    if payload.archive:
+        archived, why = kanban_db.archive_task(conn, tid, with_reason=True)
+        if not archived:
+            # Shared policy refusal (protected status / live worker /
+            # in-flight spawn) is quoted verbatim for the per-id result.
+            entry.update(ok=False, error=why or "archive refused")
     if payload.status is not None and not payload.archive:
         s = payload.status
         if not _apply_status(conn, tid, s, payload, f"unknown status {s!r}"):
@@ -1594,7 +1614,11 @@ def decompose_task_endpoint(task_id: str, payload: DecomposeBody, board: Optiona
     outcome = _run_aux(board, "kanban_decompose", "decompose_task", task_id, payload.author)
     return {
         "ok": bool(outcome.ok), "task_id": outcome.task_id, "reason": outcome.reason,
-        "fanout": bool(outcome.fanout), "child_ids": outcome.child_ids or [], "new_title": outcome.new_title}
+        "fanout": bool(outcome.fanout), "child_ids": outcome.child_ids or [], "new_title": outcome.new_title,
+        # Non-null only when kanban.auto_decompose is off and the prompt was routed to
+        # the single eligible subscriber. The task graph is untouched in that case;
+        # ``reason`` says so explicitly so a no-subscriber / ambiguity result is clear.
+        "routed_to": outcome.routed_to}
 
 
 # --- Orchestration settings (kanban.orchestrator_profile / default_assignee /

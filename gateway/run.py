@@ -5638,6 +5638,12 @@ async def _start_gateway_start_control_socket(runner):
             unserve_profile_verb, serve_profile_verb,
         )
         from gateway.run_plugin_rewire import reload_plugins_verb
+        # auto_decompose-off decomposition: the shared CLI/dashboard backend holds no
+        # adapters, so it asks THIS gateway (which does) for a confirmed instruction
+        # wake. Registered here — independent of the kanban dispatcher — so a gateway
+        # with dispatch_in_gateway=false still delivers; the handler runs on the
+        # socket executor thread and marshals onto the loop.
+        from gateway.kanban_watchers import decompose_instruction_control_verb
         # pause-for-update: the updater asks us to drain + exit (freeing venv handles) vs. a tree-kill
         # (same path as SIGUSR1). Handler runs on the socket executor thread, so marshal onto the loop.
         # pause-for-update (#92091 step 2): the updater asks this gateway to drain in-flight turns and exit
@@ -5686,6 +5692,8 @@ async def _start_gateway_start_control_socket(runner):
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler,
                            "rescan-profiles": _rescan_profiles_handler,
+                           "deliver-decompose-instruction":
+                               decompose_instruction_control_verb(runner, _main_loop),
                            "unserve-profile": unserve_profile_verb(runner),
                            "serve-profile": serve_profile_verb(runner),
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),

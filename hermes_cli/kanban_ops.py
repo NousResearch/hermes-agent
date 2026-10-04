@@ -106,6 +106,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
             "auto_assigned_default": res.auto_assigned_default,
+            "discarded_spawns": [
+                {"task_id": tid, "pid": pid} for (tid, pid) in res.discarded_spawns
+            ],
             "respawn_guarded": [
                 {"task_id": tid, "reason": reason}
                 for (tid, reason) in res.respawn_guarded
@@ -132,6 +135,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     tag = " (dry)" if args.dry_run else ""
     for tid, who, ws in res.spawned:
         print(f"  - {tid}  ->  {who}  @ {ws or '-'}{tag}")
+    for tid, pid in res.discarded_spawns:
+        print(f"  - {tid}  spawn discarded (claim lost while starting; pid {pid} stopped)")
     if res.auto_assigned_default:
         print(
             f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "

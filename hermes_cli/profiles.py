@@ -943,13 +943,19 @@ def read_profile_meta(profile_dir: Path) -> dict:
             hermes_bots = ui_meta.get("hermes-bots")
             if isinstance(hermes_bots, dict):
                 bot_title = str(hermes_bots.get("title") or "").strip()
+        # A malformed ``role`` VALUE (list/dict) is still parseable YAML, so it reaches
+        # here; hashing it in the frozenset membership test raises TypeError and breaks
+        # the never-raises contract. Only a string can ever equal a PROFILE_ROLES entry,
+        # so test the type first and leave every other shape — unknown scalars included —
+        # resolving to None.
+        role = data.get("role")
         return {
             "description": str(data.get("description") or "").strip(),
             "description_auto": bool(data.get("description_auto", False)),
             "display_name": str(data.get("display_name") or "").strip(),
             "bot_title": bot_title,
             "previous_names": _clean_previous_names(data.get("previous_names")),
-            "role": data.get("role") if data.get("role") in PROFILE_ROLES else None,
+            "role": role if isinstance(role, str) and role in PROFILE_ROLES else None,
         }
 
     # A copy per caller (list included): the cached value is shared, and a caller that mutates

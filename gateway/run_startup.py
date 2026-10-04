@@ -1534,6 +1534,13 @@ class GatewayStartupMixin:
 
     def _start_spawn_background_watchers(self) -> None:
         """Spawn the long-lived supervised background watchers."""
+        # Give the auto_decompose-off routing path a delivery surface in EVERY
+        # gateway, not only one whose kanban dispatcher runs: the in-process
+        # transport is registered here at gateway start (idempotent), while
+        # callers outside this process reach the same delivery over the
+        # deliver-decompose-instruction control verb.
+        from gateway.kanban_watchers import install_kanban_instruction_transport
+        install_kanban_instruction_transport(self)
         for method in self._PRE_RECONNECT_WATCHERS:
             self._spawn_supervised(getattr(self, method), method[1:])
         if self._failed_platforms:

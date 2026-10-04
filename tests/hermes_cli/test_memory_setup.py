@@ -30,6 +30,7 @@ def test_cmd_setup_generic_choice_cancel_writes_nothing(tmp_path, monkeypatch):
     save_config = MagicMock()
     install_dependencies = MagicMock()
 
+    monkeypatch.setattr("hermes_cli.memory_catalog.featured_memory_entries", lambda: [])
     monkeypatch.setattr(memory_setup, "_get_available_providers", lambda: [("fake", "local", provider)])
     monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: next(selections))
     monkeypatch.setattr(memory_setup, "_install_dependencies", install_dependencies)

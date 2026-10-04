@@ -73,6 +73,7 @@ def test_setup_requires_dependencies_and_keeps_the_existing_union(tmp_path, monk
             assert Path(actual_home) == home
             post_calls.append(proposal)
 
+    monkeypatch.setattr('hermes_cli.memory_catalog.featured_memory_entries', lambda: [])
     monkeypatch.setattr(memory_setup, '_get_available_providers', lambda: [('candidate', 'local', Provider())])
     monkeypatch.setattr(memory_setup, '_curses_select', lambda *args, **kwargs: 0)
 

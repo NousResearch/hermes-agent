@@ -28,6 +28,11 @@ class _RecordingHandler(logging.Handler):
         self.records.append(record)
 
 
+class _CtxWithHook:
+    def register_skills(self, *args, **kwargs):
+        raise RuntimeError("registry offline")
+
+
 def _collector() -> _ProviderCollector:
     return _ProviderCollector("open-second-brain")
 
@@ -57,19 +62,38 @@ class SecondaryRegistrationWarningTests(unittest.TestCase):
         handler = self._capture()
         collector = _collector()
 
-        def _boom(*args, **kwargs):
-            raise RuntimeError("registry offline")
-
-        real_ctx = mock.MagicMock(spec=["register_skills"])
-        real_ctx.register_skills.side_effect = _boom
+        real_ctx = _CtxWithHook()
         with mock.patch.object(
             _ProviderCollector, "_plugin_context", return_value=real_ctx
         ):
             self.assertIsNone(collector.register_skills("/tmp/x.md"))
-        self.assertTrue(
-            handler.records,
-            "a real failure on a supported hook must still warn",
-        )
+        self.assertEqual(len(handler.records), 1)
+        self.assertEqual(handler.records[0].levelno, logging.WARNING)
+        self.assertIn("registry offline", handler.records[0].getMessage())
+
+    def test_spec_mock_with_hook_behaves_like_real_object(self):
+        """A spec'd mock exposing the hook is called through the same lookup."""
+        handler = self._capture()
+        collector = _collector()
+        ctx = mock.MagicMock(spec=["register_skills"])
+        ctx.register_skills.side_effect = RuntimeError("registry offline")
+        with mock.patch.object(_ProviderCollector, "_plugin_context", return_value=ctx):
+            collector.register_skills("x")
+        self.assertEqual(len(handler.records), 1)
+        self.assertIn("registry offline", handler.records[0].getMessage())
+
+    def test_failing_plugin_context_warns_and_returns(self):
+        """A plugin context that cannot be built is a warning, not an exception."""
+        handler = self._capture()
+        collector = _collector()
+        with mock.patch.object(
+            _ProviderCollector, "_plugin_context",
+            side_effect=RuntimeError("plugin manager unavailable"),
+        ):
+            self.assertIsNone(collector.register_skills("x"))
+        self.assertEqual(len(handler.records), 1)
+        self.assertEqual(handler.records[0].levelno, logging.WARNING)
+        self.assertIn("plugin manager unavailable", handler.records[0].getMessage())
 
     def test_non_register_attribute_still_raises(self):
         """The typo guard must survive: non-``register_*`` still raises loudly."""

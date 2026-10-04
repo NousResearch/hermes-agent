@@ -765,7 +765,6 @@ def build_bwrap_args(
     # a write then fails where the command can see it.
     if scratch_dir:
         late.append(("--bind-try" if profile.writable_cwd else "--ro-bind-try", scratch_dir, scratch_dir))
-        late += scratch_mask(scratch_dir, empty_file_path(state_dir))
         restored.append(scratch_dir)
         if profile.writable_cwd:
             restored_rw.append(scratch_dir)
@@ -792,6 +791,9 @@ def build_bwrap_args(
     ]
     pins = ancestor_pin_args([(root, root) for root in restored_rw], restored, shown)
     late += [(pins[i], pins[i + 1], pins[i + 2]) for i in range(0, len(pins), 3)]
+    # The mask of the scratch dir comes after the pins: a pin binds a host
+    # directory over itself, and would show again what a mask below it hid.
+    late += scratch_mask(scratch_dir, empty_file_path(state_dir))
     for path in shown:
         if os.path.isdir(path):
             late.append(("--tmpfs", path))

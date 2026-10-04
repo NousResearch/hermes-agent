@@ -838,3 +838,17 @@ class TestScratchMask:
 
         assert scratch_mask(None, "/nonexistent") == []
         assert scratch_mask(str(missing), "/nonexistent") == []
+
+    def test_mask_comes_after_every_pin_inside_the_scratch_dir(self, paths, scratch):
+        (scratch / "a" / "b").mkdir(parents=True)
+        (scratch / "a" / "b" / "s.txt").write_text("x")
+        sock = _listen(str(scratch / "a" / "ctl.sock"))
+        try:
+            hidden = sensitive_paths(paths["home"], str(scratch.parent.parent), (str(scratch / "a" / "b" / "s.txt"),))
+            argv = self._argv(paths, scratch, hidden_paths=hidden)
+        finally:
+            sock.close()
+        i_pin = next(i for i, a in enumerate(argv) if a == "--bind" and argv[i + 1] == str(scratch / "a"))
+        i_mask = argv.index(str(scratch / "a" / "ctl.sock"))
+        i_overlay = max(i for i, a in enumerate(argv) if a == str(scratch / "a" / "b" / "s.txt"))
+        assert i_pin < i_mask < i_overlay

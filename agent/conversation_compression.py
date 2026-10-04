@@ -2236,13 +2236,6 @@ def conversation_history_after_compression(
     return None
 
 
-_SYNTHETIC_USER_PREFIXES = (
-    "[System: Your previous response was truncated", "[System: The previous response was cut off",
-    "[System: Your previous tool call", "[Your active task list was preserved across context compression]",
-    "[IMPORTANT: Background process ",
-)
-
-
 def _message_text(message: Any) -> str:
     content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, str):
@@ -2269,9 +2262,20 @@ def _is_real_user_message(message: Any) -> bool:
     if any(message.get(flag) for flag in _SYNTHETIC_USER_FLAGS):
         return False
     text = _message_text(message).strip()
-    if not text or text.startswith(_SYNTHETIC_USER_PREFIXES):
+    if not text:
         return False
-    from agent.context_compressor import ContextCompressor
+    # A steer row is a direct message from the user delivered mid-turn — full user authority,
+    # even though the compressor's scaffolding list tags the wrapper prefix as synthetic there.
+    if text.startswith(_STEER_FALLBACK_OPEN):
+        return True
+    # The SAME shared prefix/pattern list the compressor's verbatim-section picker uses —
+    # a stale local copy missed the batched count digests and the iteration-cap row, so a
+    # background-completion digest counted as "real user intent" and flipped compression
+    # anchors (#126286 review). One definition to keep in sync, not three.
+    from agent.context_compressor import ContextCompressor, _synthetic_user_row
+
+    if _synthetic_user_row(text):
+        return False
     return not ContextCompressor._is_synthetic_compression_user_turn(message)
 
 

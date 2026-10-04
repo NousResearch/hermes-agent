@@ -15,8 +15,10 @@ import subprocess
 import sys
 import textwrap
 import uuid
+from contextlib import suppress
 from pathlib import Path
 
+import psutil
 import pytest
 
 from hermes_cli import update_pause_record as pause_record
@@ -109,3 +111,94 @@ def test_a_partly_resumed_claim_is_what_the_next_launch_resumes_not_the_copy_win
     finally:
         _release(holder)
     assert owed == [{"work": 4343}], "the next launch would restart a gateway this launch already restarted"
+
+
+# --- SCM: a running wrapper is not a ready gateway ---------------------------------------------
+
+_WRAPPER_CS = r"""
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.ServiceProcess;
+
+public class Wrapper : ServiceBase {
+    Process child;
+    protected override void OnStart(string[] args) {
+        string[] spec = File.ReadAllLines(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "child.txt"));
+        ProcessStartInfo psi = new ProcessStartInfo(spec[0], spec[1]);
+        psi.UseShellExecute = false;
+        psi.CreateNoWindow = true;
+        psi.WorkingDirectory = spec[2];
+        for (int i = 3; i < spec.Length; i++) {
+            int eq = spec[i].IndexOf('=');
+            if (eq > 0) psi.EnvironmentVariables[spec[i].Substring(0, eq)] = spec[i].Substring(eq + 1);
+        }
+        child = Process.Start(psi);
+    }
+    public static void Main() { ServiceBase.Run(new Wrapper()); }
+}
+"""
+
+
+@pytest.fixture(scope="module")
+def service_wrapper(tmp_path_factory) -> Path:
+    """A real SCM service executable that starts one configured child process, like a service wrapper."""
+    windir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Microsoft.NET"
+    csc = next((c for c in sorted(windir.glob("Framework*/v4.*/csc.exe"), reverse=True)), None)
+    assert csc is not None, f"no .NET Framework C# compiler under {windir}"
+    out = tmp_path_factory.mktemp("scm-wrapper")
+    (out / "wrapper.cs").write_text(_WRAPPER_CS, encoding="utf-8")
+    subprocess.run([str(csc), "/nologo", "/target:exe", "/reference:System.ServiceProcess.dll",
+                    f"/out:{out / 'wrapper.exe'}", str(out / "wrapper.cs")], check=True, capture_output=True)
+    return out / "wrapper.exe"
+
+
+def _sc(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["sc.exe", *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                          check=False)
+
+
+@pytest.mark.parametrize("gateway", ["absent", "ready"])
+def test_a_running_service_owes_its_gateway_until_that_gateway_is_ready(tmp_path, monkeypatch, service_wrapper, gateway):
+    from hermes_cli import update_cmd_windows as w
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    bin_dir = tmp_path / "svc"
+    bin_dir.mkdir()
+    exe = bin_dir / "wrapper.exe"
+    exe.write_bytes(service_wrapper.read_bytes())
+    child = ([sys.executable, "-c \"import time; time.sleep(900)\""] if gateway == "absent"
+             else [sys.executable, "-m hermes_cli.main gateway run"])
+    (bin_dir / "child.txt").write_text("\n".join([*child, str(REPO), f"HERMES_HOME={home}", f"PYTHONPATH={REPO}",
+                                                  "PYTHONIOENCODING=utf-8"]) + "\n", encoding="utf-8")
+    name = f"hermes-r8-debt-{gateway}-{os.getpid()}"
+    created = _sc("create", name, "binPath=", f'"{exe}"', "start=", "demand")
+    assert created.returncode == 0, created.stdout + created.stderr
+    if gateway == "absent":  # the budget only bounds how long the miss takes to report
+        monkeypatch.setattr(w, "_SERVICE_READY_TIMEOUT_S", 20.0, raising=False)
+    token = {"services": [name], "expected_services": [name], "restarted_services": [], "service_profiles": {name: "default"}}
+    try:
+        if gateway == "absent":
+            with pytest.raises(RuntimeError):
+                w._resume_windows_services(token)
+            assert token["services"] == [name], "SCM 'running' retired the debt of a gateway that never started"
+        else:
+            try:
+                w._resume_windows_services(token)
+            except RuntimeError as exc:
+                pytest.fail(f"{exc}\n{_logs(home)}")
+            assert token["services"] == [] and token["restarted_services"] == [name]
+    finally:
+        pid = 0
+        with suppress(Exception):
+            pid = int(psutil.win_service_get(name).pid() or 0)  # type: ignore[attr-defined]
+        if pid:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True, check=False)
+        _sc("delete", name)
+
+
+def _logs(home: Path) -> str:
+    return "\n".join(f"--- {p}\n{p.read_text(encoding='utf-8-sig', errors='replace')[-3000:]}"
+                     for p in sorted((home / "logs").glob("*.log")))

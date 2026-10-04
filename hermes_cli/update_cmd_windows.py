@@ -1229,8 +1229,36 @@ def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:
             print("  ✓ Refreshed installer bootstrap-cache script(s): " + ", ".join(sorted(refreshed)))
 
 
+_SERVICE_READY_TIMEOUT_S = 60.0
+
+
+def _service_gateway_ready(name: str, profile: str | None) -> list[int]:
+    """The stable gateway *name*'s service process supervises (in *profile*'s home when known): SCM
+    ``running`` proves only the wrapper started, not that the gateway it hosts came up."""
+    from hermes_cli import gateway_windows
+    from hermes_cli.profiles import get_profile_dir
+    psutil, service = _win_service(name)
+
+    def under_service(pids):
+        try:
+            service_pid = int(service.pid() or 0)
+        except Exception:
+            return []
+        owned = []
+        for pid in pids:
+            with suppress(Exception):
+                if service_pid and service_pid in {int(p.pid) for p in psutil.Process(int(pid)).parents()}:
+                    owned.append(int(pid))
+        return owned
+
+    home = Path(get_profile_dir(profile)) if profile else None
+    return gateway_windows._wait_for_gateway_ready(
+        timeout_s=_SERVICE_READY_TIMEOUT_S, home=home, all_profiles=home is None, pid_filter=under_service)
+
+
 def _resume_windows_services(token: dict) -> None:
-    """Restart the SCM services recorded on *token*; failed ones stay on the token so a retry sees them."""
+    """Restart the SCM services recorded on *token*; one leaves the token only once the gateway it
+    supervises is ready. Failed ones stay on the token so a retry sees them."""
     from hermes_cli.update_cmd import _start_windows_gateway_service
     services = list(token.get("services") or [])
     token.setdefault("expected_services", list(services))
@@ -1240,6 +1268,8 @@ def _resume_windows_services(token: dict) -> None:
     for service_name in map(str, services):
         try:
             _start_windows_gateway_service(service_name)
+            if not _service_gateway_ready(service_name, (token.get("service_profiles") or {}).get(service_name)):
+                raise RuntimeError(f"Windows service {service_name} is running but its gateway did not become ready")
             restarted_services.append(service_name)
             if service_name not in verified_restarts:
                 verified_restarts.append(service_name)

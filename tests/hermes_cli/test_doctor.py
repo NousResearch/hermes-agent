@@ -18,7 +18,7 @@ import hermes_constants
 from hermes_cli import config as config_mod
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
-from hermes_cli.doctor_config import _has_provider_env_config
+from hermes_cli.doctor_config import _has_provider_config_credential, _has_provider_env_config
 from hermes_cli.doctor_report import Finding
 import shutil
 from hermes_cli import doctor_tools
@@ -123,6 +123,117 @@ class TestProviderEnvDetection:
     def test_returns_false_when_no_provider_settings(self):
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
+
+
+class TestProviderConfigCredential:
+    """config.yaml-side credential detection for the doctor env check (#132666).
+
+    The check's ok label says "API key or custom endpoint configured", so a user-defined
+    provider that carries its credential entirely in config must not be reported missing."""
+
+    def test_inline_provider_api_key_counts(self):
+        inline = os.environ.get("HERMES_TEST_INLINE_PROVIDER_KEY", "test-inline-key")
+        cfg = {
+            "model": {"default": "my-model", "provider": "custom:mylocal"},
+            "providers": {
+                "mylocal": {
+                    "base_url": "https://example.internal/v1",
+                    "api_key": inline,
+                }
+            },
+        }
+        assert _has_provider_config_credential(cfg)
+
+    def test_key_env_pointer_counts_only_when_set(self, monkeypatch):
+        cfg = {
+            "providers": {
+                "mylocal": {
+                    "base_url": "https://example.internal/v1",
+                    "key_env": "HERMES_TEST_MYLOCAL_TOKEN",
+                }
+            }
+        }
+        monkeypatch.delenv("HERMES_TEST_MYLOCAL_TOKEN", raising=False)
+        # An unset pointer must not false-pass (the opposite-direction bug from #123762).
+        assert not _has_provider_config_credential(cfg)
+        monkeypatch.setenv("HERMES_TEST_MYLOCAL_TOKEN", "tok")
+        assert _has_provider_config_credential(cfg)
+        monkeypatch.delenv("HERMES_TEST_MYLOCAL_TOKEN", raising=False)
+        assert _has_provider_config_credential(
+            cfg, {"HERMES_TEST_MYLOCAL_TOKEN": "tok"}
+        )
+
+    def test_custom_model_provider_or_base_url_counts(self):
+        assert _has_provider_config_credential({
+            "model": {"provider": "Custom:MyLocal"}
+        })
+        assert _has_provider_config_credential({
+            "model": {"base_url": "https://example.internal/v1"}
+        })
+        assert not _has_provider_config_credential({"model": {"provider": "openai"}})
+
+    def test_bare_or_tuning_only_cfg_does_not_count(self):
+        assert not _has_provider_config_credential(None)
+        assert not _has_provider_config_credential({})
+        # A provider block without an endpoint is built-in tuning (resolve_user_provider
+        # ignores it too), not a custom endpoint carrying a credential.
+        assert not _has_provider_config_credential({
+            "providers": {"bedrock": {"stale_timeout_seconds": 600}}
+        })
+
+
+def _patch_doctor_home(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
+    return home
+
+
+def test_env_check_passes_for_custom_provider_inline_key(monkeypatch, tmp_path):
+    """Issue #132666: a live custom: provider whose credential lives inline in config.yaml
+    must satisfy the check — the .env substring scan is not the only credential source."""
+    home = _patch_doctor_home(monkeypatch, tmp_path)
+    inline = os.environ.get("HERMES_TEST_INLINE_PROVIDER_KEY", "test-inline-key")
+    (home / ".env").write_text("TERMINAL_ENV=local\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  default: my-model\n"
+        "  provider: custom:mylocal\n"
+        "providers:\n"
+        "  mylocal:\n"
+        "    base_url: https://example.internal/v1\n"
+        f"    api_key: {inline}\n",
+        encoding="utf-8",
+    )
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        f = doctor_config._check_env_file(False)
+    out = buf.getvalue()
+
+    assert "API key or custom endpoint configured" in out
+    assert "No API key or custom endpoint found" not in out
+    assert "Credentials resolved from config.yaml" in out
+    assert f.issues == []
+
+
+def test_env_check_still_fails_when_neither_source_has_credentials(
+    monkeypatch, tmp_path
+):
+    home = _patch_doctor_home(monkeypatch, tmp_path)
+    (home / ".env").write_text("TERMINAL_ENV=local\n", encoding="utf-8")
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        f = doctor_config._check_env_file(False)
+    out = buf.getvalue()
+
+    assert "No API key or custom endpoint found" in out
+    assert f.issues == ["Run 'hermes setup' to configure API keys"]
 
 
 class TestDoctorToolAvailabilitySummary:

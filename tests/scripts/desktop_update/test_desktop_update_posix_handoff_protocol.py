@@ -14,7 +14,6 @@ One or two invariant tests per Round 5 finding:
 
 from __future__ import annotations
 
-import fcntl  # windows-footgun: ok — linux-only module (platforms("linux"))
 import os
 from pathlib import Path
 import re
@@ -24,6 +23,10 @@ import subprocess
 import time
 
 import pytest
+
+# linux-only module (platforms("linux")): skip the module where it is absent instead of
+# failing collection on Windows
+fcntl = pytest.importorskip("fcntl")  # windows-footgun: ok
 
 from tests.scripts.desktop_update.lineage_rule_cases import ENV_CASES, RULE_CASES
 from tests.scripts.desktop_update.lineage_rule_cases import FACTS as LINEAGE_FACTS

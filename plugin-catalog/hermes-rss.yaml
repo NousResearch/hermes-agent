@@ -2,7 +2,7 @@ name: hermes-rss
 repo: https://github.com/Adolanium/hermes-rss
 sha: c608a9881077c30fbd9653da1b247e8399732603
 version: "0.0.3"
-description: Read RSS and Atom feeds and discuss articles in Hermes Desktop.
+description: "Read RSS and Atom feeds and discuss articles in Hermes Desktop. Disclosure — feeds and full articles are fetched with curl through the gateway's shell.exec on the connected Hermes host (public-IPv4 SSRF guard); opt-in AI grading sends article excerpts to your configured model and creates HERMES_HOME/skills/rss-importance-grading/SKILL.md if missing; opt-in image loading fetches publisher images directly from Desktop."
 maintainer: Adolanium
 tier: community
 category: desktop

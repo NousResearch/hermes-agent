@@ -636,7 +636,7 @@ def _resolve_assignment_credentials(model_cfg: dict, provider: str, provider_ent
         raw_entry = None
     if not isinstance(raw_entry, dict):
         raw_entry = {}
-    key_env = str(raw_entry.get("key_env") or "").strip()
+    key_env = str(raw_entry.get("key_env") or raw_entry.get("api_key_env") or "").strip()
     if key_env:
         model_cfg["key_env"] = key_env
         # #88990: carry the credential POINTER, never a resolved secret.

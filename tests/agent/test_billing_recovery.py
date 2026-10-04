@@ -38,6 +38,7 @@ def _agent(pool=None):
         _primary_runtime={"provider": "nous", "model": "test-model"},
         provider="openrouter", _credential_pool=pool, _fallback_activated=True,
         _rate_limited_until=time.monotonic() + 3600, _rate_limit_backoff_count=7,
+        _rate_limit_cooldown_reason=FailoverReason.billing,
     )
 
 
@@ -167,3 +168,102 @@ def test_unsuccessful_unbench_does_not_clear_session_cooldown(store, monkeypatch
     assert agent._rate_limited_until == until
     assert agent._rate_limit_backoff_count == 7
     assert store.read_bytes() == before
+
+
+@pytest.mark.parametrize("attached", [False, True])
+@pytest.mark.parametrize("reason", [FailoverReason.rate_limit, FailoverReason.upstream_rate_limit, None])
+def test_mixed_billing_and_429_preserves_session_owner(store, monkeypatch, attached, reason):
+    from agent.agent_runtime_helpers import restore_primary_runtime
+
+    write_credential_pool("nous", [_row("billing"), _row("rate", "rate_limit")])
+    agent = _agent(load_pool("nous") if attached else load_pool("openrouter"))
+    agent.model = "fallback-model"
+    # A previous billing timer must not confer ownership of the latest 429.
+    agent.provider = "nous"
+    agent._rate_limit_backoff_count = 2
+    if reason is None:
+        agent._rate_limit_cooldown_reason = None
+    else:
+        assert _arm_rate_limit_cooldown(agent, reason, reset_at=time.time() + 3600)
+    agent.provider = "openrouter"
+    until, count = agent._rate_limited_until, agent._rate_limit_backoff_count
+    before_rate = next(r for r in read_credential_pool("nous") if r["id"] == "rate")
+    probe = _portal(monkeypatch)
+
+    # Cross the composed restore boundary and real auth-store persistence.
+    assert not restore_primary_runtime(agent)
+    probe.assert_called_once_with(force_fresh=True)
+    assert agent._rate_limited_until == until
+    assert agent._rate_limit_backoff_count == count
+    assert agent._rate_limit_cooldown_reason == reason
+    assert agent._fallback_activated
+    assert agent.provider == "openrouter"
+    rows = {r["id"]: r for r in read_credential_pool("nous")}
+    assert rows["billing"]["last_status"] == "ok"
+    assert rows["rate"] == before_rate
+    reloaded = {e.id: e for e in load_pool("nous").entries()}
+    assert reloaded["billing"].failure_reason is None
+    assert reloaded["rate"].last_status == "exhausted"
+    assert reloaded["rate"].failure_reason == "rate_limit"
+
+
+@pytest.mark.parametrize("reason", [FailoverReason.billing, FailoverReason.rate_limit, FailoverReason.upstream_rate_limit])
+def test_session_cooldown_records_latest_primary_failure(reason):
+    agent = _agent()
+    agent.provider = "nous"
+    assert _arm_rate_limit_cooldown(agent, reason)
+    assert agent._rate_limit_cooldown_reason == reason
+    until = agent._rate_limited_until
+    agent.provider = "openrouter"
+    assert _arm_rate_limit_cooldown(agent, FailoverReason.billing) is None
+    assert agent._rate_limit_cooldown_reason == reason
+    assert agent._rate_limited_until == until
+
+
+@pytest.mark.parametrize("extends", [False, True])
+def test_exhausted_nonbilling_chain_updates_only_its_own_timer(monkeypatch, extends):
+    from agent.chat_completion_helpers import _fallback_chain_exhausted
+
+    monkeypatch.setattr("agent.chat_completion_helpers.time.monotonic", lambda: 1000.0)
+    agent = _agent()
+    agent._fallback_chain = [{"provider": "openrouter", "model": "fallback-model"}]
+    agent._rate_limited_until = 0 if extends else 100000.0
+    assert not _fallback_chain_exhausted(agent, FailoverReason.server_error)
+    if extends:
+        assert agent._rate_limited_until > 1000
+        assert agent._rate_limit_cooldown_reason == FailoverReason.server_error
+    else:
+        assert agent._rate_limited_until == 100000.0
+        assert agent._rate_limit_cooldown_reason == FailoverReason.billing
+
+
+def test_billing_owned_timer_restores_primary_in_same_turn(store, monkeypatch):
+    from unittest.mock import MagicMock, patch
+    from run_agent import AIAgent
+
+    write_credential_pool("nous", [_row("billing")])
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key-12345678", base_url="https://example.com/v1", provider="custom",
+            quiet_mode=True, skip_context_files=True, skip_memory=True,
+        )
+    agent._primary_runtime = {**agent._primary_runtime, "provider": "nous", "model": "test-model"}
+    agent.provider = "nous"
+    assert _arm_rate_limit_cooldown(agent, FailoverReason.billing)
+    agent.provider = "openrouter"
+    agent._fallback_activated = True
+    agent._credential_pool = load_pool("openrouter")
+    agent._swap_credential = MagicMock()
+    probe = _portal(monkeypatch)
+    with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+        assert agent._restore_primary_runtime()
+    probe.assert_called_once_with(force_fresh=True)
+    assert agent.provider == "nous"
+    assert not agent._fallback_activated
+    assert agent._rate_limit_backoff_count == 0
+    assert agent._rate_limit_cooldown_reason is None
+    assert load_pool("nous").has_available()

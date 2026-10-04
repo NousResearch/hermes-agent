@@ -15,6 +15,7 @@ import { useInRouterContext, useNavigate } from 'react-router'
 import { requestModelMenuToggle } from '@/app/chat/composer/focus'
 import { useComposerScope } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
+import { StructuralMessageParts } from './structural-message-parts'
 import { SETTINGS_ROUTE } from '@/app/routes'
 import { dispatchedTo } from '@/components/assistant-ui/thread/agent-delivery'
 import { ChangedFilesCard } from '@/components/assistant-ui/thread/changed-files-card'
@@ -88,7 +89,7 @@ const EMPTY_PARTS: readonly unknown[] = []
 // (pending -> complete and back, N rows per stream flush) can no longer
 // descend into the parts subtree at all. Its props were already the module
 // constant MESSAGE_PARTS_COMPONENTS, so nothing per-message is captured here.
-const MESSAGE_PARTS = <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
+const MESSAGE_PARTS = <StructuralMessageParts components={MESSAGE_PARTS_COMPONENTS} />
 
 interface MessageActionProps {
   messageId: string

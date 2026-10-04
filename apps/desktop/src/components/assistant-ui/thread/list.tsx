@@ -44,7 +44,6 @@ import {
 import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
-import { messageRowResetKey } from './message-row-key'
 import { PendingApprovalStack } from '../tool/approval'
 
 import { responseMessageRole, ResponseMessages } from './response-group'
@@ -1505,11 +1504,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           components={components}
           group={group}
           key={group.id}
-          resetKey={messageRowResetKey(structuralSignature, weightSignature)}
+          resetKey={structuralSignature}
           virtualized={indexInVisible < tailStart}
         />
       )),
-    [visibleGroups, components, structuralSignature, tailStart, weightSignature]
+    [visibleGroups, components, structuralSignature, tailStart]
   )
 
   useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey, sessionId: scrollSessionId })

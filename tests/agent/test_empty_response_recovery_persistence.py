@@ -180,11 +180,12 @@ def _response(content="", finish_reason="stop", tool_calls=None):
     return SimpleNamespace(id="chatcmpl-test", choices=[choice], model="test/model", usage=None)
 
 
+def _call(name, args, call_id):
+    return SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(name=name, arguments=json.dumps(args)))
+
+
 def _write_file_call(path):
-    return SimpleNamespace(
-        id="call_write", type="function",
-        function=SimpleNamespace(name="write_file", arguments=json.dumps({"path": str(path), "content": "PAYMENT #1 SENT\n"})),
-    )
+    return _call("write_file", {"path": str(path), "content": "PAYMENT #1 SENT\n"}, "call_write")
 
 
 @pytest.fixture
@@ -267,10 +268,6 @@ def test_stop_during_empty_response_recovery_keeps_the_executed_tool_call_live(r
     _assert_saved_tool_pairs_stay_live(result, real_loop.db, real_loop.sid)
     # The Stop owner strips the nudge scaffold itself and closes with its own reason.
     assert result["messages"][-1]["content"] == result["final_response"]
-
-
-def _call(name, args, call_id):
-    return SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(name=name, arguments=json.dumps(args)))
 
 
 def test_housekeeping_fallback_names_its_final_a_reused_response(real_loop):

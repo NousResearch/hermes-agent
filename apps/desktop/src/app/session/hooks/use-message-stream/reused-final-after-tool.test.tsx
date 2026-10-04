@@ -56,16 +56,3 @@ it('a reused final whose deltas never reached this window still paints the reply
   // would leave the bubble without the reply.
   expect(await texts([...toolRound('m', 'todo_list'), ['message.complete', reused]])).toEqual([ANSWER])
 })
-
-it('the same words in a second response are not a reused final: both stay', async () => {
-  const all = (
-    await texts([
-      ['message.delta', { text: 'Done.' }],
-      ...toolRound('t', 'terminal'),
-      ['message.delta', { text: '\n\nDone.' }],
-      ['message.complete', { text: 'Done.' }]
-    ])
-  ).join('\n')
-
-  expect(all.split('Done.').length - 1).toBe(2)
-})

@@ -773,12 +773,9 @@ export function useMessageStream({
           : undefined
 
         const replaceTextPart = (parts: ChatMessagePart[], interim: boolean) => {
-          // The backend names this final a response the turn already delivered
-          // (it streamed before the bubble's last tool, or was sealed as an
-          // interim): every word is on screen. Settle as is; a text merge
-          // bounded at the last tool row would paint it a second time. Only
-          // when this bubble does hold it — a bubble that lost those deltas
-          // (reconnect) still takes the text through the normal merge.
+          // The backend says every word of this final is already on screen; a
+          // merge bounded at the last tool row would paint it twice. A bubble
+          // that missed those deltas (reconnect) still merges.
           if (reusedResponse && normalizeWs(partsText(parts)).includes(normalizeWs(finalText))) {
             return parts
           }

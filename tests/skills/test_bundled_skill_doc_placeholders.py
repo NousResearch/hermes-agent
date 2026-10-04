@@ -19,19 +19,14 @@ ROLE_TAG = re.compile("<" + "/?(?:tool|system|assistant)" + ">", re.IGNORECASE)
 
 
 def bundled_skill_texts() -> list[tuple[Path, str]]:
-    # skill_view serves ANY file under a skill root that decodes as UTF-8 text, whatever its
-    # suffix, so scan everything and skip only what fails that same strict decode.
-    texts = []
-    for root in ("skills", "optional-skills", "plugins"):
-        if not (REPO_ROOT / root).is_dir():
-            continue
-        for path in sorted((REPO_ROOT / root).rglob("*")):
-            if not path.is_file() or ".hub" in path.parts:
-                continue
-            try:
-                texts.append((path, path.read_text(encoding="utf-8")))
-            except UnicodeDecodeError:
-                continue
+    # skill_view serves ANY file under a skill root, whatever its suffix, decoded via
+    # _read_skill_text (utf-8-sig, errors="replace"), so scan everything the same way.
+    texts = [
+        (path, path.read_text(encoding="utf-8-sig", errors="replace"))
+        for root in ("skills", "optional-skills", "plugins")
+        for path in sorted((REPO_ROOT / root).rglob("*"))
+        if path.is_file() and ".hub" not in path.parts
+    ]
     assert texts, "bundled skills tree not found under skills/, optional-skills/ or plugins/"
     return texts
 

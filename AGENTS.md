@@ -534,6 +534,7 @@ extract, not to regex around it.
 | `plugins/`, `hermes_cli/plugins*.py` | `plugins/AGENTS.md` | Plugin kinds, native compat contract, in-tree policy |
 | `plugin-catalog/` entries, catalog reviews | `plugin-catalog/README.md` (canonical admission rules), `website/docs/developer-guide/plugins/catalog-submission.md` (mirror + submission guide) | What a listed plugin may do; keep the two rule blocks identical |
 | `tui_gateway/`, `ui-tui/` | `tui_gateway/AGENTS.md` | Process model, JSON-RPC transport, key surfaces, slash flow, dev commands |
+| `browser/` | `browser/AGENTS.md` | In-browser backend under Pyodide: cooperative runtime, page/worker transport, environment shims |
 | `web/`, `hermes_cli/web_routers/` | `web/AGENTS.md` | Dashboard embeds the real TUI; what React may and may not rebuild |
 | `apps/desktop/` | `apps/desktop/AGENTS.md`, `apps/desktop/src/AGENTS.md` | Desktop judgment guide; `serve` backend, slash palette curation, Bot Mode canonical chat |
 | `skills/`, `optional-skills/`, `agent/curator*.py` | `skills/AGENTS.md` | Frontmatter, HARDLINE authoring standards, curator |

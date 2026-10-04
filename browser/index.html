@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hermes — in-browser backend demo</title>
+  <!--
+    Minimal host page for the browser runtime. page.js must load before any
+    renderer that calls /api/*; place the webapp bundle after it when serving
+    the real dashboard UI. This demo only proves the backend boots and
+    answers JSON-RPC over the in-page WebSocket shim.
+  -->
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 46rem; color: #ddd; background: #161616; }
+    code, pre { background: #222; border-radius: 4px; padding: 2px 6px; }
+    pre { padding: 12px; overflow: auto; }
+    #status { font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Hermes — in-browser backend</h1>
+  <p id="status">booting…</p>
+  <pre id="log"></pre>
+  <script src="./page.js"></script>
+  <script>
+    // Wait for the worker to finish booting, then open a JSON-RPC socket
+    // through the same /api/ws path the webapp uses.
+    const log = (s) => { document.getElementById('log').textContent += s + '\n' }
+    const status = (s) => { document.getElementById('status').textContent = s }
+    const t0 = Date.now()
+    const wait = () => new Promise((res, rej) => {
+      const iv = setInterval(() => {
+        if (window.__HERMES_BACKEND_READY__) { clearInterval(iv); res() }
+        if (Date.now() - t0 > 120000) { clearInterval(iv); rej(new Error('boot timeout')) }
+      }, 200)
+    })
+    wait().then(() => {
+      status('backend ready — opening /api/ws')
+      const ws = new WebSocket('/api/ws')
+      ws.onopen = () => ws.send(JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'gateway.ping', params: {},
+      }))
+      ws.onmessage = (ev) => {
+        log('ws <- ' + ev.data.slice(0, 400))
+        status('gateway.ping answered ✓')
+      }
+      ws.onerror = () => status('socket error')
+      ws.onclose = (e) => log('ws closed ' + e.code)
+    }).catch((e) => status('failed: ' + e.message))
+  </script>
+</body>
+</html>

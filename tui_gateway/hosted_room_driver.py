@@ -803,8 +803,9 @@ class HostedRoomRuntime:
                 binding.room_id, task["identity"].task_id, int(task["execution_generation"]))
             try:
                 is_local = self._transport_for(binding, task) is self.rpc
-            except Exception as exc:
-                # A peer whose admission recovery keeps failing must still reach the deadline.
+            except (RuntimeError, ValueError, OSError) as exc:
+                # A missing route or a failed admission replay (PeerRunsHTTPError) must not keep
+                # the turn from reaching its deadline.
                 self._record_error(
                     f"task {task['identity'].task_id} recovery probe failed: {exc}")
                 is_local = False

@@ -49,6 +49,13 @@ def _import_audio():
     gate, or installed-but-needs-restart) and OSError when PortAudio's shared library is
     missing — pip can't fix that one, so it is reported separately.
     """
+    from tools.native_cpu_compat import x86_64_local_voice_native_unsupported_reason
+
+    # SIGILL cannot be caught: on a pre-x86-64-v2 core the numpy import inside this
+    # function kills the process, so refuse before touching the native wheels.
+    unsupported_reason = x86_64_local_voice_native_unsupported_reason()
+    if unsupported_reason:
+        raise OSError(unsupported_reason)
     import pm
 
     if not pm.available("audio-io"):
@@ -104,6 +111,13 @@ def _unlink_quietly(path: Optional[str]) -> None:
 
 
 def _audio_unavailable_reason() -> str:
+    from tools.native_cpu_compat import x86_64_local_voice_native_unsupported_reason
+
+    # The SIGILL-class CPU guard is checked first: its reason is the answer,
+    # no audio probing needed — and the probe below would itself import numpy.
+    cpu_reason = x86_64_local_voice_native_unsupported_reason()
+    if cpu_reason:
+        return cpu_reason
     try:
         _import_audio()
     except ImportError as exc:

@@ -9,7 +9,7 @@
  * Format:
  *
  *     line 1   owner pid, ASCII digits, fits u32 (else MALFORMED). pid 0 is never a process.
- *     line 2   started_at unix seconds, ASCII digits (else MALFORMED)
+ *     line 2   started_at unix seconds, ASCII digits, fits u64 (else MALFORMED; any digit count)
  *     line 3   ct:<digits[.digits]> owner creation time; anything else => v1
  *     lines 4+ 'delegate:<pid> ct:<ct>' (exactly one space; first well-formed wins)
  *              'run:<[A-Za-z0-9._-]{1,128}>' (first wins); other lines ignored
@@ -28,6 +28,7 @@ export const CREATE_TIME_TOLERANCE_S = 2.0
 export const V1_MAX_AGE_S = 1200
 
 const U32_MAX = 0xffff_ffff
+const U64_MAX = 18_446_744_073_709_551_615n
 const INT_RE = /^[0-9]+$/
 const CT_RE = /^ct:([0-9]+(?:\.[0-9]+)?)$/
 const DELEGATE_RE = /^delegate:([0-9]+) ct:([0-9]+(?:\.[0-9]+)?)$/
@@ -67,7 +68,8 @@ export function parseUpdateMarker(raw: string): UpdateMarker | null {
 
   const pid = u32(lines[0])
 
-  if (pid === null) {
+  // BigInt parses any digit string exactly (INT_RE above) and never throws here.
+  if (pid === null || BigInt(lines[1]) > U64_MAX) {
     return null
   }
 

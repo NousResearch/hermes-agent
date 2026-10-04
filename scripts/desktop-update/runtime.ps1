@@ -24,6 +24,7 @@ function Invoke-HermesProbe {
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
+    # Launchers print UTF-8; PowerShell 5.1 would decode with the OEM code page (#124526).
     $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
     $process = [System.Diagnostics.Process]::Start($psi)
     try { $process.StandardInput.Close() } catch {}

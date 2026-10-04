@@ -294,97 +294,6 @@ def resolve_allowlist(
     return tuple(sorted(units))
 
 
-_MAX_LINK_HOPS = 40
-
-
-def _link_chain(path: str) -> tuple[list[str], str | None]:
-    """Every symlink met while resolving *path*, in order, and the real path it ends at.
-
-    The walk is the one the kernel does, component by component. A symlink
-    at any component (the entry itself, or a directory on the way) puts
-    its target in front of what is left. ``..`` steps up from the
-    directory reached so far, after the links before it were followed;
-    resolving it on the text of the path instead would name another file
-    when a symlinked directory comes before it. The real path may not
-    exist. A loop, or a chain longer than _MAX_LINK_HOPS, gives
-    (links, None).
-    """
-    links: list[str] = []
-    pending = [part for part in path.split(os.sep) if part]
-    current = os.sep
-    while pending:
-        part = pending.pop(0)
-        if part == ".":
-            continue
-        if part == "..":
-            current = os.path.dirname(current)
-            continue
-        candidate = os.path.join(current, part)
-        if os.path.islink(candidate):
-            links.append(candidate)
-            if len(links) > _MAX_LINK_HOPS:
-                return links, None
-            target = os.readlink(candidate)
-            if os.path.isabs(target):
-                current = os.sep
-            pending = [p for p in target.split(os.sep) if p] + pending
-        else:
-            current = candidate
-    return links, current
-
-
-def link_protection(home: str | None, allowlist: tuple[str, ...] | list[str]) -> tuple[tuple[str, str, bool], ...]:
-    """The parts of the chain behind each dot symlink, as (entry, host path, is the target) triples.
-
-    A dot entry of HOME is read-only or hidden in the sandbox. One that is
-    a symlink (a shell rc file kept in a dotfiles directory) is only as
-    fixed as its chain: a command with write access to a part of it could
-    change the target, or replace a middle link with a file, and the host
-    would read the new content at its next login. The parts are:
-
-    - the directory that holds each middle link of the chain. A symlink
-      cannot be mounted over, so the directory around it is what has to
-      stay fixed. The entry itself is not a middle link: where it lives is
-      read-only, or the operator made it writable with a bind, and then a
-      plain entry there could be replaced just as well. A middle link at
-      the top of HOME is left out too: that level is a read-only tmpfs
-      whatever the mounts are. One in HOME/.config, HOME/.local or
-      HOME/.local/share is kept, because a bind can cover that level;
-    - the real path the chain ends at, marked as the target. For a
-      directory, what lies below it counts too;
-    - for a chain that ends at a path that does not exist, the nearest
-      directory that does: a command that can write there can make the
-      missing file.
-
-    Whether a command can write to a part, and what to do then, depends
-    on the mounts, which the caller knows. The chain is resolved here,
-    once; the caller keeps the result for the life of the environment, so
-    a link swapped later moves no mount.
-    """
-    if home is None:
-        return ()
-    parts: list[tuple[str, str, bool]] = []
-    for unit in allowlist:
-        entry = os.path.join(home, unit.replace("/", os.sep))
-        if not os.path.islink(entry):
-            continue
-        links, real = _link_chain(entry)
-        if real is None:
-            continue
-        found = [(os.path.dirname(link), False) for link in links[1:]]
-        if os.path.lexists(real):
-            found.append((real, True))
-        else:
-            parent = os.path.dirname(real)
-            while parent != os.sep and not os.path.isdir(parent):
-                parent = os.path.dirname(parent)
-            found.append((parent, False))
-        for path, is_target in found:
-            if path not in (home, os.sep) and (unit, path, is_target) not in parts:
-                parts.append((unit, path, is_target))
-    return tuple(parts)
-
-
 def resolve_home_root(home: str) -> str | None:
     """The real path of *home* when a layout can be built over it, else None with one warning.
 
@@ -409,8 +318,8 @@ def _entry_args(path: str, flag: str, visible: list[str]) -> list[str]:
     A symlink is never bound through: bwrap would follow it and mount its
     target, which can be a hidden directory. Made again as a link, it
     resolves inside the sandbox, where a hidden target does not exist.
-    What the link points at is kept read-only by the caller, from the
-    chain resolved at construction (link_protection).
+    Nothing is held at what the link points at: a target in a directory a
+    command can write to is as writable as that directory.
     """
     if os.path.islink(path):
         return ["--symlink", os.readlink(path), path]

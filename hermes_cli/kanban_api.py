@@ -710,6 +710,9 @@ def _transcript_message(msg: dict[str, Any]) -> dict[str, Any]:
         truncated = truncated or cut
     return {
         "id": msg["id"],
+        # Compaction re-inserts the steps it carries forward under fresh ids; the uid survives,
+        # so a poller can drop a step it already has.
+        "uid": msg.get("message_uid"),
         "role": role,
         "content": content,
         "reasoning": reasoning,
@@ -796,11 +799,11 @@ def task_transcript(
     if run is not None and session_id:
         # The run's own profile, never the task's assignee: PATCH can repoint the assignee.
         profile = run.profile or "default"
+        if not _transcripts_enabled(profile):
+            raise HTTPException(status_code=404, detail="transcripts are disabled")
         try:
             rows = _read_session_messages(
                 profile, str(session_id), 0 if latest else after_id, limit + 1, latest
-        if not _transcripts_enabled(profile):
-            raise HTTPException(status_code=404, detail="transcripts are disabled")
             )
         except Exception as exc:
             log.warning("kanban transcript read failed for %s: %s", task_id, exc)

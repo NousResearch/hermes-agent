@@ -762,3 +762,31 @@ def test_transcript_needs_the_worker_profiles_own_opt_in(
     assert client.get(url).status_code == 404
     (home / "config.yaml").write_text(_EXPOSE_TRANSCRIPTS)
     assert [m["content"] for m in client.get(url).json()["messages"]] == ["worker output"]
+
+
+def test_transcript_steps_keep_their_uid_when_compaction_renumbers_them(
+    client: TestClient, transcripts_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Compaction re-inserts the steps it carries forward under fresh ids, so a poller gets a
+    step it already read again; ``uid`` is what lets it recognise the repeat."""
+    from hermes_state import SessionDB
+
+    home = _worker_home(tmp_path, monkeypatch)
+    task_id = _running_task_with_session(client, "transcript-uid", "s1")
+    db = SessionDB(home / "state.db")
+    db.create_session("s1", "kanban")
+    db.append_message("s1", "assistant", content="step 1")
+    db.append_message("s1", "assistant", content="step 2")
+
+    url = f"/api/plugins/kanban/v1/tasks/{task_id}/transcript"
+    first = client.get(url).json()
+    seen = {m["uid"]: m["content"] for m in first["messages"]}
+    assert len(seen) == 2 and all(seen)
+
+    # "step 2" arrived during the slow summary call: it is re-sequenced after the summary.
+    db.archive_and_compact(
+        "s1", [{"role": "user", "content": "[summary]"}], watermark=first["messages"][0]["id"])
+    db.close()
+    again = client.get(url, params={"after_id": first["next_after_id"]}).json()["messages"]
+    repeat = [m for m in again if m["content"] == "step 2"]
+    assert repeat and seen[repeat[0]["uid"]] == "step 2"

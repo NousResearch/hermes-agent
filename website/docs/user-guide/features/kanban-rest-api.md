@@ -252,8 +252,12 @@ curl -fsS \
   -H "$AUTH" | jq '{run_status, next_after_id, has_more, steps: [.messages[] | {id, role, tool_calls: [.tool_calls[].name], truncated}]}'
 ```
 
-Each message carries `id`, `role` (`user`, `assistant`, or `tool`),
+Each message carries `id`, `uid`, `role` (`user`, `assistant`, or `tool`),
 `content`, `reasoning`, `tool_calls` (`id`, `name`, `arguments`),
 `tool_name`, `tool_call_id`, `timestamp`, and `truncated`. The response
 wraps them with `task_id`, `run_id`, `run_status`, `next_after_id`, and
+
+`id` is only the paging cursor. When the worker compacts its context mid-run,
+the steps it carries forward are stored again under new ids, so a poller can
+receive a step it already has; `uid` stays the same, so deduplicate on it.
 `has_more`.

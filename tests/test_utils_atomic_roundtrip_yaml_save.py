@@ -182,6 +182,9 @@ class TestAtomicRoundtripYamlSave:
         ("whole section", "a: 1\nsec:\n  x: 1\n  y: 2  # eol-y\n\n# NOTE below\nb: 2\n"),
         ("first nested key", "sec:\n  x: 1\n  # NOTE below\n  y: 2\nb: 2\n"),
         ("list tail", "sec:\n  - a\n  - b  # eol-b\n\n# NOTE below\nb: 2\n"),
+        ("emptied list", "sec:\n  - a\n  # NOTE below\nb: 2\n"),
+        ("emptied map", "a: 1\nsec:\n  x: 1\n# NOTE below\nb: 2\n"),
+        ("two keys in one save", "sec:\n  x: 1\n  # NOTE below\n  w: 2\n  z: 3\nb: 2\n"),
     ])
     def test_removing_an_entry_keeps_the_comments_below_it(self, config_path, removed, doc):
         from utils import atomic_roundtrip_yaml_save
@@ -192,8 +195,12 @@ class TestAtomicRoundtripYamlSave:
             state.pop("sec")
         elif removed == "first nested key":
             state["sec"].pop("x")
-        else:
+        elif removed == "list tail":
             state["sec"].pop()
+        elif removed.startswith("emptied"):
+            state["sec"].clear()
+        else:
+            del state["sec"]["x"], state["sec"]["w"]
 
         atomic_roundtrip_yaml_save(config_path, state)
 

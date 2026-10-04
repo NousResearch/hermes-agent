@@ -12,9 +12,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.provider_base import ProviderBase
 
-def valid_verification_expect(expect: Any) -> bool:
-    """Empty predicate sets are not evidence, even if a driver reports success."""
-    return isinstance(expect, list) and bool(expect) and all(isinstance(item, dict) and bool(item) for item in expect)
 
 
 @dataclass

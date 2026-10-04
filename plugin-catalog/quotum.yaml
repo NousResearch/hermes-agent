@@ -1,0 +1,18 @@
+name: quotum
+repo: https://github.com/qvotvm/hermes-quotum
+sha: ac1642dc8c6a712e2fc306b7df8b17be7690d2b3
+description: A quotum seat's Venice key as a provider. Private and anonymized models, with the seat's daily cap, spend and the 20:00 UTC bell in /usage.
+maintainer: quotum
+tier: community
+category: models
+version: "0.1.2"
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/qvotvm/hermes-quotum#readme
+known_issues:
+  - The optional QUOTUM_X_SEARCH mode supplies its own client through create_client, so it works with plugins.isolation in_process (the default) only; under host isolation leave it off.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - QUOTUM_SEAT_KEY

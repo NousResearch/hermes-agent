@@ -482,9 +482,8 @@ class EmailAdapter(BasePlatformAdapter):
             self._require_authenticated_sender = bool(extra["require_authenticated_sender"])
         else:
             self._require_authenticated_sender = not _esecret_bool("EMAIL_TRUST_FROM_HEADER", False)
-        # Pin Authentication-Results to the operator's receiving MTA. When an
-        # allowlist grants access, an absent pin fails closed rather than
-        # accepting a sender-supplied result header.
+        # Pin Authentication-Results to the operator's receiving MTA. With sender auth on, an absent pin fails
+        # closed for EVERY sender rather than trusting a sender-supplied result header; connect() warns once per account.
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth

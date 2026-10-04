@@ -1818,6 +1818,53 @@ def test_gui_successful_pack_swaps_new_app_into_release(tmp_path, monkeypatch):
     assert not list((desktop_dir / "release").glob("*.previous"))
 
 
+def _version_info(base_version: str):
+    from hermes_cli.version_info import VersionInfo
+    return VersionInfo(
+        base_version=base_version,
+        derived_version=base_version,
+        distance=0,
+        commit="abc1234",
+        branch="main",
+        source="git",
+    )
+
+
+def test_desktop_builder_version_args_stamp_agent_semver(monkeypatch):
+    """Local packs must inject extraMetadata.version so macOS CFBundleShortVersionString
+    is the agent version, not apps/desktop/package.json's placeholder 0.0.0."""
+    monkeypatch.setattr("hermes_cli.version_info.get_version_info", lambda: _version_info("0.21.5"))
+    assert main_desktop._desktop_builder_version_args() == ["-c.extraMetadata.version=0.21.5"]
+
+
+@pytest.mark.parametrize("base_version", ["0.0.0", "unknown", "git.abc1234", "1.2"])
+def test_desktop_builder_version_args_omit_unusable_versions(monkeypatch, base_version):
+    monkeypatch.setattr("hermes_cli.version_info.get_version_info", lambda: _version_info(base_version))
+    assert main_desktop._desktop_builder_version_args() == []
+
+
+def test_build_prepared_desktop_passes_version_to_electron_builder(tmp_path, monkeypatch):
+    desktop_dir = tmp_path / "apps" / "desktop"
+    desktop_dir.mkdir(parents=True)
+    captured: list[list[str]] = []
+
+    def fake_run(cmd, label, **kwargs):
+        captured.append(list(cmd))
+        return subprocess.CompletedProcess(list(cmd), 0)
+
+    monkeypatch.setattr("pm.progress.run_contained", fake_run)
+    monkeypatch.setattr(main_desktop, "_force_adhoc_macos_signing", lambda *a, **k: False)
+    monkeypatch.setattr(main_desktop, "_stop_desktop_processes_locking_build", lambda *a, **k: [])
+    monkeypatch.setattr(main_desktop, "_promote_staged_desktop_app", lambda *a, **k: Path("/fake/Hermes"))
+    monkeypatch.setattr(main_desktop, "_discard_desktop_staging", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.version_info.get_version_info", lambda: _version_info("0.21.5"))
+
+    built = main_desktop.build_prepared_desktop(desktop_dir, source_mode=False, npm="npm", env={})
+    assert built == Path("/fake/Hermes")
+    builder = next(cmd for cmd in captured if cmd[1:3] == ["run", "builder"])
+    assert "-c.extraMetadata.version=0.21.5" in builder
+
+
 def test_gui_zero_exit_pack_without_artifact_keeps_previous_app(tmp_path, monkeypatch, capsys):
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"

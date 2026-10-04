@@ -97,7 +97,7 @@ def pool_cooldown_message(provider_id: str, *, model: Optional[str] = None) -> O
             blocking.append(scoped_until)
             scoped_models.update(
                 name for name, value in (e.model_cooldowns or {}).items()
-                if isinstance(value, (int, float)) and value > now and (model is None or name == model)
+                if isinstance(value, (int, float)) and value > now and (not model or name == model)
             )
         if not blocking:
             # This entry is usable the way the caller asked: not a cooldown picture.

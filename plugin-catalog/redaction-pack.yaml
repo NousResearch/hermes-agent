@@ -1,6 +1,6 @@
 name: redaction-pack
 repo: https://github.com/pierrenode/hermes-redaction-pack
-sha: bf88e84d48e93485a72170a6f5b6c14e1ae1c34a
+sha: 342ea8192cc0bd9cb27501c24769fb418cf53ee7
 subdir: redaction-pack
 description: >-
   Teaches Hermes's built-in secret redactor 42 more vendor credential formats (HashiCorp Vault,
@@ -15,6 +15,7 @@ category: tools
 requires_hermes: ">=0.21"
 docs_url: https://github.com/pierrenode/hermes-redaction-pack
 version: "1.0.0"
+image: https://raw.githubusercontent.com/pierrenode/hermes-redaction-pack/342ea8192cc0bd9cb27501c24769fb418cf53ee7/docs/card.png
 platforms: []
 capabilities:
   provides_tools: []

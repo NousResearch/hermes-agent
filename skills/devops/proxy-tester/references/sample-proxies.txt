@@ -1,0 +1,7 @@
+# Sample proxy list (edit with your real proxies)
+# Format: protocol://host:port or protocol://user:pass@host:port
+# Supported: http, https, socks4, socks5
+
+# Example (replace with your actual proxy URIs):
+# socks5://123.45.67.89:1080
+# http://user:pass@proxy.example.com:8080

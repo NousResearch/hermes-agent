@@ -82,6 +82,33 @@ describe('session focus while interacting with the sidebar', () => {
     expect($focusedStoredSessionId.get()).toBe('split')
   })
 
+  it('retains the chat when a preview replaces its active tab in the same group', () => {
+    $layoutTree.set(
+      group(['workspace', pane('a'), pane('b'), 'preview-tile:file:test'], { active: pane('a'), id: 'main' })
+    )
+    target('main').focus()
+    expect($focusedStoredSessionId.get()).toBe('a')
+
+    $layoutTree.set(
+      group(['workspace', pane('a'), pane('b'), 'preview-tile:file:test'], {
+        active: 'preview-tile:file:test',
+        id: 'main'
+      })
+    )
+    expect($focusedStoredSessionId.get()).toBe('a')
+
+    $layoutTree.set(
+      group(['workspace', pane('a'), pane('b'), 'preview-tile:file:test'], { active: pane('b'), id: 'main' })
+    )
+    $layoutTree.set(
+      group(['workspace', pane('a'), pane('b'), 'preview-tile:file:test'], {
+        active: 'preview-tile:file:test',
+        id: 'main'
+      })
+    )
+    expect($focusedStoredSessionId.get()).toBe('b')
+  })
+
   it('uses the visible main tab on restore and after the remembered split closes', () => {
     const sidebar = target('sidebar')
     sidebar.focus()

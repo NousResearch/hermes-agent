@@ -30,7 +30,6 @@ class _ButtonAdapter:
     def __init__(self, *, editable: bool = True) -> None:
         self.sends: List[str] = []
         self.edits: List[tuple] = []
-        self.card_metadata: List[Any] = []
         self.send_metadata: List[Any] = []
         self._editable = editable
 
@@ -38,7 +37,6 @@ class _ButtonAdapter:
         return None
 
     async def send_exec_approval(self, *a: Any, **k: Any) -> SendResult:
-        self.card_metadata.append(k.get("metadata"))
         return SendResult(success=True, message_id="card-1")
 
     async def send(self, chat_id: str, message: str, **k: Any) -> SendResult:
@@ -125,22 +123,12 @@ def test_other_settle_reasons_post_nothing(pending_entry, reason):
     assert adapter.edits == [] and adapter.sends == []
 
 
-def test_button_prompt_metadata_carries_notify(pending_entry):
-    """#132516: the button card send must carry notify=True — a card that lands with
-    disable_notification=True (Telegram "important" mode) is indistinguishable from
-    "no prompt" and burns the whole approval window before failing closed."""
-    adapter = _ButtonAdapter()
-    _runner(adapter)._approval_notify_sync(dict(pending_entry.data))
 
-    assert adapter.card_metadata == [{"thread_id": "t1", "notify": True}]
-
-
-def test_text_fallback_metadata_carries_notify_and_approval_marker(pending_entry):
-    """#132516: the plain-text fallback must carry notify=True (push, don't silently
-    deliver) plus the is_approval_prompt marker WeCom's control lane keys on."""
+def test_text_fallback_is_an_interim_approval_prompt(pending_entry):
+    """#132516: the plain-text fallback carries the is_approval_prompt marker (Telegram pushes
+    it, WeCom routes it via the control lane) and stays interim — ``notify`` is the turn-final
+    marker A2A resolves the caller's task on, so it must not ride an approval prompt."""
     adapter = _PlainAdapter()
     _runner(adapter)._approval_notify_sync(dict(pending_entry.data))
 
-    assert adapter.send_metadata == [
-        {"thread_id": "t1", "notify": True, "is_approval_prompt": True, "_interim_send": True}]
-    assert adapter.send_exec_approval is None  # really the fallback lane
+    assert adapter.send_metadata == [{"thread_id": "t1", "is_approval_prompt": True, "_interim_send": True}]

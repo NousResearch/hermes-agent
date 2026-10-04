@@ -1475,11 +1475,7 @@ class TurnRunner:
                 fut = self._schedule(
                     adapter.send_exec_approval(
                         chat_id=ctx._status_chat_id, command=cmd, session_key=ctx.session_key or "",
-                        description=desc,
-                        # Push, don't silently deliver (#132516): a card that lands with
-                        # disable_notification=True is indistinguishable from "no prompt" and
-                        # burns the whole approval window. Mirrors the cron-delivery convention.
-                        metadata={**(ctx._status_thread_metadata or {}), "notify": True}, **flags,
+                        description=desc, metadata=ctx._status_thread_metadata, **flags,
                     ),
                     "send_exec_approval scheduling error",
                 )
@@ -1540,9 +1536,9 @@ class TurnRunner:
         # in Slack threads and reserved by Matrix clients.
         msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
         try:
-            # Mark as approval prompt so WeCom routes through the control lane; notify=True so
-            # "important"-mode Telegram pushes instead of silently delivering the prompt (#132516).
-            metadata = {**(ctx._status_thread_metadata or {}), "notify": True, "is_approval_prompt": True}
+            # Mark as approval prompt: WeCom routes it through the control lane and Telegram pushes it
+            # in "important" mode (#132516). Never ``notify`` — A2A reads that as the turn-final reply.
+            metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )

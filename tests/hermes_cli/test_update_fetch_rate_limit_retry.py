@@ -15,6 +15,7 @@ pin, ``fetch --no-tags origin <target_ref>``) degrades past a 429 on its own.
 import subprocess
 
 from hermes_cli import update_cmd
+from hermes_cli.update_custody import git_subcommand
 
 
 def _result(returncode, stderr=""):
@@ -137,7 +138,7 @@ class TestShallowPreHealRateLimitRetry:
         real_run, queued, fetches = gitlock.subprocess.run, list(stderrs), []
 
         def run(cmd, *args, **kwargs):
-            if cmd[:2] == ["git", "fetch"]:
+            if git_subcommand(cmd[1:]) == "fetch":
                 fetches.append(cmd)
                 if queued:
                     raise subprocess.CalledProcessError(128, cmd, output="", stderr=queued.pop(0))
@@ -169,3 +170,77 @@ class TestShallowPreHealRateLimitRetry:
         assert len(fetches) == 1 and slept == []
         assert git(clone, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
         assert "Could not resolve host" in capsys.readouterr().out
+
+
+def _real_fork_checkout(tmp_path):
+    """canonical (one commit ahead) → bare fork → clone with ``upstream`` remote, all local transports."""
+    real_run = subprocess.run
+
+    def git(cwd, *args):
+        res = real_run(["git", "-c", "user.email=t@invalid", "-c", "user.name=T", *args],
+                       cwd=cwd, text=True, capture_output=True)
+        assert res.returncode == 0, (args, res.stderr)
+        return res.stdout.strip()
+
+    canonical = tmp_path / "canonical"
+    canonical.mkdir()
+    git(canonical, "init", "-q", "-b", "main")
+    (canonical / "f").write_text("0", encoding="utf-8")
+    git(canonical, "add", "f")
+    git(canonical, "commit", "-qm", "c0")
+    fork = tmp_path / "fork.git"
+    git(tmp_path, "clone", "-q", "--bare", canonical.as_uri(), str(fork))
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", "-q", fork.as_uri(), str(clone))
+    git(clone, "remote", "add", "upstream", canonical.as_uri())
+    old = git(clone, "rev-parse", "HEAD")
+    (canonical / "f").write_text("1", encoding="utf-8")
+    git(canonical, "commit", "-qam", "c1")
+    return clone, old, git(canonical, "rev-parse", "HEAD"), git
+
+
+def _inject_upstream_429(monkeypatch, failures, stderr=RATE_LIMIT):
+    """Make the first ``failures`` upstream network calls fail; everything else runs real git."""
+    real_run = subprocess.run
+    calls = []
+
+    def run(cmd, *args, **kwargs):
+        sub = git_subcommand(cmd[1:])
+        if sub == "fetch" and "upstream" in cmd or sub == "pull":
+            calls.append(sub)
+            if len(calls) <= failures:
+                return subprocess.CompletedProcess(cmd, 128, "", stderr)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(update_cmd._time, "sleep", lambda s: None)
+    return calls
+
+
+def test_fork_upstream_sync_recovers_from_transient_429_without_refetching(monkeypatch, tmp_path):
+    """The fork-sync consumer of #105857: a 429 on the upstream fetch is retried, and the
+    fast-forward uses the fetched ref instead of a ``git pull`` that re-fetches outside the policy."""
+    from hermes_cli import update_cmd_git
+
+    clone, _old, upstream_tip, git = _real_fork_checkout(tmp_path)
+    calls = _inject_upstream_429(monkeypatch, failures=1)
+
+    assert update_cmd_git._sync_with_upstream_if_needed(["git"], clone, assume_yes=True)
+
+    assert git(clone, "rev-parse", "HEAD") == upstream_tip
+    assert calls == ["fetch", "fetch"]  # one throttled attempt, one success, no network pull
+
+
+def test_fork_upstream_sync_gives_up_after_exhausted_429_and_fails_fast_otherwise(monkeypatch, tmp_path):
+    from hermes_cli import update_cmd_git
+
+    clone, old, _tip, git = _real_fork_checkout(tmp_path)
+    calls = _inject_upstream_429(monkeypatch, failures=99)
+    assert not update_cmd_git._sync_with_upstream_if_needed(["git"], clone, assume_yes=True)
+    assert calls == ["fetch"] * update_cmd._FETCH_MAX_ATTEMPTS
+    assert git(clone, "rev-parse", "HEAD") == old
+
+    calls = _inject_upstream_429(monkeypatch, failures=99, stderr=DNS_FAILURE)
+    assert not update_cmd_git._sync_with_upstream_if_needed(["git"], clone, assume_yes=True)
+    assert calls == ["fetch"]
+    assert git(clone, "rev-parse", "HEAD") == old

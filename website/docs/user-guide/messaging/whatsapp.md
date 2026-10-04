@@ -70,7 +70,11 @@ platforms:
 A gateway identifies a running bridge by the session directory the bridge
 reports in `/health`. A bridge serving another profile's session is never
 adopted and never stopped: the second profile's WhatsApp fails to start with
-`whatsapp_bridge_foreign_session`, naming the port and the other session. If you
+`whatsapp_bridge_foreign_session`, naming the port and the other session. On
+Linux and macOS, a process that holds the port but does not answer `/health` in
+time is left running too, and WhatsApp fails with the retryable
+`whatsapp_bridge_unresponsive`. `hermes whatsapp send` and cron delivery check
+the same field and refuse to send through another profile's bridge. If you
 override `session_path`, keep it distinct per profile, or the profiles share one
 WhatsApp login. Bridges started by an older Hermes report no session directory
 and are restarted once, as after a bridge update.

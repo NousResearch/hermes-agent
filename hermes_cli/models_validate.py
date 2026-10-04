@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from difflib import get_close_matches
+from difflib import SequenceMatcher, get_close_matches
 from typing import Any, Callable, Optional
 
 from utils import base_url_host_matches
@@ -402,16 +402,86 @@ def _static_catalog(normalized: str) -> list[str]:
         return []
 
 
-_STATIC_FAMILY_PREFIXES = {
-    # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists for entitlement-gated *hidden*
-    # slugs the curated listing hasn't caught up with — but those are always the provider's own family
-    # (openai-codex -> gpt-*; xai-oauth -> grok-*). Accepting an unrelated typed name (e.g. `qwen3.5-4b`,
-    # `llama-3.1-8b`) here turns what should be an actionable "did you mean --provider <x>?" error into a
-    # confusing success that 400s on the next turn. Only soft- accept names that share the provider's family
-    # prefix; reject the rest with guidance to pin the right provider.
-    "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
-    "xai-oauth": ("grok-",),
-}
+def _catalog_family_keys(model_name: str) -> set[str]:
+    """Return family keys backed by the model resolver and catalog spelling.
+
+    The vendor resolver carries Hermes' provider-aware naming rules.  The bare
+    leading token is retained for catalog families the resolver does not name
+    (for example subscription-only families), but it is useful only when that
+    token also occurs in a shipped provider catalog.
+    """
+    from hermes_cli.model_normalize import detect_vendor
+
+    bare = model_name.rsplit("/", 1)[-1].strip().lower()
+    token = re.split(r"[-_.:]", bare, maxsplit=1)[0]
+    vendor = detect_vendor(model_name)
+    return {key for key in (f"vendor:{vendor}" if vendor else None, f"token:{token}" if token else None) if key}
+
+
+def _catalog_family_matches(model_name: str, catalog: list[str]) -> bool:
+    requested = _catalog_family_keys(model_name)
+    catalog_keys = set().union(*(_catalog_family_keys(model) for model in catalog))
+    return bool(requested.intersection(catalog_keys))
+
+
+def _foreign_catalog_providers(req: _Request) -> list[str]:
+    """Find direct providers whose shipped catalogs own the requested family.
+
+    Aggregators and custom endpoints intentionally serve multiple vendors, so
+    they cannot establish native-provider ownership.  This is an invariant over
+    current catalogs/resolvers rather than a snapshot of model names.
+    """
+    from hermes_cli import models as _m
+    from hermes_cli.model_normalize import detect_vendor, normalize_model_for_provider
+
+    current_catalog = list(_m._PROVIDER_MODELS.get(req.normalized) or [])
+    if _catalog_family_matches(req.lookup, current_catalog):
+        return []
+    requested_vendor = detect_vendor(req.lookup)
+    requested_vendor_key = re.sub(r"[^a-z0-9]", "", requested_vendor or "")
+    candidates: list[tuple[bool, bool, float, str]] = []
+    for provider, catalog in _m._PROVIDER_MODELS.items():
+        if provider == req.normalized or provider in _m._AGGREGATOR_PROVIDERS or provider == "custom":
+            continue
+        provider_catalog = list(catalog or [])
+        if not _catalog_family_matches(req.lookup, provider_catalog):
+            continue
+        normalized_for_provider = normalize_model_for_provider(req.requested, provider).lower()
+        lowered_catalog = {model.lower() for model in provider_catalog}
+        exact = normalized_for_provider in lowered_catalog
+        provider_key = re.sub(r"[^a-z0-9]", "", provider)
+        vendor_affinity = bool(requested_vendor_key and provider_key.startswith(requested_vendor_key))
+        similarity = max(
+            (SequenceMatcher(None, normalized_for_provider, model).ratio() for model in lowered_catalog),
+            default=0.0,
+        )
+        candidates.append((exact, vendor_affinity, similarity, provider))
+    if not candidates:
+        return []
+    if any(candidate[1] for candidate in candidates):
+        candidates = [candidate for candidate in candidates if candidate[1]]
+    best_exact = max(candidate[0] for candidate in candidates)
+    candidates = [candidate for candidate in candidates if candidate[0] == best_exact]
+    best_similarity = max(candidate[2] for candidate in candidates)
+    return sorted(candidate[3] for candidate in candidates if candidate[2] == best_similarity)
+
+
+def _foreign_provider_rejection(req: _Request) -> Optional[dict[str, Any]]:
+    from hermes_cli import models as _m
+
+    providers = _foreign_catalog_providers(req)
+    if not providers:
+        return None
+    current_label = _m._PROVIDER_LABELS.get(req.normalized, req.normalized)
+    owner_labels = ", ".join(
+        f"{_m._PROVIDER_LABELS.get(provider, provider)} (`{provider}`)" for provider in providers
+    )
+    return _reject(
+        f"Model `{req.requested}` belongs to a catalog family served by {owner_labels}, not {current_label}. "
+        "Switch with the matching `--provider <slug>` or select it from the `/model` picker."
+    )
+
+
 _STATIC_LABELS = {"openai-codex": "OpenAI Codex", "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)"}
 
 
@@ -477,13 +547,13 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
     if verdict is not None:
         return verdict
     label = _STATIC_LABELS[req.normalized]
-    # Plausibility gate: the soft-accept exists for entitlement-gated *hidden* slugs the curated
-    # listing hasn't caught up with — always the provider's own family (gpt-* / grok-*). An
-    # unrelated name (`qwen3.5-4b`) would turn an actionable "did you mean --provider <x>?" into
-    # a confusing success that 400s on the next turn, so reject it with guidance instead.
-    prefixes = _STATIC_FAMILY_PREFIXES.get(req.normalized, ())
-    lower = req.lookup.strip().lower()
-    if prefixes and not any(lower.startswith(p) for p in prefixes):
+    # Hidden or entitlement-gated names are plausible only when their resolver/catalog family
+    # belongs to this provider.  A foreign family gets a provider-specific rejection; an unknown
+    # family keeps the existing generic guidance.
+    if not _catalog_family_matches(req.lookup, catalog):
+        rejection = _foreign_provider_rejection(req)
+        if rejection is not None:
+            return rejection
         return _reject(
             f"`{req.requested}` doesn't look like a {label} model and isn't in its listing, so it was not "
             "accepted. If it belongs to another configured provider, switch with `--provider <slug>` "
@@ -521,9 +591,15 @@ def _validate_anthropic(req: _Request) -> Optional[dict[str, Any]]:
     if models is None:
         return None
     match = _match_in_catalog(req.lookup, models, suggest_query=req.requested)
-    # Accept anyway — Anthropic gates newer/preview models (snapshot IDs, early access) behind
-    # accounts even though they aren't listed on /v1/models.
-    return match.verdict(req) or _soft_accept(
+    verdict = match.verdict(req)
+    if verdict is not None:
+        return verdict
+    # Preserve soft acceptance for Anthropic's own hidden/snapshot family, but reject a family
+    # that the shipped resolver and another direct-provider catalog jointly identify as foreign.
+    rejection = _foreign_provider_rejection(req)
+    if rejection is not None:
+        return rejection
+    return _soft_accept(
         f"Note: `{req.requested}` was not found in Anthropic's /v1/models listing. "
         f"It may still work if you have early-access or snapshot IDs."
         f"{match.suggestion_text}"

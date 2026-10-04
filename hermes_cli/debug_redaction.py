@@ -112,7 +112,10 @@ _PLAIN_HEADER_ARG_RE = re.compile(
     re.IGNORECASE,
 )
 _SUPPORT_BEARER_RE = re.compile(
-    rf"(?P<prefix>\bBearer\s+|\bBasic\s+{_NOT_WORD})(?=[^\s]{{8}}){_KEY}",
+    # Free text has no header boundary to stop at: consume the whole value,
+    # inner ``=`` padding included (``abcd1234==x``), not just a key-shaped prefix.
+    rf"(?P<prefix>\bBearer\s+|\bBasic\s+{_NOT_WORD})(?=[^\s]{{8}})"
+    rf"[{_KEY_CHARS}=]+(?::[{_KEY_CHARS}=]+)*",
     re.IGNORECASE,
 )
 

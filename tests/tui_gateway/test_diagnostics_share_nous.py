@@ -205,6 +205,7 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
         ("--header x-api-key *** " + "Q" * 32, "Q" * 32),
         ("x-api-key: *** sk-abc:xyz123456", "xyz123456"),
         ("Basic user:passw0rd", "passw0rd"),
+        ("Bearer abcd1234=efgh5678 x", "efgh5678"),
         ("?r=x%2526access_token%253Dtok123456789", "tok123456789"),
     ):
         assert key not in real_redact(leaky)

@@ -1175,14 +1175,15 @@ class RelayAdapter(BasePlatformAdapter):
             user = {}
         if not isinstance(member, dict):
             member = {}
-        # Prefer the display name (member nick, then global/display name) like the
-        # native adapter's author.display_name, not the raw username, so relayed
-        # slash turns pin the same user label as relayed text turns (fixes #128796).
+        # Prefer the display name (member nick, then global name, then username)
+        # like the native adapter's author.display_name, not the raw username, so
+        # relayed slash turns pin the same user label as relayed text turns
+        # (fixes #128796). `display_name` is NOT a Discord API user field — only
+        # member nick / user global_name / user username exist.
         # chat_name/chat_topic are not in the raw interaction body; the connector
         # should forward its resolved labels (follow-up) to stop those flips.
         _display_name = (
-            member.get("nick") or user.get("global_name") or user.get("display_name")
-            or user.get("username")
+            member.get("nick") or user.get("global_name") or user.get("username")
         )
         guild_id = payload.get("guild_id")
         source = SessionSource(

@@ -122,18 +122,20 @@ def _unlink_quietly(path: Path) -> None:
 
 
 def _read_bridge_pidfile(session_path: Path) -> tuple:
-    """``(pid, kernel_start_time)`` from ``bridge.pid``; ``(None, None)`` when absent or unparseable.
-    Line 1 = pid, optional line 2 = kernel start time (legacy files: pid only)."""
+    """``(pid, kernel_start_time, port)`` from ``bridge.pid``; all ``None`` when absent or unparseable.
+    Line 1 = pid, optional line 2 = kernel start time, optional line 3 = the ``--port`` it was spawned
+    with (legacy files: pid only, or pid + start time)."""
     pid_file = session_path / "bridge.pid"
     if not pid_file.exists():
-        return None, None
+        return None, None, None
     try:
         lines = [ln.strip() for ln in pid_file.read_text(encoding="utf-8-sig").split("\n")]
         pid = int(lines[0])
         recorded_start = int(lines[1]) if len(lines) > 1 and lines[1] else None
+        recorded_port = int(lines[2]) if len(lines) > 2 and lines[2] else None
     except (ValueError, OSError, TypeError, IndexError):
-        return None, None
-    return pid, recorded_start
+        return None, None, None
+    return pid, recorded_start, recorded_port
 
 
 def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
@@ -142,7 +144,7 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     pid_file = session_path / "bridge.pid"
     if not pid_file.exists():
         return
-    pid, recorded_start = _read_bridge_pidfile(session_path)
+    pid, recorded_start, _ = _read_bridge_pidfile(session_path)
     if pid is None:
         _unlink_quietly(pid_file)
         return
@@ -158,12 +160,14 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     _unlink_quietly(pid_file)
 
 
-def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
-    """Write the bridge PID plus its kernel start time (line 2) for identity-checked cleanup."""
+def _write_bridge_pidfile(session_path: Path, pid: int, port: Optional[int] = None) -> None:
+    """Write the bridge PID plus its kernel start time (line 2) for identity-checked cleanup, and the
+    port it listens on (line 3) so a secondary adopts only the endpoint that process actually serves."""
     with suppress(OSError):
         from gateway.status import get_process_start_time
         start = get_process_start_time(pid)
-        (session_path / "bridge.pid").write_text(str(pid) if start is None else f"{pid}\n{start}", encoding="utf-8")
+        text = str(pid) if start is None else f"{pid}\n{start}" + ("" if port is None else f"\n{port}")
+        (session_path / "bridge.pid").write_text(text, encoding="utf-8")
 
 
 def _terminate_bridge_process(proc, *, force: bool = False) -> None:
@@ -298,7 +302,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         from hermes_constants import get_hermes_home
         self._profile_home = get_hermes_home()
         self._bridge_process: Optional[subprocess.Popen] = None
-        self._bridge_port: int = extra.get("bridge_port", 3000)
+        from .bridge_ownership import standalone_bridge_port
+        try:
+            # Same resolution as out-of-process sends, so a profile that recorded a port while serving as a
+            # secondary keeps it when it launches; a secondary re-resolves (and may allocate) in connect().
+            self._bridge_port: int = standalone_bridge_port(self._profile_home, extra.get("bridge_port"))
+        except ValueError as exc:
+            logger.warning("[whatsapp] %s; using port 3000", exc)
+            self._bridge_port = 3000
         self._bridge_script: str = extra.get("bridge_script", str(self._DEFAULT_BRIDGE_DIR / "bridge.js"))
         self._session_path = Path(extra.get("session_path", get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")))
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
@@ -564,7 +575,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._bridge_process = subprocess.Popen(
                 [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
                  "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
-            _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
+            _write_bridge_pidfile(self._session_path, self._bridge_process.pid, self._bridge_port)
             if not await self._wait_for_bridge():
                 return False
             self._attach_to_bridge(self._bridge_process)

@@ -56,11 +56,11 @@ def secondary_bridge_port(home: Path, explicit) -> int:
 
 
 def standalone_bridge_port(home: Path, explicit) -> int:
-    """Resolve a port for an out-of-process send without allocating one.
+    """Port for the launch profile's startup and for out-of-process sends; never allocates.
 
-    Startup is responsible for creating the secondary record. A standalone
-    sender may only consume an explicit value or an already persisted record;
-    an unknown profile keeps the historical default port.
+    Explicit config wins, then the profile's persisted record (written when it served as a
+    secondary), then the historical default 3000. Startup and delivery share this one
+    resolution so they always target the same bridge.
     """
     if explicit is not None:
         port = int(explicit)
@@ -76,15 +76,16 @@ def standalone_bridge_port(home: Path, explicit) -> int:
 
 def check_secondary_ownership(session: Path, port: int) -> str:
     """``"free"`` when the port is unbound, ``"ours"`` when it is bound and this profile's own
-    ``bridge.pid`` (pid plus kernel start time, the same fingerprint the default path trusts) names
-    a live process, so a bridge orphaned by a gateway crash can be adopted or reaped by identity.
-    Anything else bound on the port belongs to someone else and is a fatal for this profile: no HTTP
-    probe is safe before ownership is known, a healthy listener can still be another phone, and a
-    secondary never signals a process it cannot prove is its own."""
+    ``bridge.pid`` names a live process (pid plus kernel start time, the same fingerprint the default
+    path trusts) that was spawned on this same port, so a bridge orphaned by a gateway crash can be
+    adopted or reaped by identity. A live recorded bridge on a different port proves nothing about
+    who holds this one. Anything else bound on the port belongs to someone else and is a fatal for
+    this profile: no HTTP probe is safe before ownership is known, a healthy listener can still be
+    another phone, and a secondary never signals a process it cannot prove is its own."""
     if port_is_free(port):
         return "free"
     from .adapter import _bridge_pid_is_ours, _read_bridge_pidfile
-    pid, recorded_start = _read_bridge_pidfile(session)
-    if pid is not None and _bridge_pid_is_ours(pid, recorded_start):
+    pid, recorded_start, recorded_port = _read_bridge_pidfile(session)
+    if pid is not None and recorded_port == port and _bridge_pid_is_ours(pid, recorded_start):
         return "ours"
     raise ValueError(f"Bridge port {port} is bound by a process this profile does not own")

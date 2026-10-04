@@ -42,10 +42,13 @@ An explicit `platforms.whatsapp.extra.bridge_port` takes precedence. Otherwise,
 a secondary selects the first free port in 3001 to 3999 that no other profile's
 record claims, and saves it in its own `platforms/whatsapp/bridge_port` file for
 subsequent starts. Operators can pre-create that file with a port number; delete
-it to have a new port allocated. The launch profile keeps port 3000.
+it to have a new port allocated. The launch profile uses port 3000 unless it
+already has that file (from serving as a secondary), in which case its gateway
+and `hermes whatsapp send` both keep using the recorded port.
 
 A secondary adopts a bridge already running on its port only when its own
-session pidfile identifies that process (pid and kernel start time), which is
+session pidfile identifies that process (pid, kernel start time, and the port it
+was started on), which is
 what a gateway crash leaves behind. An unhealthy one is reaped by that same
 identity and restarted. Any other process bound on the port is a fatal error
 for that profile only. Set `platforms.whatsapp.extra.bridge_port` to a

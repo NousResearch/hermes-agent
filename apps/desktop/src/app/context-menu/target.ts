@@ -8,8 +8,9 @@
  */
 
 export interface ContextMenuDomTarget {
-  /** The enclosing dialog content node, when the click landed inside one. */
-  dialogPortalContainer: HTMLElement | null
+  /** The enclosing modal surface (dialog content, onboarding overlay) that a
+   *  menu must portal into to paint above it, when the click landed inside one. */
+  portalContainer: HTMLElement | null
   /** The clicked editable, when the click landed in one. */
   editable: HTMLElement | null
   /** `href` of the enclosing anchor, as written (never absolutized). */
@@ -41,12 +42,14 @@ function editableFrom(element: Element | null): HTMLElement | null {
 
 export function resolveDomTarget(element: Element | null): ContextMenuDomTarget {
   const anchor = element?.closest('a[href]')
-  const dialogContent = element?.closest('[data-slot="dialog-content"]')
+  // Dialogs and the onboarding overlay both paint above the menu rung, so a
+  // menu opened inside one must portal into that surface to stay visible.
+  const portalHost = element?.closest('[data-slot="dialog-content"], [data-slot="onboarding-overlay"]')
   const image = element?.closest('img')
   const linkUrl = anchor?.getAttribute('href')?.trim() ?? ''
 
   return {
-    dialogPortalContainer: dialogContent instanceof HTMLElement ? dialogContent : null,
+    portalContainer: portalHost instanceof HTMLElement ? portalHost : null,
     editable: editableFrom(element),
     // A placeholder anchor is not a link the menu can act on.
     linkUrl: linkUrl === '#' ? '' : linkUrl,

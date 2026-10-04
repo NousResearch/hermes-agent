@@ -17,6 +17,7 @@ import {
 } from '@/components/ui/dialog'
 import { getGlobalModelOptions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
+import { ExternalLink as ExternalLinkAnchor } from '@/lib/external-link'
 import { CheckCircle2, Loader2 } from '@/lib/icons'
 import { FREE_TIER_MODEL, friendlyWait, NOUS_PROVIDER_ID, refreshFreeTierStatus } from '@/store/free-tier'
 import {
@@ -115,14 +116,13 @@ export function FreeTierSignInDialog({ onSelectModel }: FreeTierSignInDialogProp
           <Screen body={copy.codeBody} heading={copy.signInHeading}>
             <DeviceCode code={state.code} copied={state.codeCopied} onCopy={() => void copyFreeTierCode()} />
             <div className="flex min-w-0 items-center justify-between gap-3">
-              <a
+              <ExternalLinkAnchor
+                bare
                 className="min-w-0 truncate text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary) underline underline-offset-2 hover:text-foreground"
-                href={state.url}
-                rel="noreferrer"
-                target="_blank"
+                href={state.url} native
               >
                 {state.url}
-              </a>
+              </ExternalLinkAnchor>
               <Button onClick={() => void copyFreeTierUrl()} size="xs" type="button" variant="text">
                 {state.urlCopied ? t.common.copied : copy.copyLink}
               </Button>

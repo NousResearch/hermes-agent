@@ -285,3 +285,55 @@ def test_a_refused_job_join_never_runs_the_command(tmp_path):
     assert _CUSTODY_UNAVAILABLE in out.stderr
     # m1: the notice also lands in the report the updater turns into a warning + receipt step
     assert _CUSTODY_UNAVAILABLE in report.read_text(encoding="utf-8-sig")
+
+
+
+# --- R8 m1: the completion child is bound before it runs; a refused bind reaches the receipt ---
+
+_COMPLETION_CHILD = (
+    "import json, os, sys\n"
+    "from pathlib import Path\n"
+    "Path(os.environ['HERMES_PROBE_STARTED']).touch()\n"  # its first instruction
+    "request = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8-sig'))\n"
+    "receipt = dict(request['receipt'], finished_at='now', outcome='success')\n"
+    "Path(sys.argv[2]).write_text(json.dumps({'schema': 1, 'update_id': receipt['update_id'], 'exit_code': 0,\n"
+    "                                         'receipt': receipt, 'windows_resume': None}), encoding='utf-8')\n"
+)
+
+
+def test_a_completion_child_runs_only_after_its_bind_and_a_refusal_is_receipted(tmp_path, monkeypatch):
+    """The completion child is a checkout writer (dependency sync, product builds). It is created
+    suspended and bound before it runs one instruction; when the real AssignProcessToJobObject
+    refuses it (handed an event handle), it still runs (post-commit, ruling) but the refusal is a
+    failed ``update_custody`` step in the receipt it finishes."""
+    import ctypes
+    import copy
+
+    from hermes_cli import update_completion, update_lock, update_receipt
+
+    root = tmp_path / "checkout"
+    (root / "hermes_cli").mkdir(parents=True)
+    (root / "hermes_cli" / "update_completion.py").write_text(_COMPLETION_CHILD, encoding="utf-8")
+    started = tmp_path / "started"
+    monkeypatch.setenv("HERMES_PROBE_STARTED", str(started))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateEventW.restype = ctypes.c_void_p
+    event = kernel32.CreateEventW(None, True, False, None)
+    ran_before_bind = []
+
+    def refusing_job() -> int:
+        time.sleep(2.0)  # a child already running has touched its marker by now
+        ran_before_bind.append(started.exists())
+        return event
+
+    monkeypatch.setattr(update_lock, "update_tree_job", refusing_job)
+    with update_receipt.update_receipt_scope():
+        update_receipt.begin_update_receipt()
+        request = {"source": str(root), "home": str(tmp_path / "home"),
+                   "receipt": copy.deepcopy(update_receipt._current.get().data)}
+        result = update_completion.run_completion(request)
+    assert ran_before_bind == [False], "the completion child ran before its job bind"
+    assert result["exit_code"] == 0 and started.exists(), result
+    steps = [s for s in result["receipt"].get("steps", []) if s["name"] == "update_custody"]
+    assert steps and steps[0]["ok"] is False and "completion child" in steps[0]["detail"], result["receipt"]

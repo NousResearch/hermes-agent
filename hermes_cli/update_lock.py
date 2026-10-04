@@ -1119,27 +1119,45 @@ def custody_spawn_kwargs() -> dict:
     return {"pass_fds": (_HELD["fd"],)}
 
 
-def bind_child_to_update_tree(proc: subprocess.Popen) -> bool:
+CREATE_SUSPENDED = 0x00000004
+
+
+def bind_child_to_update_tree(proc: subprocess.Popen) -> OSError | None:
     """Windows: put an update-tree child in a kill-on-close job owned by this process, so the
     child (and everything it spawns) dies when the lock owner dies and frees the lock.
 
-    The job allows breakaway: a process the tree starts with ``CREATE_BREAKAWAY_FROM_JOB`` (the
-    gateways an update restarts or resumes, ``gateway_windows._spawn_detached``) leaves it and
-    outlives the update; every other descendant stays bound. Not ``SILENT_BREAKAWAY_OK``, which
-    would let every descendant escape.
+    Create ``proc`` with :data:`CREATE_SUSPENDED` and resume it after the bind
+    (:func:`resume_suspended_child`): it runs no instruction before, so nothing it starts can
+    escape the job. The job allows breakaway: a process the tree starts
+    with ``CREATE_BREAKAWAY_FROM_JOB`` (the gateways an update restarts or resumes,
+    ``gateway_windows._spawn_detached``) leaves it and outlives the update; every other
+    descendant stays bound. Not ``SILENT_BREAKAWAY_OK``, which would let every descendant escape.
 
-    POSIX children inherit the lock fd instead (:func:`checkout_lock_fds`). Returns False (and
-    logs) when the job cannot be set up: the caller runs post-commit work, which must not fail
-    over a weaker lock.
+    POSIX children inherit the lock fd instead (:func:`checkout_lock_fds`). Returns ``None`` when
+    bound, else the refusal (logged): the caller runs post-commit work, which must not fail over
+    a weaker lock, so it records the refusal and runs the child unfenced.
     """
     if sys.platform != "win32":
-        return True
+        return None
     try:
         _bind_to_kill_on_close_job(proc)
     except OSError as exc:
         logger.warning("Could not bind update child %s to the update's job: %s", proc.pid, exc)
-        return False
-    return True
+        return exc
+    return None
+
+
+def resume_suspended_child(proc: subprocess.Popen) -> None:
+    """Windows: resume a :data:`CREATE_SUSPENDED` child (a no-op for a running one). A failed
+    resume kills it and raises ``OSError``."""
+    import ctypes
+
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
+    ntdll.NtResumeProcess.restype = ctypes.c_long
+    if ntdll.NtResumeProcess(int(proc._handle)) != 0:
+        proc.kill()
+        raise OSError(f"could not resume update child {proc.pid}")
 
 
 def _bind_to_kill_on_close_job(proc: subprocess.Popen) -> None:

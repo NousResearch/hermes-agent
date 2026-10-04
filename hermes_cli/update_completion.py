@@ -35,6 +35,29 @@ def _write_bootstrap_result(request: dict, result_path: Path, code: int, receipt
     return code
 
 
+def _bind_and_resume(proc: subprocess.Popen, request: dict, request_path: Path) -> None:
+    """Windows: bind the suspended completion child to the update's job, then resume it.
+
+    Post-commit, refusing the child would fail a committed update, so a child the job refuses
+    runs unfenced (D2 ruling), never silently: the refusal is printed and recorded as a failed
+    ``update_custody`` step in this run's receipt and, before the child runs (it has not read
+    its request yet), in the receipt it resumes, so the terminal receipt carries it."""
+    from hermes_cli import update_receipt
+    from hermes_cli.update_lock import bind_child_to_update_tree, resume_suspended_child
+
+    refusal = bind_child_to_update_tree(proc)
+    if refusal is not None:
+        detail = (f"the update's job would not take the completion child ({refusal}), so it runs "
+                  "unfenced: a killed update would not stop it")
+        print(f"  ⚠ Update completion: {detail}")
+        update_receipt.record_step("update_custody", False, detail)
+        current = update_receipt._current.get()
+        if current is not None and current.data.get("update_id") == request["receipt"]["update_id"]:
+            request["receipt"] = json.loads(json.dumps(current.data))
+            _write_json(request_path, request)
+    resume_suspended_child(proc)
+
+
 def run_completion(request: dict) -> dict:
     """Wait for new code; zero exit without a correlated terminal result fails closed."""
     root = Path(request["source"])
@@ -59,19 +82,20 @@ def run_completion(request: dict) -> dict:
         command = [sys.executable, "-I", "-S", "-u", "-X", "utf8", "-X", f"pycache_prefix={request['bytecode_cache']}",
                    str(root / "hermes_cli/update_completion.py"),
                    str(request_path), str(result_path)]
-        from hermes_cli.update_lock import bind_child_to_update_tree, checkout_lock_fds
+        from hermes_cli.update_lock import CREATE_SUSPENDED, checkout_lock_fds
 
         # The child joins the update tree's checkout lock: it inherits the locked fd (POSIX)
-        # or dies with us (Windows job), so the lock is never free while it runs.
+        # or dies with us (Windows job: created suspended, bound, then resumed, so nothing it
+        # starts runs outside the job), so the lock is never free while it runs.
         proc = subprocess.Popen(
             command, cwd=root, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             **({"start_new_session": True, "pass_fds": checkout_lock_fds(root)} if os.name == "posix" else
-               {"creationflags": subprocess.CREATE_NO_WINDOW}))
+               {"creationflags": subprocess.CREATE_NO_WINDOW | CREATE_SUSPENDED}))
         decoder = codecs.getincrementaldecoder("utf-8")("replace")
         try:
-            # Post-commit: an unbindable child only weakens the lock (logged), never fails the
-            # update; anything else unwinds through the cleanup below, never orphans the child.
-            bind_child_to_update_tree(proc)
+            # A failure here unwinds through the cleanup below, never orphans the child.
+            if os.name != "posix":
+                _bind_and_resume(proc, request, request_path)
             while True:
                 chunk = proc.stdout.read1(8192)
                 sys.stdout.write(decoder.decode(chunk, final=not chunk))

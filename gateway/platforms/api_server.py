@@ -94,6 +94,7 @@ _CAPABILITY_ENDPOINTS = (
     ("session_messages", ("GET", "/api/sessions/{session_id}/messages")),
     ("session_fork", ("POST", "/api/sessions/{session_id}/fork")),
     ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
+    ("session_steer", ("POST", "/api/sessions/{session_id}/steer")),
     ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
     ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")),
     ("browser_control_register", ("POST", "/v1/browser-control/register")),
@@ -1768,6 +1769,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
+            ("POST", "/api/sessions/{session_id}/steer", self._handle_session_steer),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
             ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
             ("POST", "/v1/chat/completions", self._handle_chat_completions),
@@ -3590,6 +3592,66 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             logger.info("Session SSE client disconnected while a live Bot Chat held the turn")
         return response
+
+    def _live_agents_for_session(self, session_id: str) -> list:
+        """Every live api_server agent whose run is bound to *session_id* and can steer.
+
+        The run registry (``_active_run_agents``) is keyed by run_id with the agent as value;
+        the session binding lives on the run status snapshot. Queued-but-agent-less runs are
+        skipped (nothing to steer yet). Ordered newest-first is unnecessary — we only need one.
+        """
+        agents = []
+        statuses = getattr(self, "_run_statuses", None) or {}
+        for run_id, agent in list((getattr(self, "_active_run_agents", None) or {}).items()):
+            if agent is None:
+                continue
+            status = statuses.get(run_id) or {}
+            if str(status.get("session_id") or "") != session_id:
+                continue
+            if not hasattr(agent, "steer"):
+                continue
+            agents.append(agent)
+        return agents
+
+    async def _handle_session_steer(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/steer — nudge the session's LIVE turn with new info.
+
+        Delivers the text via ``agent.steer()``: queued as its own user row after the current
+        tool batch, the turn's objective unchanged (no interrupt, no redirect). 409 with
+        ``code="no_live_turn"`` when nothing is running, so callers can fall back to /chat.
+        """
+        session_id = request.match_info["session_id"]
+        session, err = await self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        raw_text = body.get("message") or body.get("input") or body.get("text") or ""
+        steer_text = _normalize_chat_content(raw_text).strip()
+        if not steer_text:
+            return _error_response(
+                "Missing non-empty steer text; expected 'message', 'input', or 'text'.",
+                400, code="invalid_steer_input")
+        live = self._live_agents_for_session(session_id)
+        if not live:
+            return _error_response(
+                f"No live turn to steer for session: {session_id}",
+                409, code="no_live_turn")
+        accepted = False
+        for agent in live:
+            try:
+                if agent.steer(steer_text):
+                    accepted = True
+                    break
+            except Exception as exc:  # noqa: BLE001 - mirror _handle_steer_run's contract
+                logger.warning("[api_server] session steer failed for %s: %s", session_id, exc)
+        if not accepted:
+            return _error_response(
+                f"Live turn did not accept steer text: {session_id}",
+                409, code="steer_not_accepted")
+        return web.json_response({
+            "object": "hermes.session.steer", "session_id": session_id, "accepted": True})
 
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":

@@ -873,14 +873,21 @@ def _guarded_action(task_id: Optional[str], action: str, command: str, args: lis
     """Input action on the task's current page, refused when the SSRF guard flags the page.
     ``scroll_into_view``: agent-browser clicks at the element's current coordinates without
     scrolling, so a below-the-fold target gets a silent no-op click that still reports success.
-    Scroll it in first; a failed scroll is ignored (the action still runs, as before)."""
+    Scroll it in first. A failed scroll does not stop the action (it may be visible already), but
+    its error rides along as ``scroll_warning`` so a "success" can't hide a likely no-op."""
     effective_task_id = _last_session_key(task_id or "default")
     blocked = _blocked_private_page_action(effective_task_id, action)
     if blocked is not None:
         return blocked
+    scroll_warning = None
     if scroll_into_view:
-        _session._run_browser_command(effective_task_id, "scrollintoview", args[:1])
-    return _tool_response(_session._run_browser_command(effective_task_id, command, args), ok, err)
+        scrolled = _session._run_browser_command(effective_task_id, "scrollintoview", args[:1])
+        if not scrolled.get("success"):
+            scroll_warning = (f"Could not scroll {args[0]} into view ({scrolled.get('error') or 'scroll failed'}); "
+                              "if it is off-screen this action may have done nothing — re-snapshot to check.")
+            logger.debug("browser %s: %s", action, scroll_warning)
+    result = _session._run_browser_command(effective_task_id, command, args)
+    return _tool_response(result, {**ok, "scroll_warning": scroll_warning} if scroll_warning else ok, err)
 
 
 def _at_ref(ref: str) -> str:

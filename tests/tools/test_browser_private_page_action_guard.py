@@ -91,7 +91,8 @@ def test_guard_inactive_does_not_block_or_probe(monkeypatch):
 def test_click_scrolls_into_view_before_click(monkeypatch):
     """Off-screen targets get a no-op success from agent-browser click unless
     scrolled into view first. browser_click must call scrollintoview before
-    click, and must still click even if scrollintoview fails."""
+    click, must still click even if scrollintoview fails, and must surface that
+    failure (``scroll_warning``) so the click's "success" can't hide a no-op."""
     calls = []
 
     monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: False)
@@ -106,7 +107,8 @@ def test_click_scrolls_into_view_before_click(monkeypatch):
 
     out = json.loads(browser_tool.browser_click("@e7", task_id="task-1"))
 
-    assert out == {"success": True, "clicked": "@e7"}
+    assert out["success"] is True and out["clicked"] == "@e7"
+    assert "@e7" in out["scroll_warning"] and "unknown ref" in out["scroll_warning"]
     assert calls == [
         ("scrollintoview", ["@e7"]),
         ("click", ["@e7"]),

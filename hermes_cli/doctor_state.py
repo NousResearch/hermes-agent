@@ -11,7 +11,6 @@ from hermes_cli.doctor_report import (
     warn_on_error,
 )
 from hermes_cli.sizefmt import format_bytes as _human_bytes
-from hermes_state_common import FTS_STORAGE_VERSION
 from hermes_state_holders import read_only_db_uri
 
 
@@ -104,13 +103,11 @@ def _render_state_db_stats(stats: dict, holders=None, host_note: str = "") -> li
                           "(stop the listed processes; the host gateway's own retry then rebuilds, or run "
                           "'hermes sessions optimize-storage' with every holder stopped)"))
     # Oversized DB: suggest auto_prune, plus the offline optimize-storage pass when the FTS rebuild is
-    # pending OR the DB predates the current trigram layout (fts_storage_version < FTS_STORAGE_VERSION).
+    # pending OR the stored FTS layout structurally needs upgrading (not just a lagging marker).
     if logical is not None and logical > STATE_DB_SIZE_WARN_BYTES:
         detail = "consider enabling sessions.auto_prune in config.yaml to bound growth"
-        stale_trigram = (fts is not None and fts.get("messages_fts_trigram")
-                         and (stats.get("fts_storage_version") or 0) < FTS_STORAGE_VERSION)
         structural_fts_upgrade = bool(stats.get("fts_storage_upgrade_needed"))
-        if stats.get("fts_rebuild_pending") or stale_trigram or structural_fts_upgrade:
+        if stats.get("fts_rebuild_pending") or structural_fts_upgrade:
             detail += "; run 'hermes sessions optimize-storage' offline (with the host gateway stopped) to compact FTS storage"
         lines.append(("warn", f"state.db is large ({_human_bytes(logical)})", f"({detail})"))
     # WAL runaway is deliberately NOT warned here: _state_db_wal already warns above 50 MB and offers --fix.

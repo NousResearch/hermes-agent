@@ -203,19 +203,6 @@ class TestQQWebSocketProxy:
         assert seen_ws_kwargs.get("proxy") == "http://127.0.0.1:7897"
 
 # ---------------------------------------------------------------------------
-# _strip_at_mention
-# ---------------------------------------------------------------------------
-
-class TestStripAtMention:
-    def _fn(self, content):
-        from gateway.platforms.qqbot import QQAdapter
-        return QQAdapter._strip_at_mention(content)
-
-    def test_removes_mention(self):
-        result = self._fn("@BotUser hello there")
-        assert result == "hello there"
-
-
 # ---------------------------------------------------------------------------
 # _is_dm_allowed
 # ---------------------------------------------------------------------------

@@ -67,7 +67,10 @@ from gateway.platforms.qqbot.constants import (
     QUICK_DISCONNECT_THRESHOLD, MAX_QUICK_DISCONNECT_COUNT, MAX_MESSAGE_LENGTH,
     DEDUP_WINDOW_SECONDS, DEDUP_MAX_SIZE, MSG_TYPE_TEXT, MSG_TYPE_MARKDOWN, MSG_TYPE_MEDIA,
     MSG_TYPE_INPUT_NOTIFY, MEDIA_TYPE_IMAGE, MEDIA_TYPE_VIDEO, MEDIA_TYPE_VOICE, MEDIA_TYPE_FILE)
-from gateway.platforms.qqbot.utils import coerce_list as _coerce_list, build_user_agent
+from gateway.platforms.qqbot.utils import (
+    coerce_list as _coerce_list, build_user_agent, format_mentions,
+    render_group_mentions, mentions_this_bot,
+)
 from gateway.platforms.qqbot.chunked_upload import (
     ChunkedUploader, UploadDailyLimitExceededError, UploadFileTooLargeError)
 from gateway.platforms.qqbot.keyboards import (
@@ -153,6 +156,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._allow_from = _coerce_list(extra.get("allow_from") or extra.get("allowFrom"))
         self._group_policy = str(extra.get("group_policy", "pairing")).strip().lower()
         self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
+        self._bot_member_openid = str(extra.get("bot_member_openid") or "").strip()
 
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -769,8 +773,13 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if not group_openid or not self._is_group_allowed(group_openid, member):
             return
         await self._ingest(
-            d, msg_id, self._strip_at_mention(content), d.get("attachments"), timestamp,
+            d, msg_id, render_group_mentions(content, d.get("mentions"), self._bot_member_openid),
+            d.get("attachments"), timestamp,
             chat_id=group_openid, qq_chat_type="group", user_id=member, chat_type="group")
+
+    async def _handle_full_group_message(self, d, msg_id, content, author, timestamp) -> None:
+        if mentions_this_bot(content, d.get("mentions"), self._bot_member_openid):
+            await self._handle_group_message(d, msg_id, content, author, timestamp)
 
     async def _handle_guild_message(self, d, msg_id, content, author, timestamp) -> None:
         channel_id = str(d.get("channel_id", ""))
@@ -806,6 +815,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     _INBOUND_HANDLERS = {
         "C2C_MESSAGE_CREATE": "_handle_c2c_message",
         "GROUP_AT_MESSAGE_CREATE": "_handle_group_message",
+        "GROUP_MESSAGE_CREATE": "_handle_full_group_message",
         "GUILD_MESSAGE_CREATE": "_handle_guild_message",
         "GUILD_AT_MESSAGE_CREATE": "_handle_guild_message",
         "DIRECT_MESSAGE_CREATE": "_handle_dm_message"}
@@ -824,6 +834,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         into the text, drop empty events, remember the QQ chat kind and dispatch."""
         att = await self._process_attachments(attachments)
         text = content
+        mentions = format_mentions(d.get("mentions"))
+        if mentions:
+            text = self._append_block(text, mentions)
         voice_transcripts = att["voice_transcripts"]
         if voice_transcripts:
             text = self._append_block(text, "\n".join(voice_transcripts))
@@ -868,7 +881,11 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return empty
 
         elements = [e for e in elements if isinstance(e, dict)]
-        quoted_text_parts = [t for t in (str(e.get("content", "")).strip() for e in elements) if t]
+        quoted_text_parts = [t for t in (
+            self._append_block(render_group_mentions(str(e.get("content", "")), e.get("mentions")),
+                               format_mentions(e.get("mentions")))
+            for e in elements
+        ) if t]
         all_attachments = [
             a for e in elements if isinstance(e.get("attachments"), list) for a in e["attachments"] if isinstance(a, dict)]
         att_result = await self._process_attachments(all_attachments)
@@ -1655,10 +1672,6 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     def _guess_chat_type(self, chat_id: str) -> str:
         """Determine chat type from stored inbound metadata, fallback to 'c2c'."""
         return self._chat_type_map.get(chat_id, "c2c")
-
-    @staticmethod
-    def _strip_at_mention(content: str) -> str:
-        return re.sub(r"^@\S+\s*", "", content.strip())
 
     def _entry_matches(self, entries: List[str], target: str) -> bool:
         normalized_target = str(target).strip().lower()

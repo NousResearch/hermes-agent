@@ -126,3 +126,25 @@ This usually means:
 - Ensure `aiohttp` and `httpx` are installed: `python -c "import pm; pm.sync_venv(['messaging'], explicit=True)"`
 - Check network connectivity to `api.sgroup.qq.com` and the WebSocket gateway
 - Review gateway logs for detailed error messages and reconnect behavior
+
+### Mentioned group members are missing
+
+QQ's official group events may provide mentioned members in a separate `mentions`
+user list. Hermes adds that list to the model's input with nicknames and member IDs.
+When `content` includes `<@OpenID>` tokens, Hermes resolves them at their original
+positions using the list. If only the list is supplied, Hermes
+does not guess text positions. A quoted element's own mention list stays inside its
+quoted context.
+
+When QQ omits both the mention text and the list, Hermes cannot recover
+the target from that event; write the nickname as ordinary text as a workaround.
+See the [official event schema](https://bot.q.qq.com/wiki/develop/api-v2/autogen/event/group_at_message_create.html).
+
+The official "receive all messages" setting changes delivery to
+`GROUP_MESSAGE_CREATE`. A live comparison found member mentions available in this mode when they were
+absent from @-only events. This is an observation, not a guarantee of platform behavior. Configure
+`platforms.qqbot.extra.bot_member_openid` with this bot's group OpenID (the token
+corresponding to its actual mention in a full-mode event). Full-mode messages invoke
+Hermes only when they mention that exact bot identity. Without the setting, full-mode
+events do not invoke the model. The group OpenID differs
+from the numeric bot ID returned by `/users/@me`.

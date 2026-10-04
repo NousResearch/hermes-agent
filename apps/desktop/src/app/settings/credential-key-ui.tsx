@@ -107,11 +107,7 @@ export function KeyField({
         {isSecret && (
           <Button
             aria-label={valueRevealed ? t.settings.envActions.hideValue : t.settings.envActions.revealValue}
-            onBlur={() => {
-              if (valueRevealed) {
-                onHideReveal(varKey)
-              }
-            }}
+            onBlur={() => onHideReveal(varKey)}
             onClick={() => void onReveal(varKey)}
             size="icon-xs"
             type="button"

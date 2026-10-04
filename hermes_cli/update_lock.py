@@ -970,6 +970,11 @@ def _inherited_lock_fd(path: Path) -> int | None:
 
     for fd in candidates:
         try:
+            # pass_fds clears CLOEXEC in the exec'd child. Local opens (including the
+            # concurrent status probe) retain it and must never donate their lifetime:
+            # their owner may close the fd while our update still holds custody.
+            if not os.get_inheritable(fd):
+                continue
             st = os.fstat(fd)
             if (st.st_dev, st.st_ino) != (target.st_dev, target.st_ino):
                 continue

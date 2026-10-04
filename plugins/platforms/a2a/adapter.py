@@ -221,6 +221,12 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             if length > _MAX_BODY:
                 return self._error(413, None, protocol.ERR_PARSE, "payload too large")
+            # Header before body: a JSON body under a non-JSON Content-Type is rejected, not served.
+            # A missing header stays accepted (lenient clients).
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype and not ctype.startswith("application/json"):
+                return self._error(415, None, protocol.ERR_CONTENT_TYPE_NOT_SUPPORTED,
+                                   f"Content-Type not supported: {ctype}")
             req = json.loads((self.rfile.read(length) if length else b"{}").decode("utf-8"))
         except Exception:
             return self._error(400, None, protocol.ERR_PARSE, "parse error")

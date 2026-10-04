@@ -35,6 +35,9 @@ INPUT_REQUIRED_MARKER = "[INPUT_REQUIRED]"
 # live at -32050..-32059 (implementation-defined space, clear of the A2A block).
 ERR_PARSE, ERR_INVALID_PARAMS, ERR_METHOD_NOT_FOUND = -32700, -32602, -32601
 ERR_TASK_NOT_FOUND, ERR_TASK_NOT_CANCELABLE = -32001, -32002  # A2A spec: TaskNotFoundError / TaskNotCancelableError
+# A2A spec 5.4: ContentTypeNotSupportedError. The TCK (JSONRPC-SSE-002) posts a valid JSON body
+# under ``Content-Type: text/plain`` and expects this code (or an HTTP-level rejection).
+ERR_CONTENT_TYPE_NOT_SUPPORTED = -32005
 ERR_UNAUTHORIZED, ERR_RATE_LIMITED, ERR_UNTRUSTED_PEER = -32050, -32051, -32052
 
 # Anti-loop: max inbound turns per context. A2A_MAX_PINGPONG_TURNS env, capped at 20.

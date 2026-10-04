@@ -1468,6 +1468,41 @@ class TestV1SpecRegressionFixes:
 
         asyncio.run(run())
 
+    def test_wrong_content_type_is_content_type_not_supported(self, monkeypatch):
+        """A2A 5.4 / TCK JSONRPC-SSE-002: a valid JSON body under ``text/plain`` must answer
+        ContentTypeNotSupportedError (-32005), not run the task; ``application/json`` with a
+        charset parameter still works."""
+        import urllib.error
+
+        monkeypatch.delenv("A2A_BEARER_TOKEN", raising=False)
+        monkeypatch.delenv("A2A_PEER_TOKENS", raising=False)
+        seen = []
+        adapter, base = _make_live_adapter(monkeypatch, reply_fn=lambda event: seen.append(event.text) or "ok")
+
+        def post_raw(content_type):
+            req = urllib.request.Request(
+                base + "/", data=json.dumps(_send_body("content type test")).encode(),
+                headers={"Content-Type": content_type}, method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    return r.status, json.loads(r.read().decode())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read().decode())
+
+        async def run():
+            assert await adapter.connect() is True
+            status, body = await asyncio.to_thread(post_raw, "text/plain")
+            assert status == 415
+            assert body["error"]["code"] == protocol.ERR_CONTENT_TYPE_NOT_SUPPORTED == -32005
+            assert seen == []  # the task never reached the agent
+            status, body = await asyncio.to_thread(post_raw, "application/json; charset=utf-8")
+            assert status == 200
+            assert body["result"]["status"]["state"] == protocol.STATE_COMPLETED
+            await adapter.disconnect()
+
+        asyncio.run(run())
+
     def test_client_sends_v1_method_and_unwraps_response(self, monkeypatch):
         posted = {}
 

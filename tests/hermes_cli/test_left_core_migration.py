@@ -251,3 +251,30 @@ def test_the_migration_installs_once_so_a_removal_sticks(tmp_path, monkeypatch):
     monkeypatch.setattr(lcm, "_install_into", lambda h: install)
     assert lcm.recover_at_startup(say=quiet) == []
     assert calls == ["homeassistant"] and not plugin.exists()
+
+
+def test_a_failed_startup_install_backs_off_and_reports_one_line(tmp_path, monkeypatch):
+    """With the catalog or git unreachable, only the first agent start in a while pays the network
+    round trip, and its notice is one line naming the cause; `hermes update` always retries."""
+    import hermes_cli.memory_provider_migration as mpm
+    import pm.install
+    home = _home(tmp_path, env="HASS_TOKEN=abc\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: True)
+    lookups = []
+    monkeypatch.setattr(mpm, "catalog_source", lambda name: lookups.append(name) or name)
+    git_error = ("Could not download the plugin from https://github.com/x/y. Check the address.\n"
+                 "Details: Cloning into '/h/plugins/.install-1'...\n"
+                 "fatal: unable to access 'https://github.com/x/y/': Could not resolve host: github.com\n")
+    failing = lambda name: {"ok": False, "error": git_error}  # noqa: E731
+    monkeypatch.setattr(lcm, "_install_into", lambda h: failing)
+    said = []
+    assert lcm.recover_at_startup(say=said.append) == []
+    assert len(said) == 1 and "\n" not in said[0] and "Could not resolve host: github.com" in said[0]
+    assert "plugins install homeassistant" in said[0]
+
+    lcm._attempted.clear()  # the next `hermes chat` process
+    assert lcm.recover_at_startup(say=said.append) == []
+    assert lookups == ["homeassistant"] and len(said) == 1
+    assert lcm.migrate_home(home, install=failing, say=said.append) == []
+    assert lookups == ["homeassistant", "homeassistant"]

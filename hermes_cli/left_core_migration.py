@@ -9,6 +9,9 @@ reuses; memory is not a row because its plugin name comes from ``memory.provider
 * ``hermes update`` installs the plugin for every profile home sharing the venv that uses the feature.
 * Agent start and gateway start retry once per process for the active home (Desktop users update
   through the app and never run ``hermes update``), honouring ``security.allow_lazy_installs``.
+* After a failed attempt (catalog miss or unreachable, failed install) starts skip the row for
+  :data:`STARTUP_RETRY_SECONDS`, so an offline machine pays the network round trip once, not on every
+  ``hermes chat``; ``hermes update`` always retries.
 * A home gets the plugin automatically at most once (``_left_core_installed`` in its config.yaml):
   ``hermes plugins remove`` afterwards is the user's choice and sticks.
 
@@ -21,6 +24,7 @@ Desktop, chat); a gateway-start outcome waits for the home's first agent to deli
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -213,11 +217,37 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
     atomic_config_write(path, config)
 
 
-def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = False) -> list[LeftCoreFeature]:
+STARTUP_RETRY_SECONDS = 3600.0
+
+
+def _failure_stamp(home: Path, feature: LeftCoreFeature) -> Path:
+    """Touched on every failed automatic install; its mtime gates the next startup attempt."""
+    return home / "cache" / f"left-core-{feature.plugin}.failed"
+
+
+def _note_failure(home: Path, feature: LeftCoreFeature) -> None:
+    stamp = _failure_stamp(home, feature)
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+    except OSError as exc:
+        logger.debug("left-core retry stamp not written for %s: %s", home, exc)
+
+
+def _failed_recently(home: Path, feature: LeftCoreFeature) -> bool:
+    try:
+        return time.time() - _failure_stamp(home, feature).stat().st_mtime < STARTUP_RETRY_SECONDS
+    except OSError:
+        return False
+
+
+def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = False,
+             backoff: bool = False) -> list[LeftCoreFeature]:
     """Rows *home* uses whose plugin it never had and that the catalog ships (a catalog miss is
     reported through *say*). Converts the toolset scope of every row *home* uses once
     (:func:`_record_migration`), installed or not; a row whose scope cannot be recorded is
-    reported and skipped, never installed unscoped. A row marked installed is done for good."""
+    reported and skipped, never installed unscoped. A row marked installed is done for good.
+    *backoff* (startup) skips a row whose last attempt failed recently, before any network."""
     from hermes_cli.memory_provider_migration import catalog_source
     out = []
     for feature in LEFT_CORE:
@@ -235,7 +265,12 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
             continue
         if present:
             continue
+        if backoff and _failed_recently(home, feature):
+            logger.info("%s plugin install failed recently for %s; retrying after %ds or on `hermes update`",
+                        feature.label, home, STARTUP_RETRY_SECONDS)
+            continue
         if catalog_source(feature.plugin) is None:
+            _note_failure(home, feature)
             say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this "
                 f"Hermes cannot find in the plugin catalog yet. Run `{_install_command(feature.plugin, home)}` "
                 f"once it is listed.")
@@ -257,6 +292,14 @@ def _install_into(home: Path) -> Callable[[str], dict]:
     return _install
 
 
+def _first_cause(error: str) -> str:
+    """One line for a notice: git's own ``fatal:`` / ``error:`` line when *error* ends with raw git
+    stderr (a failed clone), else its first non-empty line."""
+    lines = [line.strip() for line in error.splitlines() if line.strip()]
+    cause = next((line.split(":", 1)[1].strip() for line in lines if line.startswith(("fatal:", "error:"))), None)
+    return (cause or (lines[0] if lines else "unknown error")).rstrip(". ")
+
+
 def _install_one(home: Path, feature: LeftCoreFeature, *, install: Callable[[str], dict],
                  say: Callable[[str], None]) -> bool:
     try:
@@ -271,7 +314,8 @@ def _install_one(home: Path, feature: LeftCoreFeature, *, install: Callable[[str
         say(f"  ✓ {feature.label} moved out of core — installed the '{feature.plugin}' plugin from the "
             f"catalog ({feature.unchanged}).")
         return True
-    error = str(result.get("error") or "unknown error").rstrip(". ")
+    _note_failure(home, feature)
+    error = _first_cause(str(result.get("error") or ""))
     say(f"  ⚠ {feature.label} moved out of core and its '{feature.plugin}' plugin could not be installed "
         f"automatically: {error}. Run `{_install_command(feature.plugin, home)}`.")
     return False
@@ -373,7 +417,7 @@ def recover_at_startup(*, say: Optional[Callable[[str], None]] = None) -> list[s
         deliver(message)
 
     try:
-        features = _pending(home, say=report, process_env=True)
+        features = _pending(home, say=report, process_env=True, backoff=True)
         if not features:
             return []
         from pm.install import lazy_installs_allowed

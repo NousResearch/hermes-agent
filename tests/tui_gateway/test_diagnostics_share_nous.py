@@ -201,6 +201,8 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
         ("x-api-key: Bearer abc1234", "abc1234"),
         ("-H 'x-auth-token: *** s3cr3t'", "s3cr3t"),
         ("--header x-api-key *** abc1234", "abc1234"),
+        ("x-api-key: *** " + "q" * 32, "q" * 32),
+        ("--header x-api-key *** " + "Q" * 32, "Q" * 32),
         ("x-api-key: *** sk-abc:xyz123456", "xyz123456"),
         ("Basic user:passw0rd", "passw0rd"),
         ("?r=x%2526access_token%253Dtok123456789", "tok123456789"),

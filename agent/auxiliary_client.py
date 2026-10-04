@@ -3024,13 +3024,14 @@ def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = N
         from agent.anthropic_credentials import resolve_anthropic_token
     except ImportError:
         return None, None
+    model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
     pool_present, entry = _select_pool_entry("anthropic")
     if pool_present and entry is not None:
         token = explicit_api_key or _pool_runtime_api_key(entry)
     else:
         # Pool absent/empty: legacy resolver so a dead pool entry can't wedge aux tasks when a standalone credential exists.
         entry = None
-        token = explicit_api_key or resolve_anthropic_token()
+        token = explicit_api_key or resolve_anthropic_token(model=model)
     if not token:
         return None, None
     # Honor config.yaml model.base_url only when provider is anthropic AND the URL is
@@ -3063,7 +3064,6 @@ def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = N
         base_url = override_url
     from agent.anthropic_credentials import _is_oauth_token
     is_oauth = _is_oauth_token(token)
-    model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
     if _aux_probe_active():
         # Probe: token + adapter import resolved; skip real client construction.
         return _AuxProbeClientStub(api_key="", base_url=base_url), model

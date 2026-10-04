@@ -82,4 +82,45 @@ def test_oauth_pool_discovery_keeps_model_specific_availability(pool, monkeypatc
 
     assert resolve_anthropic_token(model=MODEL_A) is None
     assert resolve_anthropic_token(model=MODEL_B) == KEY
-    assert resolve_anthropic_token() == KEY
+    assert resolve_anthropic_token() is None
+
+
+@pytest.mark.parametrize("configured_model", [None, "claude-sonnet-4-5"])
+@pytest.mark.parametrize("cool_aux_model", [True, False])
+def test_auxiliary_resolver_honors_actual_model_cooldown(
+    pool, monkeypatch, configured_model, cool_aux_model,
+):
+    from unittest.mock import Mock
+
+    from agent import auxiliary_client
+    from agent.credential_pool import AUTH_TYPE_OAUTH
+    from hermes_constants import get_hermes_home
+
+    aux_model = configured_model or "claude-haiku-4-5-20251001"
+    cooled_model = aux_model if cool_aux_model else "claude-opus-4-6"
+    entry = pool.entries()[0]
+    entry.auth_type = AUTH_TYPE_OAUTH
+    entry.refresh_token = "refresh-token"
+    entry.model_cooldowns = {cooled_model: 4102444800.0}
+    pool._persist()
+    auth_path = get_hermes_home() / "auth.json"
+    before = auth_path.read_bytes()
+
+    # Keep real pool selection and token resolution. Substitute only model
+    # configuration and SDK construction; no provider request is made.
+    monkeypatch.setattr(auxiliary_client, "_get_aux_model_for_provider", lambda provider: configured_model)
+    monkeypatch.setattr("agent.anthropic_credentials.read_claude_code_credentials", lambda: None)
+    build = Mock(return_value=Mock())
+    monkeypatch.setattr("agent.anthropic_adapter.build_anthropic_client", build)
+    available, _ = pool._available_entries(model=aux_model)
+    assert bool(available) is (not cool_aux_model)
+
+    client, model = auxiliary_client._try_anthropic()
+    if cool_aux_model:
+        assert (client, model) == (None, None)
+        build.assert_not_called()
+    else:
+        assert isinstance(client, auxiliary_client.AnthropicAuxiliaryClient)
+        assert model == aux_model
+        assert build.call_args.args[0] == KEY
+    assert auth_path.read_bytes() == before

@@ -225,11 +225,14 @@ _EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
 # older dated value) Copilot answers with its legacy context limits even for models it serves
 # at a much larger window under a newer version — e.g. Claude Opus was observed reporting a
 # 200k/328k prompt/context ceiling with no header and 1M/1M with this one, on both
-# api.githubcopilot.com and api.enterprise.githubcopilot.com. Value confirmed via a live capture
-# of GitHub's own Copilot CLI; the header mechanism itself is corroborated by other open-source
+# api.githubcopilot.com and api.enterprise.githubcopilot.com. GitHub's REST API only accepts
+# "2026-03-10" (most recent) or "2022-11-28" (api.github.com/repos/... returns HTTP 400
+# "is not a supported version" for any other dated value, confirmed live) — "2026-03-10" is used
+# here as the current/most-recent supported version. The header mechanism itself is corroborated
+# by other open-source
 # Copilot clients that send it on every request (e.g. github/gh-cli, opencode, zed-industries/zed,
 # the copilot-api crate) even though none of those observed this exact dated value yet.
-_GITHUB_API_VERSION = "2026-08-01"
+_GITHUB_API_VERSION = "2026-03-10"
 
 # Transient-failure hardening: gateway startup races network readiness, and a single-shot
 # exchange failing there silently degrades to the RAW GitHub token, whose integrator allowlist

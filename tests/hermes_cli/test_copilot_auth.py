@@ -132,10 +132,13 @@ class TestRequestHeaders:
         same model id) is gated server-side by this header, confirmed via a live capture of
         GitHub's own Copilot CLI traffic against api.githubcopilot.com and
         api.enterprise.githubcopilot.com. Without it Copilot silently answers with legacy,
-        smaller context limits."""
+        smaller context limits. GitHub's REST API only accepts "2026-03-10" (most recent) or
+        "2022-11-28" for this header (any other dated value, e.g. a newer-looking one, is
+        rejected outright with HTTP 400 "is not a supported version" -- confirmed live against
+        api.github.com), so "2026-03-10" is what's actually sent."""
         from hermes_cli.copilot_auth import copilot_request_headers
         headers = copilot_request_headers()
-        assert headers["X-GitHub-Api-Version"] == "2026-08-01"
+        assert headers["X-GitHub-Api-Version"] == "2026-03-10"
 
 
     def test_no_vision_header_by_default(self):
@@ -163,7 +166,26 @@ class TestCopilotDefaultHeaders:
         reporting legacy (smaller) context windows on the model picker/catalog."""
         from hermes_cli.models import copilot_default_headers
         headers = copilot_default_headers()
-        assert headers["X-GitHub-Api-Version"] == "2026-08-01"
+        assert headers["X-GitHub-Api-Version"] == "2026-03-10"
+
+    def test_fallback_headers_include_github_api_version(self, monkeypatch):
+        """copilot_default_headers()'s own ImportError fallback (taken only when
+        hermes_cli.copilot_auth can't be imported) must carry the same header -- the normal path
+        delegates to copilot_auth first, so without forcing this branch directly it stays
+        uncovered even if its literal drifts from copilot_auth's (caught in review on #126897)."""
+        import builtins
+        real_import = builtins.__import__
+
+        def _blocked_import(name, *args, **kwargs):
+            if name == "hermes_cli.copilot_auth":
+                raise ImportError("forced for test")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _blocked_import)
+
+        from hermes_cli.models import copilot_default_headers
+        headers = copilot_default_headers()
+        assert headers["X-GitHub-Api-Version"] == "2026-03-10"
 
 
 class TestEnvVarOrder:

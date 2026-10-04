@@ -5,6 +5,7 @@ import pytest
 
 from agent.codex_runtime import _record_codex_app_server_compaction
 from agent.conversation_compression import COMPACTION_DONE_STATUS, COMPACTION_STATUS, compress_context
+from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
 from agent.transports.codex_app_server_session import TurnResult
 
 
@@ -71,6 +72,7 @@ class DummyAgent:
         self.touch_calls = []
         self.touch_provenances = []
         self._compression_activity_heartbeat_interval = 0.1
+        self._tool_guardrails = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
 
     def _touch_activity(self, desc, *, provenance=None, force_persist=False):
         self.touch_calls.append(desc)
@@ -121,6 +123,8 @@ def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting(
         agent._codex_session.result,
         agent.touch_calls,
     )
+    for _ in range(5):
+        agent._tool_guardrails.after_call("skill_view", {"name": "report"}, "unchanged", failed=False)
     messages = [{"role": "user", "content": "hi"}]
 
     returned, prompt = compress_context(
@@ -144,6 +148,7 @@ def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting(
     assert all(
         p is ActivityProvenance.AGENT_COMPRESSION for p in agent.touch_provenances
     )
+    assert agent._tool_guardrails.before_call("skill_view", {"name": "report"}).allows_execution
 
 
 
@@ -152,6 +157,8 @@ def test_codex_app_server_compaction_heartbeat_refreshes_activity_while_waiting(
 
 def test_codex_app_server_compression_failure_preserves_bookkeeping():
     agent = DummyAgent(TurnResult(error="compact failed"))
+    for _ in range(5):
+        agent._tool_guardrails.after_call("skill_view", {"name": "report"}, "unchanged", failed=False)
     messages = [{"role": "user", "content": "hi"}]
 
     returned, prompt = compress_context(
@@ -174,6 +181,7 @@ def test_codex_app_server_compression_failure_preserves_bookkeeping():
         ("lifecycle", COMPACTION_STATUS),
         ("warn", "⚠ Codex app-server compaction failed: compact failed"),
     ]
+    assert agent._tool_guardrails.before_call("skill_view", {"name": "report"}).code == "idempotent_no_progress_block"
 
 
 

@@ -849,8 +849,20 @@ def test_total_deadline_cancellation_retains_lock_until_worker_cleanup() -> None
 
     assert not released.is_set()
 
-def test_delayed_contender_adopts_unique_rotated_child(tmp_path: Path) -> None:
+def test_delayed_contender_adopts_unique_rotated_child(tmp_path: Path, monkeypatch) -> None:
     """A stale agent must continue on the winner's compacted child transcript."""
+    from agent.conversation_compression import _adopt_live_compression_child
+    from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+    from tools.skills_tool import _skill_view_with_bump, reset_skill_view_dedup
+
+    home = tmp_path / "home"
+    skill = home / "skills" / "report-skill"
+    skill.mkdir(parents=True)
+    body = "Follow the complete report procedure.\n" * 40
+    (skill / "SKILL.md").write_text(
+        "---\nname: report-skill\ndescription: Report procedure\n---\n" + body, encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
     db = SessionDB(db_path=tmp_path / "state.db")
     parent_sid = "STALE_PARENT"
     child_sid = "CANONICAL_CHILD"
@@ -864,6 +876,14 @@ def test_delayed_contender_adopts_unique_rotated_child(tmp_path: Path) -> None:
     db.replace_messages(child_sid, compacted)
 
     agent = _build_agent_with_db(db, parent_sid)
+    agent._current_task_id = "adoption-report"
+    reset_skill_view_dedup(agent._current_task_id)
+    agent._tool_guardrails = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    read_args = {"name": "report-skill"}
+    assert body in json.loads(_skill_view_with_bump(read_args, task_id=agent._current_task_id))["content"]
+    for _ in range(5):
+        agent._tool_guardrails.after_call("skill_view", read_args, "skill body")
+    assert agent._tool_guardrails.before_call("skill_view", read_args).action == "block"
     stale_messages = [
         {"role": "user", "content": "stale"},
         {"role": "assistant", "content": "x" * 1000},
@@ -886,6 +906,14 @@ def test_delayed_contender_adopts_unique_rotated_child(tmp_path: Path) -> None:
     assert lifecycle_kwargs["boundary_reason"] == "compression"
     assert lifecycle_kwargs["old_session_id"] == parent_sid
     assert lifecycle_kwargs["session_db"] is db
+    assert agent._tool_guardrails.before_call("skill_view", read_args).action == "allow"
+    assert body in json.loads(_skill_view_with_bump(read_args, task_id=agent._current_task_id))["content"]
+
+    for _ in range(5):
+        agent._tool_guardrails.after_call("skill_view", read_args, "skill body")
+    assert _adopt_live_compression_child(agent, db, parent_sid)
+    assert agent._tool_guardrails.before_call("skill_view", read_args).action == "block"
+    assert json.loads(_skill_view_with_bump(read_args, task_id=agent._current_task_id))["content_returned"] is False
 
 def _no_consecutive_user_roles(messages: list) -> bool:
     roles = [m.get("role") for m in messages if isinstance(m, dict)]

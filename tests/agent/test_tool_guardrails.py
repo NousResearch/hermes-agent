@@ -177,6 +177,64 @@ def test_skill_read_tools_are_idempotent_and_block_repeated_identical_success_ou
         assert blocked.code == "idempotent_no_progress_block"
 
 
+def test_read_boundary_releases_reloads_without_resetting_turn_safety():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            loop_caps=LoopCapConfig(max_web_searches=2, max_subagents=2),
+        )
+    )
+    reads = [("skill_view", {"name": "report"}), ("read_file", {"path": "/report.html"})]
+    for tool_name, args in reads + [("skills_list", {"category": "reports"})]:
+        for _ in range(5):
+            controller.after_call(tool_name, args, "unchanged", failed=False)
+    for _ in range(5):
+        controller.after_call("terminal", {"command": "failing"}, '{"error":"failed"}', failed=True)
+    for index in range(2):
+        assert controller.before_call("web_search", {"query": str(index)}).allows_execution
+        assert controller.before_call("delegate_task", {"goal": str(index)}).allows_execution
+    halt = controller.before_call("web_search", {"query": "over cap"})
+    assert halt.code == "loop_web_search_cap"
+
+    large_result = "x" * 1024
+    args = {"command": "previous output"}
+    controller.observe_call("terminal", args, large_result, tool_call_id="old")
+    controller.record_persisted_result("old", "/old-output.txt")
+    assert "old-output.txt" in controller.observe_call("terminal", args, large_result).stub
+    controller.reset_read_tracking()
+
+    assert controller.halt_decision is halt
+    for tool_name, read_args in reads:
+        assert controller.before_call(tool_name, read_args).allows_execution
+        for _ in range(5):
+            controller.after_call(tool_name, read_args, "unchanged", failed=False)
+        assert controller.before_call(tool_name, read_args).code == "idempotent_no_progress_block"
+    assert controller.before_call("skills_list", {"category": "reports"}).code == "idempotent_no_progress_block"
+    assert controller.before_call("terminal", {"command": "failing"}).code == "repeated_exact_failure_block"
+    assert controller.before_call("web_search", {"query": "still over cap"}).code == "loop_web_search_cap"
+    assert controller.before_call("delegate_task", {"goal": "still over cap"}).code == "loop_subagent_cap"
+    assert controller.before_call("delegate_task", {"action": "stop", "subagent_id": "child"}).allows_execution
+
+    # Even an unrelated tool's original output may have been evicted. The
+    # first result is whole, and later stubs must reference the new generation.
+    fresh = controller.observe_call("terminal", args, large_result, tool_call_id="new")
+    assert fresh.stub is None and fresh.notice is None
+    repeated = controller.observe_call("terminal", args, large_result, tool_call_id="repeat")
+    assert "tool_call_id new" in repeated.stub and "old-output.txt" not in repeated.stub
+
+    cycle = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    for _ in range(2):
+        for command in ("a", "b"):
+            cycle.observe_call("terminal", {"command": command}, command)
+    cycle.reset_read_tracking()
+    for lap in range(5):
+        for command in ("a", "b"):
+            observation = cycle.observe_call("terminal", {"command": command}, command)
+            if lap == 0:
+                assert observation.notice is None
+    assert cycle.halt_decision.code == "identical_cycle_halt"
+
+
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)

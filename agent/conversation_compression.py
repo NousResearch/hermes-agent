@@ -1693,6 +1693,7 @@ def _adopt_live_compression_child(
     confirmed = resolver(session_db, parent_session_id)
     if not confirmed or str(confirmed) != child_session_id:
         return None
+    session_changed = agent.session_id != child_session_id
     agent.session_id = child_session_id
     _rebind_session_context(child_session_id)
     _hand_off_metrics_segment(parent_session_id, child_session_id)
@@ -1726,6 +1727,15 @@ def _adopt_live_compression_child(
             agent._memory_manager.on_session_switch(
                 child_session_id, parent_session_id=parent_session_id, reset=False, reason="compression"
             )
+    # Another contender committed this rewrite, but our old tool results were
+    # also replaced. Re-adopting the same tip must not renew read allowances.
+    if session_changed:
+        guardrails = getattr(agent, "_tool_guardrails", None)
+        task_id = getattr(agent, "_current_task_id", None)
+        if isinstance(task_id, str) and task_id:
+            _reset_read_dedup_caches(task_id, session_id=child_session_id, guardrails=guardrails)
+        elif guardrails is not None:
+            guardrails.reset_read_tracking()
     return recovered
 
 
@@ -3442,12 +3452,14 @@ def _warn_summary_or_aux_fallback(agent: Any) -> None:
             )
 
 
-def _reset_read_dedup_caches(task_id: str, *, session_id: str = "") -> None:
+def _reset_read_dedup_caches(task_id: str, *, session_id: str = "", guardrails: Any = None) -> None:
     """Advance the file-read and skill_view repeat-read dedup to a fresh generation after a boundary.
     The mtime map is kept: the first read of each unchanged key returns full content compaction may have
     omitted; later reads return stubs, and stub-hit counters restart at the same boundary (#84857).
     The computer_use screenshot dedup is session-keyed and forgets its last frame for the same reason.
     """
+    if guardrails is not None:
+        guardrails.reset_read_tracking()
     with contextlib.suppress(Exception):
         from tools.file_tools_read_tracking import reset_file_dedup
         reset_file_dedup(task_id)
@@ -3550,7 +3562,12 @@ def _finish_compaction_boundary(
             )
         else:
             compressor._verify_compaction_cleared_threshold = True
-    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
+    # Candidate rejection already proved a changed transcript. Plugin engines
+    # need not expose the built-in compressor's private progress telemetry.
+    if session_commit_succeeded or compacted_in_place or not getattr(agent, "_session_db", None):
+        _reset_read_dedup_caches(
+            task_id, session_id=agent.session_id or "", guardrails=getattr(agent, "_tool_guardrails", None),
+        )
     return _compressed_est
 
 
@@ -4411,7 +4428,9 @@ def _compress_context_via_codex_app_server(
         # armed until a later turn; minimal test engines may lack update_from_response.
         if hasattr(agent.context_compressor, "update_from_response"):
             _record_codex_app_server_usage(agent, result, messages=messages)
-    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
+    _reset_read_dedup_caches(
+        task_id, session_id=agent.session_id or "", guardrails=getattr(agent, "_tool_guardrails", None),
+    )
     logger.info(
         "codex app-server compaction done: session=%s thread=%s turn=%s", _sid,
         getattr(result, "thread_id", None) or "", getattr(result, "turn_id", None) or "",

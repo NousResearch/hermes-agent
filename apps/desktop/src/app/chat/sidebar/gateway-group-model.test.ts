@@ -30,21 +30,35 @@ describe('buildGatewaySessionGroups', () => {
     const groups = buildGatewaySessionGroups(rows, registry, {})
 
     expect(members(groups)).toEqual({
-      [JSON.stringify(['local', 'default'])]: ['a', 'd'],
-      [JSON.stringify(['remote-1', 'default'])]: ['b'],
-      [JSON.stringify([null, 'default'])]: ['c']
+      [JSON.stringify(['local', 'default'])]: ['a', 'c', 'd'],
+      [JSON.stringify(['remote-1', 'default'])]: ['b']
     })
 
     for (const group of groups) {
-      expect(group.sessions.every(session => (session.connection_id || null) === group.connectionId)).toBe(true)
+      expect(group.sessions.every(session => (session.connection_id || registry.primary) === group.connectionId)).toBe(
+        true
+      )
     }
   })
 
-  it('leaves legacy rows without a connection unassigned instead of guessing a gateway', () => {
-    const legacy = buildGatewaySessionGroups(rows, registry, {}).find(group => group.connectionId === null)!
+  it('attributes rows with no connection_id to the primary gateway instead of floating them', () => {
+    const groups = buildGatewaySessionGroups(rows, registry, {})
 
-    expect(legacy.label).toBe(legacy.profile)
-    expect(registry.connections.some(connection => legacy.label.includes(connection.label))).toBe(false)
+    expect(groups.some(group => group.connectionId === null)).toBe(false)
+
+    const primary = groups.find(group => group.connectionId === 'local')!
+
+    expect(primary.sessions.map(session => session.id)).toContain('c')
+  })
+
+  it('follows the registry primary and never rewrites explicit ownership', () => {
+    const remotePrimary = { ...registry, primary: 'remote-1' } as DesktopConnectionsRegistry
+    const groups = buildGatewaySessionGroups(rows, remotePrimary, {})
+
+    // c carried no connection_id → it follows primary='remote-1' and joins b.
+    expect(members(groups)[JSON.stringify(['remote-1', 'default'])]).toEqual(['b', 'c'])
+    // a/d carried an explicit 'local' and are never pulled into the remote group.
+    expect(members(groups)[JSON.stringify(['local', 'default'])]).toEqual(['a', 'd'])
   })
 })
 

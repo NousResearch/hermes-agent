@@ -4839,27 +4839,36 @@ class BasePlatformAdapter(ABC):
                 # wider than the utf16 budget) would never shrink ``remaining``; overshooting beats
                 # a hang.
                 split_at = max(1, _cp_limit)
-            # Don't split inside an inline code span: an unpaired backtick breaks MarkdownV2.
-            candidate = remaining[:split_at]
-            backtick_count = candidate.count("`") - candidate.count("\\`")
-            if backtick_count % 2 == 1:
-                last_bt = candidate.rfind("`")
-                while last_bt > 0 and candidate[last_bt - 1] == "\\":
-                    last_bt = candidate.rfind("`", 0, last_bt)
-                if last_bt > 0:
+            # Don't split inside an inline code span or an open Markdown link:
+            # an unpaired backtick breaks MarkdownV2, and a cut between "[" and
+            # its closing ")" strands a half link in each chunk. One guard's
+            # retreat can re-expose the other's hazard in the shorter candidate
+            # (retreating past the "[" may also cross a backtick), so the guards
+            # settle split_at to a fixed point; it strictly decreases per move,
+            # which guarantees termination.
+            while True:
+                candidate = remaining[:split_at]
+                moved = False
+                backtick_count = candidate.count("`") - candidate.count("\\`")
+                if backtick_count % 2 == 1:
+                    last_bt = candidate.rfind("`")
+                    while last_bt > 0 and candidate[last_bt - 1] == "\\":
+                        last_bt = candidate.rfind("`", 0, last_bt)
+                    if last_bt > 0:
+                        safe_split = max(
+                            candidate.rfind(" ", 0, last_bt), candidate.rfind("\n", 0, last_bt))
+                        if safe_split > _cp_limit // 4:
+                            split_at = safe_split
+                            moved = True
+                link_lb = _open_link_bracket(candidate)
+                if link_lb > 0:
                     safe_split = max(
-                        candidate.rfind(" ", 0, last_bt), candidate.rfind("\n", 0, last_bt))
+                        candidate.rfind(" ", 0, link_lb), candidate.rfind("\n", 0, link_lb))
                     if safe_split > _cp_limit // 4:
                         split_at = safe_split
-            # Don't split inside a Markdown link either: a cut between "[" and the
-            # closing ")" strands a half link in each chunk; retreat to before the "[".
-            candidate = remaining[:split_at]  # re-slice: the backtick guard may have moved it
-            link_lb = _open_link_bracket(candidate)
-            if link_lb > 0:
-                safe_split = max(
-                    candidate.rfind(" ", 0, link_lb), candidate.rfind("\n", 0, link_lb))
-                if safe_split > _cp_limit // 4:
-                    split_at = safe_split
+                        moved = True
+                if not moved:
+                    break
             chunk_body = remaining[:split_at]
             remaining = remaining[split_at:].lstrip()
             full_chunk = prefix + chunk_body

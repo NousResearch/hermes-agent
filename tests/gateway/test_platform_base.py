@@ -1275,6 +1275,25 @@ class TestTruncateMessageUtf16:
                 f"Chunk {i} exceeds 4096 UTF-16 units: {utf16_len(chunk)}"
             )
 
+    def test_link_guard_retreat_keeps_backtick_parity(self):
+        # The link guard's retreat can cross the closing backtick of a code span
+        # sitting right before the "[", re-exposing the parity hazard the backtick
+        # guard had already cleared on the longer candidate — both chunks then
+        # carry an unpaired backtick. The guards must settle together so every
+        # chunk stays balanced (AI review fuzz: 207 head-only unpaired cases).
+        import re
+
+        link = "[Mission Control `issue 7](https://example.invalid/i/7)"
+        head = "This synthetic statement is supported by a retained source\\. `code `"
+        content = head * 54 + link + " `tail"
+        chunks = BasePlatformAdapter.truncate_message(content, 3713, len_fn=utf16_len)
+        assert len(chunks) > 1, chunks
+        for i, chunk in enumerate(chunks):
+            body = re.sub(r"\s*\(\d+/\d+\)$", "", chunk)
+            backticks = body.count("`") - body.count("\\`")
+            assert backticks % 2 == 0, f"chunk {i + 1} carries an unpaired backtick: {body[:40]!r}"
+            assert utf16_len(chunk) <= 3713
+
     def test_utf16_split_keeps_a_formatted_telegram_link_whole(self):
         # Telegram MarkdownV2 output: prose dots escaped ("source\."), brackets in
         # the link left raw. The 4096-10-4 UTF-16 budget lands inside the label and

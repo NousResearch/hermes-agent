@@ -2,6 +2,7 @@
 gateway forwarding.
 """
 
+import asyncio
 import contextlib
 import logging
 import inspect
@@ -386,7 +387,7 @@ async def _forward_cron_fire_to_gateway(
     drops the fire with 200: retrying into an operator-stopped gateway can never succeed.
     """
     _profile_name, home = _cron_profile_home(profile)
-    url = _gateway_fire_endpoint(_profile_name, home)
+    url = await asyncio.to_thread(_gateway_fire_endpoint, _profile_name, home)
     import httpx
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:

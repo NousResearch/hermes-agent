@@ -4,18 +4,23 @@ import type { SessionCreateResponse } from '@/types/hermes'
 
 type RequestGateway = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 
-/** A backend predating #122899 (contract without `cwd_explicit`) rejects the
- *  whole create at admission (`tui_gateway/contracts/registry.py::validate_params`,
- *  code 4000, handler never runs) — e.g. a Hermes Cloud backend behind a
- *  Desktop that updates from main (#128971). Those backends always honoured the
- *  client `cwd`, so resending without the flag reproduces their behaviour.
+/** A backend predating a `session.create` field rejects the whole create at
+ *  admission (`tui_gateway/contracts/registry.py::validate_params`, code 4000,
+ *  handler never runs) — e.g. a Hermes Cloud backend behind a Desktop that
+ *  updates from main (#128971). Each field below is safe to drop for them:
+ *  - `cwd_explicit` (#122899): those backends always honoured the client `cwd`.
+ *  - `service_tier` (Ultrafast): `fast` still rides, so they get Priority.
  *  Matched on the stable prefix, not `isOutOfSyncRpcParams`: v0.21.3 already
  *  rejects but predates the "out of sync" suffix.
- *  Delete once no supported backend predates #122899. */
-const CWD_EXPLICIT_REJECTED = /invalid params for session\.create: cwd_explicit:/
+ *  Delete a field once no supported backend predates it. */
+const DROPPABLE_CREATE_FIELDS = ['cwd_explicit', 'service_tier'] as const
 
-function rejectsCwdExplicit(params: Record<string, unknown>, error: unknown): boolean {
-  return 'cwd_explicit' in params && CWD_EXPLICIT_REJECTED.test(error instanceof Error ? error.message : String(error))
+function rejectedField(params: Record<string, unknown>, error: unknown): string | undefined {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return DROPPABLE_CREATE_FIELDS.find(
+    field => field in params && message.includes(`invalid params for session.create: ${field}:`)
+  )
 }
 
 /** `session.create` on the captured owner route (or the window's gateway). */
@@ -37,15 +42,22 @@ export async function createGatewaySession(
         )
       : requestGateway<SessionCreateResponse>('session.create', requestParams)
 
-  try {
-    return await send(params)
-  } catch (error) {
-    if (!rejectsCwdExplicit(params, error)) {
-      throw error
+  // One resend per dropped field: a backend predating both rejects them one at a time.
+  const create = async (requestParams: Record<string, unknown>): Promise<SessionCreateResponse> => {
+    try {
+      return await send(requestParams)
+    } catch (error) {
+      const field = rejectedField(requestParams, error)
+
+      if (!field) {
+        throw error
+      }
+
+      const { [field]: _dropped, ...compatible } = requestParams
+
+      return create(compatible)
     }
-
-    const { cwd_explicit: _cwdExplicit, ...compatible } = params
-
-    return send(compatible)
   }
+
+  return create(params)
 }

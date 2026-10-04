@@ -783,6 +783,7 @@ All compression settings live in `config.yaml` (no environment variables).
 ```yaml
 compression:
   enabled: true                                     # Toggle compression on/off
+  checkpoint_required: false                        # Fail closed before any lossy compaction unless an active memory provider committed a pre-compress checkpoint — see below
   progress_notices: false                           # Opt-in: deliver routine compression progress notices to chat platforms — see below
   threshold: 0.50                                   # Compress at this % of context limit
   threshold_tokens: null                            # Absolute token cap (optional) — takes lower of ratio vs absolute
@@ -812,6 +813,10 @@ auxiliary:
 :::info Legacy config migration
 Older configs with `compression.summary_model`, `compression.summary_provider`, and `compression.summary_base_url` are automatically migrated to `auxiliary.compression.*` on first load (config version 17). No manual action needed.
 :::
+
+`checkpoint_required` (default `false`) makes automatic compression **fail closed**. Compaction is lossy: anything the transcript carried but never wrote to a durable place is gone after the summary replaces it. With the gate armed, Hermes refuses any lossy rewrite — including the ones it does not perform itself — until an active memory provider advertising the pre-compress checkpoint contract (API v2) reports its checkpoint committed. If no such provider can, the compaction errors with `BLOCKED_MISSING_PREREQUISITE`, the uncompressed transcript is preserved, and the attempt can be retried once the store recovers.
+
+The gate binds to every compaction authority, not just the Hermes summarizer: server-side native compaction (`compression.codex_responses_native`) is suppressed while it is armed, post-turn micro-compaction (`compression.micro_compact`) is forced off at agent init, and `codex_app_server` API mode is refused at agent init — the codex agent compacts its own thread with no truthful pre-compaction boundary, so a required checkpoint cannot be guaranteed there. It needs a provider that implements the contract and, because a memory manager holds one external provider, that provider is the one named in `memory.provider` — see [Memory Provider Plugins → Pre-Compress Checkpoints](/developer-guide/memory-provider-plugin#pre-compress-checkpoints-fail-closed) for the provider-side API, and `tests/agent/test_pre_compress_checkpoint_contract.py` for the host contract.
 
 `progress_notices` (default `false`) controls whether **routine** compression progress statuses reach chat platforms (Telegram, Discord, Slack, etc.). By design, automatic compression is silent on chat surfaces — it runs in the background with server-side logging only. Set `progress_notices: true` to opt into seeing the routine lifecycle on chat platforms: the "Compacting context…" start notice, preflight/pre-API compression triggers, idle compaction, retry progress ("Compressed 30 → 12 messages, retrying…"), and the "Context compaction complete" notice. The gate is scoped to compression statuses only — unrelated operational noise (auxiliary model failures, provider rate-limit/retry chatter) stays suppressed either way. Compression **failure** notices and manual `/compress` feedback are always visible regardless of this setting. Editing this value on a running gateway takes effect on the next message.
 

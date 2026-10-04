@@ -596,6 +596,7 @@ Hermes 自动压缩长对话以保持在模型的上下文窗口内。压缩摘�
 ```yaml
 compression:
   enabled: true                                     # 开启/关闭压缩
+  checkpoint_required: false                        # 压缩前必须先完成持久检查点，否则拒绝任何有损压缩 —— 见下文
   threshold: 0.50                                   # 在上下文限制的此百分比时压缩
   target_ratio: 0.20                                # 保留为最近尾部的阈值分数
   protect_last_n: 20                                # 保持未压缩的最少最近消息数
@@ -614,6 +615,10 @@ auxiliary:
 :::info 旧版配置迁移
 带有 `compression.summary_model`、`compression.summary_provider` 和 `compression.summary_base_url` 的旧版配置在首次加载时自动迁移到 `auxiliary.compression.*`（配置版本 17）。无需手动操作。
 :::
+
+`checkpoint_required`（默认 `false`）让自动压缩**失败即关闭（fail closed）**。压缩是有损的：transcript 里存在、但从未写到持久位置的事实，会在摘要替换原文后消失。开启该闸门后，Hermes 会拒绝任何有损重写 —— 包括它自己不执行的那些 —— 直到某个启用了「压缩前检查点」契约（API v2）的记忆 provider 确认检查点已提交。若没有任何 provider 能做到，压缩会以 `BLOCKED_MISSING_PREREQUISITE` 报错，未压缩的 transcript 被保留，待存储恢复后可重试。
+
+该闸门约束**所有**压缩权威，而不只是 Hermes 摘要器：开启期间服务端原生压缩（`compression.codex_responses_native`）被抑制，轮次后的微压缩（`compression.micro_compact`）在 agent 初始化时被强制关闭，`codex_app_server` 模式在初始化时直接拒绝（codex agent 自行压缩其线程，不存在可信的「压缩前」边界）。它需要实现了该契约的 provider；由于一个 memory manager 只持有单个外部 provider，承担检查点的就是 `memory.provider` 指定的那个 —— provider 侧 API 见 [记忆 Provider 插件 → 压缩前检查点](/developer-guide/memory-provider-plugin#pre-compress-checkpoints-fail-closed)，宿主契约见 `tests/agent/test_pre_compress_checkpoint_contract.py`。
 
 `hygiene_hard_message_limit` 是仅限 gateway 的**预压缩安全阀**。它的存在是为了打破一个死循环：当超大会话的 API 调用持续断开时，gateway 永远收不到 token 使用数据，基于 token 的阈值因此无法触发，于是 transcript 持续增长、断开愈发严重。这个基于消息数的下限仅凭消息数量触发（无论 API 是否失败，消息数始终已知），强制压缩以恢复会话。默认 `5000` —— 远高于任何正常会话，包括做数千次短轮次的大上下文（1M+）模型，它们早就在 token 阈值处压缩了。对于异常平台可调得更高；要强制更积极的压缩则调低。在运行中的 gateway 上编辑此值将在下一条消息时生效（见下文）。
 

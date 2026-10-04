@@ -162,7 +162,13 @@ def prepare_runtime(uv: Path, python: Path, root: Path, *, offline: bool = False
             print("Preparing the isolated Hermes runtime…", file=sys.stderr, flush=True)
             executable = stage_runtime(uv, python, environment, project=project, offline=offline, cache=cache)
             (environment / ".lease-managed").touch()
-            _write(environment / "pm-runtime.json", {"inputs": identity})
+            from pm.environments import site_packages as _site_packages
+
+            _write(environment / "pm-runtime.json", {
+                "inputs": identity,
+                "python": executable.relative_to(environment).as_posix(),
+                "sitePackages": _site_packages(environment).relative_to(environment).as_posix(),
+            })
             _write(selected, {"inputs": identity, "generation": generation.as_posix()})
         except BaseException:
             shutil.rmtree(environment, ignore_errors=True)

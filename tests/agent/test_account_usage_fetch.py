@@ -386,16 +386,42 @@ class _XaiClient:
         return httpx.Response(status, request=request, json=self._payloads.get(url, {}))
 
 
-def _patch_xai(monkeypatch, *, token=_XAI_FAKE_TOKEN, statuses=None, payloads=None):
+class _XaiCalls(list):
+    """HTTP calls, plus the resolver kwargs and pool peeks the fetcher made."""
+
+    def __init__(self):
+        super().__init__()
+        self.resolve_kwargs, self.peeks = [], []
+
+
+class _PeekOnlyPool:
+    """Exposes only ``peek``: a select/refresh/persist call would raise AttributeError."""
+
+    def __init__(self, entry, peeks):
+        self._entry, self._peeks = entry, peeks
+
+    def peek(self):
+        self._peeks.append(True)
+        return self._entry
+
+
+def _patch_xai(monkeypatch, *, token=_XAI_FAKE_TOKEN, statuses=None, payloads=None, pool_entry=None,
+               resolve_error=None):
     from hermes_cli.auth import AuthError
 
-    def _resolve(**_kw):
+    calls = _XaiCalls()
+
+    def _resolve(**kw):
+        calls.resolve_kwargs.append(kw)
+        if resolve_error is not None:
+            raise resolve_error
         if token is None:
             raise AuthError("not signed in", provider="xai-oauth", code="missing")
         return {"provider": "xai-oauth", "api_key": token}
 
     monkeypatch.setattr("hermes_cli.auth_xai.resolve_xai_oauth_runtime_credentials", _resolve)
-    calls = []
+    monkeypatch.setattr("agent.credential_pool.load_pool",
+                        lambda provider: _PeekOnlyPool(pool_entry if provider == "xai-oauth" else None, calls.peeks))
     payloads = payloads if payloads is not None else {
         _XAI_BILLING: _XAI_BILLING_PAYLOAD, _XAI_SETTINGS: {"subscription_tier_display": "SuperGrok"},
     }
@@ -454,6 +480,50 @@ def test_xai_oauth_without_token_returns_none(monkeypatch):
 
     assert fetch_account_usage("xai-oauth") is None
     assert calls == []
+
+
+def test_xai_oauth_usage_never_refreshes_the_singleton(monkeypatch):
+    calls = _patch_xai(monkeypatch)
+
+    assert fetch_account_usage("xai-oauth").available
+    assert calls.resolve_kwargs and all(kw.get("refresh_if_expiring") is False for kw in calls.resolve_kwargs)
+    assert calls.peeks == []  # live singleton token wins; the pool is not consulted
+
+
+def test_xai_oauth_pool_only_login_uses_peeked_access_token(monkeypatch):
+    from types import SimpleNamespace
+
+    pooled = "pooled-xai-access-token"
+    calls = _patch_xai(monkeypatch, token=None, pool_entry=SimpleNamespace(access_token=pooled))
+
+    snapshot = fetch_account_usage("xai-oauth")
+
+    assert snapshot is not None and snapshot.available
+    assert calls.peeks == [True]
+    assert _XAI_BILLING in {url for url, _ in calls}
+    assert all(h["Authorization"] == f"Bearer {pooled}" for _, h in calls)
+    assert pooled not in "\n".join(render_account_usage_lines(snapshot))
+
+
+@pytest.mark.parametrize("entry", [None, "empty"])
+def test_xai_oauth_no_singleton_and_no_pool_token_returns_none(monkeypatch, entry):
+    from types import SimpleNamespace
+
+    pool_entry = SimpleNamespace(access_token="") if entry == "empty" else None
+    calls = _patch_xai(monkeypatch, token=None, pool_entry=pool_entry)
+
+    assert fetch_account_usage("xai-oauth") is None
+    assert calls == [] and calls.peeks == [True]
+
+
+def test_xai_oauth_unexpected_resolver_error_fails_open_without_peeking(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = _patch_xai(monkeypatch, resolve_error=TimeoutError("auth lock"),
+                       pool_entry=SimpleNamespace(access_token="other-account-token"))
+
+    assert fetch_account_usage("xai-oauth") is None
+    assert calls == [] and calls.peeks == []
 
 
 @pytest.mark.parametrize("provider", ["openai-codex", "xai"])

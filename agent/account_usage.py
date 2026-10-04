@@ -711,15 +711,28 @@ def _xai_billing_snapshot(billing: dict, plan: Optional[str]) -> AccountUsageSna
 
 def _fetch_xai_oauth_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
     """SuperGrok weekly pool. No credential → None (``/usage`` still shows session tokens); any billing failure →
-    an unavailable line. Never raises. The live session's own token wins so a pooled login reports its own account."""
+    an unavailable line. Never raises. The live session's own token wins so a pooled login reports its own account.
+    Read-only: a display path never refreshes, rotates, or persists a credential."""
     token = str(api_key or "").strip()
     if not token:
+        from hermes_cli.auth import AuthError
+
         try:
             from hermes_cli.auth_xai import resolve_xai_oauth_runtime_credentials
-            token = str(resolve_xai_oauth_runtime_credentials().get("api_key") or "").strip()
-        except Exception as exc:  # AuthError (signed out) or a failed refresh
+            token = str(resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False).get("api_key") or "").strip()
+        except AuthError as exc:  # signed out of the singleton; pool-only logins fall through to the peek
+            logger.debug("xai-oauth ▸ /usage no singleton credential (%s)", type(exc).__name__)
+        except Exception as exc:
             logger.debug("xai-oauth ▸ /usage no credential (%s)", type(exc).__name__)
             return None
+        if not token:
+            try:
+                from agent.credential_pool import load_pool
+                entry = load_pool("xai-oauth").peek()
+            except Exception as exc:
+                logger.debug("xai-oauth ▸ /usage pool peek failed (%s)", type(exc).__name__)
+                return None
+            token = str(getattr(entry, "access_token", None) or "").strip()
         if not token:
             return None
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json",

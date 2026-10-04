@@ -26,6 +26,18 @@
 #     [-NoUi]               headless (tests); default shows a progress window
 #     [-NoMarkerCleanup]    leave .hermes-update-in-progress in place (tests)
 #     [-ProbeTimeoutSeconds <n>] launcher probe bound, default 60 (tests)
+#     [-HandoffRun <id>]    protocol 2: the run id of the Desktop's bridge claim
+#
+# hermes-handoff-protocol: 2
+# (exact line above: the Desktop reads it to learn this script speaks hand-off
+# protocol 2 -- it accepts -HandoffRun and the -MarkerOp helper below.)
+#
+# HELPER OPS (Electron's only way to mutate the marker; runs right after
+# marker.ps1 loads -- no UI, log rotation, result or relaunch):
+#   powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File windows.ps1
+#     -MarkerOp reclaim|withdraw -InstallRoot <root> [-DesktopPid P] [-HandoffRun R]
+#   prints ONE line (absent | reclaimed | live <pid> | busy | withdrawn |
+#   taken <pid> | foreign) and exits 0; 64 on bad usage.
 #
 # SAFETY POSTURE: both preflight gates FAIL CLOSED. A Desktop that never
 # exits, or a venv shim that never unlocks, aborts the hand-off without
@@ -35,16 +47,16 @@
 # relaunches the Desktop so the user is never left stranded. The one
 # exception is a refused run (exit 2): it changed nothing and writes no result.
 #
-# Marker (contract C1 v2, marker.ps1): claiming HERMES_HOME\.hermes-update-
+# Marker (contract C1 v2 + A7, marker.ps1): claiming HERMES_HOME\.hermes-update-
 # in-progress is the FIRST thing the script does -- before any Add-Type, UI
-# or probe. Started with -DesktopPid it only adopts that Desktop's live
-# bridge claim (compare-and-swap); otherwise it publishes a fresh claim with
-# an exclusive hard link. Any other live owner refuses the run (exit 2,
-# nothing changed, no result file); a dead owner is compare-and-deleted and
-# the claim retried. hermes_cli/update_lock.py's ancestry rule lets our
-# `hermes update` child run under the claim (it may add a line-4 delegate).
-# Release is compare-and-delete and never drops a marker whose delegate is
-# still running.
+# or probe -- and every read/judge/mutate of it happens inside one hold of
+# the kernel lock on "<marker>.lock". With -HandoffRun it only adopts the
+# Desktop's bridge for that run; with only -DesktopPid (an old packaged
+# Desktop) it accepts that Desktop's cmd.exe launcher claim by lineage;
+# otherwise it claims fresh, reclaiming a dead marker. Any other live owner
+# refuses the run (exit 2, nothing changed, no result file). The `hermes
+# update` child is named as the line-4 delegate BEFORE it is resumed.
+# Release deletes our claim, or hands it to a still-running delegate.
 
 param(
     [string]$InstallRoot,
@@ -60,8 +72,15 @@ param(
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
     [switch]$SelfTestMarker,
-    [switch]$SelfTestWorkingDirectory
+    [switch]$SelfTestWorkingDirectory,
+    [string]$HandoffRun = "",
+    [string]$MarkerOp = ""
 )
+
+if ($MarkerOp -and -not $InstallRoot) {
+    [Console]::Error.WriteLine("-MarkerOp needs -InstallRoot")
+    exit 64
+}
 
 if ($PSBoundParameters.ContainsKey("Branch") -and $PSBoundParameters.ContainsKey("Channel")) {
     throw "-Branch and -Channel are mutually exclusive"
@@ -86,6 +105,7 @@ $ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
 function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
     try { Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 } catch {}
+    if ($MarkerOp) { return }   # a helper op's stdout is its one verdict line
     if ($script:ConsoleInput -and [HermesHandoff.ConsoleInput]::Selecting()) { return }
     Write-Host $line
 }
@@ -98,6 +118,9 @@ try { . (Join-Path $PSScriptRoot 'marker.ps1') } catch {
     Write-HandoffLog "Update aborted: $PSScriptRoot\marker.ps1 could not be loaded ($($_.Exception.Message)). Nothing was changed. Repair the installation and try again."
     exit 3
 }
+
+# Helper op (SPEC 6): one verdict line, before any UI, result or relaunch.
+if ($MarkerOp) { exit (Invoke-MarkerOpCli $MarkerOp $DesktopPid $HandoffRun) }
 
 # The Desktop's identity is pinned now: a reused pid later is not "still open".
 $script:DesktopCt = $null
@@ -918,245 +941,7 @@ function Get-StepProgressLogStamp {
     }
 }
 
-if (-not ("HermesUpdateJob" -as [type])) {
-    Add-Type -TypeDefinition @'
-using System;
-using System.Diagnostics;
-using System.IO;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading;
-using Microsoft.Win32.SafeHandles;
-
-public static class HermesUpdateJob {
-    public sealed class StartedProcess {
-        public Process Process;
-        public StreamReader StandardOutput;
-        public StreamReader StandardError;
-        public IntPtr Job;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct SecurityAttributes {
-        public int Length;
-        public IntPtr SecurityDescriptor;
-        public bool InheritHandle;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct StartupInfo {
-        public int Size;
-        public string Reserved;
-        public string Desktop;
-        public string Title;
-        public int X;
-        public int Y;
-        public int XSize;
-        public int YSize;
-        public int XCountChars;
-        public int YCountChars;
-        public int FillAttribute;
-        public int Flags;
-        public short ShowWindow;
-        public short Reserved2;
-        public IntPtr Reserved2Ptr;
-        public IntPtr StdInput;
-        public IntPtr StdOutput;
-        public IntPtr StdError;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ProcessInformation {
-        public IntPtr Process;
-        public IntPtr Thread;
-        public int ProcessId;
-        public int ThreadId;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct BasicAccountingInformation {
-        public long TotalUserTime;
-        public long TotalKernelTime;
-        public long ThisPeriodTotalUserTime;
-        public long ThisPeriodTotalKernelTime;
-        public uint TotalPageFaultCount;
-        public uint TotalProcesses;
-        public uint ActiveProcesses;
-        public uint TotalTerminatedProcesses;
-    }
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr CreateJobObject(IntPtr attributes, string name);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool CreatePipe(out IntPtr read, out IntPtr write, ref SecurityAttributes attributes, int size);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool SetHandleInformation(IntPtr handle, int mask, int flags);
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr CreateFile(
-        string fileName, uint desiredAccess, uint shareMode, ref SecurityAttributes attributes,
-        uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile
-    );
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool CreateProcess(
-        string applicationName, StringBuilder commandLine,
-        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles,
-        int creationFlags, IntPtr environment, string currentDirectory,
-        ref StartupInfo startupInfo, out ProcessInformation processInformation
-    );
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern uint ResumeThread(IntPtr thread);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool QueryInformationJobObject(
-        IntPtr job,
-        int informationClass,
-        out BasicAccountingInformation information,
-        uint informationLength,
-        IntPtr returnLength
-    );
-
-    [DllImport("kernel32.dll", EntryPoint = "QueryInformationJobObject", SetLastError = true)]
-    private static extern bool QueryInformationJobObjectRaw(
-        IntPtr job, int informationClass, IntPtr information, uint informationLength, IntPtr returnLength);
-
-    [DllImport("kernel32.dll")]
-    private static extern bool CloseHandle(IntPtr handle);
-
-    // Pids still assigned to the job (JobObjectBasicProcessIdList).
-    public static int[] ProcessIds(IntPtr job) {
-        if (job == IntPtr.Zero) return new int[0];
-        const int capacity = 1024;
-        int size = 8 + IntPtr.Size * capacity;
-        IntPtr buffer = Marshal.AllocHGlobal(size);
-        try {
-            Marshal.WriteInt64(buffer, 0, 0);
-            if (!QueryInformationJobObjectRaw(job, 3, buffer, (uint)size, IntPtr.Zero)) return new int[0];
-            int count = Marshal.ReadInt32(buffer, 4);
-            int[] ids = new int[count];
-            for (int i = 0; i < count; i++) ids[i] = (int)Marshal.ReadIntPtr(buffer, 8 + i * IntPtr.Size).ToInt64();
-            return ids;
-        } finally { Marshal.FreeHGlobal(buffer); }
-    }
-
-    // CPU time plus I/O bytes the job's processes have spent so far
-    // (JobObjectBasicAndIoAccountingInformation: 48-byte basic accounting,
-    // then IO_COUNTERS). Any change is progress; -1 when unavailable.
-    public static long Activity(IntPtr job) {
-        if (job == IntPtr.Zero) return -1;
-        const int size = 96;
-        IntPtr buffer = Marshal.AllocHGlobal(size);
-        try {
-            if (!QueryInformationJobObjectRaw(job, 8, buffer, size, IntPtr.Zero)) return -1;
-            return Marshal.ReadInt64(buffer, 0) + Marshal.ReadInt64(buffer, 8)
-                + Marshal.ReadInt64(buffer, 72) + Marshal.ReadInt64(buffer, 80) + Marshal.ReadInt64(buffer, 88);
-        } finally { Marshal.FreeHGlobal(buffer); }
-    }
-
-    public static StartedProcess StartAssigned(string executable, string arguments) {
-        IntPtr job = IntPtr.Zero;
-        IntPtr outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
-        IntPtr errRead = IntPtr.Zero, errWrite = IntPtr.Zero;
-        IntPtr nullInput = new IntPtr(-1);
-        ProcessInformation pi = new ProcessInformation();
-        try {
-            job = CreateJobObject(IntPtr.Zero, null);
-            if (job == IntPtr.Zero) throw new InvalidOperationException("CreateJobObject failed");
-            SecurityAttributes sa = new SecurityAttributes();
-            sa.Length = Marshal.SizeOf(typeof(SecurityAttributes));
-            sa.InheritHandle = true;
-            if (!CreatePipe(out outRead, out outWrite, ref sa, 0) ||
-                !CreatePipe(out errRead, out errWrite, ref sa, 0))
-                throw new InvalidOperationException("CreatePipe failed");
-            if (!SetHandleInformation(outRead, 1, 0) || !SetHandleInformation(errRead, 1, 0))
-                throw new InvalidOperationException("SetHandleInformation failed");
-            // Steps read NUL, never the hand-off console. A step that sees a
-            // console asks its question into the captured stdout, where the
-            // user cannot see it, and waits for an answer that never comes.
-            nullInput = CreateFile("NUL", 0x80000000, 0x00000003, ref sa, 3, 0, IntPtr.Zero);
-            if (nullInput == new IntPtr(-1))
-                throw new InvalidOperationException("CreateFile(NUL) failed");
-
-            StartupInfo si = new StartupInfo();
-            si.Size = Marshal.SizeOf(typeof(StartupInfo));
-            si.Flags = 0x00000100; // STARTF_USESTDHANDLES
-            si.StdInput = nullInput;
-            si.StdOutput = outWrite;
-            si.StdError = errWrite;
-            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
-            if (!CreateProcess(executable, commandLine, IntPtr.Zero, IntPtr.Zero, true,
-                    0x00000004 | 0x08000000, IntPtr.Zero, null, ref si, out pi))
-                throw new InvalidOperationException("CreateProcess failed");
-            if (!AssignProcessToJobObject(job, pi.Process)) {
-                TerminateProcess(pi.Process, 1);
-                throw new InvalidOperationException("AssignProcessToJobObject failed");
-            }
-
-            Process process = Process.GetProcessById(pi.ProcessId);
-            // Force Process to open its own stable query handle before the raw
-            // CreateProcess handle is closed; PS 5.1 otherwise reports a null
-            // ExitCode after fast children have already disappeared.
-            IntPtr stableProcessHandle = process.Handle;
-            StreamReader stdout = new StreamReader(new FileStream(
-                new SafeFileHandle(outRead, true), FileAccess.Read, 4096, false), Encoding.UTF8);
-            StreamReader stderr = new StreamReader(new FileStream(
-                new SafeFileHandle(errRead, true), FileAccess.Read, 4096, false), Encoding.UTF8);
-            outRead = IntPtr.Zero;
-            errRead = IntPtr.Zero;
-            CloseHandle(outWrite); outWrite = IntPtr.Zero;
-            CloseHandle(errWrite); errWrite = IntPtr.Zero;
-            if (ResumeThread(pi.Thread) == 0xffffffff)
-                throw new InvalidOperationException("ResumeThread failed");
-            return new StartedProcess { Process = process, StandardOutput = stdout, StandardError = stderr, Job = job };
-        } catch {
-            if (pi.Process != IntPtr.Zero) TerminateProcess(pi.Process, 1);
-            if (job != IntPtr.Zero) CloseHandle(job);
-            throw;
-        } finally {
-            if (pi.Thread != IntPtr.Zero) CloseHandle(pi.Thread);
-            if (pi.Process != IntPtr.Zero) CloseHandle(pi.Process);
-            if (outRead != IntPtr.Zero) CloseHandle(outRead);
-            if (outWrite != IntPtr.Zero) CloseHandle(outWrite);
-            if (errRead != IntPtr.Zero) CloseHandle(errRead);
-            if (errWrite != IntPtr.Zero) CloseHandle(errWrite);
-            if (nullInput != new IntPtr(-1)) CloseHandle(nullInput);
-        }
-    }
-
-    public static bool TerminateAndWait(IntPtr job, uint exitCode, int timeoutMs) {
-        if (job == IntPtr.Zero || !TerminateJobObject(job, exitCode)) return false;
-        Stopwatch clock = Stopwatch.StartNew();
-        BasicAccountingInformation information;
-        do {
-            if (!QueryInformationJobObject(
-                    job, 1, out information,
-                    (uint)Marshal.SizeOf(typeof(BasicAccountingInformation)),
-                    IntPtr.Zero)) return false;
-            if (information.ActiveProcesses == 0) return true;
-            Thread.Sleep(50);
-        } while (clock.ElapsedMilliseconds < timeoutMs);
-        return false;
-    }
-
-    public static void Close(IntPtr job) {
-        if (job != IntPtr.Zero) CloseHandle(job);
-    }
-}
-'@
-}
+. (Join-Path $PSScriptRoot 'update-job.ps1')
 
 function Step-PipeDrain($Reader, [ref]$Task, $Buffer, $Sink, [ref]$Moved) {
     # Advance one redirected pipe by whatever has already arrived, without
@@ -1232,11 +1017,19 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
         if ($null -eq $savedPythonUnbuffered) { Remove-Item Env:PYTHONUNBUFFERED -ErrorAction SilentlyContinue } else { $env:PYTHONUNBUFFERED = $savedPythonUnbuffered }
     }
     $proc = $started.Process
-    # C1 rule 6: the update child is the marker's delegate from its first
-    # instant. Killed before that child takes the update lock (about a second
-    # of Python start-up), this script would otherwise leave a marker that
-    # reads DEAD while the update goes on.
-    if ($Tag -eq 'update') { Add-MarkerDelegate @($proc.Id) }
+    # C1 rule 6 + SPEC 5: the update child is the marker's delegate from its
+    # first instruction. It is still SUSPENDED here (and its job kills it if
+    # this script dies first), so no update work can run before the delegate
+    # line is published under the marker lock -- and none runs when it can't be.
+    if ($Tag -eq 'update') {
+        $delegate = Add-MarkerDelegate @($proc.Id)
+        if ($delegate -notin @('published', 'kept')) {
+            [void][HermesUpdateJob]::TerminateAndWait($started.Job, 1, 5000)
+            [HermesUpdateJob]::Close($started.Job)
+            throw "could not name the update process as the update marker's delegate ($delegate); nothing was run"
+        }
+    }
+    [HermesUpdateJob]::Resume($started)
     $stdoutReader = $started.StandardOutput
     $stderrReader = $started.StandardError
     $job = $started.Job
@@ -1338,6 +1131,7 @@ function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
             }
         }
         if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
+        Update-MarkerHeartbeat
     }
     # Bounded overload deliberately: the argument-less overload also waits on
     # redirected streams, which is the very wait we just bounded. HasExited is
@@ -1882,7 +1676,7 @@ try {
         # A failed job termination means a mutating descendant may still own
         # checkout/install files. Keep the marker LIVE for as long as a
         # surviving member does and do not relaunch into that state.
-        Add-MarkerDelegate $script:UnquiescedPids
+        [void](Add-MarkerDelegate $script:UnquiescedPids)
         if ($script:Committed) {
             # C3: the update landed; only a follow-up step outlived its cancellation.
             $finalCode = 0
@@ -1905,7 +1699,7 @@ try {
         }
         $manualAction = $finalCode -eq 0 -and $script:ManualFollowup
         Write-Result ($finalCode -eq 0) $finalCode $finalMsg $manualAction
-        Remove-MarkerIfOwned
+        Invoke-MarkerRelease
         if ($finalCode -ne 0) {
             Show-ErrorFinale $finalMsg
             Close-ProgressWindow

@@ -180,6 +180,8 @@ def _optout_action(row: dict, playbook: dict[str, dict], subject_id: str, dossie
         "confirm_first": confirm_first,
         "optout_url": row.get("optout_url"),
         "clears_children": row.get("clears_children") or [],
+        "disclosure_fields": row.get("disclosure_fields") or [],
+        "needs_operator_input": row.get("needs_operator_input") or [],
         "steps": steps,
         "after": f"python3 scripts/pdd.py record {subject_id} {bid} submitted "
                  f"--disclosed <field>... --channel web_form",
@@ -198,6 +200,11 @@ def _optout_action(row: dict, playbook: dict[str, dict], subject_id: str, dossie
     if req.get("captcha"):
         action["note"] = ("CAPTCHA-gated: attempt with the configured browser backend once; if it "
                           "does not clear, record blocked (do NOT retry-loop or bypass)")
+    if action["needs_operator_input"]:
+        action["operator_boundary"] = (
+            "Begin only with disclosure_fields; stop before disclosing unplanned fields and queue "
+            "one consolidated human decision unless explicit owner approval is already recorded."
+        )
     return action, None
 
 

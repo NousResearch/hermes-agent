@@ -979,6 +979,101 @@ class GatewayNotificationsMixin:
             except Exception:
                 logger.warning("Planned-restart notification remains pending", exc_info=True)
 
+    def _profile_runs_incident_route(self, profile, incident_routes) -> bool:
+        """True when a served profile's own config routes through an affected provider:model.
+
+        The wall notice is scoped to the profiles it can actually hurt: a profile running an
+        unrelated route keeps quiet.  Doubt resolves to True — an unreadable config or an older
+        marker without route info must not swallow the notice.
+        """
+        from agent.provider_wall_notice import route_pairs, routes_affected
+
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            home = None if profile is None else (
+                getattr(self, "_served_profile_homes", None) or {}).get(profile)
+            if profile is None or home is None:
+                config = load_config_readonly()
+            else:
+                from gateway.run import _profile_runtime_scope
+
+                with _profile_runtime_scope(Path(home), hydrate_secrets=False):
+                    config = load_config_readonly()
+        except Exception:
+            logger.debug(
+                "Provider wall notice: could not read the routes of %s — notifying",
+                profile or "the launch profile", exc_info=True)
+            return True
+        return routes_affected(route_pairs(config or {}), incident_routes)
+
+    async def _replay_pending_provider_wall_notice(self, *, skip_chats: Optional[set] = None) -> None:
+        """Fan a pending provider-wall notice out to every served profile's home channel.
+
+        The agent records the incident (``agent.provider_wall_notice``) the moment it leaves a
+        walled primary; whichever process owns the adapters delivers it here, so a wall hit by a
+        cron job or a kanban worker also reaches the operator's channels. Owed targets come from
+        CONFIG, not live transports: a removed home or an opted-out platform must not keep the
+        marker alive forever. One message per home CHAT (several served profiles can share a chat),
+        and the marker is cleared only once every owed target has been served.
+        """
+        from agent import provider_wall_notice as wall
+        from gateway.warning_notifications import warning_notifications_enabled
+
+        payload = wall.read_pending()
+        if not payload:
+            return
+        text = str(payload.get("text") or "")
+        if not text:
+            wall.clear_pending()
+            return
+
+        skipped = set(skip_chats or ())
+        incident_routes = payload.get("routes")
+        delivered = {
+            tuple(str(part) if part is not None else "" for part in target)
+            for target in (payload.get("delivered_targets") or [])
+        }
+        owed = {
+            _served_notice_target_key(
+                profile, platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
+            for profile, platform, cfg in self._served_home_channel_configs()
+            if cfg.home_channel and cfg.home_channel.chat_id
+        }
+        notified_chats: set = set()
+        for profile, platform, _platform_cfg, home, transport in self._served_home_channel_transports():
+            target = _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id)
+            chat = _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
+            if target in delivered:
+                continue
+            if chat in skipped:
+                # The chat that hit the wall already got the notice in-band — do not send it twice.
+                delivered.add(target)
+                continue
+            if not self._profile_runs_incident_route(profile, incident_routes):
+                # A profile on an unrelated model/provider is not paged for someone else's wall.
+                delivered.add(target)
+                continue
+            if chat in notified_chats:
+                delivered.add(target)
+                continue
+            if not warning_notifications_enabled(platform.value):
+                logger.info(
+                    "Provider wall notice suppressed for %s: diagnostics are muted for this platform",
+                    platform.value,
+                )
+                delivered.add(target)
+                continue
+            if await self._send_home_channel_message(
+                platform, home, transport, text, "Provider wall notice failed for %s:%s: %s",
+            ):
+                notified_chats.add(chat)
+                delivered.add(target)
+        wall.mark_delivered(delivered)
+        if owed <= delivered:
+            wall.clear_pending()
+            logger.info("Provider wall notice delivered to every home channel")
+
     async def _send_home_channel_startup_notifications(
         self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None
     ) -> set[tuple[str, str, Optional[str]]]:

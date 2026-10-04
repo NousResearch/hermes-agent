@@ -1932,6 +1932,37 @@ def _log_fallback_activated(agent, reason, old_model, old_provider, fb_model, fb
     )
 
 
+def _emit_provider_wall_notice(agent, *, reason, reset_at) -> None:
+    """Record the operator-facing wall notice and surface it in the originating chat.
+
+    The incident text (one line per provider:model pair, with status and reset) is written to a
+    marker the gateway fans out to every served home channel; the in-band notice keeps the chat
+    that actually hit the wall equally clear.  Fires once per incident: a repeat of the same wall
+    records nothing and returns None from ``record_provider_wall``.  Never raises — this runs on
+    the retry path of a failing turn and must not mask the provider error.
+    """
+    try:
+        from agent.provider_wall_notice import read_pending, record_provider_wall
+
+        signature = record_provider_wall(agent, reason=reason, reset_at=reset_at)
+        if not signature:
+            return
+        callback = getattr(agent, "notice_callback", None)
+        if callback is None:
+            return
+        text = (read_pending() or {}).get("text")
+        if not text:
+            return
+        from agent.credits_tracker import AgentNotice
+
+        callback(AgentNotice(
+            text=text, level="warn", kind="sticky",
+            key=f"provider_wall.{signature}", id=f"provider_wall.{signature}",
+        ))
+    except Exception:
+        logger.debug("provider wall notice skipped", exc_info=True)
+
+
 def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     """Chain exhausted (always False). A non-empty chain walked on a non-rate-limit failure arms a
     short cooldown so next turn's restore_primary_runtime stays gated instead of replaying the whole
@@ -2079,6 +2110,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
+    if not getattr(agent, "_fallback_activated", False):
+        # Leaving a walled primary: record the incident for the operator. The marker dedupes per
+        # incident, so a wall that persists for hours notifies once (agent/provider_wall_notice).
+        _emit_provider_wall_notice(agent, reason=reason, reset_at=reset_at)
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
             return _fallback_chain_exhausted(agent, reason)

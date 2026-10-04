@@ -4809,6 +4809,21 @@ def _drain_restart_safe_cron_deliveries(adapters, loop, runner=None) -> None:
             cron_scheduler.drain_delivery_queue(profile_adapters, loop)
 
 
+def _housekeeping_provider_wall_notice(runner, loop) -> None:
+    """Drain a pending provider-wall notice onto the gateway loop (housekeeping runs on a thread).
+
+    A wall noticed by a cron job, a kanban worker or a CLI process writes the marker; whichever
+    gateway owns the adapters delivers it, so the notice lands within one housekeeping tick rather
+    than at the next restart. Best-effort: a notice failure must never kill the chore loop.
+    """
+    if runner is None or loop is None:
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(runner._replay_pending_provider_wall_notice(), loop)
+    except Exception:
+        logger.debug("provider wall notice drain failed", exc_info=True)
+
+
 def _start_gateway_housekeeping(
     stop_event: threading.Event, adapters=None, loop=None, interval: int = 60, cron_provider=None, runner=None,
     cron_thread=None,
@@ -4828,6 +4843,11 @@ def _start_gateway_housekeeping(
         # Restart-safe cron workers run outside the gateway cgroup and queue their final send for
         # whichever gateway is live; drained here (not the scheduler tick) so external providers get it too.
         chores.append((1, DRAIN_LABEL, lambda: _drain_restart_safe_cron_deliveries(adapters, loop, runner)))
+        # Same intent as the drain above: a provider wall recorded by another process (cron job,
+        # kanban worker, CLI) reaches the operator's channels on this tick instead of at the next
+        # restart. Returns immediately when there is no marker.
+        chores.append((1, "Provider wall notice drain",
+                       lambda: _housekeeping_provider_wall_notice(runner, loop)))
     chores += [
         (5, "Channel directory refresh", lambda: adapters and _housekeeping_channel_directory(adapters, loop)),
         (60, "Media cache cleanup", _housekeeping_media_caches),

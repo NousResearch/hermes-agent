@@ -942,6 +942,21 @@ gateway:
     hint: "أعد تعبئة الرصيد وأدِر الفوترة في المتصفح — سيتحدّث رصيدك هنا بعد ذلك."
   login:
     free_tier_remaining: "\nما زالت بعض المحادثات على المستوى المجاني؛ استخدم /model في تلك المحادثات للتبديل."
+provider_wall:
+  # Operator notice when a provider route walls (quota, balance, auth, hard rate limit). One line
+  # per provider:model pair, so the wall is legible from any channel instead of only in the chat
+  # that happened to send the failing turn.
+  title_blocked: "⚠️ Provider wall — no usable route: turns keep failing until one recovers"
+  title_partial: "⚠️ Provider wall — {down} route(s) unusable, carrying on {carrying}"
+  row_walled: "{emoji} {provider} · {model} — {detail}{until}"
+  row_cooling: "{emoji} {provider} · {model} — {detail}{until}"
+  row_unknown: "{emoji} {provider} · {model} — {detail}"
+  until_reset: " · resets {when}"
+  until_cooling: " · available again in ~{wait}"
+  scope: "Scope: profile {profile}."
+  remedy: "Remedy: top up the walled account, or run `{cmd}` to pick a usable route."
+
+
 platform:
   whatsapp:
     clarify_other_title: "✏️ أخرى"

@@ -942,6 +942,21 @@ gateway:
     hint: "브라우저에서 충전과 결제 관리를 하면 잔액이 여기에도 곧 반영돼요."
   login:
     free_tier_remaining: "\n일부 채팅은 아직 무료 등급을 사용 중이에요. 해당 채팅에서 /model로 전환하세요."
+provider_wall:
+  # Operator notice when a provider route walls (quota, balance, auth, hard rate limit). One line
+  # per provider:model pair, so the wall is legible from any channel instead of only in the chat
+  # that happened to send the failing turn.
+  title_blocked: "⚠️ Provider wall — no usable route: turns keep failing until one recovers"
+  title_partial: "⚠️ Provider wall — {down} route(s) unusable, carrying on {carrying}"
+  row_walled: "{emoji} {provider} · {model} — {detail}{until}"
+  row_cooling: "{emoji} {provider} · {model} — {detail}{until}"
+  row_unknown: "{emoji} {provider} · {model} — {detail}"
+  until_reset: " · resets {when}"
+  until_cooling: " · available again in ~{wait}"
+  scope: "Scope: profile {profile}."
+  remedy: "Remedy: top up the walled account, or run `{cmd}` to pick a usable route."
+
+
 platform:
   whatsapp:
     clarify_other_title: "✏️ 기타"

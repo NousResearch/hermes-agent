@@ -305,9 +305,13 @@ async function relayAgentsOn(
   labels: Map<string, string>
 ): Promise<RelayAgentRow[] | null> {
   try {
-    const res = await host.requestProfile<{ install_id?: string; profiles?: RosterRow[] }>(connection.route, 'profiles.list', {
-      include_sessions: false
-    })
+    const res = await host.requestProfile<{ install_id?: string; profiles?: RosterRow[] }>(
+      connection.route,
+      'profiles.list',
+      {
+        include_sessions: false
+      }
+    )
 
     const profiles = Array.isArray(res?.profiles) ? res.profiles : []
     const label = labels.get(connection.id) || connection.id
@@ -372,6 +376,16 @@ async function syncRelayRosters() {
 
     if (!isCurrent()) {
       return
+    }
+
+    // A connection removed and re-added under a new id answers from the same
+    // install; remembering the departed id flagged the replacement MISROUTED.
+    const live = new Set(connections.map(connection => connection.id))
+
+    for (const [install, connectionId] of answeringInstall) {
+      if (!live.has(connectionId)) {
+        answeringInstall.delete(install)
+      }
     }
 
     const labels = await connectionLabels()

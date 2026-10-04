@@ -162,6 +162,20 @@ def test_loopback_location_redirect_allowed_without_next_request():
         _run(hook(response))
 
 
+def test_location_header_takes_precedence_over_next_request():
+    """The hook must validate Location even if httpx later exposes another next_request."""
+    import httpx
+
+    with patch("tools.url_safety.is_safe_url", return_value=True), patch(
+        "tools.url_safety.is_always_blocked_url", return_value=True
+    ):
+        hook = _make_mcp_http_redirect_hooks("https://mcp.example.com/v1")[0]
+        response = _real_redirect_response("http://169.254.169.254/latest/meta-data/")
+        response.next_request = httpx.Request("GET", "https://mcp.example.com/safe")
+        with pytest.raises(ValueError, match="metadata|always-blocked|Blocked MCP redirect"):
+            _run(hook(response))
+
+
 def test_non_redirect_response_is_ignored_without_next_request():
     """A plain 200 with no redirect must not trip the guard."""
     import httpx

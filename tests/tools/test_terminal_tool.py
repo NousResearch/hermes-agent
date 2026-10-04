@@ -155,6 +155,27 @@ def test_every_sudo_invocation_is_probed_before_the_prompt_is_skipped(monkeypatc
     assert sudo_stdin == "pw\npw\n"
 
 
+def test_redirections_never_leak_into_the_probe_target(monkeypatch):
+    """The scanner tiles `>`/`2>&1` as words, so a naive space-join would have the backend's
+    `bash -c` probe *run* the user's redirection (`sudo make install > out.log` truncates the
+    file) or die on the partial `2>` (rc 2 reads as "prompt needed" — the 45s stall this fix
+    exists to remove). Redirected spellings must degrade to the root probe (target None)."""
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    terminal_tool.set_sudo_password_callback(None)
+    asked = []
+
+    def _probe(target):
+        asked.append(target)
+        return True
+
+    for command in ("sudo make install > out.log", "sudo tool 2>&1", "sudo -u svc tool 2>&1"):
+        assert terminal_tool_sudo._transform_sudo_command(
+            command, sudo_nopasswd_check=_probe) == (command, None)
+
+    assert asked == [None, None, None]
+
+
 def test_validate_workdir_blocks_shell_metacharacters_in_windows_paths():
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project; rm -rf /")
     assert terminal_tool._validate_workdir(r"C:\Users\Alice\project$(whoami)")

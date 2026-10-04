@@ -310,13 +310,21 @@ def _scan_shell(command: str, background: bool = False) -> Iterator[tuple[str, i
         i = end
 
 
+# Raw spellings carrying these degrade to the root probe: the backend runs the probe through
+# `bash -c`, so a redirection would be *executed* (`sudo make install > out.log` truncates the
+# file), a partial one is a syntax error (`2>&1` scans as `2>` — rc 2 reads as "prompt needed",
+# bringing back the 45s stall), and `$`/backtick would expand under the probe's shell.
+_PROBE_UNSAFE_CHARS = "$`<>|;&"
+
+
 def _sudo_probe_target(words: list[str]) -> str | None:
     """``sudo -n -l`` probe target (the argv that follows ``-l``) for one sudo invocation's
     argument words (raw shell spellings), or None when the spelling is anything but a plain,
     optionally ``-u USER``-prefixed command. The probe must re-ask the exact invocation —
     never a wider one — so env indirection (``sudo env …``), env assignments, sudo options we
-    don't model, or an option-looking command all return None (the caller falls back to the
-    ``sudo -n true`` root probe, i.e. today's behavior)."""
+    don't model, an option-looking command, or any redirection/expansion in the words all
+    return None (the caller falls back to the ``sudo -n true`` root probe, i.e. today's
+    behavior)."""
     if not words:
         return None
     head = words[0]
@@ -333,6 +341,9 @@ def _sudo_probe_target(words: list[str]) -> str | None:
     elif head.startswith("-"):
         return None
     if not command_words or command_words[0] == "env" or _looks_like_env_assignment(command_words[0]):
+        return None
+    spellings = command_words if user is None else [user, *command_words]
+    if any(char in spelling for spelling in spellings for char in _PROBE_UNSAFE_CHARS):
         return None
     prefix = f"-u {user} " if user is not None else ""
     return f"{prefix}-- {' '.join(command_words)}"

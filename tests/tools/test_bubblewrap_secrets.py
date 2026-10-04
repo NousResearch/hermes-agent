@@ -1131,6 +1131,62 @@ class TestLinkedDotEntryIntegration:
 
 
 @needs_bwrap
+class TestLinkedDotEntryCwdIntegration:
+    """Which part of a chain is held depends on where the cwd is."""
+
+    @pytest.fixture
+    def nested_home(self, host_dir, monkeypatch):
+        home = host_dir / "home"
+        _write(home / "dotfiles" / "sub" / "bashrc", "ORIGINAL")
+        (home / "dotfiles" / "bashrc").symlink_to("sub/bashrc")
+        (home / ".bashrc").symlink_to("dotfiles/bashrc")
+        monkeypatch.setenv("HOME", str(home))
+        return home
+
+    def test_only_the_target_is_held_when_the_cwd_is_below_the_middle_link(self, sandbox_root, nested_home, caplog):
+        import logging
+
+        sub = nested_home / "dotfiles" / "sub"
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"):
+            env = BubblewrapEnvironment(cwd=str(sub), timeout=30)
+        try:
+            result = env.execute("echo EVIL >> bashrc")
+            assert result["returncode"] != 0, result["output"]
+            assert env.execute("rm -f bashrc; mv bashrc bashrc.old")["returncode"] != 0
+            assert env.execute("printf ok > other.txt")["returncode"] == 0
+        finally:
+            env.cleanup()
+        assert (sub / "bashrc").read_text().strip() == "ORIGINAL"
+        assert (nested_home / ".bashrc").read_text().strip() == "ORIGINAL"
+        assert (sub / "other.txt").read_text() == "ok"
+        assert not any("is read-only inside the sandbox" in r.getMessage() for r in caplog.records)
+
+    def test_dot_symlink_off_the_allowlist_has_its_target_held_too(self, sandbox_root, nested_home):
+        # The host reads ~/.xprofile at login whether or not a command can see it.
+        _write(nested_home / "dotfiles" / "xprofile", "ORIGINAL")
+        (nested_home / ".xprofile").symlink_to("dotfiles/xprofile")
+        env = BubblewrapEnvironment(cwd=str(nested_home), timeout=30)
+        try:
+            assert env.execute(f"echo EVIL >> {nested_home}/dotfiles/xprofile")["returncode"] != 0
+            assert env.execute(f"ls {nested_home}/.xprofile 2>&1")["returncode"] != 0
+        finally:
+            env.cleanup()
+        assert (nested_home / "dotfiles" / "xprofile").read_text().strip() == "ORIGINAL"
+
+    def test_middle_link_directory_is_held_when_the_cwd_is_that_directory(self, sandbox_root, nested_home):
+        dotfiles = nested_home / "dotfiles"
+        env = BubblewrapEnvironment(cwd=str(dotfiles), timeout=30)
+        try:
+            assert env.execute("rm bashrc && echo EVIL > bashrc")["returncode"] != 0
+            assert env.execute("echo EVIL >> sub/bashrc")["returncode"] != 0
+            assert env.execute("mv sub sub.old")["returncode"] != 0
+        finally:
+            env.cleanup()
+        assert (dotfiles / "bashrc").is_symlink()
+        assert (nested_home / ".bashrc").read_text().strip() == "ORIGINAL"
+
+
+@needs_bwrap
 class TestCoveredDefaultDenyDirIntegration:
     """A bind on ~/.local covers the tmpfs of ~/.local/share below it: the
     layout must not remount a path that is no longer a mount point."""

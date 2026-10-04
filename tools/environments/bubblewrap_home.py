@@ -324,34 +324,30 @@ def _link_chain(path: str) -> tuple[list[str], str | None]:
     return links, current
 
 
-def link_protection(home: str | None, allowlist: tuple[str, ...] | list[str]) -> tuple[str, ...]:
-    """Host paths to hold read-only so the content behind an allowed dot symlink cannot change.
+def link_protection(home: str | None, allowlist: tuple[str, ...] | list[str]) -> tuple[tuple[str, str], ...]:
+    """The parts of the chain behind each allowed dot symlink, as (entry, host path) pairs.
 
     An allowed dot entry is read-only in the sandbox. One that is a symlink
     (a shell rc file kept in a dotfiles directory) is only as fixed as its
-    chain: a command with write access to a directory on the way could
-    swap the target, or replace a middle link with a file, and the host
-    would read the new content at its next login. For each such entry
-    this gives:
+    chain: a command with write access to a part of it could change the
+    target, or replace a middle link with a file, and the host would read
+    the new content at its next login. The parts are:
 
-    - the real path the chain ends at, which the caller binds read-only
-      (a bound file cannot be unlinked or renamed) and whose parents it
-      pins like the parents of a hidden path;
     - the directory that holds each middle link. A symlink cannot be
-      mounted over, so the directory around it is bound read-only.
+      mounted over, so the directory around it is what has to stay fixed;
+    - the real path the chain ends at.
 
     The entry itself, and any link at the top of HOME or of a default-deny
-    directory, lies in a read-only tmpfs and needs nothing. The chain is
-    resolved here, once: the caller keeps the result for the life of the
-    environment, so a link swapped later moves no mount. A path under
-    another one is dropped as covered. The caller decides which of these
-    lie in a writable part of the sandbox; binding one that does not
-    would only show what is hidden.
+    directory, lies in a read-only tmpfs and is no part. Nothing else is
+    left out: whether a command can write to a part, and what to do then,
+    depends on the mounts, which the caller knows. The chain is resolved
+    here, once; the caller keeps the result for the life of the
+    environment, so a link swapped later moves no mount.
     """
     if home is None:
         return ()
     sealed = {home, *(os.path.join(home, rel.replace("/", os.sep)) for rel in DEFAULT_DENY_DIRS)}
-    protected: list[str] = []
+    parts: list[tuple[str, str]] = []
     for unit in allowlist:
         entry = os.path.join(home, unit.replace("/", os.sep))
         if not os.path.islink(entry):
@@ -360,9 +356,9 @@ def link_protection(home: str | None, allowlist: tuple[str, ...] | list[str]) ->
         if real is None or not os.path.lexists(real):
             continue
         for path in [os.path.dirname(link) for link in links if os.path.dirname(link) not in sealed] + [real]:
-            if path not in protected and path != os.sep and not _is_within(home, path):
-                protected.append(path)
-    return tuple(p for p in protected if not any(p != other and _is_within(p, other) for other in protected))
+            if (unit, path) not in parts:
+                parts.append((unit, path))
+    return tuple(parts)
 
 
 def resolve_home_root(home: str) -> str | None:

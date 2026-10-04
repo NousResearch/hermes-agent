@@ -105,6 +105,9 @@ _SYSTEMD_SCOPE_PROBED_AT = 0.0
 # Both verdicts expire: the user bus can vanish after a True (session logout without linger,
 # #110803) and reappear after a False (linger enabled later, #104893).
 _SYSTEMD_SCOPE_PROBE_TTL_SECONDS = 60.0
+# systemd >= 254 expands ``$$``/``${X}`` in a ``--scope`` command line itself unless told not to;
+# older systemd-run rejects the option (and never expanded there), so the probe drops it on rejection.
+_SYSTEMD_RUN_NO_EXPAND = True
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
 _WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
@@ -167,9 +170,11 @@ def _worker_memory_max_bytes() -> int:
 def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> List[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
     ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
-    No ``OOMPolicy=``: transient scopes reject it on systemd <253 (#102486)."""
+    No ``OOMPolicy=``: transient scopes reject it on systemd <253 (#102486).
+    ``--expand-environment=no`` keeps the command byte-identical (#132385)."""
+    no_expand = ["--expand-environment=no"] if _SYSTEMD_RUN_NO_EXPAND else []
     return [
-        binary, "--user", "--scope", "--quiet", "--unit", unit_name, "--collect",
+        binary, "--user", "--scope", "--quiet", *no_expand, "--unit", unit_name, "--collect",
         "--property", "MemoryAccounting=yes",
         "--property", f"MemoryMax={_worker_memory_max_bytes()}",
         "--", *argv,
@@ -248,7 +253,7 @@ def _systemd_run_user_scope_available() -> bool:
 
     Use ``/bin/sh -c 'exit 0'``: NixOS provides ``/bin/sh`` but not ``/bin/true``
     (#105365), regardless of the gateway service's PATH."""
-    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT
+    global _SYSTEMD_SCOPE_AVAILABLE, _SYSTEMD_SCOPE_PROBED_AT, _SYSTEMD_RUN_NO_EXPAND
     verdict = _systemd_scope_cached()
     if verdict is not None:
         return verdict
@@ -267,12 +272,18 @@ def _systemd_run_user_scope_available() -> bool:
                 if binary:
                     # Unique unit avoids collisions; the timeout bounds D-Bus.
                     probe_unit = f"hermes-probe-scope-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-                    result = subprocess.run(
-                        _systemd_scope_argv(binary, probe_unit, "/bin/sh", "-c", "exit 0"),
-                        capture_output=True,
-                        timeout=3,
-                        env=systemd_user_bus_env(),
-                    )
+                    for _attempt in range(2):
+                        result = subprocess.run(
+                            _systemd_scope_argv(binary, probe_unit, "/bin/sh", "-c", "exit 0"),
+                            capture_output=True,
+                            timeout=3,
+                            env=systemd_user_bus_env(),
+                        )
+                        if not (result.returncode and _SYSTEMD_RUN_NO_EXPAND
+                                and b"expand-environment" in (result.stderr or b"")):
+                            break
+                        # systemd < 254 rejects the option: drop it and probe again.
+                        _SYSTEMD_RUN_NO_EXPAND = False
                     available = result.returncode == 0
                     if not available:
                         logger.debug(

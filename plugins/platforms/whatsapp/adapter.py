@@ -57,12 +57,24 @@ def _safe_ints(tokens) -> list:
     return out
 
 
+def _session_dir(extra) -> Path:
+    """Absolute session dir: --session, bridge.pid and every /health ``session`` comparison (gateway and standalone
+    sends) share this one string, or a gateway restarted from another cwd would see its own bridge as foreign."""
+    return Path(os.path.abspath(os.path.expanduser(str((extra or {}).get(
+        "session_path", get_hermes_dir("platforms/whatsapp/session", "whatsapp/session"))))))
+
+
 def _windows_listener_pids(port: int) -> list:
     """PIDs in LISTENING state on ``port`` via netstat (Windows)."""
     from hermes_cli._subprocess_compat import windows_hide_flags
     result = subprocess.run(["netstat", "-ano", "-p", "TCP"], timeout=5, creationflags=windows_hide_flags(), **_RUN_TEXT)
     rows = (line.split() for line in result.stdout.splitlines())
     return _safe_ints(p[4] for p in rows if len(p) >= 5 and p[3] == "LISTENING" and p[1].endswith(f":{port}"))
+
+
+def _port_listener_pids(port: int) -> list:
+    """Listening PIDs on ``port`` for this platform: netstat on Windows, lsof/ss elsewhere."""
+    return _windows_listener_pids(port) if _IS_WINDOWS else _listener_pids_on_port(port)
 
 
 def _pid_looks_like_node_bridge(pid: int) -> bool:
@@ -85,7 +97,7 @@ def _pid_looks_like_node_bridge(pid: int) -> bool:
 def _kill_port_process(port: int) -> None:
     """Kill any node bridge *listening* on the given TCP port (never a client); SIGTERM on POSIX, taskkill /F on Windows."""
     with suppress(Exception):
-        for pid in (_windows_listener_pids(port) if _IS_WINDOWS else _listener_pids_on_port(port)):
+        for pid in _port_listener_pids(port):
             # Killing a mistyped or recycled PID is unrecoverable — verify first.
             if pid <= 0 or not _pid_looks_like_node_bridge(pid):
                 logger.warning("[whatsapp] Not killing PID %s on port %d: process is not a node bridge (or identity unverifiable)", pid, port)
@@ -302,6 +314,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         from hermes_constants import get_hermes_home
         self._profile_home = get_hermes_home()
         self._bridge_process: Optional[subprocess.Popen] = None
+        self._foreign_bridge_session: Optional[str] = None  # set by _reuse_running_bridge when /health names another profile's session
+        self._bridge_probe_timed_out = False  # set by _reuse_running_bridge when the port's holder gave no /health answer
         from .bridge_ownership import standalone_bridge_port
         try:
             # Same resolution as out-of-process sends, so a profile that recorded a port while serving as a
@@ -311,7 +325,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("[whatsapp] %s; using port 3000", exc)
             self._bridge_port = 3000
         self._bridge_script: str = extra.get("bridge_script", str(self._DEFAULT_BRIDGE_DIR / "bridge.js"))
-        self._session_path = Path(extra.get("session_path", get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")))
+        self._session_path = _session_dir(extra)
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         self._dm_policy = str(_extra_or_secret(extra, "dm_policy", "WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         self._allow_from = self._coerce_allow_list(self._select_dm_allowlist(extra, ("WHATSAPP_ALLOWED_USERS",), _wenv))
@@ -341,13 +355,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return getattr(self._http_session, method)(self._bridge_url(path), **kwargs, timeout=aiohttp.ClientTimeout(total=timeout))
 
     async def _probe_bridge_health(self) -> tuple[bool, Any]:
-        """GET /health with a fresh session → ``(http_200, json)``; unparseable 200 body → ``(True, None)``; connection errors propagate."""
+        """GET /health with a fresh session → ``(http_200, json)``; unparseable 200 body → ``(True, None)``; connection errors and timeouts propagate."""
         import aiohttp
         async with aiohttp.ClientSession() as session, session.get(self._bridge_url("health"), timeout=aiohttp.ClientTimeout(total=2)) as resp:
             if resp.status != 200:
                 return False, None
             try:
                 return True, await resp.json()
+            except asyncio.TimeoutError:
+                raise  # a body that never arrives is no answer, the same as headers that never arrive
             except Exception:
                 return True, None
 
@@ -398,9 +414,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _reuse_running_bridge(self, bridge_path: Path) -> bool:
         """Adopt a connected bridge serving the on-disk bridge.js + same read-receipt config; else say why it restarts."""
+        self._foreign_bridge_session = None
+        self._bridge_probe_timed_out = False
         try:
             ok, data = await self._probe_bridge_health()
             if not ok or data is None:
+                return False
+            # Another profile's bridge (same default port) is neither adopted, which would answer as that
+            # profile's phone, nor killed: connect() reports it. Checked before status because a bridge in
+            # startup, reconnect or QR wait reports "disconnected". A bridge without ``session`` predates the
+            # field, so its scriptHash no longer matches bridge.js and it restarts as stale below.
+            reported_session = data.get("session")
+            if reported_session and reported_session != str(self._session_path):
+                self._foreign_bridge_session = reported_session
                 return False
             bridge_status = data.get("status", "unknown")
             if bridge_status != "connected":
@@ -415,6 +441,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return True
             stale_reason = f"running={running_hash or 'unversioned'}, disk={disk_hash}" if running_hash != disk_hash else "send_read_receipts config changed"
             print(f"[{self.name}] Running bridge is stale ({stale_reason}), restarting")
+        except asyncio.TimeoutError:
+            self._bridge_probe_timed_out = True  # something holds the port but gave no identity; connect() leaves it
         except Exception:
             pass  # Bridge not running, start a new one
         return False
@@ -560,9 +588,39 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # the default keeps its historical adopt-or-clear-the-port path.
             if (not secondary or prior_bridge_is_ours) and await self._reuse_running_bridge(bridge_path):
                 return True
+            if self._foreign_bridge_session:
+                # The port is served by another profile's bridge. Never adopt
+                # it and never kill it: it belongs to a live session.
+                foreign = self._foreign_bridge_session
+                self._set_fatal_error(
+                    "whatsapp_bridge_foreign_session",
+                    f"Port {self._bridge_port} is already served by a WhatsApp bridge for a different session "
+                    f"({foreign}). Give this profile its own port via platforms.whatsapp.extra.bridge_port "
+                    f"(one distinct bridge_port per profile); nothing on port {self._bridge_port} was stopped.",
+                    retryable=False,
+                )
+                return False
             if not secondary or prior_bridge_is_ours:
                 _kill_stale_bridge_by_pidfile(self._session_path)
             if not secondary:
+                if self._bridge_probe_timed_out:
+                    # No /health answer is no ownership evidence (another profile's busy bridge looks the same), and
+                    # our own stale bridge was just reaped by its pidfile: a holder that remains is left running.
+                    await asyncio.sleep(1)
+                    try:
+                        held = bool(_port_listener_pids(self._bridge_port))
+                    except Exception:
+                        held = True  # listeners could not be listed: still no evidence to kill on
+                    if held:
+                        self._set_fatal_error(
+                            "whatsapp_bridge_unresponsive",
+                            f"Port {self._bridge_port} is held by a process that did not answer /health in time, so "
+                            f"Hermes cannot tell whose WhatsApp bridge it is; nothing on port {self._bridge_port} was "
+                            "stopped. Stop that process, or give this profile its own port via "
+                            "platforms.whatsapp.extra.bridge_port.",
+                            retryable=True,
+                        )
+                        return False
                 _kill_port_process(self._bridge_port)
             if not secondary or prior_bridge_is_ours:
                 await asyncio.sleep(1)
@@ -990,6 +1048,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         bridge_port = standalone_bridge_port(
             get_hermes_home(), (getattr(pconfig, "extra", {}) or {}).get("bridge_port")
         )
+        own_session = str(_session_dir(getattr(pconfig, "extra", {}) or {}))
         normalized_chat_id = to_whatsapp_jid(chat_id)
         media = media_files or []
         # A caption only applies to a single media file — never repeat it across a multi-file send.
@@ -1005,12 +1064,22 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 
         last_message_id = None
         async with aiohttp.ClientSession() as session:
+            # Whose bridge holds the port is checked before anything is posted: on a shared port another profile's
+            # bridge would deliver from that profile's WhatsApp account. A bridge without ``session`` predates the field.
+            async with session.get(
+                f"http://localhost:{bridge_port}/health",
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status != 200:
+                    return send_error(
+                        f"WhatsApp bridge on port {bridge_port} answered /health with HTTP {resp.status}; nothing was sent.")
+                health = await resp.json()
+            reported_session = health.get("session")
+            if reported_session and reported_session != own_session:
+                return send_error(
+                    f"WhatsApp bridge on port {bridge_port} serves another profile's session ({reported_session}); "
+                    "nothing was sent. Give each profile its own platforms.whatsapp.extra.bridge_port.")
             if pending_mentions:
-                async with session.get(
-                    f"http://localhost:{bridge_port}/health",
-                    timeout=aiohttp.ClientTimeout(total=5),
-                ) as resp:
-                    health = await resp.json() if resp.status == 200 else {}
                 if not (health.get("capabilities") or {}).get("outboundMentions"):
                     return {"error": (
                         "WhatsApp bridge does not support native mentions; "

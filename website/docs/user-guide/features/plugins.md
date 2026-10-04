@@ -203,7 +203,12 @@ Hermes checks out the commit detached, verifies that `HEAD` exactly matches the
 requested SHA, and records the canonical source, installed revision, and pin
 status in the current profile. `hermes plugins update` refuses to move a pinned
 plugin; choose a new exact commit explicitly with
-`hermes plugins install <source> --force --ref <new-commit>`. The
+`hermes plugins install <source> --force --ref <new-commit>`. Like an
+update, a forced reinstall from the source the plugin was installed from
+replaces its code but keeps your files: untracked and git-ignored files stay in
+place, and edits to tracked files are copied to
+`~/.hermes/plugins-backup/<name>-<sha>/`. A reinstall from a different source
+starts clean; to reset a plugin completely, `hermes plugins remove` it first. The
 profile-local install metadata contains no config values, environment values,
 secrets, or capability grants.
 

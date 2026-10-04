@@ -42,7 +42,24 @@ class GatewaySessionWatchersMixin:
         await asyncio.sleep(60)
         while self._running:
             try:
+<<<<<<< origin/fix/expiry-live-turn-guard
+                store = self.async_session_store
+                await store._ensure_loaded()
+                expired = [
+                    (key, entry) for key, entry in list(self.session_store._entries.items())
+                    if not entry.expiry_finalized and await store._is_session_expired(entry)
+                    # Never finalize mid-turn: tearing down a running agent
+                    # crashes the turn and wipes approval/update registrations
+                    # the reply needs. The next pass finalizes after turn end
+                    # (same skip-not-kill norm as the cache cap/idle sweeps).
+                    and not self._is_session_running(key)
+                ]
+                if expired:
+                    await self._finalize_expired_sessions(expired, finalize_failures)
+                await self._expiry_housekeeping()
+=======
                 await self._session_housekeeping()
+>>>>>>> upstream/main
             except Exception as e:
                 logger.debug("Session housekeeping error: %s", e)
             await _interruptible_sleep(self, interval)

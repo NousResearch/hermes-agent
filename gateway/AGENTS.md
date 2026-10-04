@@ -82,6 +82,13 @@ acceptance. Refused admission refunds every claimed batch sibling without spendi
 actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
 persisted messaging origins and defer quietly when unavailable; malformed routes still warn.
 
+Background AI workers publish process-identity leases under each owning profile's
+`cache/background-work/` via the existing session/subagent lifecycle hooks
+(`hermes_cli/background_activity.py`). Discord polls those cheap local leases at 500 ms: identity
+transitions update presence and the single pinned `#usage` dashboard immediately, while elapsed-only
+edits are throttled. Lease readers delete dead-PID identities, so crashes and gateway restarts cannot
+strand a busy presence; titles are sanitized before they ever reach disk.
+
 Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
 reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
 or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored

@@ -260,6 +260,13 @@ From `apps/desktop`, use a fresh temporary directory for each rehearsal and run
 `HERMES_PORTAL_BASE_URL=http://127.0.0.1:8765 HERMES_ANON_API_SECRET=test-secret HERMES_SHARED_AUTH_DIR=<tmp>/.hermes/shared`
 before `npm run dev`. Stop Electron and its dev server after the run.
 
+## macOS background-work status item
+
+Electron owns a macOS-only menu-bar item (`electron/background-work-tray.ts`). It scans the same
+profile-safe per-worker leases as Discord every 500 ms, aggregates all profile homes, shows compact
+elapsed/profile/model rows, and destroys the native `Tray` during normal quit. Lease PID checks make
+restart/crash cleanup fail idle rather than leaving stale busy UI; the renderer is not involved.
+
 ## The taste test before you hand off
 
 - Does every piece of state live with its authority, at the narrowest scope?

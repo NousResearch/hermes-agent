@@ -1519,3 +1519,28 @@ def test_dead_worker_reap_reads_the_log_of_the_dispatching_board(kanban_home):
     finally:
         conn.close()
 
+
+def test_worker_argv_drops_unknown_skills(kanban_home):
+    """Cards created before create-time filtering are still safe at spawn."""
+    _plant_profile_skill(kanban_home, "orch", "human-in-loop-agent-graphs")
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="spawn filter",
+            assignee="orch",
+            skills=["human-in-loop-agent-graphs"],
+        )
+        # Simulate a legacy card that bypassed create-time filtering.
+        conn.execute(
+            "UPDATE tasks SET skills = ? WHERE id = ?",
+            (json.dumps(["human-in-loop-agent-graphs", "revenueos"]), tid),
+        )
+        task = kb.get_task(conn, tid)
+        assert task is not None
+    finally:
+        conn.close()
+
+    argv = kbd._worker_argv(task, "orch", None)
+    skill_args = [argv[i + 1] for i, part in enumerate(argv[:-1]) if part == "--skills"]
+    assert skill_args == ["human-in-loop-agent-graphs"]

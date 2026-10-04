@@ -108,17 +108,36 @@ def _message_item(text: Any) -> Dict[str, Any]:
 
 
 def _cap_text(text: str, keep: int) -> str:
-    """Head of ``text`` plus a marker saying how much was cut (the Responses truncation rule)."""
-    return text[:keep] + "...[" + str(len(text) - keep) + " more chars]"
+    """Cap the retained head, carrying forward an existing loss count on replay."""
+    # Bound the marker itself too: an arbitrary suffix must not exempt a giant payload
+    # or trigger Python's integer-string conversion limit. Twenty digits exceed any
+    # realistic in-memory output length while keeping marker overhead constant.
+    marker = re.search(r"\.\.\.\[([0-9]{1,20}) more chars\]\Z", text)
+    end = marker.start() if marker else len(text)
+    if end <= keep:
+        return text
+    lost = end - keep + (int(marker.group(1)) if marker else 0)
+    return text[:keep] + f"...[{lost} more chars]"
+
+
+def _cap_tool_value(value: Any, max_chars: int) -> Any:
+    """Copy JSON-shaped tool data, capping string leaves without flattening containers."""
+    if isinstance(value, str):
+        return _cap_text(value, max_chars)
+    if isinstance(value, dict):
+        return {key: _cap_tool_value(item, max_chars) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_cap_tool_value(item, max_chars) for item in value]
+    return value
 
 
 def _cap_history_tool_outputs(history: List[Dict[str, Any]], max_chars: int) -> List[Dict[str, Any]]:
-    """Copy of ``history`` with tool outputs and string tool-call arguments longer than
-    ``max_chars`` cut down. Only tool rows and ``tool_calls`` blobs change; user/assistant text
-    is left alone, and the agent's own transcript rows are never mutated (rows are copied).
-    Opt-in via gateway.api_server.history_tool_output_max_chars: a single stored snapshot
-    embeds the full cumulative history, so a few large tool outputs pushed one
-    response_store.db write to ~677 KB (#82513)."""
+    """Cap string leaves in persisted tool outputs/arguments, preserving JSON shapes.
+
+    The default cap bounds each retained string head, not the entire cumulative snapshot.
+    Only tool rows and tool-call arguments change; user/assistant text and the agent's
+    own transcript are untouched. An explicit zero opts out of capping.
+    """
     if max_chars <= 0:
         return history
     out: List[Dict[str, Any]] = []
@@ -127,8 +146,8 @@ def _cap_history_tool_outputs(history: List[Dict[str, Any]], max_chars: int) -> 
             out.append(msg)
             continue
         content = msg.get("content")
-        if msg.get("role") == "tool" and isinstance(content, str) and len(content) > max_chars:
-            msg = {**msg, "content": _cap_text(content, max_chars)}
+        if msg.get("role") == "tool":
+            msg = {**msg, "content": _cap_tool_value(content, max_chars)}
         tool_calls = msg.get("tool_calls")
         if msg.get("role") == "assistant" and isinstance(tool_calls, list):
             capped_calls = []
@@ -138,13 +157,17 @@ def _cap_history_tool_outputs(history: List[Dict[str, Any]], max_chars: int) -> 
                 if isinstance(raw, str) and len(raw) > max_chars:
                     try:
                         args = json.loads(raw)
-                    except ValueError:
-                        args = None
-                    if isinstance(args, dict):
-                        for k, v in args.items():
-                            if isinstance(v, str) and len(v) > max_chars:
-                                args[k] = _cap_text(v, max_chars)
-                        call = {**call, "function": {**fn, "arguments": json.dumps(args)}}
+                    except (ValueError, RecursionError):
+                        # Keep malformed arguments as raw text rather than dropping the call.
+                        capped = _cap_text(raw, max_chars)
+                    else:
+                        capped_args = _cap_tool_value(args, max_chars)
+                        # Preserve wire formatting if no string leaf changed.
+                        capped = json.dumps(capped_args) if capped_args != args else raw
+                    call = {**call, "function": {**fn, "arguments": capped}}
+                elif isinstance(raw, (dict, list)):
+                    call = {**call, "function": {
+                        **fn, "arguments": _cap_tool_value(raw, max_chars)}}
                 capped_calls.append(call)
             msg = {**msg, "tool_calls": capped_calls}
         out.append(msg)

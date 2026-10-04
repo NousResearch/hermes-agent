@@ -1,6 +1,9 @@
 """Tests for Signal messenger platform adapter."""
 import asyncio
 import base64
+import os
+import shutil
+import subprocess
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -445,6 +448,8 @@ class TestSignalSendVoice:
 
         audio_path = tmp_path / "reply.ogg"
         audio_path.write_bytes(b"OggS" + b"\x00" * 100)
+        # No transcode available: the original goes out as a plain attachment.
+        monkeypatch.setattr("gateway.platforms.signal._transcode_to_voice_note", lambda path: None)
 
         result = await adapter.send_voice(chat_id="+155****4567", audio_path=str(audio_path))
 
@@ -452,8 +457,78 @@ class TestSignalSendVoice:
         assert captured[0]["method"] == "send"
         assert captured[0]["params"]["attachments"] == [str(audio_path)]
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
+        assert "voiceNote" not in captured[0]["params"]
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
         assert 1234567890 in adapter._recent_sent_timestamps
+
+    @pytest.mark.asyncio
+    async def test_send_voice_m4a_is_sent_as_voice_note(self, monkeypatch, tmp_path):
+        """AAC/M4A input needs no transcode and carries voiceNote, so Signal renders it inline."""
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+        transcode = MagicMock()
+        monkeypatch.setattr("gateway.platforms.signal._transcode_to_voice_note", transcode)
+
+        audio_path = tmp_path / "reply.m4a"
+        audio_path.write_bytes(b"\x00\x00\x00\x20ftypM4A " + b"\x00" * 100)
+
+        result = await adapter.send_voice(chat_id="+155****4567", audio_path=str(audio_path))
+
+        assert result.success is True
+        assert captured[0]["params"]["attachments"] == [str(audio_path)]
+        assert captured[0]["params"]["voiceNote"] is True
+        transcode.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_voice_transcodes_opus_and_removes_the_temp_file(self, monkeypatch, tmp_path):
+        """Opus TTS output is transcoded to M4A, sent with voiceNote, and the M4A is deleted afterwards."""
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        audio_path = tmp_path / "reply.ogg"
+        audio_path.write_bytes(b"OggS" + b"\x00" * 100)
+        voice_path = tmp_path / "hermes-signal-voice-x.m4a"
+        voice_path.write_bytes(b"\x00\x00\x00\x20ftypM4A " + b"\x00" * 100)
+        monkeypatch.setattr("gateway.platforms.signal._transcode_to_voice_note", lambda path: str(voice_path))
+
+        result = await adapter.send_voice(chat_id="+155****4567", audio_path=str(audio_path), caption="hi")
+
+        assert result.success is True
+        assert captured[0]["params"]["attachments"] == [str(voice_path)]
+        assert captured[0]["params"]["voiceNote"] is True
+        assert captured[0]["params"]["message"] == "hi"
+        assert not voice_path.exists()
+        assert audio_path.exists()
+
+    @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+    def test_transcode_to_voice_note_produces_aac(self, tmp_path):
+        """The real ffmpeg path turns Opus/Ogg into an M4A that sniffs as such."""
+        from gateway.platforms.signal import _transcode_to_voice_note
+        from tools.audio_container import sniff_container
+
+        src = tmp_path / "tts.ogg"
+        subprocess.run([shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                        "-c:a", "libopus", str(src)], check=True)
+        out = _transcode_to_voice_note(str(src))
+        try:
+            assert out and out.endswith(".m4a")
+            with open(out, "rb") as f:
+                assert sniff_container(f.read(16)) == "m4a"
+        finally:
+            if out:
+                os.unlink(out)
+
+    def test_transcode_to_voice_note_without_ffmpeg(self, monkeypatch, tmp_path):
+        from gateway.platforms import signal as signal_mod
+
+        monkeypatch.setattr(signal_mod, "_find_ffmpeg", lambda: None)
+        src = tmp_path / "tts.ogg"
+        src.write_bytes(b"OggS")
+        assert signal_mod._transcode_to_voice_note(str(src)) is None
 
 
     @pytest.mark.asyncio

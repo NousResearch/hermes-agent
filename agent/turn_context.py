@@ -557,7 +557,7 @@ def _refresh_mcp_tools_between_turns(agent: Any) -> None:
             from tools.mcp_tool_discovery import has_registered_mcp_tools
             from tools.mcp_tool_agent import refresh_agent_mcp_tools
             if has_registered_mcp_tools():
-                refresh_agent_mcp_tools(agent, quiet_mode=True, preserve_prefix=True)
+                refresh_agent_mcp_tools(agent, quiet_mode=True, preserve_prefix=True, content_aware=True)
     except Exception:
         logger.debug("between-turns MCP tool refresh skipped", exc_info=True)
 

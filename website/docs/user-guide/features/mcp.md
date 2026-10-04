@@ -779,6 +779,17 @@ This reloads MCP servers from config and refreshes the available tool list. It i
 
 A running messaging gateway (`hermes gateway run`) also watches `config.yaml` on its own: within about a minute of you removing an `mcp_servers` entry or setting `enabled: false`, that server's connection is torn down; a newly added entry is connected. A server whose first connect failed (an unreachable host, or an OAuth server on a headless box that had no token yet) is retried automatically on its connect cooldown schedule (30 s, doubling up to 10 min) once you fix the cause. No restart or `/reload-mcp` needed for the edit to take effect.
 
+For a **single server whose executable changed without a config edit** (for example, a managed `current/dist` symlink atomically promoted to a new release), an external release adopter can ask the *already-running* gateway to reconnect that server only. Invoke this **after** promotion, never before:
+
+```bash
+~/.hermes/hermes-agent/venv/bin/python -m gateway.mcp_reload_cli smart-web --home ~/.hermes
+# Optional: --profile-home ~/.hermes/profiles/NAME --drain-timeout 15
+```
+
+The CLI prints one JSON object. Exit **0** means `{"status":"reloaded","name":"smart-web","home":"...","tools":[...]}`: the replacement connected and registered live tools. Exit **75** means `{"status":"pending","retry":true,...}`: an in-flight call did not drain within the requested timeout or another reload is running; retry later. Exit **1** means `status: "failed"`, `"rejected"`, or `"unavailable"` (old gateway without this verb or a socket timeout); do not count it as adoption. A shared connection across profiles returns `pending` with `retry: false` and is not safe for automated retries. The CLI never restarts the gateway or falls back to the broad `/reload-mcp`. An existing gateway process must already be running a Hermes build containing this verb: installing new Python files alone cannot inject code into a running process.
+
+The gateway closes admission to the selected MCP connection, waits for admitted calls to complete, preflights the replacement and then swaps only that server. On preflight failure it keeps the old connection. Once shutdown has begun, a reconnect failure cannot atomically restore the old subprocess; the response says `old_preserved: false`. New tools and changed schemas propagate to sessions on their next turn (not mid-turn); successful live registration also writes through to the MCP schema cache. Do not treat a socket timeout as proof that a swap finished.
+
 **Expired OAuth tokens in the background.** The gateway, `/reload-mcp`, and the periodic self-probe of a parked server never open a browser — nobody is there to complete the flow. When a refresh token dies, the server parks with a warning in `gateway.log` and you re-authorize once with `hermes mcp login <server>` (or the Desktop/dashboard *Authorize* button); the parked server picks the new token up on its next probe.
 
 ### Toolsets

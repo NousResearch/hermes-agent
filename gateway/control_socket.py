@@ -388,6 +388,18 @@ def purge_gateway_profile_identity(home: Path, name: str, *,
     return query_gateway_control(home, "purge-profile-identity", params={"name": name}, timeout=timeout)
 
 
+def reload_gateway_mcp_server(home: Path, name: str, *, profile_home: Optional[Path] = None,
+                              drain_timeout: float = 15.0, timeout: float = 240.0) -> Optional[dict[str, Any]]:
+    """Reload one configured MCP server in a live gateway; None means unsupported/unreachable.
+
+    ``pending`` is a retryable reply, NOT evidence of adoption. No fallback to a broad
+    gateway restart or /reload-mcp. The read deadline covers drain + two MCP handshakes.
+    """
+    return query_gateway_control(home, "reload-mcp-server",
+                                 params={"name": name, "home": str(profile_home or home),
+                                         "drain_timeout": drain_timeout}, timeout=timeout)
+
+
 def reload_gateway_plugins(home: Path, *, profile_home: Optional[Path] = None,
                            timeout: float = 30.0) -> Optional[dict[str, Any]]:
     """Ask the gateway serving ``home`` to force plugin re-discovery for ``profile_home`` (default: ``home``)

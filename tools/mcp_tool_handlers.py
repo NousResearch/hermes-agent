@@ -587,7 +587,19 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             server_name, server, op, _call, tool_timeout,
             (_handle_stdio_child_exited_and_retry, _handle_auth_error_and_retry, session_expired),
             _on_failure, record_outcome=True)
-    return _handler
+    return _reload_gated(server_name, _handler)
+
+
+def _reload_gated(server_name: str, handler):
+    """Admit before lookup so reload cannot miss queued calls or retries."""
+    from tools.mcp_tool_reload import admit_call
+
+    def _wrapped(args: dict, **kwargs) -> str:
+        with admit_call(server_name) as admitted:
+            if not admitted:
+                return tool_error(f"MCP server '{server_name}' is reloading; retry after reload completes")
+            return handler(args, **kwargs)
+    return _wrapped
 
 
 def _make_utility_handler(op: str, log_label: str, rpc, render, required: Optional[str] = None):
@@ -604,14 +616,14 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
                 return tool_error(f"Missing required parameter '{required}'")
 
             async def _call():
-                async with server._rpc_lock:
+                async with server._rpc_lock, _track_inflight_rpc(server, server_name, op):
                     result = await rpc(server.session, args, server_name)
                 return json.dumps(render(result, server_name), ensure_ascii=False)
             return _dispatch(
                 server_name, server, op, _call, tool_timeout,
                 (_handle_auth_error_and_retry, _handle_session_expired_and_retry),
                 lambda exc: logger.error("MCP %s/%s failed: %s", server_name, log_label, exc))
-        return _handler
+        return _reload_gated(server_name, _handler)
     return _factory
 
 

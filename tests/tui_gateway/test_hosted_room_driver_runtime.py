@@ -971,6 +971,32 @@ def test_turn_deadline_stops_exact_attempt_and_publishes_durable_failure(db: Pat
     assert [task["status"] for task in published] == ["failed"]
 
 
+def test_disabled_deadline_leaves_a_stalled_attempt_to_its_own_settlement(db: Path):
+    identity = _identity()
+    _admit(db, identity)
+    rpc = FakeSessionRPC(auto_complete=False)
+    runtime = _runtime(
+        db,
+        rpc,
+        active_poll_interval_seconds=0.01,
+        turn_timeout_seconds=None,
+    )
+
+    runtime.start()
+    assert rpc.submitted.wait(timeout=5.0)
+    # Well past the sub-second deadline the test above uses: a disabled
+    # deadline must not terminalize the attempt on its own.
+    time.sleep(0.3)
+    assert state.get_task(db, identity)["status"] == "running"
+
+    rpc.complete(identity.task_id)
+    _wait_for(lambda: state.get_task(db, identity)["status"] == "settled")
+    assert runtime.stop(timeout=5.0)
+
+    assert not [call for call in rpc.calls if call[0] == "interrupt"]
+    assert state.get_task(db, identity)["cancel_id"] is None
+
+
 def test_deadline_releases_worker_capacity_for_later_room(tmp_path: Path):
     db = tmp_path / "state.db"
     bindings = [

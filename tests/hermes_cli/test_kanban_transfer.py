@@ -221,6 +221,15 @@ def test_run_session_link_never_travels(kanban_root, tmp_path):
     assert sessions == [None]
 
 
+def test_export_of_a_board_not_opened_since_an_upgrade(kanban_root, tmp_path):
+    """Export copies the DB file without running migrations, so the scrub may meet a schema
+    older than the columns it clears."""
+    _seed_board()
+    with kbc.connect_closing(board="alpha") as conn:
+        conn.execute("ALTER TABLE task_runs DROP COLUMN worker_session_id")
+    assert Path(kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]).is_file()
+
+
 def test_gateway_subscriptions_never_travel(kanban_root, tmp_path):
     ids = _seed_board()
     _subscribe(ids["scratch"])

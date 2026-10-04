@@ -100,8 +100,11 @@ def _scrub_local_state(conn: sqlite3.Connection) -> None:
         """,
         (int(time.time()),),
     )
+    conn.execute("UPDATE task_runs SET claim_lock = NULL, worker_pid = NULL")
     # worker_session_id names a session in this machine's state.db; the transcript API reads it.
-    conn.execute("UPDATE task_runs SET claim_lock = NULL, worker_pid = NULL, worker_session_id = NULL")
+    # Export scrubs a raw file copy, which may predate the column.
+    if any(col[1] == "worker_session_id" for col in conn.execute("PRAGMA table_info(task_runs)")):
+        conn.execute("UPDATE task_runs SET worker_session_id = NULL")
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

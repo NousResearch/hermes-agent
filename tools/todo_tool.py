@@ -88,6 +88,10 @@ class TodoStore:
     def restore(self, todos: List[Dict[str, Any]], *, revision: Any = 0) -> List[Dict[str, str]]:
         """Restore a trusted snapshot without manufacturing a new revision."""
         self._items = self._fresh_items(todos)[:MAX_TODO_ITEMS]
+        # Same hygiene as write(): a dangling parent (or cycle) would make the
+        # item invisible to format_for_injection, silently dropping the plan
+        # post-compression. Restored snapshots come from caller history.
+        self._sanitize_parents(self._items)
         try:
             self._revision = max(0, int(revision or 0))
         except (TypeError, ValueError):

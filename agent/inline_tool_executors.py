@@ -18,14 +18,18 @@ from tools.arg_coercion import coerce_tool_args
 
 
 def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> Dict[str, str]:
-    """Identity kwargs every tool hook/middleware call carries (all coerced to ``""``)."""
-    return {
+    """Identity kwargs every hook/middleware carries; omit an unknown profile."""
+    ids = {
         "task_id": effective_task_id or "",
         "session_id": getattr(agent, "session_id", "") or "",
         "tool_call_id": tool_call_id or "",
         "turn_id": getattr(agent, "_current_turn_id", "") or "",
         "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
     }
+    profile = getattr(agent, "_profile_name", None)
+    if profile is not None:
+        ids["profile"] = profile
+    return ids
 
 
 def emit_terminal_post_tool_call(

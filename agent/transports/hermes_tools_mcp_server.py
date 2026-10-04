@@ -102,7 +102,11 @@ def _build_server() -> Any:
         def _dispatch(**kwargs: Any) -> str:
             try:
                 # Drop None so unset optionals aren't forwarded to the handler.
-                return handle_function_call(tool_name, {k: v for k, v in kwargs.items() if v is not None})
+                from hermes_cli.profiles import current_profile_name
+                return handle_function_call(
+                    tool_name, {k: v for k, v in kwargs.items() if v is not None},
+                    profile=os.environ.get("HERMES_TOOL_PROFILE_NAME") or current_profile_name(),
+                )
             except Exception as exc:
                 logger.exception("tool %s raised", tool_name)
                 return json.dumps({"error": str(exc), "tool": tool_name})

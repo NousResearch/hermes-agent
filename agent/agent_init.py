@@ -2408,6 +2408,7 @@ def init_agent(
     requested_provider: str = None, capabilities: Optional[Dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
+    profile_name: str | None = None,
 ):
     _install_safe_stdio()
 
@@ -2417,6 +2418,9 @@ def init_agent(
     for _name in _GATEWAY_IDENTITY_PARAMS:
         setattr(agent, f"_{_name}", _params[_name])
     agent.session_cwd = cwd or None
+    # Freeze request identity before dispatch; routed home overrides outrank launcher pins.
+    from hermes_cli.profiles import current_profile_name
+    agent._profile_name = profile_name if profile_name is not None else current_profile_name()
     # Shared iteration budget: parent creates, children inherit.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
     # CLI replaces this with _cprint so raw ANSI status lines go through prompt_toolkit's

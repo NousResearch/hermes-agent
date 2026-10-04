@@ -595,6 +595,7 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
         developer_instructions=developer_instructions or None,
         model=getattr(agent, "model", None) if model_provider else None, model_provider=model_provider,
         resume_thread_id=resume_thread_id, history_seed=history_seed,
+        profile_name=getattr(agent, "_profile_name", None),
     )
 
 

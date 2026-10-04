@@ -47,14 +47,94 @@ def floor_reasoning_config(reasoning_config: Any) -> Dict[str, Any]:
     return reasoning_config
 
 
+def _thinking_type(extra_body: Any) -> str:
+    if not isinstance(extra_body, dict):
+        return ""
+    thinking = extra_body.get("thinking")
+    if not isinstance(thinking, dict):
+        return ""
+    return str(thinking.get("type", "")).strip().lower()
+
+
+def _wire_enables_reasoning(kwargs: Dict[str, Any], extra_body: Any) -> bool:
+    """True when the wire already asks for thinking on, so a floor must not overwrite it."""
+    effort = str(kwargs.get("reasoning_effort", "")).strip().lower()
+    if effort and effort not in _DISABLED_EFFORTS:
+        return True
+    kind = _thinking_type(extra_body)
+    if kind and kind != "disabled":
+        return True
+    if isinstance(extra_body, dict):
+        reasoning = extra_body.get("reasoning")
+        if isinstance(reasoning, dict) and not _is_disabled(reasoning):
+            nested = str(reasoning.get("effort", "")).strip().lower()
+            if nested not in _DISABLED_EFFORTS and (reasoning.get("enabled") is True or nested):
+                return True
+    return False
+
+
+def _adaptive_thinking_off_fields(kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Adaptive thinking+output_config at the floor, or None when *kwargs* is not that thinking-off.
+
+    OpenAI-compat relays encode adaptive-Claude thinking-off as ``thinking.type=disabled``
+    (opus 4.6) or as no thinking field at all (mandatory families). Neither shape is
+    ``reasoning_effort`` / ``extra_body.reasoning`` / ``_reasoning_config``, so the floor
+    ladder used to return None and a route that refuses the disable 400'd on every aux call.
+    Native Messages already carries the disable on ``_reasoning_config``; injecting a second
+    thinking block there would passthrough beside the adapter's own field.
+    """
+    model = str(kwargs.get("model") or "")
+    extra_body = kwargs.get("extra_body")
+    from agent.anthropic_adapter import (
+        _MANDATORY_THINKING_CLAUDE_SUBSTRINGS,
+        _is_claude_model,
+        _model_matches,
+        _supports_adaptive_thinking,
+        adaptive_thinking_wire_fields,
+    )
+
+    adaptive = adaptive_thinking_wire_fields(
+        {"enabled": True, "effort": REASONING_FLOOR_EFFORT}, model,
+    )
+    if not adaptive:
+        return None
+    thinking_off = _thinking_type(extra_body) == "disabled"
+    mandatory_omit = (
+        "_reasoning_config" not in kwargs
+        and _is_claude_model(model)
+        and _supports_adaptive_thinking(model)
+        and _model_matches(model, _MANDATORY_THINKING_CLAUDE_SUBSTRINGS)
+        and not _wire_enables_reasoning(kwargs, extra_body)
+    )
+    if not thinking_off and not mandatory_omit:
+        return None
+    return adaptive
+
+
+def _merge_adaptive_floor(extra_body: Any, adaptive: Dict[str, Any]) -> Dict[str, Any]:
+    """Overlay *adaptive* onto *extra_body*, keeping a structured ``output_config.format``."""
+    merged = dict(extra_body) if isinstance(extra_body, dict) else {}
+    existing_output = merged.get("output_config")
+    merged.pop("thinking", None)
+    merged.update(adaptive)
+    if isinstance(existing_output, dict):
+        preserved = {key: value for key, value in existing_output.items() if key != "effort"}
+        preserved.update(adaptive.get("output_config") or {})
+        merged["output_config"] = preserved
+    return merged
+
+
 def with_reasoning_floor(kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Copy of *kwargs* with every thinking-OFF encoding lifted to ``REASONING_FLOOR_EFFORT``:
-    top-level ``reasoning_effort``, ``extra_body.reasoning`` (OpenRouter shape) and the adapter's private
-    ``_reasoning_config``. ``None`` when nothing was disabled, so the ladder never re-sends an unchanged
-    request."""
+    top-level ``reasoning_effort``, ``extra_body.reasoning`` (OpenRouter shape), the adapter's private
+    ``_reasoning_config``, and adaptive-Claude shapes (``thinking.type=disabled``, or the empty omit
+    mandatory families emit). ``None`` when nothing was disabled, so the ladder never re-sends an
+    unchanged request."""
     changed = False
     retry = dict(kwargs)
-    if str(retry.get("reasoning_effort", "")).strip().lower() in _DISABLED_EFFORTS:
+    adaptive = _adaptive_thinking_off_fields(kwargs)
+    effort_off = str(retry.get("reasoning_effort", "")).strip().lower() in _DISABLED_EFFORTS
+    if effort_off and adaptive is None:
         retry["reasoning_effort"] = REASONING_FLOOR_EFFORT
         changed = True
     if _is_disabled(retry.get("_reasoning_config")):
@@ -68,6 +148,13 @@ def with_reasoning_floor(kwargs: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         ):
             retry["extra_body"] = {**extra_body, "reasoning": {"enabled": True, "effort": REASONING_FLOOR_EFFORT}}
             changed = True
+    if adaptive is not None:
+        # ``reasoning_effort: none`` beside adaptive thinking is the CometAPI 400 this floor
+        # is recovering from; the adaptive shape is the effort knob on that wire.
+        if effort_off:
+            retry.pop("reasoning_effort", None)
+        retry["extra_body"] = _merge_adaptive_floor(retry.get("extra_body"), adaptive)
+        changed = True
     return retry if changed else None
 
 

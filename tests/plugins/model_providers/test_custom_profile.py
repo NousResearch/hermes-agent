@@ -189,6 +189,60 @@ class TestCustomReasoningWireShape:
         assert "think" not in kwargs.get("extra_body", {}) and "reasoning" not in kwargs.get("extra_body", {})
 
 
+class TestCustomAdaptiveClaudeReasoningWireShape:
+    """CometAPI-style relays map ``reasoning_effort`` to Bedrock ``thinking.enabled`` (#122672)."""
+
+    def test_opus_55_thinking_sends_adaptive_not_reasoning_effort(self, custom_profile):
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="claude-opus-5-5-thinking",
+            base_url="https://api.cometapi.com/v1",
+        )
+        assert tl == {}
+        assert eb["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert eb["output_config"] == {"effort": "medium"}
+
+    def test_mandatory_opus_55_disable_emits_nothing(self, custom_profile):
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="claude-opus-5-5-thinking",
+            base_url="https://api.cometapi.com/v1",
+        )
+        assert eb == {}
+        assert tl == {}
+
+    @pytest.mark.parametrize(
+        "model",
+        ["claude-haiku-5-5", "claude-haiku-4.5"],
+    )
+    @pytest.mark.parametrize(
+        "reasoning_config, expected_effort",
+        [
+            ({"enabled": True, "effort": "low"}, "low"),
+            ({"enabled": True, "effort": "high"}, "high"),
+            ({"enabled": False}, "none"),
+            ({"enabled": True, "effort": "none"}, "none"),
+        ],
+    )
+    def test_haiku_keeps_the_reasoning_effort_ladder(
+        self, custom_profile, model, reasoning_config, expected_effort,
+    ):
+        """Haiku is classified adaptive but has no extended thinking.
+
+        An early return on ``_supports_adaptive_thinking`` drops the effort knob
+        (helper returns {} for haiku). Both the legacy and the 5.x ids must still
+        emit top-level ``reasoning_effort`` and never the adaptive pair.
+        """
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning_config,
+            model=model,
+            base_url="https://api.cometapi.com/v1",
+        )
+        assert tl == {"reasoning_effort": expected_effort}
+        assert "thinking" not in eb
+        assert "output_config" not in eb
+
+
 class TestCustomReasoningWithNumCtx:
     """Ollama num_ctx and reasoning are independent and compose."""
 

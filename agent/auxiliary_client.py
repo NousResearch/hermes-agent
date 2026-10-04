@@ -6593,6 +6593,10 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
 _PROFILE_REASONING_KEYS = {
     "reasoning", "reasoning_effort", "thinking", "thinking_config", "thinkingconfig",
     "thinking_budget", "thinkingbudget", "enable_thinking", "think", "verbosity",
+    # Adaptive Claude emits this beside ``thinking``. Leaving it off the strip set
+    # removes ``thinking`` and strands ``output_config``, so the retry is still a
+    # reasoning payload and the ladder cannot classify the next 400.
+    "output_config",
 }
 
 

@@ -21,6 +21,7 @@ export function ErrorBanner({ children, className }: { children: ReactNode; clas
         'flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-destructive',
         className
       )}
+      data-selectable-text="true"
     >
       <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
       <span className="min-w-0 whitespace-pre-wrap break-words">{children}</span>
@@ -45,7 +46,7 @@ export interface ErrorStateProps {
 // Dialog callers can pass DialogTitle/DialogDescription for accessibility.
 export function ErrorState({ children, className, description, icon, title }: ErrorStateProps) {
   return (
-    <div className={cn('grid gap-5', className)}>
+    <div className={cn('grid gap-5', className)} data-selectable-text="true">
       <div className="flex flex-col items-center gap-3 text-center">
         {icon ?? <ErrorIcon />}
 

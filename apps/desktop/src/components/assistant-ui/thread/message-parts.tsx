@@ -464,12 +464,20 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
 
 const TrajectoryReasoningGroup: FC<{ children?: ReactNode; endIndex: number; startIndex: number }> = props => {
   const hide = useHideTrajectoryGroups()
-  return hide ? null : <ReasoningAccordionGroup {...props} />
+  return (
+    <div data-trajectory-group="reasoning" hidden={hide}>
+      <ReasoningAccordionGroup {...props} />
+    </div>
+  )
 }
 
 const TrajectoryToolGroup: FC<{ children?: ReactNode; endIndex: number; startIndex: number }> = props => {
   const hide = useHideTrajectoryGroups()
-  return hide ? null : <ToolGroupSlot {...props} />
+  return (
+    <div data-trajectory-group="tool" hidden={hide}>
+      <ToolGroupSlot {...props} />
+    </div>
+  )
 }
 
 // Module-level constant so the `components` prop on `MessagePrimitive.Parts`

@@ -65,18 +65,22 @@ function Harness({ assistant }: { assistant: ThreadMessage }) {
 }
 
 describe('execution trajectory collapse', () => {
-  it('folds completed preliminary groups and restores them on manual expansion', async () => {
+  it('folds completed preliminary groups without unmounting them', async () => {
     const { container } = render(<Harness assistant={assistantMessage()} />)
 
     const summary = await screen.findByRole('button', { name: /Completed 2 steps in 2s/i })
     expect(screen.getByText('final answer here')).toBeTruthy()
-    expect(container.querySelector('[data-slot="aui_thinking-disclosure"]')).toBeNull()
-    expect(container.querySelector('[data-tool-row]')).toBeNull()
+    expect(container.querySelector('[data-slot="aui_thinking-disclosure"]')).toBeTruthy()
+    expect(container.querySelector('[data-tool-row]')).toBeTruthy()
+    expect(container.querySelector('[data-trajectory-group="reasoning"]')?.hasAttribute('hidden')).toBe(true)
+    expect(container.querySelector('[data-trajectory-group="tool"]')?.hasAttribute('hidden')).toBe(true)
 
     fireEvent.click(summary)
 
     expect(container.querySelector('[data-slot="aui_thinking-disclosure"]')).toBeTruthy()
     expect(container.querySelector('[data-tool-row]')).toBeTruthy()
+    expect(container.querySelector('[data-trajectory-group="reasoning"]')?.hasAttribute('hidden')).toBe(false)
+    expect(container.querySelector('[data-trajectory-group="tool"]')?.hasAttribute('hidden')).toBe(false)
   })
 
   it('leaves a running turn and a disabled preference expanded', async () => {

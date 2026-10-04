@@ -6,9 +6,12 @@ any dependency from that environment has been imported.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
+import re
+import shlex
 from pathlib import Path
 
 from hermes_constants import get_default_hermes_root, project_venv_dir
@@ -50,13 +53,13 @@ def runtime_facts_path(project_root: Path) -> Path:
     return install_state_dir(project_root) / "facts.json"
 
 
-# The files that decide the dependency set. `scripts/_hermes-python` re-activates
+# The files that decide the dependency set. `scripts/run-in-hermes-env` re-syncs
 # when any of them differs in mtime from its stamp under activation_inputs_dir.
 ACTIVATION_INPUTS = ("uv.lock", "pyproject.toml", "pm/lock.json")
 
 
 def activation_inputs_dir(project_root: Path) -> Path:
-    """Beside facts.json, so the prologue finds it from ``$__HERMES_ACTIVATED``."""
+    """Beside facts.json, so the runner finds it from ``$__HERMES_ACTIVATED``."""
     return install_state_dir(project_root) / "inputs"
 
 
@@ -72,7 +75,7 @@ def record_activation_inputs(stamps: Path, mtimes: dict[str, int], project_root:
 
     Recorded on every successful install, including no-op syncs: a checkout that
     rewrites an input without changing it moves the mtime, and only this record
-    brings the stamp back to equal. The prologue compares for equality, not order,
+    brings the stamp back to equal. The runner compares for equality, not order,
     because switching branches can move an input's mtime in either direction.
     """
     import shutil
@@ -109,11 +112,19 @@ def base_venv(project_root: Path) -> Path:
     return payload_venv(project_root) or project_venv_dir(Path(project_root).resolve()) or Path(project_root).resolve() / "venv"
 
 
-def store_root(project_root: Path) -> Path:
-    """Resolve a payload-relative or stamped store before PM imports."""
-    override = os.environ.get("HERMES_RUNTIME_DIR")
-    if override:
-        return Path(override).resolve()
+def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Path:
+    """Resolve a payload-relative or stamped store before PM imports.
+
+    ``HERMES_RUNTIME_DIR`` exists so a running process can point PM at a
+    non-default runtime location. Publication paths must pass
+    ``honor_runtime_override=False``: a persisted artifact (an installed
+    launcher) has to bind the store of the tree it serves, never a runtime
+    directory inherited through the environment.
+    """
+    if honor_runtime_override:
+        override = os.environ.get("HERMES_RUNTIME_DIR")
+        if override:
+            return Path(override).resolve()
     root = Path(project_root).resolve()
     manifest_path = root.parent / "manifest.json"
     if manifest_path.is_file():
@@ -380,7 +391,7 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     # environment was composed against, so a consumer learns that it inherited
     # an activated shell and which checkout/profile that shell came from. Its
     # directory also holds activation_inputs_dir, the input-mtime stamps
-    # `scripts/_hermes-python` compares against to decide staleness.
+    # `scripts/_activation.sh` compares against to decide staleness.
     env["__HERMES_ACTIVATED"] = str(runtime_facts_path(project_root))
     # The suite's interpreter (pm.testenv): an isolated side environment, so it
     # never appears on PYTHONPATH/PATH above. scripts/run_tests.sh reads it.
@@ -392,5 +403,46 @@ def activation_environment(project_root: Path) -> dict[str, str]:
     return env
 
 
+def _fish_quote(value: str) -> str:
+    """Inside fish single quotes only backslash and the quote itself are special."""
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+# fish refuses to assign these, and each is either inherited unchanged from the
+# invoking shell (PWD, SHLVL, _) or fish's own state, so skipping loses nothing.
+_FISH_READ_ONLY = frozenset({
+    "PWD", "SHLVL", "_", "status", "version", "hostname", "fish_pid", "history",
+    "pipestatus", "status_generation", "umask", "FISH_VERSION",
+})
+
+# dialect -> (export statement, names the shell cannot assign). fish splits
+# values of variables named *PATH on colons when they are set from a single
+# word, so PATH stays a list.
+_SHELL_DIALECTS = {
+    "sh": (lambda name, value: f"export {name}={shlex.quote(value)}", frozenset()),
+    "fish": (lambda name, value: f"set -gx {name} {_fish_quote(value)}", _FISH_READ_ONLY),
+}
+_SHELL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def shell_exports(env: dict[str, str], dialect: str) -> str:
+    """The composed environment as a script a shell of ``dialect`` can evaluate.
+
+    Windows carries names like ``ProgramFiles(ARM)`` that no shell can assign;
+    they pass through untouched instead of failing the whole script.
+    """
+    statement, read_only = _SHELL_DIALECTS[dialect]
+    return "\n".join(statement(name, str(value)) for name, value in env.items()
+                     if _SHELL_IDENTIFIER.fullmatch(name) and name not in read_only)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Print the composed activation environment.")
+    parser.add_argument("--format", choices=["json", *_SHELL_DIALECTS], default="json")
+    options = parser.parse_args(argv)
+    env = activation_environment(Path(__file__).resolve().parents[1])
+    print(json.dumps(env) if options.format == "json" else shell_exports(env, options.format))
+
+
 if __name__ == "__main__":
-    print(json.dumps(activation_environment(Path(__file__).resolve().parents[1])))
+    main()

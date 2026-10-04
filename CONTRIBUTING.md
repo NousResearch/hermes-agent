@@ -69,7 +69,7 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 
 ## Memory Providers: Ship as a Standalone Plugin
 
-**We are no longer accepting new memory providers into this repo.** The set of built-in providers under `plugins/memory/` (mem0, supermemory, byterover, holographic, openviking, retaindb) is closed. If you want to add a new memory backend, publish it as a **standalone plugin repo** that users install into `~/.hermes/plugins/` (or via a pip entry point).
+**We are no longer accepting new memory providers into this repo.** The set of built-in providers under `plugins/memory/` (mem0, byterover, holographic, openviking, retaindb) is closed, and the former in-tree providers hindsight, honcho and supermemory now ship from the plugin catalog. If you want to add a new memory backend, publish it as a **standalone plugin repo** that users install into `~/.hermes/plugins/` (or via a pip entry point).
 
 Standalone memory plugins:
 
@@ -136,6 +136,13 @@ source ./activate
 hermes --version
 ```
 
+fish:
+
+```fish
+source ./activate.fish
+hermes --version
+```
+
 PowerShell:
 
 ```powershell
@@ -149,6 +156,9 @@ outside the worktree. PM activation
 syncs tools and Python dependencies before adding them to the shell. It does not
 install JS workspaces or rewrite launchers and shell configuration. `deactivate`
 restores the prior shell environment and removes the function.
+
+To run one command in the environment without activating a shell, use
+`scripts/run-in-hermes-env CMD...`.
 
 ### Manual development and test environment
 

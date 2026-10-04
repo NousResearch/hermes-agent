@@ -172,6 +172,55 @@ class TestScopedAwsSessionKwargs:
         assert in_scope(home_a, scoped_aws_session_kwargs) == a_kwargs
         assert in_scope(home_a, resolve_bedrock_bearer_token) == "bearer-A"
 
+    def test_multiplex_bearer_only_profile_passes_guard_and_pins_bearer_auth(self, tmp_path, monkeypatch):
+        """A profile whose only credential is its Bedrock API key is COMPLETE: it passes the
+        ambient-chain refusal and its client is pinned to bearer auth with the scoped token,
+        so botocore never consults the launch env for it (#132685)."""
+        pytest.importorskip("botocore.session", reason="botocore (bedrock extra) required")
+        from agent import bedrock_adapter, secret_scope
+        from agent.bedrock_adapter import _cached_client, scoped_aws_session_kwargs
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home = tmp_path / "home-bearer"
+        home.mkdir()
+        (home / ".env").write_text("AWS_BEARER_TOKEN_BEDROCK=bearer-scoped\n")
+        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+
+        h_tok = set_hermes_home_override(str(home))
+        s_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
+        try:
+            assert scoped_aws_session_kwargs() == {}
+            client = _cached_client({}, "bedrock-runtime", "us-east-1")
+            assert client._client_config.signature_version == "bearer"
+        finally:
+            secret_scope.reset_secret_scope(s_tok)
+            reset_hermes_home_override(h_tok)
+            bedrock_adapter.reset_client_cache()
+
+    def test_multiplex_bearer_launch_env_does_not_complete_a_credless_profile(self, tmp_path, monkeypatch):
+        """The guard's bearer leg must read the profile's own scope, not the process env:
+        a served profile with no credential of its own keeps the ambient-chain refusal
+        even when the LAUNCH profile carries a bearer token (#132685)."""
+        from agent import secret_scope
+        from agent.bedrock_adapter import scoped_aws_session_kwargs
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home = tmp_path / "home-empty"
+        home.mkdir()
+        (home / ".env").write_text("")
+        monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bearer-launch")
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+
+        h_tok = set_hermes_home_override(str(home))
+        s_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
+        try:
+            with pytest.raises(RuntimeError, match="refused for this profile"):
+                scoped_aws_session_kwargs()
+        finally:
+            secret_scope.reset_secret_scope(s_tok)
+            reset_hermes_home_override(h_tok)
+
 
 class TestResolveBedrocRegion:
     def test_prefers_aws_region(self):

@@ -47,7 +47,9 @@ def scoped_aws_session_kwargs() -> dict[str, str]:
     would then resolve the ambient default chain (process env, ~/.aws, instance metadata), i.e. the
     launch context's identity, exactly the borrow the Entra adapter refuses. ``AWS_PROFILE`` counts as
     an explicit per-profile choice (it names an entry in the shared AWS config, like the Entra
-    ``AZURE_CLIENT_ID``-only managed-identity opt-in)."""
+    ``AZURE_CLIENT_ID``-only managed-identity opt-in). So does the profile's own
+    ``AWS_BEARER_TOKEN_BEDROCK`` (a Bedrock API key) — it is not a Session kwarg, so the bearer
+    client is assembled in ``_cached_client``, not here (#132685)."""
     from hermes_constants import get_hermes_home_override
     if get_hermes_home_override() is None:
         return {}
@@ -59,16 +61,18 @@ def scoped_aws_session_kwargs() -> dict[str, str]:
     # ambient chain (process env, ~/.aws, instance metadata), i.e. the launch context's identity —
     # the same borrow the Entra adapter refuses. Require a COMPLETE credential: the key pair, or
     # AWS_PROFILE naming an entry in the shared AWS config (an explicit per-profile choice, like
-    # the Entra AZURE_CLIENT_ID-only managed-identity opt-in).
+    # the Entra AZURE_CLIENT_ID-only managed-identity opt-in), or the profile's own Bedrock API key.
     complete = ("aws_access_key_id" in kwargs and "aws_secret_access_key" in kwargs) \
-        or "profile_name" in kwargs
+        or "profile_name" in kwargs \
+        or bool((scope.get("AWS_BEARER_TOKEN_BEDROCK") or "").strip())
     if not complete and is_multiplex_active():
         raise RuntimeError(
             "Bedrock auth is refused for this profile: it sets no complete AWS credential of its "
             "own, and under multiplexed profiles the ambient default chain (process env, ~/.aws, "
             "instance metadata) would sign this profile's calls with the LAUNCH context's identity. "
             "Set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in this profile's own config, or "
-            "AWS_PROFILE to name a shared AWS config profile."
+            "AWS_PROFILE to name a shared AWS config profile, or AWS_BEARER_TOKEN_BEDROCK for a "
+            "Bedrock API key."
         )
     return kwargs
 
@@ -138,7 +142,21 @@ def _cached_client(cache: dict[str, Any], service: str, region: str):
         # Scope check first: a cred-less multiplex profile must hit the ambient-chain
         # refusal, not a boto3 ImportError on hosts that lack the package.
         kwargs = scoped_aws_session_kwargs()
-        client = _require_boto3().Session(**kwargs).client(service, region_name=region)
+        bearer = resolve_bedrock_bearer_token()
+        boto3 = _require_boto3()
+        if bearer and not kwargs:
+            # The profile's only credential is its Bedrock API key. botocore's bearer probe
+            # (_should_prefer_bearer_auth) reads the LAUNCH process env, so hand the session a
+            # token provider scoped to this profile and pin bearer auth explicitly (#132685).
+            import botocore.config, botocore.session, botocore.tokens
+            scoped = botocore.session.get_session()
+            scoped.register_component("token_provider", botocore.tokens.ScopedEnvTokenProvider(
+                scoped, environ={"AWS_BEARER_TOKEN_BEDROCK": bearer}))
+            client = boto3.Session(botocore_session=scoped).client(
+                service, region_name=region,
+                config=botocore.config.Config(signature_version="bearer"))
+        else:
+            client = boto3.Session(**kwargs).client(service, region_name=region)
         _bedrock_clients_by_home[key] = client
     return client
 

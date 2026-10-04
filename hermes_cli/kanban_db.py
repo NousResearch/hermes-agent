@@ -1412,6 +1412,25 @@ def create_task(
         if board_default:
             workspace_path = str(board_default)
 
+    # Refuse to STORE a path the resolver would reject. Without this the card is
+    # born dead: `resolve_workspace` raises at spawn, the dispatcher logs
+    # spawn_failed, gives up after max_retries, auto-unblocks, and loops.
+    # Measured 2026-09-26 (5 cards) and again 2026-09-29 (5 cards) from cron
+    # workers; the shape reaches here verbatim from the kanban tool
+    # (tools/kanban_tools.py:1044) and the CLI (hermes_cli/kanban.py:366),
+    # whose schema says "Absolute path" but never enforced it.
+    #
+    # PLACEMENT IS LOAD-BEARING: the check runs INSIDE the write txn, AFTER the
+    # project materialisation below, never before it. A project-linked card
+    # legitimately presents ``kind='worktree', workspace_path=None`` here --
+    # `_resolve_project_link` defers the concrete path to the insert loop on
+    # purpose ("Concrete path is deferred to the insert loop"), so grading that
+    # pre-materialisation state refuses EVERY project-scoped card in the estate.
+    # Measured 2026-10-03: 36c7b35b29aa placed this call before the txn and
+    # `kanban_create(project=...)` raised ValueError for every project card while
+    # a creation-time guard that mirrors the resolver cannot disagree with it
+    # (the project card IS spawnable -- just not materialised yet).
+
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
         task_id = _new_task_id()
@@ -1427,6 +1446,15 @@ def create_task(
                         workspace_path = os.path.join(project_repo, ".worktrees", task_id)
                     if not branch_name:
                         branch_name = _project_branch_name(project_obj, task_id, title)
+
+                # Grade the path the row will ACTUALLY store, i.e. AFTER the
+                # project materialisation above. See the placement note above:
+                # refusing before it broke every project-scoped card.
+                # The guard now also names a leftover `kind:` scheme prefix, but
+                # it is CALLED through the landed alias -- see the import note.
+                kbw_require_spawnable_workspace_path(
+                    workspace_path, kind=workspace_kind, where="kanban create",
+                )
 
                 conn.execute(
                     """
@@ -4569,6 +4597,19 @@ from hermes_cli.kanban_db_workspace import (  # noqa: E402
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,
+)
+from hermes_cli.kanban_db_workspace import (  # noqa: E402
+    # KEEP THE ALIASED IMPORT NAME. This exact spelling is a LANDED CONTRACT that
+    # the estate asserts by name: bin/verify-workspace-path-creation.py grades
+    # "kbw_require_spawnable_workspace_path(" appearing in create_task, and
+    # bin/falsify-relative-workspace-create.py uses it as FIX_SYMBOLS to prove a
+    # sandbox really is pre-fix. Measured 2026-10-03 (t_wswriteguard01): renaming
+    # the call site to `require_absolute_workspace_path(` turns that guard RED
+    # 38/40 -- and RED for the WRONG reason, because the store is unchanged and
+    # every row is clean, so the operator is told "a card with a relative
+    # workspace_path is reachable again" when nothing regressed. A rename that a
+    # source-text guard cannot follow is a self-inflicted outage in the guard lane.
+    require_spawnable_workspace_path as kbw_require_spawnable_workspace_path,
 )
 from hermes_cli.kanban_db_dispatch import (  # noqa: E402
     DEFAULT_FAILURE_LIMIT,

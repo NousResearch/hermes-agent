@@ -5,6 +5,8 @@ import sqlite3
 import time
 from typing import Any, Optional
 
+from hermes_cli.kanban_db_workspace import is_spawnable_workspace_path as _is_spawnable_workspace_path
+
 def inherit_creator_origin(
     conn: sqlite3.Connection, task_id: str, creator_task_id: Optional[str], *,
     created_at: int,
@@ -194,6 +196,20 @@ def _insert_decomposed_child(
         child_ws_path = root_row["workspace_path"]
     else:
         child_ws_path = None
+    # This INSERT bypasses ``create_task``, so the creation-time guard has to be
+    # applied here too or a decomposed card is born dead exactly like a created
+    # one. Two ways in: an explicit per-child override (a decomposer can pass
+    # anything), and the inherited root path -- which is why the message names
+    # the root, since a relative root is the defect to repair
+    # (bin/fix-relative-workspace.py), not the child's.
+    if child_ws_path and not _is_spawnable_workspace_path(child_ws_path):
+        source = (f" (inherited from root {root_id})"
+                  if not child.get("workspace_path") else "")
+        raise ValueError(
+            f"decompose: child workspace_path {child_ws_path!r}{source} is not absolute; "
+            f"a decomposed card with a relative path can never spawn. Give the child an "
+            f"absolute path, or omit workspace_path so dispatch materialises a fresh one."
+        )
     new_id = _new_task_id()
     body = child.get("body")
     conn.execute(

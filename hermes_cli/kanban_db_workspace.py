@@ -26,6 +26,122 @@ if TYPE_CHECKING:
 _REMOVABLE_KINDS = ("scratch", "worktree")
 
 
+# ``--workspace`` is a COMBINED ``kind[:path]`` CLI argument. ``_parse_workspace_flag``
+# splits it into TWO columns (``workspace_kind`` + ``workspace_path``) before it ever
+# reaches storage, so a scheme prefix is never a valid stored value. Any writer that
+# stores the raw argument — an ad-hoc INSERT, a fallback insert tool, a wrapper that
+# forwards the flag unparsed — leaves ``dir:C:/...`` in the column; on Windows the
+# scheme occupies position 0, so ``Path(...).is_absolute()`` is False even though the
+# path underneath is absolute, the dispatcher raises ``non-absolute workspace_path``
+# on every tick, burns the retry budget, and blocks the card permanently. The failure
+# is SILENT: the writer reports CREATED, the card appears on the board, and it is
+# already dead. Seven estate cards died this way before the shape was understood.
+#
+# The scheme test is deliberately platform-independent. On POSIX ``dir:/x`` is a legal
+# RELATIVE path (a colon is an ordinary filename character), so the absolute-path check
+# ALONE cannot distinguish it from an ordinary relative path: it refuses the value, but
+# with a message that sends the operator looking for a CWD problem instead of naming
+# the real cause. Naming the prefix explicitly is what turns an unactionable refusal
+# into a named, fixable defect on every OS — including the POSIX-only CI runs that can
+# never observe the Windows symptom.
+_WORKSPACE_SCHEME_PREFIXES = ("scratch:", "dir:", "worktree:", "file:")
+
+_SCHEME_HINT = (
+    "a 'dir:'/'worktree:' prefix means the un-split --workspace argument was stored "
+    "verbatim; the scheme belongs in workspace_kind, not in the path"
+)
+
+
+def _scheme_prefix_for(raw: str) -> Optional[str]:
+    """The ``kind:`` prefix *raw* starts with, case-insensitively, or None."""
+    lowered = raw.lower()
+    for prefix in _WORKSPACE_SCHEME_PREFIXES:
+        if lowered.startswith(prefix):
+            return prefix
+    return None
+
+
+def require_absolute_workspace_path(
+    value: Path | str | None,
+    *,
+    field: str = "workspace_path",
+    kind: Optional[str] = None,
+    where: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> None:
+    """Refuse to STORE a ``workspace_path`` that would strand the card at spawn.
+
+    ``None``/blank means "unset" and passes whenever the kind does not require one (a
+    ``scratch`` task with no path is NORMAL — ``resolve_workspace`` materialises
+    ``<board-root>/workspaces/<id>``). Two defects are refused:
+
+    1. a leftover ``kind:`` scheme prefix (see ``_WORKSPACE_SCHEME_PREFIXES``) — never
+       a valid stored path on any OS, and the cause of the seven-card incident;
+    2. any other non-absolute path, which is ambiguous against the dispatcher's CWD (a
+       confused-deputy traversal) and is already refused by ``resolve_workspace`` on
+       every tick.
+
+    The absolute test is deliberately IDENTICAL to the resolver's own
+    (``Path(p).expanduser().is_absolute()``) rather than a re-derivation: a checker that
+    disagrees with the resolver either lets a card through that dies at spawn, or
+    refuses a card that would have worked. This is the creation-time mirror of the
+    resolver's own acceptance test, extended to name the scheme defect so the refusal
+    identifies the real cause instead of only the symptom.
+    """
+    if kind == "scratch" and value is None:
+        return
+    if value is None:
+        # UNSET (None) is not the same defect as a NON-ABSOLUTE or BLANK value,
+        # and the kinds differ because the resolver treats them differently (do not
+        # over-refuse -- a checker that refuses a card the resolver would have
+        # served is its own outage):
+        #   scratch  -> resolver materialises <board-root>/workspaces/<id>  : OK
+        #   worktree -> resolver falls back to the board's default_workdir  : OK,
+        #               and only raises if THAT is unset, with a message that
+        #               points at the board setting rather than at a missing
+        #               argument (measured 2026-10-03: refusing here sent the
+        #               operator to the wrong knob, and would have killed every
+        #               board-default-anchored worktree card in the estate).
+        #   dir      -> resolver raises "kind=dir but no workspace_path"   : error
+        if kind == "dir":
+            raise ValueError(
+                f"{where + ': ' if where else ''}workspace_kind=dir needs a non-empty "
+                f"workspace_path, got None; pass an absolute path, e.g. "
+                f"'C:/Users/<you>/<repo>' or 'dir:<abs path>' in the CLI's --workspace form."
+            )
+        return
+    if not str(value).strip():
+        # A BLANK string is not "unset" -- it is a malformed value that no
+        # resolver serves for ANY kind, and it is the shape the estate guard
+        # pins as unspawnable for dir AND worktree alike.
+        raise ValueError(
+            f"{where + ': ' if where else ''}workspace_kind={kind or 'scratch'} needs a "
+            f"non-empty workspace_path, got {value!r}; pass an absolute path, e.g. "
+            f"'C:/Users/<you>/<repo>' or 'dir:<abs path>' in the CLI's --workspace form."
+        )
+    raw = str(value).strip()
+    prefix = _scheme_prefix_for(raw)
+    if prefix is not None:
+        subject = f"task {task_id} " if task_id else ""
+        raise ValueError(
+            f"{where + ': ' if where else ''}{subject}{field} {raw!r} still carries a "
+            f"{prefix!r} scheme prefix; store the kind in workspace_kind={prefix[:-1]!r} "
+            f"and the bare path in {field}={raw[len(prefix):].strip()!r} instead — "
+            f"{_SCHEME_HINT}. A scheme-prefixed path is not absolute, so the dispatcher "
+            f"raises 'non-absolute workspace_path' on every tick, burns the retry budget, "
+            f"and blocks the card permanently — silently, because the writer already "
+            f"reported CREATED."
+        )
+    if not Path(raw).expanduser().is_absolute():
+        subject = f"task {task_id} " if task_id else ""
+        raise ValueError(
+            f"{where + ': ' if where else ''}{subject}{field} {raw!r} is not absolute; "
+            f"use an absolute path (relative paths are ambiguous against the dispatcher's "
+            f"CWD, so the card would be born unspawnable). If this came from a --workspace "
+            f"argument, {_SCHEME_HINT}."
+        )
+
+
 def _path_key(path: Path | str | None) -> str:
     """Unicode-form-insensitive identity for a filesystem path.
 
@@ -722,7 +838,9 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
         if not anchor.is_absolute():
             raise ValueError(
                 f"board {board_slug!r} default_workdir {board_default!r} is not "
-                "absolute; use an absolute path to a git repo"
+                "absolute; use an absolute path to a git repo. If it starts with a "
+                "'dir:'/'worktree:' scheme prefix, the un-split --workspace argument was "
+                "stored verbatim — the scheme belongs in workspace_kind, not in the path"
             )
         repo_root = _git_toplevel(anchor)
         if repo_root is None:
@@ -736,7 +854,10 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     if not requested.is_absolute():
         raise ValueError(
             f"task {task.id} has non-absolute worktree path "
-            f"{task.workspace_path!r}; use an absolute path"
+            f"{task.workspace_path!r}; use an absolute path. "
+            f"If the path starts with a 'dir:'/'worktree:' scheme prefix, the un-split "
+            f"--workspace argument was stored verbatim — the scheme belongs in "
+            f"workspace_kind, not in the path"
         )
     requested_resolved = requested.resolve(strict=False)
 
@@ -773,6 +894,58 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     return requested, branch_name
 
 
+def is_spawnable_workspace_path(path: Optional[str]) -> bool:
+    """Whether ``resolve_workspace`` would ACCEPT this stored ``workspace_path``.
+
+    The predicate is deliberately IDENTICAL to the resolver's own
+    (``Path(p).expanduser().is_absolute()``, ``resolve_workspace``:542-547 /
+    :602-617) rather than a re-derivation of "absolute": a checker that
+    disagrees with the resolver either lets a card through that dies at spawn
+    (a superset) or refuses a card that would have worked (a subset).
+
+    Probe of the shapes this fleet actually produced (measured 2026-10-03):
+
+        'virtengine'                             REFUSED  (the 2026-09-26/29 class)
+        './virtengine', '../virtengine'          REFUSED
+        '/c/Users/jON/virtengine-ops/virtengine' REFUSED  (MSYS drive path on a Windows host)
+        'dir:C:/Users/jON/virtengine-ops'        REFUSED  (unstripped CLI kind prefix)
+        'worktree:C:/Users/jON/virtengine-ops'   REFUSED
+        '~/virtengine'                           OK       (expanduser makes it absolute)
+        'C:/Users/jON/virtengine-ops/virtengine' OK
+    """
+    if not path or not str(path).strip():
+        return False
+    return Path(str(path)).expanduser().is_absolute()
+
+
+def require_spawnable_workspace_path(path: Optional[str], *, kind: Optional[str], where: str) -> None:
+    """Deprecated alias for :func:`require_absolute_workspace_path`.
+
+    Kept because this was the public creation-time guard name. The implementation now
+    lives in one place and additionally names a leftover ``kind:`` scheme prefix, which
+    is the defect that killed seven estate cards while the old message pointed the
+    operator at a CWD problem that did not exist.
+
+    Why creation and not only resolution: every non-absolute stored path is a
+    card that is born dead. Nothing surfaces it until a dispatcher tick tries
+    to spawn it (minutes or days later), and then the failure mode is a LOOP --
+    ``spawn_failed`` -> ``gave_up`` after ``max_retries`` -> auto-unblock ->
+    ``spawn_failed`` again -- which burns ticks while occupying diagnostics
+    (measured 2026-09-26: ``t_ccad2930`` burned ticks at 19:13/19:14/19:48/
+    19:49 with 0-second runs and no worker; five more cards on 2026-09-29).
+
+    A ``scratch`` task with no path is NORMAL (``resolve_workspace``:597
+    materialises ``<board-root>/workspaces/<id>``), so an empty value is only
+    an error for the persistent kinds that require one.
+
+    The ``scratch``/``dir``/``worktree`` kinds are all affected: a stored
+    ``'dir:C:/x'`` or bare relative path fails at the ``dir`` and ``worktree``
+    branches alike (:602-617, :542-547), and a legacy explicit-path scratch
+    task hits the same guard.
+    """
+    require_absolute_workspace_path(path, kind=kind, where=where)
+
+
 def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
@@ -796,7 +969,10 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         if not p.is_absolute():
             raise ValueError(
                 f"task {task.id} has non-absolute workspace_path "
-                f"{task.workspace_path!r}; workspace paths must be absolute"
+                f"{task.workspace_path!r}; workspace paths must be absolute. "
+                f"If the path starts with a 'scratch:'/'dir:'/'worktree:' scheme prefix, "
+                f"the un-split --workspace argument was stored verbatim — the scheme "
+                f"belongs in workspace_kind, not in the path"
             )
     elif kind == "dir":
         if not task.workspace_path:
@@ -806,7 +982,10 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
             raise ValueError(
                 f"task {task.id} has non-absolute workspace_path "
                 f"{task.workspace_path!r}; use an absolute path "
-                f"(relative paths are ambiguous against the dispatcher's CWD)"
+                f"(relative paths are ambiguous against the dispatcher's CWD). "
+                f"If the path starts with a 'dir:'/'worktree:' scheme prefix, the "
+                f"un-split --workspace argument was stored verbatim — the scheme "
+                f"belongs in workspace_kind, not in the path"
             )
     else:
         raise ValueError(f"unknown workspace_kind: {kind}")
@@ -820,6 +999,14 @@ def _set_task_column(conn: sqlite3.Connection, task_id: str, column: str, value:
 
 
 def set_workspace_path(conn: sqlite3.Connection, task_id: str, path: Path | str) -> None:
+    # Validate BEFORE the write. This is the OTHER writer: the dispatcher persists the
+    # resolved workspace here, so a scheme-prefixed value would land on a LIVE card and
+    # strand it on the next tick — with the same silent-then-permanent failure shape.
+    # Validating at the write boundary (not only in create_task) is what covers a caller
+    # that reaches this setter directly.
+    require_absolute_workspace_path(
+        path, kind="dir", where="set_workspace_path", task_id=task_id,
+    )
     _set_task_column(conn, task_id, "workspace_path", str(path))
 
 

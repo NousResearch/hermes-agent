@@ -63,3 +63,16 @@ class TestClarifyBatchPanelHeight:
         rendered = _rendered(cli, 100, 80)
         assert "ACTIVE_QUESTION_TAIL" in rendered
         assert "CHOICE_ALPHA_TOKEN" in rendered
+
+    def test_selected_choice_stays_visible_when_choices_overflow(self):
+        cli = _make_cli(
+            [_QUESTION, _QUESTION],
+            {},
+            [f"CHOICE_{i}_TOKEN " + "long label " * 12 for i in range(4)],
+            active=1,
+        )
+        cli._clarify_state["selected"] = 3
+        lines = 16
+        rendered = _rendered(cli, 100, lines)
+        assert rendered.count("\n") <= lines - 6  # _PANEL_RESERVED_BELOW
+        assert "CHOICE_3_TOKEN" in rendered

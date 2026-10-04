@@ -3,7 +3,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConfigRecord } from '@/hermes'
 
+import { TRANSLATIONS } from './catalog'
 import { type I18nConfigClient, I18nProvider, useI18n } from './context'
+import { registerAppLocale } from './registry'
+import { $requestedLocale } from './runtime'
 import type { Locale } from './types'
 
 function LanguageProbe({ target = 'zh' }: { target?: Locale }) {
@@ -76,6 +79,31 @@ describe('I18nProvider', () => {
     expect(configClient.saveConfig).not.toHaveBeenCalled()
   })
 
+  it.each([
+    ['fr', 'fr'],
+    ['de-DE', 'de'],
+    ['es', 'es']
+  ] as const)('loads display.language=%s and renders the %s catalog', async (configured, locale) => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: configured } }),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+
+    expect(screen.getByTestId('locale').textContent).toBe(locale)
+    expect(screen.getByTestId('label').textContent).toBe(TRANSLATIONS[locale].language.label)
+    expect(screen.getByTestId('label').textContent).not.toBe(TRANSLATIONS.en.language.label)
+    expect(screen.getByTestId('save').textContent).not.toBe(TRANSLATIONS.en.common.save)
+    expect(configClient.saveConfig).not.toHaveBeenCalled()
+  })
+
   it('keeps English usable when config loading fails', async () => {
     const configClient: I18nConfigClient = {
       getConfig: vi.fn().mockRejectedValue(new Error('config unavailable')),
@@ -97,7 +125,7 @@ describe('I18nProvider', () => {
 
   it('does not overwrite unsupported configured languages', async () => {
     const configClient: I18nConfigClient = {
-      getConfig: vi.fn().mockResolvedValue({ display: { language: 'de' } }),
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'it' } }),
       saveConfig: vi.fn()
     }
 
@@ -112,6 +140,65 @@ describe('I18nProvider', () => {
     expect(screen.getByTestId('locale').textContent).toBe('en')
     expect(screen.getByTestId('label').textContent).toBe('Language')
     expect(configClient.saveConfig).not.toHaveBeenCalled()
+    // …but remembers the ask so a backend pack for it can be fetched.
+    expect($requestedLocale.get()).toBe('it')
+  })
+
+  it('promotes a saved pack-only language once its pack registers, then drops back when it is removed', async () => {
+    const configClient: I18nConfigClient = {
+      getConfig: vi.fn().mockResolvedValue({ display: { language: 'pl' } }),
+      saveConfig: vi.fn()
+    }
+
+    render(
+      <I18nProvider configClient={configClient}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await waitFor(() => expect(screen.getByTestId('loading').textContent).toBe('false'))
+    expect(screen.getByTestId('locale').textContent).toBe('en')
+
+    const dispose = registerAppLocale(
+      'pl',
+      { endonym: 'Polski', translations: { language: { label: 'Język' } } },
+      'backend'
+    )
+
+    try {
+      await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('pl'))
+      expect(screen.getByTestId('label').textContent).toBe('Język')
+      // Unregistered keys fall back to English, never to the raw key.
+      expect(screen.getByTestId('save').textContent).toBe(TRANSLATIONS.en.common.save)
+      // The provider writes <html lang> in a passive effect after the render
+      // commits, so it can trail the rendered locale under load.
+      await waitFor(() => expect(document.documentElement.lang).toBe('pl'))
+      expect(configClient.saveConfig).not.toHaveBeenCalled()
+    } finally {
+      dispose()
+    }
+
+    // The pack is gone (profile switch): strings fall back to English while the
+    // chosen id stays put for the next sync.
+    await waitFor(() => expect(screen.getByTestId('label').textContent).toBe('Language'))
+    expect(screen.getByTestId('locale').textContent).toBe('pl')
+  })
+
+  it('mirrors a registered language’s direction onto the document', async () => {
+    const dispose = registerAppLocale('he', { endonym: 'עברית', rtl: true }, 'plugin:hermes-lang-he')
+
+    try {
+      render(
+        <I18nProvider configClient={null} initialLocale="he">
+          <LanguageProbe />
+        </I18nProvider>
+      )
+
+      expect(screen.getByTestId('locale').textContent).toBe('he')
+      expect(document.documentElement.dir).toBe('rtl')
+    } finally {
+      dispose()
+    }
   })
 
   it('reads latest config before saving language and preserves unrelated values', async () => {
@@ -253,6 +340,31 @@ describe('I18nProvider', () => {
       vi.advanceTimersByTime(30_000)
     })
     expect(getConfig).toHaveBeenCalledTimes(11)
+
+    vi.useRealTimers()
+  })
+
+  it('stops retrying once the provider unmounts mid-retry', async () => {
+    vi.useFakeTimers()
+    const getConfig = vi.fn().mockRejectedValue(new Error('backend not ready yet'))
+
+    const view = render(
+      <I18nProvider configClient={{ getConfig, saveConfig: vi.fn() }}>
+        <LanguageProbe />
+      </I18nProvider>
+    )
+
+    await act(async () => {})
+    expect(getConfig).toHaveBeenCalledTimes(1)
+
+    // A retry is now scheduled; unmounting must cancel it, not keep polling a
+    // backend nobody is listening for.
+    view.unmount()
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000)
+    })
+    expect(getConfig).toHaveBeenCalledTimes(1)
 
     vi.useRealTimers()
   })

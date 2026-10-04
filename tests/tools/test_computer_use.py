@@ -783,48 +783,7 @@ class TestElementLabelParsing:
         assert labels[201] == ""              # pure order number, no label
 
 
-class TestUpdateCheck:
-    """cua_driver_update_check() / _nudge(): native `check-update --json`.
 
-    Prefers cua-driver's source-of-truth update check over a hardcoded
-    version floor. Stays quiet (None) when indeterminate: an old driver with
-    no `check-update` verb, offline, an `error` payload, or unparseable output.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _driver_resolves(self):
-        # The update check now short-circuits to None when no driver
-        # resolves; CI has none installed, so pin a resolved path.
-        with patch(
-            "tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
-            return_value="/usr/local/bin/cua-driver",
-        ):
-            yield
-
-    @staticmethod
-    def _run_returning(stdout: str):
-        fake = MagicMock()
-        fake.stdout = stdout
-        return patch("tools.computer_use.cua_backend.subprocess.run", return_value=fake)
-
-    def test_update_available(self):
-        from tools.computer_use import cua_backend
-        from tools.computer_use import cua_backend_driver
-        payload = '{"current_version":"0.3.1","latest_version":"0.3.2","update_available":true}'
-        with self._run_returning(payload):
-            st = cua_backend_driver.cua_driver_update_check()
-            assert st is not None and st["update_available"] is True
-            msg = cua_backend.cua_driver_update_nudge()
-        assert msg is not None
-        assert "0.3.2" in msg and "0.3.1" in msg
-
-    def test_error_payload_is_indeterminate(self):
-        from tools.computer_use import cua_backend
-        from tools.computer_use import cua_backend_driver
-        payload = '{"current_version":"0.3.2","update_available":false,"error":"github 503"}'
-        with self._run_returning(payload):
-            assert cua_backend_driver.cua_driver_update_check() is None
-            assert cua_backend.cua_driver_update_nudge() is None
 
 class TestLazyMcpInstall:
     """`mcp` is an optional extra; the backend lazy-installs it on start().
@@ -833,160 +792,45 @@ class TestLazyMcpInstall:
     partial installs, matching how every other optional backend behaves.
     """
 
-
-    def test_start_reports_incompatible_existing_driver_before_mcp_setup(self):
+    def test_start_lazy_installs_mcp(self):
         from tools.computer_use import cua_backend
-
-        state = {
-            "ready": False,
-            "reason": "Hermes computer use requires cua-driver 0.20.0 or newer",
-        }
         with patch.object(
                  cua_backend,
                  "cua_driver_runtime_contract_status",
-                 return_value=state,
-             ), patch("tools.lazy_deps.ensure") as mock_ensure:
-            with pytest.raises(RuntimeError, match="hermes computer-use install"):
-                cua_backend.CuaDriverBackend().start()
+                 return_value={"ready": True},
+             ), \
+             patch("pm.ensure") as driver_ensure, \
+             patch("pm.ensure_import") as mock_ensure, \
+             patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
+            cua_backend.CuaDriverBackend().start()
+        mock_ensure.assert_called_once_with("computer-use")
+        driver_ensure.assert_called_once_with("cua-driver")
+        mock_sess_start.assert_called_once()
 
-        mock_ensure.assert_not_called()
 
     def test_start_propagates_feature_unavailable(self):
         """When mcp can't be installed (lazy installs off / network), start()
         surfaces the actionable FeatureUnavailable rather than a session that
         crashes later on a bare import."""
         from tools.computer_use import cua_backend
-        from tools.lazy_deps import FeatureUnavailable
+        from pm import InstallError as FeatureUnavailable
         unavailable = FeatureUnavailable(
-            "tool.computer_use", ("mcp==1.28.1",), "lazy installs disabled"
+            "computer-use", "lazy installs disabled"
         )
         with patch.object(
                  cua_backend,
                  "cua_driver_runtime_contract_status",
                  return_value={"ready": True},
              ), \
-             patch.object(cua_backend, "_maybe_nudge_update"), \
-             patch("tools.lazy_deps.ensure", side_effect=unavailable), \
+             patch("pm.ensure"), \
+             patch("pm.ensure_import", side_effect=unavailable), \
              patch.object(cua_backend._CuaDriverSession, "start") as mock_sess_start:
             with pytest.raises(FeatureUnavailable):
                 cua_backend.CuaDriverBackend().start()
         mock_sess_start.assert_not_called()  # never reaches the MCP session
 
 
-class TestContractAutoRepair:
-    """An installed-but-incompatible driver is repaired automatically, once.
 
-    The 0.20 runtime-contract gate fails closed; when the failure is an old
-    installed driver (a state Hermes' own version-floor bump created),
-    start() runs the standard install/repair path once instead of failing
-    every computer_use call until the user runs the CLI by hand.
-    """
-
-    def _incompatible(self):
-        return {
-            "ready": False,
-            "binary": "/usr/local/bin/cua-driver",
-            "version": "0.19.3",
-            "reason": "Hermes computer use requires cua-driver 0.20.0 or newer",
-        }
-
-    def test_start_auto_repairs_incompatible_driver(self, monkeypatch):
-        from unittest.mock import MagicMock, patch
-        from tools.computer_use import cua_backend
-
-        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
-        backend = cua_backend.CuaDriverBackend()
-        backend._session = MagicMock()
-
-        with patch.object(
-                 cua_backend,
-                 "cua_driver_runtime_contract_status",
-                 side_effect=[self._incompatible(), {"ready": True}],
-             ), \
-             patch("hermes_cli.tools_config.install_cua_driver",
-                   return_value=True) as installer, \
-             patch.object(cua_backend, "_maybe_nudge_update"), \
-             patch("tools.lazy_deps.ensure"):
-            backend.start()
-
-        installer.assert_called_once_with(
-            upgrade=False, show_installer_progress=False
-        )
-        backend._session.start.assert_called_once()
-
-    def test_failed_repair_surfaces_original_error(self, monkeypatch):
-        from unittest.mock import patch
-        from tools.computer_use import cua_backend
-
-        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
-        with patch.object(
-                 cua_backend,
-                 "cua_driver_runtime_contract_status",
-                 return_value=self._incompatible(),
-             ), \
-             patch("hermes_cli.tools_config.install_cua_driver",
-                   return_value=False), \
-             patch("tools.lazy_deps.ensure") as mock_ensure:
-            with pytest.raises(RuntimeError, match="0.20.0 or newer"):
-                cua_backend.CuaDriverBackend().start()
-        mock_ensure.assert_not_called()
-
-    def test_repair_is_attempted_once_per_process(self, monkeypatch):
-        from unittest.mock import patch
-        from tools.computer_use import cua_backend
-
-        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
-        with patch.object(
-                 cua_backend,
-                 "cua_driver_runtime_contract_status",
-                 return_value=self._incompatible(),
-             ), \
-             patch("hermes_cli.tools_config.install_cua_driver",
-                   return_value=False) as installer, \
-             patch("tools.lazy_deps.ensure"):
-            for _ in range(2):
-                with pytest.raises(RuntimeError):
-                    cua_backend.CuaDriverBackend().start()
-        installer.assert_called_once()
-
-    def test_explicit_override_is_never_repaired(self, monkeypatch):
-        from unittest.mock import patch
-        from tools.computer_use import cua_backend
-
-        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
-        monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", "/opt/custom/cua-driver")
-        with patch.object(
-                 cua_backend,
-                 "cua_driver_runtime_contract_status",
-                 return_value=self._incompatible(),
-             ), \
-             patch("hermes_cli.tools_config.install_cua_driver") as installer, \
-             patch("tools.lazy_deps.ensure"):
-            with pytest.raises(RuntimeError, match="HERMES_CUA_DRIVER_CMD"):
-                cua_backend.CuaDriverBackend().start()
-        installer.assert_not_called()
-
-    def test_missing_binary_is_not_repaired(self, monkeypatch):
-        from unittest.mock import patch
-        from tools.computer_use import cua_backend
-
-        monkeypatch.setattr(cua_backend, "_contract_repair_attempted", False)
-        state = {
-            "ready": False,
-            "binary": None,
-            "version": None,
-            "reason": "cua-driver is not installed",
-        }
-        with patch.object(
-                 cua_backend,
-                 "cua_driver_runtime_contract_status",
-                 return_value=state,
-             ), \
-             patch("hermes_cli.tools_config.install_cua_driver") as installer, \
-             patch("tools.lazy_deps.ensure"):
-            with pytest.raises(RuntimeError, match="not installed"):
-                cua_backend.CuaDriverBackend().start()
-        installer.assert_not_called()
 
 
 class TestCaptureAfterAppContext:
@@ -1481,7 +1325,7 @@ class TestCaptureAppFilterNoMatch:
         assert backend._active_pid is None
         assert backend._active_window_id is None
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_linux_default_capture_skips_gnome_shell_helper(self):
         windows = [
             {"app_name": "", "pid": 100, "window_id": 1,
@@ -2260,12 +2104,11 @@ class TestSessionLifecycle:
             "structuredContent": None, "isError": False,
         })
 
-        # Stub the optional-dep lazy-install so start() runs end-to-end
-        # without trying to pip-install anything.
+        # Session lifecycle is independent of PM acquisition.
         with patch(
             "tools.computer_use.cua_backend.cua_driver_runtime_contract_status",
             return_value={"ready": True},
-        ), patch("tools.lazy_deps.ensure"):
+        ), patch("pm.ensure"), patch("pm.ensure_import"):
             backend.start()
 
         # First call_tool after _session.start() must be start_session
@@ -2292,7 +2135,7 @@ class TestSessionLifecycle:
         with patch(
             "tools.computer_use.cua_backend.cua_driver_runtime_contract_status",
             return_value={"ready": True},
-        ), patch("tools.lazy_deps.ensure"):
+        ), patch("pm.ensure"), patch("pm.ensure_import"):
             backend.start()  # must not raise
 
 
@@ -2335,6 +2178,55 @@ class TestCuaToolCoverageExpansion:
         backend.call_tool("any_tool", {"session": "harness-1", "arg": 1})
         name, args = backend._session.call_tool.call_args.args
         assert args["session"] == "harness-1"
+
+
+class TestStartupTimeoutPhaseDetail:
+    """Issue #57025: the ready-timeout error must report which startup phase
+    wedged, so 'doctor passes but wrapper times out' reports are diagnosable."""
+
+    def test_timeout_error_reports_the_wedged_phase(self):
+        import asyncio
+        import threading
+
+        from tools.computer_use import cua_backend_session as cbs
+
+        phase_reached = threading.Event()
+
+        async def _wedged_lifecycle(self):
+            # Real lifecycle shape: shutdown event on the loop, phase marker,
+            # then block — here at MCP initialize, as a wedged driver does.
+            self._shutdown_event = asyncio.Event()
+            self._startup_phase = "mcp-initialize"
+            phase_reached.set()
+            await self._shutdown_event.wait()
+
+        class _FastReadyEvent(threading.Event):
+            """Shrinks only the 30s ready wait, and only once the lifecycle
+            coroutine has provably recorded its phase (no timing race)."""
+
+            def wait(self, timeout=None):
+                if timeout is not None:
+                    assert phase_reached.wait(10), "lifecycle coroutine never ran"
+                    timeout = min(timeout, 0.05)
+                return super().wait(timeout)
+
+        bridge = cbs._AsyncBridge()
+        session = cbs._CuaDriverSession(bridge)
+        bridge.start()  # before the Event patch, so only the ready wait sees it
+        try:
+            with patch.object(cbs._CuaDriverSession, "_lifecycle_coro", _wedged_lifecycle), \
+                 patch.object(cbs.threading, "Event", _FastReadyEvent):
+                with pytest.raises(RuntimeError) as excinfo:
+                    session.start()
+            msg = str(excinfo.value)
+            assert "stuck in phase: mcp-initialize" in msg
+            assert "computer-use doctor" in msg
+            # The timeout path signals the wedged lifecycle to shut down, and
+            # the session stays un-started so the next call rebuilds it.
+            session._lifecycle_future.result(timeout=5)
+            assert session._started is False
+        finally:
+            bridge.stop()
 
 
 class TestCapturePayloadBudget:
@@ -2446,7 +2338,7 @@ class TestElementSpillFile:
         assert "elements_file" in out
         assert str(out["elements_file"]) in out["summary"]
         spill = json.loads(
-            open(out["elements_file"], encoding="utf-8").read())
+            open(out["elements_file"], encoding="utf-8-sig").read())
         # Everything the in-context response dropped is in the file:
         assert spill["total_elements"] == 120
         assert len(spill["elements"]) == 120           # beyond max_elements cap

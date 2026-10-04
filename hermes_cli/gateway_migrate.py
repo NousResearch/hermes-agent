@@ -89,7 +89,15 @@ def _service_label(service: tuple[str, bool]) -> str:
     kind, system = service
     if kind == "systemd":
         return f"systemd ({'system' if system else 'user'})"
+    if kind == "s6":
+        return "s6 slot"
     return "Windows scheduled task" if kind == "windows" else kind
+
+
+def _remove_verb(service: tuple[str, bool]) -> str:
+    """An s6 slot is parked down (it stays registered as the `hermes -p X gateway start` target), every
+    other unit is uninstalled."""
+    return "park" if service[0] == "s6" else "uninstall"
 
 
 def _service_dict(service: tuple[str, bool]) -> dict:
@@ -196,16 +204,30 @@ class MigrationPlan:
 def _home_env(home: Path) -> Iterator[None]:
     """Run service-manager helpers as if ``home`` were the active HERMES_HOME. Both the contextvar
     override (``get_hermes_home``) and ``os.environ`` (``gateway.status`` identity files, unit
-    generation) are switched, then restored."""
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    generation) are switched, then restored.
+
+    The process keeps its LAUNCH identity while swapped (``pin_process_hermes_home``): ``os.environ``
+    still holds the launch profile's ``.env``, so a child spawned in here for ``home`` must see it as
+    a routed home and take only ``home``'s own secrets — with the env var swapped, the routed-home
+    checks read ``home`` as the launch profile and handed the launch profile's credentials to the
+    default gateway."""
+    from hermes_constants import (
+        get_routing_process_hermes_home, pin_process_hermes_home, process_hermes_home_is_pinned,
+        reset_hermes_home_override, set_hermes_home_override,
+    )
     import hermes_constants
     previous = os.environ.get("HERMES_HOME")
+    pinned_here = not process_hermes_home_is_pinned()
+    if pinned_here:
+        pin_process_hermes_home(get_routing_process_hermes_home())
     token = set_hermes_home_override(str(home))
     os.environ["HERMES_HOME"] = str(home)
     hermes_constants._default_hermes_root_memo = None
     try:
         yield
     finally:
+        if pinned_here:
+            pin_process_hermes_home(None)
         reset_hermes_home_override(token)
         if previous is None:
             os.environ.pop("HERMES_HOME", None)
@@ -272,9 +294,22 @@ def _gateway_identity(home: Path, pid: Optional[int], services: list[tuple[str, 
 
 
 def _installed_services(home: Path) -> list[tuple[str, bool]]:
-    """Every installed service for ``home``'s gateway (units / plist / scheduled task), user scope first."""
+    """Every installed service for ``home``'s gateway (units / plist / scheduled task), user scope first.
+
+    Under s6 the footprint is the SLOT: the root slot always (it is what a restart goes through),
+    a named profile's slot only while it is UP — a registered-down slot is what the container's
+    boot leaves behind for every named profile and is not a gateway."""
     from hermes_cli import gateway as gw
     found: list[tuple[str, bool]] = []
+    if gw._running_under_s6():
+        from hermes_cli.gateway_multiplex_s6 import named_slot_name, slot_is_up
+        from hermes_cli.service_manager import S6ServiceManager
+        from hermes_constants import profile_name_for_home
+        name = profile_name_for_home(home) or "default"
+        slot_dir = S6ServiceManager().scandir / named_slot_name(name)
+        if slot_dir.is_dir() and (name == "default" or slot_is_up(name)):
+            found.append(("s6", False))
+        return found
     with _home_env(home):
         if gw.supports_systemd_services():
             found.extend(("systemd", system) for system in (False, True) if gw.get_systemd_unit_path(system=system).exists())
@@ -309,7 +344,9 @@ def _systemd_service_user(home: Path, services: list[tuple[str, bool]]) -> Optio
 
 
 def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: Optional[str] = None) -> None:
-    """``stop`` / ``uninstall`` / ``start`` / ``restart`` / ``install`` on ``home``'s service."""
+    """``stop`` / ``uninstall`` / ``start`` / ``restart`` / ``install`` / ``enable`` on ``home``'s service."""
+    if kind == "s6":
+        return _s6_slot_op(verb, home)
     from hermes_cli import gateway as gw
     with _home_env(home):
         if verb == "install":
@@ -323,12 +360,41 @@ def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: 
             else:
                 gw.systemd_install(system=system, run_as_user=run_as_user, non_interactive=True)
             return
+        if verb == "enable":
+            # Boot enablement only: the migration's uninstall of every secondary destroys their
+            # boot enablement (systemd: disable + default.target.wants unlink), so the survivor's is
+            # load-bearing for the whole host — and `restart` on a disabled unit succeeds, so a
+            # reboot came up with no gateway while the migration reported success (#124922).
+            # launchd (RunAtLoad plist) and the Windows logon task are their own enablement and the
+            # migration never removes the survivor's.
+            if kind != "systemd":
+                return
+            enabled = gw._run_systemctl(["enable", gw.get_service_name()], system=system, check=False, timeout=30)
+            if getattr(enabled, "returncode", 0) != 0:
+                raise RuntimeError(f"could not enable {gw.get_service_name()} at boot (systemctl enable "
+                                   f"exited {enabled.returncode}); a reboot would come up with no gateway")
+            return
         gw._service_call(kind, verb, system)
 
 
 def _stop_gateway_process(home: Path) -> None:
     from hermes_cli.profiles import _stop_gateway_process
     _stop_gateway_process(home)
+
+
+def _s6_slot_op(verb: str, home: Path) -> None:
+    """The s6 leg of :func:`_service_op`. A named profile's slot is never uninstalled: it stays
+    registered DOWN (``down`` file) as the target of a later ``hermes -p X gateway start``, exactly
+    the shape the container's boot produces. The root slot is (re)started so it re-reads its config."""
+    from hermes_cli.gateway_multiplex_s6 import bring_root_slot_up, park_named_slot
+    from hermes_constants import profile_name_for_home
+    name = profile_name_for_home(home) or "default"
+    if name == "default":
+        if verb in ("start", "restart"):
+            bring_root_slot_up()
+        return  # install/uninstall/stop of the root slot are not migration steps
+    if verb == "stop":
+        park_named_slot(name)
 
 
 def _spawn_detached_gateway(home: Path) -> bool:
@@ -363,10 +429,20 @@ def _write_multiplex_flag(default_home: Path, value: bool) -> None:
 def _profile_gateway_config(home: Path):
     """This profile's ``GatewayConfig`` read exactly the way the multiplexer reads it: under the
     profile's own secret scope with multiplexing active, so a missing token stays missing instead of
-    borrowing the CLI process's ``os.environ`` (which holds the launch profile's ``.env``)."""
+    borrowing the CLI process's ``os.environ`` (which holds the launch profile's ``.env``).
+
+    A PARKED profile stays in the inventory and the duplicate-credential guard (parking must not hide
+    a conflict), but it is inert for the host: its config is read without discovering its plugins,
+    whose ``register()`` would otherwise run in the live gateway on every boot (#123386). Only its
+    plugin-defined platforms fall out of the guard — their credentials cannot be evaluated without
+    importing the plugin; builtin bot tokens still collide.
+    """
     from gateway.config import load_gateway_config
     from gateway.run import _profile_runtime_scope
-    with _profile_runtime_scope(home):
+    from hermes_cli.plugins_discovery import suppress_plugin_discovery
+    from hermes_cli.profiles import profile_is_parked
+    scope = suppress_plugin_discovery() if profile_is_parked(home) else contextlib.nullcontext()
+    with _profile_runtime_scope(home), scope:
         return load_gateway_config()
 
 
@@ -642,7 +718,7 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     steps = []
     signalled = _signalled_gateways(plan)
     for p in plan.standalone_secondaries:
-        what = " + ".join(x for x in (f"stop pid {p.pid}" if p.pid else "", f"uninstall {p.service_label()}" if p.services else "") if x)
+        what = " + ".join(x for x in (f"stop pid {p.pid}" if p.pid else "", " + ".join(f"{_remove_verb(s)} {_service_label(s)}" for s in p.services)) if x)
         steps.append(f"  - {p.name}: {what}")
     if len(plan.profiles) < 2:  # the notice already says "only one profile exists"
         return lines + _plan_tail(plan)
@@ -752,7 +828,7 @@ def _read_manifest(default_home: Path) -> Optional[dict]:
     if not path.exists():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -820,7 +896,12 @@ def _restart_default(
     *,
     run_as_user: Optional[str] = None,
 ) -> str:
-    """Bring the default gateway up on the new flag value; returns a one-line description."""
+    """Bring the default gateway up on the new flag value; returns a one-line description.
+
+    Boot enablement is NOT this function's job: an existing survivor unit is enabled by
+    :func:`_enable_default_at_boot` before the first removal, and the install branch enables
+    through ``systemd_install``'s own enable-on-startup.
+    """
     if plan_default.service is not None:
         kind, system = plan_default.service
         _service_op(kind, system, "restart", default_home)
@@ -838,12 +919,33 @@ def _restart_default(
     return f"{verb} the default gateway (detached; no service manager was in use)"
 
 
+def _enable_default_at_boot(plan: MigrationPlan) -> Optional[str]:
+    """Make the survivor boot-startable BEFORE anything is removed. Every secondary unit the fold
+    uninstalls takes its boot enablement with it, and the pre-existing default unit may have been
+    disabled all along; ``restart`` on a disabled unit succeeds, so the old order (remove, then
+    restart) turned N boot-startable gateways into 0 and reported success (#124922). ``enable``
+    never starts the unit, so doing it first cannot double-bind a platform while secondaries run,
+    and an apply interrupted anywhere after it still leaves a host that comes back after a reboot.
+    Returns the failure line, or None: a fresh apply refuses on it (nothing has been removed yet),
+    a resume reports it and converges anyway (rollback could do no better).
+    """
+    if plan.default.service is None:
+        return None
+    kind, system = plan.default.service
+    try:
+        _service_op(kind, system, "enable", plan.default_home)
+    except RuntimeError as exc:
+        return f"default: {exc}"
+    return None
+
+
 def _remove_secondary_gateways(plan: MigrationPlan) -> None:
     for p in plan.standalone_secondaries:
         for kind, system in p.services:
             _service_op(kind, system, "stop", p.home)
             _service_op(kind, system, "uninstall", p.home)
-            print(f"  ✓ {p.name}: stopped and removed its {_service_label((kind, system))} service")
+            done = "parked (down file)" if kind == "s6" else "removed"
+            print(f"  ✓ {p.name}: stopped and {done} its {_service_label((kind, system))}")
         if p.pid is not None:
             _stop_gateway_process(p.home)
             print(f"  ✓ {p.name}: stopped standalone gateway (pid {p.pid})")
@@ -941,11 +1043,14 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
         # Re-running this command IS the recovery.
         print(f"  ↻ resuming the migration recorded in {_manifest_path(plan.default_home)}")
         _print(_resume_findings(plan, target, run_as_user))
+        enable_failure = _enable_default_at_boot(plan)
+        if enable_failure is not None:
+            print(f"  ⚠ {enable_failure} — resuming anyway")
     else:
         if plan.blocked:
             _print(["✗ Migration refused:", *[f"  • {b}" for b in plan.blockers]])
             return False
-        blocker = _preflight_apply(plan, target, run_as_user)
+        blocker = _preflight_apply(plan, target, run_as_user) or _enable_default_at_boot(plan)
         if blocker is not None:
             _print(["✗ Migration refused before changing anything:", f"  • {blocker}"])
             return False
@@ -1105,19 +1210,23 @@ def rollback_migration(default_home: Optional[Path] = None) -> bool:
 
 
 def _host_supports_migration() -> Optional[str]:
-    """Reason the host cannot be converged by this command (s6 slots), else None.
+    """Reason the host cannot be converged by this command, else None.
 
-    Windows IS handled now: per-profile Scheduled Tasks (and the Startup-folder fallback) are
-    detected and removed like any other unit. s6 is not, and cannot be from here: the per-profile
-    gateways are slots the container image registers at boot
-    (``hermes_cli/container_boot.py::reconcile_profile_gateways``), so the convergence belongs to
-    the container's own boot, not to a process inside it.
+    Windows IS handled (per-profile Scheduled Tasks and the Startup-folder fallback are removed
+    like any other unit). s6 IS handled too, in-process: a named profile's slot that is UP is
+    parked (``s6-svc -d`` + ``down`` file) and its autostart intent folded into the root slot the
+    same way the container's boot does it (``hermes_cli.gateway_multiplex_s6``). What cannot be
+    done from here is register a slot the boot never created — that is the one refusal left.
     """
     from hermes_cli import gateway as gw
-    if gw._running_under_s6():
-        return ("s6-supervised container: per-profile gateways are s6 slots registered by the "
-                "container's boot, not by this process. Restart the container so its boot "
-                "reconciles them; nothing on this host was changed.")
+    if not gw._running_under_s6():
+        return None
+    from hermes_cli.gateway_multiplex_s6 import named_slot_name
+    from hermes_cli.service_manager import S6ServiceManager
+    scandir = S6ServiceManager().scandir
+    if not (scandir / named_slot_name("default")).is_dir():
+        return (f"s6-supervised container without a root gateway slot ({scandir / named_slot_name('default')}); "
+                "the container's boot registers it — restart the container.")
     return None
 
 

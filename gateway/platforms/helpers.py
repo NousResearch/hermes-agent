@@ -60,6 +60,29 @@ class MessageDeduplicator:
     def clear(self):
         self._seen.clear()
 
+    def absorb(self, other: "MessageDeduplicator") -> None:
+        """Adopt *other*'s still-live IDs (at their original seen times) into this cache."""
+        cutoff = time.time() - self._ttl
+        self._seen.update({k: v for k, v in other._seen.items() if v > cutoff and k not in self._seen})
+
+
+def inbound_dedup_caches(adapter: Any) -> dict[str, MessageDeduplicator]:
+    """The adapter's ``MessageDeduplicator`` attributes, by name (held by reference, so IDs the old
+    adapter admits after this call still reach its replacement)."""
+    return {name: v for name, v in vars(adapter).items() if isinstance(v, MessageDeduplicator)}
+
+
+def carry_inbound_dedup(caches: Optional[dict], adapter: Any) -> None:
+    """Seed a rebuilt adapter's dedup caches from the instance it replaces.
+
+    The runner's reconnect path builds a NEW adapter; without this a platform replaying a recent
+    inbound ID after the reconnect (websocket resume, webhook retry, unacked poll batch) is
+    admitted and answered a second time."""
+    for name, previous in (caches or {}).items():
+        current = getattr(adapter, name, None)
+        if isinstance(current, MessageDeduplicator) and current is not previous:
+            current.absorb(previous)
+
 
 # Worker-thread handoff used by the off-loop persist paths.  A module attribute
 # so tests can replace THIS seam instead of patching ``asyncio.to_thread``
@@ -161,7 +184,7 @@ class ThreadParticipationTracker:
 
     def _load(self) -> list[str]:
         try:
-            data = json.loads(self._state_path().read_text(encoding="utf-8"))
+            data = json.loads(self._state_path().read_text(encoding="utf-8-sig"))
         except Exception:
             return []
         return [str(thread_id) for thread_id in data] if isinstance(data, list) else []
@@ -217,6 +240,26 @@ class ThreadParticipationTracker:
     def clear(self) -> None:
         with self._lock:
             self._threads.clear()
+
+
+async def send_chunks(chunks: list, send_one) -> Any:
+    """Send ``chunks`` in order through ``send_one(chunk) -> SendResult``, stopping at the first failure.
+
+    A failure after earlier chunks landed carries the ``partial_overflow`` contract that
+    ``BasePlatformAdapter._is_partial_delivery`` reads, so no caller (send retry, plain-text
+    fallback, cron standalone fallback) re-sends the head the recipient already has.
+    """
+    from gateway.platforms.base import SendResult
+    result = SendResult(success=False, error="nothing to send")
+    for delivered, chunk in enumerate(chunks):
+        result = await send_one(chunk)
+        if not result.success:
+            if delivered:
+                raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}
+                raw.update(partial_overflow=True, delivered_chunks=delivered, total_chunks=len(chunks))
+                result.raw_response = raw
+            break
+    return result
 
 
 def redact_phone(phone: str) -> str:
@@ -635,98 +678,3 @@ def is_discord_channel_obfuscated(channel) -> bool:
     if isinstance(flag_value, int) and flag_value & DISCORD_CHANNEL_OBFUSCATED_FLAG:
         return True
     return getattr(channel, "name", None) == DISCORD_OBFUSCATED_CHANNEL_NAME
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-from typing import TYPE_CHECKING  # noqa: F401,E402
-import asyncio  # noqa: F401,E402
-import asyncio  # noqa: F401,E402
-
-class TextBatchAggregator:
-    """Aggregates rapid-fire text events into single messages.
-
-    Replaces the ``_enqueue_text_event`` / ``_flush_text_batch`` pattern
-    previously duplicated in telegram, discord, matrix, wecom, and feishu.
-
-    Usage::
-
-        self._text_batcher = TextBatchAggregator(
-            handler=self._message_handler,
-            batch_delay=0.6,
-            split_threshold=1900,
-        )
-
-        # In message dispatch:
-        if msg_type == MessageType.TEXT and self._text_batcher.is_enabled():
-            self._text_batcher.enqueue(event, session_key)
-            return
-    """
-
-    def __init__(
-        self,
-        handler,
-        *,
-        batch_delay: float = 0.6,
-        split_delay: float = 2.0,
-        split_threshold: int = 4000,
-    ):
-        self._handler = handler
-        self._batch_delay = batch_delay
-        self._split_delay = split_delay
-        self._split_threshold = split_threshold
-        self._pending: Dict[str, MessageEvent] = {}
-        self._pending_tasks: Dict[str, asyncio.Task] = {}
-
-    def is_enabled(self) -> bool:
-        """Return True if batching is active (delay > 0)."""
-        return self._batch_delay > 0
-
-    def enqueue(self, event: MessageEvent, key: str) -> None:
-        """Add *event* to the pending batch for *key*."""
-        chunk_len = len(event.text or "")
-        existing = self._pending.get(key)
-        if not existing:
-            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            self._pending[key] = event
-        else:
-            existing.text = f"{existing.text}\n{event.text}"
-            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-
-        # Cancel prior flush timer, start a new one
-        prior = self._pending_tasks.get(key)
-        if prior and not prior.done():
-            prior.cancel()
-        self._pending_tasks[key] = asyncio.create_task(self._flush(key))
-
-    async def _flush(self, key: str) -> None:
-        """Wait then dispatch the batched event for *key*."""
-        current_task = self._pending_tasks.get(key)
-        pending = self._pending.get(key)
-        last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
-
-        # Use longer delay when the last chunk looks like a split message
-        delay = self._split_delay if last_len >= self._split_threshold else self._batch_delay
-        await asyncio.sleep(delay)
-
-        event = self._pending.pop(key, None)
-        if event:
-            try:
-                await self._handler(event)
-            except Exception:
-                logger.exception("[TextBatchAggregator] Error dispatching batched event for %s", key)
-
-        if self._pending_tasks.get(key) is current_task:
-            self._pending_tasks.pop(key, None)
-
-    def cancel_all(self) -> None:
-        """Cancel all pending flush tasks."""
-        for task in self._pending_tasks.values():
-            if not task.done():
-                task.cancel()
-        self._pending_tasks.clear()
-        self._pending.clear()
-# ---- END PLUGIN-COMPAT ----

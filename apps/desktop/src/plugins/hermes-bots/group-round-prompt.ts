@@ -112,7 +112,9 @@ function viewerConnectionSources(viewer: GroupChatLineViewer): string[] {
   return [viewer.connectionLabel, viewer.connectionId].filter((token): token is string => Boolean(token))
 }
 
-function isGroupChatSelf(from: GroupMessageAuthor, viewer: GroupChatLineViewer): boolean {
+/** Whether `from` is the viewer itself — the one authorship rule for the
+ *  `(you)` suffix and for the round's own-entry watermark walk. */
+export function isGroupChatSelf(from: GroupMessageAuthor, viewer: GroupChatLineViewer): boolean {
   if (!from.name || from.name !== viewerNameOf(viewer)) {
     return false
   }

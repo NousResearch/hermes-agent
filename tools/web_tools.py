@@ -20,7 +20,7 @@ from plugins.web.firecrawl.provider import _is_tool_gateway_ready, check_firecra
 from tools.debug_helpers import DebugSession
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_exists
 from tools.url_safety import async_is_safe_url
-from tools.web_tools_rescue import _rescue_eligible, _rescue_search
+from tools.web_tools_rescue import _managed_search_fallback, _rescue_eligible, _rescue_search
 from tools.web_tools_truncate import _effective_char_limit, _trim_results, _truncate_results, convert_base64_images_to_links
 from tools.web_tools_extract import (
     _extract_safe_urls, _merge_in_order, _no_provider_error, _resolve_extract_provider, _result_entry,
@@ -111,9 +111,14 @@ def _get_backend() -> str:
         # Shared selection exists (use_gateway) but no shared name: firecrawl, no ladder.
         return "firecrawl"
 
-    # Never-configured install. Explicit user credentials beat the managed-gateway probe (a Nous OAuth
-    # token's tier may not grant web access; the gateway then fails at runtime with no fallback).
-    # Free tiers trail paid.
+    # Never-configured install.
+    return _autodetect_backend() or _keyless_backend() or "firecrawl"  # default (backward compat)
+
+
+def _autodetect_backend() -> Optional[str]:
+    """Autodetect rungs above the keyless tier, or None. Explicit user credentials beat the managed-gateway
+    probe (a Nous OAuth token's tier may not grant web access; the gateway then fails at runtime with no
+    fallback). Free tiers trail paid."""
     backend_candidates = (
         ("tavily", _has_env("TAVILY_API_KEY")), ("perplexity", _has_env("PERPLEXITY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
@@ -130,8 +135,7 @@ def _get_backend() -> str:
     for provider in _list_registered_web_providers():
         if provider.name not in _LEGACY_WEB_BACKENDS and _probe(provider, "is_available"):
             return provider.name
-
-    return _keyless_backend() or "firecrawl"  # default (backward compat)
+    return None
 
 
 def _keyless_backend() -> Optional[str]:
@@ -151,9 +155,28 @@ def _keyless_backend() -> Optional[str]:
     return None
 
 
+def _managed_web_search() -> bool:
+    """True when web_search is on the managed Nous route: the stored ``nous`` selection, or a
+    never-configured install whose autodetect lands on the gateway — the entitled Firecrawl gateway, or
+    free Perplexity fast search for any Nous identity when nothing else is configured (search-only: the
+    extract ladder is untouched). A stored vendor selection never is."""
+    if _configured_backend("search_backend"):
+        return False
+    selected = read_selection("web")
+    if selected is not None:
+        return selected == NOUS_MANAGED_PROVIDER
+    backend = _autodetect_backend()
+    if backend == "firecrawl":
+        return not (_has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")) and _is_tool_gateway_ready()
+    from tools.managed_tool_gateway import peek_nous_access_token, resolve_free_search_gateway
+    return backend is None and resolve_free_search_gateway(token_reader=peek_nous_access_token) is not None
+
+
 def _get_search_backend() -> str:
-    """Backend for web_search: ``web.search_backend`` (strict, no probe) > ``web.backend`` > autodetect."""
-    return _configured_backend("search_backend") or _get_backend()
+    """Backend for web_search: ``web.search_backend`` (strict, no probe) > ``web.backend`` > autodetect.
+    The managed Nous route serves search from Perplexity (extract stays on Firecrawl); managed Firecrawl
+    is the per-call fallback, see ``_memoized_search``."""
+    return _configured_backend("search_backend") or ("perplexity" if _managed_web_search() else _get_backend())
 
 
 def _get_extract_backend() -> str:
@@ -190,7 +213,7 @@ _BUILTIN_AVAILABILITY = {
     "firecrawl": lambda: check_firecrawl_api_key(),
     "tavily": lambda: _has_env("TAVILY_API_KEY")
     or any(_configured_backend(k) == "tavily" for k in ("backend", "search_backend", "extract_backend")),
-    "perplexity": lambda: _has_env("PERPLEXITY_API_KEY"),
+    "perplexity": lambda: _has_env("PERPLEXITY_API_KEY") or _managed_web_search(),
     "searxng": lambda: _has_env("SEARXNG_URL"),
     "brave-free": lambda: _has_env("BRAVE_SEARCH_API_KEY"),
     "ddgs": lambda: _ddgs_package_importable(),
@@ -226,7 +249,7 @@ def _web_requires_env() -> list[str]:
     Contract: set var -> tool sees it; extras are harmless for the not-logged-in."""
     return [
         "EXA_API_KEY", "PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "KEENABLE_API_KEY", "FIRECRAWL_API_KEY",
-        "FIRECRAWL_API_URL", "FIRECRAWL_GATEWAY_URL", "TOOL_GATEWAY_DOMAIN", "TOOL_GATEWAY_SCHEME",
+        "FIRECRAWL_API_URL", "FIRECRAWL_GATEWAY_URL", "PERPLEXITY_GATEWAY_URL", "TOOL_GATEWAY_DOMAIN", "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
     ]
 
@@ -328,13 +351,24 @@ def _memoized_search(provider, query: str, limit: int) -> dict:
         fetch_limit = bucket_limit(limit)
         try:
             resp = provider.search(query, fetch_limit)
-        except Exception as exc:  # noqa: BLE001 — candidate for rescue
-            if not _rescue_eligible(provider):
+        except Exception as exc:  # noqa: BLE001 — candidate for fallback / rescue
+            served = _served_after_failure(str(exc), fetch_limit)
+            if served is None:
                 raise
-            return _rescue_search(provider.name, str(exc), query, fetch_limit), True
-        if not resp.get("success") and _rescue_eligible(provider):
-            return _rescue_search(provider.name, str(resp.get("error", "")), query, fetch_limit), True
+            return served, True
+        if not resp.get("success"):
+            served = _served_after_failure(str(resp.get("error", "")), fetch_limit)
+            if served is not None:
+                return served, True
         return resp, False
+
+    def _served_after_failure(error: str, fetch_limit: int) -> Optional[dict]:
+        """Managed Firecrawl for a failed managed Perplexity call, else the one-shot keyless rescue when
+        eligible; None means the vendor's own failure stands."""
+        fallback = _managed_search_fallback(provider, error, query, fetch_limit)
+        if fallback is not None:
+            return fallback
+        return _rescue_search(provider.name, error, query, fetch_limit) if _rescue_eligible(provider) else None
 
     response_data = search_memo.lookup(provider.name, query, limit)
     if response_data is None:
@@ -530,40 +564,3 @@ registry.register(
     check_fn=check_web_api_key, requires_env=_web_requires_env(), is_async=True, emoji="📄",
     max_result_size_chars=100_000,
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-from typing import TYPE_CHECKING  # noqa: F401,E402
-import asyncio  # noqa: F401,E402
-import httpx  # noqa: F401,E402
-import re  # noqa: F401,E402
-import sys  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_EXTRACT_CHAR_LIMIT': ('tools.web_tools_truncate', 'DEFAULT_EXTRACT_CHAR_LIMIT'),
-    'Firecrawl': ('plugins.web.firecrawl.provider', 'Firecrawl'),
-    'MAX_STORED_TEXT_CHARS': ('tools.web_tools_truncate', 'MAX_STORED_TEXT_CHARS'),
-    'build_vendor_gateway_url': ('tools.managed_tool_gateway', 'build_vendor_gateway_url'),
-    'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
-    'normalize_url_for_request': ('tools.url_safety', 'normalize_url_for_request'),
-    'nous_tool_gateway_unavailable_message': ('tools.tool_backend_helpers', 'nous_tool_gateway_unavailable_message'),
-    'prefers_gateway': ('tools.tool_backend_helpers', 'prefers_gateway'),
-    'resolve_managed_tool_gateway': ('tools.managed_tool_gateway', 'resolve_managed_tool_gateway'),
-    'sensitive_query_param_name': ('tools.url_safety', 'sensitive_query_param_name'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

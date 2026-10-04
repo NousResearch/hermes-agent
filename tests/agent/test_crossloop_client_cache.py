@@ -14,7 +14,6 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Minimal stubs so we can import _get_cached_client without the full tree
 # ---------------------------------------------------------------------------
@@ -25,7 +24,6 @@ def _stub_resolve_provider_client(provider, model, async_mode, **kw):
     client.api_key = "test"
     client.base_url = kw.get("explicit_base_url", "http://localhost:8081/v1")
     return client, model or "test-model"
-
 
 @pytest.fixture(autouse=True)
 def _clean_client_cache():
@@ -39,10 +37,8 @@ def _clean_client_cache():
     yield
     ac._client_cache.clear()
 
-
 class TestCrossLoopCacheIsolation:
     """Verify async clients are cached per-event-loop, not globally."""
-
 
     def test_different_loops_get_different_clients(self):
         """Different event loops must get separate client instances."""
@@ -73,6 +69,3 @@ class TestCrossLoopCacheIsolation:
             "Different event loops got the SAME cached client — this causes "
             "httpx cross-loop deadlocks in gateway mode (#2681)"
         )
-
-
-

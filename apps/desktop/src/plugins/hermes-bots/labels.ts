@@ -21,13 +21,15 @@ export function displayName(bot: Partial<RosterRow>, meta?: BotMeta | null): str
   // connection label — the active gateway's own default must keep reading
   // "Hermes". Annotated active rows carry sourceScoped too, and keying this
   // off sourceScoped renamed the user's main agent to an IP-derived label
-  // (community report, Aug 17 2026).
+  // (community report, Aug 17 2026). A display_name its own backend reports
+  // is a real name, never traded for a Desktop-side label.
   if (
     bot?.remoteSource &&
     (bot.name || '').trim().toLowerCase() === 'default' &&
     bot.connectionLabel &&
     !alias &&
-    !meta?.title?.trim()
+    !meta?.title?.trim() &&
+    !bot.display_name?.trim()
   ) {
     return bot.connectionLabel
   }

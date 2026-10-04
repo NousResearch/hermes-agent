@@ -7,9 +7,8 @@ PRs #9850, #9934, #7536):
 1. When a gateway restart drain times out and agents are force-interrupted,
    the affected sessions are flagged ``resume_pending=True`` — not
    ``suspended`` — so the next user message on the same session_key
-   auto-resumes from the existing transcript instead of getting routed
-   through ``suspend_recently_active()`` and converted into a fresh
-   session.
+   auto-resumes from the existing transcript instead of being converted
+   into a fresh session.
 
 2. ``suspended=True`` (from ``/stop`` or stuck-loop escalation) still
    wins over ``resume_pending`` — the forced-wipe path is preserved.
@@ -26,8 +25,9 @@ PRs #9850, #9934, #7536):
 """
 
 import asyncio
+import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -247,25 +247,6 @@ class TestGetOrCreateResumePending:
 
 
 # ---------------------------------------------------------------------------
-# SessionStore.suspend_recently_active skip behaviour
-# ---------------------------------------------------------------------------
-
-
-class TestSuspendRecentlyActiveSkipsResumePending:
-    def test_resume_pending_entries_not_suspended(self, tmp_path):
-        store = _make_store(tmp_path)
-        source = _make_source()
-        entry = store.get_or_create_session(source)
-        store.mark_resume_pending(entry.session_key)
-
-        count = store.suspend_recently_active()
-        assert count == 0
-        e = store._entries[entry.session_key]
-        assert e.suspended is False
-        assert e.resume_pending is True
-
-
-# ---------------------------------------------------------------------------
 # Restart-resume system-note injection
 # ---------------------------------------------------------------------------
 
@@ -282,6 +263,19 @@ class TestResumePendingSystemNote:
             resume_reason=reason,
             last_resume_marked_at=now,
         )
+
+    def test_empty_message_noninteractive_note_continues_task(self):
+        """Non-interactive platforms (webhook, API server): nobody can answer
+        'what next?', so the resumed turn must complete the interrupted work
+        instead of acknowledging (#57056)."""
+        note = build_resume_recovery_note("restart_timeout", "", interactive=False)
+        assert note != build_resume_recovery_note("restart_timeout", "", interactive=True)
+        assert "CONTINUE the interrupted task" in note
+        assert "ask what they would like to do next" not in note
+        # Must not tell the model to skip the unfinished work it should finish.
+        assert "skip any unfinished work" not in note
+        # But still guards against re-running already-recorded tool calls.
+        assert "already appear in the history" in note
 
 
 
@@ -539,7 +533,7 @@ class TestFreshnessHelpers:
 async def test_drain_timeout_marks_resume_pending():
     """End-to-end: a drain timeout during gateway stop should flag every
     active session as resume_pending BEFORE the interrupt fires, so the
-    next startup's suspend_recently_active() does not destroy them."""
+    next startup auto-resumes them."""
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
     runner._restart_drain_timeout = 0.05
@@ -664,6 +658,61 @@ async def test_reconnect_reschedule_is_platform_scoped():
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.source == tg_source
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs a POSIX process timezone switch")
+@pytest.mark.parametrize("aware_marker", [False, True], ids=["naive-local", "aware-utc"])
+async def test_startup_auto_resume_freshness_survives_spring_forward(monkeypatch, aware_marker):
+    """A session marked 20 minutes before boot is inside a 60-minute window even when a DST
+    spring-forward falls between the two (naive wall-clock subtraction read it as 80 minutes)."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="dst-chat")
+    monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
+    original_tz = os.environ.get("TZ")
+    try:
+        os.environ["TZ"] = "America/New_York"
+        time.tzset()
+        # 2026-03-08: clocks jump 02:00 -> 03:00, so 01:50 -> 03:10 is 20 real minutes.
+        marked = datetime(2026, 3, 8, 1, 50)
+        now = datetime(2026, 3, 8, 3, 10)
+        if aware_marker:
+            marked = datetime.fromtimestamp(marked.timestamp(), tz=timezone.utc)
+
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now if tz is None else datetime.fromtimestamp(now.timestamp(), tz=tz)
+
+        # Freeze both wall clocks the startup path could read.
+        monkeypatch.setattr("gateway.run_startup.datetime", _FrozenDatetime, raising=False)
+        monkeypatch.setattr(time, "time", lambda: now.timestamp())
+        entry = SessionEntry(
+            session_key="agent:main:telegram:dm:dst-chat",
+            session_id="sid-dst",
+            created_at=marked,
+            updated_at=marked,
+            origin=source,
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            resume_pending=True,
+            resume_reason="restart_interrupted",
+            last_resume_marked_at=marked,
+        )
+        runner.session_store._entries = {entry.session_key: entry}
+        adapter.handle_message = AsyncMock()
+
+        scheduled = runner._schedule_resume_pending_sessions()
+    finally:
+        if original_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original_tz
+        time.tzset()
+    await asyncio.sleep(0)
+
+    assert scheduled == 1
+    adapter.handle_message.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -971,8 +1020,8 @@ async def test_restart_home_channel_notification_not_deduped_across_threads():
     await runner._notify_active_sessions_of_shutdown()
 
     assert len(adapter.sent) == 2
-    assert adapter.sent_calls[0][2] == {"thread_id": "topic-7"}
-    assert adapter.sent_calls[1][2] is None
+    assert adapter.sent_calls[0][2] == {"thread_id": "topic-7", "_interim_send": True}
+    assert adapter.sent_calls[1][2] == {"_interim_send": True}
 
 
 # ---------------------------------------------------------------------------

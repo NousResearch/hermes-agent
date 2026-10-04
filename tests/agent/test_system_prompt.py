@@ -1,5 +1,8 @@
 """Tests for agent/system_prompt.py — context-file cwd wiring."""
 
+import json
+import os
+import time
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -150,10 +153,42 @@ class TestContextFileCwd:
         with (
             patch("agent.prompt_builder.load_soul_md", return_value=""),
             patch("agent.prompt_builder.build_environment_hints", return_value=""),
-            patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
+            patch("agent.system_prompt.resolve_context_cwd", return_value=None),
         ):
             context = build_system_prompt_parts(agent)["context"]
 
+        assert "bundled contributor instructions" not in context
+
+    def test_desktop_launch_artifact_uses_profile_configured_cwd(
+        self, monkeypatch, tmp_path
+    ):
+        import agent.runtime_cwd as runtime_cwd
+
+        launch = tmp_path / "launch"
+        workspace = tmp_path / "workspace"
+        launch.mkdir()
+        workspace.mkdir()
+        monkeypatch.setattr(runtime_cwd, "_PACKAGE_ROOT", launch.resolve())
+        monkeypatch.chdir(launch)
+        monkeypatch.setenv("TERMINAL_CWD", str(workspace))
+        (launch / "AGENTS.md").write_text("bundled contributor instructions")
+        (workspace / "AGENTS.md").write_text("operator workspace rules")
+
+        token = runtime_cwd.set_session_cwd(str(launch))
+        try:
+            agent = _make_agent(
+                platform="desktop",
+                _context_cwd_is_launch_artifact=True,
+            )
+            with (
+                patch("agent.prompt_builder.load_soul_md", return_value=""),
+                patch("agent.prompt_builder.build_environment_hints", return_value=""),
+            ):
+                context = build_system_prompt_parts(agent)["context"]
+        finally:
+            runtime_cwd.reset_session_cwd(token)
+
+        assert "operator workspace rules" in context
         assert "bundled contributor instructions" not in context
 
     def test_desktop_explicit_install_tree_workspace_still_loads_agents_md(
@@ -279,6 +314,19 @@ def test_stored_prompt_cwd_ignores_project_host_decoys(monkeypatch, tmp_path):
     assert _stored_prompt_matches_runtime(agent, legacy)
 
 
+def test_stored_prompt_stamped_for_another_session_is_not_restored(monkeypatch, tmp_path):
+    """With the Session ID trailer on, a prompt persisted for another session (a /branch child
+    copies its parent's bytes) must rebuild instead of telling the model the parent's id."""
+    from agent.conversation_loop import _stored_prompt_matches_runtime
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    fields = dict(platform="cli", model="test-model", provider="test-provider", pass_session_id=True)
+    parent_prompt = build_system_prompt(_make_agent(session_id="parent-sid", **fields))
+    assert _stored_prompt_matches_runtime(_make_agent(session_id="parent-sid", **fields), parent_prompt)
+    assert not _stored_prompt_matches_runtime(_make_agent(session_id="child-sid", **fields), parent_prompt)
+
+
 class TestExecutionGuidanceInjection:
     """Injection gate for OPENAI_MODEL_EXECUTION_GUIDANCE via
     ``agent.execution_guidance`` (auto/true/false/list).
@@ -346,6 +394,31 @@ class TestExecutionGuidanceInjection:
             "deepseek/deepseek-v4-pro", valid_tool_names=())
 
 
+class TestAsyncDelegationHandoffGuidance:
+    """A background child cannot re-enter until the parent yields its current turn (#124072)."""
+
+    def _prompt(self, valid_tool_names):
+        return _stable_prompt(_make_agent(
+            valid_tool_names=list(valid_tool_names),
+            model="openai/gpt-5.5",
+            _tool_use_enforcement="auto",
+            _execution_guidance="auto",
+        ))
+
+    @pytest.mark.parametrize("tools,expected", [
+        (("delegate_task", "execute_code"), True),
+        (("execute_code",), False),
+    ])
+    def test_handoff_injected_only_with_delegate_task(self, tools, expected):
+        stable = self._prompt(tools)
+        assert ("Async handoff" in stable) is expected
+        if expected:
+            assert stable.count("Async handoff") == 1
+            # Must follow the generic "keep working" blocks so it reads as their exception.
+            assert stable.index("Async handoff") > stable.index("Tool-use enforcement")
+            assert stable.index("Async handoff") > stable.index("Execution discipline")
+
+
 class TestNamedProfileHintIntegration:
     """The same defect through the REAL resolution chain (#72894).
 
@@ -408,6 +481,23 @@ class TestNamedProfileHintIntegration:
 
         assert "Active Hermes profile: default." in prompt
         assert f"under {root}/profiles/<name>/." in prompt
+
+
+def test_stable_tier_is_identical_across_homes(tmp_path, monkeypatch):
+    """The profile line names the home path, so it must live outside the stable tier:
+    every home/profile on a host then shares one cacheable stable prefix."""
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    tiers = []
+    for name in ("a", "b"):
+        root = tmp_path / name / ".hermes"
+        root.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda root=root: root.parent)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        with patch("agent.coding_context._coding_mode", return_value="off"):
+            parts = _prompt_parts(_make_agent(valid_tool_names=["read_file"]))
+        assert f"under {root}/profiles/<name>/." in parts["volatile"]
+        tiers.append(parts["stable"])
+    assert tiers[0] == tiers[1]
 
 
 def test_build_system_prompt_records_stable_prefix():
@@ -785,6 +875,31 @@ class TestSessionStartLike:
         start = _session_start_like(agent, now)
         assert start.strftime("%Y-%m-%d") == "2026-01-01"
 
+    @pytest.mark.skipif(not hasattr(time, "tzset"), reason="needs a POSIX process timezone switch")
+    def test_stamp_from_other_dst_half_keeps_its_own_offset(self):
+        """A naive stamp takes the UTC offset in force at that stamp, not today's:
+        a January 00:30 London session read on a summer day rendered as January 14.
+        Both halves are checked so the test bites whichever season it runs in."""
+        from agent.system_prompt import _session_start_like
+
+        london = ZoneInfo("Europe/London")
+        original_tz = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = "Europe/London"
+            time.tzset()
+            for sid, now, expected in (
+                ("20260115_003000_jan", datetime(2026, 7, 16, 9, 0, tzinfo=london), "2026-01-15T00:30:00+00:00"),
+                ("20260715_003000_jul", datetime(2026, 12, 16, 9, 0, tzinfo=london), "2026-07-15T00:30:00+01:00"),
+            ):
+                start = _session_start_like(SimpleNamespace(session_id=sid), now)
+                assert start.isoformat() == expected
+        finally:
+            if original_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = original_tz
+            time.tzset()
+
 
 def test_conversation_start_uses_session_start_not_build_time(monkeypatch):
     """Regression: a session that started on Jan 1 must still read
@@ -848,6 +963,17 @@ class TestConversationStartedTwoLine:
         vol = self._volatile(self._agent(sid))
         assert "Conversation started:" in vol
         assert "as of the last context rebuild" not in vol
+
+    def test_surrogate_zone_name_does_not_abort_prompt(self):
+        # Windows cp1252 zone name decoded under a UTF-8 LC_CTYPE; strftime("%Z") raised (#102910).
+        from datetime import timedelta, timezone
+        current = datetime(2026, 7, 14, 13, 5, tzinfo=timezone(timedelta(hours=2), "Paris, Madrid (heure d'\udce9t\udce9)"))
+        with patch("hermes_time.now", return_value=current):
+            vol = self._volatile(self._agent("20260714_090000_fresh"))
+
+        json.dumps(vol, ensure_ascii=False).encode("utf-8")
+        assert "Conversation started: Tuesday, July 14, 2026" in vol
+        assert "Paris, Madrid (heure d'" in vol and "UTC+02:00" in vol
 
     def test_timeless_bot_chat_unaffected(self):
         agent = self._agent("20200110_090000_old")

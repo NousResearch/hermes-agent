@@ -17,14 +17,16 @@ import stat
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
     _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
@@ -39,6 +41,8 @@ router = APIRouter()
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
+load_env = late("load_env", "hermes_cli.config")
+_require_token = late("_require_token")
 # Image types GET /api/media serves — extension-allowlisted so an authenticated
 # caller can't pull non-image files through it.
 _MEDIA_CONTENT_TYPES = {
@@ -174,13 +178,39 @@ def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
     return target, st
 
 
-def _fs_read_bytes(target: Path, limit: Optional[int] = None) -> bytes:
-    """Read (a prefix of) ``target``; 403/400 on failure."""
+@contextlib.contextmanager
+def _serve_offline(target: Path):
+    """Hold ``offline_file_access`` for serving ``target``; 409 while a SQLite connection to it is live.
+
+    Callers keep the block open through the file's close: a raw close cancels this process's
+    SQLite POSIX locks on it."""
     try:
-        if limit is None:
-            return target.read_bytes()
-        with target.open("rb") as handle:
-            return handle.read(limit)
+        with offline_file_access(target, what="serve"):
+            yield
+    except LiveConnectionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _refuse_live_database(target: Path) -> None:
+    """Point-in-time 409 before streaming ``target`` while a SQLite connection to it is live.
+
+    ``FileResponse`` opens and closes the file in-process, and that raw close cancels the
+    connection's POSIX locks. The registry lock can't be held across a streamed response
+    (never across an await/yield), so streamed routes only get this admission check. It
+    takes the global registry lock, which other threads hold across whole-file reads, so
+    call it via ``asyncio.to_thread``."""
+    with _serve_offline(target):
+        pass
+
+
+def _fs_read_bytes(target: Path, limit: Optional[int] = None) -> bytes:
+    """Read (a prefix of) ``target``; 403/400 on failure, 409 while a SQLite connection to it is live."""
+    try:
+        with _serve_offline(target):
+            if limit is None:
+                return target.read_bytes()
+            with target.open("rb") as handle:
+                return handle.read(limit)
     except PermissionError:
         raise HTTPException(status_code=403, detail="File is not readable")
     except OSError as exc:
@@ -217,13 +247,61 @@ def _fs_default_cwd() -> str:
 
 def _fs_git_branch(cwd: str) -> str:
     try:
-        run_kwargs: Dict[str, Any] = {"capture_output": True, "text": True, "timeout": 2, "check": False}
+        # git emits UTF-8 (branch names, localized "not a git repository" stderr); the locale codec
+        # (cp936 on zh-CN Windows) raised inside communicate()'s reader threads on every poll (#83851).
+        run_kwargs: Dict[str, Any] = {"capture_output": True, "text": True, "encoding": "utf-8",
+                                      "errors": "replace", "timeout": 2, "check": False}
         if sys.platform == "win32":
             run_kwargs["creationflags"] = windows_hide_flags()
         result = subprocess.run(["git", "-C", cwd, "branch", "--show-current"], **run_kwargs)
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
         return ""
+
+
+def _fs_backend(profile: Optional[str] = None):
+    """Return the profile's SSH workspace adapter, or None for host-local FS."""
+    from hermes_cli.ssh_workspace_fs import get_ssh_workspace_fs
+
+    with _profile_scope(profile):
+        terminal = dict(load_config().get("terminal") or {})
+        profile_env = load_env()
+    for key, env_name in {
+        "ssh_host": "TERMINAL_SSH_HOST",
+        "ssh_user": "TERMINAL_SSH_USER",
+        "ssh_port": "TERMINAL_SSH_PORT",
+        "ssh_key": "TERMINAL_SSH_KEY",
+    }.items():
+        if not terminal.get(key) and profile_env.get(env_name):
+            terminal[key] = profile_env[env_name]
+    profile_key = (profile or "current").strip().lower() or "current"
+    return get_ssh_workspace_fs(profile_key, terminal)
+
+
+def _raise_fs_backend_error(exc: Exception) -> None:
+    from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
+
+    if not isinstance(exc, SshWorkspaceFsError):
+        raise exc
+    status = {
+        "EACCES": 403,
+        "ECONN": 503,
+        "EFBIG": 413,
+        "EINVAL": 400,
+        "EIO": 502,
+        "ENOENT": 404,
+        "ENOTREG": 400,
+    }.get(exc.code, 400)
+    detail = {
+        "EACCES": "File is not readable",
+        "ECONN": "SSH workspace is unavailable",
+        "EFBIG": "File too large",
+        "EINVAL": "Invalid path",
+        "EIO": "SSH workspace request failed",
+        "ENOENT": "File not found",
+        "ENOTREG": "Only regular files can be read",
+    }.get(exc.code, str(exc) or "Filesystem request failed")
+    raise HTTPException(status_code=status, detail=detail)
 
 
 def _media_serve_roots() -> list[Path]:
@@ -241,8 +319,11 @@ def _media_serve_roots() -> list[Path]:
 
 
 def _read_base64_file(path: Path) -> str:
-    """Read and encode a bounded file from a worker thread."""
-    return base64.b64encode(path.read_bytes()).decode("ascii")
+    """Read and encode a bounded file from a worker thread; 409 while a SQLite connection to it is live."""
+    with _serve_offline(path):
+        data = path.read_bytes()
+    # Encode after release: only the open/read/close needs the registry lock.
+    return base64.b64encode(data).decode("ascii")
 
 
 @router.get("/api/media")
@@ -267,6 +348,65 @@ async def get_media(path: str):
 
     encoded = await asyncio.to_thread(_read_base64_file, target)
     return {"data_url": f"data:{_MEDIA_CONTENT_TYPES[target.suffix.lower()]};base64,{encoded}"}
+
+
+# Remote image URLs an authenticated proxy may fetch for a client that cannot
+# reach the CDN itself (#74564: a Desktop on a restricted network renders an
+# agent-generated FAL image inline; the direct link is blocked, but the GATEWAY
+# hosts a working route to the CDN and already holds the generation credentials).
+# Host-allowlisted + size-capped like the rest of the media surface.
+_MEDIA_PROXY_ALLOWED_HOSTS = (
+    "fal.media", "fal.run", "v3.fal.media", "storage.googleapis.com",
+    "*.fal.media", "*.fal.run",
+)
+_MEDIA_PROXY_TIMEOUT_S = 20.0
+
+
+def _media_proxy_host_allowed(host: str) -> bool:
+    host = host.lower().rstrip(".")
+    return any(
+        host == allowed.lstrip("*.") or (allowed.startswith("*.") and host.endswith(allowed[1:]))
+        for allowed in _MEDIA_PROXY_ALLOWED_HOSTS
+    )
+
+
+@router.get("/api/media/proxy")
+async def proxy_remote_media(url: str, request: Request):
+    """Fetch a remote image URL the gateway can reach but the client cannot
+    (#74564), returning the same ``data_url`` shape as ``/api/media``. Only
+    allowlisted image CDNs; the bytes stay behind the size cap."""
+    _require_token(request)
+    parsed = urllib.parse.urlparse((url or "").strip())
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise HTTPException(status_code=400, detail="A remote image URL is required")
+    if not _media_proxy_host_allowed(parsed.hostname):
+        raise HTTPException(status_code=403, detail="Image host not allowed")
+    if not parsed.path or Path(parsed.path).suffix.lower() not in _MEDIA_CONTENT_TYPES:
+        # Generated-image CDN URLs are content-hash paths with no extension;
+        # a missing extension is expected, so only reject explicit non-image
+        # extensions and let content type be sniffed from the response.
+        if Path(parsed.path).suffix and Path(parsed.path).suffix.lower() not in _MEDIA_CONTENT_TYPES:
+            raise HTTPException(status_code=415, detail="Unsupported media type")
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=_MEDIA_PROXY_TIMEOUT_S, follow_redirects=True) as client:
+            response = await client.get(url)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Image fetch failed: {exc}")
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Image fetch returned HTTP {response.status_code}")
+    content_type = (response.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if content_type not in _MEDIA_CONTENT_TYPES.values():
+        raise HTTPException(status_code=415, detail="Unsupported media type")
+    data = response.content
+    if len(data) > _MEDIA_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    encoded = base64.b64encode(data).decode("ascii")
+    return {"data_url": f"data:{content_type};base64,{encoded}"}
 
 
 def _decode_data_url(data_url: str) -> tuple[bytes, str]:
@@ -386,8 +526,9 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
 
 def _managed_readable_file(request: Request, path: str) -> tuple[Any, Path, str, int, str]:
     """Resolve + guard a managed file for reading: existence, regular file,
-    sensitive-path denylist, size cap. Returns (policy, target, display_path,
-    size, mime_type)."""
+    sensitive-path denylist. Returns (policy, target, display_path, max_bytes,
+    mime_type). Callers own the live-SQLite 409 (held through the read for
+    /api/files/read, point-in-time for streamed responses)."""
     from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES
     policy, target, display_path = _resolve_managed_path(path, request)
     if not target.exists():
@@ -426,7 +567,7 @@ async def read_managed_file(request: Request, path: str):
     }
 
 
-def _managed_file_response(
+async def _managed_file_response(
     request: Request,
     path: str,
     *,
@@ -438,6 +579,7 @@ def _managed_file_response(
     if media_only and target.suffix.lower() not in _STREAMABLE_MEDIA_EXTENSIONS:
         raise HTTPException(status_code=415, detail="Unsupported media type")
     _managed_file_size(target, max_bytes)
+    await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(
         path=str(target),
         media_type=mime_type,
@@ -459,7 +601,7 @@ async def download_managed_file(request: Request, path: str):
     """
     fetch_destination = request.headers.get("sec-fetch-dest", "").lower()
     is_media_subresource = fetch_destination in {"audio", "video"}
-    return _managed_file_response(
+    return await _managed_file_response(
         request,
         path,
         content_disposition_type="inline" if is_media_subresource else "attachment",
@@ -474,7 +616,7 @@ async def stream_managed_file(request: Request, path: str):
     media pipeline may reject an attachment response as an ``<audio>``/
     ``<video>`` source. Same auth, size cap, sensitive guard and MIME detection
     as download."""
-    return _managed_file_response(request, path, content_disposition_type="inline", media_only=True)
+    return await _managed_file_response(request, path, content_disposition_type="inline", media_only=True)
 
 
 def _managed_write_target(path: str, request: Request, overwrite: bool):
@@ -612,7 +754,13 @@ _FS_LIST_ERRNO = (
 
 
 @router.get("/api/fs/list")
-async def fs_list(path: str):
+async def fs_list(path: str, profile: Optional[str] = None):
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            return await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
+        except Exception as exc:
+            _raise_fs_backend_error(exc)
     target = _fs_path(path)
     try:
         entries = []
@@ -635,7 +783,28 @@ async def fs_list(path: str):
 
 
 @router.get("/api/fs/read-text")
-async def fs_read_text(path: str):
+async def fs_read_text(path: str, profile: Optional[str] = None):
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            data, size, target = await asyncio.to_thread(
+                backend.read_bytes,
+                path,
+                max_bytes=_FS_TEXT_SOURCE_MAX_BYTES,
+                read_limit=_FS_TEXT_PREVIEW_MAX_BYTES,
+            )
+        except Exception as exc:
+            _raise_fs_backend_error(exc)
+        target_path = Path(target)
+        return {
+            "binary": _fs_looks_binary(data[:4096]),
+            "byteSize": size,
+            "language": _FS_PREVIEW_LANGUAGE_BY_EXT.get(target_path.suffix.lower(), "text"),
+            "mimeType": _fs_mime_type(target_path),
+            "path": target,
+            "text": data.decode("utf-8", errors="replace"),
+            "truncated": size > _FS_TEXT_PREVIEW_MAX_BYTES,
+        }
     target, st = _fs_regular_file(_fs_path(path))
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
@@ -654,7 +823,7 @@ async def fs_read_text(path: str):
 
 
 @router.post("/api/fs/write-text")
-async def fs_write_text(payload: FsWriteText):
+async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     """Overwrite (or create) a UTF-8 text file for the in-app spot editor.
 
     Mirrors the Electron ``hermes:fs:writeText`` hardening: path validated by
@@ -663,8 +832,21 @@ async def fs_write_text(payload: FsWriteText):
     temp file and ``os.replace``-d so a crash can't truncate the original.
     Stale-on-disk detection is the client's job (re-read before save).
     """
-    target = _fs_path(payload.path)
     text = payload.content or ""
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            target, byte_size = await asyncio.to_thread(
+                backend.write_text,
+                payload.path,
+                text,
+                max_bytes=_FS_TEXT_WRITE_MAX_BYTES,
+            )
+        except Exception as exc:
+            _raise_fs_backend_error(exc)
+        return {"ok": True, "path": target, "byteSize": byte_size}
+
+    target = _fs_path(payload.path, decode_fallback=False)
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 
@@ -718,6 +900,16 @@ async def fs_read_data_url(
     path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            data, _size, target = await asyncio.to_thread(
+                backend.read_bytes, path, max_bytes=_FS_DATA_URL_MAX_BYTES
+            )
+        except Exception as exc:
+            _raise_fs_backend_error(exc)
+        encoded = base64.b64encode(data).decode("ascii")
+        return {"dataUrl": f"data:{_fs_mime_type(Path(target))};base64,{encoded}"}
     target, st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
@@ -731,7 +923,23 @@ async def fs_read_data_url(
 async def fs_download(
     path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            target, _size = await asyncio.to_thread(backend.inspect_file, path)
+        except Exception as exc:
+            _raise_fs_backend_error(exc)
+        target_path = Path(target)
+        if _is_sensitive_path(target_path):
+            raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+        filename = urllib.parse.quote(target_path.name)
+        return StreamingResponse(
+            backend.stream_file(target),
+            media_type=_fs_mime_type(target_path),
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
+        )
     target, _st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
+    await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(
         path=str(target),
         media_type=_fs_mime_type(target),
@@ -741,7 +949,13 @@ async def fs_download(
 
 
 @router.get("/api/fs/git-root")
-async def fs_git_root(path: str):
+async def fs_git_root(path: str, profile: Optional[str] = None):
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        try:
+            return {"root": await asyncio.to_thread(backend.git_root, path)}
+        except Exception as exc:
+            _raise_fs_backend_error(exc)
     target = _fs_path(path)
     try:
         st = target.stat()
@@ -752,6 +966,14 @@ async def fs_git_root(path: str):
 
 
 @router.get("/api/fs/default-cwd")
-async def fs_default_cwd():
+async def fs_default_cwd(profile: Optional[str] = None):
+    backend = await asyncio.to_thread(_fs_backend, profile)
+    if backend is not None:
+        cwd = backend.cwd
+        try:
+            branch = await asyncio.to_thread(backend.git_branch, cwd)
+        except Exception as exc:
+            _raise_fs_backend_error(exc)
+        return {"cwd": cwd, "branch": branch}
     cwd = _fs_default_cwd()
     return {"cwd": cwd, "branch": _fs_git_branch(cwd)}

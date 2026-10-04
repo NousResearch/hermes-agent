@@ -22,6 +22,8 @@ import { ChatSidebar } from './index'
 
 const noop = () => {}
 
+const noopAsync = async () => {}
+
 const mount = () =>
   render(
     <MemoryRouter>
@@ -37,6 +39,7 @@ const mount = () =>
           onNewSessionInWorkspace={noop}
           onNewSessionSplit={noop}
           onResumeSession={vi.fn()}
+          onRetrySessions={noopAsync}
           onTriggerCronJob={async () => {}}
         />
       </SidebarProvider>

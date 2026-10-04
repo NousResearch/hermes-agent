@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.stream_consumer_fences import ensure_closed_code_fences
+from hermes_cli.observability.shared_metrics_gateway import stops_reply_clock
 
 logger = logging.getLogger("gateway.stream_consumer")
 
@@ -308,6 +309,7 @@ class StreamTransportMixin:
             self._message_id = "__no_edit__"
             self._message_created_ts = None
 
+    @stops_reply_clock
     async def _send_or_edit(
         self, text: str, *, finalize: bool = False, is_turn_final: bool = True) -> bool:
         """Send or edit the streaming message; True if delivered.  ``finalize`` marks the
@@ -331,9 +333,16 @@ class StreamTransportMixin:
             return True  # cursor-only / whitespace-only update
         # Don't open a new message for 1-2 tokens + cursor (rapid tool-calling): if
         # the cursor-strip edit is then rate-limited, "X ▉" stays forever.
-        if (self._message_id is None and self.cfg.cursor and self.cfg.cursor in text
-                and len(visible_stripped) < self._MIN_NEW_MSG_CHARS):
-            return True  # too short for a standalone message — accumulate more
+        # A segment-break finalize never carries the cursor, so gate it too or a 1-2 token
+        # preamble lands durably at every tool boundary and resets the progress anchor
+        # (#99026).  Turn finals are exempt: a short complete answer must be delivered.
+        # Tradeoff: on non-cumulative transports the held preamble is DROPPED, not
+        # carried — _end_segment sees update_visible=True and resets the segment.
+        preamble_finalize = finalize and not is_turn_final
+        if (self._message_id is None and len(visible_stripped) < self._MIN_NEW_MSG_CHARS
+                and (preamble_finalize or (self.cfg.cursor and self.cfg.cursor in text))):
+            # Mid-stream: accumulate more.  Segment-break finalize: dropped (see above).
+            return True
 
         # A failed native/draft transport disables itself and falls through so the
         # accumulated text still reaches the user via edit/send.
@@ -349,6 +358,10 @@ class StreamTransportMixin:
         self._last_edit_overflowed = False
         try:
             if self._message_id is None:
+                if not self._edit_supported and not finalize:
+                    # A failed send disabled edits: a preview sent now could never be updated and
+                    # would stay on screen truncated next to the final reply. Send only the final.
+                    return False
                 return await self._first_send(text, finalize=finalize)
             if not self._edit_supported:
                 return False  # edits unsupported; fallback path sends the final

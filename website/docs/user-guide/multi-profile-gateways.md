@@ -104,22 +104,30 @@ settles at boot, never a verdict. Each start it runs the same preflight as
 [`hermes gateway migrate --multiplex`](#migrating-from-per-profile-gateways) and
 multiplexes only when the fold would have been safe — two
 or more profiles, no secondary still running its own gateway (live process or
-installed service), no duplicate bot credential, no port-binding platform
-without a `/p/<profile>/` ingress, and a host the migration understands (not an
-s6 container or Windows Scheduled Tasks). Otherwise it comes up exactly as
-before — serving the default profile only — and logs the blocker plus the
-`hermes gateway migrate --multiplex` one-liner. Nothing is changed on disk.
+installed service, or under s6 a per-profile slot that is actually *up*), no
+duplicate bot credential, and no port-binding platform without a `/p/<profile>/`
+ingress. **Unset means on**: when nothing blocks, the gateway multiplexes and
+writes `gateway.multiplex_profiles: true` into the default profile's
+`config.yaml` (comments preserved) so the file says what the runtime does.
+Otherwise it comes up serving the default profile only and says so **loudly** on
+a host with other profiles: a boxed warning at gateway start naming the profiles
+that are not served, the blocker, and the fix; the same box in the `hermes
+update` summary and `hermes gateway status`; a banner in the dashboard
+(`/api/status` carries `multiplex_standalone_reason`). A single-profile install
+is not warned — there is nothing to serve. Nothing is written on a refusal.
 
 An **explicit** `true` bypasses migration preflight, except for a launching
 profile that opts out with `gateway.standalone: true`:
 
 - `gateway.multiplex_profiles: true` (what the migration writes) multiplexes
   regardless of the preflight — you, or the migration, made the call.
-- `gateway.multiplex_profiles: false` is **retired**. It used to keep
-  per-profile gateways for good; now it resolves exactly like an unset key and
-  the gateway logs a warning pointing at `hermes gateway migrate --multiplex`.
-  `--force` remains the path for the boundary cases below; `gateway.standalone:
-  true` is a temporary shim for fleets the switch broke, not a supported topology.
+- `gateway.multiplex_profiles` has **one valid value right now: `true`**, and
+  it is written for you. An unset key resolves on and is made explicit in the
+  default profile's `config.yaml`. `false` is **retired**: the gateway rewrites
+  it to `true` in place and prints a one-time boxed notice at that start and in
+  the next `hermes update` summary — never a silent flip. A per-profile gateway
+  is `gateway.standalone: true` in that profile's own config (a temporary shim,
+  not a supported topology) or `--force` for the boundary cases below.
 - `GATEWAY_MULTIPLEX_PROFILES` in the process environment overrides the
   unset-key decision the same way an explicit `true` does.
 - `gateway.standalone: true` in a **named** profile's own `config.yaml`
@@ -202,6 +210,9 @@ Parking does not delete the profile, its sessions, or its scheduled jobs.
 Without a running host it removes the marker and follows the normal start
 path; start the host from the default profile if prompted. `restart` unserves
 and serves the profile without writing a parked marker, re-reading its config.
+On a **parked** profile with no live per-profile gateway, `restart` behaves as
+`start`: it removes the marker and hot-serves the profile (a gateway started
+with `--force` beside the marker keeps its own restart instead).
 These operations do not terminate work already dispatched by a cron tick.
 
 The host also rescans every 30 seconds: adding the marker by hand unserves the
@@ -319,7 +330,10 @@ A standalone profile's adapters, cron, webhook ingress and Kanban
 notifications run only while its own gateway runs, not under the host
 multiplexer or `hermes serve`. Point webhook clients at the standalone
 gateway's own listener; the host's `/p/<profile>/` ingress no longer serves
-it. The cron destination picker still lists standalone profiles as
+it. That listener resolves its port from the profile's own `.env` or
+`config.yaml`, so when both it and the host gateway enable the API server or
+webhook ingress, give the profile its own `API_SERVER_PORT` / `WEBHOOK_PORT`;
+two gateways left on the defaults both try to bind them. The cron destination picker still lists standalone profiles as
 `bot-chat:<name>` targets, but the host cannot deliver to those targets.
 
 `hermes -p coder gateway status` prints `standalone by config
@@ -555,7 +569,7 @@ parent conversation.
 
 #### 5. One PID/lock and one status surface
 
-There is a single process-level PID and lock (the multiplexer, under the default home). `hermes status` on the default profile reports the multiplexer and lists the profiles it serves (`Serves: coder, research`). `hermes -p coder status` and `hermes -p coder gateway status` report "running via the default-profile multiplexer" instead of "stopped". The dashboard's `/api/status?profile=coder` / Channels page report the multiplexer as coder's running gateway, with coder's own adapters as its platforms. The single `gateway_state.json` lives under the default home: secondary adapters appear there as `<profile>:<platform>` entries beside `served_profiles`; no per-profile gateway status file is written.
+There is a single process-level PID and lock (the multiplexer, under the default home). `hermes status --full` on the default profile reports the multiplexer and lists the profiles it serves (`Serves: coder, research`). `hermes -p coder status` and `hermes -p coder gateway status` report "running via the default-profile multiplexer" instead of "stopped". The dashboard's `/api/status?profile=coder` / Channels page report the multiplexer as coder's running gateway, with coder's own adapters as its platforms. The single `gateway_state.json` lives under the default home: secondary adapters appear there as `<profile>:<platform>` entries beside `served_profiles`; no per-profile gateway status file is written.
 
 `hermes -p coder cron status` names the single host gateway and the profiles it serves — `Scheduler host: the host gateway (PID 4211) serving profiles default, coder` — then checks coder's own ticker heartbeat and last successful tick. A missing or stale heartbeat produces a warning rather than an unconditional running verdict. `cron list` and `cron create` also warn when a served profile has no fresh heartbeat. `cron status` adds tick-failure details that those lightweight checks do not read.
 
@@ -652,6 +666,7 @@ profile and never shares with the default or any sibling:
 |---|---|---|
 | Provider keys, bot tokens, `${VAR}` refs in `config.yaml` | The profile's own `.env` (its secret scope) | Unresolved / no adapter — never the default profile's value |
 | Authorization (`GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS`, per-platform allowlists and allow-all opt-ins) | The owning profile's `.env` and `config.yaml` | Closed — a default-profile opt-in never opens a secondary's bot |
+| Slash-command gating (`allow_admin_from`, `user_allowed_commands`, `group_allow_admin_from`; see [Slash commands](../reference/slash-commands.md)) | The profile whose bot received the message — a secondary's own platform `extra` block governs its bots, not the default profile's | Fail closed: a served profile whose config the multiplexer has not loaded is gated with an **empty** admin list and no user-enabled commands, so only the always-allowed floor (`/help`, `/whoami`) runs — never the default profile's open policy |
 | HTTP endpoints (`/p/<profile>/api/...`, `/p/<profile>/webhooks/...`, platform event callbacks) | The named profile's `API_SERVER_KEY`, `profile:`-bound webhook routes, and its own adapter | `401`/`404`; delivery without an adapter is `502`/`503`, never another profile's bot |
 | Inbound-port platforms (`/p/<profile>/webhooks/twilio`, `/p/<profile>/line/webhook`, `/p/<profile>/api/messages`, …) | The named profile's own adapter and its secret (Twilio auth token, LINE channel secret, Teams app, BlueBubbles password, …); replies leave through that adapter | `401`/`403` on a wrong secret, `404` when the profile has no such adapter — never the default profile's adapter |
 | Adapter settings (`*_REQUIRE_MENTION`, `*_REACTIONS`, `*_ALLOW_BOTS`, `*_PROXY`, Discord `allow_mentions`, Matrix `allowed_users` / `ignore_user_patterns`, webhook host/port/URL, Matrix thread/session/E2EE policy, Discord backfill/attachment caps, Buzz reply mode, A2A agent card / public URL, WhatsApp bridge policy, Yuanbao home channel) | The owning profile, in this order: explicit `.env` value → its `config.yaml` → the adapter's default | The adapter's documented default — never the default profile's setting. Single-profile installs keep env-over-YAML exactly as each platform page documents |
@@ -1095,6 +1110,20 @@ the host gateway with `gateway.standalone: true` (see
 [No new per-profile gateways](#no-new-per-profile-gateways)), which
 `hermes gateway migrate --multiplex` respects.
 
+### Docker / Hermes Cloud (s6-supervised container)
+
+Inside the official image every profile has an s6 slot
+(`/run/service/gateway-<profile>`). The container's boot registers every *named*
+slot down and folds its autostart intent into the root slot, so a fresh boot
+already multiplexes. An **in-place** update no longer needs a container restart
+to converge either: `hermes gateway migrate --multiplex` (and the hook `hermes
+update` runs) parks any named slot that is still up (`s6-svc -d` plus a `down`
+file so a supervisor restart does not revive it), folds its intent into the root
+slot through the same rule the boot uses, and restarts the root slot. A
+registered-down slot is never a blocker — only a slot that is actually up is.
+The one thing the command still cannot do from inside is create a root slot the
+boot never registered; that case names itself and asks for a container restart.
+
 ### What `hermes update` does
 
 After a successful update, when the install has two or more profiles, at least
@@ -1234,7 +1263,8 @@ single failed apply so that no profile is left without a gateway.
 
 Not covered automatically: s6-supervised containers — they converge on the next
 container start (the per-profile slots are registered down and the root gateway
-multiplexes). Windows Scheduled Tasks are folded by the command. The dashboard's
+multiplexes; a `gateway.standalone: true` profile boots its own slot from its own
+run intent instead). Windows Scheduled Tasks are folded by the command. The dashboard's
 System page offers the same migration as a button when the preflight finds an
 eligible install.
 

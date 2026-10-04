@@ -12,12 +12,10 @@ from __future__ import annotations
 import sys
 import types
 
-
 if "dotenv" not in sys.modules:
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     sys.modules["dotenv"] = fake_dotenv
-
 
 class TestUpstageResolver:
     """The providers.py resolver must recognise upstage (the actual bug)."""
@@ -33,9 +31,3 @@ class TestUpstageResolver:
         assert pdef.id == "upstage"
         assert pdef.base_url == "https://api.upstage.ai/v1"
         assert "UPSTAGE_API_KEY" in pdef.api_key_env_vars
-
-
-
-
-
-

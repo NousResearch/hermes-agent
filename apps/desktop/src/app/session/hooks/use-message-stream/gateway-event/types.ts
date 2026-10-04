@@ -21,7 +21,9 @@ export interface GatewayEventDeps {
     responsePreviewed?: boolean,
     failure?: { error: string; partial: boolean },
     occurredAt?: number,
-    persistedTurn?: PersistedTurn | null
+    persistedTurn?: PersistedTurn | null,
+    responseTransformed?: boolean,
+    status?: string
   ) => void
   failAssistantMessage: (
     sessionId: string,
@@ -30,6 +32,7 @@ export interface GatewayEventDeps {
     surface?: ErrorSurface | null
   ) => void
   flushQueuedDeltas: (sessionId?: string) => void
+  dropQueuedDeltas: (sessionId?: string) => void
   finalizeInterimAssistantMessage: (sessionId: string, text: string, occurredAt?: number) => void
   hydrateFromStoredSession: (
     attempts?: number,

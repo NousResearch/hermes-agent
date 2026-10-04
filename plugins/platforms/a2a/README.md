@@ -53,6 +53,26 @@ and push notification configs (inline or via
 memory — and the reply is returned over A2A. Completed tasks stay queryable
 via `tasks/get`.
 
+## Task completion tracking — three modes, one recommended
+
+An agent turn can take seconds to minutes. A2A offers three ways for the
+caller to learn the outcome; they are not interchangeable, and picking the
+right one per consumer matters:
+
+| Mode | How it works | Best for | Watch out |
+|---|---|---|---|
+| **Webhook push** ⭐ recommended | Caller attaches `configuration.taskPushNotificationConfig.url` to `message/send`; when the task reaches a terminal state, this gateway POSTs a signed `status-update` to that URL | **Server-to-server fleet links** — the sender does nothing after sending; no connection to hold, nothing to poll | Callbacks are best-effort: keep `tasks/get` polling as the fallback of last resort. Callbacks are SSRF-guarded and HMAC-SHA256-signed (`X-A2A-Signature`, computed over the exact wire bytes) |
+| **SSE streaming** (`message/stream`) | Caller holds one long-lived HTTP connection and receives live events | Dashboards, live progress, anything a human is watching | Proxy idle timeouts kill idle streams (send keepalives); a drop requires resubscribe. This is what MCP uses client→server — the mirror-image direction |
+| **Polling** (`tasks/get`) | Caller asks on its own schedule | Simple integrations, cron jobs, the last-resort fallback | Officially the highest-latency path; every empty poll is a wasted request |
+
+**Recommended pairing for autonomous agent fleets**: *instant-ack*
+(`A2A_EARLY_WORKING=1`, returns `TASK_STATE_WORKING` in milliseconds instead
+of holding the request open for the whole agent turn) + *webhook push* for
+completion. SSE stays for dashboard/live-progress consumers, polling as the
+universal fallback. This combination eliminates the classic failure mode
+where a slow agent turn (minutes) exceeds the caller's HTTP timeout and the
+task gets redelivered as a duplicate.
+
 ## Security
 
 - **No token ⇒ localhost only.** The server binds `127.0.0.1` and refuses to

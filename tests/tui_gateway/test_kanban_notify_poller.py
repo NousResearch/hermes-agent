@@ -14,6 +14,8 @@ unsubscribe) and ``_format_kanban_event_text``.
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -265,11 +267,17 @@ class TestFormatKanbanEventText:
         assert "Iteration budget exhausted" in tui
         assert "spawn" not in tui
 
-    def test_gave_up_without_payload_details_still_renders(self):
-        ev = SimpleNamespace(kind="gave_up", payload={})
+    @pytest.mark.parametrize(
+        "payload",
+        [{}, {"failures": "three", "error": "boom"}, {"failures": 3, "error": "line1\nline2"}],
+    )
+    def test_gave_up_odd_payload_renders_one_line(self, payload):
+        ev = SimpleNamespace(kind="gave_up", payload=payload)
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "gave up" in text
         assert "spawn" not in text
+        assert "line2" not in text
+        assert len(text.splitlines()) == 1
 
 
 class TestNotificationPollerLoopKanbanWiring:

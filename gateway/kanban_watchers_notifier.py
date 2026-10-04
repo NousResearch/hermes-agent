@@ -438,11 +438,14 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
 
 def gave_up_cause(payload: dict) -> tuple[str, str]:
     """``(count, last)`` copy for gave_up; spawn failures, crashes and timeouts all trip it."""
-    failures = payload.get("failures")
-    count = (t("gateway.kanban.ping.failed_n_times", count=int(failures)) if failures
+    try:
+        failures = int(payload.get("failures") or 0)
+    except (TypeError, ValueError):
+        failures = 0  # one bad payload must not drop the rest of a poll batch
+    count = (t("gateway.kanban.ping.failed_n_times", count=failures) if failures
              else t("gateway.kanban.ping.kept_failing"))
     error = payload.get("error")
-    last = t("gateway.kanban.ping.last_error", value=str(error)[:160]) if error else ""
+    last = t("gateway.kanban.ping.last_error", value=_first_line(str(error), 160)) if error else ""
     return count, last
 
 

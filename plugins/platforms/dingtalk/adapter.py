@@ -128,6 +128,9 @@ _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
 _TRUTHY = {"true", "1", "yes", "on"}
 _EMOTION_ID = "2659900"
 _EMOTION_BG = "im_bg_1"
+# oapi media/upload caps: 20 MB for BOTH type=image and type=file
+# (open.dingtalk.com "upload-media-files").
+_MAX_MEDIA_UPLOAD_BYTES = 20 * 1024 * 1024
 # recall? -> (TextEmotion model, Request model, Headers model, robot SDK method), resolved on ``dingtalk_robot_models`` at call time.
 _EMOTION_SDK = {recall: (f"Robot{v}EmotionRequestTextEmotion", f"Robot{v}EmotionRequest", f"Robot{v}EmotionHeaders", f"robot_{v.lower()}_emotion_with_options_async")
                 for recall, v in ((True, "Recall"), (False, "Reply"))}
@@ -562,11 +565,19 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not os.path.exists(file_path):
             raise RuntimeError(f"File not found: {file_path}")
 
+        file_name = Path(file_path).name
+        file_size = os.path.getsize(file_path)
+        if file_size > _MAX_MEDIA_UPLOAD_BYTES:
+            raise RuntimeError(
+                f"File exceeds DingTalk's "
+                f"{_MAX_MEDIA_UPLOAD_BYTES // (1024 * 1024)} MB media upload "
+                f"limit: {file_name} is {file_size / (1024 * 1024):.1f} MB"
+            )
+
         token = await self._get_access_token()
         if not token:
             raise RuntimeError("Failed to obtain access token")
 
-        file_name = Path(file_path).name
         content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
 
         content = await asyncio.to_thread(Path(file_path).read_bytes)

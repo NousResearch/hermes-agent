@@ -724,6 +724,51 @@ class TestUploadMedia:
         assert media_id == "mid-123"
 
     @pytest.mark.asyncio
+    async def test_oversized_image_rejected_before_upload(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = AsyncMock()
+        adapter._get_access_token = AsyncMock(return_value="token")
+        img = tmp_path / "huge.png"
+        img.write_bytes(b"\x89PNG" + b"\x00" * (20 * 1024 * 1024))
+
+        with pytest.raises(RuntimeError, match="20 MB media upload limit"):
+            await adapter._upload_media(str(img), media_type="image")
+        adapter._http_client.post.assert_not_called()
+        adapter._get_access_token.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_oversized_document_rejected_before_upload(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = AsyncMock()
+        adapter._get_access_token = AsyncMock(return_value="token")
+        doc = tmp_path / "huge.pdf"
+        doc.write_bytes(b"%PDF-" + b"\x00" * (20 * 1024 * 1024))
+
+        with pytest.raises(RuntimeError, match="20 MB media upload limit"):
+            await adapter._upload_media(str(doc), media_type="file")
+        adapter._http_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_file_at_size_limit_accepted(self, tmp_path):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = AsyncMock()
+        adapter._get_access_token = AsyncMock(return_value="token")
+        img = tmp_path / "ok.png"
+        # exactly at the cap: allowed (guard is strict >)
+        img.write_bytes(b"\x89PNG" + b"\x00" * (20 * 1024 * 1024 - 5))
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"media_id": "mid-ok"}
+        adapter._http_client.post = AsyncMock(return_value=mock_resp)
+
+        media_id = await adapter._upload_media(str(img), media_type="image")
+        assert media_id == "mid-ok"
+
+    @pytest.mark.asyncio
     async def test_file_not_found(self):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))

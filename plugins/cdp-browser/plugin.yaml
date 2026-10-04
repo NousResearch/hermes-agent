@@ -1,0 +1,8 @@
+name: cdp-browser
+version: 1.0.0
+description: Composed one-pass CDP browser driver for Hermes — run multi-step browser actions (snapshot/focus/type/click/upload/wait/capture) in a single websocket connection, plus parallel tab spaces and token-cheap semantic snapshots. Ported from ego-lite's code-base/spaces/snapshot ideas. Requires a Chrome-family browser launched with --remote-debugging-port.
+author: Sahil Thakur
+provides_tools:
+  - cdp_list
+  - cdp_run
+  - cdp_spaces

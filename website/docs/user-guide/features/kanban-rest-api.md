@@ -222,6 +222,11 @@ default** — the endpoint returns 404 and `GET /capabilities` omits
 kanban:
   api_expose_transcripts: true
 ```
+The setting is per profile, and a transcript is served only when the profile
+that **ran the worker** has it on — a `?profile=` on the request does not
+change whose opt-in counts. With workers in named profiles, set it in each of
+their `config.yaml` files as well as the one serving the API.
+
 
 Every text field goes through the same secret redaction and absolute-path
 removal as the log excerpt. Tool results are capped at 4,000 characters and

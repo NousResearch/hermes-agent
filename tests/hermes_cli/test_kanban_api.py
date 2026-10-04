@@ -31,7 +31,22 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
 def transcripts_on() -> None:
     from hermes_constants import get_hermes_home
 
-    (get_hermes_home() / "config.yaml").write_text("kanban:\n  api_expose_transcripts: true\n")
+    (get_hermes_home() / "config.yaml").write_text(_EXPOSE_TRANSCRIPTS)
+
+
+_EXPOSE_TRANSCRIPTS = "kanban:\n  api_expose_transcripts: true\n"
+
+
+def _worker_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, expose: bool = True) -> Path:
+    """Home of the profile that runs the workers; every profile name resolves to it."""
+    from hermes_cli import profiles as profiles_mod
+
+    home = tmp_path / "worker-home"
+    home.mkdir()
+    if expose:
+        (home / "config.yaml").write_text(_EXPOSE_TRANSCRIPTS)
+    monkeypatch.setattr(profiles_mod, "resolve_profile_env", lambda name: str(home))
+    return home
 
 
 def _create(client: TestClient, **overrides) -> dict:
@@ -193,6 +208,7 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
     assert "secret-value-1234567890" not in log_body["excerpt"]
     assert "bare-opaque-token-42" not in log_body["excerpt"]
     assert "query-token-42" not in log_body["excerpt"]
+    assert "/secret.txt" not in log_body["excerpt"] and "/workspace" not in log_body["excerpt"]
 
     unlinked = client.delete(f"/api/plugins/kanban/v1/tasks/{parent_id}/links/{child_id}")
     assert unlinked.status_code == 200
@@ -208,7 +224,6 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
 
     assert client.post(f"/api/plugins/kanban/v1/tasks/{child_id}/unblock").status_code == 200
     assert client.post(f"/api/plugins/kanban/v1/tasks/{child_id}/archive").status_code == 200
-    assert "/secret.txt" not in log_body["excerpt"] and "/workspace" not in log_body["excerpt"]
 
 
 def test_operator_routes_keep_their_paths_beside_v1() -> None:
@@ -548,12 +563,9 @@ def test_patch_edits_notify_observers_like_the_dashboard(
 def test_transcript_streams_worker_session_while_running(
     client: TestClient, transcripts_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from hermes_cli import profiles as profiles_mod
     from hermes_state import SessionDB
 
-    profile_home = tmp_path / "worker-home"
-    profile_home.mkdir()
-    monkeypatch.setattr(profiles_mod, "resolve_profile_env", lambda name: str(profile_home))
+    profile_home = _worker_home(tmp_path, monkeypatch)
 
     task_id = _create(client, title="привіт", idempotency_key="transcript-1")["task"]["id"]
     empty = client.get(f"/api/plugins/kanban/v1/tasks/{task_id}/transcript").json()
@@ -638,12 +650,9 @@ def test_agent_init_links_kanban_run_session(
 def test_transcript_latest_returns_newest_steps(
     client: TestClient, transcripts_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from hermes_cli import profiles as profiles_mod
     from hermes_state import SessionDB
 
-    home = tmp_path / "worker-home"
-    home.mkdir()
-    monkeypatch.setattr(profiles_mod, "resolve_profile_env", lambda name: str(home))
+    home = _worker_home(tmp_path, monkeypatch)
     task_id = _create(client, idempotency_key="transcript-latest")["task"]["id"]
     with kbc.connect_closing() as conn:
         kanban_db.claim_task(conn, task_id)
@@ -670,12 +679,9 @@ def test_transcript_latest_returns_newest_steps(
 def test_transcript_ignores_caller_supplied_metadata_session(
     client: TestClient, transcripts_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from hermes_cli import profiles as profiles_mod
     from hermes_state import SessionDB
 
-    home = tmp_path / "worker-home"
-    home.mkdir()
-    monkeypatch.setattr(profiles_mod, "resolve_profile_env", lambda name: str(home))
+    home = _worker_home(tmp_path, monkeypatch)
     db = SessionDB(home / "state.db")
     db.create_session("private-chat", "cli")
     db.append_message("private-chat", "user", content="not a kanban run")
@@ -727,3 +733,32 @@ def test_actions_fire_lifecycle_hooks_for_the_requested_board(
     assert client.post(f"{base}/{done}/complete?board=ops", json={"summary": "ok"}).status_code == 200
     assert client.post(f"{base}/{stuck}/block?board=ops", json={"reason": "wait"}).status_code == 200
     assert fired and {board for _event, board in fired} == {"ops"}
+
+
+def _running_task_with_session(client: TestClient, key: str, session_id: str) -> str:
+    task_id = _create(client, idempotency_key=key)["task"]["id"]
+    with kbc.connect_closing() as conn:
+        kanban_db.claim_task(conn, task_id)
+        run = kanban_db.latest_run(conn, task_id)
+        kanban_db.set_run_worker_session(conn, run.id, task_id, session_id)
+    return task_id
+
+
+def test_transcript_needs_the_worker_profiles_own_opt_in(
+    client: TestClient, transcripts_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The opt-in is read from the profile whose session is served, never from the profile the
+    request selected: ``?profile=`` must not unlock another profile's worker."""
+    from hermes_state import SessionDB
+
+    home = _worker_home(tmp_path, monkeypatch, expose=False)
+    task_id = _running_task_with_session(client, "transcript-owner", "s1")
+    db = SessionDB(home / "state.db")
+    db.create_session("s1", "kanban")
+    db.append_message("s1", "assistant", content="worker output")
+    db.close()
+
+    url = f"/api/plugins/kanban/v1/tasks/{task_id}/transcript"
+    assert client.get(url).status_code == 404
+    (home / "config.yaml").write_text(_EXPOSE_TRANSCRIPTS)
+    assert [m["content"] for m in client.get(url).json()["messages"]] == ["worker output"]

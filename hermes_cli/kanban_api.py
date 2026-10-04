@@ -644,11 +644,26 @@ def task_log(
     }
 
 
-def _transcripts_enabled() -> bool:
-    """Opt-in: transcripts carry the task body and worker output that the rest of ``/v1`` withholds."""
+def _transcripts_enabled(profile: Optional[str] = None) -> bool:
+    """Opt-in: transcripts carry the task body and worker output that the rest of ``/v1`` withholds.
+    ``profile``: read that profile's own config instead of the request's. The request scope follows
+    ``?profile=``, so on its own it would let a caller pick a config that unlocks another profile's worker."""
     from hermes_cli.config import cfg_get, load_config
 
-    return cfg_get(load_config(), "kanban", "api_expose_transcripts", default=False) is True
+    if profile is None:
+        return cfg_get(load_config(), "kanban", "api_expose_transcripts", default=False) is True
+    from hermes_cli.profiles import resolve_profile_env
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    try:
+        home = resolve_profile_env(profile)
+    except (FileNotFoundError, ValueError):
+        return False
+    token = set_hermes_home_override(home)
+    try:
+        return cfg_get(load_config(), "kanban", "api_expose_transcripts", default=False) is True
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _transcript_text(value: Any, cap: int) -> tuple[Optional[str], bool]:
@@ -762,7 +777,7 @@ def task_transcript(
     ``next_after_id`` for near-live progress while the run is going, or with
     ``latest=true`` for the newest ``limit`` steps (``has_more`` then means
     older steps exist; ``after_id`` is ignored). 404 unless
-    ``kanban.api_expose_transcripts`` is on."""
+    ``kanban.api_expose_transcripts`` is on, in the worker profile's config too."""
     if not _transcripts_enabled():
         raise HTTPException(status_code=404, detail="transcripts are disabled")
     with _connection(board) as conn:
@@ -784,6 +799,8 @@ def task_transcript(
         try:
             rows = _read_session_messages(
                 profile, str(session_id), 0 if latest else after_id, limit + 1, latest
+        if not _transcripts_enabled(profile):
+            raise HTTPException(status_code=404, detail="transcripts are disabled")
             )
         except Exception as exc:
             log.warning("kanban transcript read failed for %s: %s", task_id, exc)

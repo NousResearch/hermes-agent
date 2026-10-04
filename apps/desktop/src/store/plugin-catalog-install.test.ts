@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $apiRequestScope } from '@/api/client'
 import { PLUGIN_CATALOG_URL, type PluginCatalogLookup } from '@/lib/plugin-catalog'
 
 import { $agentPlugins } from './agent-plugins'
@@ -19,6 +20,7 @@ describe('requestPluginCatalogInstallFromDeepLink', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    $apiRequestScope.set({ connectionId: null, profile: null })
   })
 
   it('opens the reviewed/pinned catalog dialog exactly like an in-app pick', async () => {
@@ -42,6 +44,38 @@ describe('requestPluginCatalogInstallFromDeepLink', () => {
       sha: 'b'.repeat(40)
     })
     expect($notifications.get()).toEqual([])
+  })
+
+  it('carries only catalog-designated memory providers into owner-pinned review', async () => {
+    const rows = [
+      { name: 'provider', category: 'memory', featured: true },
+      { name: 'memory-tool', category: 'memory', featured: false },
+      { name: 'featured-tool', category: 'tools', featured: true },
+      { name: 'malformed', category: 'memory', featured: 'true' },
+      { name: 'legacy', category: 'memory' }
+    ].map(row => ({ ...row, repo: `https://github.com/example/${row.name}`, sha: 'a'.repeat(40), subdir: 'plugin' }))
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify(rows)))
+
+    for (const row of rows) {
+      $apiRequestScope.set({ connectionId: 'a', profile: 'research' })
+      const pending = requestPluginCatalogInstallFromDeepLink(row.name)
+      $apiRequestScope.set({ connectionId: 'b', profile: 'other' })
+      await pending
+      const request = $pluginInstallRequest.get()
+      expect(request).toMatchObject({ catalogName: row.name, repo: `${row.repo}#plugin`, sha: row.sha })
+
+      if (row.name === 'provider') {
+        expect(request).toMatchObject({
+          profile: 'research',
+          legacyHint: 'agent',
+          enable: true,
+          memory: { name: row.name, owner: { connectionId: 'a', profile: 'research' } }
+        })
+      } else {
+        expect(request?.memory).toBeUndefined()
+      }
+    }
   })
 
   it.each([

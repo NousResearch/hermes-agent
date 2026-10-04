@@ -9,6 +9,30 @@ import { jaPluginSettings } from './ja_plugins'
 import { jaSharedMetrics } from './ja_shared_metrics'
 
 export const ja = defineLocale({
+  memoryDiscovery: {
+    installed: 'インストール済み',
+    availableToInstall: 'インストール可能',
+    installationRequired: 'インストールが必要です',
+    reviewInstall: '確認してインストール',
+    exploreAll: 'すべて見る…',
+    missing: '見つかりません',
+    installConsent:
+      '依存関係とともにプラグインをインストールして有効にします。メモリープロバイダーは明示的に選択するまで変更されません。',
+    builtin: '組み込み',
+    providerSettings: 'プロバイダー設定',
+    configureElsewhere: 'CLIで設定するか、選択を変更せず保存できるHermesに更新してください。',
+    notReady: '設定と依存関係を確認してください。インストール直後はバックエンドを再起動して再試行してください。',
+    useFailed: '使用できませんでした。設定を確認して再試行してください。',
+
+    active: '使用中',
+    useProvider: 'このプロバイダーを使う',
+    loadFailed: 'メモリプロバイダーを読み込めませんでした',
+    ownerChanged: 'この画面を開いた接続とプロファイルに戻ってから、もう一度お試しください。',
+    notDiscovered:
+      'パッケージはインストールされましたが、メモリプロバイダーはまだ検出されていません。メモリ設定に戻って再検出してください。',
+    installedNotice: 'プロバイダーが見つかりました。設定後、明示的に使用を選択してください。',
+    backToMemory: 'メモリ設定に戻る'
+  },
   externalOpenFailed: {
     title: 'このリンクを開けませんでした',
     message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',

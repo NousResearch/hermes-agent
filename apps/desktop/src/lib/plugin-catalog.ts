@@ -25,6 +25,9 @@ const FETCH_TIMEOUT_MS = 15_000
 export interface PluginCatalogEntry {
   name: string
   repo: string
+  category?: string
+  /** Only featured memory entries designate selectable providers (catalog admission contract). */
+  featured?: boolean
   /** Reviewed pin (40-hex) the backend installs at; may be missing on a malformed feed. */
   sha?: string
   /** Sub-directory of a monorepo the plugin lives in; empty when the repo root is the plugin. */
@@ -50,6 +53,8 @@ function asEntry(raw: unknown): null | PluginCatalogEntry {
   return {
     name: row.name,
     repo: row.repo,
+    category: typeof row.category === 'string' ? row.category : undefined,
+    featured: row.featured === true,
     sha: typeof row.sha === 'string' && row.sha ? row.sha : undefined,
     subdir: typeof row.subdir === 'string' && row.subdir ? row.subdir : undefined
   }

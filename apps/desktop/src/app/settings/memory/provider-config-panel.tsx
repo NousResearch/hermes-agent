@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import type { ResolvedOwner } from '@/api/client'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { getMemoryProviderConfig, saveMemoryProviderConfig } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { SlidersHorizontal } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
@@ -11,7 +13,7 @@ import type { MemoryProviderConfig, MemoryProviderField } from '@/types/hermes'
 import { ListRow, Pill } from '../primitives'
 
 import { FieldControl, FieldTitle } from './field-control'
-import { ProviderConfigModal } from './provider-config-modal'
+import { ProviderConfigModal, providerConfigSavePolicy } from './provider-config-modal'
 
 // Inline fields only: the compact panel must never re-write modal-owned keys.
 function seedValues(config: MemoryProviderConfig): Record<string, string> {
@@ -20,7 +22,20 @@ function seedValues(config: MemoryProviderConfig): Record<string, string> {
   )
 }
 
-export function ProviderConfigPanel({ profile, provider }: { profile?: string; provider: string }) {
+export function ProviderConfigPanel({
+  profile,
+  provider,
+  owner,
+  isActive = true,
+  onSaved
+}: {
+  profile?: string
+  provider: string
+  owner?: ResolvedOwner
+  isActive?: boolean
+  onSaved?: () => Promise<void>
+}) {
+  const { t } = useI18n()
   const [config, setConfig] = useState<MemoryProviderConfig | null>(null)
   const [loadError, setLoadError] = useState<null | string>(null)
   const [values, setValues] = useState<Record<string, string>>({})
@@ -30,7 +45,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
 
   const refresh = useCallback(async () => {
     try {
-      const next = await getMemoryProviderConfig(provider, profile)
+      const next = await getMemoryProviderConfig(provider, profile, owner)
       const seed = seedValues(next)
       setConfig(next)
       setValues(seed)
@@ -40,7 +55,7 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
       setConfig(null)
       setLoadError(err instanceof Error ? err.message : 'Memory provider settings failed to load')
     }
-  }, [profile, provider])
+  }, [profile, provider, owner])
 
   useEffect(() => {
     setConfig(null)
@@ -51,12 +66,23 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
   // on commit, silent on success, no full refresh (it would reset sibling drafts).
   const commitField = useCallback(
     async (field: MemoryProviderField, value: string) => {
+      if (!config || !providerConfigSavePolicy(config, isActive).allowed) {
+        return
+      }
+
       if (value === (saved[field.key] ?? '') || (field.kind === 'secret' && !value.trim())) {
         return
       }
 
       try {
-        await saveMemoryProviderConfig(provider, { [field.key]: value }, profile)
+        await saveMemoryProviderConfig(
+          provider,
+          { [field.key]: value },
+          profile,
+          owner,
+          providerConfigSavePolicy(config, isActive).activate
+        )
+        await onSaved?.()
 
         if (field.kind === 'secret') {
           setValues(current => ({ ...current, [field.key]: '' }))
@@ -74,8 +100,12 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
         notifyError(err, `Failed to save ${field.label}`)
       }
     },
-    [profile, provider, saved]
+    [profile, provider, saved, owner, onSaved, config, isActive]
   )
+
+  if (config && !providerConfigSavePolicy(config, isActive).allowed) {
+    return <p role="status">{t.memoryDiscovery.configureElsewhere}</p>
+  }
 
   // Providers without a declared config surface (e.g. builtin) render nothing.
   if (config && config.fields.length === 0) {
@@ -152,9 +182,14 @@ export function ProviderConfigPanel({ profile, provider }: { profile?: string; p
       {hasFullConfig && (
         <ProviderConfigModal
           config={config}
+          isActive={isActive}
           onOpenChange={setShowModal}
-          onSaved={refresh}
+          onSaved={async () => {
+            await refresh()
+            await onSaved?.()
+          }}
           open={showModal}
+          owner={owner}
           profile={profile}
           provider={provider}
         />

@@ -1,7 +1,10 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { $apiRequestScope } from '@/api/client'
+import { getMemoryStatus } from '@/api/system'
+import { memoryDiscoveryKey } from '@/api/system'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { NEW_CHAT_ROUTE, SETTINGS_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
@@ -23,7 +26,9 @@ import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
 import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
+import { queryClient } from '@/lib/query-client'
 import { type AgentPluginLiveNow, COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import { activeGateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import {
   $pluginInstallRequest,
@@ -33,12 +38,15 @@ import {
 } from '@/store/plugin-install-request'
 import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, profileLabel } from '@/store/profile'
 import { $connection } from '@/store/session'
+import { setSettingsScope } from '@/store/settings-scope'
 
 type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
 type ProbePhase = 'idle' | 'probing' | 'ready' | 'error'
 
 type InstallModalCopy = ReturnType<typeof useI18n>['t']['settings']['plugins']['installModal']
+
+const MEMORY_SETTINGS_ROUTE = '/settings?tab=config:memory&page=persistent'
 
 /** What an agent-plugin install made usable, as toast fragments ("12 tools connected", ...). */
 function installOutcome(m: InstallModalCopy, live: AgentPluginLiveNow, nextChat: boolean): string[] {
@@ -56,13 +64,12 @@ export function PluginInstallModal() {
   const { t } = useI18n()
   const m = t.settings.plugins.installModal
   const { requestGateway } = useGatewayRequest()
+  const requestScope = useStore($apiRequestScope)
   const navigate = useNavigate()
   const location = useLocation()
   const onSettings = location.pathname.startsWith(SETTINGS_ROUTE)
   const connection = useStore($connection)
-  const activeProfile = useStore($activeGatewayProfile)
   const profiles = useStore($profiles)
-  const profileScope = useStore($profileScope)
 
   const [repoInput, setRepoInput] = useState('')
   const [targetProfile, setTargetProfile] = useState('default')
@@ -76,9 +83,13 @@ export function PluginInstallModal() {
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
   const [installUncertain, setInstallUncertain] = useState(false)
+  const [memoryResult, setMemoryResult] = useState<'discovered' | 'missing' | null>(null)
+  const installPending = useRef(false)
   const probeToken = useRef(0)
 
   const resetState = useCallback(() => {
+    probeToken.current += 1
+    setMemoryResult(null)
     setRepoInput('')
     setPhase('idle')
     setProbe(null)
@@ -87,7 +98,8 @@ export function PluginInstallModal() {
     setEnableAgent(true)
     setForceReinstall(false)
     setPinRef('')
-    setInstalling(false)
+    // Replacing the review must not admit another install until the old one settles.
+    setInstalling(installPending.current)
     setInstallError(null)
     setInstallUncertain(false)
   }, [])
@@ -157,24 +169,47 @@ export function PluginInstallModal() {
   )
 
   useEffect(() => {
-    if (request && onSettings) {
+    if (request && !request.memory && onSettings) {
       navigate(NEW_CHAT_ROUTE)
     }
   }, [request, onSettings, navigate])
 
-  useEffect(() => {
-    if (!request) {
-      resetState()
+  // Navigation is presentation, not a new repository inspection.
+  const openMemorySettings = useEffectEvent((profile: string) => {
+    setSettingsScope(profile)
+    navigate(MEMORY_SETTINGS_ROUTE)
+  })
 
+  useEffect(() => {
+    resetState()
+
+    if (!request) {
       return
     }
 
-    setTargetProfile(normalizeProfileKey(request.profile || activeProfile || profileScope))
+    if (request.memory) {
+      const { owner } = request.memory
+      const foreground = $apiRequestScope.get()
+
+      // A slow catalog lookup must not take over a newly selected owner.
+      if (
+        foreground.connectionId === owner.connectionId &&
+        normalizeProfileKey(foreground.profile) === normalizeProfileKey(owner.profile)
+      ) {
+        openMemorySettings(normalizeProfileKey(owner.profile))
+      }
+    }
+
+    setTargetProfile(
+      normalizeProfileKey(
+        request.memory?.owner.profile ?? request.profile ?? $activeGatewayProfile.get() ?? $profileScope.get()
+      )
+    )
 
     if (request.repo) {
       void runProbe(request)
     }
-  }, [activeProfile, profileScope, request, resetState, runProbe])
+  }, [request, resetState, runProbe])
 
   const targetProfileInfo = profiles.find(profile => normalizeProfileKey(profile.name) === targetProfile)
   const profileOptions = targetProfileInfo ? profiles : [...profiles, { name: targetProfile }]
@@ -206,7 +241,7 @@ export function PluginInstallModal() {
   }
 
   const handleInstall = async () => {
-    if (!request || !probe?.ok || installing || installUncertain) {
+    if (!request || !probe?.ok || installPending.current || installing || installUncertain || memoryResult) {
       return
     }
 
@@ -216,6 +251,31 @@ export function PluginInstallModal() {
       return
     }
 
+    const memory = request.memory
+
+    if (memory && !probe.agent) {
+      setInstallError(m.selectComponent)
+
+      return
+    }
+
+    const gateway = activeGateway()
+
+    const ownerMatches =
+      !memory ||
+      ($apiRequestScope.get().connectionId === memory.owner.connectionId &&
+        normalizeProfileKey($apiRequestScope.get().profile) === normalizeProfileKey(memory.owner.profile))
+
+    if (memory && (!ownerMatches || !gateway)) {
+      setInstallError(t.memoryDiscovery.ownerChanged)
+
+      return
+    }
+
+    // Pin the socket before the first await. Never reconnect/retry a mutation
+    // through the ambient requestGateway, which can change owners mid-install.
+    const installRequest = memory && gateway ? gateway.request.bind(gateway) : requestGateway
+    installPending.current = true
     setInstalling(true)
     setInstallError(null)
     setInstallUncertain(false)
@@ -227,14 +287,39 @@ export function PluginInstallModal() {
 
     try {
       if (installAgent && probe.agent) {
-        const result = await installAgentPlugin(requestGateway, {
+        const result = await installAgentPlugin(installRequest, {
           identifier: request.repo,
           force: forceReinstall,
-          enable: enableAgent,
+          enable: memory ? true : enableAgent,
           catalogName: request.catalogName,
           ref: pinRefTrimmed || undefined,
-          profile: targetProfile
+          profile: memory ? memory.owner.profile : targetProfile
         })
+
+        if (memory && result.ok) {
+          try {
+            const status = await getMemoryStatus(memory.owner)
+            queryClient.setQueryData(memoryDiscoveryKey(memory.owner), status)
+
+            if ($pluginInstallRequest.get() === request) {
+              setMemoryResult(
+                status.providers.some(provider => provider.name === memory.name && provider.status !== 'missing')
+                  ? 'discovered'
+                  : 'missing'
+              )
+            }
+          } catch {
+            if ($pluginInstallRequest.get() === request) {
+              setMemoryResult('missing')
+            }
+          }
+
+          return
+        }
+
+        if (memory && $pluginInstallRequest.get() !== request) {
+          return
+        }
 
         if (result.ok) {
           successes.push(
@@ -270,7 +355,10 @@ export function PluginInstallModal() {
           // installing. A read-only list refresh can show an already landed
           // package; the user can rescan later if the backend is still busy.
           setInstallUncertain(true)
-          void loadAgentPlugins(requestGateway, targetProfile)
+
+          if (!memory) {
+            void loadAgentPlugins(requestGateway, targetProfile)
+          }
 
           return
         } else {
@@ -278,7 +366,7 @@ export function PluginInstallModal() {
         }
       }
 
-      if (installDesktop && probe.desktop) {
+      if (!memory && installDesktop && probe.desktop) {
         if (desktopHalfFromPackage) {
           // Unified package into a LOCAL backend: the desktop half ships inside
           // the package folder. Materialise it from there (one source of truth,
@@ -316,7 +404,9 @@ export function PluginInstallModal() {
         }
       }
 
-      await loadAgentPlugins(requestGateway, targetProfile)
+      if (!memory) {
+        await loadAgentPlugins(requestGateway, targetProfile)
+      }
 
       if (errors.length === 0) {
         for (const message of successes) {
@@ -346,11 +436,18 @@ export function PluginInstallModal() {
 
       setInstallError(errors.join('\n'))
     } finally {
+      installPending.current = false
       setInstalling(false)
     }
   }
 
-  const open = request !== null && !onSettings
+  const open = request !== null && (!onSettings || Boolean(request.memory))
+
+  const memoryOwnerMatches =
+    !request?.memory ||
+    (requestScope.connectionId === request.memory.owner.connectionId &&
+      normalizeProfileKey(requestScope.profile) === normalizeProfileKey(request.memory.owner.profile))
+
   const busy = phase === 'probing' || installing
   const pinRefTrimmed = pinRef.trim().toLowerCase()
   const pinRefInvalid = pinRefTrimmed !== '' && !COMMIT_SHA_RE.test(pinRefTrimmed)
@@ -465,7 +562,7 @@ export function PluginInstallModal() {
                     <label className="flex items-start gap-3">
                       <Checkbox
                         checked={installAgent}
-                        disabled={busy}
+                        disabled={busy || Boolean(request.memory)}
                         onCheckedChange={value => setInstallAgent(value === true)}
                       />
                       <span className="min-w-0">
@@ -480,7 +577,11 @@ export function PluginInstallModal() {
                       <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
                         {m.profileLabel}
                       </span>
-                      <Select disabled={busy || !installAgent} onValueChange={setTargetProfile} value={targetProfile}>
+                      <Select
+                        disabled={busy || !installAgent || Boolean(request.memory)}
+                        onValueChange={setTargetProfile}
+                        value={targetProfile}
+                      >
                         <SelectTrigger aria-label={m.profileLabel} className="w-full">
                           <SelectValue />
                         </SelectTrigger>
@@ -496,7 +597,7 @@ export function PluginInstallModal() {
                   </div>
                 )}
 
-                {probe.desktop && (
+                {probe.desktop && !request.memory && (
                   <label className="flex items-start gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
                     <Checkbox
                       checked={installDesktop}
@@ -533,7 +634,8 @@ export function PluginInstallModal() {
                   </div>
                 )}
 
-                {probe.agent && (
+                {request.memory && <p className="text-sm text-muted-foreground">{t.memoryDiscovery.installConsent}</p>}
+                {probe.agent && !request.memory && (
                   <label className="flex items-center justify-between gap-3">
                     <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
                       {m.enableAgent}
@@ -575,6 +677,12 @@ export function PluginInstallModal() {
               </div>
             )}
 
+            {memoryResult && (
+              <p role="status">
+                {memoryResult === 'discovered' ? t.memoryDiscovery.installedNotice : t.memoryDiscovery.notDiscovered}
+              </p>
+            )}
+            {!memoryOwnerMatches && !installError && <p role="status">{t.memoryDiscovery.ownerChanged}</p>}
             {installError && (
               <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 whitespace-pre-wrap text-[length:var(--conversation-caption-font-size)] text-destructive">
                 {installError}
@@ -595,13 +703,24 @@ export function PluginInstallModal() {
           <Button disabled={busy} onClick={handleClose} variant="outline">
             {t.common.cancel}
           </Button>
-          {request && !request.repo ? (
+          {memoryResult === 'discovered' && memoryOwnerMatches ? (
+            <Button
+              onClick={() => {
+                closePluginInstallRequest()
+                navigate(MEMORY_SETTINGS_ROUTE)
+              }}
+            >
+              {t.memoryDiscovery.backToMemory}
+            </Button>
+          ) : request && !request.repo ? (
             <Button disabled={!repoInput.trim()} form="plugin-repository-form" type="submit">
               {m.reviewRepository}
             </Button>
           ) : (
             <Button
-              disabled={busy || installUncertain || phase !== 'ready' || !probe?.ok || pinRefInvalid}
+              disabled={
+                busy || Boolean(memoryResult) || installUncertain || phase !== 'ready' || !probe?.ok || pinRefInvalid
+              }
               onClick={() => void handleInstall()}
             >
               {installing ? m.installing : m.install}

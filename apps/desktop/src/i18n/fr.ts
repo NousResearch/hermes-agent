@@ -9,6 +9,32 @@ import { frSharedMetrics } from './fr_shared_metrics'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
+  memoryDiscovery: {
+    installed: 'Installés',
+    availableToInstall: 'Disponibles à installer',
+    installationRequired: 'Installation requise',
+    reviewInstall: 'Vérifier et installer',
+    exploreAll: 'Tout explorer…',
+    missing: 'Manquant',
+    installConsent:
+      'Installe et active le plugin avec ses dépendances. Le fournisseur mémoire actif reste inchangé jusqu’à votre sélection explicite.',
+    builtin: 'Intégré',
+    providerSettings: 'Paramètres du fournisseur',
+    configureElsewhere:
+      'Configurez ce fournisseur via son assistant CLI ou mettez Hermes à jour pour enregistrer sans activer.',
+    notReady:
+      'Terminez la configuration et installez les dépendances. Après une installation, redémarrez le backend puis réessayez.',
+    useFailed: 'Impossible d’utiliser ce fournisseur. Vérifiez sa configuration et réessayez.',
+
+    active: 'Actif',
+    useProvider: 'Utiliser ce fournisseur',
+    loadFailed: 'Impossible de charger les fournisseurs de mémoire',
+    ownerChanged: 'Revenez à la connexion et au profil utilisés à l’ouverture de cet installateur, puis réessayez.',
+    notDiscovered:
+      'Le paquet est installé, mais son fournisseur de mémoire n’est pas encore détecté. Revenez aux paramètres de mémoire pour réessayer.',
+    installedNotice: 'Fournisseur détecté. Configurez-le, puis choisissez explicitement de l’utiliser.',
+    backToMemory: 'Retour aux paramètres de mémoire'
+  },
   sharedMetrics: frSharedMetrics,
   intro: introFr,
   connectors: {

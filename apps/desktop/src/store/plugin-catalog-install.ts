@@ -1,3 +1,4 @@
+import { $apiRequestScope, type ProfileScope, type ResolvedOwner } from '@/api/client'
 import { translateNow } from '@/i18n'
 import { lookupPluginCatalogEntry, type PluginCatalogEntry, type PluginCatalogLookupError } from '@/lib/plugin-catalog'
 
@@ -12,10 +13,16 @@ import { openPluginInstallRequest } from './plugin-install-request'
  * dialog an in-app pick does: `catalogName` makes the backend resolve the
  * pinned SHA and record provenance; `repo#subdir` is what the dialog inspects.
  */
-export function openCatalogPluginInstall(entry: PluginCatalogEntry, profile: null | string): void {
+export function openCatalogPluginInstall(
+  entry: PluginCatalogEntry,
+  profile: null | string,
+  owner: ResolvedOwner = { ...$apiRequestScope.get(), profile: profile ?? $apiRequestScope.get().profile }
+): void {
+  const memoryProvider = entry.category === 'memory' && entry.featured === true
   const existing = $agentPlugins.get().find(row => row.catalog_name === entry.name || row.name === entry.name)
 
-  if (existing && !existing.update_available) {
+  // The Plugins tab cache is not owner-keyed and cannot prove memory installation.
+  if (!memoryProvider && existing && !existing.update_available) {
     notify({ kind: 'success', message: translateNow('skills.plugins.alreadyInstalled', entry.name) })
 
     return
@@ -25,7 +32,15 @@ export function openCatalogPluginInstall(entry: PluginCatalogEntry, profile: nul
     catalogName: entry.name,
     profile,
     repo: entry.subdir ? `${entry.repo}#${entry.subdir}` : entry.repo,
-    sha: entry.sha
+    sha: entry.sha,
+    ...(memoryProvider
+      ? {
+          profile: owner.profile,
+          legacyHint: 'agent' as const,
+          enable: true,
+          memory: { name: entry.name, owner }
+        }
+      : {})
   })
 }
 
@@ -43,8 +58,17 @@ const DEEP_LINK_ERROR_KEYS: Record<PluginCatalogLookupError, string> = {
  */
 export async function requestPluginCatalogInstallFromDeepLink(
   name: string,
-  lookup: typeof lookupPluginCatalogEntry = lookupPluginCatalogEntry
+  lookup: typeof lookupPluginCatalogEntry = lookupPluginCatalogEntry,
+  scope?: ProfileScope
 ): Promise<void> {
+  const ambient = $apiRequestScope.get()
+  const profile = typeof scope === 'string' ? scope : (scope?.profile ?? null)
+
+  const owner: ResolvedOwner =
+    scope && typeof scope === 'object'
+      ? { connectionId: scope.connectionId ?? null, profile: scope.profile ?? null }
+      : { ...ambient, profile: profile ?? ambient.profile }
+
   const result = await lookup(name)
 
   if (!result.ok) {
@@ -57,5 +81,5 @@ export async function requestPluginCatalogInstallFromDeepLink(
     return
   }
 
-  openCatalogPluginInstall(result.entry, null)
+  openCatalogPluginInstall(result.entry, profile, owner)
 }

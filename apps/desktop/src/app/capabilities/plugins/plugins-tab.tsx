@@ -45,7 +45,7 @@ import {
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
-import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
+import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection } from '@/store/session'
 
@@ -77,12 +77,7 @@ const CATALOG_COLLAPSED_PX = 4
 const CATALOG_LIST_RESERVED_PX = 176
 
 interface PluginPickMessage {
-  installCmd?: string
   name?: string
-  repo?: string
-  sha?: string
-  subdir?: string
-  tier?: string
   type?: string
 }
 
@@ -620,27 +615,19 @@ export const PluginsTab = memo(function PluginsTab({
 
       const data = event.data as null | PluginPickMessage
 
-      if (!data || data.type !== 'hermes-plugin-pick' || !data.name || !data.repo) {
+      if (!data || data.type !== 'hermes-plugin-pick' || typeof data.name !== 'string') {
         return
       }
 
-      // Already-installed short-circuit + the dialog itself live in the shared
-      // helper so a catalog deep link behaves identically to this pick.
-      openCatalogPluginInstall(
-        {
-          name: String(data.name),
-          repo: String(data.repo),
-          sha: data.sha ? String(data.sha) : undefined,
-          subdir: data.subdir ? String(data.subdir) : undefined
-        },
-        scope
-      )
+      // Resolve the authoritative metadata just like an external catalog link.
+      // Older picker pages omit provider designation; never infer it from a name.
+      void requestPluginCatalogInstallFromDeepLink(data.name, undefined, profile)
     }
 
     window.addEventListener('message', onMessage)
 
     return () => window.removeEventListener('message', onMessage)
-  }, [open, p, scope])
+  }, [open, profile])
 
   const agentBusy = (row: AgentPluginRow) => busyKey === (row.key ?? row.name) || busyKey === row.name
 

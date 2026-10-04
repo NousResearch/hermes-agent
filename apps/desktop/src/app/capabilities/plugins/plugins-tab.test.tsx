@@ -1,10 +1,11 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $apiRequestScope } from '@/api/client'
 import { createPluginContext } from '@/contrib/plugin'
 import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
 import { queryClient } from '@/lib/query-client'
-import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
+import { $agentPlugins, $agentPluginsStatus, type AgentPluginRow } from '@/store/agent-plugins'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { $notifications } from '@/store/notifications'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
@@ -13,7 +14,7 @@ import { $connection } from '@/store/session'
 
 import { PluginsTab } from './plugins-tab'
 
-const requestGateway = vi.fn(async () => ({ plugins: [] }))
+const requestGateway = vi.fn(async (): Promise<{ plugins: AgentPluginRow[] }> => ({ plugins: [] }))
 
 const connectionFixture = {
   baseUrl: 'http://localhost',
@@ -64,6 +65,7 @@ describe('PluginsTab', () => {
     cleanup()
     $connection.set(null)
     queryClient.clear()
+    vi.restoreAllMocks()
   })
 
   it('renders declared server pills and the unavailable sentence under the description', () => {
@@ -227,6 +229,14 @@ describe('PluginsTab', () => {
   })
 
   it('opens the dual-target install modal from a catalog pick message', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify([
+            { name: 'weather-plugin', repo: 'https://github.com/example/weather-plugin', sha: 'a'.repeat(40) }
+          ])
+        )
+    )
     render(<PluginsTab profile="workbot" />)
 
     window.dispatchEvent(
@@ -324,6 +334,14 @@ describe('PluginsTab', () => {
   })
 
   it('appends the subdir fragment for multi-plugin repos', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify([
+            { name: 'nested-plugin', repo: 'https://github.com/example/plugins-monorepo', subdir: 'nested-plugin' }
+          ])
+        )
+    )
     render(<PluginsTab profile={null} />)
 
     window.dispatchEvent(
@@ -507,7 +525,10 @@ describe('PluginsTab catalog UX', () => {
     setPaneHeightOverride('capabilities-plugin-catalog', undefined)
   })
 
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
 
   it('grows the catalog when its top-edge sash is dragged up, and resets on double-click', () => {
     // jsdom has no layout: give the Capabilities column a real height so the
@@ -657,7 +678,77 @@ describe('PluginsTab catalog UX', () => {
     expect(screen.queryByRole('button', { name: 'Uninstall: demo-tool' })).toBeNull()
   })
 
+  it('resolves picker memory metadata from the catalog and preserves its explicit owner', async () => {
+    const entry = {
+      name: 'memory',
+      category: 'memory',
+      featured: true,
+      repo: 'https://github.com/example/reviewed',
+      sha: 'a'.repeat(40),
+      subdir: 'provider'
+    }
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify([entry])))
+    $apiRequestScope.set({ connectionId: 'foreground', profile: 'default' })
+    render(<PluginsTab profile={{ connectionId: 'owner', profile: 'workbot' }} />)
+
+    try {
+      fireEvent(
+        window,
+        new MessageEvent('message', {
+          origin: 'https://hermes-agent.nousresearch.com',
+          data: {
+            type: 'hermes-plugin-pick',
+            name: 'memory',
+            repo: 'https://github.com/example/stale',
+            category: 'tools',
+            featured: false
+          }
+        })
+      )
+      await waitFor(() =>
+        expect($pluginInstallRequest.get()).toMatchObject({
+          catalogName: 'memory',
+          repo: `${entry.repo}#provider`,
+          sha: entry.sha,
+          profile: 'workbot',
+          memory: { name: 'memory', owner: { connectionId: 'owner', profile: 'workbot' } }
+        })
+      )
+      expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'install' }))
+    } finally {
+      fetchSpy.mockRestore()
+      $apiRequestScope.set({ connectionId: null, profile: null })
+    }
+  })
+
   it('refuses a catalog pick that is already installed and current', async () => {
+    $notifications.set([])
+    requestGateway.mockImplementationOnce(async () => ({
+      plugins: [
+        {
+          catalog_name: 'demo-weather',
+          name: 'demo-weather',
+          source: 'git',
+          status: 'enabled',
+          update_available: false,
+          version: '1.0.0',
+          description: ''
+        }
+      ]
+    }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify([
+            {
+              name: 'demo-weather',
+              repo: 'https://github.com/example/demo-weather',
+              sha: 'a'.repeat(40)
+            }
+          ])
+        )
+    )
     $agentPlugins.set([
       {
         catalog_name: 'demo-weather',
@@ -686,11 +777,23 @@ describe('PluginsTab catalog UX', () => {
     )
 
     // The modal must NOT open — the pick is refused with a toast.
-    await new Promise(resolve => setTimeout(resolve, 20))
+    await waitFor(() => expect($notifications.get().some(notice => notice.kind === 'success')).toBe(true))
     expect($pluginInstallRequest.get()).toBeNull()
   })
 
   it('still opens the modal for an installed pick when an update is available', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify([
+            {
+              name: 'demo-weather',
+              repo: 'https://github.com/example/demo-weather',
+              sha: 'a'.repeat(40)
+            }
+          ])
+        )
+    )
     $agentPlugins.set([
       {
         catalog_name: 'demo-weather',

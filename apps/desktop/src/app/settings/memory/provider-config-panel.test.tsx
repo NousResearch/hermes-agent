@@ -3,12 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { MemoryProviderConfig } from '@/types/hermes'
 
+import { field } from './test-fixtures'
+
 const getMemoryProviderConfig = vi.fn()
 const saveMemoryProviderConfig = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getMemoryProviderConfig: (provider: string) => getMemoryProviderConfig(provider),
-  saveMemoryProviderConfig: (provider: string, values: unknown) => saveMemoryProviderConfig(provider, values)
+  saveMemoryProviderConfig: (...args: unknown[]) => saveMemoryProviderConfig(...args)
 }))
 
 vi.mock('@/store/profile', async () => {
@@ -35,37 +37,30 @@ function honchoSchema(): MemoryProviderConfig {
     label: 'Honcho',
     docs_url: 'https://docs.honcho.dev/v3/guides/integrations/hermes',
     fields: [
-      {
+      field({
         key: 'apiKey',
         label: 'API key',
         kind: 'secret',
-        value: '',
         description: 'Authenticate with Honcho Cloud.',
         placeholder: 'Enter Honcho API key',
-        is_set: false,
         inline: true,
-        group: 'Connection',
-        options: []
-      },
-      {
+        group: 'Connection'
+      }),
+      field({
         key: 'baseUrl',
         label: 'Base URL',
         kind: 'text',
-        value: '',
         description: 'Self-hosted Honcho URL.',
         placeholder: 'https://… (self-hosted)',
-        is_set: false,
         inline: true,
-        group: 'Connection',
-        options: []
-      },
-      {
+        group: 'Connection'
+      }),
+      field({
         key: 'environment',
         label: 'Environment',
         kind: 'select',
         value: 'production',
         description: 'Honcho environment.',
-        placeholder: '',
         is_set: true,
         inline: true,
         group: 'Connection',
@@ -74,8 +69,8 @@ function honchoSchema(): MemoryProviderConfig {
           { value: 'demo', label: 'Demo', description: '' },
           { value: 'local', label: 'Local', description: '' }
         ]
-      },
-      {
+      }),
+      field({
         key: 'workspace',
         label: 'Workspace',
         kind: 'text',
@@ -84,23 +79,18 @@ function honchoSchema(): MemoryProviderConfig {
         placeholder: 'hermes',
         is_set: true,
         inline: true,
-        group: 'Connection',
-        options: []
-      },
-      // Non-inline field: must NOT render in the compact panel and must NOT be
-      // submitted when the panel saves.
-      {
+        group: 'Connection'
+      }),
+      // Non-inline field: neither rendered nor submitted by the compact panel.
+      field({
         key: 'writeFrequency',
         label: 'Write frequency',
         kind: 'text',
         value: 'async',
-        description: '',
-        placeholder: '',
         is_set: true,
         inline: false,
-        group: 'Message writing',
-        options: []
-      }
+        group: 'Message writing'
+      })
     ]
   }
 }
@@ -120,6 +110,23 @@ function renderPanel(provider = 'honcho') {
 }
 
 describe('ProviderConfigPanel', () => {
+  it('uses save-only even without an explicit owner when the capability is advertised', async () => {
+    getMemoryProviderConfig.mockResolvedValue({ ...honchoSchema(), supports_save_only: true })
+    renderPanel()
+    const workspace = await screen.findByDisplayValue('myws')
+    fireEvent.change(workspace, { target: { value: 'updated' } })
+    fireEvent.blur(workspace)
+    await waitFor(() =>
+      expect(saveMemoryProviderConfig).toHaveBeenCalledExactlyOnceWith(
+        'honcho',
+        { workspace: 'updated' },
+        undefined,
+        undefined,
+        false
+      )
+    )
+  })
+
   it('hides fields that are not marked inline', async () => {
     await renderPanel()
 
@@ -146,7 +153,13 @@ describe('ProviderConfigPanel', () => {
     fireEvent.blur(baseUrl)
 
     await waitFor(() =>
-      expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { baseUrl: 'http://localhost:8000' })
+      expect(saveMemoryProviderConfig).toHaveBeenCalledWith(
+        'honcho',
+        { baseUrl: 'http://localhost:8000' },
+        undefined,
+        undefined,
+        true
+      )
     )
     expect(saveMemoryProviderConfig).toHaveBeenCalledTimes(1)
   })
@@ -171,7 +184,15 @@ describe('ProviderConfigPanel', () => {
     fireEvent.change(apiKey, { target: { value: 'hch-new-key' } })
     fireEvent.blur(apiKey)
 
-    await waitFor(() => expect(saveMemoryProviderConfig).toHaveBeenCalledWith('honcho', { apiKey: 'hch-new-key' }))
+    await waitFor(() =>
+      expect(saveMemoryProviderConfig).toHaveBeenCalledWith(
+        'honcho',
+        { apiKey: 'hch-new-key' },
+        undefined,
+        undefined,
+        true
+      )
+    )
     await waitFor(() => expect((apiKey as HTMLInputElement).value).toBe(''))
   })
 

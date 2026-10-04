@@ -1,10 +1,11 @@
 import { QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The host tab lists installed plugins on mount; only an `install` action counts as installing.
-const { requestGateway } = vi.hoisted(() => ({
+const { requestGateway, gateway } = vi.hoisted(() => ({
+  gateway: { request: vi.fn() },
   requestGateway: vi.fn(async (_method: string, _params?: Record<string, unknown>): Promise<unknown> => ({
     plugins: []
   }))
@@ -13,12 +14,18 @@ const { requestGateway } = vi.hoisted(() => ({
 vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
 }))
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  activeGateway: () => gateway
+}))
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getProfiles: async () => ({ profiles: [] })
 }))
 
+import { $apiRequestScope } from '@/api/client'
 import { queryClient } from '@/lib/query-client'
+import { requestPluginCatalogInstallFromDeepLink } from '@/store/plugin-catalog-install'
 import {
   $pluginInstallRequest,
   closePluginInstallRequest,
@@ -26,26 +33,49 @@ import {
 } from '@/store/plugin-install-request'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
+import { $settingsScopeOverride, $settingsScopeProfile } from '@/store/settings-scope'
 
 import { PluginsTab } from '../capabilities/plugins/plugins-tab'
 
 import { PluginInstallModal } from './plugin-install-modal'
 
+import { SettingsPage } from './index'
+
 const probePluginRepo = vi.fn()
 const installDesktopPlugin = vi.fn()
 
-const renderFlow = () =>
+function LocationProbe() {
+  const location = useLocation()
+
+  return (
+    <output data-testid="location">
+      {location.pathname}
+      {location.search}
+    </output>
+  )
+}
+
+const renderFlow = (realSettings = false) =>
   render(
     <MemoryRouter initialEntries={['/capabilities?tab=plugins']}>
       <QueryClientProvider client={queryClient}>
-        <PluginsTab profile={null} />
+        {realSettings ? (
+          <Routes>
+            <Route element={<PluginsTab profile={null} />} path="/capabilities" />
+            <Route element={<SettingsPage onClose={() => {}} />} path="/settings" />
+          </Routes>
+        ) : (
+          <PluginsTab profile={null} />
+        )}
         <PluginInstallModal />
+        <LocationProbe />
       </QueryClientProvider>
     </MemoryRouter>
   )
 
 beforeEach(() => {
   vi.clearAllMocks()
+  $apiRequestScope.set({ connectionId: 'a', profile: 'default' })
   Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
   queryClient.clear()
   closePluginInstallRequest()
@@ -79,6 +109,225 @@ afterEach(() => {
   cleanup()
   closePluginInstallRequest()
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
+  $settingsScopeOverride.set(null)
+})
+
+describe('Memory catalog ownership', () => {
+  const memoryRequest = () =>
+    openPluginInstallRequest({
+      repo: 'https://github.com/example/memory',
+      catalogName: 'memory',
+      sha: 'a'.repeat(40),
+      legacyHint: 'agent',
+      enable: true,
+      profile: 'default',
+      memory: { name: 'memory', owner: { connectionId: 'a', profile: 'default' } }
+    })
+
+  it('opens marketplace memory review over the owning Memory settings without selecting a provider', async () => {
+    $settingsScopeOverride.set('research')
+
+    const entry = {
+      name: 'memory',
+      repo: 'https://github.com/example/memory',
+      sha: 'a'.repeat(40),
+      category: 'memory',
+      featured: true
+    }
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify([entry])))
+
+    const api = vi.fn(async ({ path }: { path: string; method?: string }) => {
+      if (path.startsWith('/api/model/')) {
+        throw new Error('Model API is outside this memory fixture')
+      }
+
+      if (path === '/api/memory') {
+        return { active: 'builtin', providers: [{ name: 'memory', status: 'needs_config' }], builtin_files: {} }
+      }
+
+      if (path === '/api/config/schema') {
+        return { fields: {} }
+      }
+
+      if (path === '/api/config') {
+        return { memory: { provider: 'builtin', memory_enabled: true } }
+      }
+
+      return { available: false, logged_in: false }
+    })
+
+    vi.stubGlobal('hermesDesktop', { probePluginRepo, installDesktopPlugin, api })
+    gateway.request.mockResolvedValue({ ok: true, plugin_name: 'memory' })
+    renderFlow(true)
+    await act(() => requestPluginCatalogInstallFromDeepLink('memory'))
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    // The actual SettingsPage must consume the route, not silently fall back to Model.
+    expect(await screen.findByRole('combobox', { name: 'Provider settings', hidden: true })).toBeTruthy()
+    expect(screen.getByTestId('location').textContent).toBe('/settings?tab=config:memory&page=persistent')
+    expect($settingsScopeProfile.get()).toBe('default')
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(probePluginRepo).toHaveBeenCalledTimes(1)
+    expect(gateway.request).not.toHaveBeenCalled()
+    expect(installDesktopPlugin).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    expect(await screen.findByRole('button', { name: 'Back to Memory settings' })).toBeTruthy()
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/memory',
+      connectionId: 'a',
+      profile: 'default',
+      priority: 'foreground'
+    })
+    expect(gateway.request).toHaveBeenCalledExactlyOnceWith(
+      'plugins.manage',
+      expect.objectContaining({ action: 'install', catalog_name: 'memory', profile: 'default', enable: true }),
+      120000
+    )
+    expect(installDesktopPlugin).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Memory settings' }))
+    expect(await screen.findByRole('combobox', { name: 'Provider settings' })).toBeTruthy()
+    expect(screen.getByTestId('location').textContent).toBe('/settings?tab=config:memory&page=persistent')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(api.mock.calls.every(([request]) => !request.method || request.method === 'GET')).toBe(true)
+  })
+
+  it.each(['completed', 'in flight'])(
+    'reviews and installs a replacement request independently of the %s install',
+    async timing => {
+      let finish!: (value: unknown) => void
+
+      const pending = new Promise(resolve => {
+        finish = resolve
+      })
+
+      gateway.request.mockReturnValueOnce(pending).mockResolvedValue({ ok: true })
+
+      const api = vi.fn(async () => ({
+        active: 'builtin',
+        providers: [
+          { name: 'memory', status: 'needs_config' },
+          { name: 'second-memory', status: 'missing' }
+        ],
+        builtin_files: {}
+      }))
+
+      vi.stubGlobal('hermesDesktop', { probePluginRepo, api })
+      renderFlow()
+      act(memoryRequest)
+      expect(await screen.findByText('This package includes')).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+
+      const complete = async () => {
+        await act(async () => {
+          finish({ ok: true })
+          await pending
+        })
+      }
+
+      if (timing === 'completed') {
+        await complete()
+        expect(await screen.findByRole('button', { name: 'Back to Memory settings' })).toBeTruthy()
+      }
+
+      act(() =>
+        openPluginInstallRequest({
+          repo: 'https://github.com/example/second-memory',
+          catalogName: 'second-memory',
+          legacyHint: 'agent',
+          memory: { name: 'second-memory', owner: { connectionId: 'a', profile: 'default' } }
+        })
+      )
+      expect(await screen.findByText('This package includes')).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Back to Memory settings' })).toBeNull()
+
+      if (timing === 'in flight') {
+        expect((screen.getByRole('button', { name: 'Installing…' }) as HTMLButtonElement).disabled).toBe(true)
+        expect(gateway.request).toHaveBeenCalledTimes(1)
+        await complete()
+      }
+
+      const install = (await screen.findByRole('button', { name: 'Install' })) as HTMLButtonElement
+      expect(install.disabled).toBe(false)
+      expect(screen.queryByRole('button', { name: 'Back to Memory settings' })).toBeNull()
+      fireEvent.click(install)
+      expect(await screen.findByText(/not discovered yet/)).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Back to Memory settings' })).toBeNull()
+      expect(gateway.request).toHaveBeenCalledTimes(2)
+      expect(gateway.request).toHaveBeenLastCalledWith(
+        'plugins.manage',
+        expect.objectContaining({ action: 'install', catalog_name: 'second-memory', profile: 'default' }),
+        120000
+      )
+    }
+  )
+
+  it.each([
+    { connectionId: 'b', profile: 'default' },
+    { connectionId: 'a', profile: 'research' }
+  ])('refuses an owner changed during catalog lookup: %j', async owner => {
+    let finish!: (value: Response) => void
+
+    const pending = new Promise<Response>(resolve => {
+      finish = resolve
+    })
+
+    vi.spyOn(globalThis, 'fetch').mockReturnValue(pending)
+    renderFlow()
+    const lookup = requestPluginCatalogInstallFromDeepLink('memory')
+    act(() => $apiRequestScope.set(owner))
+    await act(async () => {
+      finish(
+        new Response(
+          JSON.stringify([
+            { name: 'memory', repo: 'https://github.com/example/memory', category: 'memory', featured: true }
+          ])
+        )
+      )
+      await lookup
+    })
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    expect(screen.getByTestId('location').textContent).toBe('/capabilities?tab=plugins')
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    expect(await screen.findByText(/Switch back to the connection and profile/)).toBeTruthy()
+    expect(gateway.request).not.toHaveBeenCalled()
+    expect(requestGateway.mock.calls.some(([, params]) => params?.action === 'install')).toBe(false)
+    expect(installDesktopPlugin).not.toHaveBeenCalled()
+  })
+
+  it('keeps an in-flight install and its rediscovery on A after switching to B, without a B handoff', async () => {
+    let finish!: (value: unknown) => void
+
+    const pending = new Promise(resolve => {
+      finish = resolve
+    })
+
+    gateway.request.mockReturnValueOnce(pending)
+    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
+
+    const response = {
+      active: 'builtin',
+      providers: [{ name: 'memory', description: '', configured: false, status: 'needs_config' }],
+      builtin_files: { memory: 0, user: 0 }
+    }
+
+    const api = vi.fn(async () => response)
+    vi.stubGlobal('hermesDesktop', { probePluginRepo, api })
+    renderFlow()
+    act(memoryRequest)
+    expect(await screen.findByText('This package includes')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    act(() => $apiRequestScope.set({ connectionId: 'b', profile: 'other' }))
+    await act(async () => {
+      finish({ ok: true })
+      await pending
+    })
+    await waitFor(() => expect(queryClient.getQueryData(['memory-discovery', 'a', 'default'])).toEqual(response))
+    expect(api).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'a', profile: 'default' }))
+    expect(queryClient.getQueryData(['memory-discovery', 'b', 'other'])).toBeUndefined()
+    expect(screen.queryByRole('button', { name: 'Back to Memory settings' })).toBeNull()
+    expect(gateway.request).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('Install from Git entry flow', () => {

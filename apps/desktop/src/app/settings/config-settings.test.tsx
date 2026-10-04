@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
@@ -78,6 +78,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  vi.unstubAllGlobals()
 })
 
 function renderConfigSettings(activeSectionId = 'safety') {
@@ -96,6 +97,41 @@ function renderConfigSettings(activeSectionId = 'safety') {
 }
 
 describe('ConfigSettings autosave', () => {
+  it('mounts one provider discovery selector and keeps imported selection out of autosave', async () => {
+    getHermesConfigRecord.mockResolvedValue({ memory: { provider: 'builtin', memory_enabled: true } })
+    getHermesConfigSchema.mockResolvedValue({
+      fields: {
+        'memory.provider': { type: 'str', default: 'builtin', description: 'Provider' },
+        'memory.memory_enabled': { type: 'boolean', default: true, description: 'Memory' }
+      }
+    })
+
+    const api = vi.fn(async (_request?: { method?: string }) => ({
+      active: '',
+      providers: [],
+      builtin_files: { memory: 0, user: 0 }
+    }))
+
+    vi.stubGlobal('hermesDesktop', { api })
+    const { importInputRef } = renderConfigSettings('memory')
+    expect(await screen.findByRole('combobox', { name: 'Provider settings' })).toBeTruthy()
+    expect(screen.getAllByRole('combobox')).toHaveLength(1)
+    expect(screen.queryByRole('region', { name: 'Featured memory' })).toBeNull()
+    expect(screen.getByRole('switch')).toBeTruthy()
+    fireEvent.change(importInputRef.current!, {
+      target: {
+        files: [
+          new File([JSON.stringify({ memory: { provider: 'unconfigured', memory_enabled: false } })], 'config.json', {
+            type: 'application/json'
+          })
+        ]
+      }
+    })
+    await waitFor(() => expect(saveHermesConfig).toHaveBeenCalled())
+    expect(saveHermesConfig.mock.calls[0][0]).toEqual({ memory: { memory_enabled: false } })
+    expect(api.mock.calls.every(([request]) => !request?.method)).toBe(true)
+  })
+
   it('sends a later revert instead of diffing it away against the stale page-load baseline', async () => {
     getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, other: 'untouched' })
 

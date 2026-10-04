@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import type { ResolvedOwner } from '@/api/client'
+
 /** Which plugin component(s) a legacy deeplink pre-selects after probe. */
 export type PluginInstallLegacyHint = 'agent' | 'desktop' | null
 
@@ -7,6 +9,8 @@ export type PluginInstallLegacyHint = 'agent' | 'desktop' | null
 export interface PluginInstallRequest {
   /** Empty opens repository entry; a supplied repo goes straight to inspection. */
   repo: string
+  /** Memory discovery fixes the owner and installs without activating. */
+  memory?: { name: string; owner: ResolvedOwner }
   enable?: boolean
   force?: boolean
   legacyHint?: PluginInstallLegacyHint

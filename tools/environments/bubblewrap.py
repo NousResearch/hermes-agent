@@ -1315,10 +1315,12 @@ class BubblewrapEnvironment(LocalEnvironment):
         bind source on the next spawn, showing the whole secret. Under a
         hidden path (the default HERMES_HOME/sandboxes) the overlay covers
         it and nothing in a sandbox can reach it, unless a later bind lands
-        on top of the overlay. The profile home under home_mode=profile
-        is the one such bind, so a sandbox dir under it is refused
-        first, whether the profile home is a directory under HERMES_HOME
-        or a symlink to a directory outside every hidden path. An operator
+        on top of the overlay. Two binds do, read-write: the profile home
+        under home_mode=profile, and the scratch dir under a profile with
+        a writable cwd. A sandbox dir under either is refused first,
+        whether the profile home is a directory under HERMES_HOME or a
+        symlink to a directory outside every hidden path. The staged data
+        roots land on the overlay too, but read-only. An operator
         bind cannot re-expose the dir: filter_binds
         drops a source under a hidden path and a source containing one
         that maps elsewhere, and a source containing one at its own path
@@ -1334,9 +1336,18 @@ class BubblewrapEnvironment(LocalEnvironment):
                 "terminal.sandbox_dir to a directory outside HERMES_HOME/home; the "
                 "default HERMES_HOME/sandboxes is covered by the HERMES_HOME overlay."
             )
+        writable_profile = resolve_profile(self._config.profile).writable_cwd
+        if writable_profile and _is_within(sandbox_root, self._scratch_dir):
+            raise ValueError(
+                f"terminal.sandbox_dir {sandbox_root} lies inside the Hermes scratch dir "
+                f"{self._scratch_dir}, which is writable inside the sandbox with the bubblewrap "
+                "backend: a command could replace the empty file bound over hidden files. Set "
+                "terminal.sandbox_dir to a directory outside the scratch dir; the default "
+                "HERMES_HOME/sandboxes is covered by the HERMES_HOME overlay."
+            )
         if any(_is_within(sandbox_root, hidden) for hidden in self._hidden_paths):
             return
-        writable: list[str] = [self._initial_cwd] if resolve_profile(self._config.profile).writable_cwd else []
+        writable: list[str] = [self._initial_cwd] if writable_profile else []
         writable += [
             os.path.realpath(os.path.expanduser(bind.src))
             for bind in self._config.binds

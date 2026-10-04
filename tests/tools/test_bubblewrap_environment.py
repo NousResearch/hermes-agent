@@ -825,6 +825,29 @@ class TestSandboxDirGuard:
         # get_sandbox_dir() creates the empty root; no state dir or empty file follows.
         assert not root.exists() or not any(root.iterdir())
 
+    @pytest.mark.parametrize("rel", ["sb", "", "deep/er"])
+    @pytest.mark.parametrize("profile", ["workspace", "network"])
+    def test_sandbox_dir_inside_the_scratch_dir_is_refused(self, tmp_path, work_dir, monkeypatch, rel, profile):
+        # The scratch dir is bound read-write on top of the HERMES_HOME
+        # overlay, so the overlay no longer shields a sandbox dir there.
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        scratch = hermes_home / "cache" / "scratch"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(scratch / rel))
+        with _no_session(), pytest.raises(ValueError, match="terminal.sandbox_dir") as exc:
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(profile=profile))
+        assert str(scratch) in str(exc.value)
+        assert "scratch" in str(exc.value)
+
+    def test_sandbox_dir_inside_the_scratch_dir_constructs_when_scratch_is_read_only(self, tmp_path, work_dir, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(hermes_home / "cache" / "scratch" / "sb"))
+        with _no_session():
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(profile="restricted")).cleanup()
+
     @pytest.mark.parametrize("mode", ["profile", "auto", "real"])
     def test_default_sandbox_dir_constructs_under_every_home_mode(self, tmp_path, work_dir, monkeypatch, mode):
         hermes_home = tmp_path / "hermes"

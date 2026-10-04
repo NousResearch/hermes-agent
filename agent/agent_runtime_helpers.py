@@ -2619,11 +2619,21 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
                 if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
             }
             if "http_client" not in safe_kwargs:
+                from agent.final_wire_admission import (
+                    ProviderBoundUnsupportedAccounting,
+                    wrap_httpx_client_transports,
+                )
+
                 keepalive_http = agent._build_keepalive_http_client(
                     base_url, verify=httpx_verify,
                 )
-                if keepalive_http is not None:
-                    safe_kwargs["http_client"] = keepalive_http
+                if keepalive_http is None:
+                    raise ProviderBoundUnsupportedAccounting(
+                        "covered httpx construction returned None"
+                    )
+                safe_kwargs["http_client"] = wrap_httpx_client_transports(
+                    keepalive_http, covered=True
+                )
             client = GeminiNativeClient(**safe_kwargs)
             _ra().logger.info(
                 "Gemini native client created (%s, shared=%s) %s",
@@ -2650,11 +2660,21 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
     # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
     if "http_client" not in client_kwargs:
+        from agent.final_wire_admission import (
+            ProviderBoundUnsupportedAccounting,
+            wrap_httpx_client_transports,
+        )
+
         keepalive_http = agent._build_keepalive_http_client(
             client_kwargs.get("base_url", ""), verify=httpx_verify,
         )
-        if keepalive_http is not None:
-            client_kwargs["http_client"] = keepalive_http
+        if keepalive_http is None:
+            raise ProviderBoundUnsupportedAccounting(
+                "covered httpx construction returned None"
+            )
+        client_kwargs["http_client"] = wrap_httpx_client_transports(
+            keepalive_http, covered=True
+        )
     # Delegate all rate-limit / 5xx retry to hermes's outer conversation loop,
     # which honors Retry-After and applies adaptive/jittered backoff. The OpenAI
     # SDK default (max_retries=2) uses its own 1-2s backoff that ignores

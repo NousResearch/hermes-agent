@@ -245,12 +245,12 @@ def test_output_reservation_reduces_compaction_trigger_not_dispatch_ceiling():
     assert resolved_safe_dispatch_limit(bound) != 1000 - 200
 
 
-def test_input_under_context_length_with_output_reservation_is_not_input_overflow(agent):
-    """Cell 17 companion: 843 input vs context 1000 with max_tokens 200 may send.
+def test_input_under_context_length_with_known_output_reservation_is_refused(agent):
+    """Frozen D: 808/843 input + KNOWN_R 200 against W 1000 is combined-fit refuse.
 
-    The independent probe expected input <= context-max_tokens (800). That is
-    the compaction-trigger budget, not the established dispatch refuse
-    ceiling. This pins the source contract rather than adopting the probe.
+    Predecessor input-only dispatch of 843+200 against 1000 is obsolete.
+    Combined estimated_input + resolved_final_R <= W; equality at combined
+    bound is allowed, greater totals refuse. Input == W still refuses.
     """
     agent.max_tokens = 200
     observation = run_local(
@@ -259,12 +259,6 @@ def test_input_under_context_length_with_output_reservation_is_not_input_overflo
         cooldown={"reason": "summary-failure"},
     )
     result, create, _comp, _texts, pressure = observation
-    if create.call_count:
-        payload = create.call_args.kwargs
-        reservation = payload.get("max_tokens", payload.get("max_completion_tokens"))
-        assert reservation == 200
-        assert all(p < WINDOW for p in pressure)
-        assert any(p >= WINDOW - reservation for p in pressure)
-    assert create.call_count == 1
-    assert result.get("completed") is True
-    assert result.get("failed") is not True
+    assert create.call_count == 0
+    assert result.get("failed") is True
+    assert pressure == []

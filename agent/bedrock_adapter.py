@@ -117,9 +117,12 @@ def _get_bedrock_runtime_client(region: str):
     """
     if region not in _bedrock_runtime_client_cache:
         boto3 = _require_boto3()
-        _bedrock_runtime_client_cache[region] = boto3.client(
+        client = boto3.client(
             "bedrock-runtime", region_name=region,
         )
+        from agent.final_wire_admission import wrap_botocore_runtime_client
+
+        _bedrock_runtime_client_cache[region] = wrap_botocore_runtime_client(client)
     return _bedrock_runtime_client_cache[region]
 
 

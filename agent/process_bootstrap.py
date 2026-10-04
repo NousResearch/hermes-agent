@@ -270,11 +270,13 @@ def _enable_happy_eyeballs(transport) -> None:
 
 
 def _load_openai_cls() -> type:
-    """Import and cache ``openai.OpenAI``."""
+    """Import and cache ``openai.OpenAI`` with local-refusal retry interception."""
     global _OPENAI_CLS_CACHE
     if _OPENAI_CLS_CACHE is None:
         from openai import OpenAI as _cls
-        _OPENAI_CLS_CACHE = _cls
+        from agent.final_wire_admission import intercepted_openai_class
+
+        _OPENAI_CLS_CACHE = intercepted_openai_class(_cls)
     return _OPENAI_CLS_CACHE
 
 

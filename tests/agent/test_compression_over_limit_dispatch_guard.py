@@ -347,6 +347,10 @@ def test_lock_skip_over_limit_still_defers_to_provider_path(agent):
             "agent.conversation_compression.estimate_request_tokens_rough",
             return_value=OVER_LIMIT,
         ),
+        patch(
+            "agent.final_wire_admission.estimate_final_body_pressure",
+            return_value=OVER_LIMIT,
+        ),
         patch.object(
             agent.context_compressor,
             "should_defer_preflight_to_real_usage",

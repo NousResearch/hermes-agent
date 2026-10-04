@@ -1105,9 +1105,12 @@ class GeminiNativeClient:
         self._default_headers = dict(default_headers or {})
         self.chat = _GeminiChatNamespace(self)
         self.is_closed = False
-        self._http = http_client or httpx.Client(
-            timeout=timeout or httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0)
-        )
+        if http_client is None:
+            from agent.final_wire_admission import build_covered_keepalive_http_client
+
+            self._http = build_covered_keepalive_http_client(self.base_url)
+        else:
+            self._http = http_client
 
     def close(self) -> None:
         self.is_closed = True

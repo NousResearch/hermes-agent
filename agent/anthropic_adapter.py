@@ -72,6 +72,26 @@ def _get_anthropic_sdk():
             _anthropic_sdk = None
     return _anthropic_sdk
 
+
+def _anthropic_client_class(base_cls):
+    from agent.final_wire_admission import intercepted_anthropic_class
+
+    return intercepted_anthropic_class(base_cls)
+
+
+def _install_covered_anthropic_http_client(kwargs: dict, base_url: str = "") -> dict:
+    from agent.final_wire_admission import (
+        build_covered_keepalive_http_client,
+        wrap_httpx_client_transports,
+    )
+
+    existing = kwargs.get("http_client")
+    if existing is not None:
+        kwargs["http_client"] = wrap_httpx_client_transports(existing, covered=True)
+        return kwargs
+    kwargs["http_client"] = build_covered_keepalive_http_client(base_url)
+    return kwargs
+
 logger = logging.getLogger(__name__)
 
 THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
@@ -820,7 +840,8 @@ def _build_anthropic_client_with_bearer_hook(
     if common_betas:
         kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
-    client = _anthropic_sdk.Anthropic(**kwargs)
+    _install_covered_anthropic_http_client(kwargs, normalized_base_url or "")
+    client = _anthropic_client_class(_anthropic_sdk.Anthropic)(**kwargs)
     # Same env-inference trap as build_anthropic_client: auth_token-only
     # construction would otherwise also send ANTHROPIC_API_KEY as X-Api-Key.
     client.api_key = None
@@ -971,7 +992,8 @@ def build_anthropic_client(
         headers.setdefault("User-Agent", f"HermesAgent/{_HERMES_VERSION}")
         kwargs["default_headers"] = headers
 
-    client = _anthropic_sdk.Anthropic(**kwargs)
+    _install_covered_anthropic_http_client(kwargs, normalized_base_url or "")
+    client = _anthropic_client_class(_anthropic_sdk.Anthropic)(**kwargs)
     # Bearer-only construction leaves ``api_key`` unset, so the SDK fills it
     # from ``ANTHROPIC_API_KEY`` (Hermes loads that into the process env from
     # ``~/.hermes/.env``). The result is dual auth —
@@ -1012,14 +1034,16 @@ def build_anthropic_bedrock_client(region: str):
         )
     from httpx import Timeout
 
-    return _anthropic_sdk.AnthropicBedrock(
-        aws_region=region,
-        timeout=Timeout(timeout=900.0, connect=10.0),
+    bedrock_kwargs = {
+        "aws_region": region,
+        "timeout": Timeout(timeout=900.0, connect=10.0),
         # Delegate retry to hermes's outer loop (honors Retry-After); the SDK
         # default max_retries=2 ignores it and double-retries. (#26293)
-        max_retries=0,
-        default_headers={"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
-    )
+        "max_retries": 0,
+        "default_headers": {"anthropic-beta": ",".join([*_COMMON_BETAS, _CONTEXT_1M_BETA])},
+    }
+    _install_covered_anthropic_http_client(bedrock_kwargs)
+    return _anthropic_client_class(_anthropic_sdk.AnthropicBedrock)(**bedrock_kwargs)
 
 
 def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:

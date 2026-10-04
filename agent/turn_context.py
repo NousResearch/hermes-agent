@@ -452,6 +452,9 @@ class TurnContext:
     ext_prefetch_cache: str = ""
     # Turn-start preflight already proved an immediate retry ineffective.
     preflight_compression_blocked: bool = False
+    # Prologue compaction may rewrite/drop rows before the loop initializes.
+    preflight_transcript_rewritten: bool = False
+    preflight_mutation_outcome: str = "no_change"
 
 
 def build_turn_context(
@@ -903,6 +906,8 @@ def build_turn_context(
     # issue #27405 (a few very large messages slipping past the count gate).
     _preflight_compressed = False
     _preflight_compression_blocked = False
+    _preflight_transcript_rewritten = False
+    _preflight_mutation_outcome = "no_change"
     agent._turn_received_provider_response = False
     agent._turn_preflight_display_snapshot = None
     if (
@@ -1053,10 +1058,14 @@ def build_turn_context(
                 _orig_len = len(messages)
                 _orig_tokens = _preflight_tokens
                 _preflight_input = messages
+                _preflight_system = active_system_prompt
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
                     task_id=effective_task_id,
                 )
+                if messages is not _preflight_input or active_system_prompt != _preflight_system:
+                    _preflight_transcript_rewritten = True
+                    _preflight_mutation_outcome = "rewrite"
                 if (
                     messages is _preflight_input
                     and compression_skipped_due_to_lock(agent)
@@ -1513,4 +1522,6 @@ def build_turn_context(
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
         preflight_compression_blocked=_preflight_compression_blocked,
+        preflight_transcript_rewritten=_preflight_transcript_rewritten,
+        preflight_mutation_outcome=_preflight_mutation_outcome,
     )

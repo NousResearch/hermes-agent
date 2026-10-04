@@ -1303,43 +1303,45 @@ def estimate_provider_bound_request_pressure(api_kwargs: Any) -> int:
     Chat-completions: ``messages`` plus optional top-level ``system`` and
     ``tools``. Codex Responses: ``input`` plus ``instructions`` and ``tools``.
     Anthropic Messages: ``messages`` plus top-level ``system`` and ``tools``.
+    Native schemas (input_schema / toolConfig / functionDeclarations) are
+    counted from the final transmitted shape. A string Responses ``input``
+    is counted as text, not replaced with an empty list.
     """
-    if not isinstance(api_kwargs, dict):
-        return 0
-    messages = api_kwargs.get("messages")
-    system_prompt = ""
-    if isinstance(messages, list):
-        extra = api_kwargs.get("system")
-        if extra:
-            system_prompt = extra if isinstance(extra, str) else str(extra)
-    else:
-        messages = api_kwargs.get("input")
-        extra = api_kwargs.get("instructions")
-        if extra:
-            system_prompt = extra if isinstance(extra, str) else str(extra)
-        if not isinstance(messages, list):
-            messages = []
-    tools = api_kwargs.get("tools")
-    if not isinstance(tools, list):
-        tools = None
-    return estimate_request_tokens_rough(
-        messages,
-        system_prompt=system_prompt,
-        tools=tools,
-    )
+    from agent.final_wire_admission import estimate_final_body_pressure
+
+    return estimate_final_body_pressure(api_kwargs)
 
 
 def refuse_over_limit_provider_dispatch(agent: Any, api_kwargs: Any) -> None:
     """Fail closed immediately before the provider client is invoked.
 
     Compression admission exemptions are not dispatch-safety exemptions.
+    Positive known W is mandatory. Optional omitted caps stay unresolved
+    and keep input-only admission; known finite R restores combined fit.
     """
-    limit = resolved_safe_dispatch_limit(agent)
-    if limit <= 0:
-        return
-    pressure = estimate_provider_bound_request_pressure(api_kwargs)
-    if pressure >= limit:
-        raise ProviderBoundRequestOverLimit(pressure, limit)
+    from agent.final_wire_admission import (
+        COVERED_MAIN,
+        FinalAttemptIdentity,
+        admit_final_json,
+    )
+
+    compressor = getattr(agent, "context_compressor", None)
+    family = {
+        "codex_responses": "codex_responses",
+        "anthropic_messages": "anthropic_messages",
+        "bedrock_converse": "bedrock_converse",
+    }.get(getattr(agent, "api_mode", ""), "chat_completions")
+    if getattr(agent, "provider", "") == "gemini":
+        family = "gemini_native"
+    identity = FinalAttemptIdentity(
+        purpose=COVERED_MAIN,
+        family=family,
+        model=str(getattr(agent, "model", "") or ""),
+        endpoint=str(getattr(agent, "base_url", "") or ""),
+        window=int(getattr(compressor, "context_length", 0) or 0),
+        correlation_id=str(getattr(agent, "session_id", "") or id(agent)),
+    )
+    admit_final_json(api_kwargs, identity)
 
 
 def over_limit_local_stop_status(*, transcript_rewritten: bool) -> str:

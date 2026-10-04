@@ -994,6 +994,29 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     from agent.conversation_compression import refuse_over_limit_provider_dispatch
 
     refuse_over_limit_provider_dispatch(agent, api_kwargs)
+    from agent.final_wire_admission import COVERED_MAIN, FinalAttemptIdentity, bind_attempt_identity
+
+    compressor = getattr(agent, "context_compressor", None)
+    family = {
+        "codex_responses": "codex_responses",
+        "anthropic_messages": "anthropic_messages",
+        "bedrock_converse": "bedrock_converse",
+    }.get(getattr(agent, "api_mode", ""), "chat_completions")
+    if getattr(agent, "provider", "") == "gemini":
+        family = "gemini_native"
+    identity = FinalAttemptIdentity(
+        purpose=COVERED_MAIN,
+        family=family,
+        model=str(getattr(agent, "model", "") or ""),
+        endpoint=str(getattr(agent, "base_url", "") or ""),
+        window=int(getattr(compressor, "context_length", 0) or 0),
+        correlation_id=str(getattr(agent, "session_id", "") or id(agent)),
+    )
+    with bind_attempt_identity(identity):
+        return _dispatch_nonstreaming_api_request_unguarded(agent, api_kwargs, make_client=make_client)
+
+
+def _dispatch_nonstreaming_api_request_unguarded(agent, api_kwargs: dict, *, make_client):
     if agent.api_mode == "codex_responses":
         request_client = make_client("codex_stream_request")
         return agent._run_codex_stream(
@@ -4052,7 +4075,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             from agent.conversation_compression import refuse_over_limit_provider_dispatch
 
             refuse_over_limit_provider_dispatch(agent, stream_kwargs)
-            return request_client.chat.completions.create(**stream_kwargs)
+            from agent.final_wire_admission import COVERED_MAIN, FinalAttemptIdentity, bind_attempt_identity
+
+            compressor = getattr(agent, "context_compressor", None)
+            identity = FinalAttemptIdentity(
+                purpose=COVERED_MAIN,
+                family="chat_completions",
+                model=str(getattr(agent, "model", "") or ""),
+                endpoint=str(getattr(agent, "base_url", "") or ""),
+                window=int(getattr(compressor, "context_length", 0) or 0),
+                correlation_id=str(getattr(agent, "session_id", "") or id(agent)),
+            )
+            with bind_attempt_identity(identity):
+                return request_client.chat.completions.create(**stream_kwargs)
 
         def _stream_created(raw_stream: Any) -> None:
             response = getattr(raw_stream, "response", None)

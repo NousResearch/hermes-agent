@@ -20,6 +20,23 @@ CODEX_URL = "https://chatgpt.com/backend-api/codex"
 MODEL = "gpt-5.4"
 
 
+def _main_attempt(agent=None):
+    from agent.final_wire_admission import COVERED_MAIN, FinalAttemptIdentity, bind_attempt_identity
+
+    compressor = getattr(agent, "context_compressor", None) if agent is not None else None
+    window = int(getattr(compressor, "context_length", 0) or 256_000)
+    return bind_attempt_identity(
+        FinalAttemptIdentity(
+            purpose=COVERED_MAIN,
+            family="codex_responses",
+            model=str(getattr(agent, "model", None) or MODEL),
+            endpoint=str(getattr(agent, "base_url", None) or CODEX_URL),
+            window=window,
+            correlation_id="codex-header-probe",
+        )
+    )
+
+
 def _jwt(account_id="acct-attribution-test"):
     payload = json.dumps({
         "https://api.openai.com/auth": {"chatgpt_account_id": account_id},
@@ -175,14 +192,16 @@ def test_primary_client_and_credential_rebuild_send_expected_headers(
     )
     clients = [agent.client]
     try:
-        agent.client.responses.create(model=MODEL, input="test")
+        with _main_attempt(agent):
+            agent.client.responses.create(model=MODEL, input="test")
         _assert_identity(wire[-1])
 
         agent._client_kwargs["api_key"] = _jwt("acct-rotated")
         agent._apply_client_headers_for_base_url(CODEX_URL)
         assert agent._replace_primary_openai_client(reason="attribution-test")
         clients.append(agent.client)
-        agent.client.responses.create(model=MODEL, input="test")
+        with _main_attempt(agent):
+            agent.client.responses.create(model=MODEL, input="test")
         _assert_identity(wire[-1], "acct-rotated")
 
         direct_url = "https://api.openai.com/v1"
@@ -190,7 +209,8 @@ def test_primary_client_and_credential_rebuild_send_expected_headers(
         agent._apply_client_headers_for_base_url(direct_url)
         assert agent._replace_primary_openai_client(reason="attribution-route-change")
         clients.append(agent.client)
-        agent.client.responses.create(model=MODEL, input="test")
+        with _main_attempt(agent):
+            agent.client.responses.create(model=MODEL, input="test")
         assert "originator" not in wire[-1].headers
         assert "chatgpt-account-id" not in wire[-1].headers
         assert not wire[-1].headers["user-agent"].startswith("HermesAgent/")
@@ -327,14 +347,16 @@ def test_required_identity_wins_over_configured_header_defaults(
     clients = [agent.client, raw, proxy]
     try:
         for client in (agent.client, raw):
-            client.responses.create(model=MODEL, input="test")
+            with _main_attempt(agent):
+                client.responses.create(model=MODEL, input="test")
             _assert_identity(wire[-1])
             assert wire[-1].headers["x-test-header"] == "preserved"
 
         agent._apply_client_headers_for_base_url(CODEX_URL)
         assert agent._replace_primary_openai_client(reason="required-identity-test")
         clients.append(agent.client)
-        agent.client.responses.create(model=MODEL, input="test")
+        with _main_attempt(agent):
+            agent.client.responses.create(model=MODEL, input="test")
         _assert_identity(wire[-1])
         assert wire[-1].headers["x-test-header"] == "preserved"
 

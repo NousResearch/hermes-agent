@@ -6,7 +6,7 @@ import { $voicePlayback } from '@/store/voice-playback'
 import { $autoSpeakReplies, $bargeInEnabled } from '@/store/voice-prefs'
 
 import type { MicRecording } from './use-mic-recorder'
-import { useVoiceConversation } from './use-voice-conversation'
+import { speechResumeOffset, useVoiceConversation } from './use-voice-conversation'
 
 // The full-duplex contract: the barge monitor is live across the WHOLE agent
 // turn — generation (thinking) and playback (speaking) — so speaking over the
@@ -85,7 +85,7 @@ interface HookProps {
 function renderConversation(
   overrides: {
     onInterrupt?: () => void
-    pendingResponse?: () => { id: string; pending: boolean; text: string } | null
+    pendingResponse?: () => { id: string; pending: boolean; text: string; turnKey?: string } | null
     transcript?: string
   } = {}
 ) {
@@ -158,7 +158,10 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     micHandle.stop.mockResolvedValue(null)
   })
 
-  afterEach(cleanup)
+  afterEach(() => {
+    $autoSpeakReplies.set(false)
+    cleanup()
+  })
 
   it('arms the barge monitor during generation (before any reply audio exists)', async () => {
     const { hook } = renderConversation()
@@ -171,6 +174,41 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     await waitFor(() => expect(hook.result.current.status).toBe('thinking'))
     // busy=true + thinking → the full-duplex monitor must be live.
     await waitFor(() => expect(monitorCalls.length).toBeGreaterThan(0))
+  })
+
+  it('keeps feeding the same speech session after hydration rewrites the reply id', async () => {
+    $autoSpeakReplies.set(true)
+    let response: { id: string; pending: boolean; text: string; turnKey: string } | null = null
+    const append = vi.fn()
+    const finish = vi.fn()
+    const session = {
+      append,
+      done: new Promise<'completed'>(() => undefined),
+      finish
+    }
+    startSpeechStreamMock.mockResolvedValueOnce(session as never)
+
+    const { hook, onBusyChange } = renderConversation({ pendingResponse: () => response })
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await enterThinking(hook)
+
+    response = { id: 'assistant-stream-1', pending: true, text: 'One.', turnKey: 'session:0' }
+    act(() => {
+      onBusyChange.current(false)
+      onBusyChange.current(true)
+    })
+    await waitFor(() => expect(append).toHaveBeenCalledWith('One.'))
+
+    response = { id: 'durable-42', pending: true, text: 'One. Two. Three.', turnKey: 'session:0' }
+    await act(async () => {
+      await new Promise(resolve => setTimeout(resolve, 200))
+    })
+
+    expect(append).toHaveBeenCalledWith(' Two. Three.')
+    expect(finish).not.toHaveBeenCalled()
   })
 
   it('never arms the barge monitor when voice.barge_in is false (#126708)', async () => {
@@ -193,6 +231,67 @@ describe('useVoiceConversation full-duplex barge-in', () => {
     } finally {
       $bargeInEnabled.set(true)
     }
+  })
+
+  it('resumes at the right word when hydration folds the turn and its breaks change', async () => {
+    $autoSpeakReplies.set(true)
+
+    let response: { id: string; pending: boolean; text: string; turnKey: string } | null = null
+    const append = vi.fn()
+    const finish = vi.fn()
+
+    const session = {
+      append,
+      done: new Promise<'completed'>(() => undefined),
+      finish
+    }
+
+    startSpeechStreamMock.mockResolvedValueOnce(session as never)
+
+    const { hook, onBusyChange } = renderConversation({ pendingResponse: () => response })
+
+    await act(async () => {
+      await hook.result.current.start()
+    })
+    await enterThinking(hook)
+
+    // Live: two sealed narration bubbles and the start of the answer, joined
+    // on blank lines.
+    response = {
+      id: 'assistant-stream-1',
+      pending: true,
+      text: 'Let me check.\n\nNow the name.\n\nAll done. Here is what I',
+      turnKey: 'session:0'
+    }
+    act(() => {
+      onBusyChange.current(false)
+      onBusyChange.current(true)
+    })
+    await waitFor(() =>
+      expect(append).toHaveBeenCalledWith('Let me check.\n\nNow the name.\n\nAll done. Here is what I')
+    )
+
+    // Hydration folds the turn into one durable row whose breaks are single
+    // newlines: the same words, four characters shorter before the cut.
+    response = {
+      id: 'durable-42',
+      pending: false,
+      text: 'Let me check.\nNow the name.\nAll done. Here is what I found on this machine.',
+      turnKey: 'session:0'
+    }
+    act(() => {
+      onBusyChange.current(false)
+    })
+    await waitFor(() => expect(finish).toHaveBeenCalled())
+
+    expect(append).toHaveBeenLastCalledWith(' found on this machine.')
+  })
+
+  it('speechResumeOffset matches the spoken text on its words, not its whitespace', () => {
+    expect(speechResumeOffset('One. Tw', 'One. Two.')).toBe(7)
+    expect(speechResumeOffset('One.\n\nTwo. Th', 'One.Two. Three.')).toBe(11)
+    expect(speechResumeOffset('One.\n\nTwo.', 'One.\nTwo.\n\nThree.')).toBe(9)
+    expect(speechResumeOffset('', 'One.')).toBe(0)
   })
 
   it('interrupts the in-flight turn when speech trips mid-generation', async () => {

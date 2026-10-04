@@ -313,6 +313,30 @@ export function chatMessageText(message: ChatMessage): string {
     .join('')
 }
 
+/**
+ * `chatMessageText` for speech: a blank line where a tool call (or any other
+ * part) separated two runs of text. Hydration folds a tool turn's narration and
+ * answer into one row, and joined with nothing they read as one sentence
+ * ("…the host name.All done.").
+ */
+export function chatMessageSpeechText(message: ChatMessage): string {
+  let text = ''
+  let broken = false
+
+  for (const part of message.parts) {
+    if (part.type !== 'text') {
+      broken = text.length > 0
+
+      continue
+    }
+
+    text += (broken ? '\n\n' : '') + part.text
+    broken = false
+  }
+
+  return text
+}
+
 export interface UnspokenTurnSpeech {
   /** First unspoken assistant bubble — stable for the turn, the live speech session binds to it. */
   id: string
@@ -365,7 +389,11 @@ export function collectUnspokenTurnSpeech(
     }
 
     pending = Boolean(message.pending)
-    const text = chatMessageText(message).trim()
+    // Speech text, not display text: once hydration folds the turn into one
+    // row, its narration and answer are separated only by tool parts, and
+    // joined with nothing they would read as one sentence — and the folded
+    // string would no longer line up with the live bubbles already spoken.
+    const text = chatMessageSpeechText(message).trim()
 
     if (!text) {
       continue

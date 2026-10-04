@@ -110,6 +110,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     _page_target_id: Optional[str] = None  # target behind _page_session_id
     _reattaching: bool = False  # a lost-page re-attach is in flight (loop-only state)
     _web_page_seen: bool = False  # binding has been on an http(s) page since the last (re)attach
+    _driver_bind_failed: bool = False  # driver's tab not found in this browser since the last (re)attach
 
     def __init__(self, task_id: str, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
                  dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S) -> None:
@@ -540,7 +541,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             page_target = (await self._cdp("Target.createTarget", {"url": "about:blank"}))["result"]
         attach = await self._cdp("Target.attachToTarget", {"targetId": page_target["targetId"], "flatten": True})
         self._page_target_id = page_target["targetId"]
-        self._web_page_seen = False
+        self._web_page_seen = self._driver_bind_failed = False
         self._page_session_id = sid = attach["result"]["sessionId"]
         await self._enable_page_domains(sid, timeout=10.0)
         await self._install_dialog_bridge(sid)

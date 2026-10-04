@@ -313,6 +313,7 @@ def test_first_eval_binds_supervisor_to_driver_page(monkeypatch):
 
     class _Sup:
         _web_page_seen = False
+        _driver_bind_failed = False
         bound = []
 
         def bind_driver_page(self, url):
@@ -338,3 +339,55 @@ def test_first_eval_binds_supervisor_to_driver_page(monkeypatch):
     assert json.loads(bt._browser_eval("1"))["result"] == 1
     assert sup.bound == ["https://example.com/b"]
     assert hops == [("get", ["url"])]
+
+
+def test_driver_tab_missing_falls_back_to_cli_once(monkeypatch):
+    """Per-connection backends (e.g. self-hosted Browserless) give the supervisor's websocket a
+    private browser that only holds its own about:blank; the driver's tab lives elsewhere. The
+    bind must fail ONCE, the eval must go to the CLI path (the driver's page) instead of
+    answering from about:blank, and later evals must not repeat the hop or the retry sleep.
+    Real supervisor over a stubbed CDP wire (adapted from chrisyoung2005's repro on #123794)."""
+    import asyncio
+    import threading
+
+    import tools.browser_supervisor as bs
+    import tools.browser_tool as bt
+    from tools import browser_tool_eval_policy as bt_eval_policy
+
+    cdp_calls = []
+
+    async def cdp(method, params=None, *, session_id=None, timeout=10.0):
+        cdp_calls.append(method)
+        if method == "Target.getTargets":
+            return {"result": {"targetInfos": [{"targetId": "T0", "type": "page", "url": "about:blank"}]}}
+        if method == "Runtime.evaluate":
+            return {"result": {"result": {"type": "string", "value": ""}}}  # about:blank's title
+        raise AssertionError(f"unexpected CDP call {method}")
+
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    sup = object.__new__(bs.CDPSupervisor)
+    sup.task_id, sup._loop, sup._state_lock, sup._active = "test-task", loop, threading.Lock(), True
+    sup._page_session_id, sup._page_target_id, sup._cdp = "S-T0", "T0", cdp
+    _patch_supervisor(monkeypatch, sup)
+    monkeypatch.setattr(bt_eval_policy, "_eval_ssrf_guard_active", lambda task_id: False)
+    hops = []
+
+    def fake_run(task_id, command, args, **kw):
+        hops.append(command)
+        if command == "get":
+            return {"success": True, "data": {"url": "https://example.com/"}}
+        return {"success": True, "data": {"result": "Example Domain"}}  # CLI eval: driver's page
+
+    monkeypatch.setattr(bt_session, "_run_browser_command", fake_run)
+    try:
+        first = json.loads(bt._browser_eval("document.title"))
+        second = json.loads(bt._browser_eval("document.title"))
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=2)
+    assert first["result"] == second["result"] == "Example Domain"
+    assert hops.count("get") == 1  # one driver hop per (re)attach, not per eval
+    assert "Runtime.evaluate" not in cdp_calls  # never answered from the supervisor's about:blank
+    assert sup._driver_bind_failed is True

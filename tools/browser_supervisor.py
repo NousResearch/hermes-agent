@@ -268,7 +268,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         (``scheme://host[:port]``). The initial attach picks the FIRST page target, but tools
         that open their own tabs (browser_exec) put the login form somewhere else. With
         ``accept`` (a JS expression) the first same-origin tab where it evaluates truthy wins,
-        so a login and a checkout tab on one site resolve to the right one. Returns
+        so a login and a checkout tab on one site resolve to the right one. An exact
+        ``chrome-extension://<id>`` origin also matches that extension's own page tabs; an empty
+        ``origin`` searches web pages only. Returns
         ``{"ok": True, "url"}`` or ``{"ok": False, "error"}``; on failure the previous session stays."""
         loop = self._loop
         if loop is None or not loop.is_running():
@@ -283,13 +285,23 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
 
         async def _focus() -> Dict[str, Any]:
             from agent.vault_store import normalize_origin
+            # origin="" = any http(s) page (used to FIND the login tab before its origin is known).
+            # An explicitly bound, exact chrome-extension origin (e.g. a password manager's unlock
+            # page) also admits that one extension's own tabs; discovery never reaches extensions.
+            schemes: Tuple[str, ...] = ("http://", "https://")
+            if origin.startswith("chrome-extension:"):
+                try:
+                    if normalize_origin(origin) != origin:
+                        return _fail("expected an exact chrome-extension origin")
+                except Exception:
+                    return _fail("invalid chrome-extension origin")
+                schemes += ("chrome-extension://",)
             targets = (await self._cdp("Target.getTargets", timeout=timeout)).get("result", {}).get("targetInfos", [])
             candidates = []
             for t in targets:
                 url = str(t.get("url") or "")
                 try:
-                    # origin="" = any http(s) page (used to FIND the login tab before its origin is known)
-                    if t.get("type") == "page" and url.startswith(("http://", "https://")) \
+                    if t.get("type") == "page" and url.startswith(schemes) \
                             and (not origin or normalize_origin(url) == origin):
                         candidates.append((t["targetId"], url))
                 except Exception:

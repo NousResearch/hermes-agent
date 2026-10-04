@@ -544,20 +544,25 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def _truncate_base_file_in_place(self) -> None:
-        """Reopen ``baseFilename`` truncated, as the bounded fallback rollover.
+        """Truncate ``baseFilename``, then reopen it for append, as the bounded fallback rollover.
 
-        Best-effort like ``_reopen_stream``: if the reopen fails the stream is
-        left ``None`` so the next emit bails instead of writing to a stale fd.
+        The truncate and the reopen are separate steps on purpose: reopening through a
+        temporary ``self.mode = "w"`` would leave the stream without ``O_APPEND``, so
+        records a sibling appends between our writes would be overwritten from this
+        process's own offset (#44873) — only stdlib ``shouldRollover``'s seek to EOF
+        keeps that from biting on the emit path today. Best-effort like
+        ``_reopen_stream``: if the truncate or the reopen fails the stream is left
+        ``None`` so the next emit bails instead of writing to a stale fd.
         """
         if self.stream is not None:
             _quietly(self.stream.close)
         self.stream = None  # type: ignore[assignment]
-        original_mode = self.mode
         try:
-            self.mode = "w"
+            with open(self.baseFilename, "w", encoding=self.encoding):
+                pass  # truncate only; the stream is reopened for append below
             self.stream = self._open()
-        finally:
-            self.mode = original_mode
+        except Exception:
+            return
 
     def doRollover(self):
         # The stdlib rollover opens a fresh baseFilename owned by whichever process crossed

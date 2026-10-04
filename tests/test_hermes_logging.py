@@ -638,6 +638,65 @@ class TestWindowsFallbackBoundedRollover:
         finally:
             handler.close()
 
+    def test_truncating_rollover_reopens_the_stream_for_append(
+        self, fallback, tmp_path, monkeypatch,
+    ):
+        # A "w"-opened stream carries no O_APPEND, so records a sibling appends
+        # between our writes would be overwritten from this process's offset
+        # (#44873); only stdlib shouldRollover's seek(0, 2) keeps a "w" stream
+        # from biting on the emit path today. The reopened stream must itself
+        # append.
+        log_path = tmp_path / "agent.log"
+        log_path.write_text("x" * 300, encoding="utf-8")
+        handler = hermes_logging._new_file_handler(
+            log_path, level=logging.INFO, max_bytes=200,
+            backup_count=1, formatter=logging.Formatter("%(message)s"),
+        )
+
+        def fail_rename(source, dest):
+            raise PermissionError(32, "The process cannot access the file")
+
+        monkeypatch.setattr(handler, "rotate", fail_rename)
+        try:
+            handler.handle(self._record("OURS-1"))
+            handler.flush()
+            # A sibling Hermes process appends through its own handle.
+            with open(log_path, "a", encoding="utf-8") as sibling:
+                sibling.write("SIBLING\n")
+            assert handler.stream.mode == "a"
+            # Write straight through the handler's stream: emit()'s
+            # shouldRollover seek would mask a "w" stream, and O_APPEND is the
+            # contract that keeps the sibling's records intact regardless.
+            handler.stream.write("OURS-2\n")
+            handler.flush()
+            assert log_path.read_text(encoding="utf-8-sig").splitlines() == [
+                "OURS-1", "SIBLING", "OURS-2",
+            ]
+        finally:
+            handler.close()
+
+    def test_truncate_in_place_swallows_reopen_failure(
+        self, fallback, tmp_path, monkeypatch,
+    ):
+        log_path = tmp_path / "agent.log"
+        log_path.write_text("x" * 300, encoding="utf-8")
+        handler = hermes_logging._new_file_handler(
+            log_path, level=logging.INFO, max_bytes=200,
+            backup_count=1, formatter=logging.Formatter("%(message)s"),
+        )
+
+        def fail_open(self):
+            raise OSError("reopen failed")
+
+        monkeypatch.setattr(type(handler), "_open", fail_open)
+        try:
+            # Best-effort like _reopen_stream: the failure must not escape
+            # doRollover, and the stream stays None for the next emit.
+            handler._truncate_base_file_in_place()
+            assert handler.stream is None
+        finally:
+            handler.close()
+
 
 
 class TestReadLoggingConfig:

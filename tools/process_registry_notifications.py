@@ -139,18 +139,15 @@ def _notice_lines(results) -> "list[str]":
     return ["", *notice] if notice else []
 
 
-_APPROVAL_OUTCOME_NOTICES = {
-    "denied": "The user explicitly denied an approval request. Do not retry or bypass it; ask for a new authorization only if the user requests the action again.",
-    "cancelled": "The approval request was withdrawn before the user answered. It is no longer live; obtain fresh authorization before retrying.",
-    "timeout": "The approval request expired without a user response. It is no longer live; obtain fresh authorization before retrying.",
-}
+from agent.approval_outcomes import APPROVAL_OUTCOME_NOTICES as _APPROVAL_OUTCOME_NOTICES
 
 
 def _approval_outcome_lines(results) -> "list[str]":
     """Render bounded approval outcomes without trusting arbitrary tool text."""
     lines = []
     for result in results:
-        notice = _APPROVAL_OUTCOME_NOTICES.get(result.get("approval_outcome"))
+        outcome = result.get("approval_outcome")
+        notice = _APPROVAL_OUTCOME_NOTICES.get(outcome) if isinstance(outcome, str) else None
         if notice:
             lines.append(f"Approval outcome: {notice}")
     return lines

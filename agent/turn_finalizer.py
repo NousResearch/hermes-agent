@@ -702,6 +702,11 @@ def finalize_turn(
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
+    from agent.approval_outcomes import APPROVAL_OUTCOMES
+    approval_outcome = str(_turn_exit_reason).removeprefix("approval_")
+    if str(_turn_exit_reason).startswith("approval_") and approval_outcome in APPROVAL_OUTCOMES:
+        result["approval_outcome"] = approval_outcome
+        result["error"] = final_response
     # Persistence failures already set failed=True; also stamp `error` so the gateway
     # surfaces status="error" (desktop can toast) instead of a quiet complete frame, plus
     # the machine-readable cause 'session_persistence_failed:<locked|compression|...>'.

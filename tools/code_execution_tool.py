@@ -531,7 +531,8 @@ def _error_result(error: str, *, tool_calls_made: int = 0, duration: float = 0,
     body = {"status": "error", "error": error, "tool_calls_made": tool_calls_made, "duration_seconds": duration}
     if user_summary:
         body["user_summary"] = user_summary  # one human sentence; surfaces show it before the model text
-    if approval_outcome in {"denied", "timeout", "cancelled"}:
+    from agent.approval_outcomes import APPROVAL_OUTCOMES
+    if isinstance(approval_outcome, str) and approval_outcome in APPROVAL_OUTCOMES:
         body["approval_outcome"] = approval_outcome
     return json.dumps(body, ensure_ascii=False)
 

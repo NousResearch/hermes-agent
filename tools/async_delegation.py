@@ -919,6 +919,10 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         payload = {
             "summary": result.get("summary"), "error": result.get("error"), "api_calls": result.get("api_calls", 0),
             "duration_seconds": result.get("duration_seconds", round(completed_at - dispatched_at, 2))}
+        from agent.approval_outcomes import APPROVAL_OUTCOMES
+        outcome = result.get("approval_outcome")
+        if isinstance(outcome, str) and outcome in APPROVAL_OUTCOMES:
+            payload["approval_outcome"] = outcome
     evt = {
         "type": "async_delegation", "delegation_id": record.get("delegation_id"),
         # session_key routes back to the originating gateway session; "" => CLI.

@@ -151,6 +151,7 @@ def run_tool_round(
         with suppress(Exception):
             agent.stream_delta_callback(None)
 
+    result_start = len(messages)
     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
     from hermes_cli.observability.shared_metrics_harness import finish_tool_round
 
@@ -163,6 +164,26 @@ def run_tool_round(
         final_response = ""
         failed = True
         return _verdict("break")
+
+    # Read only this round's terminal/code gate envelopes, never historical or
+    # arbitrary tool prose. A non-consent result must not become a model retry.
+    import json
+    from agent.approval_outcomes import APPROVAL_OUTCOMES, APPROVAL_OUTCOME_NOTICES
+    for row in messages[result_start:]:
+        if row.get("role") != "tool" or row.get("name") not in {"terminal", "execute_code"}:
+            continue
+        try:
+            envelope = json.loads(row.get("content", ""))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(envelope, dict) or not envelope.get("error"):
+            continue
+        outcome = envelope.get("approval_outcome")
+        if isinstance(outcome, str) and outcome in APPROVAL_OUTCOMES:
+            _turn_exit_reason = "approval_" + outcome
+            final_response = APPROVAL_OUTCOME_NOTICES[outcome]
+            failed = True
+            return _verdict("break")
 
     if agent._tool_guardrail_halt_decision is not None:
         decision = agent._tool_guardrail_halt_decision

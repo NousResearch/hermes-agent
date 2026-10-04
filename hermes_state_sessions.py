@@ -472,6 +472,29 @@ class SessionSessionsMixin:
             return None
         return str(rows[0]["id"])
 
+    def gateway_chat_facts(self, *, platform: str, chat_id: str, user_ids: tuple = ()) -> Dict[str, Any]:
+        """What the gateway has recorded about one chat: its ``chat_type`` / ``display_name`` (latest
+        row), whether any of ``user_ids`` has a session there (``user_seen``), and the chat's live
+        keyed sessions (``live_sessions``: ``id`` / ``session_key`` / ``user_id``). Empty facts for an
+        unknown chat — callers fail closed on ``chat_type is None``."""
+        facts: Dict[str, Any] = {"chat_type": None, "chat_name": None, "user_seen": False, "live_sessions": []}
+        if not platform or chat_id in (None, ""):
+            return facts
+        rows = [dict(r) for r in self._read_all(
+            "SELECT id, session_key, user_id, chat_type, display_name, ended_at FROM sessions"
+            " WHERE LOWER(source) = LOWER(?) AND chat_id = ? AND session_key IS NOT NULL"
+            " ORDER BY started_at DESC", [platform, str(chat_id)])]
+        if not rows:
+            return facts
+        facts["chat_type"] = next((r["chat_type"] for r in rows if r.get("chat_type")), None)
+        facts["chat_name"] = next((r["display_name"] for r in rows if r.get("display_name")), None)
+        wanted = {str(u) for u in user_ids if u}
+        facts["user_seen"] = any(str(r.get("user_id") or "") in wanted for r in rows)
+        facts["live_sessions"] = [
+            {"id": r["id"], "session_key": r["session_key"], "user_id": r.get("user_id")}
+            for r in rows if r.get("ended_at") is None]
+        return facts
+
     # Orphaned gateway-session repair: widest plausible gap between a keyed predecessor going
     # quiet and its unkeyed successor (incident was ~60s; 15 min without spanning conversations).
     _ORPHAN_ADOPTION_MAX_GAP_S = 900.0

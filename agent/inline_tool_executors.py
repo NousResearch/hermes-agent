@@ -251,6 +251,12 @@ _RAW_INLINE_TOOL_EXECUTORS: Dict[str, InlineToolExecutor] = {
         "tools.clarify_tool", "clarify_tool", ("questions", "questions"),
         callback=lambda agent, ctx: agent.clarify_callback,
     ),
+    # Needs the live clarify surface for its in-DM approval step.
+    "carry_to_group": _tool(
+        "tools.group_carryover_tool", "carry_to_group_tool",
+        ("action", "action", "carry"), ("target", "target", ""), ("synopsis", "synopsis", ""),
+        callback=lambda agent, ctx: agent.clarify_callback,
+    ),
     "read_terminal": _callback_tool(
         "tools.read_terminal_tool", "read_terminal_tool", "read_terminal_callback",
         ("start_line", "start_line"), ("count", "count"),

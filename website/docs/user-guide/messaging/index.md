@@ -323,6 +323,35 @@ replacing the durable conversation. Restart-recovery freshness limits automatic
 continuation, not the history loaded when you send a message.
 
 
+### Carrying a private chat into a group
+
+Work something out with Hermes in a DM, then say *"let's take this to the family group"* (or
+*"share this with the group chat"*). Hermes drafts a short synopsis of what the group needs,
+shows it to you **in the DM**, and waits:
+
+- **Share it with the group** — the synopsis is posted to the group, and the group chat starts a
+  fresh conversation seeded with it, so the agent there picks up from the plan instead of older
+  information it had in that chat.
+- **Cancel** — nothing leaves the DM.
+- **Anything else you type** is taken as an edit ("leave out the budget part") — Hermes redrafts
+  and asks again.
+
+Guardrails: it only runs from a DM, only into a group on the same platform, and only into a group
+where you already talk with Hermes. Your private conversation itself is never copied or changed —
+only the synopsis you approved. With `group_sessions_per_user: true` (the default) your own lane
+in the group is forked; other members' lanes keep their history and receive the synopsis as a
+new message.
+
+The toolset is **off by default** — outbound, agent-initiated posts are opt-in. Enable it per
+platform with `hermes tools`, or in `config.yaml`:
+
+```yaml
+platform_toolsets:
+  bluebubbles:
+    - hermes-bluebubbles
+    - group_carryover
+```
+
 ## Per-Channel Model & System Prompt Overrides
 
 Different channels can run different models and personas from a **single gateway** — e.g. a cheap fast model in `#daily` and a frontier model with a specialist prompt in `#dev`. Configure `channel_overrides` under the platform in `~/.hermes/config.yaml`:

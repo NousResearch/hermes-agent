@@ -29,6 +29,7 @@ $script:MarkerCtTolerance = 2.0
 $script:MarkerOwnCtEpsilon = 0.005
 $script:MarkerLockTimeoutMs = 10000
 $script:MarkerHeartbeatSeconds = 300
+$script:MarkerReleaseWaitSeconds = 7200
 $script:ProcessCtCache = @{}
 $script:MarkerClaim = "none"    # claimed | adopted | refused
 $script:MarkerBlocker = 0
@@ -330,3 +331,50 @@ function Read-MarkerLocked($Ctx) {
 }
 
 . (Join-Path $PSScriptRoot 'marker-claim.ps1')
+
+function Get-CheckoutLockPath {
+    # hermes_cli/update_lock.py::checkout_lock_path: <git common dir>/hermes-update.lock,
+    # else <root>/.hermes-update.lock.
+    $root = Get-Variable -Name InstallRoot -ValueOnly -ErrorAction SilentlyContinue
+    if (-not $root) { return $null }
+    $dot = Join-Path $root '.git'
+    $gitDir = $null
+    if ([System.IO.Directory]::Exists($dot)) {
+        $gitDir = $dot
+    } elseif ([System.IO.File]::Exists($dot)) {
+        $first = (([System.IO.File]::ReadAllText($dot)).TrimStart([char]0xFEFF) -split "`n")[0].Trim()
+        if ($first -like 'gitdir:*') {
+            $gitDir = $first.Substring(7).Trim()
+            if (-not [System.IO.Path]::IsPathRooted($gitDir)) { $gitDir = Join-Path $root $gitDir }
+        }
+    }
+    if (-not $gitDir) { return (Join-Path $root '.hermes-update.lock') }
+    $commonFile = Join-Path $gitDir 'commondir'
+    if ([System.IO.File]::Exists($commonFile)) {
+        $common = (([System.IO.File]::ReadAllText($commonFile)).TrimStart([char]0xFEFF) -split "`n")[0].Trim()
+        if ($common) {
+            $gitDir = if ([System.IO.Path]::IsPathRooted($common)) { $common } else { Join-Path $gitDir $common }
+        }
+    }
+    return (Join-Path $gitDir 'hermes-update.lock')
+}
+
+function Test-CheckoutLockHeld {
+    # R6: does some process hold the checkout lock right now? Python takes it with
+    # msvcrt.locking on one byte at offset 1 MiB (LockFile); probe the same byte and
+    # give it straight back.
+    $path = Get-CheckoutLockPath
+    if (-not $path -or -not [System.IO.File]::Exists($path)) { return $false }
+    $fs = $null
+    try {
+        $fs = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+            ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+    } catch { return $false }
+    try {
+        try { $fs.Lock(1048576, 1) } catch [System.IO.IOException] { return $true }
+        try { $fs.Unlock(1048576, 1) } catch {}
+        return $false
+    } finally {
+        $fs.Dispose()
+    }
+}

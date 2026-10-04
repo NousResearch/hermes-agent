@@ -188,6 +188,18 @@ function Invoke-MarkerRelease {
     # Corpus 'release' under the lock: owner deletes, or hands the claim over
     # to a live delegate; anything that is not ours is kept.
     if ($NoMarkerCleanup -or $script:MarkerClaim -notin @('claimed', 'adopted')) { return }
+    # R6: never while a survivor of the update still holds the checkout lock --
+    # the marker would read free while that process still mutates the checkout.
+    $waited = 0
+    while (Test-CheckoutLockHeld) {
+        if ($waited -eq 0) { Write-HandoffLog "a process still holds the checkout update lock; keeping the update marker until it exits" }
+        if ($waited -ge $script:MarkerReleaseWaitSeconds) {
+            Write-HandoffLog "checkout update lock still held after $($waited)s; leaving the update marker"
+            return
+        }
+        Start-Sleep -Seconds 1
+        $waited++
+    }
     $lock = Open-MarkerLock
     if ($null -eq $lock) { Write-HandoffLog "update marker lock stayed busy; leaving the marker to identity-checking readers"; return }
     try {
@@ -236,7 +248,7 @@ function Update-MarkerHeartbeat {
 
 function Invoke-MarkerOp([string]$Op, [int]$Desktop, [string]$Run) {
     # SPEC 6 helper ops (Electron's only way to mutate). Returns the verdict
-    # line: absent | reclaimed | live <pid> | busy | withdrawn | taken <pid> | foreign.
+    # line: absent | reclaimed | held | live <pid> | busy | withdrawn | taken <pid> | foreign.
     $lock = Open-MarkerLock
     if ($null -eq $lock) { return 'busy' }
     try {
@@ -248,6 +260,7 @@ function Invoke-MarkerOp([string]$Op, [int]$Desktop, [string]$Run) {
         $j = $read.Judgement
         if ($Op -eq 'reclaim') {
             if ($j.Verdict -in @('live', 'ours')) { return "live $($j.Owner)" }
+            if (Test-CheckoutLockHeld) { return 'held' }   # R6: a survivor still mutates the checkout
             if (-not (Remove-MarkerLocked)) { return 'busy' }
             Write-HandoffLog "marker-op reclaim: removed a $($j.Verdict) update marker"
             return 'reclaimed'

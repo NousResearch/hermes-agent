@@ -479,7 +479,7 @@ marker_op_withdraw_locked() {
   marker_judge "$SEEN"
   if [ -z "$M_PID" ] || [ "$M_RUN" != "$HANDOFF_RUN" ]; then echo foreign; return 0; fi
   if [ "$M_PID" != "$DESKTOP_PID" ] && [ "$J_OWNER_STATE" -eq 2 ]; then echo "taken $M_PID"; return 0; fi
-  if [ "$M_PID" = "$DESKTOP_PID" ] || [ "$J_VERDICT" = dead ]; then
+  if [ "$M_PID" = "$DESKTOP_PID" ] && [ "$J_OWNER_STATE" -eq 2 ] && [ -n "$M_CT" ]; then
     rm -f "$MARKER" 2>/dev/null
     log "withdrew the Desktop's hand-off marker (run $HANDOFF_RUN)"
     echo withdrawn; return 0
@@ -487,7 +487,10 @@ marker_op_withdraw_locked() {
   echo foreign
 }
 
-marker_op() { # reclaim | withdraw -> one verdict line on stdout
+marker_op() { # reclaim | withdraw -> one verdict line on stdout (same words as marker.ps1):
+  # reclaim  absent | live <pid> | busy | held (dead, but the checkout lock is held) | reclaimed
+  # withdraw absent | taken <pid> (a live adopter carries the run) | withdrawn (this Desktop's
+  #          own bridge, removed) | foreign (anything else, kept -- a dead adopter included)
   local rc
   case "$1" in
     reclaim) marker_locked marker_op_reclaim_locked ;;

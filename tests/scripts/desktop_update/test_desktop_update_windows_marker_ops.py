@@ -145,3 +145,39 @@ def test_heartbeat_refreshes_line_2_only_for_our_own_claim(tmp_path: Path, sleep
     foreign = f'{sleeper.pid}\n{started}\nct:{dct}\n'
     _harness(tmp_path, foreign, 'heartbeat')
     assert (tmp_path / MARKER).read_bytes().decode() == foreign
+
+
+_CHECKOUT_HOLDER = """
+import msvcrt, os, sys, time
+from pathlib import Path
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o644)
+os.lseek(fd, 1 << 20, os.SEEK_SET)
+msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)   # exactly hermes_cli/update_lock.py::_try_lock
+Path(sys.argv[2] + '.ready').write_text('1', encoding='utf-8')
+while not Path(sys.argv[2]).exists():
+    time.sleep(0.05)
+"""
+
+
+@pytest.mark.platforms('windows')
+def test_marker_op_reclaim_reports_held_while_a_survivor_holds_the_checkout_lock(tmp_path: Path) -> None:
+    """R6: the update died (dead marker) but a process it started still holds the checkout lock:
+    the Desktop's reclaim must not free the marker; it answers `held` until that process exits."""
+    install = tmp_path / 'hermes-agent'
+    install.mkdir()
+    dead = f'{_dead_pid()}\n{int(time.time())}\nct:5.000\n'.encode()
+    (tmp_path / MARKER).write_bytes(dead)
+    release = tmp_path / 'release-holder'
+    holder = subprocess.Popen([sys.executable, '-c', _CHECKOUT_HOLDER, str(install / '.hermes-update.lock'), str(release)])
+    try:
+        deadline = time.monotonic() + 30
+        while not Path(str(release) + '.ready').exists():
+            assert time.monotonic() < deadline and holder.poll() is None
+            time.sleep(0.05)
+        assert _op(tmp_path, '-MarkerOp', 'reclaim')[:2] == (0, 'held\n')
+        assert (tmp_path / MARKER).read_bytes() == dead
+    finally:
+        release.touch()
+        holder.wait(timeout=30)
+    assert _op(tmp_path, '-MarkerOp', 'reclaim')[:2] == (0, 'reclaimed\n')
+    assert not (tmp_path / MARKER).exists()

@@ -33,10 +33,11 @@ def _probe_primary_billing_recovery(agent) -> bool:
     (often paid) fallback while the primary is usable again. When the primary is in
     billing-backed cooldown, probe the provider's account status (throttled to one probe
     a minute, everything fail-open) and on a funded answer clear the pool's
-    billing-attributed benches, the armed cooldown and the backoff counter so the next
-    turn's restore is evaluated normally.
+    billing-attributed benches. Only a session cooldown explicitly armed for billing
+    loses its timer and backoff counter; independent 429/unknown cooldowns stay intact.
 
-    Returns True when the session's billing cooldowns were cleared this call.
+    Returns True when billing pool benches were cleared this call, not necessarily
+    when the session can restore the primary.
     """
     primary = getattr(agent, "_primary_runtime", None) or {}
     primary_provider = str(primary.get("provider") or "").strip().lower()
@@ -104,14 +105,17 @@ def _probe_primary_billing_recovery(agent) -> bool:
             cleared = True
     except Exception:
         logger.debug("Billing-recovery pool unbench failed", exc_info=True)
-    if cleared and getattr(agent, "_rate_limited_until", 0) > now:
-        agent._rate_limited_until = now
-        cleared = True
-    if cleared:
+    # Pool recovery is independent of session ownership: another entry may have
+    # armed a live 429 after this billing bench. Unknown ownership stays intact.
+    if cleared and getattr(agent, "_rate_limit_cooldown_reason", None) == FailoverReason.billing:
+        if getattr(agent, "_rate_limited_until", 0) > now:
+            agent._rate_limited_until = now
         agent._rate_limit_backoff_count = 0
+        agent._rate_limit_cooldown_reason = None
+    if cleared:
         logger.info(
-            "Primary nous account is funded again (top-up detected); cleared billing cooldown "
-            "so the primary is restored next turn (#126818)"
+            "Primary nous account is funded again (top-up detected); cleared billing benches; "
+            "primary restoration remains subject to independent cooldowns (#126818)"
         )
     return cleared
 
@@ -164,6 +168,7 @@ def _arm_rate_limit_cooldown(
         backoff_seconds = min(60 * (2 ** backoff_count), 14400)
         source = "exponential fallback"
     agent._rate_limited_until = time.monotonic() + backoff_seconds
+    agent._rate_limit_cooldown_reason = reason
     logging.info(
         "Rate-limit backoff level %d: cooldown %d s (%.1f min, backoff#%d, %s)",
         backoff_count, backoff_seconds, backoff_seconds / 60, backoff_count + 1, source,

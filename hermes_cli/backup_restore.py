@@ -27,17 +27,27 @@ from utils import (
 
 logger = logging.getLogger(__name__)
 
-def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
+def _foreign_db_holder_pids(db_path: Path) -> List[int]:
     """PIDs of OTHER processes holding *db_path* or its WAL/SHM open.
 
-    Linux-only ``/proc/<pid>/fd`` scan (no psutil dependency), preserving the
-    kernel's ``(deleted)`` suffix so an already-unlinked sidecar generation —
-    the #90950 split-brain fingerprint — still counts as held. Returns
-    ``None`` when the scan is unavailable (non-Linux, or /proc unreadable);
-    callers must treat ``None`` as "unknown", not as "no holders".
+    Delegates to :func:`hermes_state_holders.foreign_state_db_holders`, which is
+    fail-closed and cross-platform (macOS psutil scan, Windows Restart Manager):
+    an unscannable database reports an unknown holder instead of ``None``, so
+    callers refuse rather than replacing the inode under a live writer and
+    splitting the brain (fixes #127010). Falls back to the Linux-only
+    ``/proc`` scan when the shared helper is unavailable.
     """
+    try:
+        from hermes_state_holders import foreign_state_db_holders
+    except ImportError:
+        foreign_state_db_holders = None  # type: ignore[assignment]
+    if foreign_state_db_holders is not None:
+        try:
+            return [int(pid) for pid, _ in foreign_state_db_holders(db_path)]
+        except Exception:
+            return [-1]
     if not sys.platform.startswith("linux"):
-        return None
+        return [-1]
 
     def _canonical(path: str) -> str:
         return os.path.normcase(

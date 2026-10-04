@@ -1118,13 +1118,15 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
     subject = f"Tool '{tool_name}' requires approval ({description})"
     # Unattended deny wording is plugin-contextual: the escalation means "this decision needs a
     # human", so the message names the rule and offers neither the approvals.*_mode: approve
-    # switch (unattended advice gets executed, and the agent must not switch the gate off itself)
-    # nor an alternative route. ``rule_key`` interpolates AFTER the empty-key derivation above —
-    # the same identity ``pattern_key`` carries, so message and allowlist grain name one rule.
+    # switch (unattended advice gets executed, and the agent must not switch the gate off itself),
+    # any other policy-editing route, nor an alternative approach. It points the agent at the
+    # user instead — the only party that can change the policy (#132507). ``rule_key``
+    # interpolates AFTER the empty-key derivation above — the same identity ``pattern_key``
+    # carries, so message and allowlist grain name one rule.
     plugin_deny_message = (
         f"BLOCKED: plugin rule '{rule_key}' flagged this action for human approval and no "
-        "approver is available in this unattended run. The block stands. To change this policy, "
-        "edit the plugin's pre_tool_call rules."
+        "approver is available in this unattended run. The block stands. Do not retry this "
+        "action by another route; ask the user how to proceed when they are available."
     )
     return _run_approval_gate(
         # Namespaced so plugin-rule approvals share the allowlist machinery without ever colliding with a real

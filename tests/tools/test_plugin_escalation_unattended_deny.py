@@ -105,6 +105,14 @@ def _assert_plugin_deny_contract(res, rule_key, ctx_guidance_key):
         "deny message must not point the agent at its own config to unblock, "
         "got: %r" % message
     )
+    assert "edit the plugin" not in message and "pre_tool_call rules" not in message, (
+        "deny message must not teach the agent any policy-editing route (it would "
+        "execute the advice and un-escalate itself), got: %r" % message
+    )
+    assert "ask the user" in message, (
+        "issue #132507 contract: the message must direct the agent to a human "
+        "instead of any self-service path, got: %r" % message
+    )
     assert "Find an alternative" not in message, (
         "escalation means this decision needs a human, not a different route, "
         "got: %r" % message

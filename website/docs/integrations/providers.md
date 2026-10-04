@@ -1296,7 +1296,7 @@ Hermes uses a multi-source resolution chain to detect the correct context window
 6. **OpenRouter API** — live model metadata from OpenRouter
 7. **Nous Portal** — suffix-matches Nous model IDs against OpenRouter metadata
 8. **[models.dev](https://models.dev)** — community-maintained registry with provider-specific context lengths for 3800+ models across 100+ providers
-9. **Fallback defaults** — broad model family patterns (128K default)
+9. **Fallback defaults** — a hardcoded model-family pattern, then a 256,000-token default. On a local endpoint a family match above that default is declined: the catalog describes the vendor's API, not the window the server was launched with.
 
 For most setups this works out of the box. The system is provider-aware — the same model can have different context limits depending on who serves it (e.g., `claude-opus-4.6` is 1M on Anthropic direct but 128K on GitHub Copilot).
 

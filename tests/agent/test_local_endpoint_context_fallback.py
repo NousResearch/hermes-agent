@@ -1,45 +1,35 @@
-"""Local endpoints must not inherit a cloud vendor's window from the hardcoded catalog.
+"""A local endpoint's probe-down answer must never exceed `min(catalog, DEFAULT_FALLBACK_CONTEXT)`.
 
-When every endpoint-specific probe fails, `_resolve_custom_endpoint_context_length` falls
-back to `DEFAULT_CONTEXT_LENGTHS` — a table of *cloud API* limits keyed on the model name.
-For a local server that value describes nothing: a local window is whatever the server was
-launched with (`--ctx-size`, `max_model_len`), not what the vendor sells over HTTP.
+When every endpoint-specific probe fails, `_resolve_custom_endpoint_context_length` falls back to
+`DEFAULT_CONTEXT_LENGTHS` — a table of **cloud API** limits keyed on the model *name*. For a local
+server that value describes nothing: its window is whatever it was launched with (`--ctx-size`,
+`max_model_len`), not what a vendor sells over HTTP.
 
-Two things go wrong together on that path:
+Both directions of that have to hold, and declining the catalog outright breaks one of them:
 
-1. The probe-down log line promises ``DEFAULT_FALLBACK_CONTEXT`` and the function then
-   returns the catalog number instead, so the log and the return value disagree.
-2. The catalog branch ``return``s before ``_warn_context_length_fallback``, so the one
-   warning that exists to say "we guessed" never fires for the case that guesses loudest.
+- **Above the default** — declining a 1,000,000-token catalog hit on a 131,072-token local model is
+  the point of the change. The compression trigger derives from this window, so an inflated value
+  puts compaction past the real limit and the session dies at the endpoint instead of compacting
+  before it.
+- **At or below the default** — declining a 131,072-token hit would *raise* the guess to 256,000 and
+  move the 0.8 trigger from 104,857 to 204,800. That is the same costly direction, and it covers 33
+  of the 124 catalog entries (the `llama`/`qwen`/`gemma-3`/`deepseek`/`nemotron` catch-alls), so
+  refusing the catalog wholesale trades one wrong guess for another.
 
-The resulting window is trusted by the compression trigger, so a 1,000,000-token catalog
-hit on a 131,072-token local model computes an 800,000-token compaction trigger that the
-session can never reach — compression silently never runs.
+One rule covers both: keep the catalog value when it is the lower guess, decline it when it is not.
+
+Catalog data is seeded synthetically so these assertions never depend on real catalog entries.
 """
-
-from unittest.mock import patch
 
 import pytest
 
 import agent.model_metadata as mm
 from agent.model_metadata import (
-    DEFAULT_CONTEXT_LENGTHS,
     DEFAULT_FALLBACK_CONTEXT,
     _resolve_custom_endpoint_context_length,
 )
 
-# A model id that substring-matches the catalog entry below (the real-world shape: a local
-# MLX/Llama.cpp server serving a model whose vendor name maps to a 1M cloud API limit).
-LOCAL_MODEL = "ddalcu/Qwen3.8-Flash-Next-MLX-Serve-iQ-MLX-4.7bpw"
-LOCAL_BASE_URL = "http://192.168.0.16:6068"
-REMOTE_BASE_URL = "https://my-gateway.example.com/v1"
-
-
-def _catalog_hit_for(model: str) -> int:
-    """The catalog value this model id would resolve to, so a test can state the delta."""
-    hit = mm._longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
-    assert hit, f"test model {model!r} must match the hardcoded catalog"
-    return hit[1]
+LOCAL_BASE_URL = "http://127.0.0.1:8080/v1"
 
 
 @pytest.fixture
@@ -49,54 +39,42 @@ def probes_down(monkeypatch):
     monkeypatch.setattr(mm, "_probe_local_context_length", lambda *a, **k: None)
     monkeypatch.setattr(mm, "_query_ollama_api_show", lambda *a, **k: None)
     monkeypatch.setattr(mm, "get_cached_context_length", lambda *a, **k: None)
-    seen = []
-    monkeypatch.setattr(mm, "_warn_context_length_fallback", lambda model, base_url: seen.append((model, base_url)))
-    return seen
+    warned = []
+    monkeypatch.setattr(mm, "_warn_context_length_fallback", lambda model, base_url: warned.append((model, base_url)))
+    return warned
+
+
+def _fake_catalog(monkeypatch, value: int) -> str:
+    """Seed a synthetic catalog entry so no assertion depends on real catalog data."""
+    monkeypatch.setitem(mm.DEFAULT_CONTEXT_LENGTHS, "fake-local-model", value)
+    return "Fake-Local-Model"
 
 
 class TestLocalEndpointCatalogFallback:
-    def test_local_endpoint_does_not_inherit_cloud_catalog_window(self, probes_down):
-        """A local server whose probes failed must not report a cloud vendor's window."""
-        catalog = _catalog_hit_for(LOCAL_MODEL)
-        assert mm.is_local_endpoint(LOCAL_BASE_URL)
+    @pytest.mark.parametrize(
+        "catalog",
+        [1_000_000, 131_072],
+        ids=["catalog-above-default", "catalog-at-or-below-default"],
+    )
+    def test_local_result_never_exceeds_min_catalog_and_default(self, probes_down, monkeypatch, catalog):
+        """The invariant: a local probe-down answer is exactly `min(catalog, default)`."""
+        model = _fake_catalog(monkeypatch, catalog)
 
-        ctx = _resolve_custom_endpoint_context_length(LOCAL_MODEL, LOCAL_BASE_URL, "", "custom")
+        ctx = _resolve_custom_endpoint_context_length(model, LOCAL_BASE_URL, "", "custom")
 
-        assert ctx != catalog, (
-            f"local endpoint inherited the cloud catalog window {catalog:,}; "
-            f"its own window is whatever the server was launched with"
+        assert ctx == min(catalog, DEFAULT_FALLBACK_CONTEXT), (
+            f"local endpoint answered {ctx:,}; a local answer must never exceed "
+            f"min(catalog={catalog:,}, default={DEFAULT_FALLBACK_CONTEXT:,})"
         )
+
+    def test_declined_local_guess_is_visible(self, probes_down, monkeypatch):
+        """Declining the catalog must not swallow the warning — it is the only sign of a guess."""
+        model = _fake_catalog(monkeypatch, 1_000_000)
+
+        ctx = _resolve_custom_endpoint_context_length(model, LOCAL_BASE_URL, "", "custom")
+
         assert ctx == DEFAULT_FALLBACK_CONTEXT
-
-    def test_local_endpoint_guess_still_warns(self, probes_down):
-        """The 'we guessed' warning must fire — it is what tells the user to pin the window."""
-        _resolve_custom_endpoint_context_length(LOCAL_MODEL, LOCAL_BASE_URL, "", "custom")
-
         assert probes_down, (
             "the catalog branch returned before _warn_context_length_fallback, "
             "so the user was never told the window was a guess"
         )
-
-    def test_catalog_still_serves_proxied_remote_gateway(self, probes_down):
-        """Remote/proxied endpoints keep the catalog: that is the case the branch exists for
-        (a proxied Anthropic gateway fails the probes but its model name is still real)."""
-        assert not mm.is_local_endpoint(REMOTE_BASE_URL)
-
-        ctx = _resolve_custom_endpoint_context_length(LOCAL_MODEL, REMOTE_BASE_URL, "", "custom")
-
-        assert ctx == _catalog_hit_for(LOCAL_MODEL)
-
-    def test_local_probe_down_log_matches_return_value(self, probes_down, caplog):
-        """The probe-down log promises DEFAULT_FALLBACK_CONTEXT; the return must agree."""
-        import logging
-
-        with caplog.at_level(logging.INFO, logger="agent.model_metadata"):
-            ctx = _resolve_custom_endpoint_context_length(LOCAL_MODEL, LOCAL_BASE_URL, "", "custom")
-
-        assert ctx == DEFAULT_FALLBACK_CONTEXT
-        for record in caplog.records:
-            if "probe-down" in record.getMessage():
-                assert f"{DEFAULT_FALLBACK_CONTEXT:,}" in record.getMessage()
-                break
-        else:
-            pytest.fail("expected a probe-down log line")

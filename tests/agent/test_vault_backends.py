@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+from types import SimpleNamespace
 import stat
 from unittest.mock import patch
 
@@ -249,6 +250,34 @@ def test_onepassword_item_get_passes_the_vault_recorded_by_list_items():
         calls.clear()
         backend.resolve_otp("op:gh")  # warm: no second list
         assert calls == [("item", "get", "gh", "--vault", "vault123", "--otp")]
+
+
+def test_onepassword_desktop_app_integration_counts_as_unlocked_only_where_a_human_can_answer(monkeypatch):
+    """With "Integrate with 1Password CLI" on, op needs no token: a passing `op account get` is the
+    unlock, and list/get run without OP_SESSION. Headless contexts never probe (a locked app
+    would raise its own window), so they still report locked."""
+    from agent.vault_backends import onepassword as mod
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    backend = OnePasswordLoginBackend({"enabled": True})
+    backend._service_token = ""
+    calls = []
+
+    def fake_run_cli(argv, *, env, **kw):
+        calls.append((tuple(argv[1:]), "OP_SESSION" in env))
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(mod, "run_cli", fake_run_cli)
+    monkeypatch.setattr(backend, "_op", lambda: "/usr/local/bin/op")
+    monkeypatch.setattr(mod._unlock, "can_prompt_here", lambda: False)
+    assert backend.is_unlocked() is False and calls == []  # headless: no probe, no app window
+
+    monkeypatch.setattr(mod._unlock, "can_prompt_here", lambda: True)
+    assert backend.is_unlocked() is True
+    assert calls == [(("account", "get", "--format", "json"), False)]
+    assert backend.list_items() == []  # runs through _run with no session token
+    assert calls[-1] == (("item", "list", "--categories", "Login", "--format", "json"), False)
+    assert calls.count((("account", "get", "--format", "json"), False)) == 1  # probe result is cached
 
 
 def test_onepassword_backend_env_forwards_config_directory(monkeypatch):

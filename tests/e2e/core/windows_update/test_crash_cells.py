@@ -336,6 +336,44 @@ def _update_banners(machine, banner: str = UPDATE_BANNER) -> int:
         return 0
 
 
+class _ExitCode:
+    """An open handle on a process this test did not spawn, so its exit code stays readable
+    after it exits. ``psutil.Process.wait`` returns None for a non-child that is already
+    gone, which lost the orphaned update's rc whenever it exited between two samples."""
+
+    def __init__(self, pid: int) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        self._ctypes, self._wintypes = ctypes, wintypes
+        k = self._k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.OpenProcess.restype = wintypes.HANDLE
+        k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k.WaitForSingleObject.restype = wintypes.DWORD
+        k.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        k.GetExitCodeProcess.restype = wintypes.BOOL
+        k.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
+        # PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE
+        self._h = k.OpenProcess(0x1000 | 0x00100000, False, pid)
+        if not self._h:
+            raise OSError(ctypes.get_last_error(), f"OpenProcess({pid}) failed")
+
+    def wait(self, timeout: float) -> int | None:
+        """The exit code once the process has exited, else None after ``timeout`` seconds."""
+        if self._k.WaitForSingleObject(self._h, int(timeout * 1000)) != 0:  # WAIT_OBJECT_0
+            return None
+        code = self._wintypes.DWORD()
+        if not self._k.GetExitCodeProcess(self._h, self._ctypes.byref(code)):
+            raise OSError(self._ctypes.get_last_error(), "GetExitCodeProcess failed")
+        return code.value
+
+    def close(self) -> None:
+        if self._h:
+            self._k.CloseHandle(self._h)
+            self._h = None
+
+
 def _orphan(machine, srv, label: str) -> dict:
     """Start the hand-off script, kill ONLY its powershell once its ``hermes update``
     child runs under the claimed marker, and watch that orphaned update to its end."""
@@ -365,6 +403,8 @@ def _orphan(machine, srv, label: str) -> dict:
         if child is None:
             taskkill_tree(proc.pid)
             raise AssertionError(fail_with(machine, f"{label}: no hermes update child within {UPDATE_TIMEOUT:.0f}s"))
+        # Held from before the kill, while the update is minutes from done.
+        exit_code = _ExitCode(child.pid)
         marker_at_kill = _read_marker(machine)
         # No /T: the script alone dies; its update child (in the script's job, which has
         # no KILL_ON_JOB_CLOSE) keeps running.
@@ -375,12 +415,8 @@ def _orphan(machine, srv, label: str) -> dict:
         holders: set[str] = set()
         rc = None
         while time.monotonic() < killed_at + UPDATE_TIMEOUT:
-            try:
-                rc = child.wait(timeout=0.25)
-                break
-            except psutil.TimeoutExpired:
-                pass
-            except psutil.NoSuchProcess:
+            rc = exit_code.wait(0.25)
+            if rc is not None:
                 break
             text = _read_marker(machine)
             if text is not None and text.startswith("<unreadable"):
@@ -395,10 +431,13 @@ def _orphan(machine, srv, label: str) -> dict:
                     who = "?" if text.startswith("<unreadable") else _marker_live(text)
             if who and who != "?":
                 holders.add(who.split()[0])
-            elif not who and dead_while_running is None and child.is_running():
+            elif not who and dead_while_running is None and exit_code.wait(0) is None:
                 dead_while_running = (round(time.monotonic() - killed_at, 1),
                                       "<absent>" if text is None else repr(text))
-        orphan_finished = not child.is_running()
+        if rc is None:
+            rc = exit_code.wait(0)
+        exit_code.close()
+        orphan_finished = rc is not None
         if not orphan_finished:
             machine.kill_owned()
         tree_after_orphan = _tree(machine, label)

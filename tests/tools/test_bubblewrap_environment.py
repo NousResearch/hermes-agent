@@ -351,7 +351,7 @@ class TestConstructionTimeMounts:
         # construction as well.
         assert params == [
             "config", "initial_cwd", "state_dir", "home", "hermes_home", "tracked_cwd", "bwrap_path", "hidden_paths",
-            "home_root", "home_allow", "scratch_dir", "scratch_view", "scratch_private", "staged_roots", "staged_files",
+            "home_root", "home_allow", "scratch_dir", "scratch_view", "scratch_private", "staged_roots", "staged_files", "sandbox_overlays",
         ]
 
     def test_chdir_follows_tracked_cwd_with_fixed_mounts(self, sandbox_root, work_dir):
@@ -764,6 +764,51 @@ class TestSandboxDirGuard:
     empty file bound over hidden files lives beside the state dir, and a
     sandbox that can replace it with a symlink would choose the next
     spawn's bind source."""
+
+    @pytest.mark.parametrize("what", ["cwd", "home", "hermes_home", "bind"])
+    def test_sandbox_dir_that_contains_a_path_the_sandbox_needs_is_refused(self, tmp_path, monkeypatch, what):
+        # The sandbox dir is hidden from commands; a cwd, HOME, HERMES_HOME
+        # or bind destination inside it would be hidden with it.
+        root = tmp_path / "all"
+        inner = root / "inner"
+        inner.mkdir(parents=True)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(root))
+        config = BubblewrapConfig(profile="restricted")
+        if what == "home":
+            monkeypatch.setenv("HOME", str(inner))
+        elif what == "hermes_home":
+            monkeypatch.setenv("HERMES_HOME", str(inner))
+        elif what == "bind":
+            config = BubblewrapConfig(profile="restricted", binds=(BindMount(src=str(elsewhere), dest=str(inner)),))
+        cwd = inner if what == "cwd" else elsewhere
+        with _no_session(), pytest.raises(ValueError, match="terminal.sandbox_dir .* contains"):
+            BubblewrapEnvironment(cwd=str(cwd), timeout=10, config=config)
+
+    def test_sandbox_dir_outside_every_hidden_path_gets_an_overlay_below_the_state_dir(self, sandbox_root, work_dir, tmp_path):
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        try:
+            mounts = _mounts(env._wrap_popen_args(["bash"]))
+            i_overlay = mounts.index(("--tmpfs", str(sandbox_root)))
+            assert i_overlay < mounts.index(("--bind", env.get_temp_dir(), env.get_temp_dir()))
+        finally:
+            env.cleanup()
+
+    def test_default_sandbox_dir_gets_no_overlay_of_its_own(self, tmp_path, work_dir, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TERMINAL_SANDBOX_DIR", raising=False)
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        try:
+            assert ("--tmpfs", str(hermes_home / "sandboxes")) not in _mounts(env._wrap_popen_args(["bash"]))
+        finally:
+            env.cleanup()
 
     @pytest.mark.parametrize("profile", ["workspace", "network"])
     def test_sandbox_dir_under_a_writable_cwd_is_refused(self, tmp_path, work_dir, monkeypatch, profile):

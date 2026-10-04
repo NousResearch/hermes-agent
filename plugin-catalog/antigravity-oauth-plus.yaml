@@ -1,0 +1,22 @@
+name: antigravity-oauth-plus
+repo: https://github.com/taylorwtf/hermes-antigravity-oauth
+sha: b686fe6ad0f17bfe492ecba83465d109f4a2b2c2
+version: "0.2.0"
+title: Antigravity OAuth Plus
+description: "Official-CLI Antigravity access with live model discovery, native context detection, cached account quotas and an opt-in usage widget with five-hour and weekly resets."
+maintainer: taylorwtf
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/taylorwtf/hermes-antigravity-oauth/blob/b686fe6ad0f17bfe492ecba83465d109f4a2b2c2/README.md
+screenshots:
+  - https://github.com/taylorwtf/hermes-antigravity-oauth/releases/download/v0.2.0/usage-widget-redacted.png
+known_issues:
+  - "Inherited inference isolation links agy's credential file and macOS Keychains, with hardlink/copy fallback; see README security disclosure."
+  - "Native /usage reads cached quota; refresh explicitly. Optional TUI widget requires explicit profile-local setup."
+  - "Unknown model context may fall back to Hermes metadata defaults; advertised capacity is not an end-to-end context test."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -119,11 +119,12 @@ def test_plugin_auxiliary_task_inherits_builtin_and_user_overrides(monkeypatch, 
     assert result["timeout"] == 99
 
 
-def test_plugin_auxiliary_task_rejects_unknown_inheritance(patched_manager):
+def test_plugin_auxiliary_task_defers_unknown_inheritance(patched_manager, caplog):
+    from hermes_cli.plugins import get_plugin_auxiliary_tasks
     ctx = PluginContext(PluginManifest(name="plug"), patched_manager)
-
-    with pytest.raises(ValueError, match="unknown task"):
-        ctx.register_auxiliary_task(
-            key="broken_aux", display_name="Broken", description="d",
-            inherit_from="does_not_exist",
-        )
+    ctx.register_auxiliary_task(
+        key="broken_aux", display_name="Broken", description="d",
+        inherit_from="does_not_exist",
+    )
+    assert get_plugin_auxiliary_tasks() == []
+    assert "does_not_exist" in caplog.text

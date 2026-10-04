@@ -139,13 +139,17 @@ def _notice_lines(results) -> "list[str]":
     return ["", *notice] if notice else []
 
 
-def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool) -> "list[str]":
-    """Shared preamble: title, intro, blank, dispatch time, [goal], context/toolsets, role+model."""
+def _preamble(evt: dict, title: str, intro: str, rendered_at: float, *, with_goal: bool) -> "list[str]":
+    """Shared preamble: title, intro, blank, dispatch time, [goal], context/toolsets, role+model.
+
+    The dispatch age is measured against *rendered_at* (formatting/delivery time), not the
+    unit's completion timestamp: a consolidated block that is queued and delivered long after
+    completion must not still claim the batch finished "4m ago" when it finished hours ago."""
     lines = [title, intro, ""]
     dispatched_at = evt.get("dispatched_at")
     if isinstance(dispatched_at, (int, float)):
         ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(dispatched_at))
-        lines.append(f"Dispatched: {ts} ({_format_age(completed_at - dispatched_at)} ago)")
+        lines.append(f"Dispatched: {ts} ({_format_age(rendered_at - dispatched_at)} ago)")
     if with_goal:
         lines.append(f"Original goal: {evt.get('goal', '') or ''}")
     if evt.get("context"):
@@ -192,7 +196,7 @@ def _recovery_lines(evt: dict) -> "list[str]":
     return lines
 
 
-def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> str:
+def _format_batch_delegation(evt: dict, deleg_id: str, rendered_at: float) -> str:
     """Consolidated block for a delegate_task fan-out that finished as one unit."""
     results, goals = evt.get("results") or [], evt.get("goals") or []
     # ``goals`` is the whole delegate_task call (task_index indexes it); ``results`` is this unit's subset.
@@ -206,7 +210,7 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         "below. Any other units from the same delegate_task call report separately as they finish. You may have "
         "moved on since dispatching — act on these or re-dispatch if things have changed. If you are still waiting "
         "on siblings, end your turn after acting on this one.",
-        completed_at, with_goal=False)
+        rendered_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
     lines += _recovery_lines(evt)
     if evt.get("error") and not results:
@@ -265,11 +269,13 @@ def _format_async_delegation(evt: dict) -> str:
     original task source (goal, context, toolsets, role, model), dispatch time, status
     and result, so an agent deep in unrelated context can act on it or re-dispatch."""
     deleg_id = evt.get("delegation_id", "unknown")
-    completed_at = evt.get("completed_at") or time.time()
+    # Age the dispatch line against "now" (render time), not evt["completed_at"]: the
+    # parenthetical says "ago", which the reader resolves against delivery time.
+    rendered_at = time.time()
     if evt.get("task_failure_notice"):
         return _format_task_failure_notice(evt, deleg_id)
     if evt.get("is_batch") or isinstance(evt.get("results"), list):
-        return _format_batch_delegation(evt, deleg_id, completed_at)
+        return _format_batch_delegation(evt, deleg_id, rendered_at)
     status, summary, error = evt.get("status") or "completed", evt.get("summary"), evt.get("error")
     truncated = _is_truncated(evt)
     lines = _preamble(
@@ -278,7 +284,7 @@ def _format_async_delegation(evt: dict) -> str:
         "A background subagent you dispatched earlier has finished. You may "
         "have moved on since dispatching it; the full task source is below so "
         "you can act on the result or re-dispatch if things have changed.",
-        completed_at, with_goal=True)
+        rendered_at, with_goal=True)
     lines += _notice_lines([evt]) + [
         f"Status: {status}   API calls: {evt.get('api_calls', 0)}   Duration: {evt.get('duration_seconds', '?')}s"
         + (" [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""),

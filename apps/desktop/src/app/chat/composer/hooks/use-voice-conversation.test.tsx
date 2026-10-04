@@ -30,7 +30,7 @@ const markVoicePlaybackInterrupted = vi.fn()
 const stopVoicePlayback = vi.fn()
 const takeVoicePlaybackInterrupted = vi.fn(() => true)
 
-const playSpeechTextMock = vi.fn(async () => true)
+const playSpeechTextMock = vi.fn(async (..._args: unknown[]) => true)
 const startSpeechStreamMock = vi.fn(async () => null)
 
 vi.mock('@/lib/voice-playback', () => ({
@@ -209,6 +209,27 @@ describe('useVoiceConversation full-duplex barge-in', () => {
 
     expect(append).toHaveBeenCalledWith(' Two. Three.')
     expect(finish).not.toHaveBeenCalled()
+  })
+
+  it.each(['unavailable', 'handoff'])('keeps fallback speech across id rewrites (%s)', async mode => {
+    $autoSpeakReplies.set(true)
+    let response: { id: string; pending: boolean; text: string; turnKey: string } | null = null
+    if (mode === 'handoff') {
+      startSpeechStreamMock.mockResolvedValueOnce({
+        append: vi.fn(), finish: vi.fn(), done: Promise.resolve('fallback')
+      } as never)
+    }
+    const { hook, onBusyChange } = renderConversation({ pendingResponse: () => response })
+    await enterThinking(hook)
+    response = { id: 'stream', pending: true, text: 'First sentence is long enough. ', turnKey: 'turn:0' }
+    act(() => { onBusyChange.current(false); onBusyChange.current(true) })
+    await waitFor(() => expect(playSpeechTextMock).toHaveBeenCalledWith('First sentence is long enough.', expect.anything()))
+    response = { id: 'durable', pending: true, text: 'First sentence is long enough. Second sentence is long enough. ', turnKey: 'turn:0' }
+    await waitFor(() => expect(playSpeechTextMock).toHaveBeenCalledWith('Second sentence is long enough.', expect.anything()))
+    expect(playSpeechTextMock.mock.calls.filter(call => call[0] === 'First sentence is long enough.')).toHaveLength(1)
+    response = { id: 'other', pending: true, text: 'Different turn. ', turnKey: 'turn:1' }
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 200)) })
+    expect(playSpeechTextMock).not.toHaveBeenCalledWith('Different turn.', expect.anything())
   })
 
   it('never arms the barge monitor when voice.barge_in is false (#126708)', async () => {

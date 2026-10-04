@@ -82,7 +82,11 @@ def test_live_running_record_is_not_reclaimed(tmp_path, monkeypatch):
     own_id = update_receipt._current.get().data["update_id"]
     for path in (tmp_path / "logs/update_receipts").glob("*.json"):
         data = json.loads(path.read_text())
-        data.update(pid=os.getppid(), writer_pid=os.getppid(), pid_create_time=None)  # alive
+        from hermes_cli.process_identity import _process_create_time
+
+        parent_time = _process_create_time(os.getppid())
+        data.update(pid=os.getppid(), writer_pid=os.getppid(),
+                    pid_create_time=parent_time, writer_create_time=parent_time)
         path.write_text(json.dumps(data))
     assert update_receipt.reconcile_interrupted_runs() == []
     (archived,) = (tmp_path / "logs/update_receipts").glob(f"update_*_{own_id}.json")

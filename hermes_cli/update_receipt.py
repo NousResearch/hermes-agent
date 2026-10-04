@@ -218,21 +218,36 @@ def _persist_running(data: dict[str, Any]) -> None:
 
         directory = _receipt_dir()
         directory.mkdir(parents=True, exist_ok=True)
-        payload = (json.dumps({**data, "writer_pid": os.getpid()}, indent=2, default=str) + "\n").encode("utf-8")
-        _atomic_bytes(_run_file(directory, data), payload)
+        path = _run_file(directory, data)
+        # A completion child can finalize while its parent still holds the pre-child
+        # context. That stale running snapshot must never undo the terminal receipt.
+        with suppress(OSError, ValueError):
+            stored = json.loads(path.read_text(encoding="utf-8-sig"))
+            if stored.get("update_id") == data.get("update_id") and stored.get("finished_at"):
+                return
+        from hermes_cli.process_identity import _process_create_time
+
+        payload = (json.dumps({**data, "writer_pid": os.getpid(),
+                               "writer_create_time": _process_create_time(os.getpid())},
+                              indent=2, default=str) + "\n").encode("utf-8")
+        _atomic_bytes(path, payload)
         _atomic_bytes(directory / "latest.json", payload)
 
 
 def _owner_alive(record: dict[str, Any]) -> bool:
     from hermes_cli.process_identity import _pid_alive_matches
 
-    for key in ("pid", "writer_pid"):
+    identities = {}
+    for key, time_key in (("pid", "pid_create_time"), ("writer_pid", "writer_create_time")):
         pid = record.get(key)
-        if isinstance(pid, int) and pid > 0 and pid != os.getpid():
-            create_time = record.get("pid_create_time") if key == "pid" else None
-            if _pid_alive_matches(pid, create_time) is not False:
-                return True
-    return False
+        if isinstance(pid, int) and pid > 0:
+            # Older receipts recorded no writer incarnation. Do not let a duplicate
+            # bare PID override the original owner's proven creation-time mismatch.
+            create_time = record.get(time_key)
+            if pid not in identities or identities[pid] is None:
+                identities[pid] = create_time
+    return any(_pid_alive_matches(pid, create_time) is not False
+               for pid, create_time in identities.items())
 
 
 def reconcile_interrupted_runs() -> list[dict[str, Any]]:
@@ -355,6 +370,7 @@ def record_user_action(step: str, reason: str) -> None:
     ``hermes update`` exits 1, as #122557 established for an unrestored autostash.
     """
     _record("fact", f"update user action {step}", "user_action", {"step": step, "reason": " ".join(str(reason).split())[:500]})
+    persist_running_receipt()
 
 
 def amend_terminal_followup(update_id: str, step: str, reason: str) -> None:

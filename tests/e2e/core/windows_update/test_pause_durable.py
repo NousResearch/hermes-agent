@@ -33,7 +33,7 @@ pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
               pytest.mark.live_system_guard_bypass, REQUIRES_OPT_IN]
 
 _PAUSED = "Paused gateway profile"
-_RECORD = ".hermes-update-paused-gateways.json"
+_RECORD_STEM = ".hermes-update-paused-gateways"  # <stem>.<checkout key>.json, plus <record>.<pid>.<nonce>.claim
 _EARLY, _HELD = "AGENTS.md", "website/package.json"  # checkout order: the early file is written first
 _PULL_MARKER = "hermes-update-pull"  # hermes_cli._early_recovery.INTERRUPTED_PULL_MARKER, in the git dir
 _RESTORED = "Checkout restored"  # the updater's own in-place restore of git's half-written files
@@ -44,6 +44,11 @@ def _alive(pid: int) -> bool:
         return psutil.Process(pid).is_running() and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
     except psutil.Error:
         return False
+
+
+def _record_held(machine) -> bool:
+    """The paused set is still on disk (the record or a recovering launch's claim)."""
+    return any(p.suffix in (".json", ".claim") for p in machine.hermes_home.glob(_RECORD_STEM + "*"))
 
 
 def _running_gateway(machine, not_pid: int, timeout: float) -> dict | None:
@@ -117,7 +122,7 @@ def journey(tmp_path_factory):
                 machine.advance()
                 out["a_paused"], out["a_tail"] = _update_killed_after_pause(machine)
                 out["a_old_stopped"] = not _alive(old)
-                out["a_record"] = (machine.hermes_home / _RECORD).is_file()
+                out["a_record"] = _record_held(machine)
                 out["a_launch"] = machine.hermes("gateway", "status", label="next-launch")
                 out["a_after"] = _running_gateway(machine, old, 120)
                 machine.kill_owned()
@@ -132,7 +137,7 @@ def journey(tmp_path_factory):
                 time.sleep(30)
                 out["c_after"] = after
                 out["c_alive_30s"] = bool(after) and _alive(int(after.get("pid") or 0))
-                out["c_record"] = (machine.hermes_home / _RECORD).is_file()
+                out["c_record"] = _record_held(machine)
                 machine.kill_owned()
 
                 # (b) the pull fails with a torn tree
@@ -150,7 +155,7 @@ def journey(tmp_path_factory):
                 time.sleep(15 if after else 0)
                 out["b_after"] = after
                 out["b_alive_15s"] = bool(after) and _alive(int(after.get("pid") or 0))
-                out["b_record"] = (machine.hermes_home / _RECORD).is_file()
+                out["b_record"] = _record_held(machine)
                 machine.kill_owned()
             yield out
         finally:

@@ -198,6 +198,11 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     _ctx._fire_approval_hook("pre_approval_request", **payload)
     # Bridges sync agent thread → async gateway.
     try:
+        logger.info(
+            "Approval prompt dispatch: session=%s request=%s notifier=%s",
+            session_key, entry.data.get("request_id"),
+            getattr(notify_cb, "__qualname__", type(notify_cb).__name__),
+        )
         notify_cb(dict(entry.data))
         approval_published()
     except Exception as exc:

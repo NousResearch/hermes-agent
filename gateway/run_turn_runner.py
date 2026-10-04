@@ -1485,6 +1485,7 @@ class TurnRunner:
                     raise RuntimeError("send_exec_approval: loop unavailable")
                 outcome = _approval_send_outcome(fut, timeout=15)
                 if outcome == "sent":
+                    self._log_approval_delivery(approval_data, fut.result(timeout=0), "buttons")
                     # Without this, a card whose timer runs out keeps live buttons and nobody
                     # learns the command did NOT run (only the TUI registered a settle hook).
                     register_timeout_notice(
@@ -1537,19 +1538,37 @@ class TurnRunner:
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
         msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
-        try:
-            # Mark as approval prompt so WeCom routes through the control lane.
-            metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
-            fut = self._schedule(
-                adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
-            )
-            if fut is not None:
-                fut.result(timeout=15)
-                # No card to edit on the text path: the prompt has no buttons to drop and carries
-                # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
-        except Exception as e:
-            logger.error("Failed to send approval request: %s", e)
+        # Mark as approval prompt so WeCom routes through the control lane.
+        metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}
+        fut = self._schedule(
+            adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
+        )
+        outcome = _approval_send_outcome(fut, timeout=15)
+        if outcome == "ambiguous":
+            # A lost acknowledgement is not proof of non-delivery. Keep the original
+            # request answerable, but never duplicate it or claim it was delivered.
+            logger.warning("Approval text send is possibly delivered; awaiting the original request")
+            return
+        if outcome != "sent":
+            # The notifier contract is exception-on-failure. Returning normally here
+            # made _await_gateway_decision wait out approvals.timeout and blame user
+            # silence even when no prompt was posted (including success=False results).
+            raise RuntimeError(f"exec approval undeliverable: text send {outcome}")
+        assert fut is not None  # a missing scheduling future classifies as failed
+        self._log_approval_delivery(approval_data, fut.result(timeout=0), "text")
+        # No card to edit on the text path: the prompt has no buttons to drop and carries
+        # the /approve instructions, so the timeout notice is posted as a new message.
+        register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+
+    def _log_approval_delivery(self, approval_data: dict, result, lane: str) -> None:
+        """Record routing/ack evidence, never the command or credential-bearing errors."""
+        ctx = self._ctx
+        logger.info(
+            "Exec approval delivered: session=%s request=%s adapter=%s chat=%s thread=%s message=%s lane=%s",
+            ctx.session_key, approval_data.get("request_id"), type(ctx._status_adapter).__name__,
+            ctx._status_chat_id, (ctx._status_thread_metadata or {}).get("thread_id"),
+            getattr(result, "message_id", None), lane,
+        )
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────
 

@@ -774,19 +774,22 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
 
 
 def _approval_send_outcome(future, timeout: float) -> str:
-    """Classify an approval prompt send as ``sent`` / ``failed`` / ``ambiguous``.
+    """Classify a prompt send as ``sent`` / ``failed`` / ``ambiguous`` / ``declined``.
 
     ``ambiguous`` = future timed out but the card may have posted: keep the registration, do NOT re-send.
-    Only a DEFINITIVE failure (error result / non-timeout exception / no future) re-asks; logged here."""
+    Only a DEFINITIVE failure (error result / non-timeout exception / no future) re-asks.
+    Log only fixed outcome categories: adapter errors and exception details can
+    contain credentials, command text, or private response bodies.
+    """
     if future is None:
-        logger.warning("Prompt send failed: no scheduling future (loop unavailable)")
+        logger.warning("Prompt send outcome=failed category=no_future")
         return "failed"
     try:
         result = future.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
         return "ambiguous"
-    except Exception as exc:
-        logger.warning("Prompt send failed: %s", exc)
+    except Exception:
+        logger.warning("Prompt send outcome=failed category=adapter_exception")
         return "failed"
     if getattr(result, "success", False):
         return "sent"
@@ -814,17 +817,14 @@ def _approval_send_outcome(future, timeout: float) -> str:
         # decline classification because an ambiguous result is a transport
         # outcome, not an authorization one, and this lane has three verdicts
         # rather than the boolean the shared helper answers.
-        logger.warning("Prompt send AMBIGUOUS (lost ack): %s", _raw.get("error"))
+        logger.warning("Prompt send outcome=ambiguous category=lost_ack")
         return "ambiguous"
     if declined_send(result):
         # Both shapes, one classifier: a structured body, or the uniform
         # decline sentence from an older connector.
-        logger.warning(
-            "Prompt send DECLINED by connector egress guard: %s",
-            getattr(result, "error", None),
-        )
+        logger.warning("Prompt send outcome=declined category=egress_declined")
         return "declined"
-    logger.warning("Prompt send failed: %s", getattr(result, "error", None) or "unknown error")
+    logger.warning("Prompt send outcome=failed category=adapter_result")
     return "failed"
 
 

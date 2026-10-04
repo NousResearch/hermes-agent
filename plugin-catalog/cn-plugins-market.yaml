@@ -1,0 +1,21 @@
+name: cn-plugins-market
+repo: https://github.com/krintcal/CN-plugins-market
+sha: 2e9c2f0c4f536913db0bf127269171cda40a3f04
+description: Browse the Hermes plugin catalog inside the Desktop app, in your own language — rank it four ways, install with one click, and translate each plugin's blurb into the language you pick, cached per plugin so repeat browsing is free. 在 Hermes 桌面端用中文浏览并翻译官方插件目录：四档排行、一键安装，简介翻译一次永久缓存。
+maintainer: krintcal
+tier: community
+category: desktop
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/krintcal/CN-plugins-market#readme
+version: "1.0.0"
+screenshots:
+  - https://raw.githubusercontent.com/krintcal/CN-plugins-market/2e9c2f0c4f536913db0bf127269171cda40a3f04/screenshots/01-catalog-zh.png
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

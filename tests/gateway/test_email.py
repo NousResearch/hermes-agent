@@ -380,7 +380,7 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
         """A granted sender's mail with no Authentication-Results suggests a server that never stamps it, so the drop
         warns with the opt-out hint; no stamp from the pinned authserv-id warns to check authserv_id; a listed sender's
         failing verdict warns without a hint; forged stranger mail under open access stays at debug."""
-        from plugins.platforms.email.adapter import _UNTRUSTED_AUTHSERV_REASON
+        from plugins.platforms.email.adapter import _MISSING_AUTHSERV_REASON, _UNTRUSTED_AUTHSERV_REASON, EmailAdapter
 
         adapter_log = "plugins.platforms.email.adapter"
         with self.assertLogs(adapter_log, level="WARNING") as logs:
@@ -391,6 +391,16 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
                                                    env={"EMAIL_ALLOWED_USERS": self.STRANGER}), [])
         self.assertIn("authserv_id", logs.output[0])
         self.assertNotIn("require_authenticated_sender", logs.output[0])
+        # No pin drops every message, so the fix (pin, or the explicit opt-out) is logged once per process.
+        with patch.object(EmailAdapter, "_missing_pin_warned", False), \
+                self.assertLogs(adapter_log, level="DEBUG") as logs:
+            for _ in range(2):
+                self.assertEqual(self._reached_gateway(authenticated=False, auth_reason=_MISSING_AUTHSERV_REASON,
+                                                       env={"EMAIL_ALLOWED_USERS": self.STRANGER}), [])
+        warnings = [line for line in logs.output if line.startswith("WARNING")]
+        self.assertEqual(len(warnings), 1, logs.output)
+        self.assertIn("EMAIL_AUTHSERV_ID", warnings[0])
+        self.assertIn("EMAIL_TRUST_FROM_HEADER=true", warnings[0])
         with self.assertNoLogs(adapter_log, level="WARNING"):
             self.assertEqual(self._reached_gateway(authenticated=False, auth_reason="dmarc=fail",
                                                    env={"EMAIL_ALLOW_ALL_USERS": "true"}), [])
@@ -1289,11 +1299,15 @@ class TestSenderAuthentication(unittest.TestCase):
             msg["Authentication-Results"] = ar
         return msg
 
-    def _verify(self, from_addr, auth_results=None, authserv_id=""):
+    def _verify(self, from_addr, auth_results=None, authserv_id=None):
+        """authserv_id=None pins the topmost header's own id, as a correctly configured receiver would."""
         from plugins.platforms.email.adapter import (
+            _ar_clauses,
             _verify_sender_authentication,
             _extract_email_address,
         )
+        if authserv_id is None:
+            authserv_id = (_ar_clauses(" ".join(auth_results[0].split())) or [""])[0].strip() if auth_results else ""
         msg = self._msg(from_addr, auth_results)
         addr = _extract_email_address(from_addr)
         return _verify_sender_authentication(msg, addr, authserv_id=authserv_id)
@@ -1375,6 +1389,8 @@ class TestSenderAuthentication(unittest.TestCase):
     def test_only_topmost_exact_authserv_id_is_trusted(self):
         """Never search below the authoritative field or relax an authserv-id pin.
         The subdomain and comment-smuggled rows carry dmarc=pass, so only the exact pin rejects them."""
+        from plugins.platforms.email.adapter import _MISSING_AUTHSERV_REASON
+
         forged_lower = "mx.ourserver.com; dmarc=pass header.from=example.com"
         for topmost in (
             "mx.ourserver.com; dmarc=fail header.from=example.com",
@@ -1388,6 +1404,10 @@ class TestSenderAuthentication(unittest.TestCase):
                     authserv_id="mx.ourserver.com",
                 )
                 self.assertFalse(ok, reason)
+        # No pin at all: the topmost header may be one the sender wrote (a self-hosted MTA that stamps nothing).
+        ok, reason = self._verify("owner@allowed.example", ["attacker.self; dmarc=pass header.from=allowed.example"],
+                                  authserv_id="")
+        self.assertEqual((ok, reason), (False, _MISSING_AUTHSERV_REASON))
 
         # Matching remains case-insensitive and accepts RFC 8601 CFWS comments,
         # including a semicolon inside a nested comment.

@@ -449,6 +449,7 @@ class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
     # One email carries the whole body, so cron delivery hands over the full payload untruncated.
     splits_long_messages = True
+    _missing_pin_warned = False  # the no-authserv_id drop warning is logged once per process
 
     # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
@@ -805,7 +806,10 @@ class EmailAdapter(BasePlatformAdapter):
         if self._require_authenticated_sender and not msg_data.get("sender_authenticated", False):
             auth_reason = msg_data.get("auth_reason", "no verdict")
             hint = _DROP_HINTS.get(auth_reason, "")
-            if is_listed or (granted and hint):
+            # A missing pin drops every message, so name the fix once per process rather than once per message.
+            repeat = auth_reason == _MISSING_AUTHSERV_REASON and EmailAdapter._missing_pin_warned
+            if (is_listed or (granted and hint)) and not repeat:
+                EmailAdapter._missing_pin_warned |= auth_reason == _MISSING_AUTHSERV_REASON
                 logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s).%s", sender_addr, auth_reason, hint)
             else:
                 logger.debug("[Email] Dropping %s sender with unauthenticated From: %s (%s)",

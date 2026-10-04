@@ -135,6 +135,9 @@ def finish_text_response(
             return _verdict("return", _ev.result)
         if _ev.action == "break":
             return _verdict("break")
+        # The empty/think-only text that triggered the retry, nudge or prefill is not an
+        # answer: carried into later rounds it makes budget exhaustion look answered (#92552).
+        final_response = None
         return _verdict("continue")
 
     agent._empty_content_retries = 0

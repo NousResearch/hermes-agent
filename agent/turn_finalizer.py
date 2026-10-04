@@ -156,6 +156,10 @@ def _resolve_budget_fallback(
                     f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
                     "— requesting summary...", diagnostic=True,
                 )
+            # A nudge pair still at the tail would end up under the summary request, out of reach
+            # of the tail-only drop at persist time, and replay as history next turn. A nudge the
+            # model already answered is past context of later calls and stays, as on any turn end.
+            agent._drop_trailing_empty_response_scaffolding(messages)
             _summary_start = time.time()
             try:
                 final_response = agent._handle_max_iterations(messages, api_call_count)

@@ -33,6 +33,7 @@ from typing import Any
 import pytest
 
 from tests.ci import _gha_expr as gha
+from tests.ci import workflow_steps
 
 _REPO = Path(__file__).resolve().parents[2]
 _CLASSIFIER = _REPO / "scripts" / "ci" / "classify_changes.py"
@@ -78,11 +79,9 @@ def _detect_outputs(lanes: dict[str, bool]) -> dict[str, Any]:
     gate = next(s for s in detect["steps"] if s.get("id") == "gate-lanes")
     classify = next(s for s in detect["steps"] if s.get("id") == "classify")
     assert classify["uses"] == "./.github/actions/detect-changes"
-    # gate-lanes copies every classified value unchanged unless RELEASE is true (a PR is not).
-    assert gate["env"]["RELEASE"] == "${{ inputs.release }}"
-    assert "steps.classify.outputs" in gate["env"]["CLASSIFIED"]
-    steps = {"classify": {"outputs": action_out}, "gate-lanes": {"outputs": action_out}}
+    steps = {"classify": {"outputs": action_out}}
     ctx = {"steps": steps, "github": {"event_name": "pull_request"}, "inputs": {}}
+    steps["gate-lanes"] = {"outputs": workflow_steps.outputs(gate, ctx)}
     return {k: gha.render(v, ctx) for k, v in detect["outputs"].items()}
 
 
@@ -131,7 +130,11 @@ def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | 
                 continue  # implicit success(): a skipped dependency skips this job
             if not gha.condition(cond, ctx):
                 continue
-            entry: dict[str, Any] = {"ctx": ctx}
+            entry: dict[str, Any] = {"ctx": ctx, "body": body}
+            if name == "e2e-upgrade-plan":
+                plan = next(s for s in body["steps"] if s.get("id") == "plan")
+                entry["outputs"] = workflow_steps.outputs(plan, ctx, _REPO)
+                assert json.loads(entry["outputs"]["shards"]), "upgrade plan selected no shards"
             uses = body.get("uses")
             if isinstance(uses, str) and uses.startswith("./.github/workflows/"):
                 called = uses[2:]
@@ -156,19 +159,40 @@ def _reached(run: dict, *path: str) -> dict | None:
     return node
 
 
+def _selected_test_files(node: dict, name: str, *, windows_only: bool = False) -> set[str]:
+    body, ctx = node["body"], node["ctx"]
+    steps = [s for s in body["steps"] if s.get("name", "").startswith(name)]
+    assert len(steps) == 1, f"missing/ambiguous required step: {name}"
+    matrix = body.get("strategy", {}).get("matrix", {})
+    if "shard" in matrix:
+        cells = [{"shard": s} for s in gha.render(matrix["shard"], ctx)]
+    else:
+        cells = matrix.get("include", [{}])
+    if windows_only:
+        cells = [cell for cell in cells if cell.get("marker") == "windows"]
+    assert cells, f"{name}: empty matrix"
+    selected = set()
+    for cell in cells:
+        runner = gha.render(body["runs-on"], {**ctx, "matrix": cell})
+        context = {**ctx, "matrix": cell, "runner": {
+            "os": "Windows" if "windows" in runner else "Linux",
+            "arch": "ARM64" if "arm" in runner else "X64",
+        }}
+        workflow_steps.required(body, context)
+        selected |= workflow_steps.selected_files(steps[0], context, _REPO)
+    return selected
+
+
 def _windows_desktop_updater_tests_selected(run: dict) -> bool:
     """tests-os os-tests runs, and its Windows step keeps the desktop-update hand-off files."""
     os_tests = _reached(run, "tests-os", "os-tests")
     if os_tests is None:
         return False
-    body = _yaml(".github/workflows/tests-os.yml")["jobs"]["os-tests"]
-    windows = next(m for m in body["strategy"]["matrix"]["include"] if m["marker"] == "windows")
-    step = next(s for s in body["steps"] if "list_os_marked_tests.py" in str(s.get("run", "")))
-    ctx = {**os_tests["ctx"], "matrix": windows, "runner": {"os": "Windows", "arch": "X64"}}
-    script = gha.render(step["run"], ctx)
-    gate = re.search(r'if \[ "(\w*)" != "true" \]; then\s+echo "desktop_updater lane off', script)
-    assert gate, "the desktop_updater deselect gate moved: update this replay"
-    return gate.group(1) == "true"
+    selected = _selected_test_files(os_tests, "Run ${{ matrix.marker }} tests", windows_only=True)
+    expected = {p.relative_to(_REPO).as_posix() for p in
+                (_REPO / "tests/scripts/desktop_update").glob("test_desktop_update_windows_*.py")}
+    assert expected, "no Windows hand-off consumers exist"
+    return expected <= selected
 
 
 # Each real consumer of a lane, as a path of job names from ci.yaml down.
@@ -187,7 +211,15 @@ def _consumers_reached(run: dict, lane: str) -> dict[str, bool]:
     if lane == "desktop_updater":
         return {"tests-os/os-tests[windows] keeps test_desktop_update_windows_*":
                 _windows_desktop_updater_tests_selected(run)}
-    return {"/".join(path): _reached(run, *path) is not None for path in _CONSUMERS[lane]}
+    reached = {}
+    for path in _CONSUMERS[lane]:
+        node = _reached(run, *path)
+        if node is None or path[-1] == "e2e-upgrade-plan":
+            reached["/".join(path)] = node is not None
+            continue
+        name = next(name for _, _, job, name in _REQUIRED_STEP_CASES if job == path[-1])
+        reached["/".join(path)] = bool(_selected_test_files(node, name))
+    return reached
 
 
 _GATED = ("python", "desktop_updater", "e2e", "e2e_upgrade", "e2e_desktop_update")
@@ -331,17 +363,107 @@ def test_every_test_that_reads_a_shared_fixture_is_routed_by_it():
     a listed consumer, and the fixture selects each test lane that consumer's own edit would."""
     assert _CORPUS in cc._SHARED_FIXTURE_CONSUMERS
     for fixture, listed in cc._SHARED_FIXTURE_CONSUMERS.items():
+        assert (_REPO / fixture).is_file(), f"missing shared fixture: {fixture}"
+        assert listed, f"{fixture}: no listed consumers"
+        for consumer in listed:
+            assert (_REPO / consumer).is_file(), f"{fixture}: missing consumer: {consumer}"
         readers = {p for p in _tracked_mentions(Path(fixture).name) if _TEST_FILE.search(p)}
+        assert readers, f"{fixture}: no discovered test readers"
         assert readers <= set(listed), f"{fixture}: unlisted consumer(s) {sorted(readers - set(listed))}"
-        # No "listed consumer left the tree" check: a batch lands the fixture and its
-        # readers in separate PRs (a branch stacked on one of them has the corpus but not
-        # the Electron / hand-off readers), and routing a path that is not there yet costs
-        # nothing. The direction that loses coverage — a reader missing here — is above.
         on = cc.classify([fixture])
         for consumer in listed:
             own = cc.classify([consumer])
             lost = [lane for lane in cc._FIXTURE_CONSUMER_LANES if own[lane] and not on[lane]]
             assert not lost, f"{fixture}: editing it skips {lost}, which run {consumer}"
+
+
+# -- replay guard sensitivity: mutate data, not the replay implementation ------------------
+
+_REQUIRED_STEP_CASES = (
+    ("e2e_desktop_update", ".github/workflows/e2e-desktop-update.yml", "update", "Run the update suite under xvfb"),
+    ("e2e_upgrade", ".github/workflows/tests.yml", "e2e-upgrade", "Run upgrade e2e tests"),
+    ("e2e_upgrade", ".github/workflows/windows-install-update-e2e.yml", "install-update", "Run Windows install + update E2E"),
+    ("desktop_updater", ".github/workflows/tests-os.yml", "os-tests", "Run ${{ matrix.marker }} tests"),
+    ("e2e", ".github/workflows/tests.yml", "e2e", "Run e2e tests"),
+    ("e2e", ".github/workflows/tests-os.yml", "e2e-windows", "Run Windows E2E suite"),
+)
+
+
+def _mutated_yaml(monkeypatch, rel):
+    from copy import deepcopy
+
+    original = _yaml
+    changed = deepcopy(original(rel))
+    monkeypatch.setattr(sys.modules[__name__], "_yaml", lambda path: changed if path == rel else original(path))
+    return changed
+
+
+@pytest.mark.parametrize("lane,rel,job,name", _REQUIRED_STEP_CASES)
+@pytest.mark.parametrize("mutation", ["disabled", "advisory", "no-command", "empty-selection"])
+def test_replay_rejects_ineffective_required_step(monkeypatch, lane, rel, job, name, mutation):
+    lanes = cc.classify([])
+    assert all(_consumers_reached(_ci_run(lanes), lane).values())
+    workflow = _mutated_yaml(monkeypatch, rel)
+    step = next(s for s in workflow["jobs"][job]["steps"] if s.get("name", "").startswith(name))
+    if mutation == "disabled":
+        step["if"] = "${{ false }}"
+    elif mutation == "advisory":
+        step["continue-on-error"] = "${{ true }}"
+    elif mutation == "no-command":
+        # Keep every old substring/regex check satisfied, but execute no tests.
+        step["run"] = "if false; then\n" + step["run"] + "\nfi\n"
+    elif job == "os-tests":
+        step["run"] = step["run"].replace('"${{ matrix.marker }}"', '"macos"')
+    elif job == "update":
+        for cell in workflow["jobs"][job]["strategy"]["matrix"]["include"]:
+            cell["specs"] = "e2e/update/absent.spec.ts"
+    else:
+        step["run"] = step["run"].replace("tests/e2e", "tests/absent-e2e")
+    with pytest.raises(AssertionError):
+        reached = _consumers_reached(_ci_run(lanes), lane)
+        assert all(reached.values()), reached
+
+
+def test_selection_receipt_does_not_require_the_native_jobs_venv(tmp_path):
+    workflow = _yaml(".github/workflows/tests.yml")
+    step = next(s for s in workflow["jobs"]["e2e-upgrade"]["steps"]
+                if s.get("name", "").startswith("Run upgrade e2e tests"))
+    rel = "tests/e2e/core/upgrade/test_owned.py"
+    test_file = tmp_path / rel
+    test_file.parent.mkdir(parents=True)
+    test_file.write_text("def test_owned(): pass\n", encoding="utf-8")
+    ctx = {"matrix": {"shard": "core"}, "inputs": {}}
+    assert workflow_steps.selected_files(step, ctx, tmp_path) == {rel}
+
+
+def test_replay_uses_executed_gate_output(monkeypatch):
+    path = "apps/desktop/electron/handoff-result.ts"
+    assert all(_consumers_reached(_ci_run(_real_classifier([path])), "desktop_updater").values())
+    workflow = _mutated_yaml(monkeypatch, ".github/workflows/ci.yaml")
+    gate = next(s for s in workflow["jobs"]["detect"]["steps"] if s.get("id") == "gate-lanes")
+    needle = "    for lane, value in values.items():"
+    assert needle in gate["run"]
+    gate["run"] = gate["run"].replace(needle, "    values['desktop_updater'] = 'false'\n" + needle)
+    with pytest.raises(AssertionError):
+        test_update_owner_change_dispatches_its_suites_end_to_end(path, ("desktop_updater",))
+
+
+@pytest.mark.parametrize("missing", ["fixture", "consumer", "readers", "listed"])
+def test_shared_fixture_guard_rejects_phantom_graph(monkeypatch, tmp_path, missing):
+    fixture = "tests/fixtures/owned_corpus.json"
+    consumer = "tests/test_owned_corpus.py"
+    for rel in (fixture, consumer):
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("{}" if rel == fixture else "def test_reader(): pass\n", encoding="utf-8")
+    if missing in ("fixture", "consumer"):
+        (tmp_path / (fixture if missing == "fixture" else consumer)).unlink()
+    monkeypatch.setattr(sys.modules[__name__], "_REPO", tmp_path)
+    monkeypatch.setattr(sys.modules[__name__], "_CORPUS", fixture)
+    monkeypatch.setattr(cc, "_SHARED_FIXTURE_CONSUMERS", {fixture: () if missing == "listed" else (consumer,)})
+    monkeypatch.setattr(sys.modules[__name__], "_tracked_mentions", lambda _: [] if missing in ("readers", "listed") else [consumer])
+    with pytest.raises(AssertionError):
+        test_every_test_that_reads_a_shared_fixture_is_routed_by_it()
 
 
 # -- ownership: the update entry points' real imports ---------------------------------------
@@ -520,7 +642,7 @@ def _strict_env(run: dict, path: tuple[str, ...], rel: str, job: str, step_name:
     node = _reached(run, *path)
     assert node is not None, f"{'/'.join(path)} did not run"
     step = next(s for s in _yaml(rel)["jobs"][job]["steps"] if str(s.get("name", "")).startswith(step_name))
-    assert "run_tests.sh" in step["run"]
+    assert _selected_test_files(node, step_name)
     return gha.to_string(gha.render(step["env"]["HERMES_E2E_STRICT_ACCEPTANCE"], node["ctx"]))
 
 

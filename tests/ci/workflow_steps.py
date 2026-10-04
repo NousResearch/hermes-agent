@@ -1,0 +1,115 @@
+"""Local receipts for the few safe routing steps, NOT a hosted workflow runner.
+
+Execute lane/selection scripts; replace only pytest/Playwright launch boundaries
+with argv receipts. No setup actions, installs, E2E tests or native hosts run here.
+"""
+from __future__ import annotations
+
+import fnmatch
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+from tests.ci import _gha_expr as gha
+
+
+# Intercept launch/activation boundaries, not selection logic. The unit lane
+# need not have the upgrade job's venv; the Desktop monitor must not outlive us.
+_RECEIPTS = r'''
+record() {
+  "$REPLAY_PYTHON" -c 'import json, os, sys; open(os.environ["REPLAY_CALLS"], "a").write(json.dumps(sys.argv[1:]) + "\n")' "$@"
+}
+source() { [[ "$1" == .venv/bin/activate ]]; }
+scripts/run_tests.sh() { record pytest "$@"; }
+npx() { record npx "$@"; }
+xvfb-run() { shift 2; "$@"; }
+sleep() { return 1; }
+'''
+
+
+def required(step: dict, ctx: dict) -> None:
+    label = step.get("name", step.get("id", "required step"))
+    assert gha.condition(step.get("if"), ctx), f"{label}: disabled"
+    assert not gha.truthy(gha.render(step.get("continue-on-error", False), ctx)), f"{label}: advisory"
+
+
+def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = False) -> tuple[dict, list]:
+    required(step, ctx)
+    assert step.get("shell", "bash") == "bash", "only safe Bash selection steps are replayed"
+    with tempfile.TemporaryDirectory(prefix="workflow-replay-") as directory:
+        root = Path(directory)
+        output, calls = root / "outputs", root / "calls"
+        output.touch()
+        calls.touch()
+        env = {
+            "PATH": os.pathsep.join((str(Path(sys.executable).parent), os.defpath)),
+            "HOME": directory, "RUNNER_TEMP": directory, "GITHUB_OUTPUT": str(output),
+            "REPLAY_PYTHON": sys.executable, "REPLAY_CALLS": str(calls),
+            **{k: gha.to_string(gha.render(v, ctx)) for k, v in step.get("env", {}).items()},
+        }
+        script = root / "step.sh"
+        script.write_text((_RECEIPTS if receipt else "") + gha.render(step["run"], ctx), encoding="utf-8")
+        result = subprocess.run(
+            ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
+            cwd=cwd or root, env=env, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        return (dict(line.split("=", 1) for line in output.read_text(encoding="utf-8-sig").splitlines()),
+                [json.loads(line) for line in calls.read_text(encoding="utf-8-sig").splitlines()])
+
+
+def outputs(step: dict, ctx: dict, cwd: Path | None = None) -> dict:
+    return _run(step, ctx, cwd)[0]
+
+
+def selected_files(step: dict, ctx: dict, repo: Path) -> set[str]:
+    """Receipt the real command and nonempty selected files, not native execution."""
+    cwd = repo / step.get("working-directory", ".")
+    _, calls = _run(step, ctx, cwd, receipt=True)
+    assert len(calls) == 1, f"expected one test invocation, got {calls}"
+    command, *args = calls[0]
+    if command == "npx":
+        assert args[:3] == ["playwright", "test", "-c"], args
+        assert (cwd / args[3]).is_file(), args
+        paths = args[4:]
+        assert paths and all(p.endswith(".spec.ts") for p in paths), args
+        ignores = []
+    else:
+        assert command == "pytest", calls
+        # Only the runner options used by these steps are supported; fail closed
+        # when a new filter could change the selected files.
+        paths, ignores = [], []
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg == "--files":
+                i += 1
+                paths.extend(args[i].split(os.pathsep))
+            elif arg == "-m":
+                i += 1  # native marker evaluation belongs to the native runner
+                assert args[i] in ("platforms and integration", "platforms and not integration"), args
+            elif arg.startswith("--ignore-glob="):
+                ignores.append(arg.split("=", 1)[1])
+            elif arg in ("--", "--include-integration", "-v", "--tb=short", "-rA"):
+                pass
+            else:
+                assert arg.startswith("tests/"), f"unsupported runner argument: {arg}"
+                paths.append(arg)
+            i += 1
+    assert paths, "test command selected no paths"
+    files = set()
+    for rel in paths:
+        path = cwd / rel
+        assert path.exists(), f"selected test path does not exist: {path}"
+        candidates = path.rglob("test_*.py") if path.is_dir() else [path]
+        for candidate in candidates:
+            name = candidate.relative_to(repo).as_posix()
+            if not any(fnmatch.fnmatch(name, pattern) for pattern in ignores):
+                assert candidate.stat().st_size > 0, f"empty test file: {name}"
+                files.add(name)
+    assert files, "test command selected no files"
+    return files

@@ -82,7 +82,9 @@ export function mediaName(path: string): string {
       }
 
       try {
-        return decodeURIComponent(name)
+        // Keep encoded separators inside the basename: decoding them would
+        // introduce path separators into labels and download suggestions.
+        return decodeURIComponent(name.replace(/%2f|%5c/gi, encoded => `%25${encoded.slice(1)}`))
       } catch {
         // Malformed percent escapes must not discard the filename.
         return name

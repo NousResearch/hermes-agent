@@ -14,6 +14,8 @@ import './kanban.css'
 import {
   cn,
   Codicon,
+  COMPOSER_AREAS,
+  type ComposerSessionContribution,
   type HermesPlugin,
   host,
   type KeybindContribution,
@@ -22,6 +24,8 @@ import {
   type PaletteContribution,
   type RouteContribution,
   ROUTES_AREA,
+  SESSION_ROW_AREAS,
+  type SessionRowSlotContribution,
   SIDEBAR_NAV_AREA,
   type SidebarNavContribution,
   STATUSBAR_AREAS,
@@ -33,6 +37,7 @@ import {
 import { $boardSlug, bindApi, boardKey, fetchBoard, useKanbanScope } from './api'
 import { KanbanBoardPage } from './board'
 import { KANBAN_LOCALES } from './i18n'
+import { OriginRowBadge, OriginStrip } from './origin-ui'
 import { $newTaskLane, useKanban } from './ui'
 
 // Live "N running / ready" pill — one glance at fleet activity from anywhere,
@@ -116,6 +121,18 @@ const plugin: HermesPlugin = {
         area: STATUSBAR_AREAS.right,
         order: 80,
         render: () => <KanbanCount />
+      },
+      // Conversation surfaces: the tasks a chat ordered, on its sidebar row and above
+      // its composer. Both consume core's generic session context — no core import of kanban.
+      {
+        id: 'origin-badge',
+        area: SESSION_ROW_AREAS.trailing,
+        data: { render: context => <OriginRowBadge context={context} /> } satisfies SessionRowSlotContribution
+      },
+      {
+        id: 'origin-strip',
+        area: COMPOSER_AREAS.session,
+        data: { render: context => <OriginStrip context={context} /> } satisfies ComposerSessionContribution
       }
     ])
 

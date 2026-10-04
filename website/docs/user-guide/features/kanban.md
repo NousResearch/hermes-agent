@@ -1131,6 +1131,18 @@ Built-in decomposition also inherits its root's durable session. Session lineage
 `session_id` does not replace existing subscriptions; use `notify-subscribe` and
 `notify-unsubscribe` to change where events are delivered.
 
+**Origin index (desktop session view).** So the Desktop can show a conversation the tasks it ordered —
+across boards, after the turn ended — without scanning boards, `kanban_create` and `tui` subscriptions
+(`notify-subscribe --platform tui`) also write one small reference per `(session, board, task)` into the
+owning profile's `state.db` (`state_meta`, key prefix `kanban_origin:`). It is a navigation index only: the
+board stays authoritative, and `GET /api/plugins/kanban/origin-tasks` re-opens just the indexed boards
+(read-only) and re-verifies each reference before reporting it. A worker-created task is indexed under the
+profile its inherited subscription names, never the worker's. Indexing is best-effort and never affects
+creation. Tasks created before the index existed are not discovered and nothing backfills them;
+re-running `notify-subscribe --platform tui` for such a task indexes it. Tasks created through the CLI or
+dashboard (no session), through decomposition, or on a board file outside the standard board layout
+(custom `HERMES_KANBAN_DB`) are not indexed. A missing reference means "not known", never "idle".
+
 A chat-originated auto-subscribe is created in `notify+wake` mode: on a terminal event the destination agent both receives the passive message **and** takes a real turn, so it can read the board context and reply in its own voice. See [Delivery modes](#delivery-modes) below.
 
 ### Output truncation in messaging

@@ -40,6 +40,7 @@ import type {
   KanbanTask,
   KanbanTaskDetail,
   OrchestrationSettings,
+  OriginTasksResponse,
   TaskEstimate,
   WorkerLog
 } from './types'
@@ -176,6 +177,8 @@ function onEventsFrame(scope: string, slug: string, data: unknown, selectedSlug 
   void queryClient.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
   // Any event can change a board's card count — keep the switcher badge honest.
   void queryClient.invalidateQueries({ queryKey: boardsKey(scope) })
+  // …and a linked task's activity, which conversation badges and strips read.
+  void queryClient.invalidateQueries({ queryKey: originKeyPrefix(scope) })
 
   for (const taskId of new Set(events.map(event => event.task_id).filter(Boolean))) {
     void queryClient.invalidateQueries({ queryKey: taskKey(scope, slug, taskId!) })
@@ -225,6 +228,17 @@ export function bindApi(
   persist($introDismissed, INTRO_KEY, false)
   persist($lanesByProfile, LANES_KEY, false)
   persist($collapsedLanes, COLLAPSED_KEY, {})
+
+  // Origin links live on boards other than the selected one, whose socket is
+  // the only live feed — so one shared slow tick refreshes every mounted
+  // conversation badge/strip (the batcher folds them into few requests).
+  const originTick = setInterval(() => {
+    if (document.visibilityState !== 'hidden') {
+      void queryClient.invalidateQueries({ queryKey: originKeyPrefix(kanbanConnectionScope()) })
+    }
+  }, ORIGIN_REFRESH_MS)
+
+  unsubs.push(() => clearInterval(originTick))
 
   eventCursorByBoard.clear()
 
@@ -379,6 +393,9 @@ export const boardKey = (scope: string, slug: string, archived: boolean) =>
 export const taskKey = (scope: string, slug: string, id: string) => ['kanban', 'task', scope, slug, id] as const
 export const logKey = (scope: string, slug: string, id: string) => ['kanban', 'log', scope, slug, id] as const
 export const boardsKey = (scope: string) => ['kanban', 'boards', scope] as const
+export const originKeyPrefix = (scope: string) => ['kanban', 'origin', scope] as const
+export const originKey = (scope: string, profile: string, ids: readonly string[]) =>
+  [...originKeyPrefix(scope), profile, [...ids].sort().join(',')] as const
 export const profilesKey = (scope: string) => ['kanban', 'profiles', scope] as const
 export const projectsKey = (scope: string) => ['kanban', 'projects', scope] as const
 export const orchestrationKey = (scope: string) => ['kanban', 'orchestration', scope] as const
@@ -399,6 +416,77 @@ export const fetchTask = async (id: string) => {
 export const fetchLog = (id: string) => call<WorkerLog>(withBoard(`/tasks/${id}/log`, { tail: '16384' }))
 
 export const fetchBoards = () => call<BoardsResponse>('/boards')
+
+/** Ids per `/origin-tasks` request — the backend's own seed bound, so a chunk is never truncated. */
+export const ORIGIN_CHUNK = 64
+
+const ORIGIN_REFRESH_MS = 30_000
+const ORIGIN_BATCH_MS = 25
+
+interface OriginWaiter {
+  ids: readonly string[]
+  reject: (reason: unknown) => void
+  resolve: (value: OriginTasksResponse) => void
+}
+
+const originPending = new Map<string, OriginWaiter[]>()
+
+const chunked = <T>(items: readonly T[], size: number): T[][] =>
+  Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size))
+
+async function flushOrigin(waiters: OriginWaiter[]): Promise<OriginTasksResponse[]> {
+  const ids = [...new Set(waiters.flatMap(waiter => waiter.ids))]
+
+  return Promise.all(
+    chunked(ids, ORIGIN_CHUNK).map(chunk =>
+      call<OriginTasksResponse>(`/origin-tasks?session_ids=${encodeURIComponent(chunk.join(','))}`)
+    )
+  )
+}
+
+/** Folds every conversation asking within one short window (a sidebar of rows mounting together) into
+ *  the fewest `/origin-tasks` requests, per (connection, profile) route. Each caller gets the merged
+ *  answer; it filters to its own ids, so a shared truncation flag stays honest for all of them. */
+export function fetchOriginTasks(scope: string, profile: string, ids: readonly string[]): Promise<OriginTasksResponse> {
+  const route = `${scope}\0${profile}`
+
+  return new Promise((resolve, reject) => {
+    const waiters = originPending.get(route)
+
+    if (waiters) {
+      waiters.push({ ids, reject, resolve })
+
+      return
+    }
+
+    originPending.set(route, [{ ids, reject, resolve }])
+
+    setTimeout(() => {
+      const batch = originPending.get(route) ?? []
+      originPending.delete(route)
+
+      flushOrigin(batch).then(
+        responses => {
+          const merged: OriginTasksResponse = {
+            now: Math.max(0, ...responses.map(r => r.now)),
+            profile: responses[0]?.profile ?? profile,
+            refs: responses.flatMap(r => r.refs),
+            truncated: {
+              lineage: responses.some(r => r.truncated.lineage),
+              refs: responses.some(r => r.truncated.refs),
+              sessions: responses.some(r => r.truncated.sessions),
+              total_refs: responses.reduce((sum, r) => sum + r.truncated.total_refs, 0)
+            },
+            unknown_sessions: responses.flatMap(r => r.unknown_sessions)
+          }
+
+          batch.forEach(waiter => waiter.resolve(merged))
+        },
+        error => batch.forEach(waiter => waiter.reject(error))
+      )
+    }, ORIGIN_BATCH_MS)
+  })
+}
 
 export const fetchProfiles = () => call<{ profiles: KanbanProfile[] }>('/profiles')
 

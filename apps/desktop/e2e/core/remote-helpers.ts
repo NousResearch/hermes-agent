@@ -31,7 +31,7 @@ export interface RemoteBackend {
   hidden: boolean
 }
 
-function python(): string {
+export function python(): string {
   const selected = process.env.HERMES_E2E_PYTHON
 
   if (selected) {

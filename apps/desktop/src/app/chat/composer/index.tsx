@@ -95,6 +95,7 @@ import {
   RICH_INPUT_SLOT
 } from './rich-editor'
 import { useComposerScope, useComposerSurfaceId } from './scope'
+import { ComposerSessionSlot } from './session-slot'
 import { ComposerStatusStack } from './status-stack'
 import { CodingStatusRow } from './status-stack/coding-row'
 import { StatusDrawerContent, StatusDrawerToggle } from './status-stack/drawer'
@@ -1336,6 +1337,7 @@ export function ChatBar({
             <SuggestionPills sessionId={statusSessionId} />
             <OnboardingSkip />
           </div>
+          <ComposerSessionSlot sessionId={statusSessionId} />
           {/* Session-scoped status stack (todos, subagents, background tasks,
               queue). An in-flow dock child: the dock is bottom-anchored, so it
               grows upward over the thread and the dock's own measurement covers

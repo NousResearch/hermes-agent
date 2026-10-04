@@ -1,0 +1,31 @@
+name: hermes-review-loop
+repo: https://github.com/coe0718/hermes-review-loop
+sha: 59eab1f0070ff9671682c975ad58c172d0245ead
+description: >-
+  Unattended GitHub pull-request review between two Hermes agents: one pushes fixes, a different one
+  reviews, rounds are capped in verdicts, a watchdog reports silent stalls, and the loop never
+  merges. Disclosure — runs Hermes agent turns unattended, each inside bubblewrap with terminal and
+  file tools but no credentials, no network and none of your secret files; only a host-side broker
+  writes to GitHub, with repo-scope tokens you provide in separate files; spawns host processes
+  (bwrap, git, hermes workers); downloads PR source archives and pinned Rust crates on the host;
+  creates webhook routes on your gateway and one cron watchdog job; deletes its own local review
+  artifacts for merged or closed PRs. Nothing runs until you arm a loop, and fixer pushes stay off
+  until you opt in. Opt-in extras — an observer that posts transition notices to the chat you name;
+  issue triage that labels issues; issue fixes a maintainer hands over with a label (a new branch
+  and PR, capped per day); the reviewer filing its non-blocking findings as issues; an experimental
+  seat on your own Claude subscription, which needs the claude-subscription-directsdk plugin and the
+  claude CLI installed and logged in (OAuth seats refresh through Hermes's own resolver). Linux
+  only.
+maintainer: coe0718
+tier: community
+category: automation
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/coe0718/hermes-review-loop#readme
+version: "0.1.0"
+platforms:
+  - linux
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

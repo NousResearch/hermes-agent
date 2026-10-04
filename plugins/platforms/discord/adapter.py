@@ -1717,19 +1717,23 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
     async def _on_platform_thread_update(self, before, after) -> None:
         """Normalize ``on_thread_update`` renames into ``thread_renamed``; non-rename updates are dropped."""
+        old_name = getattr(before, "name", None)
+        new_name = getattr(after, "name", None)
+        # Retire Hermes's rename mask on any real rename away from the set name,
+        # BEFORE the event gate: _emit_platform_event returns without calling
+        # build() unless a gateway_platform_event hook is registered, so on the
+        # default config the mask would otherwise never retire and a restored
+        # title would render the opening name (fixes #131614; review: #132295).
+        # Moderator edits emit THREAD_UPDATE; stale cache reads do not.
+        renames = getattr(self, "_semantic_thread_renames", None)
+        if renames is not None and old_name != new_name and isinstance(new_name, str):
+            rec = renames.get(str(getattr(after, "id", "")))
+            if rec is not None and new_name != rec[1]:
+                renames.pop(str(getattr(after, "id", "")), None)
+
         def _build():
-            old_name = getattr(before, "name", None)
-            new_name = getattr(after, "name", None)
             if old_name == new_name or not isinstance(new_name, str):
                 return None
-            # Retire Hermes's rename mask on any real rename away from the set
-            # name (moderator edits emit THREAD_UPDATE; stale cache reads do not),
-            # so restoring Hermes's title later shows itself (fixes #131614).
-            renames = getattr(self, "_semantic_thread_renames", None)
-            if renames is not None:
-                rec = renames.get(str(getattr(after, "id", "")))
-                if rec is not None and new_name != rec[1]:
-                    renames.pop(str(getattr(after, "id", "")), None)
             return self._thread_event_parts(after, lambda _t, _o: {
                 "old_name": old_name[:256] if isinstance(old_name, str) else None,
                 "new_name": new_name[:256],

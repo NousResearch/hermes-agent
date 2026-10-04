@@ -1309,6 +1309,9 @@ class BubblewrapEnvironment(LocalEnvironment):
             return
 
         def writable(target: str) -> bool:
+            # A target under a hidden path is not reachable in the sandbox.
+            if any(_is_within(target, hidden) for hidden in self._hidden_paths):
+                return False
             for source in sources:
                 if not _is_within(target, source):
                     continue

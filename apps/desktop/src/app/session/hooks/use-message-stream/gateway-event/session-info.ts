@@ -341,7 +341,9 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           const busy = Boolean(payload!.running)
 
           if (state.busy === busy && (busy || !state.awaitingResponse)) {
-            return state
+            // Optimistic busy may already be armed when the backend accepts
+            // the next turn. It cannot inherit the previous terminal's reply.
+            return busy && state.completedAssistantId ? { ...state, completedAssistantId: null } : state
           }
 
           if (busy) {
@@ -364,6 +366,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
             return {
               ...state,
               busy,
+              completedAssistantId: null,
               // running=true from the backend is turn-live proof, same as
               // message.start (e.g. resuming an already-running session
               // that never replays its start event).

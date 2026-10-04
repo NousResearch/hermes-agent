@@ -411,16 +411,31 @@ describe('useMessageStream interim text sealing', () => {
     expect(getState().turnLive).toBe(false)
   })
 
-  it('ignores a queued delta and interim redelivered after terminal completion', async () => {
-    mountStream()
-    await start()
-    await complete('same final')
+  it.each([false, true])('drops terminal stragglers before a timer flush (sequenced=%s)', async sequenced => {
+    vi.useFakeTimers()
 
-    await delta('same final')
-    await interim('same final')
+    try {
+      mountStream()
+      await start(sequenced ? 1 : undefined)
+      await complete('same final', sequenced ? 3 : undefined)
 
-    expect(assistantMessages()).toEqual(['same final'])
-    expect(getState().messages.filter(message => message.role === 'assistant' && !message.hidden)).toHaveLength(1)
+      await delta('same final', sequenced ? 2 : undefined)
+      // Reproduce the loaded renderer: the coalescing timer runs BEFORE the
+      // late interim gets an opportunity to discard the queued bytes.
+      await act(() => vi.advanceTimersByTimeAsync(100))
+      expect(assistantMessages()).toEqual(['same final'])
+
+      await interim('same final', sequenced ? 2 : undefined)
+      expect(assistantMessages()).toEqual(['same final'])
+
+      await start(sequenced ? 4 : undefined)
+      await delta('next reply', sequenced ? 5 : undefined)
+      await act(() => vi.advanceTimersByTimeAsync(100))
+      expect(assistantMessages()).toEqual(['same final', 'next reply'])
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
   })
 
   it('ignores an interim redelivered from a completed turn after a new turn starts', async () => {

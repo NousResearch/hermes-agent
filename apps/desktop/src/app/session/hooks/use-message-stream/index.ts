@@ -875,6 +875,31 @@ export function useMessageStream({
           if (fallbackIndex >= 0) {
             const index = fallbackIndex
             const existing = prev[index]
+            const finalRowId = persistedTurn?.final_assistant_row_id
+
+            const existingFinalRowId =
+              existing.persistedTurn?.final_assistant_row_id ??
+              existing.parts.findLast(part => part.type === 'text')?.sourceRowId ??
+              existing.rowId
+
+            // A settled tool-turn can keep all its text BEFORE the last tool.
+            // Its current-response suffix is then empty, but a redelivered
+            // terminal frame still belongs to the same completed occurrence.
+            // Never collapse a live turn or a different durable row by text.
+            const repeatsSettledReply =
+              state.completedAssistantId === existing.id &&
+              !state.turnLive &&
+              !state.busy &&
+              !state.awaitingResponse &&
+              !interimBoundaryPending &&
+              !existing.pending &&
+              !existing.interim &&
+              existing.completedAt !== undefined &&
+              !existing.error &&
+              !completionError &&
+              !(typeof finalRowId === 'number' && typeof existingFinalRowId === 'number' && finalRowId !== existingFinalRowId) &&
+              Boolean(finalText) &&
+              chatMessageText(existing).trim() === finalText
 
             const existingText = chatMessageText({
               ...existing,
@@ -916,8 +941,6 @@ export function useMessageStream({
             // interim instead of painting a second bubble for one row
             // (#124128). A frame with no receipt keeps the rules below, so a
             // genuinely distinct reply still appends its own bubble.
-            const finalRowId = persistedTurn?.final_assistant_row_id
-
             const settlesPersistedRow =
               existing.interim === true &&
               existing.rowId === undefined &&
@@ -925,7 +948,13 @@ export function useMessageStream({
               Number.isSafeInteger(finalRowId) &&
               finalRowId > 0
 
-            if (
+            if (repeatsSettledReply) {
+              // Do not re-merge the pre-tool text into an empty suffix. A later
+              // receipt may still upgrade the same row's durable identity.
+              nextMessages = persistedTurn
+                ? prev.map((message, messageIndex) => (messageIndex === index ? withPersistedIdentity(message) : message))
+                : prev
+            } else if (
               existing.pending ||
               failureRepeatsErrorCard ||
               settlesPersistedRow ||
@@ -1038,6 +1067,7 @@ export function useMessageStream({
           ...state,
           messages: nextMessages,
           adoptedRunningTurn: false,
+          completedAssistantId: finalText ? sameTurnAssistant?.id ?? null : null,
           heartbeatSettledStreamId: null,
           streamId: null,
           pendingBranchGroup: null,

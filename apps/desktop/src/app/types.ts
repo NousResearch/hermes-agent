@@ -186,6 +186,9 @@ export interface ClientSessionState {
    *  heartbeat (#119569); when it lands it settles onto this bubble instead of
    *  appending a duplicate. Cleared by the next message.start or complete. */
   heartbeatSettledStreamId?: null | string
+  /** Reply owned by the latest terminal frame. A new accepted/adopted turn
+   *  clears it; running=false must not erase that occurrence boundary. */
+  completedAssistantId?: null | string
   /** A blocking clarify prompt is waiting on the user for this session. Drives
    *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
   needsInput: boolean

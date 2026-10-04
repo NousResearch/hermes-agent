@@ -8,9 +8,12 @@
 #   -IncludeDesktop       add the desktop build stage
 #   -ProtocolVersion      print the stage protocol version
 #   -SkipBrowser          do not install the browser tools (agent-browser +
-#                         Chromium); remembered by later installs and
-#                         `hermes update`, undone by
+#                         Chromium); remembered by later
+#                         installs and `hermes update`, undone by
 #                         `hermes pm install agent-browser`
+#   -SkipComputerUse      do not install the computer-use driver (cua-driver);
+#                         remembered the same way, undone by
+#                         `hermes pm install cua-driver`
 #   -Verbose              stream every child command's output (the default
 #                         with redirected output and in CI)
 [CmdletBinding(PositionalBinding=$false)]
@@ -32,6 +35,7 @@ param(
     # installs and `hermes update` keep the browser tools off until
     # `hermes pm install agent-browser` opts back in.
     [switch]$SkipBrowser,
+    [switch]$SkipComputerUse,
     # Print the paths this install would use, as JSON on stdout, and exit
     # without touching anything. The first question on any "installer says a
     # path doesn't exist" report is which paths it actually resolved --
@@ -89,14 +93,14 @@ $script:UvPinFiles = @{
 $script:GitPinVersion = "2.53.0+3"
 $script:GitPinFiles = @{
     "win32-x64" = @{
-        Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/Git-2.53.0.3-64-bit.tar.bz2"
-        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/1661f02e85a7901ad7920e2a358ee3772ed9066b00d8590bf2d9046ef10aa8b2"
-        Sha256 = "1661f02e85a7901ad7920e2a358ee3772ed9066b00d8590bf2d9046ef10aa8b2"
+        Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-64-bit.7z.exe"
+        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
+        Sha256 = "b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
     }
     "win32-arm64" = @{
-        Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/Git-2.53.0.3-arm64.tar.bz2"
-        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/4015f05a68bd2bcf3cc6c426e8d44b65d670fbb879225bb7b7c347cfc3a2758a"
-        Sha256 = "4015f05a68bd2bcf3cc6c426e8d44b65d670fbb879225bb7b7c347cfc3a2758a"
+        Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-arm64.7z.exe"
+        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
+        Sha256 = "0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
     }
 }
 # --- END GENERATED: bootstrap pins ---
@@ -492,16 +496,12 @@ function Invoke-DownloadWithProgress {
 # (<store>\uv-<version>-<target>\), sha256-verified, so pm adopts the same
 # bytes — no astral-latest, no irm|iex. Returns the uv.exe path.
 function Get-Uv {
-    $existing = Get-Command uv -ErrorAction SilentlyContinue
-    if ($existing) {
-        # Developer shortcut: fetches nothing, but only for a new-enough uv.
-        if (Test-UvAtLeastPin $existing.Source) { return $existing.Source }
-        Log "uv on PATH ($($existing.Source)) is older than the pinned $($script:UvPinVersion) or does not run; downloading our own copy"
-    }
+    # Always the pinned artifact, never a uv already on PATH: Hermes runs only
+    # its own packaged toolchain.
     $target = "win32-$(Get-WindowsArch)"
     $pin = $script:UvPinFiles[$target]
     if (-not $pin) {
-        Fail "no pinned uv artifact for $target; install uv manually: https://docs.astral.sh/uv/"
+        Fail "no pinned uv artifact for $target; Hermes does not support this host"
     }
     $entry = Join-Path (Get-PmStoreRoot) "uv-$($script:UvPinVersion)-$target"
     $uvExe = Join-Path $entry "uv.exe"
@@ -547,34 +547,32 @@ function Get-PinnedGit {
     $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "hermes-git-bootstrap-$PID"
     try {
         New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-        $tarPath = Join-Path $tmpDir "git.tar.bz2"
-        Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $tarPath
+        $sfxPath = Join-Path $tmpDir "portable-git.7z.exe"
+        Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $sfxPath
         $extractDir = Join-Path $tmpDir "unpacked"
         New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-        # The pinned artifact is a git-for-windows tar.bz2 (the same one pm
-        # itself extracts). Windows 10+ ships bsdtar with bzip2 support in
-        # System32; a GNU tar earlier on PATH (Cygwin/MSYS) reads C:\ as a
-        # remote host, so never resolve it from PATH.
-        $inboxTar = Join-Path $env:SystemRoot 'System32\tar.exe'
-        # MSYS ships these as symlinks into /proc. Without symlink rights (not
-        # elevated, no Developer Mode) tar cannot create them and fails the
-        # whole extract. Skip exactly the links pm's own extractor skips
-        # (pm/store.py extract_tar git_msys) so any other failure still fails.
-        # '^' anchors bsdtar's otherwise any-path-component match.
-        $msysProcLinks = @('dev/fd', 'dev/stdin', 'dev/stdout', 'dev/stderr', 'etc/mtab')
-        $excludes = foreach ($link in $msysProcLinks) { '--exclude'; "^$link" }
-        Invoke-Native { & $inboxTar @excludes -xf $tarPath -C $extractDir }
-        if ($LASTEXITCODE) { Fail "failed to extract pinned git archive" }
-        # Layout: Git-<ver>/cmd\git.exe — flatten the single wrapper dir.
-        $inner = @(Get-ChildItem $extractDir)
-        $src = $extractDir
-        if ($inner.Count -eq 1 -and $inner[0].PSIsContainer) { $src = $inner[0].FullName }
-        if (-not (Test-Path (Join-Path $src "cmd\git.exe"))) { Fail "git.exe not found in the downloaded archive" }
+        # PortableGit's self-extracting 7z carries its own extractor: stock
+        # Windows 10 tar.exe has no bzip2 ("unable to run program bzip2 -d").
+        Unblock-File -Path $sfxPath -ErrorAction SilentlyContinue
+        # A GUI-subsystem exe: `&` would not wait for it. Under -y it reports
+        # nothing, so the exit code is all there is. Bound the wait like pm's
+        # timeout; kill the whole tree, since the stub's post-install children
+        # would otherwise keep $tmpDir held past the cleanup below.
+        $sfx = [System.Diagnostics.Process]::Start($sfxPath, "-o`"$extractDir`" -y")
+        if (-not $sfx.WaitForExit(600000)) {
+            Invoke-Native { taskkill.exe /T /F /PID $sfx.Id 2>&1 | Out-Null }
+            $sfx.WaitForExit()
+            Fail "pinned git self-extractor timed out after 600s"
+        }
+        if ($sfx.ExitCode) {
+            Fail "pinned git self-extractor exited $($sfx.ExitCode) (it reports nothing under -y; usual causes: disk full, path-length limit, antivirus lock)"
+        }
+        if (-not (Test-Path (Join-Path $extractDir "cmd\git.exe"))) { Fail "git.exe not found in the downloaded archive" }
         if (Test-Path $entry) { Remove-Item -Recurse -Force $entry }
         # Prerequisites run first, so on a fresh host the store root does not
         # exist yet; Move-Item never creates the destination's parent.
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $entry) | Out-Null
-        Move-Item $src $entry
+        Move-Item $extractDir $entry
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -735,6 +733,16 @@ function Stage-Prerequisites {
     Write-Ok "prerequisites ok (git)"
 }
 
+# A treeless checkout must never write a commit-graph: over a graph with changed-path
+# data that lazy-fetches the trees of every unseen commit, in a loop (#127711).
+# gc.auto stays on: `hermes update` folds lazy-fetch packs with `gc --auto`.
+function Disable-TreelessGraphWrites([string]$Dir) {
+    foreach ($key in 'maintenance.commit-graph.enabled', 'gc.writeCommitGraph', 'fetch.writeCommitGraph') {
+        Invoke-Native { git -C $Dir config $key false } | Out-Null
+        if ($LASTEXITCODE) { Write-Warn "could not set $key in $Dir" }
+    }
+}
+
 function Stage-Repository {
     # Refuse an occupied non-checkout before provisioning Git. This check
     # needs no tool download and must not overwrite a user's existing files.
@@ -768,6 +776,21 @@ function Stage-Repository {
         }
         # Explicit refspec: a tag-pinned --single-branch checkout from an older installer maps only
         # the tag, so a by-name fetch never writes the origin/$Branch used below (#125112).
+        # git 2.53+ aborts fetches into a partial clone whose packs lack a .promisor marker
+        # (#124272), and an install stuck there never fetches the updater that heals it.
+        # Marking is idempotent and never rewrites objects.
+        $promisor = Invoke-Native { git -C $InstallDir config --bool --get remote.origin.promisor }
+        $packDir = Join-Path $InstallDir '.git\objects\pack'
+        if ("$promisor".Trim() -eq 'true' -and (Test-Path -LiteralPath $packDir)) {
+            Get-ChildItem -LiteralPath $packDir -Filter 'pack-*.pack' | ForEach-Object {
+                $marker = [IO.Path]::ChangeExtension($_.FullName, '.promisor')
+                if (-not (Test-Path -LiteralPath $marker)) {
+                    try { New-Item -ItemType File -Path $marker | Out-Null }
+                    catch { Write-Warn "could not mark $marker as a partial-clone pack" }
+                }
+            }
+            Disable-TreelessGraphWrites $InstallDir
+        }
         Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
         if ($LASTEXITCODE) { Fail "git fetch failed" }
         $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
@@ -876,6 +899,7 @@ function Stage-Repository {
             }
             if (-not $cloned) { Fail "git clone failed; no checkout published" }
             Move-Item -LiteralPath $tree -Destination $InstallDir
+            Disable-TreelessGraphWrites $InstallDir
             Write-Ok "Hermes Agent cloned"
         } finally {
             Remove-Item -LiteralPath $staged -Recurse -Force -ErrorAction SilentlyContinue
@@ -937,6 +961,7 @@ function Invoke-BootstrapPm {
         # param() binding is not in $script: scope (see Initialize-ResolvedPaths).
         $pmArgs = @('install')
         if ($SkipBrowser) { $pmArgs += @('--without', 'agent-browser') }
+        if ($SkipComputerUse) { $pmArgs += @('--without', 'cua-driver') }
         Invoke-Logged "Installing dependencies (hash-verified via uv.lock)" { & $bootPy -m pm.cli @pmArgs }
         if ($LASTEXITCODE) { Fail "dependency install failed" }
     } finally {

@@ -237,7 +237,7 @@ def _refuse_unsupported_catalog_platform(entry: PluginCatalogEntry) -> None:
 
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
                           allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True,
-                          before_swap=None) -> tuple:
+                          assume_deps_consent: bool = False, before_swap=None) -> tuple:
     """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance recorded on the
     install-metadata record at the sha ACTUALLY checked out (a ``--ref`` install is not at the reviewed
     pin, so ``update_available`` must say so). Returns the core's ``(target, manifest, installed_name)``."""
@@ -247,7 +247,8 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
     _refuse_unsupported_catalog_platform(entry)
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
-        reviewed_pin=entry.sha, python_deps=python_deps, allow_removed=allow_removed, before_swap=before_swap,
+        reviewed_pin=entry.sha, python_deps=python_deps, assume_deps_consent=assume_deps_consent,
+        allow_removed=allow_removed, before_swap=before_swap,
         catalog={"name": entry.name, "repo": entry.repo, "tier": entry.tier, "pin": entry.sha})
     return target, manifest, installed_name
 
@@ -787,6 +788,12 @@ def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -
                       + (f" [dim]— {detail}[/dim]" if detail else ""))
     for warning in report.warnings:
         console.print(f"[yellow]⚠ {warning}[/yellow]")
+    if report.isolation:
+        from hermes_cli.plugin_isolation_audit import IsolationReport
+        iso = IsolationReport(report.isolation["verdict"], report.isolation["reasons"], report.isolation["notes"])
+        console.print(f"{'[green]◆[/green]' if iso.host_ready else '[dim]◇[/dim]'} Isolation [dim]— {iso.summary()}[/dim]")
+        for note in iso.notes:
+            console.print(f"  [dim]· {note}[/dim]")
     console.print()
     console.print("[green bold]Validation passed.[/green bold]" if report.ok else "[red bold]Validation failed.[/red bold]")
     sys.exit(report.exit_code)
@@ -867,3 +874,18 @@ def catalog_versions() -> Dict[str, str]:
         return {e.name: e.version for e in load_catalog_live() if e.version}
     except Exception:
         return {}
+
+
+def catalog_rows_maps() -> tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
+    """The pins/versions/titles maps from ONE live-catalog resolution. Listing callers (``_plugin_rows``)
+    need all three; taking them via :func:`catalog_pins`/:func:`catalog_versions`/:func:`catalog_titles`
+    would pay the whole ``load_catalog_live()`` pass — git probe, ~300 catalog YAMLs, prefer-in-tree
+    merges — three times per inventory request (#125683). Best effort like the per-map helpers: an
+    empty triple on failure."""
+    try:
+        entries = load_catalog_live()
+    except Exception:
+        return {}, {}, {}
+    return ({e.name: e.sha for e in entries},
+            {e.name: e.version for e in entries if e.version},
+            {e.name: e.title for e in entries if e.title})

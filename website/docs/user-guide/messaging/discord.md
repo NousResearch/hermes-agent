@@ -105,6 +105,10 @@ Any knob at `0` disables the whole WebSocket liveness probe. Values that fail to
 
 `websocket_event_max_silence_seconds` is the exception: it guards a single dimension (event dispatch), so `0` opts out of **that check only** — ready/ACK/latency keep guarding. A socket can stay ESTABLISHED and keep ACKing heartbeats while delivering zero Gateway events; heartbeat ACKs are frames without an event type, so no transport-side check can see that state. The default (4 hours) matches the outage window operators have observed in the field; a quiet guild can legitimately go hours without a single Gateway event, so keep this bound generous unless you know your traffic.
 
+:::tip[Shortcut: let the wizard do Steps 5–7]
+Create the application and copy the bot token (Steps 1–4), then run `hermes gateway setup` and pick **Discord**. Hermes checks the token with Discord, tells you if **Message Content Intent** is off (with a link straight to the toggle), prints a ready-made invite link for your server, and allowlists you as the bot's owner — no Developer Mode needed.
+:::
+
 ## Step 1: Create a Discord Application
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and sign in with your Discord account.
@@ -132,7 +136,7 @@ If you prefer to keep your bot private (Public Bot = OFF), you **must** use the 
 
 ## Step 3: Enable Privileged Gateway Intents
 
-This is the most critical step in the entire setup. Without the correct intents enabled, your bot will connect to Discord but **will not be able to read message content**.
+This is the most critical step in the entire setup. Hermes always asks Discord for message content, so if **Message Content Intent** is off, Discord **refuses the bot's connection** and the bot never comes online.
 
 On the **Bot** page, scroll down to **Privileged Gateway Intents**. You'll see three toggles:
 
@@ -144,11 +148,11 @@ On the **Bot** page, scroll down to **Privileged Gateway Intents**. You'll see t
 
 **Enable both Server Members Intent and Message Content Intent** by toggling them **ON**.
 
-- Without **Message Content Intent**, your bot receives message events but the message text is empty — the bot literally cannot see what you typed.
+- Without **Message Content Intent**, Discord rejects the connection; `gateway.log` shows "Discord rejected the connection because privileged Gateway Intents are not enabled".
 - Without **Server Members Intent**, the bot cannot resolve usernames for the allowed users list and may fail to identify who is messaging it.
 
 :::warning[This is the #1 reason Discord bots don't work]
-If your bot is online but never responds to messages, the **Message Content Intent** is almost certainly disabled. Go back to the [Developer Portal](https://discord.com/developers/applications), select your application → Bot → Privileged Gateway Intents, and make sure **Message Content Intent** is toggled ON. Click **Save Changes**.
+If your bot stays offline and `gateway.log` mentions privileged Gateway Intents, the **Message Content Intent** is disabled. Go back to the [Developer Portal](https://discord.com/developers/applications), select your application → Bot → Privileged Gateway Intents, and make sure **Message Content Intent** is toggled ON. Click **Save Changes**.
 :::
 
 **Regarding server count:**
@@ -193,7 +197,7 @@ This method requires **Public Bot** to be set to **ON** in Step 2. If you set Pu
 You can construct the invite URL directly using this format:
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=274878286912
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309238025280
 ```
 
 Replace `YOUR_APP_ID` with the Application ID from Step 1.
@@ -210,6 +214,7 @@ These are the minimum permissions your bot needs:
 
 ### Recommended Additional Permissions
 
+- **Create Public Threads** — create isolated conversations with `/thread` and auto-threading
 - **Send Messages in Threads** — respond in thread conversations
 - **Add Reactions** — react to messages for acknowledgment
 
@@ -218,7 +223,12 @@ These are the minimum permissions your bot needs:
 | Level | Permissions Integer | What's Included |
 |-------|-------------------|-----------------|
 | Minimal | `117760` | View Channels, Send Messages, Read Message History, Attach Files |
-| Recommended | `274878286912` | All of the above plus Embed Links, Send Messages in Threads, Add Reactions |
+| Recommended | `309238025280` | All of the above plus Embed Links, Create Public Threads, Send Messages in Threads, Add Reactions |
+| Full (what `hermes gateway setup` prints) | `309241171008` | Recommended plus Connect and Speak (voice channels) |
+
+Existing installations do not gain newly requested permissions automatically.
+If you used an older Recommended URL, re-invite the bot with the URL above to
+grant **Create Public Threads**.
 
 ## Step 6: Invite to Your Server
 
@@ -258,7 +268,7 @@ Run the guided setup command:
 hermes gateway setup
 ```
 
-Select **Discord** when prompted, then paste your bot token and user ID when asked.
+Select **Discord** when prompted and paste your bot token. The wizard verifies it with Discord (a wrong or stale token is rejected before it is saved), checks the privileged intents, prints the invite link, and offers to allowlist the bot's owner — you. Extra users can be added by user ID or username.
 
 ### Option B: Manual Configuration
 
@@ -294,7 +304,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DISCORD_BOT_TOKEN` | **Yes** | — | Bot token from the [Discord Developer Portal](https://discord.com/developers/applications). |
-| `DISCORD_ALLOWED_USERS` | Conditional | — | Comma-separated Discord user IDs allowed to interact with the bot. Without this **or** `DISCORD_ALLOWED_ROLES`, the gateway denies all users unless `DISCORD_ALLOW_ALL_USERS=true`, `GATEWAY_ALLOW_ALL_USERS=true`, or `DISCORD_ALLOWED_CHANNELS` explicitly scopes guild access. |
+| `DISCORD_ALLOWED_USERS` | Conditional | — | Comma-separated Discord user IDs allowed to interact with the bot. Without this **or** `DISCORD_ALLOWED_ROLES`, the gateway denies all users unless `DISCORD_ALLOW_ALL_USERS=true`, `GATEWAY_ALLOW_ALL_USERS=true`, or `DISCORD_ALLOWED_CHANNELS` explicitly scopes guild access. Usernames also work: they are resolved to IDs when the bot connects (requires the **Server Members Intent**). Display names and server nicknames are never matched, because any member can set them. |
 | `DISCORD_ALLOWED_ROLES` | No | — | Comma-separated Discord role IDs. Any member with one of these roles is authorized — OR semantics with `DISCORD_ALLOWED_USERS`. Auto-enables the **Server Members Intent** on connect. Useful when moderation teams churn: new mods get access as soon as the role is granted, no config push needed. |
 | `DISCORD_ALLOW_ALL_USERS` | No | `false` | Explicit opt-in to allow every Discord user who can reach the bot. This restores the pre-0.18 open behavior for Discord only; use only for trusted/private guilds or development. |
 | `GATEWAY_ALLOW_ALL_USERS` | No | `false` | Global allow-all opt-in for every gateway platform. Prefer the platform-specific `DISCORD_ALLOW_ALL_USERS` unless you intentionally want all connected platforms open. |
@@ -768,7 +778,7 @@ When the agent calls the `clarify` tool — to ask which approach you prefer, ge
 
 Click a numbered button to answer, or click **Other** to type a free-form response (the next message you send in that channel becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
 
-The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `3600` seconds; `0` or less = unlimited). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
+The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `3600` seconds; `0` or less = unlimited). If you don't respond within the timeout, the agent unblocks with `"outcome": "timed_out"` and adapts rather than hanging. Reply `skip` to skip a question.
 
 ### Prompt layout
 
@@ -853,7 +863,7 @@ Refreshing the directory (`/channels refresh` on platforms that expose it, or a 
 
 ### Bot is online but not responding to messages
 
-**Cause**: Either Message Content Intent is disabled, or Discord auth is failing closed because no access policy is configured.
+**Cause**: Usually Discord auth is failing closed because no access policy is configured. (A disabled Message Content Intent keeps the bot offline instead; see Step 3.)
 
 **Fix**:
 
@@ -905,6 +915,12 @@ The gateway log should name the exact intent(s) Hermes requested. Until they are
 **Cause**: The bot is missing required permissions.
 
 **Fix**: Re-invite the bot with the correct permissions using the URL from Step 5, or manually adjust the bot's role permissions in Server Settings → Roles.
+
+If `/thread` reports Discord error `50001` (`Missing Access`), verify the bot's
+effective permissions in the parent channel. It needs **View Channel**, **Send
+Messages**, **Create Public Threads**, and **Send Messages in Threads**. Check
+the parent category and channel-specific permission overrides as well: an
+explicit deny there can override permissions granted by the server role.
 
 ### Bot is offline
 

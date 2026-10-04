@@ -16,10 +16,13 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 
 ## What may live in this tree (policy)
 
-- **No new in-tree memory providers (May 2026).** `plugins/memory/` is closed (honcho, mem0,
-  supermemory, byterover, holographic, openviking, retaindb stay; bug fixes welcome; hindsight moved
-  to the plugin catalog in Sep 2026 — `plugin-catalog/hindsight.yaml`, auto-installed by
-  `hermes_cli/memory_provider_migration.py` for homes still configured for it). New
+- **No new in-tree memory providers (May 2026).** `plugins/memory/` is closed (mem0, byterover,
+  holographic, openviking, retaindb stay; bug fixes welcome). hindsight (Sep 2026), honcho and
+  supermemory (Oct 2026) moved to the plugin catalog — `plugin-catalog/<name>.yaml`, auto-installed by
+  `hermes_cli/memory_provider_migration.py` for homes still configured for them. Host-side code a
+  catalog provider still relies on (the `honcho_host_block` config storage kind, profile clone /
+  rename / update-sync hooks) resolves the provider's modules through
+  `plugins.memory.import_provider_module`, never a `plugins.memory.<name>` import. New
   backends ship as standalone repos implementing the same `MemoryProvider` ABC, discovered through
   the same path, integrated via `hermes memory setup` / `post_setup()`.
 - **No new third-party-product plugins (June 2026).** Observability/metrics backends, vendor SaaS
@@ -35,7 +38,8 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 ## Plugin catalog (`plugin-catalog/`, Sep 2026)
 
 The ONLY discovery system for out-of-tree plugins. One YAML per entry, 40-hex SHA pin mandatory,
-human-merged via PR (`plugin-catalog/README.md` = admission policy; `plugin-catalog-ci.yml` clones
+human-merged via PR (`plugin-catalog/README.md` = admission policy, mirrored word for word in
+`website/docs/developer-guide/plugins/catalog-submission.md` with the submission guide; `plugin-catalog-ci.yml` clones
 each changed entry at its pin and runs `hermes plugins validate`). `removed.yaml` is the kill list —
 every install path (CLI, dashboard, TUI) refuses matches (repo URLs compared by canonical
 `host/owner/repo`, so `git@`/`ssh://`/`www.` spellings match); only the CLI has a loud
@@ -54,7 +58,7 @@ bare names resolve through the catalog or error.
 
 | Kind | Where | Discovery | Notes |
 |---|---|---|---|
-| General | `plugins/<name>/`, `~/.hermes/plugins/`, `./.hermes/plugins/`, pip entry points | `PluginManager` (`hermes_cli/plugins.py`), later-wins | `register(ctx)` registers hooks (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`), tools (`ctx.register_tool`), CLI subcommands (`ctx.register_cli_command` — argparse tree wired into `hermes` at startup, no `main.py` change) |
+| General | `plugins/<name>/`, `~/.hermes/plugins/`, `./.hermes/plugins/`, pip entry points | `PluginManager` (`hermes_cli/plugins.py`), later-wins | `register(ctx)` registers hooks (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`), tools (`ctx.register_tool`), CLI subcommands (`ctx.register_cli_command` — argparse tree wired into `hermes` at startup, no `main.py` change), language packs (`provides_locales` in the manifest auto-registers `locales/<lang>[.tui|.desktop].yaml` via `ctx.register_locale_dir`; manifest-only packs need no `__init__.py`; `hermes_cli/plugin_validate_locales.py` validates them) |
 | Memory provider | `plugins/memory/<name>/` | `plugins/memory/__init__.py`: bundled → `$HERMES_HOME/plugins/` → `./.hermes/plugins/` (opt-in `HERMES_ENABLE_PROJECT_PLUGINS`) → `hermes_agent.memory_providers` entry points; **bundled-first** | Activated by name via `memory.provider`, so a dropped-in dir must not shadow a shipped one (reverse of general later-wins). Enumerates without importing. Implements `MemoryProvider` ABC (`agent/memory_provider.py`), orchestrated by `agent/memory_manager.py`: `sync_turn`, `prefetch`, `shutdown`, optional `post_setup`. `cli.py` with `register_cli(subparser)` is wired by `discover_plugin_cli_commands()` — only for the ACTIVE provider, so `hermes --help` stays clean |
 | Model provider | `plugins/model-providers/<name>/` | `providers/__init__.py._discover_providers()`, **lazy**, on first `get_provider_profile()`/`list_providers()`; bundled → `$HERMES_HOME/plugins/model-providers/` → legacy `providers/<name>.py` | `__init__.py` calls `providers.register_provider(ProviderProfile(...))` at load; **last-writer-wins** so a user plugin overrides a bundled profile. `PluginManager` records `kind: model-provider` manifests but does NOT import them (would double-instantiate); manifests without `kind:` are auto-coerced by source heuristic (`register_provider` + `ProviderProfile`) |
 | Context engine / image-gen / others | `plugins/context_engine/`, `plugins/image_gen/`, ... | ABC + orchestrator + per-plugin directory | Plug into `agent/context_engine.py`, `agent/image_gen_provider.py` |
@@ -84,6 +88,33 @@ or the worker runs with no scope and fails closed (or writes into the launch pro
 Platform plugins never mutate `os.environ`: YAML goes to `PlatformConfig.extra` through
 `_shared.apply_yaml_bridge`, gates through `platform_gate_env` (`gateway/AGENTS.md`).
 
+## Plugin host boundary (`plugins.isolation: host`)
+
+`in_process` (default) imports user plugins into Hermes. `host` runs every non-bundled plugin in a
+per-profile host process (`hermes_cli/plugin_host.py` parent side, `plugin_host_child.py` child,
+`plugin_host_wire.py` framed JSON protocol). The child hands plugins a `RemotePluginContext`; Hermes
+registers proxies (tools, hooks, commands, provider objects as subclasses of the ABC it checks).
+Invariants:
+
+- **Every user-code import path routes to the host or refuses** — general plugins
+  (`plugins_loader`), memory / context engine / cron providers (`load_instance`), model-provider
+  profiles (`plugin_host_profiles.py`: credential-free extraction cached by file fingerprint, because
+  discovery runs while `hermes_cli.config`/`auth` import; overrides run by name in the host), dashboard
+  APIs (ASGI bridge). `plugins/plugin_loader.load_plugin_module` refuses any other synthetic-namespace
+  import. A new user-code loader MUST do the same.
+- **What cannot cross is one table:** `plugin_isolation.HOST_UNSUPPORTED_CTX_METHODS` (live gateway /
+  adapter objects). The runtime refusal and the static audit (`plugin_isolation_audit.py`, shown by
+  `hermes plugins validate/show`) both read it; `evals/plugin_isolation/audit_catalog.py` re-measures
+  the catalog.
+- **A host never spawns a host** (`HERMES_PLUGIN_HOST_PROCESS=1` makes `isolation_mode()` in-process
+  there) and must not start while a module import holds its lock (model-provider discovery is the
+  known case).
+- **The isolated party cannot opt out when an operator pins it:** `isolation_mode()` / `host_launcher()`
+  read through the managed overlay (`load_config_readonly`), so `/etc/hermes/config.yaml` beats the
+  profile's own config. Never switch them to a raw user-config read.
+- Plugins stay tenant-unaware: no new API, same `ctx`. Per-profile env comes from
+  `served_profile_child_env`, so a host sees only its own profile's secrets.
+
 ## Native plugin compatibility contract (summary — canonical text in the docs page)
 
 Compatibility is a **behavior contract**, not a monolithic `PLUGIN_API_VERSION`, a manifest-wide
@@ -103,19 +134,13 @@ native `api:` match, or version literals on unrelated payloads. Documented surfa
 - Compat tests load **frozen plugins through the real discovery path** and assert outcomes — never
   exact registry/catalog counts, source-reading tests, or "a global version literal changed".
 
-## Sep 2026 decomposition compat window (ends 2026-09-14)
+## Internal import paths are not API
 
-PR #102117 moved internals into `<stem>_<topic>` siblings. Old import paths resolve through
-`PLUGIN-COMPAT` `__getattr__` blocks (listed in `COMPAT_MANIFEST.md` / `compat_manifest.json`)
-until `hermes_cli.plugin_compat.COMPAT_REMOVAL_DATE`, when the commit that added them is reverted.
-`hermes_cli/plugin_compat.py` is the single source: `scan_plugin` (AST scan), `compat_report`
-(hits across enabled external plugins, cached to `HERMES_HOME/.plugin-compat-report.json`,
-refreshed by discovery), `removal_in_effect`, `warn_once`. Surfaces: CLI banner notice,
-`hermes plugins compat` (shows affected user plugins), `hermes doctor`, post-update notices, the
-TUI/Desktop `plugins.compat_report` RPC. After the date `PluginManager` skips a hitting plugin
-unless `plugins.allow_deprecated_imports: true`. **In-tree code and tests never use compat paths**
-(`scripts/check_compat_pointers.py` in CI; `-W error::hermes_cli.plugin_compat.HermesPluginCompatWarning`).
-External-plugin compat is handled ONCE here — never add per-PR re-export shims.
+PR #102117 moved internals into `<stem>_<topic>` siblings. The temporary compat layer that kept the
+old import paths alive for external plugins was removed after its 2026-09-14 window; an old path now
+raises `ImportError`, surfaced as the plugin's load error in `hermes plugins list`. Plugins build on
+`ctx` and the documented ABCs. Never add re-export shims for an internal move. `hermes_cli/plugin_compat.py`
+survives only as three inert stubs that already-running pre-removal updaters import.
 
 ## Tests
 

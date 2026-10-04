@@ -184,14 +184,6 @@ def _oauth_profile_name(profile: Optional[str]) -> Optional[str]:
     return requested
 
 
-def _oauth_session_profile(session_id: str, fallback: Optional[str] = None) -> Optional[str]:
-    """Return the profile that owns an OAuth session, if one was provided."""
-    with _oauth_sessions_lock:
-        sess = _oauth_sessions.get(session_id)
-        profile = sess.get("profile") if sess else None
-    return profile or _oauth_profile_name(fallback)
-
-
 def _oauth_poller(label: str):
     """Wrap a device-code poller body ``fn(session_id, sess)``: vanished session is a no-op,
     success marks ``approved``, any exception records ``error`` + ``error_message`` on the
@@ -347,7 +339,9 @@ def _nous_plain_poller(session_id: str, sess: Dict[str, Any]) -> None:
         ),
         "expires_in": token_ttl,
     }
-    with _profile_scope(_oauth_session_profile(session_id)):
+    # The profile comes from the poller's own session dict: a cancel or the 15-minute sweep drops
+    # the registry entry, and a lookup by id would then save into the dashboard's launch profile.
+    with _profile_scope(sess.get("profile")):
         full_state = refresh_nous_oauth_from_state(auth_state, timeout_seconds=15.0, force_refresh=False)
         # The final cancellation check and the save share the session lock, so a cancel cannot
         # land between them.
@@ -401,8 +395,14 @@ def _minimax_poller(session_id: str, sess: Dict[str, Any]) -> None:
         "expires_at": datetime.fromtimestamp(expires_at_ts, tz=timezone.utc).isoformat(),
         "expires_in": max(0, int(expires_at_ts - now.timestamp())),
     }
-    with _profile_scope(_oauth_session_profile(session_id)):
-        _minimax_save_auth_state(auth_state)
+    with _profile_scope(sess.get("profile")):
+        # The cancellation check and the save share the session lock, so a cancel cannot land
+        # between them (the same contract as the Nous and Codex savers).
+        with _oauth_sessions_lock:
+            if sess.get("cancelled"):
+                sess["status"] = "cancelled"
+                return
+            _minimax_save_auth_state(auth_state)
 
 
 @_oauth_poller("xai")
@@ -428,7 +428,11 @@ def _xai_device_poller(session_id: str, sess: Dict[str, Any]) -> None:
         "expires_in": token_data.get("expires_in"),
         "token_type": str(token_data.get("token_type") or "Bearer").strip() or "Bearer",
     }
-    with _profile_scope(_oauth_session_profile(session_id)):
+    with _profile_scope(sess.get("profile")), _oauth_sessions_lock:
+        # One critical section with the cancel check, as in the Nous and Codex savers.
+        if sess.get("cancelled"):
+            sess["status"] = "cancelled"
+            return
         # set_active=False: persist without hijacking an existing active chat provider.
         _save_xai_oauth_tokens(
             tokens, discovery=discovery, auth_mode="oauth_device_code", set_active=False,

@@ -32,6 +32,7 @@ import { cn } from '@/lib/utils'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronJobs } from '@/store/cron'
+import { recordAction } from '@/store/desktop-metrics'
 import { $interfaceMode, $showsAdvancedChrome, shownInMode } from '@/store/interface-mode'
 import { $bindings } from '@/store/keybinds'
 import {
@@ -127,9 +128,10 @@ import {
   sessionPinId
 } from '@/store/session'
 import { $sessionDotStateById, sessionStatusBucket } from '@/store/session-dot-state'
+import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
-import { $focusedSessionIsTile, $focusedStoredSessionId, $workingSessionIds } from '@/store/session-states'
+import { $workingSessionIds } from '@/store/session-states'
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
@@ -1636,6 +1638,10 @@ export function ChatSidebar({
                       // change which profile that is.
                       if (isNewSession) {
                         $newChatProfile.set(null)
+                      }
+
+                      if (item.keybindActionId) {
+                        recordAction(item.keybindActionId, 'click')
                       }
 
                       onNavigate(item)

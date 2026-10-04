@@ -1,6 +1,6 @@
 """Source orchestration uses real node-deps/npm in an isolated checkout.
 
-Only PM's tool acquisition is substituted with the host's node/npm. Small
+Only PM's tool acquisition (and its installed-node record) is substituted with the host's node/npm. Small
 workspace scripts stand in for the expensive UI compilers; subprocess failures,
 locked dependency selection, environment propagation and publication are real.
 """
@@ -12,11 +12,19 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
 import pm
 from pm.package import Runner
+
+
+def use_host_node_as_pm_node(monkeypatch):
+    """Freshness reads run only under PM's recorded Node; stand the host's node in for it."""
+    node, real = Path(shutil.which("node")), pm.installed_package
+    monkeypatch.setattr(pm, "installed_package", lambda name, **kwargs: (
+        SimpleNamespace(binary=node) if name == "node" else real(name, **kwargs)))
 
 
 def copy_freshness_scripts(root):
@@ -108,6 +116,7 @@ def source_checkout(tmp_path, monkeypatch):
             [str(Path(npm).parent), str(Path(node).parent), os.environ["PATH"]])})
 
     monkeypatch.setattr(pm, "ensure", acquire)
+    use_host_node_as_pm_node(monkeypatch)
     root = tmp_path / "source with spaces"
     root.mkdir()
     workspaces = ["ui-tui", "web", "apps/desktop", "unrelated"]
@@ -267,6 +276,27 @@ def test_update_builds_selected_products_after_one_union_preparation(source_prod
 
 
 @pytest.mark.platforms("linux")
+def test_update_recompiles_only_products_whose_inputs_changed(source_products):
+    from hermes_cli.source_build import build_update_products
+
+    root, _ = source_products
+
+    def products():
+        return [event["step"] for event in _events(root) if event["step"] != "deps"]
+
+    build_update_products(root, desktop=True)
+    (root / "events.jsonl").unlink()
+    build_update_products(root, desktop=True)
+    assert products() == ["desktop"]
+
+    (root / "events.jsonl").unlink()
+    (root / "web/src").mkdir(parents=True, exist_ok=True)
+    (root / "web/src/changed.ts").write_text("export {}\n", encoding="utf-8")
+    build_update_products(root, desktop=False)
+    assert products() == ["web"]
+
+
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("step", ["tui", "web", "desktop"])
 def test_update_failure_raises_without_retries_or_replacing_live_app(source_products, step):
     from hermes_cli.source_build import build_update_products
@@ -299,3 +329,39 @@ def test_module_cli_builds_the_requested_products(source_products, desktop, monk
     assert acquired == ["npm"]
     assert (root / "hermes_cli/web_dist/index.html").is_file()
     assert (root / "apps/desktop/release/linux-unpacked/hermes").exists() == desktop
+
+
+@pytest.mark.platforms("posix")
+def test_packaged_desktop_is_reused_only_while_it_names_head(tmp_path, monkeypatch):
+    """The update skips the desktop build only when the shipped app's baked commit is HEAD
+    and its receipt is current; a moved HEAD or an unreadable stamp means build."""
+    import hermes_cli.main_desktop as main_desktop
+
+    root = tmp_path / "checkout"
+    root.mkdir()
+    git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+    subprocess.run([*git[:3], "init", "-q"], check=True)
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "one"], check=True)
+    desktop_dir = root / "apps/desktop"
+    exe = desktop_dir / "release/app/Hermes"
+    monkeypatch.setattr(main_desktop, "_desktop_packaged_executable", lambda _d: exe)
+    resources = main_desktop._packaged_resources_dir(desktop_dir)
+    (resources / "app.asar.unpacked/dist").mkdir(parents=True)
+    receipt_current = {"value": True}
+    monkeypatch.setattr(main_desktop, "_desktop_build_needed",
+                        lambda *_a, **_k: not receipt_current["value"])
+
+    def head():
+        return subprocess.run([*git[:3], "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+
+    def reused():
+        return main_desktop._packaged_desktop_current_for_head(desktop_dir, root)
+
+    assert not reused()  # no baked stamp
+    (resources / "install-stamp.json").write_text(json.dumps({"commit": head()}), encoding="utf-8")
+    assert reused()
+    receipt_current["value"] = False
+    assert not reused()
+    receipt_current["value"] = True
+    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "two"], check=True)
+    assert not reused()

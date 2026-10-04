@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from pm import install_hint
+import errno
 import json
 import logging
 import os
@@ -257,7 +258,7 @@ BUILTIN_PROVIDER_IDS = frozenset(PROVIDER_REGISTRY)
 # a plugin never observes a partially initialized auth module (CONTRACT: during discovery a plugin may
 # rely only on ``ProviderConfig`` and ``PROVIDER_REGISTRY`` from here — nothing defined below).
 from hermes_cli.config import (  # noqa: E402
-    atomic_config_write, get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
+    atomic_config_replace, get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
 
 # Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
 # auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
@@ -601,6 +602,63 @@ def _kernel_lock(lock_file: Any, acquire: bool) -> None:
         msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK if acquire else msvcrt.LK_UNLCK, 1)
 
 
+# Errnos that mean the lock is held rather than broken. POSIX flock contention is a
+# ``BlockingIOError`` (EAGAIN); msvcrt reports contention as EACCES — which a real ACL denial
+# also uses, so EACCES stays retried rather than aborting every Windows lock. Anything else
+# (ENOSYS, EOPNOTSUPP, EIO, ...) cannot clear by retrying and must propagate immediately.
+_LOCK_CONTENTION_ERRNOS = frozenset(
+    code for code in (errno.EACCES, errno.EAGAIN, getattr(errno, "EDEADLK", None)) if code is not None)
+
+
+def _is_lock_contention(exc: OSError) -> bool:
+    if isinstance(exc, BlockingIOError):
+        return True
+    return exc.errno in _LOCK_CONTENTION_ERRNOS
+
+
+def _lock_holder_hint(lock_path: Path) -> str:
+    """Live-holder hint from the pid a holder stamps into the lock file; empty when there is none.
+
+    Holders stamp their pid on acquire and clear it on release, so a leftover pid from a dead
+    process is filtered by a liveness probe — stay silent instead of blaming a ghost."""
+    try:
+        first_token = lock_path.read_text(encoding="utf-8-sig", errors="replace").split()[0]
+        pid = int(first_token)
+    except (OSError, ValueError, IndexError):
+        return ""
+    if pid <= 0 or pid == os.getpid():
+        return ""
+    if os.name == "posix":
+        try:
+            os.kill(pid, 0)  # windows-footgun: ok — inside `if os.name == "posix"` gate
+        except ProcessLookupError:
+            return ""
+        except OSError:
+            pass  # exists but is not signalable (e.g. EPERM): still a live holder
+    return (f"another hermes process (pid {pid}) probably still holds it "
+            "(e.g. a dashboard or a slow credential refresh)")
+
+
+def _stamp_lock_holder_pid(lock_file: Any) -> None:
+    """Best-effort pid stamp so a timing-out waiter can name the holder (#124533)."""
+    try:
+        lock_file.truncate(0)
+        lock_file.write(f"{os.getpid()}\n")  # "a+" writes land at the (now empty) end
+        lock_file.flush()
+    except OSError:
+        pass
+
+
+def _clear_stamped_lock_holder_pid(lock_file: Any) -> None:
+    try:
+        lock_file.truncate(0)
+        if msvcrt:
+            lock_file.write(" ")  # msvcrt.locking needs a non-empty file
+        lock_file.flush()
+    except OSError:
+        pass
+
+
 @contextmanager
 def _file_lock(
     lock_path: Path, holder: threading.local, timeout_seconds: float, timeout_message: str):
@@ -636,17 +694,26 @@ def _file_lock(
                 try:
                     _kernel_lock(lock_file, True)
                     break
-                except (BlockingIOError, OSError, PermissionError):
+                except (BlockingIOError, OSError, PermissionError) as exc:
+                    if not _is_lock_contention(exc):
+                        # Permanent failure (flock-unsupported filesystem, bad fd, ...): retrying
+                        # to the deadline would burn the timeout blaming a holder that does not
+                        # exist. Let the original error through instead.
+                        raise
                     if time.monotonic() >= deadline:
-                        raise TimeoutError(timeout_message)
+                        hint = _lock_holder_hint(lock_path)
+                        raise TimeoutError(f"{timeout_message}; {hint}" if hint else timeout_message)
                     time.sleep(0.05)
 
         holder.depth = 1
         try:
+            if lock_file is not None:
+                _stamp_lock_holder_pid(lock_file)
             yield
         finally:
             holder.depth = 0
             if lock_file is not None:
+                _clear_stamped_lock_holder_pid(lock_file)
                 try:
                     _kernel_lock(lock_file, False)
                 except (OSError, IOError):
@@ -662,9 +729,10 @@ def _auth_store_lock(
     reentrancy tracker and kernel lock. Lock ordering invariant: ``_auth_store_lock`` FIRST (outer),
     ``_nous_shared_store_lock`` SECOND (inner), else deadlock against a concurrent shared import."""
     auth_path = target_path if target_path is not None else _auth_file_path()
+    lock_path = auth_path.with_suffix(".lock")
     with _file_lock(
-        auth_path.with_suffix(".lock"), _auth_lock_holder_for(auth_path), timeout_seconds,
-        "Timed out waiting for auth store lock"):
+        lock_path, _auth_lock_holder_for(auth_path), timeout_seconds,
+        f"Timed out waiting for auth store lock ({lock_path})"):
         yield
 
 
@@ -2328,7 +2396,7 @@ def _update_config_for_provider(
     elif clear_default:
         model_cfg.pop("default", None)
     config["model"] = model_cfg
-    atomic_config_write(config_path, config)
+    atomic_config_replace(config_path, config)
     return config_path
 
 
@@ -2372,7 +2440,7 @@ def _reset_config_provider() -> Path:
         model["provider"] = "auto"
         if "base_url" in model:
             model["base_url"] = OPENROUTER_BASE_URL
-    atomic_config_write(config_path, config)
+    atomic_config_replace(config_path, config)
     return config_path
 
 
@@ -2431,51 +2499,3 @@ def logout_command(args) -> None:
         print("Hermes will use OpenRouter for inference.")
     else:
         print("Run `hermes model` or configure an API key to use Hermes.")
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from http.server import BaseHTTPRequestHandler  # noqa: F401,E402
-from http.server import HTTPServer  # noqa: F401,E402
-from typing import TYPE_CHECKING  # noqa: F401,E402
-import base64  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-from urllib.parse import parse_qs  # noqa: F401,E402
-import ssl  # noqa: F401,E402
-import subprocess  # noqa: F401,E402
-import sys  # noqa: F401,E402
-from urllib.parse import urlencode  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'CODEX_OAUTH_USER_AGENT': ('hermes_cli.auth_constants', 'CODEX_OAUTH_USER_AGENT'),
-    'CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS': ('hermes_cli.auth_codex', 'CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS'),
-    'DEFAULT_SPOTIFY_REDIRECT_URI': ('hermes_cli.auth_constants', 'DEFAULT_SPOTIFY_REDIRECT_URI'),
-    'DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS': ('hermes_cli.auth_constants', 'DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS'),
-    'MINIMAX_OAUTH_GRANT_TYPE': ('hermes_cli.auth_constants', 'MINIMAX_OAUTH_GRANT_TYPE'),
-    'NOUS_INFERENCE_INVOKE_SCOPE': ('hermes_cli.auth_constants', 'NOUS_INFERENCE_INVOKE_SCOPE'),
-    'NOUS_SHARED_STORE_FILENAME': ('hermes_cli.auth_nous', 'NOUS_SHARED_STORE_FILENAME'),
-    'OAUTH_OVER_SSH_DOCS_URL': ('hermes_cli.auth_constants', 'OAUTH_OVER_SSH_DOCS_URL'),
-    'QWEN_OAUTH_CLIENT_ID': ('hermes_cli.auth_constants', 'QWEN_OAUTH_CLIENT_ID'),
-    'QWEN_OAUTH_TOKEN_URL': ('hermes_cli.auth_constants', 'QWEN_OAUTH_TOKEN_URL'),
-    'SINGLE_USE_OAUTH_SINGLETON_FILES': ('hermes_cli.auth_oauth_grants', 'SINGLE_USE_OAUTH_SINGLETON_FILES'),
-    'SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS': ('hermes_cli.auth_constants', 'SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS'),
-    'SPOTIFY_DASHBOARD_URL': ('hermes_cli.auth_constants', 'SPOTIFY_DASHBOARD_URL'),
-    'XAI_OAUTH_DEVICE_CODE_URL': ('hermes_cli.auth_constants', 'XAI_OAUTH_DEVICE_CODE_URL'),
-    'XAI_OAUTH_DISCOVERY_URL': ('hermes_cli.auth_constants', 'XAI_OAUTH_DISCOVERY_URL'),
-    'XAI_OAUTH_ISSUER': ('hermes_cli.auth_constants', 'XAI_OAUTH_ISSUER'),
-    'refresh_nous_oauth_pure': ('hermes_cli.auth_nous', 'refresh_nous_oauth_pure'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

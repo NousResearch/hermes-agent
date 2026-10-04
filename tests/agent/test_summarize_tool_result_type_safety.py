@@ -66,6 +66,19 @@ class TestEdgeCases:
 
 
 class TestMcpResultSummary:
+    def test_failed_mcp_results_keep_outcome_and_bounded_evidence(self):
+        from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
+
+        content = json.dumps({"data": "evidence " + "x" * 5_000, "error": "search unavailable"})
+        result = _summarize_tool_result("mcp__docs__search", "{}", content)
+        fallback = _summarize_tool_result("unknown_tool", "{}", content)
+        assert "FAILED: search unavailable" in result
+        assert "FAILED: search unavailable" in fallback
+        assert "evidence" in result
+        assert len(result) < len(content)
+        assert _COMPRESSION_MARKER_PREFIX in result
+        assert _is_summary_stub(result)
+
     def test_preserves_bounded_content_without_changing_unknown_tool_fallback(self):
         from agent.compression_marker import _COMPRESSION_MARKER_PREFIX, _elision_marker
 

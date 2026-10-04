@@ -32,6 +32,9 @@ METADATA_URL = "http://169.254.169.254/latest/meta-data/"
 @pytest.fixture(autouse=True)
 def _no_camofox(monkeypatch):
     monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    # Legacy literal/page probes under the explicit unsafe opt-in; runtime
+    # read-only execution is exercised in test_browser_eval_readonly.
+    monkeypatch.setattr(bt_eval_policy, "_allow_unsafe_browser_evaluate", lambda: True)
     # No supervisor — force the subprocess fallback path by default.
     monkeypatch.setattr(browser_tool, "_last_session_key", lambda key: key)
 
@@ -286,10 +289,10 @@ class TestExpressionScanHelper:
         out = bt_eval_policy._expression_targets_private_url("location.href='http://10.0.0.1/';")
         assert out == "http://10.0.0.1/"
 
-    def test_guard_wraps_runtime_network_assembly(self):
-        expression = bt_eval_policy._guard_network_expression(
-            "fetch(String.fromCharCode(104,116,116,112,58,47,47)+'169.254.169.254')"
-        )
-        assert "window.fetch = hermesDenyNetwork" in expression
-        assert "String.fromCharCode" in expression
-        assert "169.254.169.254" in expression
+    def test_readonly_params_preserve_program_text(self):
+        params = {"expression": "var total=0; if (true) total=3; total"}
+        result = bt_eval_policy._readonly_evaluate_params(params)
+        assert result["expression"] == params["expression"]
+        assert result["throwOnSideEffect"] is True
+        assert result["awaitPromise"] is False
+        assert "throwOnSideEffect" not in params

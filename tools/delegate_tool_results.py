@@ -331,7 +331,10 @@ def _notify_memory_manager(results, task_list, child_by_index, parent_agent) -> 
     memory = getattr(parent_agent, "_memory_manager", None) if parent_agent else None
     if not memory:
         return
+    from tools.delegation_quality_gate import is_quarantined
     for entry in results:
+        if is_quarantined(entry):
+            continue  # a rejected result is never learned from
         try:
             task_index = entry.get("task_index", -1)
             in_range = isinstance(task_index, int) and 0 <= task_index < len(task_list)
@@ -349,6 +352,7 @@ def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
         from hermes_cli.plugins import invoke_hook as invoke_hook
     except Exception:
         invoke_hook = None
+    from tools.delegation_quality_gate import is_quarantined
     children_cost_total = 0.0
     for entry in results:
         child_role = entry.pop("_child_role", None)
@@ -362,12 +366,13 @@ def _fire_subagent_stop_hooks(results, child_by_index, parent_agent) -> float:
             continue
         try:
             child = child_by_index.get(entry.get("task_index", -1))
+            quarantined = is_quarantined(entry)  # plugins never see a rejected child's text or tool history
             invoke_hook(
                 "subagent_stop", parent_session_id=getattr(parent_agent, "session_id", None),
                 parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
                 child_session_id=getattr(child, "session_id", None), child_role=child_role,
-                child_summary=entry.get("summary"), child_status=entry.get("status"),
-                tool_call_history=_subagent_stop_tool_call_history(entry.get("tool_trace")),
+                child_summary=None if quarantined else entry.get("summary"), child_status=entry.get("status"),
+                tool_call_history=[] if quarantined else _subagent_stop_tool_call_history(entry.get("tool_trace")),
                 duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
             )
         except Exception:

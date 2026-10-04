@@ -2865,17 +2865,34 @@ def _handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dic
     note = str(args.get("data") or "").strip()
     if not note:
         return {"error": "handoff requires `data`: one sentence saying what the process is for and what the parent should do with its result."}
-    session = process_registry.transfer_ownership(
-        session_id, from_owner=str(task_id or ""), to_owner=parent_owner,
-        to_task_id=_resolve_container_task_id(parent_owner),
-        to_session_key=str(getattr(parent, "session_id", "") or ""), note=note)
+    transfer = {"from_owner": str(task_id or ""), "to_owner": parent_owner,
+                "to_task_id": _resolve_container_task_id(parent_owner),
+                "to_session_key": str(getattr(parent, "session_id", "") or ""), "note": note}
+    if getattr(child, "_delegate_quality_gate", None) is not None:
+        # Quality-gated child: a handed-off completion carries its command, note and output to the parent, so the
+        # transfer is only RESERVED here (the child keeps owning it, its notices stay suppressed) and performed by
+        # ``_ChildRun.settle_handoffs`` once the gate accepts the result; a blocked or failed result kills it instead.
+        pending = getattr(child, "_pending_handoffs", None)
+        if pending is None:
+            pending = child._pending_handoffs = []
+        session = process_registry.get(session_id)
+        if (session is None or session.exited or session.owner_task_id != transfer["from_owner"]
+                or any(p["session_id"] == session.id for p in pending)):
+            session = None
+        else:
+            pending.append({"session_id": session.id, **transfer})
+        note_to_child = ("Your parent will own this process and receive its completion once your result is accepted "
+                         "by review; if your result is not accepted, the process is stopped. Mention the handoff in "
+                         "your final answer.")
+    else:
+        session = process_registry.transfer_ownership(session_id, **transfer)
+        note_to_child = ("Your parent now owns this process and will receive its completion; you will not. Mention the "
+                         "handoff in your final answer.")
     if session is None:
         return {"error": f"cannot hand off {session_id}: not a running process you own (already exited? read its result "
                          "with poll/log and report it instead)."}
     handed.append({"session_id": session.id, "command": session.command, "note": note})
-    return {"status": "handed_off", "session_id": session.id, "command": session.command,
-            "note": "Your parent now owns this process and will receive its completion; you will not. Mention the handoff "
-                    "in your final answer."}
+    return {"status": "handed_off", "session_id": session.id, "command": session.command, "note": note_to_child}
 
 
 _MAX_HANDOFFS_PER_CHILD = 3

@@ -1,0 +1,250 @@
+{
+  "source": "trycua/cua@cua-driver-rs-v0.21.0:libs/cua-driver/contract/manifest.json",
+  "input_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "expect": {
+        "description": "One to eight predicates, combined with logical AND.",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "element": {
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "exists": {
+                  "description": "Assert that at least one trusted element matches the selector.\n\nElement walks are not yet exhaustive on every platform, so absence\ncannot be proven. `false` is rejected instead of returning an\nindefinitely-unknown predicate.",
+                  "enum": [
+                    true
+                  ],
+                  "type": "boolean"
+                },
+                "selected": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "selector": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "label_contains": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "role": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [],
+                  "type": "object"
+                },
+                "value_equals": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "selector"
+              ],
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "window": {
+              "additionalProperties": false,
+              "properties": {
+                "bounds": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "height": {
+                      "type": "number"
+                    },
+                    "tolerance_px": {
+                      "maximum": 100,
+                      "minimum": 0,
+                      "type": "number"
+                    },
+                    "width": {
+                      "type": "number"
+                    },
+                    "x": {
+                      "type": "number"
+                    },
+                    "y": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "x",
+                    "y",
+                    "width",
+                    "height"
+                  ],
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "exists": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                }
+              },
+              "type": [
+                "object",
+                "null"
+              ]
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "maxItems": 8,
+        "minItems": 1,
+        "type": "array"
+      },
+      "include_screenshot": {
+        "description": "Return the final window screenshot as image content for a multimodal\ncaller. The driver does not interpret that image.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "pid": {
+        "description": "Exact process whose window may be observed.",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "session": {
+        "description": "For multi-call work, prefer a short public session label and repeat it on every call that\naccepts it. Omit it to use the authenticated transport's implicit lifecycle session. This\nfield never selects capture modality or authorization.",
+        "type": "string"
+      },
+      "stable_samples": {
+        "default": 2,
+        "description": "Consecutive satisfied samples required before returning success.",
+        "maximum": 5,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "timeout_ms": {
+        "default": 5000,
+        "description": "Bounded wait. Zero performs one sample.",
+        "maximum": 10000,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "window_id": {
+        "description": "Exact native window identifier.",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "pid",
+      "window_id",
+      "expect"
+    ],
+    "type": "object"
+  },
+  "success_output_schema": {
+    "additionalProperties": true,
+    "properties": {
+      "elapsed_ms": {
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "predicates": {
+        "items": {
+          "properties": {
+            "index": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "observed_json": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "enum": [
+                "satisfied",
+                "unsatisfied",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            "unknown_reason": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "invalid_predicate",
+                    "unsupported_predicate",
+                    "untrusted_source",
+                    "multi_match",
+                    "target_missing",
+                    "observation_unavailable",
+                    "stability_unproven"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "index",
+            "status",
+            "unknown_reason",
+            "observed_json"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "samples": {
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "stable": {
+        "type": "boolean"
+      },
+      "status": {
+        "enum": [
+          "satisfied",
+          "unsatisfied",
+          "unknown"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "status",
+      "stable",
+      "elapsed_ms",
+      "samples",
+      "predicates"
+    ],
+    "type": "object"
+  }
+}

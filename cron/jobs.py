@@ -2292,6 +2292,8 @@ def rearm_oneshot(job_id: str, run_at: Any) -> Optional[Dict[str, Any]]:
             repeat=repeat, run_claim=None, fire_claim=None)
         _activate_job_record(job)
         job["next_run_at"] = next_run_at
+        # An explicit new occurrence may reuse an instant already completed in the ledger.
+        job["manual_run_at"] = next_run_at
         save_jobs(jobs)
         return _normalize_job_record(job)
 
@@ -3257,7 +3259,7 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     d = _DueJob(job, scan, next_run, raw_next_run_dt, _ensure_aware(raw_next_run_dt))
     kind = d.kind
     recurring = kind in {"cron", "interval"}
-    # Intentionally string-exact on raw stored values: trigger_job stamps the SAME isoformat string
+    # Intentionally string-exact: trigger_job/rearm_oneshot stamp the SAME isoformat string
     # into both fields, and any rewrite of next_run_at (edit, re-anchor, fire-claim advance) must
     # invalidate the marker. Do not "fix" this with _ensure_aware normalization.
     manual_run = job.get("manual_run_at") == next_run

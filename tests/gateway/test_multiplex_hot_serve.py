@@ -154,6 +154,13 @@ async def test_stalled_own_gateway_probe_never_wedges_the_loop_or_serves(tmp_pat
         assert "gamma" not in (runner._profile_own_gateway_warned or set())
         await asyncio.wait_for(heartbeat, timeout=1.0)
 
+        # A peer that stays wedged must not re-WARN on every 30 s watcher cycle.
+        result = await runner.reconcile_served_profiles(reason="watcher")
+        assert result["added"] == []
+        stalled_warnings = [r for r in caplog.records if r.levelname == "WARNING"
+                            and "probe for profile 'gamma' timed out" in r.getMessage()]
+        assert len(stalled_warnings) == 1
+
         released.set()
         result = await runner.reconcile_served_profiles(reason="watcher")
         assert result["added"] == ["gamma"]

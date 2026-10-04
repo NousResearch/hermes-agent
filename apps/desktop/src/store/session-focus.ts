@@ -14,25 +14,32 @@ const isChatPane = (paneId?: string): boolean => paneId === 'workspace' || Boole
 // list, browsing Files, typing in Terminal) must not replace the chat being
 // worked in with the route's (possibly hidden) primary — the Files rail and
 // statusbar follow this chat, so they would jump projects mid-click.
-const $lastContentGroup = atom<null | string>(null)
+// Remember the pane: a preview can replace its group's active chat tab.
+const $lastContentPane = atom<null | string>(null)
 
-$activeTreeGroup.subscribe(groupId => {
+const rememberContentPane = () => {
+  const groupId = $activeTreeGroup.get()
   const tree = $layoutTree.get()
   const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
   if (!groupId || isChatPane(active)) {
-    $lastContentGroup.set(groupId)
+    $lastContentPane.set(active ?? null)
   }
-})
+}
+
+$activeTreeGroup.subscribe(rememberContentPane)
+$layoutTree.listen(rememberContentPane)
 
 export const $focusedTreePaneId = computed(
-  [$activeTreeGroup, $layoutTree, $workspaceMode, $lastContentGroup],
-  (groupId, tree, workspaceMode, lastContentGroup) => {
+  [$activeTreeGroup, $layoutTree, $workspaceMode, $lastContentPane],
+  (groupId, tree, workspaceMode, lastContentPane) => {
     let active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
     if (groupId && tree && !isChatPane(active)) {
-      const content = lastContentGroup ? findGroup(tree, lastContentGroup) : null
-      active = (content ?? findGroupOfPane(tree, 'workspace'))?.active
+      active =
+        lastContentPane && findGroupOfPane(tree, lastContentPane)
+          ? lastContentPane
+          : findGroupOfPane(tree, 'workspace')?.active
     }
 
     if (active?.startsWith('session-tile:')) {

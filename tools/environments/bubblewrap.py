@@ -753,6 +753,10 @@ def build_bwrap_args(
     # (hermes_constants.get_subprocess_home). Both are bound read-write on
     # top of the overlays, so the rest of HERMES_HOME stays hidden.
     late: list[tuple[str, ...]] = []
+    # Roots bound back on top of the HERMES_HOME overlay, and the ones of
+    # them a command can write to.
+    restored: list[str] = []
+    restored_rw: list[str] = []
     # The scratch dir is TMPDIR for every command, and the system prompt
     # tells the model to put temporary files there. It lies under the
     # hidden HERMES_HOME: left hidden, a write lands in that spawn's own
@@ -762,25 +766,37 @@ def build_bwrap_args(
     if scratch_dir:
         late.append(("--bind-try" if profile.writable_cwd else "--ro-bind-try", scratch_dir, scratch_dir))
         late += scratch_mask(scratch_dir, empty_file_path(state_dir))
+        restored.append(scratch_dir)
+        if profile.writable_cwd:
+            restored_rw.append(scratch_dir)
     # Attachments, cached documents and the other staged data live under
     # HERMES_HOME, and Hermes hands the model their host paths. Read-only:
     # a command opens them, it does not produce them. The -try form lets a
     # root that is gone from the host drop out instead of failing the spawn.
     late += [("--ro-bind-try", root, root) for root in staged_roots]
-    # A hidden path under one of the roots just bound back is shown again
-    # by that bind, so it gets its overlay once more, on top of it.
-    restored = [root for root in (scratch_dir, *staged_roots) if root]
-    for path in hidden_paths:
-        if os.path.islink(path) or not any(path != root and _is_within(path, root) for root in restored):
-            continue
-        if os.path.isdir(path):
-            late.append(("--tmpfs", path))
-        elif os.path.exists(path):
-            late.append(("--ro-bind", empty_file_path(state_dir), path))
+    restored += staged_roots
     if config.home_mode in PROFILE_HOME_MODES:
         profile_home = os.path.join(os.path.abspath(os.path.expanduser(hermes_home)), "home")
         if os.path.isdir(profile_home):
             late.append(("--bind", profile_home, profile_home))
+            restored.append(profile_home)
+            restored_rw.append(profile_home)
+    # A hidden path under one of the roots just bound back is shown again
+    # by that bind, so it gets its overlay once more, on top of it. Inside
+    # a writable root its parents are pinned first, as under any writable
+    # bind: otherwise a command renames a parent and the next spawn finds
+    # the path, and the secret, under another name.
+    shown = [
+        path for path in hidden_paths
+        if not os.path.islink(path) and any(path != root and _is_within(path, root) for root in restored)
+    ]
+    pins = ancestor_pin_args([(root, root) for root in restored_rw], restored, shown)
+    late += [(pins[i], pins[i + 1], pins[i + 2]) for i in range(0, len(pins), 3)]
+    for path in shown:
+        if os.path.isdir(path):
+            late.append(("--tmpfs", path))
+        elif os.path.exists(path):
+            late.append(("--ro-bind", empty_file_path(state_dir), path))
     late.append(("--bind", state_dir, state_dir))
 
     # What lies behind an allowed dot symlink stays read-only. The caller
@@ -1155,8 +1171,19 @@ class BubblewrapEnvironment(LocalEnvironment):
         )
         # Resolved once, like every other mount path. get_scratch_dir makes
         # the directory; pruning stays with the process that owns the home.
-        self._scratch_dir = os.path.realpath(str(get_scratch_dir(self._hermes_home, prune=False)))
+        self._scratch_dir: str | None = os.path.realpath(str(get_scratch_dir(self._hermes_home, prune=False)))
         self._staged_roots = staged_data_roots()
+        # A terminal.bubblewrap_hide entry at or above one of these roots
+        # wins: the root is not bound back.
+        covered = [root for root in self._staged_roots if any(_is_within(root, path) for path in self._operator_hidden)]
+        self._staged_roots = tuple(root for root in self._staged_roots if root not in covered)
+        if any(_is_within(self._scratch_dir, path) for path in self._operator_hidden):
+            logger.warning(
+                "bubblewrap: a terminal.bubblewrap_hide entry covers the Hermes scratch dir %s, so it "
+                "is not bound into the sandbox and files a command writes to TMPDIR do not persist.",
+                self._scratch_dir,
+            )
+            self._scratch_dir = None
         self._check_profile_home()
         # The mount paths are fixed here; only --chdir follows the tracked cwd.
         self._initial_cwd = os.path.realpath(_resolve_local_initial_cwd(cwd))
@@ -1496,7 +1523,7 @@ class BubblewrapEnvironment(LocalEnvironment):
                 "default HERMES_HOME/sandboxes is covered by the HERMES_HOME overlay."
             )
         writable_profile = resolve_profile(self._config.profile).writable_cwd
-        if writable_profile and _is_within(sandbox_root, self._scratch_dir):
+        if writable_profile and self._scratch_dir and _is_within(sandbox_root, self._scratch_dir):
             raise ValueError(
                 f"terminal.sandbox_dir {sandbox_root} lies inside the Hermes scratch dir "
                 f"{self._scratch_dir}, which is writable inside the sandbox with the bubblewrap "

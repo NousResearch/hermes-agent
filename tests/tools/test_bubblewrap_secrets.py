@@ -1265,6 +1265,54 @@ class TestHideBelowRestoredRootsIntegration:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         self._check(hermes_home, work_dir)
 
+    def test_hide_entry_deep_below_the_scratch_dir_cannot_be_moved_into_view(self, work_dir, hermes_home):
+        scratch = hermes_home / "cache" / "scratch"
+        deep = _write(scratch / "a" / "b" / "deep.txt")
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=BubblewrapConfig(hide=(str(deep),)))
+        try:
+            assert env.execute(f"mv {scratch}/a {scratch}/z")["returncode"] != 0
+            assert env.execute(f"mv {scratch}/a/b {scratch}/a/y")["returncode"] != 0
+            out = env.execute(f"cat {scratch}/z/b/deep.txt {scratch}/a/y/deep.txt {deep} 2>&1")["output"]
+            assert MARKER not in out
+        finally:
+            env.cleanup()
+        assert (scratch / "a" / "b" / "deep.txt").is_file()
+        assert not (scratch / "z").exists()
+
+    def test_hide_entry_equal_to_a_staged_root_keeps_that_root_hidden(self, work_dir, hermes_home):
+        documents = hermes_home / "cache" / "documents"
+        _write(documents / "secret.txt")
+        _write(hermes_home / "attachments" / "open.txt", VISIBLE)
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=BubblewrapConfig(hide=(str(documents),)))
+        try:
+            assert MARKER not in env.execute(f"cat {documents}/secret.txt 2>&1")["output"]
+            assert env.execute(f"cat {hermes_home}/attachments/open.txt")["output"].strip() == VISIBLE
+        finally:
+            env.cleanup()
+
+    def test_hide_entry_equal_to_the_scratch_dir_keeps_it_hidden_and_warns_once(self, work_dir, hermes_home, caplog):
+        import logging
+
+        scratch = hermes_home / "cache" / "scratch"
+        _write(scratch / "secret.txt")
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"):
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=BubblewrapConfig(hide=(str(scratch),)))
+        try:
+            assert MARKER not in env.execute(f"cat {scratch}/secret.txt 2>&1")["output"]
+            assert env.execute("true")["returncode"] == 0
+        finally:
+            env.cleanup()
+        assert len([r for r in caplog.records if "scratch" in r.getMessage() and "bubblewrap_hide" in r.getMessage()]) == 1
+
+    def test_hide_entry_inside_the_profile_home_is_refused(self, work_dir, hermes_home):
+        # The profile home is bound read-write on top of the overlay, so a
+        # hidden path inside it would show again: the backend does not start.
+        keys = hermes_home / "home" / "a" / "keys"
+        _write(keys / "id")
+        config = BubblewrapConfig(home_mode="profile", hide=(str(keys),))
+        with pytest.raises(ValueError, match="terminal.home_mode"):
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=config)
+
 
 CONNECT = (
     "python3 -c 'import socket,sys\n"

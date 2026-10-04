@@ -210,14 +210,19 @@ def _reclaim_abandoned_staging(home: Path) -> None:
     staging file proves the owner is dead; a markerless partial predates
     ownership markers and is only trusted gone once hours old.
     """
-    for staged in home.glob(_STAGING_GLOB):
+    candidates = set(home.glob(_STAGING_GLOB))
+    # Successful Windows runs used to leave only the marker behind; discover
+    # those too, but still require the ownership lock before reclaiming them.
+    candidates.update(Path(str(marker)[:-len(".owner")])
+                      for marker in home.glob(_STAGING_GLOB + ".owner"))
+    for staged in candidates:
         marker = Path(str(staged) + ".owner")
         owner = None
         if marker.exists():
             owner = _acquire_owner_marker(marker)
             if owner is None:
                 continue  # a live pre-flight owns it right now
-        elif time.time() - staged.stat().st_mtime <= _STALE_PARTIAL_HORIZON_SECONDS:
+        elif not staged.exists() or time.time() - staged.stat().st_mtime <= _STALE_PARTIAL_HORIZON_SECONDS:
             continue  # markerless but young: an old-runtime copy may still be writing it
         with suppress(OSError):
             staged.unlink()
@@ -370,11 +375,15 @@ def preflight_state_db(
         size = staged.stat().st_size
         os.replace(staged, destination)
     finally:
-        staged.unlink(missing_ok=True)
-        with suppress(OSError):
-            Path(str(staged) + ".owner").unlink()
-        if owner is not None:
-            owner.close()
+        try:
+            staged.unlink(missing_ok=True)
+        finally:
+            # Windows forbids unlinking the marker while our handle is open.
+            # Keep ownership until staging cleanup completes, then release it.
+            if owner is not None:
+                owner.close()
+            with suppress(OSError):
+                Path(str(staged) + ".owner").unlink()
     for old in sorted(home.glob(f"{_STAGING_PREFIX}*.bak"), reverse=True)[2:]:
         try:
             old.unlink()

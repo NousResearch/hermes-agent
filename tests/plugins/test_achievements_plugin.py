@@ -17,6 +17,7 @@ contract: the plugin scans ALL of your sessions, not the first 200.
 """
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 import threading
@@ -39,9 +40,10 @@ PLUGIN_MODULE_PATH = (
 def plugin_api(tmp_path, monkeypatch):
     """Load plugin_api with isolated ~/.hermes so state/snapshot files don't collide.
 
-    We load the module fresh per test because the plugin keeps module-level
-    caches (``_SNAPSHOT_CACHE``, ``_SCAN_STATUS``, background thread handle).
-    Reloading gives each test a clean world.
+    We load the module fresh per test because the plugin keeps in-process
+    scan state in ``_RUNTIME_STATES`` (snapshot cache, scan status, background
+    thread handle), keyed by the active Hermes home. Reloading gives each test
+    a clean world.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
@@ -190,7 +192,7 @@ def test_evaluate_all_first_run_returns_pending_and_starts_background_scan(plugi
     # Let the scan complete, then a second call returns real data.
     allow_scan_finish.set()
     # Wait for thread to finish.
-    thread = plugin_api._BACKGROUND_SCAN_THREAD
+    thread = plugin_api._runtime()["background_thread"]
     assert thread is not None
     thread.join(timeout=5)
     assert not thread.is_alive()
@@ -198,6 +200,53 @@ def test_evaluate_all_first_run_returns_pending_and_starts_background_scan(plugi
     second = plugin_api.evaluate_all()
     assert second["scan_meta"]["mode"] != "pending"
     assert second["scan_meta"].get("sessions_total") == 50
+
+
+def test_achievements_route_exposes_the_stable_desktop_contract(plugin_api, monkeypatch):
+    """Desktop consumes the same lightweight response as the dashboard.
+
+    Lock the bridge shape down so renderer clients get canonical evaluated badges,
+    status (including background failures), and no heavy raw session/aggregate data.
+    """
+    snapshot = {
+        "achievements": [{"id": "terminal_goblin", "state": "discovered"}],
+        "sessions": [{"session_id": "private-session"}],
+        "aggregate": {"total_terminal_calls": 4},
+        "scan_meta": {"mode": "in_progress", "sessions_scanned_so_far": 25},
+        "error": None,
+        "unlocked_count": 0,
+        "discovered_count": 1,
+        "secret_count": 0,
+        "total_count": 1,
+        "generated_at": 123,
+    }
+    monkeypatch.setattr(plugin_api, "evaluate_all", lambda: snapshot)
+    monkeypatch.setattr(plugin_api, "_is_snapshot_stale", lambda data: True)
+    monkeypatch.setattr(
+        plugin_api,
+        "_scan_status_payload",
+        lambda: {"state": "failed", "last_error": "database unavailable"},
+    )
+
+    payload = asyncio.run(plugin_api.achievements())
+
+    assert payload == {
+        "achievements": snapshot["achievements"],
+        "unlocked_count": 0,
+        "discovered_count": 1,
+        "secret_count": 0,
+        "total_count": 1,
+        "error": None,
+        "generated_at": 123,
+        "is_stale": True,
+        "scan_meta": {
+            "mode": "in_progress",
+            "sessions_scanned_so_far": 25,
+            "status": {"state": "failed", "last_error": "database unavailable"},
+        },
+    }
+    assert "sessions" not in payload
+    assert "aggregate" not in payload
 
 
 def test_start_background_scan_is_idempotent_while_running(plugin_api):
@@ -215,13 +264,13 @@ def test_start_background_scan_is_idempotent_while_running(plugin_api):
     plugin_api._run_scan_and_update_cache = gated_run
 
     plugin_api._start_background_scan()
-    first_thread = plugin_api._BACKGROUND_SCAN_THREAD
+    first_thread = plugin_api._runtime()["background_thread"]
     assert first_thread is not None and first_thread.is_alive()
 
     plugin_api._start_background_scan()
     plugin_api._start_background_scan()
 
-    assert plugin_api._BACKGROUND_SCAN_THREAD is first_thread
+    assert plugin_api._runtime()["background_thread"] is first_thread
 
     release.set()
     first_thread.join(timeout=5)
@@ -269,7 +318,7 @@ def test_background_scan_publishes_partial_snapshots(plugin_api):
         assert p["scan_meta"].get("sessions_expected_total") == 750
 
     # Final snapshot in cache is the real (non-partial) one.
-    final = plugin_api._SNAPSHOT_CACHE
+    final = plugin_api._runtime()["snapshot_cache"]
     assert final is not None
     assert final["scan_meta"].get("mode") != "in_progress"
     assert final["scan_meta"].get("sessions_total") == 750

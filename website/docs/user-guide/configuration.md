@@ -1760,7 +1760,7 @@ auxiliary:
     model: "qwen2.5-vl"
 ```
 
-`base_url` takes precedence over `provider`, so this is the most explicit way to route an auxiliary task to a specific endpoint. For direct endpoint overrides, Hermes uses the configured `api_key` or falls back to `OPENAI_API_KEY`; it does not reuse `OPENROUTER_API_KEY` for that custom endpoint.
+`base_url` takes precedence over `provider`, so this is the most explicit way to route an auxiliary task to a specific endpoint. For direct endpoint overrides, Hermes uses the configured `api_key` or falls back to `OPENAI_API_KEY`; it does not reuse `OPENROUTER_API_KEY` for that custom endpoint. With neither set, the main model's key is reused only when `base_url` has the main endpoint's exact origin (scheme, host and port). The main endpoint is the one the session is running on (after a `/model` switch, that one), paired with its own key, never with a key from a different endpoint.
 
 **Using OpenAI API key for vision:**
 ```yaml
@@ -2387,7 +2387,7 @@ display:
 
 From the CLI, use the canonical path — `hermes config set display.platforms.telegram.streaming false`. The shorthand `hermes config set platforms.telegram.streaming false` is accepted too: because per-platform *display* settings (`streaming`, `show_reasoning`, `tool_progress`, …) are only ever read from `display.platforms`, `config set`/`get`/`unset` redirect that shorthand to the canonical key and print a note. Connection keys under the top-level `platforms.<name>` block (`token`, `enabled`, `reply_to_mode`, `extra`) are not redirected. Writing them under the nested prefix (`hermes config set gateway.platforms.telegram.enabled true`) is redirected to the top-level `platforms.telegram.enabled` with a note: the gateway reads both blocks, but the top-level one wins on shared keys, so a nested write would be silently shadowed by an existing top-level value.
 
-Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
+Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, plus the name of any plugin platform (e.g. `homeassistant` from the Home Assistant plugin). The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
 
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 

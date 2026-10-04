@@ -112,6 +112,49 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     assert env._run_bash("true")._hermes_scope_unit != proc._hermes_scope_unit
 
 
+@pytest.mark.parametrize("rejects_no_expand", [False, True], ids=["systemd>=254", "systemd<254"])
+def test_foreground_scope_keeps_the_command_byte_identical_and_the_cap_off(monkeypatch, rejects_no_expand):
+    """The shared argv choke point keeps both guarantees on the foreground path too.
+
+    #132385: systemd >= 254 expands ``$$`` / ``${X}`` in a ``--scope`` command line itself
+    (``--expand-environment`` defaults to yes), so the flag must be there for a foreground
+    command as well — that command is a shell string the user wrote. systemd-run < 254 rejects
+    the option, and the retry must drop the option while keeping the scope. Foreground also
+    opts out of the worker ``MemoryMax`` (own cgroup, no cap), which the same call decides.
+    """
+    monkeypatch.setattr(process_registry, "_SYSTEMD_SCOPE_AVAILABLE", None)
+    monkeypatch.setattr(process_registry, "_SYSTEMD_SCOPE_PROBED_AT", 0.0)
+    monkeypatch.setattr(process_registry, "_SYSTEMD_RUN_NO_EXPAND", True)
+    probes: list = []
+
+    def fake_run(argv, **kwargs):
+        probes.append(argv)
+        if rejects_no_expand and "--expand-environment=no" in argv:
+            return subprocess.CompletedProcess(
+                argv, 1, stderr=b"systemd-run: unrecognized option '--expand-environment=no'")
+        return subprocess.CompletedProcess(argv, 0, stderr=b"")
+
+    real_which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: (
+        "/usr/bin/systemd-run" if name == "systemd-run" else real_which(name, *a, **k)))
+    monkeypatch.setattr(process_registry.subprocess, "run", fake_run)
+
+    # Drives the real probe, including the retry that drops the option on old systemd-run.
+    assert process_registry._systemd_run_user_scope_available() is True
+
+    payload = ["/bin/bash", "-c", "echo $$ && echo ${HOME}"]
+    argv = process_registry._build_systemd_scope_argv(payload, "4242-abcd1234", prefix="hermes-fg", memory_max=False)
+
+    assert argv[0].endswith("systemd-run")
+    # One choke point: whatever the probe settled on is what the foreground builder emits.
+    assert ("--expand-environment=no" in argv) is not rejects_no_expand
+    assert len(probes) == (2 if rejects_no_expand else 1)
+    # The command reaches the shell exactly as written — no expansion, no rewriting.
+    assert argv[argv.index("--") + 1:] == payload
+    assert argv[argv.index("--unit") + 1].startswith("hermes-fg-")
+    assert [argv[i + 1] for i, token in enumerate(argv) if token == "--property"] == ["MemoryAccounting=yes"]
+
+
 def test_scope_is_stopped_even_when_the_group_kill_raises_and_survives_adoption(monkeypatch, tmp_path):
     """The cgroup is the authoritative cleanup: an unexpected group-kill failure must not leak
     the transient unit, and a command yielded to the background keeps the unit to stop later."""

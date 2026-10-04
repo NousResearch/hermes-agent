@@ -493,18 +493,20 @@ _CALVER_MAJOR_FLOOR = 2000
 
 
 def requires_hermes_floor_unreachable(spec: str) -> bool:
-    """True when any ``requires_hermes`` clause targets the release-tag (CalVer) version space.
+    """True when a ``requires_hermes`` clause *demands* the release-tag (CalVer) version space.
 
     ``version_satisfies`` compares against ``running_hermes_version()`` — the ``base_version``
     (semver) space — so a floor like ``>=2026.9.24`` compares ``(0, 21, 5) >= (2026, 9, 24)`` and
     refuses every release, including ones newer than the tag the author meant. Such a spec is a
-    defect in the entry: no Hermes update can ever satisfy it.
+    defect in the entry: no Hermes update can ever satisfy it. Only ``>=``/``>``/``==`` clauses
+    (and a bare version, which ``version_satisfies`` reads as ``>=``) demand the space; ``<`` /
+    ``<=`` / ``!=`` into it is *already satisfied* by every base_version and must not be blamed.
     """
     for clause in filter(None, (c.strip() for c in spec.split(","))):
         m = _VERSION_COMPARATOR_RE.match(clause)
-        target = m.group(2) if m else clause
+        op, target = (m.group(1), m.group(2)) if m else (">=", clause)
         tgt = _version_tuple(target)
-        if tgt is not None and tgt[0] >= _CALVER_MAJOR_FLOOR:
+        if tgt is not None and tgt[0] >= _CALVER_MAJOR_FLOOR and op not in ("<", "<=", "!="):
             return True
     return False
 

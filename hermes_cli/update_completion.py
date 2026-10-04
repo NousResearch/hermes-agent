@@ -481,6 +481,10 @@ def _finish(request: dict, result_path: Path) -> int:
         _report_unbuilt_desktop(request)
         update_receipt.record_followup("completion", f"{type(exc).__name__}: {exc}")
     finally:
+        custody = sys.modules.get("hermes_cli.update_custody")
+        refusal = custody.refusal_notice() if code and custody is not None else None
+        if refusal:  # m2: what stopped it, whatever error the refusal turned into downstream
+            print(refusal)
         # The new interpreter owns recovery too. The original parent's atexit
         # token is updated from the response; it acts only if this process dies.
         try:

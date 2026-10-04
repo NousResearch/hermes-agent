@@ -337,3 +337,49 @@ def test_a_completion_child_runs_only_after_its_bind_and_a_refusal_is_receipted(
     assert result["exit_code"] == 0 and started.exists(), result
     steps = [s for s in result["receipt"].get("steps", []) if s["name"] == "update_custody"]
     assert steps and steps[0]["ok"] is False and "completion child" in steps[0]["detail"], result["receipt"]
+
+
+# --- R8 m2: a refusal a reader swallows is what `hermes update` reports -----------------------
+
+_SWALLOWING_OWNER = r"""
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+sys.path.insert(0, sys.argv[1])
+from hermes_cli import main, update_cmd, update_owning_install
+from hermes_cli.update_cmd_git import _git_stdout
+root = Path(sys.argv[2])
+main.PROJECT_ROOT = root
+update_owning_install.retarget_to_owning_install = lambda project_root: None
+main._update_preflight_handled = lambda args: False
+main._install_hangup_protection = lambda **kw: None
+main._finalize_update_output = lambda state: None
+
+def impl(args, gateway_mode):
+    from hermes_cli.update_receipt import begin_update_receipt
+    begin_update_receipt()
+    REFUSE_JOBS
+    # The real readers swallow the refusal: HEAD reads as unknown.
+    pre, head = update_cmd._capture_head_sha(["git"], root), _git_stdout(["git"], ["rev-parse", "HEAD"], root)
+    print(f"✗ Could not resolve the checkout's HEAD ({pre!r}, {head!r})", flush=True)
+    sys.exit(1)
+
+update_cmd._cmd_update_impl = impl
+main.cmd_update(SimpleNamespace(gateway=False))
+"""
+
+
+def test_a_refusal_the_readers_swallow_is_what_the_update_reports(tmp_path):
+    install = tmp_path / "checkout"
+    install.mkdir()
+    _git(install, "init", "-q")
+    refuse = "\n    ".join(_REFUSE_JOBS.strip().splitlines())
+    home = tmp_path / "home"
+    out = subprocess.run([sys.executable, "-c", _SWALLOWING_OWNER.replace("REFUSE_JOBS", refuse), str(REPO_ROOT),
+                          str(install)], stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
+                         errors="replace", timeout=120,
+                         env={**os.environ, "HERMES_HOME": str(home), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
+    text = out.stdout + out.stderr
+    assert out.returncode == 1, text
+    assert "`hermes update` stopped: Windows would not put `git` in this update's process job" in text, text
+    assert "Nothing was changed" in text and "Run `hermes update` again from a regular terminal" in text, text

@@ -85,11 +85,63 @@ class CustodyRefused(OSError):
         import os
 
         name = os.path.basename(str(argv[0])) if argv else "child"
-        super().__init__(
+        self.reason = (
             f"Windows would not put `{name}` in this update's process job ({cause}), so it was not "
             "run: a checkout writer outside the job could outlive a killed update and write the "
-            "checkout after its lock is released. Run the command again from a regular terminal, "
-            "outside any sandbox or tool that confines the processes it starts.")
+            "checkout after its lock is released.")
+        super().__init__(f"{self.reason} {_RETRY.format(command='the command')}")
+
+
+_RETRY = ("Run {command} again from a regular terminal, outside any sandbox or tool that confines "
+          "the processes it starts.")
+
+
+# This run's custody (m2): whether an update child already ran in custody, and the first refusal.
+# Many readers swallow an OSError (a reader's None, a best-effort probe), so a refusal can end
+# the update as a misleading downstream error; the command's failure path prints
+# :func:`refusal_notice` instead.
+_RUN: dict = {"ran": False, "refused": None}
+
+
+def _refuse(argv: Sequence[str], cause: object, *, receipted: bool = False) -> CustodyRefused:
+    """The :class:`CustodyRefused` for ``argv``: logged, noted in the receipt (unless the caller
+    already did) and kept as this run's first refusal."""
+    argv = list(argv) if isinstance(argv, (list, tuple)) else [argv]
+    exc = CustodyRefused(argv, cause)
+    detail = f"{exc.reason}: {' '.join(str(arg) for arg in argv[:2])}"
+    if not receipted:
+        logger.warning("Refused update child: %s", detail)
+        with contextlib.suppress(Exception):
+            from hermes_cli.update_receipt import record_step
+
+            record_step("update_custody", False, detail)
+    if _RUN["refused"] is None:
+        _RUN["refused"] = (exc, not _RUN["ran"] and not _past_commit())
+    return exc
+
+
+def _past_commit() -> bool:
+    """The update reached its commit point: its receipt records the ``apply`` stage (the
+    completion child resumes that receipt). No receipt is open before an update begins, nor in
+    the parent after its completion child returned, which starts no update child."""
+    try:
+        from hermes_cli.update_receipt import _current
+
+        current = _current.get()
+    except Exception:  # noqa: BLE001 - unknown: never claim that nothing changed
+        return True
+    return current is not None and any(stage.get("name") == "apply" for stage in current.data.get("stages") or ())
+
+
+def refusal_notice(command: str = "hermes update") -> str | None:
+    """What the command's failure path prints when this run refused an update child (m2), in
+    place of whatever generic error the refusal turned into downstream; ``None`` otherwise."""
+    if _RUN["refused"] is None:
+        return None
+    exc, unchanged = _RUN["refused"]
+    outcome = ("Nothing was changed: no update step had run yet." if unchanged else
+               "Update steps before it had already run.")
+    return f"✗ `{command}` stopped: {exc.reason}\n  {outcome}\n  {_RETRY.format(command=f'`{command}`')}"
 
 
 def git_subcommand(args: Sequence[str]) -> str | None:
@@ -169,23 +221,16 @@ def _bind_suspended(proc: subprocess.Popen) -> None:
     Suspended until bound, so nothing it spawns can escape the job. A refused bind kills the
     child before it ran a single instruction and raises :class:`CustodyRefused` (D2: never an
     unfenced writer); a failed resume kills the child."""
-    import ctypes
-
-    from hermes_cli.update_lock import _bind_to_kill_on_close_job
+    from hermes_cli.update_lock import _bind_to_kill_on_close_job, resume_suspended_child
 
     try:
         _bind_to_kill_on_close_job(proc)
     except OSError as exc:
         proc.kill()
         proc.wait()
-        logger.warning("Refused update child %s: the update's job would not take it (%s)", proc.args, exc)
-        raise CustodyRefused(proc.args if isinstance(proc.args, (list, tuple)) else [proc.args], exc) from exc
-    ntdll = ctypes.WinDLL("ntdll")
-    ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
-    ntdll.NtResumeProcess.restype = ctypes.c_long
-    if ntdll.NtResumeProcess(int(proc._handle)) != 0:
-        proc.kill()
-        raise OSError(f"could not resume update child {proc.pid}")
+        raise _refuse(proc.args, exc) from exc
+    resume_suspended_child(proc)
+    _RUN["ran"] = True
 
 
 def popen(argv: Sequence[str], *, inherit_lock: bool = False, **kwargs) -> subprocess.Popen:
@@ -392,7 +437,7 @@ def contained_command(argv: Sequence[str], *, inherit_lock: bool = True):
     try:
         handle = _inheritable_job_handle()
     except OSError as exc:
-        raise CustodyRefused(argv, exc) from exc
+        raise _refuse(argv, exc) from exc
     import os
     import tempfile
 
@@ -410,7 +455,8 @@ def contained_command(argv: Sequence[str], *, inherit_lock: bool = True):
         note = _report_refused_join(report, argv)
         if note:
             cause = note.removeprefix(f"{_CUSTODY_UNAVAILABLE} (").partition(")")[0]
-            raise CustodyRefused(argv, cause)
+            raise _refuse(argv, cause, receipted=True)
+        _RUN["ran"] = True
 
 
 def _inheritable_job_handle() -> int:

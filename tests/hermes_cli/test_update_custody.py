@@ -197,6 +197,44 @@ def test_a_refused_build_join_is_logged_and_noted_in_the_receipt(tmp_path, monke
     assert update_custody._report_refused_join(str(empty), ["node"]) is None  # joined: silent
 
 
+def test_a_swallowed_refusal_is_what_the_update_reports(tmp_path, monkeypatch, capsys):
+    """R8 m2: readers swallow an OSError (``_git_stdout``, ``_capture_head_sha``), so a refused
+    child used to end ``hermes update`` as whatever error followed downstream. The refusal is
+    receipted and kept for the run, and the command's failure path prints it, actionably."""
+    import contextlib
+    from types import SimpleNamespace
+
+    import hermes_cli.update_receipt as ur
+    from hermes_cli import main, update_cmd, update_custody, update_owning_install
+
+    monkeypatch.setattr(update_custody, "_RUN", {"ran": False, "refused": None})
+    monkeypatch.setattr(update_owning_install, "retarget_to_owning_install", lambda root: None)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "checkout").mkdir()
+    monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path / "checkout")
+    monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
+    monkeypatch.setattr(main, "_install_hangup_protection", lambda **kw: None)
+    monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
+
+    def impl(args, gateway_mode):
+        ur.begin_update_receipt()
+        with contextlib.suppress(OSError):  # a reader that swallows it, as _git_stdout does
+            raise update_custody._refuse(["git", "rev-parse"], OSError(6, "The handle is invalid"))
+        print("✗ Could not resolve HEAD")  # the downstream error it turned into
+        raise SystemExit(1)
+
+    monkeypatch.setattr(update_cmd, "_cmd_update_impl", impl)
+    with ur.update_receipt_scope(), pytest.raises(SystemExit) as stop:
+        main.cmd_update(SimpleNamespace(gateway=False))
+    assert stop.value.code == 1
+    out = capsys.readouterr().out
+    assert "`hermes update` stopped: Windows would not put `git` in this update's process job" in out, out
+    assert "Nothing was changed" in out and "Run `hermes update` again from a regular terminal" in out, out
+    payload = ur.read_latest_receipt()
+    steps = [s for s in payload["steps"] if s["name"] == "update_custody"]
+    assert steps and steps[0]["ok"] is False and "rev-parse" in steps[0]["detail"], payload["steps"]
+
+
 @pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc fd listing")
 def test_a_partial_clone_move_never_fetches_under_the_lock_fd(repo, tmp_path, monkeypatch):
     """m3: installer checkouts are partial clones, so `reset --hard <target>` used to fetch the

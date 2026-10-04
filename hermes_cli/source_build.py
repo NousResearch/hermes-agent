@@ -6,6 +6,63 @@ import shutil
 import subprocess
 import sys
 
+# TypeScript source trees where an interrupted update/build can leave
+# extensionless-importable `.js` next to the live `.ts`/`.tsx`. Rollup/Vite then
+# resolves the stale JS and reports MISSING_EXPORT (#132431).
+_STALE_TS_SIBLING_JS_ROOTS: tuple[str, ...] = (
+    "apps/shared/src",
+    "apps/desktop/src",
+)
+
+
+def clean_stale_typescript_sibling_js(project_root: Path) -> list[Path]:
+    """Delete untracked ``*.js`` that sit beside a same-stem ``.ts``/``.tsx``.
+
+    Tracked JavaScript (legitimate plugins / hand-written modules) is kept.
+    Never raises — update must proceed even if a file is locked.
+    """
+    root = Path(project_root)
+    tracked = _git_tracked_paths(root, _STALE_TS_SIBLING_JS_ROOTS)
+    removed: list[Path] = []
+    for rel in _STALE_TS_SIBLING_JS_ROOTS:
+        base = root / rel
+        if not base.is_dir():
+            continue
+        for js_path in base.rglob("*.js"):
+            if not js_path.is_file():
+                continue
+            rel_posix = js_path.relative_to(root).as_posix()
+            if rel_posix in tracked:
+                continue
+            stem = js_path.with_suffix("")
+            if not (stem.with_suffix(".ts").is_file() or stem.with_suffix(".tsx").is_file()):
+                continue
+            try:
+                js_path.unlink()
+            except OSError:
+                continue
+            removed.append(js_path)
+    if removed:
+        print(f"  ✓ Removed {len(removed)} stale TypeScript-sibling .js artifact(s)")
+    return removed
+
+
+def _git_tracked_paths(project_root: Path, roots: tuple[str, ...]) -> set[str]:
+    """Relative posix paths currently tracked under ``roots``. Empty on non-git."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_root), "ls-files", "--", *roots],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return set()
+    if result.returncode != 0:
+        return set()
+    return {line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()}
+
+
+
 
 def source_product_current(project_root: Path, product: str, out: Path) -> bool:
     """Read the compiler's receipt without acquiring tools or dependencies."""
@@ -107,6 +164,9 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
     from hermes_cli.update_stage import publish_stage
 
     _install_configured_features_missing_deps(project_root)
+    # Interrupted updates leave generated .js beside live .ts/.tsx; clean before
+    # any frontend compile so extensionless imports cannot shadow source (#132431).
+    clean_stale_typescript_sibling_js(project_root)
     frontends = source_frontends(project_root)
     if not frontends:
         return

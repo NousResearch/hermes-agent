@@ -3,6 +3,8 @@
 import json
 import subprocess
 import sys
+import threading
+import time
 from unittest.mock import patch
 
 import pytest
@@ -106,6 +108,99 @@ def test_run_gate_keeps_diagnostics_when_a_byte_will_not_decode(tmp_path):
     assert "FAILED: 3 tests broken" in out, (
         f"gate diagnostics were lost to a decode failure (tail={out!r})"
     )
+
+
+@pytest.mark.platforms("windows")
+def test_run_gate_timeout_terminates_pipe_holding_descendant(tmp_path):
+    """Regression for #132325: timeout must release pipes and terminate their owner."""
+    import _winapi
+    import psutil
+
+    ready = tmp_path / "ready.json"
+    script = tmp_path / "finite gate.py"
+    script.write_text(
+        "import json, os, pathlib, psutil, sys, time\n"
+        "os.write(1, b'BEFORE_STDOUT\\n'); os.write(2, b'BEFORE_STDERR\\n')\n"
+        "p = psutil.Process()\n"
+        "ready = pathlib.Path(sys.argv[1]); staging = ready.with_suffix('.tmp')\n"
+        "staging.write_text(json.dumps([p.pid, p.create_time()]), encoding='utf-8'); staging.replace(ready)\n"
+        "time.sleep(6)\n"
+        "os.write(1, b'AFTER_DEADLINE\\n')\n",
+        encoding="utf-8",
+    )
+    results = []
+    elapsed = []
+
+    def run():
+        start = time.monotonic()
+        results.append(run_gate(GoalGate(
+            command=f'echo SHELL_MARKER & "{sys.executable}" "{script}" "{ready}"',
+            timeout_seconds=1,
+        ), cwd=str(tmp_path)))
+        elapsed.append(time.monotonic() - start)
+
+    worker = threading.Thread(target=run, daemon=True)
+    handle = None
+    worker.start()
+    try:
+        deadline = time.monotonic() + 4
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists(), "descendant never became ready"
+        pid, created = json.loads(ready.read_text(encoding="utf-8-sig"))
+        handle = _winapi.OpenProcess(0x100001, False, pid)  # SYNCHRONIZE | PROCESS_TERMINATE
+        assert psutil.Process(pid).create_time() == created
+        worker.join(timeout=7)
+        assert not worker.is_alive(), "run_gate did not finish after the finite fixture"
+        assert elapsed[0] < 4, f"1s gate took {elapsed[0]:.3f}s waiting for descendant pipes"
+        passed, code, output = results[0]
+        assert (passed, code) == (False, -1)
+        assert all(marker in output for marker in ("SHELL_MARKER", "BEFORE_STDOUT", "BEFORE_STDERR", "timed out"))
+        assert "AFTER_DEADLINE" not in output
+        assert _winapi.WaitForSingleObject(handle, 2000) == _winapi.WAIT_OBJECT_0
+    finally:
+        if handle is not None:
+            if _winapi.WaitForSingleObject(handle, 0) == _winapi.WAIT_TIMEOUT:
+                _winapi.TerminateProcess(handle, 1)
+                _winapi.WaitForSingleObject(handle, 2000)
+            _winapi.CloseHandle(handle)
+        worker.join(timeout=2)
+
+
+@pytest.mark.parametrize("mode", ["success", "nonzero", "bytes", "tail", "cwd", "missing-cwd"])
+def test_run_gate_shell_diagnostic_contract(tmp_path, mode):
+    script = tmp_path / "diagnostic gate.py"
+    script.write_text(
+        "import os, pathlib, sys\n"
+        "mode = sys.argv[1]\n"
+        "if mode == 'bytes': os.write(1, 'UNICODE: \\U0001f642 \\u4e2d\\n'.encode() + b'INVALID: \\xff\\n')\n"
+        "elif mode == 'tail': os.write(1, b'A' * 6000 + b'TAIL_SENTINEL\\n')\n"
+        "elif mode == 'cwd': print(pathlib.Path.cwd()); print(pathlib.Path('marker').read_text(encoding='utf-8-sig'))\n"
+        "else: print('STDOUT'); print('STDERR', file=sys.stderr)\n"
+        "sys.exit(3 if mode in ('nonzero', 'bytes') else 0)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "marker").write_text("OWNED_CWD", encoding="utf-8")
+    cwd = tmp_path / "absent" if mode == "missing-cwd" else tmp_path
+    # A real shell operator exercises the shell=True parsing contract on each host.
+    separator = "&" if sys.platform == "win32" else ";"
+    result = run_gate(GoalGate(command=f'echo SHELL_MARKER {separator} "{sys.executable}" "{script}" {mode}'), cwd=str(cwd))
+    passed, code, output = result
+    if mode == "missing-cwd":
+        assert (passed, code) == (False, -1)
+        assert "gate could not run" in output and "timed out" not in output
+    elif mode == "tail":
+        assert (passed, code) == (True, 0)
+        assert len(output) == 3000 and output.endswith("TAIL_SENTINEL\n")
+    else:
+        assert (passed, code) == (mode not in ("nonzero", "bytes"), 3 if mode in ("nonzero", "bytes") else 0)
+        assert "SHELL_MARKER" in output
+        if mode == "bytes":
+            assert "UNICODE: \U0001f642 \u4e2d" in output and "INVALID: \ufffd" in output
+        elif mode == "cwd":
+            assert str(tmp_path) in output and "OWNED_CWD" in output
+        else:
+            assert "STDOUT" in output and "STDERR" in output
 
 
 # ──────────────────────────────────────────────────────────────────────

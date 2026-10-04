@@ -775,9 +775,10 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
 
 
 def bounded_probe_run(
-    argv: Sequence[str], *, timeout: float, errors: str = "replace",
+    argv: str | Sequence[str], *, timeout: float, errors: str = "replace",
     env: "Mapping[str, str] | None" = None, cwd: "str | os.PathLike[str] | None" = None,
     raise_on_spawn_failure: bool = False,
+    raise_on_failure: bool = False, shell: bool = False, stdin: int | None = subprocess.DEVNULL,
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=…)`` for fail-open probes.
 
@@ -785,6 +786,11 @@ def bounded_probe_run(
     ``None`` on spawn failure or timeout. With ``raise_on_spawn_failure=True`` the ``Popen``
     exception propagates instead, so callers that treat a *timeout* as a verdict can still tell
     "our own probe never started" apart from "the child hung".
+
+    ``raise_on_failure`` preserves execution exceptions, including TimeoutExpired with captured
+    output, for diagnostic callers. Its Windows cleanup uses the owned job directly rather than
+    spending another timeout in taskkill. ``shell`` and ``stdin`` retain Popen's parsing/input
+    semantics for operator-configured shell gates; existing probes keep their defaults.
 
     Why not ``subprocess.run``: on Windows, ``run()``'s post-timeout cleanup calls an *unbounded*
     ``communicate()`` after killing the direct child. Killing it can leave a descendant (``git.exe`` under a
@@ -796,6 +802,7 @@ def bounded_probe_run(
     _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
     job = None
     try:
+        command = argv if isinstance(argv, str) else list(argv)
         # Windows: contain the probe in a Job Object. `taskkill /T` walks LIVE parent pids, and a
         # Cygwin/MSYS `exec` lets the forked stub exit once the new image runs, so a Git Bash grandchild
         # (`sleep`, `cat`) has a dead parent and survives the tree-kill holding our pipes (#73403, proven
@@ -803,28 +810,37 @@ def bounded_probe_run(
         from hermes_cli.local_runtime.processes import spawn_server
 
         proc, job = spawn_server(
-            list(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=stdin, shell=shell,
             text=True, encoding="utf-8", errors=errors,
             env=dict(env) if env is not None else None, cwd=cwd, **_popen_kwargs)
     except Exception:
-        if raise_on_spawn_failure:
+        if raise_on_spawn_failure or raise_on_failure:
             raise
         return None
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
-    except Exception:
+    except Exception as exc:
         # Timeout OR any other communicate() failure (torn-down pipe, decode error): tree-kill and
         # drain bounded — leaving it running would leak the suspended-descendant class this guards.
-        _close_job(job)
-        kill_process_tree(proc)
+        if raise_on_failure and job is not None:
+            # Assignment preceded resume: this job contains the entire gate tree, even if the
+            # shell has exited. Do not follow job termination with a 15-second taskkill probe.
+            job.close()
+        else:
+            _close_job(job)
+            kill_process_tree(proc)
         try:
-            proc.communicate(timeout=1)
+            stdout, stderr = proc.communicate(timeout=1)
+            if isinstance(exc, subprocess.TimeoutExpired):
+                exc.output, exc.stderr = stdout, stderr
         except Exception:
             pass
+        if raise_on_failure:
+            raise
         return None
     # The probe exited on its own; anything it left behind (`&` jobs) goes with the job.
     _close_job(job)
-    return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)
+    return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
 
 
 def _close_job(job) -> None:

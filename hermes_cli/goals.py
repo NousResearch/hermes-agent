@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_cli._subprocess_compat import bounded_probe_run, noninteractive_git_env
 from hermes_time import safe_strftime
 
 logger = logging.getLogger(__name__)
@@ -400,8 +400,8 @@ def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, s
         # utf-8/replace: operator-configured output is arbitrary bytes; strict codepage decoding of
         # one unmappable byte (emoji/CJK on a non-UTF-8 Windows console) kills the reader thread and
         # the tail the agent needs arrives empty.
-        proc = subprocess.run(
-            gate.command, shell=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        proc = bounded_probe_run(
+            gate.command, shell=True, stdin=None, raise_on_failure=True,
             timeout=max(1, int(gate.timeout_seconds)), cwd=cwd or None,
         )
         combined = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")

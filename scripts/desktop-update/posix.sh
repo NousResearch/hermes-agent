@@ -1092,13 +1092,21 @@ run_update() { # streams straight into the log (a killed run keeps its output);
     while [ ! -e "$go" ]; do kill -0 "$MY_PID" 2>/dev/null || exit 70; sleep 0.05; done
     exec "${UPDATE_INVOKE[@]}" update --yes $GATEWAY_FLAG $KEEP_STASH "${TARGET_ARGS[@]}" ) >> "$LOG" 2>&1 <&0 &
   pid=$!
-  marker_add_delegate "$pid"
-  : > "$go"
-  while :; do
-    wait "$pid"; CODE=$?
-    [ "$CODE" -ne 127 ] || break          # not our child any more
-    kill -0 "$pid" 2>/dev/null || break   # reaped: CODE is its exit status
-  done
+  if marker_add_delegate "$pid"; then
+    : > "$go"
+    while :; do
+      wait "$pid"; CODE=$?
+      [ "$CODE" -ne 127 ] || break          # not our child any more
+      kill -0 "$pid" 2>/dev/null || break   # reaped: CODE is its exit status
+    done
+  else
+    # No go-file: the child is still our parked shell, not an updater. Never
+    # let a timed-out/refused marker write turn this custody barrier fail-open.
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    CODE=3
+    log "update aborted: could not publish the update child as our marker delegate"
+  fi
   rm -f "$go" 2>/dev/null
   for sig in HUP INT QUIT; do trap "on_signal $sig" "$sig"; done
   OUT="$(tail -c +"$(( ${offset:-0} + 1 ))" "$LOG" 2>/dev/null)"

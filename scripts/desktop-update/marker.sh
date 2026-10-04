@@ -412,22 +412,22 @@ marker_claim() { # FIRST action of the daemon. Sets MARKER_BODY/CLAIMED.
   esac
 }
 
-marker_add_delegate_locked() { # pid ct -> name the update child as line 4 under OUR claim
-  marker_read || return 0
+marker_add_delegate_locked() { # pid ct -> zero ONLY when the delegate was published
+  marker_read || return 1
   marker_judge "$SEEN"
   if [ "$M_PID" != "$MY_PID" ] || [ "$J_OWNER_STATE" -ne 0 ]; then
-    log "update marker is no longer ours; no delegate written"; return 0
+    log "update marker is no longer ours; no delegate written"; return 1
   fi
-  if [ -n "$M_DPID" ] && [ "$M_DPID" != "$1" ] && [ "$J_DELEGATE_STATE" -eq 2 ]; then return 0; fi
+  if [ -n "$M_DPID" ] && [ "$M_DPID" != "$1" ] && [ "$J_DELEGATE_STATE" -eq 2 ]; then return 1; fi
   marker_replace "$(marker_canonical "$M_PID" "$M_STARTED_DIGITS" "$M_CT" "$1" "$2")"$'\n' \
     && log "update marker names update pid $1 (ct $2) as its delegate"
 }
 
 marker_add_delegate() { # pid -> line 4 `delegate:<pid> ct:<ct>` (C1 rule 6)
   local ct
-  [ "$MARKER_CLAIMED" -eq 1 ] || return 0
+  [ "$MARKER_CLAIMED" -eq 1 ] || return 1
   ct="$(proc_ct "$1")"
-  [ -n "$ct" ] || { log "WARNING: no creation time for update pid $1; marker names no delegate"; return 0; }
+  [ -n "$ct" ] || { log "WARNING: no creation time for update pid $1; marker names no delegate"; return 1; }
   marker_locked marker_add_delegate_locked "$1" "$ct"
 }
 

@@ -208,7 +208,10 @@ from hermes_cli.cli_single_query import (  # noqa: F401,E402
     _sync_cli_session_id_from_agent,
 )
 
-from prompt_toolkit.patch_stdout import patch_stdout
+try:
+    from prompt_toolkit.patch_stdout import patch_stdout
+except ImportError:  # partial/broken prompt_toolkit (#96075); sole use is a `with patch_stdout():`
+    from contextlib import nullcontext as patch_stdout
 try:
     from prompt_toolkit.enums import EditingMode
 except ImportError:  # partial prompt_toolkit stubs in tests
@@ -564,6 +567,7 @@ from hermes_cli.worktree_ops import (
     _repo_is_shallow,
     _setup_worktree,
     _worktree_has_unpushed_commits,
+    _worktree_is_dirty,
     release_lsp_clients,
 )
 
@@ -573,7 +577,7 @@ _active_worktree: Optional[Dict[str, str]] = None
 
 
 def _cleanup_worktree(info: Dict[str, str] = None) -> None:
-    """Remove a worktree and its branch on exit; kept only when it has unpushed commits."""
+    """Remove a clean worktree and its branch on exit; preserve recoverable work."""
     global _active_worktree
     info = info or _active_worktree
     if not info:
@@ -581,6 +585,12 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
 
     wt_path, branch, repo_root = info["path"], info["branch"], info["repo_root"]
     if not Path(wt_path).exists():
+        return
+    _active_worktree = None
+
+    if _worktree_is_dirty(wt_path, repo_root, timeout=10):
+        # Uncommitted work: say so, and don't hint at `remove --force`, which would destroy it.
+        _cprint(f"\n\033[33m{_t('cli.worktree.uncommitted_keeping', path=wt_path)}\033[0m")
         return
 
     if _worktree_has_unpushed_commits(wt_path, timeout=10):
@@ -591,7 +601,6 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
         else:
             _cprint(f"\n\033[33m{_t('cli.worktree.unpushed_keeping', path=wt_path)}\033[0m")
             print(f"  {_t('cli.worktree.clean_up_manually', path=wt_path)}")
-        _active_worktree = None
         return
 
     # Release the tree's language servers while the path still exists, then unlock so `remove`
@@ -600,8 +609,6 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     _git_quiet(["worktree", "unlock", wt_path], repo_root, log="git worktree unlock failed (non-fatal)")
     _git_quiet(["worktree", "remove", wt_path, "--force"], repo_root, timeout=15, log="Failed to remove worktree")
     _git_quiet(["branch", "-D", branch], repo_root, log=f"Failed to delete branch {branch}")
-
-    _active_worktree = None
     _cprint(f"\033[32m{_t('cli.worktree.cleaned_up', path=wt_path)}\033[0m")
 
 
@@ -1037,18 +1044,12 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             return
         skills_prompt, loaded_skills, missing_skills = result
         if missing_skills:
-            missing_display = ", ".join(missing_skills)
+            from agent.skill_commands import format_missing_skills
             # A typo'd name must not crash a kanban worker; only a fully-missing set fails loudly.
-            if loaded_skills:
-                logger.warning(
-                    "Unknown skill(s) requested, skipping: %s. "
-                    "Continuing with: %s. "
-                    "List available skills with `hermes skills list`.",
-                    missing_display,
-                    ", ".join(loaded_skills),
-                )
-            else:
-                raise ValueError(f"Unknown skill(s): {missing_display}")
+            if not loaded_skills:
+                raise ValueError(format_missing_skills(missing_skills))
+            logger.warning("Skipping %s. Continuing with: %s. List available skills with `hermes skills list`.",
+                           format_missing_skills(missing_skills), ", ".join(loaded_skills))
         if skills_prompt:
             self.system_prompt = "\n\n".join(p for p in (self.system_prompt, skills_prompt) if p).strip()
         self.preloaded_skills += [name for name in loaded_skills if name not in self.preloaded_skills]

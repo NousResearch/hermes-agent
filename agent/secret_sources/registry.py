@@ -287,6 +287,14 @@ def _ordered_enabled_sources(secrets_cfg: dict, *, scope: Optional[str] = None) 
     return enabled
 
 
+def enabled_source_names(secrets_cfg: dict, home_path: Path) -> frozenset:
+    """Names of the sources :func:`apply_all` would fetch for *home_path* right now (registered
+    and enabled). A source missing here was removed or disabled, so a value it injected earlier
+    is no longer backed by anything and must be revoked, not kept as process residue."""
+    secrets_cfg = secrets_cfg if isinstance(secrets_cfg, dict) else {}
+    return frozenset(s.name for s in _ordered_enabled_sources(secrets_cfg, scope=hermes_home_key(home_path)))
+
+
 def _active_profile_name(home_path: Optional[Path]) -> str:
     """Active profile name (``~/.hermes/profiles/<name>``); "" for the default profile."""
     if home_path is not None:

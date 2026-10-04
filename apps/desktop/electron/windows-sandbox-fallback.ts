@@ -5,9 +5,9 @@
  * (`0x80000003` / exit `-2147483645`). Chromium then FATAL-exits
  * ("GPU process isn't usable. Goodbye.") before the UI is usable.
  *
- * Recovery ladder, all scoped to win32:
+ * Recovery ladder:
  *
- * 1. ACL repair (first line): grant `S-1-15-2-2` (ALL APPLICATION PACKAGES)
+ * 1. ACL repair (Windows only): grant `S-1-15-2-2` (ALL APPLICATION PACKAGES)
  *    RX on the install tree. A missing ACE plus orphan AppContainer SIDs is a
  *    known Chromium CHECK failure (electron/electron#51761). Runs at install
  *    time, and again at launch ONLY when the marker shows a prior aborted
@@ -16,10 +16,22 @@
  *    a signature-confirmed GPU/renderer breakpoint death, or TWO consecutive
  *    mid-boot aborts (a single abort can be a task-manager kill or power
  *    loss; the reported failure mode is a deterministic 100% crash loop).
+ *    On Linux (#121954) the evidence signal is the GPU child dying with
+ *    SIGTERM — Chromium's own "GPU process isn't usable. Goodbye." shutdown
+ *    for a GPU process that never came up — which the host matrix pinned to
+ *    the sandboxed GPU child (only `--no-sandbox` survives; `--disable-gpu`
+ *    crashes too, and the GPU child dies pre-main on an FD-ownership
+ *    violation before any Chromium init).
  * 3. The fallback is sticky per app version, not forever: after an update
- *    the sandbox is re-probed once (a new Electron or an installer-applied
- *    ACL grant may have fixed the host). If the re-probe boot aborts, the
- *    next launch goes straight back to `--no-sandbox`.
+ *    the sandbox is re-probed once (a new Electron, an installer-applied
+ *    ACL grant, or a kernel/driver update may have fixed the host). If the
+ *    re-probe boot aborts, the next launch goes straight back to
+ *    `--no-sandbox`.
+ * 4. Windows-only extras (renderer crash-loop relaunch, ACL repair) stay
+ *    win32-gated: Linux has no ACL model, and its renderer crash loops carry
+ *    no sandbox-specific signature.
+ *
+ * Pure helpers stay injectable so tests never boot Electron or touch real ACLs.
  *
  * Pure helpers stay injectable so tests never boot Electron or touch real ACLs.
  */
@@ -28,6 +40,15 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 export const WINDOWS_SANDBOX_MARKER_FILENAME = 'windows-sandbox-fallback.json'
+
+/**
+ * Exit status Chromium uses to SIGTERM its GPU process when it never became
+ * usable (#121954: sandbox-blocked GPU child dies pre-main on an
+ * FD-ownership violation, browser prints "GPU process isn't usable.
+ * Goodbye." and SIGTERMs it). Node reports signal deaths as `null` exitCode
+ * + `signalName: 'SIGTERM'`; Electron serializes that as exitCode 143.
+ */
+export const GPU_CHILD_SANDBOX_SIGTERM_EXIT = 143
 
 /** Well-known SID for "ALL APPLICATION PACKAGES". */
 export const ALL_APPLICATION_PACKAGES_SID = 'S-1-15-2-2'
@@ -183,7 +204,11 @@ export function decideWindowsSandboxLaunch(
 ): SandboxLaunchDecision {
   const appVersion = String(options.appVersion || '')
 
-  if ((options.platform ?? process.platform) !== 'win32') {
+  // The two-strike boot-abort ladder is platform-neutral (both win32 #38216
+  // and linux #121954); the platform-specific helpers gate themselves below.
+  const launchPlatform = options.platform ?? process.platform
+
+  if (launchPlatform !== 'win32' && launchPlatform !== 'linux') {
     return { enable: false, reason: null, nextMarker: { state: 'booting' } }
   }
 
@@ -335,33 +360,43 @@ export function grantAllApplicationPackagesAcl(
  */
 export function shouldRelaunchForGpuSandboxCrash(options: {
   platform?: NodeJS.Platform | string
-  details?: { type?: string; exitCode?: number | string } | null
+  details?: { type?: string; exitCode?: number | string; signalName?: string } | null
   alreadyNoSandbox?: boolean
   relaunchAttempted?: boolean
 }): boolean {
-  if ((options.platform ?? process.platform) !== 'win32') {
-    return false
-  }
+  const platform = options.platform ?? process.platform
 
   if (options.alreadyNoSandbox || options.relaunchAttempted) {
     return false
   }
 
-  const type = String(options.details?.type || '').toLowerCase()
-
-  if (type !== 'gpu') {
+  if (String(options.details?.type || '').toLowerCase() !== 'gpu') {
     return false
   }
 
-  return isWindowsSandboxBreakpointExit(options.details?.exitCode)
+  if (platform === 'win32') {
+    return isWindowsSandboxBreakpointExit(options.details?.exitCode)
+  }
+
+  if (platform === 'linux') {
+    // #121954: the sandbox-blocked GPU child never comes up; Chromium
+    // SIGTERMs it (exit 143) right before its own FATAL "Goodbye." abort.
+    // Deliberately narrow: GPU-only, needs the explicit signature.
+    return (
+      options.details?.exitCode === GPU_CHILD_SANDBOX_SIGTERM_EXIT &&
+      String(options.details?.signalName || '').toUpperCase() === 'SIGTERM'
+    )
+  }
+
+  return false
 }
 
 /**
  * True when a renderer crash loop carries the sandbox breakpoint signature
  * and a one-shot `--no-sandbox` relaunch should replace the dead window
- * (#38216 renderer flavor; same recovery as #56726). Gated on the breakpoint
- * exit code so unrelated renderer crash loops (bad extension, OOM churn)
- * don't silently drop the sandbox.
+ * (#38216 renderer flavor; same recovery as #56726). Windows only: Linux
+ * renderer crash loops carry no sandbox-specific exit signature, so
+ * dropping the sandbox on one would be a guess.
  */
 export function shouldRelaunchForRendererSandboxCrashLoop(options: {
   platform?: NodeJS.Platform | string

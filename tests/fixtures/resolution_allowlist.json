@@ -291,6 +291,11 @@
   },
   {
     "path": "hermes_cli/main_desktop.py",
+    "symbol": "_install_rebuilt_macos_bundles",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main_desktop.py",
     "symbol": "cmd_gui",
     "kind": "bare_which"
   },
@@ -422,6 +427,16 @@
   {
     "path": "hermes_constants.py",
     "symbol": "find_node_executable",
+    "kind": "bare_which"
+  },
+  {
+    "path": "pm/libatomic.py",
+    "symbol": "_command_plan",
+    "kind": "bare_which"
+  },
+  {
+    "path": "pm/libatomic.py",
+    "symbol": "_host_install_command",
     "kind": "bare_which"
   },
   {

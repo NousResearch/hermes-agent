@@ -19086,6 +19086,24 @@
             "default": null,
             "title": "Capabilities"
           },
+          "output_modalities": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Output Modalities"
+          },
           "pricing": {
             "anyOf": [
               {

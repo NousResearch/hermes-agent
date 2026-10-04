@@ -453,6 +453,7 @@ class ModelOptionProvider(OpenModel):
     warning: str | None = None
     featured_models: list[str] | None = None
     capabilities: dict[str, ModelCapabilities] | None = None
+    output_modalities: dict[str, list[str]] | None = None
     pricing: dict[str, ModelPricing] | None = None
     pricing_pending: bool | None = None
     free_tier: bool | None = None

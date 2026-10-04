@@ -95,6 +95,13 @@ def _oversized_active_turn(request: Any = _ACTIVE_REQUEST, groups: int = 10) -> 
     return messages
 
 
+def _actionable_user_text(messages: list[dict]) -> str:
+    """User text after each row's last summary boundary (historical quotes excluded)."""
+    return "\n".join(
+        str(m.get("content")).rsplit(_SUMMARY_END_MARKER, 1)[-1] for m in messages if m["role"] == "user"
+    )
+
+
 def _assert_tool_pairs_are_complete(messages: list[dict]) -> None:
     call_ids = {
         call["id"]
@@ -248,10 +255,7 @@ def test_active_request_survives_repeated_compaction_and_restart(tmp_path) -> No
             _assert_tool_pairs_are_complete(messages)
             # Historical summaries may quote the request. Count only actionable
             # text after their boundary, not those explicitly historical quotes.
-            user_content = "\n".join(
-                str(m.get("content")).rsplit(_SUMMARY_END_MARKER, 1)[-1]
-                for m in messages if m["role"] == "user"
-            )
+            user_content = _actionable_user_text(messages)
             assert user_content.count(_ACTIVE_REQUEST) == 1
             assert user_content.count(_INFLIGHT_TASK_REPLAY_HEADER) == 1
             assert user_content.rfind(_ACTIVE_REQUEST) > user_content.rfind(_SUMMARY_END_MARKER)
@@ -329,10 +333,7 @@ def test_reply_pointer_does_not_count_toward_the_request_size(gateway_kwargs: di
         compressed = compressor.compress(messages, current_tokens=90_000)
     assert len(compressed) < len(messages)
     _assert_tool_pairs_are_complete(compressed)
-    actionable = "\n".join(
-        str(m.get("content")).rsplit(_SUMMARY_END_MARKER, 1)[-1]
-        for m in compressed if m["role"] == "user"
-    )
+    actionable = _actionable_user_text(compressed)
     assert actionable.count(_ACTIVE_REQUEST) == 1
 
 
@@ -367,10 +368,7 @@ def test_a_long_active_request_still_splits_and_survives_verbatim() -> None:
     compressor.tail_token_budget = 1_000  # soft ceiling must hold the long request row itself
     long_request = " ".join(f"step-{i}" for i in range(400))
     assert len(long_request) > _ACTIVE_TASK_MAX_CHARS
-    messages = _oversized_active_turn()
-    messages[3]["content"] = long_request
-    for index in range(10, 40):
-        messages.extend(_tool_group(index))
+    messages = _oversized_active_turn(long_request, groups=40)
 
     cut = compressor._find_tail_cut_by_tokens(messages, compressor._protect_head_size(messages))
     assert cut > 3
@@ -379,9 +377,7 @@ def test_a_long_active_request_still_splits_and_survives_verbatim() -> None:
         compressed = compressor.compress(messages, current_tokens=90_000, force=True)
     assert len(compressed) < len(messages)
     _assert_tool_pairs_are_complete(compressed)
-    live = "\n".join(
-        str(m.get("content")).rsplit(_SUMMARY_END_MARKER, 1)[-1] for m in compressed if m["role"] == "user"
-    )
+    live = _actionable_user_text(compressed)
     assert live.count(long_request) == 1
 
 

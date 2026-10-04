@@ -275,7 +275,7 @@ def build_service(api, version):
 # =========================================================================
 
 
-def gmail_search(args):
+def gmail_search(args: argparse.Namespace) -> None:
     if _gws_binary():
         results = _run_gws(
             ["gmail", "users", "messages", "list"],

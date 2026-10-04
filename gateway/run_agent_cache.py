@@ -702,6 +702,18 @@ class GatewayAgentCacheMixin:
         if not session_key:
             return channel_prompt, source
         if not internal:
+            state = self._peek_session_state(session_key)
+            existing = state.conversation.channel_pin if state else None
+            # Synthetic goal/heartbeat/resume turns arrive non-internal with
+            # channel_prompt=None; overwriting a set pin flips the prompt A->B->A
+            # (fixes #126109). Never downgrade a recorded prompt to None — take
+            # the reuse path instead. Genuine removals re-pin via explicit flows.
+            if channel_prompt is None and existing is not None and existing[0] is not None:
+                channel_prompt = existing[0]
+                if existing[1] and not source.parent_chat_id:
+                    from gateway.session_identity import replace_source
+                    source = replace_source(source, parent_chat_id=existing[1])
+                return channel_prompt, source
             self._session_state(session_key).conversation.channel_pin = (channel_prompt, source.parent_chat_id)
             return channel_prompt, source
         state = self._peek_session_state(session_key)

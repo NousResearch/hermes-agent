@@ -697,7 +697,7 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_listen_tasks[111] = MagicMock()
         adapter._is_allowed_user = MagicMock(return_value=True)
 
-        async def process(guild_id, user_id, pcm_data):
+        async def process(guild_id, user_id, pcm_data, captured_for):
             events.append("process")
 
         adapter._process_voice_input = process
@@ -817,7 +817,7 @@ class TestDiscordVoiceChannelMethods:
              patch("tools.transcription_tools.transcribe_audio",
                    return_value={"success": True, "transcript": "Hello"}), \
              patch("tools.voice_mode_transcript.is_whisper_hallucination", return_value=False):
-            await adapter._process_voice_input(111, 42, pcm_data)
+            await adapter._process_voice_input(111, 42, pcm_data, None)
 
         callback.assert_called_once_with(guild_id=111, user_id=42, transcript="Hello")
 

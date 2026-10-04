@@ -136,7 +136,17 @@ def _open_child_session_db(parent_agent) -> Any:
     with _quiet("subagent: failed to open dedicated SessionDB; child persistence disabled", exc_info=True):
         from hermes_state_registry import acquire
         _parent_db_path = getattr(parent_session_db, "db_path", None)
-        return acquire(_parent_db_path) if _parent_db_path is not None else acquire()
+        if _parent_db_path is None:
+            return acquire()
+        # Reject non-path values: a MagicMock / test double auto-implements
+        # __fspath__ (satisfying os.PathLike's __subclasshook__) and Path(mock)
+        # silently coerces via str(mock) -> "MagicMock/mock._session_db.db_path/<id>",
+        # then SessionDB mkdir's that garbage directory on disk. Only concrete path
+        # types (str/bytes/Path) are safe; anything else (mock, sentinel) disables
+        # child persistence rather than writing the child into the wrong db.
+        if not isinstance(_parent_db_path, (str, bytes, Path)):
+            return None
+        return acquire(_parent_db_path)
     return None
 
 def _apply_child_cache_ttl(child) -> None:

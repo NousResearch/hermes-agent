@@ -107,6 +107,11 @@ def _fetch(conn: sqlite3.Connection, execution_id: str) -> Optional[Dict[str, An
     return dict(row) if row is not None else None
 
 
+def cron_task_id(job_id: str, execution_id: str) -> str:
+    """Tool-layer task id of one cron run; its session-scoped Docker sandbox is labeled with it."""
+    return f"cron:{job_id}:{execution_id}"
+
+
 def _emit_execution_state(
     record: Optional[Dict[str, Any]], *, delivery_outcome: Optional[str] = None
 ) -> None:
@@ -143,6 +148,38 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     # bounded by the stale-claim sweep below.
     from gateway.status import start_time_fingerprints_match
     return start_time_fingerprints_match(started_at, current)
+
+
+def _owner_provably_gone(pid: int, started_at: Optional[int]) -> bool:
+    """Stricter than ``not _owner_is_live``: a NULL or unreadable start-time fingerprint is not
+    proof (#108480). Sandbox removal is irreversible, so only a vanished PID or a known
+    fingerprint mismatch (PID reuse) counts."""
+    try:
+        from gateway.status import _pid_exists, start_time_fingerprints_match
+        if not _pid_exists(pid):
+            return True
+    except Exception:
+        return False
+    if started_at is None:
+        return False
+    current = _process_start_time(pid)
+    return current is not None and not start_time_fingerprints_match(started_at, current)
+
+
+def _release_dead_owner_sandbox(
+    record: Optional[Dict[str, Any]], pid: int, started_at: Optional[int]
+) -> None:
+    """Remove the Docker sandbox of a run whose owner died before its teardown ran (SIGTERM from a
+    wall-clock ``timeout``, SIGKILL, OOM). Session-scoped sandboxes idle in ``sleep infinity``, so
+    the exited-only orphan reaper never reclaims them (#75467) and each such run leaks one
+    container. The ledger is what proves the owner gone, so reclamation happens here."""
+    if record is None or not _owner_provably_gone(pid, started_at):
+        return
+    try:
+        from tools.environments.docker import remove_task_containers
+        remove_task_containers(cron_task_id(record["job_id"], record["id"]))
+    except Exception:
+        pass  # sandbox cleanup must never fail ledger recovery
 
 
 def _live_owner_stale_after_seconds() -> Optional[float]:
@@ -326,6 +363,7 @@ def recover_interrupted_executions() -> int:
     now = _hermes_now().isoformat()
     changed = 0
     recovered: List[Dict[str, Any]] = []
+    dead_owners: List[tuple] = []
     # Derived on the first live-owned row only: the bound reads config, and the idle gateway
     # tick must stay config-free (tests/cron/test_idle_tick_config_skip.py).
     stale_after: Optional[float] = None
@@ -379,10 +417,15 @@ def recover_interrupted_executions() -> int:
                 record = _fetch(conn, row["id"])
                 if record is not None:
                     recovered.append(record)
+                    # A wedged owner is alive and may still be driving its sandbox.
+                    if reason == _OWNER_GONE_REASON:
+                        dead_owners.append((record, int(row["pid"]), row["process_started_at"]))
         if changed:
             _prune_unlocked(conn)
     for record in recovered:
         _emit_execution_state(record)
+    for record, pid, started_at in dead_owners:
+        _release_dead_owner_sandbox(record, pid, started_at)
     return changed
 
 
@@ -438,6 +481,7 @@ def terminalize_dead_owner(execution_id: str, *, reason: str) -> bool:
         record = _fetch(conn, execution_id)
         _prune_unlocked(conn)
     _emit_execution_state(record)
+    _release_dead_owner_sandbox(record, int(row["pid"]), row["process_started_at"])
     return True
 
 

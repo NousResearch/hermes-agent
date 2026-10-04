@@ -219,6 +219,30 @@ def reap_orphan_containers(
     return removed
 
 
+def remove_task_containers(task_id: str, *, docker_exe: str | None = None) -> int:
+    """Force-remove every hermes container labeled for *task_id*, running ones included. Only for
+    a task whose owner is proven gone (cron dead-owner recovery): the label carries that run's
+    unique id, so no live session shares the container. Returns the number removed."""
+    docker = docker_exe or find_docker()
+    if not docker:
+        return 0
+    filters = ["--filter", "label=hermes-agent=1",
+               "--filter", f"label=hermes-task-id={_sanitize_label_value(task_id)}"]
+    listing = _docker_query(
+        [docker, "ps", "-a", *filters, "--format", "{{.ID}}"], timeout=15,
+        fail="task container lookup failed: %s", nonzero="task container lookup returned %d: %s")
+    if listing is None:
+        return 0
+    removed = 0
+    for cid in (ln.strip() for ln in listing.stdout.splitlines() if ln.strip()):
+        result = _docker_query(
+            [docker, "rm", "-f", cid], timeout=30, fail="docker rm -f %s failed: %s", fail_args=(cid[:12],))
+        if result is not None and result.returncode == 0:
+            removed += 1
+            logger.info("Removed sandbox %s of dead-owner task %s", cid[:12], task_id)
+    return removed
+
+
 def _container_finished_at(docker_exe: str, container_id: str):
     """``docker inspect`` FinishedAt as an aware datetime; ``None`` (= don't reap) when
     missing/unparseable or Docker's never-finished zero value ``0001-01-01T00:00:00Z``."""

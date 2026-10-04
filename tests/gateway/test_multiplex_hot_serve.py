@@ -7,6 +7,7 @@ profiles' live adapters. The cron ticker's live enumerator is covered in ``tests
 """
 import asyncio
 import json
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -109,6 +110,51 @@ async def test_opt_out_rescans_and_opt_in_waits_for_own_gateway_to_stop(tmp_path
         assert result["added"] == ["solo"]
         assert _served_record(home) == ["default", "solo"]
         assert runner._started.count("solo") == 2
+
+
+@pytest.mark.asyncio
+async def test_stalled_own_gateway_probe_never_wedges_the_loop_or_serves(tmp_path, monkeypatch, caplog):
+    """#132547: the pre-serve own-gateway probe can end in a control-socket read that has no
+    timeout of its own (a Windows named pipe stalls there until its peer answers); inline on
+    the loop thread it parked shutdown_watchdog liveness probes until the multiplexer was
+    hard-killed with exit 75. A stalled probe must leave the event loop turning, keep the
+    profile unserved for that cycle, and the profile must serve once the probe answers."""
+    from gateway import run_profile_reconcile as reconcile_mod
+
+    runner, home = _runner(tmp_path, monkeypatch)
+    _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+
+        released = threading.Event()
+
+        def _stalling_probe(profile_home):
+            released.wait(timeout=10)  # the control pipe that never answers
+            return None
+
+        monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", _stalling_probe)
+        monkeypatch.setattr(reconcile_mod, "_OWN_GATEWAY_PROBE_TIMEOUT_SECS", 0.2)
+
+        _mkprofile(home, "gamma", "DISCORD_BOT_TOKEN=gamma-token\n")
+
+        async def _liveness_probe():
+            # shutdown_watchdog stand-in: the loop must keep turning while the probe is stalled.
+            for _ in range(4):
+                await asyncio.sleep(0.05)
+
+        heartbeat = asyncio.ensure_future(_liveness_probe())
+        # On the unfixed code an inline probe parks the loop for the full ``released`` wait
+        # and this wait_for times out instead of returning a reconcile result.
+        result = await asyncio.wait_for(runner.reconcile_served_profiles(reason="watcher"), timeout=2.0)
+        assert result["added"] == []
+        assert _served_record(home) == ["default", "alpha"]
+        assert len([r for r in caplog.records if "still runs its own gateway" in r.message]) == 1
+        await asyncio.wait_for(heartbeat, timeout=1.0)
+
+        released.set()
+        result = await runner.reconcile_served_profiles(reason="watcher")
+        assert result["added"] == ["gamma"]
+        assert _served_record(home) == ["default", "alpha", "gamma"]
 
 
 @pytest.mark.asyncio

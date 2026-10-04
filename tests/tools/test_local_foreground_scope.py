@@ -249,17 +249,17 @@ def test_real_systemd_timeout_removes_detached_process_and_unit(real_systemd_gat
     assert state.stdout.strip() == "not-found", state
 
 
-def test_real_systemd_crash_sweep_stops_a_dead_gateways_scope(real_systemd_gateway):
-    """A scope issued by a PID that is gone is stopped by the PID-scoped sweep.
+def test_real_systemd_crash_sweep_stops_the_scopes_of_a_gone_pid(real_systemd_gateway):
+    """The ExecStopPost sweep stops a dead PID's scope and leaves a live one's alone.
 
-    This is the ExecStopPost half: systemd's ``$MAINPID`` is unset there, so the sweep
-    takes the dead gateway's PID from its record and stops ``hermes-fg-<pid>-*.scope``.
-    The PID stays in the glob, so a live gateway's scopes (another PID, same user
-    manager) are never in the match — asserted here by a second, live scope.
+    It enumerates the loaded ``hermes-fg-*`` scopes and reads the PID out of each unit
+    name — no PID record is consulted, because ``$MAINPID`` is unset in ``ExecStopPost``
+    and a record can be cleaned by a status read or left naming the replacement. The live
+    unit here is named after THIS process, so the guard is measured against a real live
+    PID, not a mocked one.
     """
-    fake_pid = 999999  # no live process: exactly what a SIGKILLed gateway leaves behind
-    dead_unit = f"hermes-fg-{fake_pid}-c0ffee01.scope"
-    live_unit = f"hermes-fg-{fake_pid + 1}-c0ffee02.scope"
+    dead_unit = "hermes-fg-999999-c0ffee01.scope"  # no live process: what a SIGKILL leaves
+    live_unit = f"hermes-fg-{os.getpid()}-c0ffee02.scope"  # this test process is alive
     if not shutil.which("systemd-run"):
         pytest.skip("systemd-run is unavailable")
     bus_env = process_registry.systemd_user_bus_env()
@@ -283,15 +283,19 @@ def test_real_systemd_crash_sweep_stops_a_dead_gateways_scope(real_systemd_gatew
         while time.monotonic() < deadline and not (load_state(dead_unit) == load_state(live_unit) == "loaded"):
             time.sleep(0.1)
         assert load_state(dead_unit) == "loaded" and load_state(live_unit) == "loaded"
+        # The enumeration the sweep depends on sees both, on a real manager.
+        enumerated = process_registry.list_systemd_user_scope_units("hermes-fg-*.scope")
+        assert dead_unit in enumerated and live_unit in enumerated, enumerated
 
-        local_env.stop_foreground_scopes(fake_pid)
+        swept = local_env.sweep_dead_foreground_scopes()
 
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline and dead.poll() is None:
             time.sleep(0.1)
         assert dead.poll() is not None, f"{dead_unit} survived the sweep"
         assert load_state(dead_unit) == "not-found", dead_unit
-        # The neighbouring gateway's PID is not in the glob: it keeps its command.
+        assert swept >= 1, swept
+        # The live PID's scope is not in the match: that gateway keeps its command.
         assert live.poll() is None and load_state(live_unit) == "loaded", live_unit
     finally:
         for proc in (dead, live):

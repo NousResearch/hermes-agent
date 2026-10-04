@@ -106,82 +106,87 @@ class TestLiveGatewayGuard:
 class TestForegroundScopeSweep:
     """The ExecStopPost parity for foreground scopes (#70716): a SIGKILLed gateway
     leaves its long-lived command in ``hermes-fg-<pid>-*.scope``, which neither the
-    unit's KillMode nor the cgroup reap reaches, and the next gateway has a new PID."""
+    unit's KillMode nor the cgroup reap reaches, and the next gateway has a new PID.
 
-    def test_sweep_reads_the_dead_pid_from_the_record_and_does_not_block(self, monkeypatch):
+    The sweep enumerates those units and reads the PID out of each name, so it never
+    consults a PID record: one can be cleaned by a concurrent status read or left naming
+    the replacement gateway, while the unit name cannot lie about who issued it."""
+
+    def _units(self, monkeypatch, names: list[str]) -> None:
+        monkeypatch.setattr(
+            "tools.process_registry.list_systemd_user_scope_units", lambda pattern: list(names)
+        )
+
+    def _stopped(self, monkeypatch) -> list:
+        stopped: list = []
+        monkeypatch.setattr(
+            "tools.process_registry._stop_systemd_unit",
+            lambda unit, **kw: stopped.append((unit, kw)) or True,
+        )
+        return stopped
+
+    def test_sweep_stops_only_the_scopes_of_a_gone_pid(self, monkeypatch):
         import gateway.status
 
-        monkeypatch.setattr(gateway.status, "_read_pid_record", lambda path=None: {"pid": 4242})
-        monkeypatch.setattr(gateway.status, "_pid_exists", lambda pid: False)
-        seen: dict = {}
-        monkeypatch.setattr(
-            "tools.environments.local.stop_foreground_scopes",
-            lambda pid=None, **kw: seen.update(pid=pid, **kw),
+        live = os.getpid()  # this test process: alive on purpose
+        monkeypatch.setattr(gateway.status, "_pid_exists", lambda pid: pid == live)
+        self._units(
+            monkeypatch,
+            [
+                "hermes-fg-4242-c0ffee01.scope",  # a gateway that is gone: its command stops
+                f"hermes-fg-{live}-c0ffee02.scope",  # a live gateway: it keeps its command
+                "hermes-fg-4242-c0ffee03.scope",  # the dead gateway's second command
+                "hermes-fg-c0ffee04.scope",  # no PID in the name: never touched
+                "hermes-pty-99.scope",  # another scope family entirely
+            ],
         )
+        stopped = self._stopped(monkeypatch)
 
         assert cgroup_cleanup.reap_foreground_scopes() is True
-        # KillMode=mixed never reaches the scope, so $MAINPID would have to — and it is
-        # unset in ExecStopPost. The record is the handle; the PID stays in the glob.
-        assert seen == {"pid": 4242, "no_block": True}
+        assert stopped == [
+            ("hermes-fg-4242-c0ffee01.scope", {"no_block": True}),
+            ("hermes-fg-4242-c0ffee03.scope", {"no_block": True}),
+        ]
 
-    def test_sweep_accepts_an_explicit_pid(self, monkeypatch):
+    def test_sweep_with_nothing_to_do_reports_false(self, monkeypatch):
         import gateway.status
 
-        monkeypatch.setattr(gateway.status, "_pid_exists", lambda pid: False)
-        seen: list = []
-        monkeypatch.setattr(
-            "tools.environments.local.stop_foreground_scopes",
-            lambda pid=None, **kw: seen.append((pid, kw)),
-        )
-
-        assert cgroup_cleanup.reap_foreground_scopes(777) is True
-        assert seen == [(777, {"no_block": True})]
-
-    def test_live_recorded_pid_is_never_swept(self, monkeypatch):
-        # A record naming a LIVE gateway (a --replace whose unlink no-oped, or a status
-        # read that rewrote it) must not turn into a sweep of that gateway's scopes.
-        import gateway.status
-
-        monkeypatch.setattr(gateway.status, "_read_pid_record", lambda path=None: {"pid": 4243})
-        monkeypatch.setattr(gateway.status, "_pid_exists", lambda pid: True)
-        called: list = []
-        monkeypatch.setattr(
-            "tools.environments.local.stop_foreground_scopes", lambda *a, **kw: called.append(a)
-        )
+        monkeypatch.setattr(gateway.status, "_pid_exists", lambda pid: True)  # all alive
+        self._units(monkeypatch, [f"hermes-fg-{os.getpid()}-c0ffee05.scope"])
+        stopped = self._stopped(monkeypatch)
 
         assert cgroup_cleanup.reap_foreground_scopes() is False
-        assert called == []
-        # Explicit-PID callers (tests, future callers) get the same guard.
-        assert cgroup_cleanup.reap_foreground_scopes(4243) is False
+        assert stopped == []
+
+    def test_sweep_without_units_reports_false(self, monkeypatch):
+        # A graceful stop already stopped its own scopes, and an unreachable manager
+        # enumerates nothing: both are "nothing to do", not a reason to keep looking.
+        self._units(monkeypatch, [])
+        stopped = self._stopped(monkeypatch)
+
+        assert cgroup_cleanup.reap_foreground_scopes() is False
+        assert stopped == []
 
     def test_liveness_check_fails_closed(self, monkeypatch):
         import gateway.status
 
-        monkeypatch.setattr(gateway.status, "_read_pid_record", lambda path=None: {"pid": 4244})
         monkeypatch.setattr(
             gateway.status, "_pid_exists", lambda pid: (_ for _ in ()).throw(RuntimeError("boom"))
         )
-        called: list = []
-        monkeypatch.setattr(
-            "tools.environments.local.stop_foreground_scopes", lambda *a, **kw: called.append(a)
-        )
+        self._units(monkeypatch, ["hermes-fg-4242-c0ffee06.scope"])
+        stopped = self._stopped(monkeypatch)
 
         assert cgroup_cleanup.reap_foreground_scopes() is False
-        assert called == []
+        assert stopped == []
 
-    def test_no_sweep_without_a_record(self, monkeypatch):
-        # A graceful stop unlinks the record before exiting, and it also stops its own
-        # scopes in-process — so a missing record must not turn into a blind sweep.
+    def test_a_stop_that_fails_is_not_counted(self, monkeypatch):
         import gateway.status
 
-        monkeypatch.setattr(gateway.status, "_read_pid_record", lambda path=None: None)
-        called: list = []
-        monkeypatch.setattr(
-            "tools.environments.local.stop_foreground_scopes", lambda *a, **kw: called.append(a)
-        )
+        monkeypatch.setattr(gateway.status, "_pid_exists", lambda pid: False)
+        self._units(monkeypatch, ["hermes-fg-4242-c0ffee07.scope"])
+        monkeypatch.setattr("tools.process_registry._stop_systemd_unit", lambda unit, **kw: False)
 
         assert cgroup_cleanup.reap_foreground_scopes() is False
-        assert called == []
 
     def test_main_sweeps_only_after_a_permitted_reap(self, monkeypatch):
         monkeypatch.setattr(cgroup_cleanup, "_parent_is_systemd", lambda: True)

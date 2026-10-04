@@ -823,6 +823,21 @@ def _profile_dirs() -> List[Path]:
         return []
 
 
+def _snap_browser_profile_stores() -> List[Path]:
+    """Every ``~/snap/<pkg>/common/hermes-browser-profile`` real-profile snapshot store (#128514).
+
+    Snap-confined browsers keep their copied Cookies / Login Data outside HERMES_HOME, so the
+    ``browser-profile`` entry under each credential home doesn't reach them. The package name
+    comes from the resolved snap binary (``/snap/bin/brave-browser`` -> ``brave-browser``),
+    so enumerate the layout itself. Read at check time like ``_profile_dirs()``; empty where
+    ``~/snap`` doesn't exist (non-Linux hosts)."""
+    try:
+        snap_root = Path(os.path.expanduser("~")) / "snap"
+        return [p / "common" / "hermes-browser-profile" for p in snap_root.iterdir() if p.is_dir()]
+    except OSError:
+        return []
+
+
 def _credential_home_roots() -> List[Path]:
     """Every Hermes home whose credential stores the denylist must cover: the ACTIVE home
     (the per-turn HERMES_HOME override under ``gateway.multiplex_profiles``), the shared root
@@ -890,7 +905,8 @@ def _media_delivery_denied_paths() -> List[Path]:
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
             *(home / sub for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
             *(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS),
-            *_kanban_board_db_paths()]
+            *_kanban_board_db_paths(),
+            *_snap_browser_profile_stores()]
 
 
 def _resolve_path(path: Path, *, strict: bool = False, expand: bool = False) -> Optional[Path]:

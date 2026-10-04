@@ -745,9 +745,17 @@ def cleanup_real_profile_snapshots() -> None:
     snapshots live outside HERMES_HOME (~/snap/<name>/common) yet hold the same cookie copies,
     so they are swept too (#128514)."""
     roots = [str(get_hermes_home() / "browser-profile")]
-    home = os.path.expanduser("~")
-    roots += [posixpath.join(home, "snap", parts[1], "common", _SNAP_COPY_DIR_NAME)
-              for parts in _LINUX_SNAP_PROFILE_PARTS.values()]
+    # The snap package name is derived from the resolved binary at launch time
+    # (/snap/bin/brave-browser -> brave-browser), NOT from _LINUX_SNAP_PROFILE_PARTS (which
+    # maps browser keys to their SOURCE profile dirs), so enumerate the store layout itself:
+    # every ~/snap/<pkg>/common/hermes-browser-profile this build can create gets swept.
+    snap_root = posixpath.join(os.path.expanduser("~"), "snap")
+    try:
+        packages = [p for p in os.listdir(snap_root)
+                    if os.path.isdir(posixpath.join(snap_root, p))]
+    except OSError:
+        packages = []
+    roots += [posixpath.join(snap_root, pkg, "common", _SNAP_COPY_DIR_NAME) for pkg in packages]
     for root in roots:
         if os.path.isdir(root):
             shutil.rmtree(root, ignore_errors=True)

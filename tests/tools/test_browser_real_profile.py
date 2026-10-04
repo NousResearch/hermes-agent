@@ -746,6 +746,34 @@ class TestReviewRound3:
         for snap in ("chromium", "brave"):
             assert not (tmp_path / "snap" / snap / "common" / "hermes-browser-profile").exists()
 
+    def test_cleanup_sweeps_packages_beyond_the_profile_table(self, tmp_path, monkeypatch):
+        """#128518: the snap package name comes from the resolved binary
+        (/snap/bin/brave-browser -> brave-browser), which disagrees with the hardcoded
+        _LINUX_SNAP_PROFILE_PARTS keys — consent-off must sweep the store layout itself,
+        or cookie copies survive revocation."""
+        import hermes_cli.browser_connect as bc
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
+        monkeypatch.setattr(bc.os.path, "expanduser", lambda _p: tmp_path.as_posix())
+        for snap in ("brave-browser", "google-chrome", "uncommon-chromium"):
+            store = tmp_path / "snap" / snap / "common" / "hermes-browser-profile" / "Default"
+            store.mkdir(parents=True)
+            (store / "Cookies").write_text("secret")
+        bc.cleanup_real_profile_snapshots()
+        for snap in ("brave-browser", "google-chrome", "uncommon-chromium"):
+            assert not (tmp_path / "snap" / snap / "common" / "hermes-browser-profile").exists(), snap
+
+    def test_cleanup_leaves_non_store_snap_data_alone(self, tmp_path, monkeypatch):
+        """Only the hermes-owned snapshot dir is swept — the snap's own profile data under
+        ~/snap/<pkg>/common must survive a consent-off cleanup."""
+        import hermes_cli.browser_connect as bc
+        monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
+        monkeypatch.setattr(bc.os.path, "expanduser", lambda _p: tmp_path.as_posix())
+        own = tmp_path / "snap" / "chromium" / "common" / "chromium" / "Default" / "Cookies"
+        own.parent.mkdir(parents=True)
+        own.write_text("user-own-profile")
+        bc.cleanup_real_profile_snapshots()
+        assert own.exists()
+
     # ── Windows lock probe (unit; the live share-lock is proven in the
     #    windows-latest E2E — here we cover the probe's contract portably) ──
     def test_lock_probe_false_when_readable(self, tmp_path):

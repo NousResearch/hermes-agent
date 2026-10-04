@@ -36,6 +36,27 @@ def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
     assert base.validate_media_delivery_path(str(path)) is None
 
 
+def test_media_delivery_denies_snap_browser_profile_store(tmp_path, monkeypatch):
+    """#128514/#128518: the snap real-profile store (copied cookies/logins) lives outside
+    HERMES_HOME under ~/snap/<pkg>/common, so the <home>/browser-profile entry can't reach
+    it — the store itself must be on the media denylist."""
+    import gateway.platforms.base as base
+
+    # Only the "~" lookup is redirected: an unconditional stub would also fold the
+    # path-under-test down to the tmp root inside validate_media_delivery_path.
+    monkeypatch.setattr(base.os.path, "expanduser",
+                        lambda p: str(tmp_path) if p == "~" else p)
+    # brave-browser: the package /snap/bin/brave-browser resolves to — a hardcoded
+    # browser-key table would only sweep "brave" and leave this store deliverable.
+    store = tmp_path / "snap" / "brave-browser" / "common" / "hermes-browser-profile"
+    cookies = store / "Default" / "Cookies"
+    cookies.parent.mkdir(parents=True)
+    cookies.write_text("sqlite-cookies")
+
+    assert store in base._media_delivery_denied_paths()
+    assert base.validate_media_delivery_path(str(cookies)) is None
+
+
 class TestInboundMediaSizeCap:
     """gateway.max_inbound_media_bytes caps inbound media buffered into RAM (#13145)."""
 

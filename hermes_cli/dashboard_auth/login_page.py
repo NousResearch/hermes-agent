@@ -31,28 +31,28 @@ _LOGIN_HTML_TEMPLATE = """\
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('/fonts/Collapse-Regular.woff2') format('woff2');
+    src: url('fonts/Collapse-Regular.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Collapse';
     font-style: normal;
     font-weight: 700;
     font-display: swap;
-    src: url('/fonts/Collapse-Bold.woff2') format('woff2');
+    src: url('fonts/Collapse-Bold.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Rules Compressed';
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('/fonts/RulesCompressed-Regular.woff2') format('woff2');
+    src: url('fonts/RulesCompressed-Regular.woff2') format('woff2');
   }}
   @font-face {{
     font-family: 'Rules Compressed';
     font-style: normal;
     font-weight: 600;
     font-display: swap;
-    src: url('/fonts/RulesCompressed-Medium.woff2') format('woff2');
+    src: url('fonts/RulesCompressed-Medium.woff2') format('woff2');
   }}
 
   :root {{
@@ -317,14 +317,14 @@ _EMPTY_HTML = """\
     font-style: normal;
     font-weight: 400;
     font-display: swap;
-    src: url('/fonts/Collapse-Regular.woff2') format('woff2');
+    src: url('fonts/Collapse-Regular.woff2') format('woff2');
   }
   @font-face {
     font-family: 'Rules Compressed';
     font-style: normal;
     font-weight: 600;
     font-display: swap;
-    src: url('/fonts/RulesCompressed-Medium.woff2') format('woff2');
+    src: url('fonts/RulesCompressed-Medium.woff2') format('woff2');
   }
   :root {
     --background-base: #170d02;
@@ -409,7 +409,7 @@ _PASSWORD_FORM_SCRIPT = """\
         password: (form.querySelector('input[name=password]') || {}).value || '',
         next: (form.querySelector('input[name=next]') || {}).value || ''
       };
-      fetch('/auth/password-login', {
+      fetch('auth/password-login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -417,7 +417,7 @@ _PASSWORD_FORM_SCRIPT = """\
       }).then(function (resp) {
         if (resp.ok) {
           return resp.json().then(function (data) {
-            window.location.assign((data && data.next) || '/');
+            window.location.assign((data && data.next) || './');
           });
         }
         var msg = resp.status === 429

@@ -1963,8 +1963,9 @@ DEFAULT_CONFIG = {
         "turn_wait_seconds": 120,
     },
     "code_execution": {  # execute_code settings (programmatic tool calls).
-        # project = session cwd; backend venv/conda, then an operator-selected Git workspace's
-        # cwd-local .venv/venv, then Hermes Python. Terminal activation/PATH are not synced.
+        # project = session cwd; backend venv/conda, or an operator-selected Git workspace's
+        # cwd-local .venv/venv if no activated executable exists. Failed activation probes
+        # fall directly back to Hermes Python. Terminal activation/PATH are not synced.
         # strict = isolated temp dir with hermes-agent's own python
         # (sys.executable): max isolation, project deps/relative paths won't work. Env scrubbing
         # (*_API_KEY, *_TOKEN, *_SECRET, ...) and the tool whitelist apply in both modes.

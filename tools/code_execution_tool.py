@@ -843,7 +843,8 @@ DEFAULT_EXECUTION_MODE = "project"
 
 def _get_execution_mode() -> str:
     """Resolve mode (invalid → default with a warning). Project uses the session cwd and
-    backend activation, then an operator-trusted cwd-local venv, then Hermes Python.
+    backend activation, or an operator-trusted cwd-local venv if no activated executable
+    is found. A failed activation probe falls directly back to Hermes Python.
     Strict uses an isolated temp dir and Hermes Python. Both scrub env and restrict tools.
     """
     cfg_value = str(_load_config().get("mode", DEFAULT_EXECUTION_MODE)).strip().lower()
@@ -898,9 +899,11 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     else:
         cwd_note = (
             "Scripts run in the session's working directory. Local interpreter: "
-            "an active VIRTUAL_ENV/CONDA_PREFIX from the backend environment, then "
-            "a .venv/venv in that directory if it belongs to an operator-selected "
-            "Git workspace; otherwise Hermes's own Python. Candidates must be Python 3.8+. "
+            "VIRTUAL_ENV/CONDA_PREFIX from the backend environment; if no activated "
+            "executable is found, a .venv/venv in that directory if it belongs to an "
+            "operator-selected Git workspace. A failed activation probe falls directly "
+            "back to Hermes's own Python; discovered candidates must be Python 3.8+ "
+            "or discovery continues, falling back to Hermes's own Python. "
             "Terminal activation and PATH are not synchronized; check imports before "
             "relying on project packages."
         )

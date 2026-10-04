@@ -1056,6 +1056,7 @@ class _ExecPlan:
     cwd: str
     host_cwd: Optional[str]
     effective_timeout: int
+    remote_ssh: bool = False
     # Set when a foreground call asked for more than FOREGROUND_MAX_TIMEOUT and was promoted to a
     # tracked background process instead of being refused (the requested seconds, for the note).
     promoted_from_foreground_timeout: Optional[int] = None
@@ -1074,7 +1075,7 @@ _PROMOTED_NOTE = (
 
 def _plan_execution(
     command: Any, *, task_id: Optional[str], timeout: Optional[int],
-    background: bool, _host_local: bool,
+    background: bool, _host_local: bool, remote: Optional[str] = None,
 ) -> _ExecPlan:
     """Resolve backend, env-cache key, image, cwd and timeout for one call.
 
@@ -1089,7 +1090,12 @@ def _plan_execution(
         ))
 
     config = _get_env_config()
-    env_type = "local" if _host_local else config["env_type"]
+    if remote is not None:
+        if remote != "ssh" or _host_local or background:
+            raise _Rejected(_error_json("remote supports only foreground calls to the configured ssh target", status="error"))
+        if not config.get("ssh_host") or not config.get("ssh_user"):
+            raise _Rejected(_error_json("Configure terminal.ssh_host and terminal.ssh_user before using remote='ssh'", status="error"))
+    env_type = "ssh" if remote == "ssh" else ("local" if _host_local else config["env_type"])
 
     # Fail closed under a refusal scope: the routed profile's terminal
     # policy could not be resolved, so running with the launch process's
@@ -1101,6 +1107,8 @@ def _plan_execution(
         enforce_no_refusal()
 
     effective_task_id = _resolve_container_task_id(task_id)
+    if remote == "ssh" and config["env_type"] != "ssh":
+        effective_task_id = f"remote-ssh-{effective_task_id}"
     if _host_local:
         # Control-plane children run beside this interpreter, never inside
         # the configured Docker/SSH backend; keep their env cache separate.
@@ -1111,9 +1119,11 @@ def _plan_execution(
     # task id first, then the collapsed container id.
     overrides = resolve_task_overrides(task_id)
     image = _select_image(env_type, overrides, config)
-
     cwd = coerce_ssh_remote_cwd(
-        overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"], env_type)
+        "~" if remote == "ssh" and config["env_type"] != "ssh" else
+        (overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]), env_type)
+    if remote == "ssh":
+        config = {**config, "env_type": "ssh", "cwd": cwd, "host_cwd": None}
     host_cwd = _resolve_task_host_cwd(config, task_id)
     # config["cwd"] was sanitized for container backends in _get_env_config
     # but an override / session record is raw: a host path would reach
@@ -1159,6 +1169,7 @@ def _plan_execution(
     return _ExecPlan(
         config=config, env_type=env_type, effective_task_id=effective_task_id,
         image=image, cwd=cwd, host_cwd=host_cwd, effective_timeout=timeout or config["timeout"],
+        remote_ssh=remote == "ssh" and effective_task_id.startswith("remote-ssh-"),
         promoted_from_foreground_timeout=promoted, auto_background_command=auto_bg,
     )
 
@@ -1197,7 +1208,7 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
     env_type, eff = plan.env_type, plan.effective_task_id
 
     with _env_lock:
-        env: Any = _lookup_active_env(eff, task_id)
+        env: Any = _lookup_active_env(eff, None if eff.startswith("remote-ssh-") else task_id)
     if env is not None:
         return env
 
@@ -1206,7 +1217,7 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
 
     with task_lock:
         with _env_lock:
-            env = _lookup_active_env(eff, task_id)
+            env = _lookup_active_env(eff, None if eff.startswith("remote-ssh-") else task_id)
         if env is not None:
             return env
 
@@ -1217,6 +1228,7 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
             new_env = _create_configured_env(
                 plan.config, env_type, image=plan.image, cwd=plan.cwd,
                 timeout=plan.effective_timeout, task_id=eff, host_cwd=plan.host_cwd,
+                probe_only=plan.remote_ssh,
             )
         except ImportError as e:
             raise _Rejected(_error_json(
@@ -1381,6 +1393,7 @@ def terminal_tool(
     _completion_output_chars: int = 0,
     heartbeat: int = 0,
     persist_on_release: bool = False,
+    remote: Optional[str] = None,
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
@@ -1407,7 +1420,8 @@ def terminal_tool(
     plan = None
     try:
         plan = _plan_execution(
-            command, task_id=task_id, timeout=timeout, background=background, _host_local=_host_local,
+            command, task_id=task_id, timeout=timeout, background=background,
+            _host_local=_host_local, remote=remote,
         )
         auto_bg = getattr(plan, "auto_background_command", None)
         if auto_bg is not None:
@@ -1423,6 +1437,8 @@ def terminal_tool(
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
+        if remote == "ssh" and effective_task_id.startswith("remote-ssh-"):
+            session_key = effective_task_id
 
         # The supervised-gateway identity probe ends in a kernel process query
         # (psutil create_time) that has wedged for the better part of an hour on
@@ -1533,6 +1549,11 @@ TERMINAL_SCHEMA = {
                 "type": "string",
                 "description": "Absolute working directory for this command only."
             },
+            "remote": {
+                "type": "string",
+                "enum": ["ssh"],
+                "description": "Run one foreground command on the configured SSH host (terminal.ssh_host/ssh_user) without changing the local backend. Direct sudo commands use the masked password dialog."
+            },
             "pty": {
                 "type": "boolean",
                 "description": "With background=true: pseudo-terminal for interactive CLIs (REPLs, coding agents); drive it with process_manage write/submit. Local backend only.",
@@ -1634,6 +1655,7 @@ def _handle_terminal(args, **kw):
         task_id=kw.get("task_id"),
         session_id=kw.get("session_id"),
         workdir=args.get("workdir"),
+        remote=args.get("remote"),
         pty=args.get("pty", False),
         notify_on_complete=notify_on_complete,
         watch_patterns=watch_patterns,

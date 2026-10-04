@@ -59,6 +59,30 @@ def test_desktop_workspace_flow_is_accepted_by_the_contracts(repo):
     assert "sourceCwd" in ok("complete.path", word="")
 
 
+@pytest.mark.parametrize(("tier_params", "expected_tier"), [
+    ({}, None),
+    ({"fast": False}, ""),
+    ({"fast": True}, "priority"),
+    ({"service_tier": "standard", "fast": True}, ""),
+    ({"service_tier": "priority", "fast": False}, "priority"),
+    ({"service_tier": "ultrafast", "fast": False}, "ultrafast"),
+])
+def test_workspace_create_preserves_composer_overrides(repo, tier_params, expected_tier):
+    prepared = ok("projects.workspace.prepare", path=str(repo), mode="worktree",
+                  requestId="composer-overrides")
+    created = ok("session.create", source="desktop", cwd=prepared["cwd"], cwd_explicit=True,
+                 coding_workspace=prepared, model="offline-model", provider="custom",
+                 reasoning_effort="high", **tier_params)
+    session = server._sessions[created["session_id"]]
+    assert session["session_key"] == created["stored_session_id"]
+    assert session["coding_workspace"] == created["info"]["coding_workspace"]
+    assert session["cwd"] == prepared["cwd"]
+    assert session["model_override"] == {"model": "offline-model", "provider": "custom"}
+    assert session["create_reasoning_override"] == {"enabled": True, "effort": "high"}
+    assert session["create_service_tier_override"] == expected_tier
+    ok("session.workspace.verify", session_id=created["session_id"], cwd=prepared["cwd"])
+
+
 def test_unknown_keys_are_still_rejected(repo):
     binding = {"requestId": "r", "cwd": str(repo), "unexpected": 1}
     response = rpc("session.create", cwd=str(repo), coding_workspace=binding)

@@ -220,9 +220,43 @@ def _persisted_session_cwd(session: dict) -> str | None:
     """The cwd to stamp on the session's DB row, or None to leave it unset (launch-dir rule: ``_ensure_session_db_row``)."""
     if session.get("explicit_cwd"):
         return _session_cwd(session)
-    if _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE:
+    if _session_source(session) in _LAUNCH_CWD_NOT_A_WORKSPACE or _is_remote_launch_cwd(session):
         return None
     return str(session.get("cwd") or "") or None  # the session's OWN dir, never _session_cwd's gateway-wide fallback
+
+
+def _is_remote_launch_cwd(session: dict | None) -> bool:
+    """An ssh session's cwd that nobody picked: the gateway's launch directory, a path on THIS host. Host-side context
+    discovery reads it from memory, but it is never persisted: a resume adopts a stored ssh cwd as the remote
+    workspace."""
+    return bool(session) and not session.get("explicit_cwd") and _cwd_is_remote(session.get("profile_home"))
+
+
+def _is_hermes_owned_cwd(cwd: str, profile_home) -> bool:
+    """Whether ``cwd`` is inside Hermes's own host tree: the Hermes root (``/opt/data`` and its ``/opt/data/home``
+    subprocess home in the Docker image, which also holds every named profile) or the install tree
+    (``/opt/hermes``). A ``~`` path is the remote's home, never this host's."""
+    from agent.runtime_cwd import _is_install_tree
+    from hermes_constants import get_default_hermes_root
+
+    if not os.path.isabs(cwd):
+        return False
+    try:
+        path = Path(cwd).resolve()
+        home = Path(profile_home or get_hermes_home()).expanduser()
+        roots = {home.resolve(), get_default_hermes_root(home=home).resolve()}
+    except (OSError, RuntimeError):
+        return False
+    return any(path == root or root in path.parents for root in roots) or _is_install_tree(path)
+
+
+def _resumable_stored_cwd(cwd, profile_home) -> str:
+    """A session row's stored cwd as a resume may adopt it: empty when an ssh session's row holds a path in Hermes's
+    own host tree (a host launch directory, never a remote workspace)."""
+    cwd = str(cwd or "")
+    if cwd and _cwd_is_remote(profile_home) and _is_hermes_owned_cwd(cwd, profile_home):
+        return ""
+    return cwd
 
 
 def _heal_dead_cwd(cwd: str) -> str:

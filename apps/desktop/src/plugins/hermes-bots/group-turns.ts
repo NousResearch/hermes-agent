@@ -807,8 +807,8 @@ export async function answerGroupClarify(
 
   try {
     if (entry.kind === 'approval') {
-      // A generous answer deadline, not the generic request timeout: a stalled
-      // socket must not reject an answer the backend still applies (#60654).
+      // Ride the backend's approvals.timeout (300s default), not the generic
+      // request timeout — the user owns the full approval window (#60654).
       await requestForBot(
         member,
         'approval.respond',
@@ -1021,13 +1021,6 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
   const { member, thread, dispatchEpoch, stored, liveRuntime, runtimeIds, before, binding } = context
   const started = Date.now()
   let deadline = started + GROUP_TURN_TIMEOUT_MS
-  // The hard cap guards against a runaway member, not a human deciding: time
-  // a member spends blocked on the user's clarify/approval answer pushes it
-  // out, so a prompt left open never expires under the room (the backend
-  // holds Desktop prompts until they are answered).
-  let hardCap = started + GROUP_TURN_HARD_CAP_MS
-  let lastPolled = started
-  let wasAwaitingUser = false
   // After the terminal frame fires, the gateway still has to flip
   // session.running off in its turn `finally` — re-check quickly for a few
   // beats instead of falling back to the slow backstop cadence.
@@ -1083,16 +1076,6 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     // hold the turn open: the member isn't stalling, it's waiting on us.
     const awaitingUser = syncGroupClarify(context.group, member, thread, state)
     const done = !busy && !awaitingUser
-    const polledAt = Date.now()
-
-    // Credit only intervals blocked on the user at both ends, not busy work
-    // that preceded the prompt.
-    if (awaitingUser && wasAwaitingUser) {
-      hardCap += polledAt - lastPolled
-    }
-
-    lastPolled = polledAt
-    wasAwaitingUser = awaitingUser
     // The gateway's retained error for THIS turn. A turn that dies before its
     // prompt is committed (agent-init failure, no-agent refusal) never grows
     // the transcript, so the tombstone — not the message count — is the only
@@ -1136,12 +1119,11 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
       return null
     }
 
-    // Still visibly working — or waiting on the user's answer to a prompt:
-    // extend the deadline (never past the hard cap, which waiting on the user
-    // pushes out). A pending question must outlive the base turn timeout or
-    // it dies unanswered at 3 minutes.
+    // Still visibly working — or waiting on the user's answer to a clarify:
+    // extend the deadline (never past the hard cap). A pending question must
+    // outlive the base turn timeout or it dies unanswered at 3 minutes.
     if (busy || awaitingUser) {
-      deadline = Math.min(hardCap, Math.max(deadline, polledAt + GROUP_TURN_TIMEOUT_MS))
+      deadline = Math.min(started + GROUP_TURN_HARD_CAP_MS, Math.max(deadline, Date.now() + GROUP_TURN_TIMEOUT_MS))
     }
   }
 
@@ -1149,10 +1131,10 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     return null
   }
 
-  // Timeout — clear any still-mirrored question card and read as a pass. The
-  // marker written at submit stays, so the finished reply is posted late into
-  // the RIGHT thread instead of vanishing; it stops being "live" when this
-  // poll returns.
+  // Timeout — clear any still-mirrored question card (the server-side
+  // clarify timeout runs its own course) and read as a pass. The marker written
+  // at submit stays, so the finished reply is posted late into the RIGHT thread
+  // instead of vanishing; it stops being "live" when this poll returns.
   recordGroupActivity(context.group, {
     kind: 'timed-out',
     member: groupMemberKey(member),

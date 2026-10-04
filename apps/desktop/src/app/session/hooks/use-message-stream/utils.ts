@@ -99,6 +99,9 @@ export function applySessionInfoStatePatch(
     (patch.personality === undefined || patch.personality === state.personality) &&
     (patch.provider === undefined || patch.provider === state.provider) &&
     (patch.reasoningEffort === undefined || patch.reasoningEffort === state.reasoningEffort) &&
+    // The wire level can change alone: an optimistic paint already holds the new
+    // model/effort, so skipping here kept the previous route's clamp ("Medium→Max") forever.
+    (patch.reasoningEffortWire === undefined || patch.reasoningEffortWire === state.reasoningEffortWire) &&
     (patch.reasoningEffortPending === undefined ||
       patch.reasoningEffortPending === Boolean(state.reasoningEffortPending)) &&
     (patch.serviceTier === undefined || patch.serviceTier === state.serviceTier) &&

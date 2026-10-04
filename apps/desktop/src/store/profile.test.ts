@@ -7,17 +7,18 @@ import type { ProfileInfo } from '@/types/hermes'
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
 const ensureGatewayForProfile = vi.fn(async (_profile: string) => undefined)
-const ensureGatewayForAgent = vi.fn(async () => undefined)
+const ensureGatewayForAgent = vi.fn(async (_connectionId: string, _profile: string) => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const openGatewayForAgent = vi.fn(async (_connectionId: null | string, _profile: string) => undefined)
 const openSecondaryCount = vi.fn(() => 0)
+const activeGatewayConnectionId = vi.fn((): null | string => null)
 const $gateway = atom<unknown>({ id: 'live-socket', connectionState: 'open' })
 const resetStarmapGraph = vi.fn()
 
 vi.mock('@/store/gateway', () => ({
   $gateway,
   activeGateway: () => null,
-  activeGatewayConnectionId: () => null,
+  activeGatewayConnectionId,
   // Activation now verifies the socket's route before publishing the profile.
   activeGatewayProfileKey: () => ensureGatewayForProfile.mock.lastCall?.[0] ?? $activeGatewayProfile.get(),
   ensureGatewayForAgent,
@@ -47,6 +48,7 @@ const {
   invalidateProfileListFetches,
   newSessionInProfile,
   prewarmProfileBackend,
+  prewarmProfilePick,
   refreshProfiles,
   selectProfile
 } = await import('./profile')
@@ -259,6 +261,29 @@ describe('prewarmProfileBackend (hover-intent pool spawn)', () => {
     prewarmProfileBackend('warm-lowered-cap')
 
     expect(openGatewayForProfile).not.toHaveBeenCalledWith('warm-lowered-cap')
+  })
+
+  // A hover-warm on a current-source pick must dial the pair the click will:
+  // the bare name resolved on the legacy door, so hovering a remote source's
+  // `default` spawned This device's default instead (#100098 review).
+  it('warms the same (connection, profile) a current-source pick activates', async () => {
+    activeGatewayConnectionId.mockReturnValue('gateway')
+    $activeGatewayProfile.set('research')
+    openGatewayForAgent.mockClear()
+    ensureGatewayForAgent.mockClear()
+
+    try {
+      prewarmProfilePick('default')
+      selectProfile('default')
+      await vi.waitFor(() => expect(ensureGatewayForAgent).toHaveBeenCalled())
+
+      expect(openGatewayForProfile).not.toHaveBeenCalled()
+      expect(openGatewayForAgent.mock.calls.map(([connection, name]) => [connection, name])).toEqual(
+        ensureGatewayForAgent.mock.calls.map(([connection, name]) => [connection, name])
+      )
+    } finally {
+      activeGatewayConnectionId.mockReturnValue(null)
+    }
   })
 })
 

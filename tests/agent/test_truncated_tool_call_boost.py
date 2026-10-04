@@ -38,7 +38,7 @@ def _length_continuation_budgets(agent, attempts=4):
             agent, _retry=_retry, response=None, interrupted=False, messages=[],
             conversation_history=[], user_message="hi", api_kwargs={}, current_turn_user_idx=0,
             final_response=None, retry_count=0, max_retries=3, api_call_count=1,
-            restart_count=0, length_continue_retries=n,
+            redirect_restart_count=0, rebuilt_restart_count=0, length_continue_retries=n,
             _preflight_compression_blocked=False, _turn_exit_reason="unknown",
         )
         assert verdict.action == "continue"

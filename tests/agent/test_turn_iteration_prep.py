@@ -26,7 +26,9 @@ def _apply(agent, flag: str, restart_count: int, redirect_restart_limit: int = M
         conversation_history=[], user_message="hi", api_kwargs={}, current_turn_user_idx=0,
         final_response=None, retry_count=0, max_retries=MAX_RETRIES,
         redirect_restart_limit=redirect_restart_limit, api_call_count=1,
-        restart_count=restart_count, length_continue_retries=0,
+        redirect_restart_count=restart_count if flag == "restart_with_redirected_messages" else 0,
+        rebuilt_restart_count=restart_count if flag == "restart_with_rebuilt_messages" else 0,
+        length_continue_retries=0,
         _preflight_compression_blocked=True, _turn_exit_reason="unknown",
     )
 
@@ -59,7 +61,8 @@ def test_restart_refunds_are_bounded_per_turn(flag):
     restart_count, verdicts = 0, []
     while len(verdicts) < MAX_RETRIES + 5 and (not verdicts or verdicts[-1].action != "break"):
         verdicts.append(_apply(agent, flag, restart_count))
-        restart_count = verdicts[-1].restart_count
+        restart_count = (verdicts[-1].redirect_restart_count if flag == "restart_with_redirected_messages"
+                         else verdicts[-1].rebuilt_restart_count)
     assert [v.action for v in verdicts] == ["continue"] * MAX_RETRIES + ["break"]
     assert agent.iteration_budget.refunds == MAX_RETRIES
     assert verdicts[-1]._turn_exit_reason.endswith("restart_limit_exceeded")

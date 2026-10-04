@@ -7,6 +7,7 @@ assembled requests, not raw ``messages``) and the call into
 from __future__ import annotations
 
 import logging
+import math
 from contextlib import suppress
 from typing import Any
 
@@ -42,6 +43,42 @@ def run_preflight_gate(
         _provider_overflow_recovery_pending=_provider_overflow_recovery_pending,
         _last_preflight_pressure=None,
     )
+
+    # The budget attribute identifies cache-parity forks even when disabled
+    # (None). Write origin excludes /btw; provenance alone also tags the standalone
+    # skill curator, which is not a snapshot review and must keep its own behavior.
+    is_review = (
+        getattr(agent, "_memory_write_origin", None) == "background_review"
+        and hasattr(agent, "_review_input_token_budget")
+    )
+    review_threshold = getattr(getattr(agent, "context_compressor", None), "threshold_tokens", None)
+
+    def skip_review(reason: str) -> PreflightGateVerdict:
+        logger.warning(
+            "Background review skipped: reason=%s request_tokens=%s threshold_tokens=%s "
+            "model=%s context_length=%s max_tokens=%s",
+            reason, request_pressure_tokens, review_threshold, getattr(agent, "model", None),
+            getattr(getattr(agent, "context_compressor", None), "context_length", None),
+            getattr(agent, "max_tokens", None),
+        )
+        v.final_response = "Background review skipped: " + reason
+        v.failed = True
+        v._turn_exit_reason = reason
+        v.api_call_count -= 1
+        agent._api_call_count = v.api_call_count
+        with suppress(Exception):
+            agent.iteration_budget.refund()
+        v.action = "break"
+        return v
+
+    if is_review:
+        valid_sizing = all(
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and value > 0
+            for value in (request_pressure_tokens, review_threshold)
+        )
+        if not valid_sizing:
+            return skip_review("review_request_size_unavailable")
 
     _runtime_context_error = _ollama_context_limit_error(agent, request_pressure_tokens)
     if _runtime_context_error:
@@ -87,7 +124,7 @@ def run_preflight_gate(
             f"{_last_preflight_pressure:,}",
             f"{request_pressure_tokens:,}",
         )
-    return run_preflight_compression(
+    v = run_preflight_compression(
         agent, v, compressor=_compressor, request_pressure_tokens=request_pressure_tokens,
         provider_overflow_preflight=_provider_overflow_preflight,
         # An anchored figure is real usage + delta: never deferred. Only a whole-context rough
@@ -100,3 +137,9 @@ def run_preflight_gate(
         user_message=user_message, max_compression_attempts=max_compression_attempts,
         effective_task_id=effective_task_id,
     )
+    # Normal detached compaction may rebuild later requests. Never compare its
+    # stale pre-compaction estimate: the next loop pass reassembles and rechecks.
+    # Request one defers compaction and reaches this guard without a model call.
+    if is_review and v.action == "fallthrough" and request_pressure_tokens >= review_threshold:
+        return skip_review("review_request_oversized")
+    return v

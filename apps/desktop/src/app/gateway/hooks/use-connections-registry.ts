@@ -22,6 +22,7 @@ export function useConnectionsRegistry(): void {
     let failed = false
     let pending = false
     let requested = false
+    let removedActive: string | null = null
     let retries = 0
     let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -37,9 +38,13 @@ export function useConnectionsRegistry(): void {
 
       try {
         const registry = await refreshConnectionsRegistry()
+        if (disposed) return
         failed = false
-        return registry
         retries = 0
+        if (removedActive && registry && $activeConnectionId.get() === removedActive) {
+          await selectConnection(registry.primary)
+          removedActive = null
+        }
       } catch (error) {
         failed = true
 
@@ -75,13 +80,8 @@ export function useConnectionsRegistry(): void {
       }
 
       forgetConnection(payload.connectionId)
-      void refreshConnectionsRegistry().then(registry => {
-        if ($activeConnectionId.get() !== payload.connectionId || !registry) {
-          return
-        }
-
-        void selectConnection(registry.primary)
-      })
+      if ($activeConnectionId.get() === payload.connectionId) removedActive = payload.connectionId
+      void refresh()
     })
     window.addEventListener('focus', onFocus)
     void refresh()

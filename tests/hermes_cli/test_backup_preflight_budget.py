@@ -195,6 +195,60 @@ def test_reclaim_spared_a_live_owner_and_aged_markerless_leftovers(tmp_path):
     assert not (home / f"{staging_name}.owner").exists()
 
 
+def test_success_closes_owner_before_unlinking_marker(tmp_path, monkeypatch):
+    from hermes_cli import backup_sqlite as mod
+
+    home = _home_with_state_db(tmp_path)
+    real_acquire = mod._acquire_owner_marker
+    real_unlink = Path.unlink
+    handles = {}
+
+    def acquire(path):
+        handle = real_acquire(path)
+        if handle is not None:
+            handles[path] = handle
+        return handle
+
+    def windows_unlink(path, *args, **kwargs):
+        # Simulate Windows' refusal to delete a file with an open owner handle.
+        handle = handles.get(path)
+        if handle is not None and not handle.closed:
+            raise PermissionError("owner marker is still open")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(mod, "_acquire_owner_marker", acquire)
+    monkeypatch.setattr(Path, "unlink", windows_unlink)
+    result = mod.preflight_state_db(home)
+    assert Path(result["path"]).exists()
+    assert not list(home.glob("*.partial.owner"))
+    assert all(handle.closed for handle in handles.values())
+
+
+def test_reclaim_discovers_owner_without_partial_and_spares_live_owner(tmp_path):
+    home = _home_with_state_db(tmp_path)
+    abandoned = home / "state.db.pre-update-emergency-orphan.partial.owner"
+    abandoned.write_bytes(b" ")
+    staging_name = "state.db.pre-update-emergency-live-orphan.partial"
+    child = subprocess.Popen(
+        [sys.executable, "-I", "-S", "-c", _LIVE_OWNER_RUNNER,
+         str(SCRIPT), str(home), staging_name],
+        stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "locked"
+        (home / staging_name).unlink()
+        marker = home / (staging_name + ".owner")
+        assert _run(home, _RECLAIM_RUNNER).returncode == 0
+        assert not abandoned.exists()
+        assert marker.exists()
+    finally:
+        child.terminate()
+        child.wait(timeout=10)
+    assert _run(home, _RECLAIM_RUNNER).returncode == 0
+    assert not marker.exists()
+
+
 def test_phase_budgets_scale_with_the_database_size():
     from hermes_cli.backup_sqlite import _copy_budget_seconds, _quick_check_budget_seconds
 

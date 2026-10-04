@@ -105,9 +105,11 @@ TASK_END_REASONS = frozenset({
     "system_aborted", "timed_out", "unknown", "user_cancelled",
 })
 TASK_TERMINATIONS = frozenset({"none", "system_aborted", "timed_out", "unknown", "user_cancelled"})
+# ``one_shot``: a finite CLI run (``hermes -z``, ``hermes chat -q`` off a TTY, ``-Q``, ``--oneshot``) that
+# answers one prompt and exits — a person's shell line or their script, never the REPL.
 TASK_ENTRYPOINTS = frozenset({
-    "api", "background", "batch", "delegated", "gateway_message", "interactive", "other", "python",
-    "scheduled_task", "unknown",
+    "api", "background", "batch", "delegated", "gateway_message", "interactive", "one_shot", "other",
+    "python", "scheduled_task", "unknown",
 })
 DURATION_BUCKETS = frozenset({
     "1s_to_5s", "2m_to_10m", "30s_to_2m", "5s_to_30s", "gte_10m", "lt_1s",
@@ -1127,15 +1129,17 @@ def _auxiliary_model_call_dimensions(event: Any) -> dict[str, str] | None:
             scope_category="end", category_profile=None,
         )
         or not isinstance(data, dict)
-        or set(data) - {"response_model"} != {"model", "outcome", "provider"}
+        or set(data) - {"response_model", "error_class"} != {"model", "outcome", "provider"}
         or data.get("outcome") not in _LEGACY_MODEL_OUTCOMES
     ):
         return None
     outcome = data["outcome"]
-    dimensions = model_route_fields(
-        data, call_role="auxiliary", outcome=outcome,
-        error_class="none" if outcome == "success" else "unknown",
-    )
+    # Same reading as a primary call: a cancelled call reports ``none``, a failure without a
+    # classified reason ``unknown``, a success the last error it recovered from.
+    error_class = "none" if outcome == "cancelled" else data.get("error_class") or "none"
+    if outcome == "failed" and error_class == "none":
+        error_class = "unknown"
+    dimensions = model_route_fields(data, call_role="auxiliary", outcome=outcome, error_class=error_class)
     return dimensions if counter_dimensions_are_valid(MODEL_ROUTE_METRIC, dimensions) else None
 
 
@@ -1482,7 +1486,7 @@ _TOOL_CATEGORY_PREFIXES = (
     ("mcp", "mcp"),
     ("browser", "browser"),
     (("image", "tts", "video", "vision"), "media"),
-    ("homeassistant", "home_automation"),
+    ("homeassistant", "home_automation"),  # the homeassistant catalog plugin's toolset
     (("discord", "email", "feishu", "hermes-yuanbao", "slack", "sms"), "communication"),
 )
 

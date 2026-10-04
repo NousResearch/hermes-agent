@@ -110,18 +110,22 @@ async def test_handshake_negotiates_descriptor(server):
 
 
 @pytest.mark.asyncio
-async def test_inbound_frame_reaches_handler(server):
+@pytest.mark.parametrize("nested_message_id", [False, True])
+async def test_inbound_frame_reaches_handler(server, nested_message_id):
     server._to_push = [
         {
             "type": "inbound",
             "event": {
                 "text": "hello from connector",
                 "message_type": "text",
+                "message_id": "actual-message",
                 "source": {"platform": "discord", "chat_id": "chan1", "chat_type": "group", "scope_id": "guildA"},
             },
             "bufferId": "buf-1",
         }
     ]
+    if nested_message_id:
+        server._to_push[0]["event"]["source"]["message_id"] = "actual-message"
     received = []
     t = WebSocketRelayTransport(server.url, "discord", "appShared")
     t.set_inbound_handler(lambda ev: received.append(ev) or asyncio.sleep(0))
@@ -133,6 +137,8 @@ async def test_inbound_frame_reaches_handler(server):
         assert len(received) == 1
         assert received[0].text == "hello from connector"
         assert received[0].source.scope_id == "guildA"
+        assert received[0].source.message_id is not None
+        assert received[0].source.message_id == received[0].message_id == "actual-message"
     finally:
         await t.disconnect()
 

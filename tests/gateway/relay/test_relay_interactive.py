@@ -230,19 +230,85 @@ def test_discord_component_interaction_decodes_prompt_token():
     assert event.metadata["interaction_id"] == "i1"
 
 
-def test_discord_application_command_does_not_invent_message_id():
+@pytest.mark.parametrize("interaction_type", [2, 5])
+def test_discord_application_command_does_not_invent_message_id(interaction_type):
     adapter, _stub = _adapter()
 
-    class Forward:
-        body = (
-            b'{"type": 2, "id": "i2", "channel_id": "ch1", "guild_id": "g1",'
-            b' "member": {"user": {"id": "u1"}}, "data": {"name": "status"}}'
-        )
+    import json
+    from types import SimpleNamespace
 
-    event = adapter._discord_interaction_to_event(Forward())
+    forward = SimpleNamespace(body=json.dumps({
+        "type": interaction_type, "id": "i2", "channel_id": "ch1", "guild_id": "g1",
+        "member": {"user": {"id": "u1"}}, "data": {"name": "status"},
+    }).encode())
+    event = adapter._discord_interaction_to_event(forward)
     assert event.message_id is None
     assert event.source.message_id is None
     assert event.metadata["interaction_id"] == "i2"
+
+
+@pytest.mark.parametrize("interaction_type", [2, 3, 5])
+def test_discord_text_interaction_text_reuses_prompt_pin(monkeypatch, interaction_type):
+    """Real relay converters preserve message targets without re-keying guidance."""
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionContext, build_session_context_prompt
+
+    monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: True)
+    adapter, _stub = _adapter(platform="discord")
+    runner = object.__new__(GatewayRunner)
+    runner._session_ephemeral_pin = {}
+    source = {
+        "platform": "discord", "chat_id": "ch1", "chat_type": "group",
+        "scope_id": "g1", "user_id": "u1", "user_name": "pix",
+    }
+    first = _event_from_wire({"text": "hello", "message_id": "m1", "source": source})
+    payload = {
+        "type": interaction_type, "id": "i1", "channel_id": "ch1", "guild_id": "g1",
+        "member": {"user": {"id": "u1", "username": "pix"}},
+        "data": {"name": "status", "custom_id": "foreign-button"},
+    }
+    if interaction_type == 3:
+        payload["message"] = {"id": "m-component"}
+    middle = adapter._discord_interaction_to_event(SimpleNamespace(body=json.dumps(payload).encode()))
+    last = _event_from_wire({"text": "again", "message_id": "m2", "source": source})
+    assert middle is not None
+    expected_target = "m-component" if interaction_type == 3 else None
+    assert middle.message_id == middle.source.message_id == expected_target
+    assert middle.metadata["interaction_id"] == "i1"
+
+    # Consumer boundaries must still receive the real target (or no target),
+    # not the interaction ID or the previous text turn's message ID.
+    from gateway.session_context import get_session_env
+    contexts = [SessionContext(source=e.source, connected_platforms=[Platform.DISCORD], home_channels={})
+                for e in (first, middle, last)]
+    for event, ctx, target in zip((first, middle, last), contexts, ("m1", expected_target, "m2")):
+        tokens = runner._set_session_env(ctx)
+        try:
+            assert get_session_env("HERMES_SESSION_MESSAGE_ID") == (target or "")
+        finally:
+            runner._clear_session_env(tokens)
+        api_text = runner._prepend_inbound_reply_context(event, event.source, event.text)
+        if target:
+            assert f"[Triggering message id: `{target}`" in api_text
+        else:
+            assert api_text == event.text
+        assert "i1" not in api_text
+
+    rendered = [build_session_context_prompt(ctx) for ctx in contexts]
+    assert "Triggering message:" in rendered[0]
+    assert rendered[0] == rendered[1] == rendered[2]
+    keys = [runner._ephemeral_change_key(ctx, False) for ctx in contexts]
+    assert keys[0] == keys[1] == keys[2]
+    renderer = Mock(wraps=build_session_context_prompt)
+    monkeypatch.setattr("gateway.run_agent_cache.build_session_context_prompt", renderer)
+    pinned = [runner._pinned_session_context_prompt(ctx, False, "sk") for ctx in contexts]
+    assert pinned[0] is pinned[1] is pinned[2]
+    assert renderer.call_count == 1
+    assert "i1" not in pinned[0]
 
 
 # ── react ack lifecycle ──────────────────────────────────────────────────

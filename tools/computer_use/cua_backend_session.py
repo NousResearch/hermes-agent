@@ -234,7 +234,7 @@ class _CuaDriverSession:
             _t_manifest = _time.monotonic()
             # Telemetry policy first (default: disabled), then strip Hermes secrets.
             params = StdioServerParameters(command=command, args=args, env=_sanitize_subprocess_env(child_env))
-            async with stdio_client(params, errlog=sys.__stderr__) as (read, write):
+            async with stdio_client(params, errlog=sys.__stderr__ or sys.stderr) as (read, write):
                 self._startup_phase = "mcp-initialize"
                 async with ClientSession(read, write) as session:
                     await session.initialize()

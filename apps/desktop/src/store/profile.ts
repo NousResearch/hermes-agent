@@ -1041,6 +1041,13 @@ function activateOnCurrentSource(target: string): Promise<void> {
   return connectionId ? ensureGatewayAgent(connectionId, target) : ensureGatewayProfile(target)
 }
 
+// The hover twin of activateOnCurrentSource: warm the pair the click will dial.
+// The bare name resolves on the legacy door, so hovering a remote source's
+// `default` warmed This device's instead.
+export function prewarmProfilePick(name: string): void {
+  prewarmProfileBackend(name, profilePickConnectionId(normalizeProfileKey(name)))
+}
+
 // A project id names a row in ONE backend's projects.db. A draft headed for
 // another profile (or source) must not resolve its cwd from the scope entered on
 // the current one: the fresh draft runs before the gateway swap refreshes the

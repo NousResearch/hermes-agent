@@ -31,6 +31,31 @@ with third-party bridges. When this happens, Hermes will update the bridge depen
 bot stops working after a WhatsApp update, pull the latest Hermes version and re-pair.
 :::
 
+## Multiple profiles
+
+The host multiplexer can serve a separate paired WhatsApp session for each profile.
+Run `hermes -p work whatsapp` to pair a secondary profile, then enable WhatsApp
+for that profile. An enabled profile without `creds.json` is skipped with the
+`whatsapp_unpaired` status and its pairing command.
+
+An explicit `platforms.whatsapp.extra.bridge_port` takes precedence. Otherwise,
+a secondary selects the first free port in 3001 to 3999 that no other profile's
+record claims, and saves it in its own `platforms/whatsapp/bridge_port` file for
+subsequent starts. Operators can pre-create that file with a port number; delete
+it to have a new port allocated. The launch profile uses port 3000 unless it
+already has that file (from serving as a secondary), in which case its gateway
+and `hermes whatsapp send` both keep using the recorded port.
+
+A secondary adopts a bridge already running on its port only when its own
+session pidfile identifies that process (pid, kernel start time, and the port it
+was started on), which is
+what a gateway crash leaves behind. An unhealthy one is reaped by that same
+identity and restarted. Any other process bound on the port is a fatal error
+for that profile only. Set `platforms.whatsapp.extra.bridge_port` to a
+distinct free port, or stop the process holding it. Other
+profiles continue running. `hermes gateway status --profile work` reports the
+profile's own WhatsApp adapter rather than shared ingress.
+
 ## Two Modes
 
 | Mode | How it works | Best for |

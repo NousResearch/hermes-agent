@@ -340,6 +340,10 @@ CASES = {
         ["apps/desktop/e2e/core/transcript-integrity.spec.ts"],
         _lanes(frontend=True, e2e_desktop_core=True),
     ),
+    "desktop profile rail → desktop core": (
+        ["apps/desktop/src/app/chat/sidebar/profile-switcher.tsx"],
+        _lanes(frontend=True, e2e_desktop_core=True),
+    ),
     "desktop update spec → desktop update, not core": (
         ["apps/desktop/e2e/update/app-update.spec.ts"],
         _lanes(frontend=True, e2e_desktop_update=True),

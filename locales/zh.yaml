@@ -2355,6 +2355,7 @@ cli:
     removed: "已移除队列项 {index}：{preview}"
     item_not_found: "未找到队列项 {index}。当前队列长度：{size}"
     usage_edit: "用法：/queue edit <number> <new prompt>"
+    usage_remove: "用法：/queue rm <number>"
     updated: "已更新队列项 {index}：{preview}"
     usage_move: "用法：/queue move <from> <to>"
     move_out_of_range: "队列移动位置超出范围。当前队列长度：{size}"
@@ -2720,6 +2721,7 @@ cli:
       restored: "已从 {snapshot_id} 恢复状态"
       restart_recommended: "建议重启网关/控制台进程，以加载 state.db 的更改。"
       not_found: "未找到快照：{snapshot_id}"
+      restore_incomplete: "快照 {snapshot_id} 未完全恢复：部分文件被拒绝（请查看日志）"
       usage_prune: "用法：/snapshot prune [保留数量]"
       pruned: "已清理 {deleted} 个旧快照（保留 {keep} 个）。"
     export:

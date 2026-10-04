@@ -80,6 +80,7 @@ import {
   setCurrentModelSource,
   setCurrentProvider,
   setCurrentReasoningEffort,
+  setCurrentServiceTier,
   setMessages,
   setMessagingSessions,
   setNewChatWorkspaceTarget,
@@ -1565,7 +1566,7 @@ describe('createBackendSessionForSend profile routing', () => {
     expect(ambientRequest).not.toHaveBeenCalledWith('session.create', expect.anything())
   })
 
-  it('freezes the visible selector state before profile readiness and sends fast: false explicitly', async () => {
+  it('freezes the visible selector state before profile readiness and sends Priority as fast alone', async () => {
     const profileReady = deferred<void>()
     vi.mocked(ensureGatewayProfile).mockReturnValueOnce(profileReady.promise)
 
@@ -1576,7 +1577,9 @@ describe('createBackendSessionForSend profile routing', () => {
     // rides along as a per-session override.
     setCurrentModelSource('manual')
     setCurrentReasoningEffort('high')
-    setCurrentFastMode(false)
+    setCurrentFastMode(true)
+    // Priority rides as `fast` alone: a pre-Ultrafast backend rejects `service_tier`.
+    setCurrentServiceTier('priority')
 
     let createParams: Record<string, unknown> | undefined
 
@@ -1605,7 +1608,8 @@ describe('createBackendSessionForSend profile routing', () => {
     setCurrentModel('openai/gpt-5.5')
     setCurrentProvider('openai-codex')
     setCurrentReasoningEffort('low')
-    setCurrentFastMode(true)
+    setCurrentFastMode(false)
+    setCurrentServiceTier('ultrafast')
     profileReady.resolve()
 
     await act(async () => {
@@ -1613,11 +1617,12 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(createParams).toMatchObject({
-      fast: false,
+      fast: true,
       model: 'anthropic/claude-sonnet-4.6',
       provider: 'anthropic',
       reasoning_effort: 'high'
     })
+    expect(createParams).not.toHaveProperty('service_tier')
   })
 
   it('falls back to the entered project cwd when the current cwd is blank', async () => {

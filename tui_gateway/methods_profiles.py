@@ -5,6 +5,7 @@ onto server.py, so they must not collide with its globals.
 """
 
 import contextlib
+import logging
 import sqlite3
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -295,8 +296,10 @@ def _(rid, params: dict) -> dict:
         _profile_ui_meta_fields(row, Path(str(p.path)))
         out.append(row)
     # bot_mode_protocol: this backend injects the Bot Mode teammate-messaging protocol into every
-    # session, so clients must not append it to SOUL.md.
-    return _ok(rid, {"profiles": out, "bot_mode_protocol": True})
+    # session, so clients must not append it to SOUL.md. install_id (same value as /api/status)
+    # lets a multi-connection client prove WHICH machine answered a routed list.
+    from hermes_cli.install_identity import get_install_id
+    return _ok(rid, {"profiles": out, "bot_mode_protocol": True, "install_id": _try(lambda: get_install_id() or "", "")})
 
 
 @method("profiles.create")
@@ -588,6 +591,11 @@ def _describe_toolsets(cfg):
     return toolsets_out, pinned_set
 
 
+def _bots_title(ui_meta: dict):
+    bots = ui_meta.get("hermes-bots")
+    return bots.get("title") if isinstance(bots, dict) else None
+
+
 def _configure_ui_meta(profile_dir, params, applied) -> None:
     """Merge ``params["ui_meta"]`` key-wise into profile.yaml (None deletes). 64KB cap (rides
     every roster paint). ``ui_meta_expected_revisions``: per-key CAS, any mismatch rejects the
@@ -615,6 +623,7 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
                 return
             current = existing.get("ui_meta")
             current = current if isinstance(current, dict) else {}
+            old_title = _bots_title(current)
             for key, value in incoming.items():
                 if value is None:
                     current.pop(key, None)
@@ -630,6 +639,13 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
             atomic_yaml_write(profile_dir / "profile.yaml", existing, sort_keys=False)
             applied["ui_meta"] = True
             applied["ui_meta_revisions"] = {key: revisions[key] for key in incoming}
+            if _bots_title(current) != old_title:
+                # A client writing another machine's bot title lands here; the Desktop's
+                # `[bot-meta win=…]` desktop.log line at the same time names the window.
+                logging.getLogger(__name__).info(
+                    "ui_meta hermes-bots title for profile %s: %r -> %r (revision %s)",
+                    params.get("name") or profile_dir.name, old_title, _bots_title(current),
+                    revisions.get("hermes-bots"))
     except Exception:
         applied["ui_meta"] = False
 

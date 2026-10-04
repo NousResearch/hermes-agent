@@ -2355,6 +2355,7 @@ cli:
     removed: "Baineadh mír scuaine {index}: {preview}"
     item_not_found: "Níor aimsíodh mír scuaine {index}. Méid reatha: {size}"
     usage_edit: "Úsáid: /queue edit <number> <new prompt>"
+    usage_remove: "Úsáid: /queue rm <number>"
     updated: "Nuashonraíodh mír scuaine {index}: {preview}"
     usage_move: "Úsáid: /queue move <from> <to>"
     move_out_of_range: "Bogadh scuaine as raon. Méid reatha: {size}"
@@ -2720,6 +2721,7 @@ cli:
       restored: "Staid aischurtha ó: {snapshot_id}"
       restart_recommended: "Moltar atosú do phróisis gateway/deais chun athruithe state.db a ghlacadh."
       not_found: "Níor aimsíodh an roghchóip: {snapshot_id}"
+      restore_incomplete: "Níor athchóiríodh an roghchóip {snapshot_id} go hiomlán; diúltaíodh roinnt comhad (féach na logaí)"
       usage_prune: "Úsáid: /snapshot prune [keep-count]"
       pruned: "Baineadh {deleted} seanroghchóip(eanna) (ag coinneáil {keep})."
     export:

@@ -10,7 +10,8 @@ export const CFG = {
 };
 
 // geometria medida na imagem de referência (pixels da imagem 1672×941)
-export const IMG = { w: 1672, h: 941, horizon: 587, axisX: 832, headTop: 122, chinY: 632, headCY: 377, mouth: [831, 552] };
+export const IMG = { w: 1672, h: 941, horizon: 587, axisX: 832, headTop: 122, chinY: 632, headCY: 377, mouth: [831, 552],
+                      ears: [354, 492] };   // linhas onde as orelhas saem do crânio
 export const HEAD_RX = 182, HEAD_RY = (IMG.chinY - IMG.headTop) / 2;   // semi-eixos do crânio
 export const NECK_Y = IMG.chinY + 110;                                  // base do pescoço: pivô da cabeça
 

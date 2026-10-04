@@ -52,7 +52,7 @@ function start(imgs) {
   const bctx = bloomCv.getContext('2d');
 
   /* ---------- programas ---------- */
-  const ATTR = { aPos: 0, aHome: 0, aCol: 1, aInfo: 2, aFrom: 3, aTo: 4 };
+  const ATTR = { aPos: 0, aHome: 0, aCol: 1, aInfo: 2, aFrom: 3, aTo: 4, aSil: 5 };
   function makeProgram(name, vsrc, fsrc) {
     const prog = gl.createProgram();
     for (const [src, type] of [[vsrc, gl.VERTEX_SHADER], [fsrc, gl.FRAGMENT_SHADER]]) {
@@ -104,11 +104,58 @@ function start(imgs) {
     return c.getImageData(0, 0, IMG.w, IMG.h).data;
   }
   const em = pixels(imEmissao), inf = pixels(imInfo);
+
+  // silhueta de cada linha (bordas do alfa do corpo, saindo do eixo): o giro 3D usa a largura
+  // real da cabeça em cada altura. Suavizada na vertical (sem degraus) e quantizada a 1/32 px: o corpo lê a
+  // mesma tabela numa textura (16 bits por borda) e as partículas num atributo, com valores idênticos.
+  const sil = new Float32Array(IMG.h * 2);
+  {
+    const al = pixels(imCorpoA), AX = IMG.axisX, MAXR = 260, GAP = 6;
+    const edge = (y, dir) => {
+      if (al[(y * IMG.w + AX) * 4] < 128) return AX + 0.5;
+      let last = AX + 0.5, run = 0;
+      for (let d = 0; d <= MAXR; d++) {
+        if (al[(y * IMG.w + AX + dir * d) * 4] >= 128) { last = AX + 0.5 + dir * d; run = 0; }   // centro do último pixel opaco
+        else if (++run > GAP) break;
+      }
+      return last;
+    };
+    for (let y = 0; y < IMG.h; y++) { sil[y * 2] = edge(y, -1); sil[y * 2 + 1] = edge(y, 1); }
+    // nas linhas das orelhas a silhueta é a do crânio (curva suave entre as linhas acima e abaixo): a orelha fica
+    // FORA dela e anda colada à borda, e a luz de borda do crânio, por dentro da orelha, não estica com o rosto.
+    const [e0, e1] = IMG.ears, n = e1 - e0;
+    for (let j = 0; j < 2; j++) {
+      const v0 = sil[e0 * 2 + j], v1 = sil[e1 * 2 + j];
+      const d0 = (v0 - sil[(e0 - 10) * 2 + j]) / 10 * n, d1 = (sil[(e1 + 10) * 2 + j] - v1) / 10 * n;   // inclinações (Hermite)
+      for (let y = e0 + 1; y < e1; y++) {
+        const t = (y - e0) / n, t2 = t * t, t3 = t2 * t;
+        sil[y * 2 + j] = (2 * t3 - 3 * t2 + 1) * v0 + (t3 - 2 * t2 + t) * d0 + (-2 * t3 + 3 * t2) * v1 + (t3 - t2) * d1;
+      }
+    }
+    for (let pass = 0; pass < 2; pass++) {
+      const src = sil.slice(), R = 5;
+      for (let y = 0; y < IMG.h; y++) {
+        for (let j = 0; j < 2; j++) {
+          let acc = 0, n = 0;
+          for (let k = Math.max(0, y - R); k <= Math.min(IMG.h - 1, y + R); k++) { acc += src[k * 2 + j]; n++; }
+          sil[y * 2 + j] = Math.round((acc / n) * 32) / 32;
+        }
+      }
+    }
+  }
+  const silBytes = new Uint8Array(IMG.h * 4);
+  for (let i = 0; i < IMG.h * 2; i++) { const v = Math.round(sil[i] * 32); silBytes[i * 2] = v >> 8; silBytes[i * 2 + 1] = v & 255; }
+  T.sil = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, T.sil);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, IMG.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, silBytes);
+  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.NEAREST], [gl.TEXTURE_MAG_FILTER, gl.NEAREST], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
   let total = 0;
   for (let i = 2; i < inf.length; i += 4) if (inf[i] > 0) total++;
   if (!total) throw new Error('as camadas de partículas vieram vazias');
   const cap = CFG.maxParticles || (MOBILE ? 90000 : 400000);
   const keep = Math.min(1, cap / total);                 // celular: amostra e compensa o brilho (uGain)
+  const silA = new Float32Array(total * 2);
   const homeA = new Float32Array(total * 2), colA = new Uint8Array(total * 4), infoA = new Uint8Array(total * 4);
   let N = 0;
   for (let y = 0, px = 0; y < IMG.h; y++) {
@@ -117,6 +164,7 @@ function start(imgs) {
       if (!t) continue;
       if (rnd() > keep) continue;
       homeA[N * 2] = x + 0.5; homeA[N * 2 + 1] = y + 0.5;
+      silA[N * 2] = sil[y * 2]; silA[N * 2 + 1] = sil[y * 2 + 1];
       colA[N * 4] = em[px]; colA[N * 4 + 1] = em[px + 1]; colA[N * 4 + 2] = em[px + 2];
       infoA[N * 4] = inf[px]; infoA[N * 4 + 1] = inf[px + 1]; infoA[N * 4 + 2] = t > 200 ? 255 : 0; infoA[N * 4 + 3] = (rnd() * 255) | 0;
       N++;
@@ -134,7 +182,7 @@ function start(imgs) {
   }
   const B = {
     tri: buffer(new Float32Array([-1, -1, 3, -1, -1, 3])),
-    home: buffer(homeA.subarray(0, N * 2)), col: buffer(colA.subarray(0, N * 4)), info: buffer(infoA.subarray(0, N * 4)),
+    home: buffer(homeA.subarray(0, N * 2)), sil: buffer(silA.subarray(0, N * 2)), col: buffer(colA.subarray(0, N * 4)), info: buffer(infoA.subarray(0, N * 4)),
     shape: { head: buffer(SHAPES.head), sphere: buffer(SHAPES.sphere), galaxy: buffer(SHAPES.galaxy), text: null },
   };
 
@@ -240,7 +288,7 @@ function start(imgs) {
 
   /* ---------- desenho ---------- */
   function quad() {
-    for (let loc = 1; loc < 5; loc++) gl.disableVertexAttribArray(loc);
+    for (let loc = 1; loc < 6; loc++) gl.disableVertexAttribArray(loc);
     gl.bindBuffer(gl.ARRAY_BUFFER, B.tri);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
@@ -292,6 +340,7 @@ function start(imgs) {
         gl.uniform1f(p.u.uVis, ST.head);
         gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, T.bodyRGB); gl.uniform1i(p.u.uBodyRGB, 0);
         gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, T.bodyA); gl.uniform1i(p.u.uBodyA, 1);
+        gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, T.sil); gl.uniform1i(p.u.uSil, 2);
         quad();
       }
 
@@ -320,12 +369,8 @@ function start(imgs) {
       attr(2, B.info, 4, gl.UNSIGNED_BYTE, true, 0);
       attr(3, B.shape[fromShape] || B.shape.head, 3, gl.FLOAT, false, 0);
       attr(4, B.shape[toShape] || B.shape.head, 3, gl.FLOAT, false, 0);
-      gl.uniform1f(u.uBack, 0);
+      attr(5, B.sil, 2, gl.FLOAT, false, 0);
       gl.drawArrays(gl.POINTS, 0, N);
-      if (Math.abs(head.pose.yaw.x) > 0.03 && ST.head > 0.5) {  // verso da cabeça: preenche o lado que aparece ao girar
-        gl.uniform1f(u.uBack, 1);
-        gl.drawArrays(gl.POINTS, 0, N);
-      }
     }
 
     const glowAmt = CFG.bloom && !STILL && !SO_FUNDO ? clamp(A.level * 0.9 + ST.think * 0.3 + ST.speak * 0.2, 0, 0.85) : 0;

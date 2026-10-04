@@ -1195,7 +1195,7 @@ def _cmd_import_hermes(db, args):
 
     if not os.path.isfile(args.input):
         print(f"Error: File not found: {args.input}")
-        return
+        return 1
 
     sessions = []
     with open(args.input, "r", encoding="utf-8") as f:
@@ -1210,13 +1210,13 @@ def _cmd_import_hermes(db, args):
 
     if not sessions:
         print("No sessions found in input file.")
-        return
+        return 1
 
     if getattr(args, "machine", None):
         sessions = [s for s in sessions if s.get("machine_id") == args.machine]
         if not sessions:
             print(f"No sessions from machine '{args.machine}' in input file.")
-            return
+            return 1
 
     if args.dry_run:
         print(f"Would import {len(sessions)} session(s):")
@@ -1224,9 +1224,14 @@ def _cmd_import_hermes(db, args):
             print(f"  {s.get('id', '?')}  {s.get('source', '?')}  ({len(s.get('messages', []))} messages)")
         if len(sessions) > 20:
             print(f"  ... {len(sessions) - 20} more")
-        return
+        return 0
 
-    result = db.import_sessions(sessions)
+    try:
+        result = db.import_sessions(sessions)
+    except ValueError as e:
+        print(f"Error: {e}")
+        print("Hint: split the export, or import a filtered view.")
+        return 1
     imported = result.get("imported", 0)
     skipped = result.get("skipped", 0)
     errors = result.get("errors", [])
@@ -1237,6 +1242,7 @@ def _cmd_import_hermes(db, args):
             print(f"    {err.get('session_id', '?')}: {err.get('error', '?')}")
         if len(errors) > 10:
             print(f"    ... {len(errors) - 10} more")
+    return 1 if errors else 0
 
 
 _PRE_DB_HANDLERS = {

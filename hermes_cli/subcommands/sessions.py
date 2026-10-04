@@ -324,7 +324,7 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_import_hermes.add_argument(
         "input", help="Path to the JSONL export file (from 'hermes sessions export')")
     sessions_import_hermes.add_argument("--machine", default=None, metavar="ID",
-        help="Only import sessions stamped with this machine_id")
+        help="Only import sessions whose machine_id field in the JSONL file matches this ID")
     sessions_import_hermes.add_argument("--dry-run", action="store_true",
         help="Preview what would be imported without importing")
 

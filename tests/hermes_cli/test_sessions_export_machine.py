@@ -262,3 +262,56 @@ class TestImportCLI:
         imported = dest_db.get_session("dryrun-test")
         assert imported is None, "Session should NOT be present after --dry-run"
         dest_db.close()
+
+    def test_import_cli_missing_file_rc1(self, tmp_path):
+        """Importing a non-existent file returns rc=1."""
+        dest_dir = tmp_path / "dest-hermes"
+        dest_dir.mkdir()
+        repo_root = Path(__file__).parent.parent.parent
+        result = _run_cli(
+            ["sessions", "import-hermes", str(tmp_path / "no-such-file.jsonl")],
+            _hermes_env(dest_dir), repo_root,
+        )
+        assert result.returncode == 1, f"Expected rc=1, got {result.returncode}: {result.stdout}"
+        assert "File not found" in result.stdout
+
+    def test_import_cli_no_sessions_rc1(self, tmp_path):
+        """Importing a file with no valid sessions returns rc=1."""
+        dest_dir = tmp_path / "dest-hermes"
+        dest_dir.mkdir()
+        repo_root = Path(__file__).parent.parent.parent
+
+        # File with only blank lines
+        export_path = tmp_path / "empty.jsonl"
+        export_path.write_text("\n\n\n")
+
+        result = _run_cli(
+            ["sessions", "import-hermes", str(export_path)],
+            _hermes_env(dest_dir), repo_root,
+        )
+        assert result.returncode == 1, f"Expected rc=1, got {result.returncode}: {result.stdout}"
+        assert "No sessions found" in result.stdout
+
+    def test_import_cli_empty_filter_rc1(self, tmp_path):
+        """--machine filter that matches nothing returns rc=1."""
+        from hermes_state import SessionDB
+
+        src = SessionDB(tmp_path / "src-state.db")
+        src.create_session("only-a", source="cli")
+        exported = src.export_session("only-a")
+        src.close()
+        exported["machine_id"] = "machine-a"
+
+        export_path = tmp_path / "only-a.jsonl"
+        with open(export_path, "w") as f:
+            f.write(json.dumps(exported) + "\n")
+
+        dest_dir = tmp_path / "dest-hermes"
+        dest_dir.mkdir()
+        repo_root = Path(__file__).parent.parent.parent
+        result = _run_cli(
+            ["sessions", "import-hermes", str(export_path), "--machine", "machine-b"],
+            _hermes_env(dest_dir), repo_root,
+        )
+        assert result.returncode == 1, f"Expected rc=1, got {result.returncode}: {result.stdout}"
+        assert "No sessions from machine" in result.stdout

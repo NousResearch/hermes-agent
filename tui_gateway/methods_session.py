@@ -1243,19 +1243,22 @@ def _(rid, params: dict) -> dict:
     # Quiet live lookup, the set_hidden reasoning: a stored id that is not in memory is this method's
     # expected second tier, not a rejection (session.list rows archive without a live runtime here).
     session = _sessions.get(target)
+    from hermes_cli.lifecycle import archive_session
+
+    profile = (params.get("profile") or "").strip() or None
     with (_profile_db(params, writer=True) if session is None else _session_db(session)) as db:
         if db is None:
             return _db_unavailable_error(rid, code=5007)
         try:
             if session is not None:
                 key = session["session_key"]
-                if not db.set_session_archived(key, archived):
+                if not archive_session(db, key, archived, surface="tui", profile=profile):
                     session["pending_archived"] = archived  # no row yet: _ensure_session_db_row applies it
             else:
                 # ``resolve_session_id`` follows key/title aliases like the REST pin/archive path.
                 if not (key := db.resolve_session_id(target) if hasattr(db, "resolve_session_id") else target):
                     return _err(rid, 4001, "session not found")
-                db.set_session_archived(key, archived)
+                archive_session(db, key, archived, surface="tui", profile=profile)
             return _ok(rid, {"archived": archived, "session_key": key})
         except Exception as e:
             return _err(rid, 5007, str(e))

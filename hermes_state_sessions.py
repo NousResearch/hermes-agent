@@ -1769,7 +1769,8 @@ class SessionSessionsMixin:
         return count
 
     def archive_sessions(
-        self, older_than_days: Optional[float] = None, source: str = None, **filters,
+        self, older_than_days: Optional[float] = None, source: str = None,
+        archive: Optional[Callable[[Any, str], Any]] = None, **filters,
     ) -> int:
         """Bulk soft-hide with prune_sessions' filter surface, via set_session_archived so each lineage
         flips as a unit; idempotent. Returns matches. A lineage is matched through its TIP only: an
@@ -1779,7 +1780,11 @@ class SessionSessionsMixin:
         filters["lineage_tips_only"] = True
         rows = self.list_prune_candidates(older_than_days=older_than_days, source=source, **filters)
         for row in rows:
-            self.set_session_archived(row["id"], True)
+            # ``archive(db, sid)`` lets a deliberate caller route through the lifecycle helper.
+            if archive is not None:
+                archive(self, row["id"])
+            else:
+                self.set_session_archived(row["id"], True)
         return len(rows)
 
     def maybe_auto_archive(

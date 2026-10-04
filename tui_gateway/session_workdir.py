@@ -460,7 +460,9 @@ def _ensure_session_db_row(session: dict) -> bool:
             # Same deferral for session.archive before the row existed (mirrors pending_hidden).
             if session.get("pending_archived"):
                 try:
-                    if db.set_session_archived(key, True):
+                    from hermes_cli.lifecycle import archive_session
+
+                    if archive_session(db, key, True, surface="tui"):
                         session.pop("pending_archived", None)
                 except Exception:
                     logger.debug("failed to apply pending archived flag", exc_info=True)

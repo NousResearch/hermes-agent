@@ -471,6 +471,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
 | `on_session_reset` | Observer | CLI/TUI session boundary and gateway after the replacement session exists; return ignored. | CLI: `session_id`, `platform`, `reason`; TUI: `session_id`, `platform`; gateway: those plus `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
+| `on_session_archived` | Observer | After a deliberate archive commits and flips a session from unarchived to archived (Desktop/dashboard, TUI `session.archive`, `hermes sessions archive`); not for the idle auto-archive sweep, profile adoption, repeats or un-archives. Return ignored. | `session_id`, `surface` (`"dashboard"`, `"tui"`, `"cli"`), `profile` | Session identifier and the owning profile name. |
 | `agent_loop_stopped` | Observer | Immediately after a real running agent is interrupted — gateway `_interrupt_and_clear_session` or TUI/desktop `session.interrupt`; return ignored. | `session_key`, `platform`, `reason`, `invalidation_reason` | Session/routing identifiers and interruption reasons; no message body. |
 | `on_skill_lifecycle` | Observer | After an authoritative skill-usage state change; return ignored. | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | Exposes the local skill name and provenance. |
 | `subagent_start` | Observer | Child constructed and about to run; return ignored. | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal may contain user/project content. |
@@ -1054,6 +1055,30 @@ def my_callback(session_id: str, platform: str, **kwargs):
 **Return value:** Ignored.
 
 **Use cases:** Reset per-session caches keyed by `session_id`, emit "session rotated" analytics, prime a fresh state bucket.
+
+---
+
+### `on_session_archived`
+
+Fires when a user **deliberately archives** a session: the Desktop sidebar or dashboard (`PATCH /api/sessions/{id}` with `archived: true`), the TUI `session.archive` RPC (including a draft archived before its first message, once its row exists), or `hermes sessions archive`. Archiving is often a user's "this is done" signal, so integrations can close the matching task, ticket or thread without polling `state.db`.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, surface: str, profile: str | None, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | The archived session's ID (the id the caller passed, after alias resolution; the whole compression lineage is archived with it). |
+| `surface` | `str` | `"dashboard"` (Desktop and web dashboard), `"tui"`, or `"cli"`. |
+| `profile` | `str` or `None` | Profile whose `state.db` holds the session when the request named one; `None` for the serving profile. |
+
+**Fires:** After the archive flag is committed, once per real unarchived → archived transition. Archiving an already archived session, un-archiving, the idle auto-archive sweep (`sessions.auto_archive`) and profile adoption do not fire it. A failing callback is logged and never fails the archive.
+
+**Return value:** Ignored.
+
+**Use cases:** Complete a task in a to-do app when its session is archived, close a support ticket, stop following an email thread, release per-session resources.
 
 ---
 

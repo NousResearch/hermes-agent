@@ -91,6 +91,14 @@ class ProviderProfile:
     # (e.g. Xiaomi MiMo, which returns 400 "text is not set").
     supports_vision_tool_messages: bool = True
 
+    # Optional wire scope for a ``supports_vision_tool_messages=False`` veto: the veto holds only
+    # when the active transport resolves to one of these api_modes. Providers whose per-model
+    # wire is derivable without runtime state (the OpenCode families via
+    # ``models.opencode_model_api_mode``) can lift a chat-completions-only veto on their
+    # responses/codex wire. ``None`` (default) keeps the veto unconditional; a provider whose
+    # wire cannot be derived also stays vetoed (fail closed).
+    vision_tool_messages_veto_wires: tuple[str, ...] | None = None
+
     # True only when this provider's Chat Completions endpoint explicitly
     # documents ``prompt_cache_key`` as an accepted request body field.  This
     # is deliberately opt-in: many OpenAI-compatible endpoints reject unknown

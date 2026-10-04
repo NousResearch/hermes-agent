@@ -2972,7 +2972,7 @@ class _RunDelivery:
 
 def _save_compose_deliver(
     d: _RunDelivery, fence: _FireOwnership, final_response: str, output: str, *,
-    adapters, loop, verbose: bool, execution_token,
+    adapters, loop, verbose: bool, execution_token, execution_id: str,
 ) -> None:
     """Save output, compose the notice and deliver it (both side effects run under the fire-claim
     fence; a lost claim raises ``_FireClaimLostDuringSideEffect`` for the caller)."""
@@ -2983,7 +2983,7 @@ def _save_compose_deliver(
         # remove_job() already deleted this job's output dir; saving would re-create an orphan.
         output_file = (
             None if self_removal_delivery_allowed(job["id"])
-            else save_job_output(job["id"], output, execution_token))
+            else save_job_output(job["id"], output, execution_id))
     if verbose and output_file is not None:
         logger.info("Output saved to: %s", output_file)
 
@@ -3318,7 +3318,7 @@ def _run_one_job_body(
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,
-                execution_token=execution_token)
+                execution_token=execution_token, execution_id=execution_id)
         except _FireClaimLostDuringSideEffect:
             d.side_effect_ownership_lost = True
         finally:

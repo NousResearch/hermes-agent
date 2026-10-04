@@ -15,6 +15,7 @@ from typing import Optional
 
 from pm import paths
 from pm.downloader import DownloadPaused, ProgressFn
+from pm.filesystem import remove_tree
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
@@ -231,7 +232,7 @@ def _remove_entry(store: Store, entry_name: str, *, attempts: int = 5) -> None:
             if entry.is_symlink() or not entry.is_dir():
                 entry.unlink(missing_ok=True)
             else:
-                shutil.rmtree(entry)
+                remove_tree(entry)
             return
         except FileNotFoundError:
             return

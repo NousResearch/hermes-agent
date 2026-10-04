@@ -56,6 +56,37 @@ def _sub_rows(tid: str) -> list:
 
 
 class TestCollectKanbanNotifications:
+    def test_review_requested_delivers_once_and_retains_subscription(self):
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            assert kb.request_review(conn, tid, summary="implementation ready for independent review")
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session())
+        assert len(texts) == 1
+        assert tid in texts[0]
+        assert "implementation ready for independent review" in texts[0]
+        assert _collect_kanban_notifications(_session()) == []
+        # A review park is not terminal: the subscriber must hear the verdict too.
+        assert len(_sub_rows(tid)) == 1
+
+    def test_other_review_attention_events_deliver_once(self):
+        for kind in ("changes_requested", "block_loop_detected"):
+            tid = _create_subscribed_task()
+            conn = kbc.connect()
+            try:
+                with kbc.write_txn(conn):
+                    kb._append_event(conn, tid, kind, {"reason": "inspect retained evidence"})
+            finally:
+                conn.close()
+            texts = _collect_kanban_notifications(_session())
+            assert len(texts) == 1, kind
+            assert tid in texts[0]
+            assert "inspect retained evidence" in texts[0]
+            assert _collect_kanban_notifications(_session()) == []
+
     def test_zero_sub_board_is_never_opened_writable(self):
         conn = kbc.connect()
         conn.close()
@@ -374,6 +405,30 @@ class TestNotificationPollerLoopKanbanWiring:
         assert any(e == "message.start" for e, _ in emits)
         assert any(tid in text for text in submits), submits
         assert session["running"] is True  # poller claimed the turn
+        assert not session.get("_kanban_pending")
+
+    def test_review_buffers_while_busy_then_dispatches_once(self, monkeypatch):
+        tid = _create_subscribed_task()
+        conn = kbc.connect()
+        try:
+            assert kb.request_review(conn, tid, summary="review pickup probe")
+        finally:
+            conn.close()
+        session = self._poller_session(running=True)
+        stop, thread, emits, submits = self._start_poller(session, monkeypatch)
+        try:
+            assert self._wait_for(lambda: session.get("_kanban_pending"))
+            assert not submits
+            with session["history_lock"]:
+                session["running"] = False
+            assert self._wait_for(lambda: submits), "review never woke the idle session"
+        finally:
+            stop.set()
+            thread.join(timeout=5)
+        assert len(submits) == 1
+        assert tid in submits[0]
+        assert "review pickup probe" in submits[0]
+        assert _collect_kanban_notifications(_session()) == []
         assert not session.get("_kanban_pending")
 
     def test_busy_session_buffers_then_flushes_when_idle(self, monkeypatch):

@@ -107,6 +107,14 @@ class VisionMessagePrepMixin:
         cleanup_path: Optional[Path] = None
         if is_data_url:
             vision_source, cleanup_path = self._materialize_data_url_for_vision(vision_source)
+            if not vision_source:
+                # Over the materialize cap: there is no file to analyze, and handing vision_analyze
+                # an empty source only logs a traceback and tells the model the image was invalid.
+                size_mb = len(str(image_url).partition(",")[2]) * 3 / 4 / (1024 * 1024)  # decoded size
+                note = (f"[The {role_label} attached an image, but at {size_mb:.0f} MB it is too large "
+                        f"to analyze here. Ask for a smaller copy if its contents matter.]")
+                self._anthropic_image_fallback_cache[cache_key] = note
+                return note
 
         try:
             from tools.vision_tools import vision_analyze_tool

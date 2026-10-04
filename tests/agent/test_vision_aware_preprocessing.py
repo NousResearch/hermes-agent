@@ -179,3 +179,60 @@ class TestModelSupportsVision:
              patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert agent._model_supports_vision() is True
 
+
+
+# ─── oversized inline images on the non-vision route ─────────────────────────
+
+
+class TestOversizedDataUrlFallback:
+    """A data URL over the materialize cap must not reach vision_analyze as ``""``."""
+
+    @staticmethod
+    def _spy_vision(monkeypatch):
+        import tools.vision_tools as vision_tools
+
+        calls = []
+
+        async def fake_vision_analyze_tool(image_url, user_prompt, **_kwargs):
+            calls.append(image_url)
+            return '{"success": true, "analysis": "a cat"}'
+
+        monkeypatch.setattr(vision_tools, "vision_analyze_tool", fake_vision_analyze_tool)
+        return calls
+
+    def test_oversized_data_url_skips_vision_and_says_why(self, monkeypatch):
+        from agent.vision_message_prep import VisionMessagePrepMixin
+
+        monkeypatch.setattr(VisionMessagePrepMixin, "_MAX_DATA_URL_BASE64_BYTES", 8)
+        calls = self._spy_vision(monkeypatch)
+        agent = _make_agent()
+        oversized = "data:image/png;base64," + "A" * 64
+
+        note = agent._describe_image_for_anthropic_fallback(oversized, "user")
+
+        assert calls == []
+        assert "too large" in note
+        assert "Image analysis failed" not in note
+        assert "image_url is required" not in note
+
+    def test_oversized_note_is_cached(self, monkeypatch):
+        from agent.vision_message_prep import VisionMessagePrepMixin
+
+        monkeypatch.setattr(VisionMessagePrepMixin, "_MAX_DATA_URL_BASE64_BYTES", 8)
+        self._spy_vision(monkeypatch)
+        agent = _make_agent()
+        oversized = "data:image/png;base64," + "A" * 64
+
+        first = agent._describe_image_for_anthropic_fallback(oversized, "user")
+        assert agent._describe_image_for_anthropic_fallback(oversized, "user") is first
+        assert len(agent._anthropic_image_fallback_cache) == 1
+
+    def test_data_url_under_the_cap_is_still_described(self, monkeypatch):
+        calls = self._spy_vision(monkeypatch)
+        agent = _make_agent()
+        small = "data:image/png;base64,iVBORw0KGgo="
+
+        note = agent._describe_image_for_anthropic_fallback(small, "user")
+
+        assert len(calls) == 1 and calls[0]
+        assert "a cat" in note

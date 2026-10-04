@@ -3910,22 +3910,13 @@ class _StreamingCall(StreamingWaitMonitor):
         if response is None or response is not self._attempt_stream_response:
             return
         try:
-            from agent.agent_runtime_helpers import (
-                _connection_candidates, _shutdown_socket, _socket_from_candidate,
-            )
-            exts = getattr(response, "extensions", None) or {}
-            direct = exts.get("network_stream") if isinstance(exts, dict) else None
-            for start in (direct, getattr(response, "stream", None)):
-                if start is None:
-                    continue
-                for candidate in _connection_candidates(start):
-                    sock = _socket_from_candidate(candidate)
-                    if sock is None:
-                        continue
-                    _shutdown_socket(sock)
-                    logger.info("Shut down the stale stream's socket to unblock the reader "
-                                "(attempt superseded; model=%s).", self.api_kwargs.get("model", "unknown"))
-                    return
+            from agent.agent_runtime_helpers import _shutdown_socket, _socket_from_response
+            sock = _socket_from_response(response)
+            if sock is not None:
+                _shutdown_socket(sock)
+                logger.info("Shut down the stale stream's socket to unblock the reader "
+                            "(attempt superseded; model=%s).", self.api_kwargs.get("model", "unknown"))
+                return
             logger.debug("Stale stream socket shutdown found no socket; pool sweep is the only abort")
         except Exception:
             logger.debug("Stale stream socket shutdown failed", exc_info=True)

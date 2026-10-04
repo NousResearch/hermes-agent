@@ -33,8 +33,9 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
             consented, reason = plugins_cmd._install_plugin_python_deps(
                 plugins_cmd._read_manifest_for_install(staged), staged, plugins_cmd._console())
             if not consented:
-                raise plugins_cmd.PluginOperationError(
-                    f"Reinstall declined: {reason}. The installed plugin and active environment are unchanged.")
+                outcome = ("Reinstall declined: {}. The installed plugin and active environment are unchanged."
+                           if target.exists() else "Install declined: {}. Nothing was installed.")
+                raise plugins_cmd.PluginOperationError(outcome.format(reason))
 
     sync_venv(explicit=True, plugins=StagedUpdate({
         "staged": str(staged.resolve()), "target": str(target.absolute()),

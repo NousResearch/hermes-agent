@@ -170,6 +170,22 @@ def provider_readiness_status(provider: dict, config: dict, *, features=None, is
     if provider.get("env_vars", []):
         return "ready" if _provider_env_ready(provider) else "needs_keys"
 
+    # Keyless web rows (empty env_vars, no post_setup) would otherwise ride the unconditional
+    # "ready" below and advertise backends dispatch can never reach (an unentitled keyless ring,
+    # missing codex credentials). Ask the registry — the same instance the dispatcher consults —
+    # and fall back to the legacy verdict when the backend is unknown to it (#132526).
+    backend = provider.get("web_backend")
+    if backend and not provider.get("post_setup"):
+        from agent.web_search_registry import get_provider
+
+        registered = get_provider(backend)
+        if registered is not None:
+            try:
+                if not (registered.is_available() or registered.is_keyless_available()):
+                    return "needs_setup"
+            except Exception:
+                pass  # a flaky availability probe must not manufacture a warning state
+
     managed_feature = provider.get("managed_nous_feature")
     if provider.get("requires_nous_auth") or managed_feature:
         if features is None:

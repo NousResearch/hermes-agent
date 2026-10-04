@@ -257,7 +257,16 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
         if err:
             raise RuntimeError(err)
         if cdp_url:
-            info = _session_record("rp", _cdp._resolve_cdp_override(cdp_url), {"local": True, "real_profile": True})
+            features = {"local": True, "real_profile": True}
+            info = _session_record("rp", _cdp._resolve_cdp_override(cdp_url), features)
+            # One-shot: if this launch was detected to have purged the copied
+            # cookies (#96993), carry the notice on the session so the first
+            # navigation can explain the signed-out state instead of the agent
+            # discovering it as mysterious login failures, site by site.
+            purge_notice = _bt._real_profile_purge_notice.pop("msg", None)
+            if purge_notice:
+                features["real_profile_cookies_purged"] = True
+                info["real_profile_purge_warning"] = purge_notice
             _bt.logger.info("Created real-profile local session %s for task %s", info["session_name"], task_id)
             return info
 

@@ -271,7 +271,12 @@ _REAL_PROFILE_CDP_LOCK_TIMEOUT_S = 30.0
 _real_profile_cdp_lock = threading.Lock()
 _real_profile_cdp_cache: dict = {}
 _real_profile_chrome_procs: list = []  # Popen handles of directly-launched real browsers
-
+# One-shot notice set when a freshly launched copy-browser is detected to have
+# purged the cookies the snapshot just copied in (Chrome ≥151 on Windows binds
+# cookie encryption to the original profile and deletes copied entries on first
+# launch, #96993). Consumed by the next real-profile session creation so the
+# first navigation can tell the agent why sites start signed out.
+_real_profile_purge_notice: dict = {}
 
 
 _PRIVATE_HOST_SUFFIXES = (".localhost", ".local", ".lan", ".internal")
@@ -812,6 +817,12 @@ def _add_navigate_warnings(response: Dict[str, Any], title: str, first_nav_sessi
                 "Consider upgrading Browserbase plan for proxy support."
             )
         response["stealth_features"] = [k for k, v in features.items() if v]
+    # Set when the copy-browser's first launch purged the copied cookies
+    # (#96993): the agent needs to know up front why every site starts signed
+    # out before it burns turns probing logins.
+    purge_warning = (first_nav_session or {}).get("real_profile_purge_warning")
+    if purge_warning:
+        response["real_profile_purge_warning"] = purge_warning
 
 
 def browser_snapshot(

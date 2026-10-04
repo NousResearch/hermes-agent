@@ -13,6 +13,7 @@ import tarfile
 
 import pytest
 
+from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.profiles import export_profile
 from plugins.teams_pipeline.store import DEFAULT_TEAMS_PIPELINE_STORE_FILENAME
 
@@ -39,8 +40,8 @@ _EXTRA_STORES = {
 }
 # Single-file stores whose name has no dot; every other dotless store is a token directory.
 _DOTLESS_FILES = {"npmrc"}
-# Dot-named stores that are directories.
-_DOT_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"}
+# Dot-named stores that are directories: the OS credential dirs shared with file_safety.
+_DOT_DIRS = set(HOME_CREDENTIAL_DIRS)
 
 
 def _seed_stores(root):

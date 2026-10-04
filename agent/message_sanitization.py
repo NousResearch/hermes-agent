@@ -701,5 +701,61 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
     return changed
 
 
+# DeepSeek-V4.1's vocabulary carries a multimodal-span placeholder family
+# (<|place_holder_mm_span_NNNN|>, added-token ids 128847..129279). On ordinary
+# tool-call turns the model occasionally samples one into prose or tool payload,
+# and the engine's chat path decodes special tokens verbatim (tool-call parsing
+# holds skip_special_tokens=False), so any sampled token rides to the client as
+# text. The '|' inside it destroys bash commands, file paths and tool names.
+# Scrub full tokens plus their truncation prefixes (streaming/storage cuts).
+_SPAN_PLACEHOLDER_RE = re.compile(r"<\|place_holder(?:_mm_span(?:_\d+)?)?\|?>?")
+_SPAN_PLACEHOLDER_SENTINEL = "<|place_holder"
+
+
+def strip_span_placeholders(text: str) -> str:
+    """Remove leaked span-placeholder tokens; identity fast-path for clean text."""
+    if not isinstance(text, str) or _SPAN_PLACEHOLDER_SENTINEL not in text:
+        return text
+    return _SPAN_PLACEHOLDER_RE.sub("", text)
+
+
+def scrub_span_placeholders_from_messages(messages: list) -> int:
+    """Read-only strip of span-placeholder tokens from a loaded conversation.
+
+    Replay seam: stored rows may carry the token (content, tool-call payloads,
+    reasoning, api_content). Mutates nothing durable — the dicts are per-load
+    copies — and leaves tool-call ids alone so result pairing stays intact.
+    Returns the number of messages touched.
+    """
+    if not isinstance(messages, list):
+        return 0
+    touched = 0
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        msg_touched = False
+        for key in ("content", "api_content", "reasoning", "reasoning_content"):
+            value = msg.get(key)
+            if isinstance(value, str) and _SPAN_PLACEHOLDER_SENTINEL in value:
+                msg[key] = strip_span_placeholders(value)
+                msg_touched = True
+            elif isinstance(value, list):
+                for part in value:
+                    if (isinstance(part, dict) and isinstance(part.get("text"), str)
+                            and _SPAN_PLACEHOLDER_SENTINEL in part["text"]):
+                        part["text"] = strip_span_placeholders(part["text"])
+                        msg_touched = True
+        for tc in msg.get("tool_calls") or ():
+            fn = tc.get("function") if isinstance(tc, dict) else None
+            if isinstance(fn, dict):
+                for key in ("name", "arguments"):
+                    value = fn.get(key)
+                    if isinstance(value, str) and _SPAN_PLACEHOLDER_SENTINEL in value:
+                        msg_touched = True
+                        fn[key] = strip_span_placeholders(value)
+        touched += int(msg_touched)
+    return touched
+
+
 # Image / multimodal parts are deliberately NOT consolidated here: per-adapter handling is
 # format-specific SYNTAX. The one shared image POLICY is ``_strip_images_from_messages``.

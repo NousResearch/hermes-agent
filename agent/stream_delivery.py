@@ -316,6 +316,11 @@ class StreamDeliveryMixin:
             # See #5719.
             scrubber = getattr(self, "_stream_context_scrubber", None)
             text = think_scrubber.feed(text) if think_scrubber is not None else self._strip_think_blocks(text)
+            # Span-placeholder tokens (DeepSeek-V4.1 mm-span family) arrive complete in one
+            # delta — one token id — so a stateless per-delta sub is safe here.
+            from agent.message_sanitization import strip_span_placeholders
+
+            text = strip_span_placeholders(text)
             # Providers that inline reasoning (MiniMax-M3 <think>…</think>) send no reasoning delta, so the
             # live reasoning pane would stay empty; forward what the scrubber stripped instead (#89647).
             hidden = think_scrubber.last_hidden if think_scrubber is not None else ""

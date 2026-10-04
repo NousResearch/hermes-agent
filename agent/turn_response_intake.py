@@ -136,6 +136,22 @@ def normalize_model_response(
     if assistant_message.content is not None and not isinstance(assistant_message.content, str):
         assistant_message.content = _coerce_content_text(assistant_message.content)
 
+    # Strip span-placeholder tokens the model sampled from its own vocabulary
+    # (DeepSeek-V4.1 mm-span family, decoded verbatim on the tool-call path).
+    # Scrubbed here so dispatch, storage and every downstream consumers sees
+    # clean text — arguments keep valid JSON because the token is whole.
+    from agent.message_sanitization import strip_span_placeholders
+    if isinstance(assistant_message.content, str) and "<|place_holder" in assistant_message.content:
+        assistant_message.content = strip_span_placeholders(assistant_message.content)
+    for tc in assistant_message.tool_calls or ():
+        fn = getattr(tc, "function", None)
+        if fn is not None:
+            fn.name = strip_span_placeholders(fn.name)
+            fn.arguments = strip_span_placeholders(fn.arguments)
+    reasoning_now = getattr(assistant_message, "reasoning_content", None)
+    if isinstance(reasoning_now, str) and "<|place_holder" in reasoning_now:
+        assistant_message.reasoning_content = strip_span_placeholders(reasoning_now)
+
     # Agent-as-provider projection: splice the provider-agent's own tool work in as
     # call/result rows before this turn's assistant message; no-op for ordinary providers.
     splice_provider_projection(agent, response, messages)

@@ -1720,6 +1720,11 @@ class SessionMessagesMixin:
         # Defense-in-depth: strip a background-review harness turn (older builds shared the parent's
         # session_id) plus its curator reply, and bare tool-call marker content ("[memory]") persisted as an answer.
         messages = _strip_stale_tool_call_markers(_strip_background_review_harness(messages))
+        # Strip span-placeholder tokens leaked into stored rows (DeepSeek-V4.1 mm-span family;
+        # read-only on the projection — durable rows stay as-is until the periodic scrub).
+        from agent.message_sanitization import scrub_span_placeholders_from_messages
+
+        scrub_span_placeholders_from_messages(messages)
         if repair_alternation and messages:
             from agent.agent_runtime_helpers import repair_message_sequence
             repaired = repair_message_sequence(None, messages)

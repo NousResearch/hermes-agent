@@ -3575,6 +3575,76 @@ def _exit_invalid(msg: str) -> None:
     sys.exit(1)
 
 
+def _resolved_profile_label() -> str:
+    """Name of the profile this process writes to (``default``, ``<name>``, or ``custom``)."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        return get_active_profile_name()
+    except Exception:
+        return "unknown"
+
+
+def _refuse_stray_profile_env(verb: str) -> None:
+    """``HERMES_PROFILE`` is an identity label (kanban comment author), not a profile selector: the CLI
+    picks the profile from ``-p/--profile`` or the sticky ``active_profile`` file. So
+    ``HERMES_PROFILE=x hermes config set …`` landed silently in whatever profile was resolved —
+    usually ``default`` — and could even create a partial ``mcp_servers.<name>`` block there. Refuse
+    when the env var names a different profile than the one this process resolved; ``custom`` homes
+    cannot be compared and are left alone."""
+    wanted = (os.environ.get("HERMES_PROFILE") or "").strip()
+    if not wanted:
+        return
+    try:
+        from hermes_cli.profiles import normalize_profile_name
+        wanted_norm = normalize_profile_name(wanted)
+    except Exception:
+        wanted_norm = wanted.casefold()
+    resolved = _resolved_profile_label()
+    if resolved in (wanted_norm, "custom", "unknown"):
+        return
+    _exit_invalid(
+        f"✗ HERMES_PROFILE={wanted!r} is set, but this command would {verb} profile '{resolved}' "
+        f"({get_config_path()}).\n"
+        "  HERMES_PROFILE is not a profile selector (it only labels kanban comments). Select the profile explicitly:\n"
+        f"    hermes -p {wanted_norm} config {verb} …\n"
+        "  or unset HERMES_PROFILE to write to the resolved profile on purpose.")
+
+
+def _refuse_new_mcp_server_from_leaf(key: str, user_config: Dict[str, Any], force: bool) -> None:
+    """Writing ``mcp_servers.<name>.tools.*`` for a server that does not exist yet would create a
+    server entry with no ``url``/``command`` — an invalid block the runtime rejects at startup.
+    Refuse a ``tools.*`` filter write unless the leaf itself defines the route (``url``/``command``) or
+    ``--force`` is given; other nested keys (``env``, ``oauth``, ``headers``) only warn, since setup
+    flows legitimately stage them before the route."""
+    segs = _split_key_path(key)
+    if len(segs) < 3 or segs[0] != "mcp_servers":
+        return
+    servers = user_config.get("mcp_servers")
+    existing = [k for k in (servers or {}) if isinstance(servers, dict) and isinstance(k, str)]
+    if any(key.startswith(f"mcp_servers.{name}.") for name in existing):
+        return
+    if segs[2] in ("url", "command"):
+        return  # defining the route creates the server legitimately
+    name = segs[1]
+    if segs[2] != "tools":
+        # ``env``/``oauth``/``headers`` on a not-yet-defined server is how setup flows stage a server
+        # before its route lands; only warn. A tool FILTER on a server that does not exist is the
+        # silent-misdirection case: it is never what the user meant.
+        print(f"  ⚠ mcp_servers.{name} has no url/command yet in profile '{_resolved_profile_label()}' — "
+              f"add mcp_servers.{name}.url or .command or the runtime will reject this entry")
+        return
+    if force:
+        print(f"⚠ Creating mcp_servers.{name} from '{key}' with no url/command (--force); "
+              f"add mcp_servers.{name}.url or .command before the next restart")
+        return
+    _exit_invalid(
+        f"✗ mcp_servers.{name} is not defined in profile '{_resolved_profile_label()}' ({get_config_path()}).\n"
+        f"  Setting '{key}' would create a server entry with no url/command, which the runtime rejects.\n"
+        f"  Define the server first (hermes mcp add {name} … or hermes config set mcp_servers.{name}.url …),\n"
+        "  or pass --force to write the partial entry anyway."
+        + (f"\n  Servers defined here: {', '.join(existing)}" if existing else ""))
+
+
 def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
     """Write only the user's raw config back (never the merged defaults)."""
     ensure_hermes_home()
@@ -3626,6 +3696,7 @@ def set_config_value(key: str, value: str, force: bool = False):
             f"✗ Invalid config key: {key!r} — contains an empty path segment "
             "(leading, trailing, or doubled '.').")
     _exit_if_key_managed(key, "set")
+    _refuse_stray_profile_env("set")
     if _is_env_config_key(key):
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
@@ -3679,6 +3750,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     _model_val = user_config.get("model")
     if key.strip().lower().startswith("model.") and isinstance(_model_val, str) and _model_val:
         user_config["model"] = {"default": _model_val}
+    _refuse_new_mcp_server_from_leaf(key, user_config, force)
     key = _guard_section_overwrite(key, value, user_config, force)
     value = _refuse_container_type_mismatch(key, value, user_config, force)
     _old_provider = _model_val.get("provider") if isinstance(_model_val, dict) else None
@@ -3803,6 +3875,7 @@ def unset_config_value(key: str):
         managed_error("unset configuration values")
         return
     _exit_if_key_managed(key, "unset")
+    _refuse_stray_profile_env("unset")
 
     if _is_env_config_key(key):
         # Unified lifecycle: also prunes env-seeded credential_pool entries and model-cache rows so

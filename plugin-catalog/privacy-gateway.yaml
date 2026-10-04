@@ -1,12 +1,13 @@
 name: privacy-gateway
 repo: https://github.com/saiteja-madha/hermes-privacy-gateway
-sha: ead68009b0bb0f27a0b0f397d32181d35333fb92
+sha: 032bda954ad89599c16b655c9b3d11c91083f3e3
 description: Local Presidio-based PII pseudonymization for Hermes model requests and tool results with an encrypted profile-scoped alias vault.
 maintainer: saiteja-madha
 tier: community
 category: general
 docs_url: https://github.com/saiteja-madha/hermes-privacy-gateway#readme
 version: "0.1.1"
+requires_hermes: ">=0.20.4"
 platforms: [linux]
 capabilities:
   provides_tools: []

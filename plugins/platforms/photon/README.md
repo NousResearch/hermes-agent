@@ -156,6 +156,14 @@ All env vars are documented in `plugin.yaml`. The most important:
   via spectrum-ts' `richlink()` builder so iMessage can render a native link
   preview card. `PHOTON_MARKDOWN=false` reverts to stripped plain text and
   disables rich-link routing.
+
+  Rich-link sends to a chat that has never received a successful outbound
+  message can fail with `Target not allowed for this project` on
+  shared/free-tier Spectrum projects — spectrum-ts enforces the
+  outbound-initiation check on every `richlink()` call. When this happens the
+  adapter falls back to plain text and logs a warning; the first successful
+  outbound send to a target warms it up and rich-link previews work from then
+  on (see #97305).
 - **Reactions (tapbacks) are supported** behind `PHOTON_REACTIONS` (default
   off): the adapter tapbacks 👀 while processing and swaps it for 👍/👎 on
   completion, and a user tapback on a bot-sent message is routed to the agent

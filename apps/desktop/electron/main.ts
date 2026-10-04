@@ -598,7 +598,7 @@ import {
   updateHandoffConflict,
   writeUpdateMarker
 } from './update-marker'
-import { liveMarkerProbe } from './update-marker-gate'
+import { heldCeilingNotice, type HeldState, heldWaitMessage, liveMarkerProbe } from './update-marker-gate'
 import { updateConnectionsBeforeLocal } from './update-order'
 import {
   resolveUpdaterMechanism,
@@ -2997,7 +2997,10 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 // The hand-off state closes the later Windows `cmd start` wrapper gap: the
 // wrapper exits 0 before the real PowerShell script claims the marker, and
 // `finally` clears updateInFlight immediately after the hand-off is accepted.
-function updateGateDeps(onLiveMarker?: (marker: { startedAt: number | null }) => void) {
+function updateGateDeps(
+  onLiveMarker?: (marker: { startedAt: number | null }) => void,
+  onHeld?: (state: HeldState) => void
+) {
   // One creation-time probe per pid for this wait: on Windows each probe is a
   // powershell spawn and the gate polls every second.
   const createTime = cachedCreateTimeProbe()
@@ -3013,6 +3016,7 @@ function updateGateDeps(onLiveMarker?: (marker: { startedAt: number | null }) =>
       hermesHome: HERMES_HOME,
       createTime,
       onLiveMarker,
+      onHeld,
       log: rememberLog,
       reclaim: async () => {
         const updateRoot = resolveUpdateRoot()
@@ -3091,13 +3095,34 @@ async function waitForUpdateToFinish() {
   // Marker line 2 of the run this boot parked on: the result we report is that
   // run's, never an older one (C2 started_at match).
   let parkedRunStartedAt: number | null = null
+  // A dead marker whose checkout a leftover process still holds (R6): its
+  // state this poll, and whether its ceiling let us through (review R6 m7).
+  let held: HeldState | null = null
+  let heldExpired: HeldState | null = null
 
-  const outcome = await waitForUpdateClearance(updateGateDeps(marker => (parkedRunStartedAt = marker.startedAt)), {
+  const gateDeps = updateGateDeps(
+    marker => (parkedRunStartedAt = marker.startedAt),
+    state => {
+      held = state
+      heldExpired = state.expired ? state : heldExpired
+    }
+  )
+
+  const outcome = await waitForUpdateClearance(gateDeps, {
     signal: localBackendLifecycle.signal,
     onWaitTick: async (reason, waitedMs) => {
       if (!announced) {
         announced = true
         rememberLog(`[updates] update in progress (${reason}); deferring backend start until it finishes`)
+      }
+
+      const heldNow = held
+      held = null
+
+      if (reason === 'marker' && heldNow) {
+        await advanceBootProgress('backend.update-wait', heldWaitMessage(heldNow), 12)
+
+        return
       }
 
       // A live update owner is waited out, never aged out (C1 rule 3): booting
@@ -3197,6 +3222,17 @@ async function waitForUpdateToFinish() {
 
   if (outcome === 'cancelled') {
     localBackendLifecycle.assertCanStart()
+  }
+
+  if (heldExpired) {
+    // The way forward when the gate stopped waiting on a held checkout: boot
+    // goes on (non-blocking dialog); the marker stays for the scripts/Python.
+    void dialog.showMessageBox({
+      type: 'warning',
+      title: 'Hermes update',
+      message: 'Hermes started while an earlier update still holds the install',
+      detail: heldCeilingNotice(heldExpired)
+    })
   }
 
   if (outcome === 'clear') {

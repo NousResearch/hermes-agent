@@ -2620,6 +2620,11 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         if not pending:
             return
         target, start_reaction_id = pending
+        if outcome is ProcessingOutcome.FAILURE and event.source:
+            key = (event.source.chat_id, event.source.thread_id or None)
+            # A failed target must not carry the next turn's Typing; keep a newer successful send.
+            if self._last_bot_messages.get(key) == target:
+                self._last_bot_messages.pop(key, None)
         if not await self._remove_reaction(target, start_reaction_id):
             # Don't stack a failure badge when Typing could not be removed.
             return

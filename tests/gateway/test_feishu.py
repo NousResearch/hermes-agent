@@ -2551,6 +2551,44 @@ def test_processing_failure_skips_cross_mark_when_typing_removal_fails(fake_lark
     assert adapter._pending_processing_reactions["om_msg"] == ("om_bot", "r_typing")
 
 
+@pytest.mark.parametrize("thread_id", [None, "omt_current"])
+@pytest.mark.parametrize("newer_reply", [False, True])
+@pytest.mark.parametrize("delete_success", [False, True])
+def test_failed_delivery_does_not_reuse_badge_target_next_turn(
+    fake_lark_requests, monkeypatch, thread_id, newer_reply, delete_success,
+):
+    """A rejected send retires its badge target without discarding a newer bot reply."""
+    from gateway.platforms.event import MessageEvent
+
+    monkeypatch.setenv("FEISHU_REACTIONS", "true")
+    adapter, tracker = _reaction_adapter(delete_success=delete_success)
+    source = adapter.build_source(chat_id="oc_chat", thread_id=thread_id)
+    event = MessageEvent(text="current turn", message_id="om_user1", source=source)
+    next_event = MessageEvent(text="next turn", message_id="om_user2", source=source)
+    metadata = {"thread_id": thread_id}
+
+    async def run():
+        assert (await adapter.send("oc_chat", "previous answer", metadata=metadata)).success
+        await adapter.on_processing_start(event)
+        tracker.response = SimpleNamespace(success=lambda: False, code=400, msg="delivery rejected", data=None)
+        assert not (await adapter.send("oc_chat", "failed answer", metadata=metadata)).success
+        if newer_reply:
+            tracker.response = SimpleNamespace(success=lambda: True, data=SimpleNamespace(
+                message_id="om_new", chat_id="oc_chat"))
+            assert (await adapter.send("oc_chat", "newer answer", metadata=metadata)).success
+        await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+        assert adapter._last_bot_messages.get(("oc_chat", thread_id)) == ("om_new" if newer_reply else None)
+        await adapter.on_processing_start(next_event)
+
+    asyncio.run(run())
+    terminal = ["CrossMark"] if delete_success else []
+    assert tracker.created == ["Typing"] + terminal + (["Typing"] if newer_reply else [])
+    assert tracker.created_on == ["om_bot"] * (1 + len(terminal)) + (["om_new"] if newer_reply else [])
+    assert tracker.deleted_on == ["om_bot"]
+    assert adapter._pending_processing_reactions.get("om_user1") == (
+        None if delete_success else ("om_bot", "r_typing"))
+
+
 @pytest.mark.parametrize("case", ["create", "reply", "thread", "thread-reply", "user-id", "first", "other-chat", "other-thread", "rejected", "missing-id", "disabled"])
 def test_processing_badge_targets_only_our_sent_conversation_message(fake_lark_requests, monkeypatch, case):
     """Exercise real sends and lifecycle requests, including a new reply between start and completion."""

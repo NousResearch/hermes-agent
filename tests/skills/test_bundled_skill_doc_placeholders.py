@@ -23,14 +23,14 @@ ROLE_TAG_PLACEHOLDER = re.compile("<" + "tool" + ">")
 def bundled_skill_files() -> list[Path]:
     paths = sorted(
         p
-        for p in (REPO_ROOT / "skills").rglob("SKILL.md")
+        for p in (REPO_ROOT / "skills").rglob("*.md")
         if ".hub" not in p.parts
     )
     optional = REPO_ROOT / "optional-skills"
     if optional.is_dir():
         paths += sorted(
             p
-            for p in optional.rglob("SKILL.md")
+            for p in optional.rglob("*.md")
             if ".hub" not in p.parts
         )
     assert paths, "bundled skills tree not found under skills/ or optional-skills/"
@@ -46,7 +46,7 @@ def test_bundled_skills_have_no_role_tag_tool_placeholder():
             if ROLE_TAG_PLACEHOLDER.search(line):
                 offenders.append(f"{path.relative_to(REPO_ROOT)}:{lineno}")
     assert offenders == [], (
-        "bundled SKILL.md files contain the angle-bracket tool placeholder"
+        "bundled skill docs contain the angle-bracket tool placeholder"
         " reported in #132504; use the brace form ({tool}) instead:"
         f" {offenders}"
     )

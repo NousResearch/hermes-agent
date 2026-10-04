@@ -26,6 +26,7 @@ _STATUS_DISPLAY = {
     "loaded": ("✓", ""),
     "truncated": ("◐", "truncated — over context_file_max_chars"),
     "shadowed": ("○", "not loaded — higher-priority context type wins"),
+    "duplicate": ("○", "not loaded — identical to an earlier file in the chain"),
     "blocked": ("✗", "not loaded — blocked by the prompt-injection scan"),
     "flagged": ("⚠", "loaded — matched prompt-injection pattern(s); review the file"),
     "empty": ("○", "not loaded — empty file"),
@@ -65,13 +66,19 @@ def list_context_file_sources(
 
     Same signature semantics as ``build_context_files_prompt`` (``cwd=None`` → launch dir, install-tree guard
     unless *allow_install_tree_fallback*). Keys: ``label``, ``path``, ``chars``, ``est_tokens``, ``loaded``
-    and ``status`` ∈ loaded / truncated / flagged / shadowed / blocked / empty / unreadable / suppressed.
+    and ``status`` ∈ loaded / truncated / flagged / shadowed / duplicate / blocked / empty / unreadable /
+    suppressed.
     """
     cwd_path = Path(cwd if cwd is not None else os.getcwd()).resolve()
     max_chars = _pb._get_context_file_max_chars(context_length)
     suppressed = _pb._project_context_suppressed(cwd, cwd_path, allow_install_tree_fallback)
     sources: List[Dict[str, Any]] = []
     winner: Optional[str] = None
+    # ``_load_agents_md`` contributes one section per directory on the chain but drops content it
+    # has already emitted (a copied or symlinked AGENTS.md), so a duplicate is discovered and read
+    # yet never reaches the prompt. No other loader dedupes: ``.cursorrules`` concatenates every
+    # candidate even when two are identical, and the remaining finders yield a single file.
+    seen_agents_md: set = set()
     for kind, label, path, content in _pb.discover_context_files(cwd_path):
         if not content:
             status = _empty_status(path)
@@ -79,8 +86,13 @@ def list_context_file_sources(
             status = "suppressed"
         elif winner in (None, kind):
             winner = kind
-            # The builder caps the rendered ``## label`` section, not the raw file.
-            status = _loaded_status(content, len(f"## {label}\n\n{content}"), max_chars)
+            if kind == "agents_md" and content in seen_agents_md:
+                status = "duplicate"
+            else:
+                if kind == "agents_md":
+                    seen_agents_md.add(content)
+                # The builder caps the rendered ``## label`` section, not the raw file.
+                status = _loaded_status(content, len(f"## {label}\n\n{content}"), max_chars)
         else:
             status = "shadowed"
         sources.append(_entry(label, path, content, status))

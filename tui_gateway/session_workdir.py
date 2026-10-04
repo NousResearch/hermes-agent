@@ -407,7 +407,7 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
     return row_model, model_config
 
 
-def _ensure_session_db_row(session: dict, session_id: str | None = None) -> bool:
+def _ensure_session_db_row(session: dict, session_id: str | None = None, db=None) -> bool:
     """Idempotently persist the session's DB row on first real activity (prompt.submit), so abandoned drafts never
     leave an empty "Untitled" session. INSERT OR IGNORE: re-calls and the AIAgent's lazy create are no-ops. Returns
     False only when the store is unavailable (no openable state.db) — prompt.submit fails the send loudly instead of
@@ -418,6 +418,10 @@ def _ensure_session_db_row(session: dict, session_id: str | None = None) -> bool
     off-turn message write against it is FK-constrained on that row existing — so such a caller must
     pass the id it is about to write under, or its INSERT fails with "FOREIGN KEY constraint failed"
     (see the model-switch marker persist in tui_gateway/server.py).
+
+    ``db`` pins the store the row is created in, for a caller that writes through a specific handle (the live
+    agent's ``_session_db``): the row must land in the SAME store as the write or the FK still fails. Default
+    None resolves the session's owner db as before.
 
     A cwd the user *chose* is always persisted. Otherwise the launch directory stands in only for terminal sessions
     (the user deliberately ``cd``'d there; dropping it left the sidebar with no cwd AND no git_repo_root); desktop
@@ -431,7 +435,11 @@ def _ensure_session_db_row(session: dict, session_id: str | None = None) -> bool
     # Persist into the session's own profile db (global remote mode), not the launch profile's — otherwise the unified
     # list mis-tags the row and resume 404s ("session not found").
     profile_home = session.get("profile_home")
-    with _workdir_owner_db(session, "failed to open profile db for session row") as db:
+    pinned_db = db
+    owner_ctx = (
+        contextlib.nullcontext(pinned_db) if pinned_db is not None
+        else _workdir_owner_db(session, "failed to open profile db for session row"))
+    with owner_ctx as db:
         if db is _WORKDIR_DB_OPEN_FAILED:
             return False
         if db is None:

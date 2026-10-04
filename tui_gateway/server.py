@@ -1847,7 +1847,7 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
         # (session_key) and never the rotated child, so a session that still owned its _session_db failed
         # the write with "FOREIGN KEY constraint failed" and the notice was lost (it is caught and logged,
         # so the next resume simply replays without it). Ensure the row for the id actually written.
-        _ensure_session_db_row(session, session_id=target)
+        _ensure_session_db_row(session, session_id=target, db=db)
         with (contextlib.nullcontext(db) if db is not None else _session_db(session)) as db:
             if db is not None:
                 from agent.context_compressor import _DB_PERSISTED_MARKER

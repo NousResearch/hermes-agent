@@ -23,7 +23,7 @@ from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
-    extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
+    TIER_LOCAL, extract_skill_conditions, extract_skill_description, get_disabled_skill_names, get_skill_search_roots,
     iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
@@ -1206,8 +1206,9 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-# v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 3
+# v2 added org provenance fields (org_id/org_author); v4 adds ``rel`` (SKILL.md path relative to its root) for
+# duplicate-name resolution. Older snapshots are rebuilt.
+_SKILLS_SNAPSHOT_VERSION = 4
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1287,6 +1288,7 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
     platforms = [platforms] if isinstance(platforms, str) else platforms
     entry = {
         "skill_name": skill_name, "category": category, "frontmatter_name": str(frontmatter.get("name", skill_name)),
+        "rel": skill_file.relative_to(skills_dir).as_posix(),
         "description": description, "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
         "requires_apps": _requires_apps_list(frontmatter),
@@ -1362,7 +1364,8 @@ def build_skills_system_prompt(
 ) -> str:
     """Compact skill index for the system prompt.
 
-    External dirs (``skills.external_dirs``) are read-only and lose name collisions to local skills.
+    Same-named skills resolve like skill_view: project > local > create_dir > external_dirs, and a
+    same-tier duplicate is listed under its exact relative path (``agent.skill_utils.resolve_skill_catalog``).
     ``compact_categories`` (coding posture) demotes categories to a names-only line — nothing is ever hidden.
     ``skills_dir_override`` makes home resolution EXPLICIT: a build thread that never bound the HERMES_HOME
     ContextVar would otherwise leak the default profile's skills into a bot's prompt.
@@ -1374,14 +1377,13 @@ def build_skills_system_prompt(
     else:
         skills_dir = get_skills_dir()
     try:
-        external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
-        # Trusted project-local dirs — highest-precedence tier; cwd/trust are session-stable, so byte-stable.
-        from agent.skill_utils import get_project_skills_dirs
-        project_dirs = get_project_skills_dirs()
-        if not skills_dir.exists() and not external_dirs and not project_dirs:
+        # Every non-local root as (tier, dir) in the shared precedence order: trusted project dirs (cwd/trust
+        # are session-stable, so byte-stable), skills.create_dir, skills.external_dirs.
+        extra_roots = [(t, d) for t, d in get_skill_search_roots(skills_dir) if t != TIER_LOCAL]
+        if not skills_dir.exists() and not extra_roots:
             return ""
         return _build_skills_system_prompt_inner(
-            skills_dir, external_dirs, available_tools, available_toolsets, compact_categories, project_dirs)
+            skills_dir, extra_roots, available_tools, available_toolsets, compact_categories)
     finally:
         if _home_token is not None:
             reset_hermes_home_override(_home_token)
@@ -1405,46 +1407,44 @@ def _read_category_descriptions(root: Path, log_fmt: str) -> dict[str, str]:
     return found
 
 
-def _collect_extra_skills(
-    root: Path, skill_files, hides, claimed: set[str], skills_by_category: dict[str, list[tuple[str, str]]],
-    *, desc_prefix: str, log_fmt: str,
-) -> None:
-    """Add visible skills from a project/external dir; names already in *claimed* are skipped."""
+def _scan_extra_root(root: Path, skill_files, tier: int, log_fmt: str) -> list[tuple[dict, bool]]:
+    """``(entry tagged with tier/root, is_compatible)`` for every skill under a project/create_dir/external root."""
+    rows = []
     for skill_file in skill_files:
         try:
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-            entry = _build_snapshot_entry(skill_file, root, frontmatter, desc) if is_compatible else None
-            fm_name = entry["frontmatter_name"] if entry else ""
-            if not entry or fm_name in claimed or hides(fm_name, entry["skill_name"], extract_skill_conditions(frontmatter)):
-                continue
-            claimed.add(fm_name)
-            skills_by_category.setdefault(entry["category"], []).append((fm_name, f"{desc_prefix}{entry['description']}".strip()))
+            rows.append(({**_build_snapshot_entry(skill_file, root, frontmatter, desc), "tier": tier, "root": root}, is_compatible))
         except Exception as e:
             logger.debug(log_fmt, skill_file, e)
+    return rows
 
 
 def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict[str, list[tuple[str, str]]]) -> None:
-    """Org labeling + FAIL-LOUD collisions: a personal/org name clash flags BOTH
-    entries (neither silently wins) and skill_view refuses the bare name."""
+    """Index rows under each entry's ``load_name`` (what skill_view accepts); org labeling + FAIL-LOUD
+    collisions: a personal/org name clash flags every loadable side with the exact path to load."""
+    from agent.skill_utils import TIER_PROJECT
     name_owners: dict[str, set[str]] = {}
     for entry in visible_entries:
-        name_owners.setdefault(_entry_name(entry), set()).add("org" if entry.get("org_id") else "personal")
-    for entry in visible_entries:
-        fm, desc, org_id = _entry_name(entry), entry.get("description", ""), entry.get("org_id")
+        name_owners.setdefault(entry["name"], set()).add("org" if entry.get("org_id") else "personal")
+    for entry in (e for e in visible_entries if e["load_name"]):
+        desc, org_id = entry.get("description", ""), entry.get("org_id")
         if org_id:
             author = entry.get("org_author") or ""
             desc = f"[org-shared{': by ' + author if author else ''}] {desc}".strip()
+        elif entry["tier"] == TIER_PROJECT:
+            desc = f"[project] {desc}".strip()
         category = f"org:{org_id}" if org_id else (entry.get("category") or "general")
-        if len(name_owners[fm]) > 1:
-            desc = f"[name collision — also exists {'personally' if org_id else 'in your org'}; load via category path] {desc}".strip()
-        skills_by_category.setdefault(category, []).append((fm, desc))
+        if len(name_owners[entry["name"]]) > 1:
+            desc = f"[name collision — also exists {'personally' if org_id else 'in your org'}; load by this exact path] {desc}".strip()
+        skills_by_category.setdefault(category, []).append((entry["load_name"], desc))
 
 
 def _render_skills_index(
     skills_by_category: dict[str, list[tuple[str, str]]], category_descriptions: dict[str, str],
-    compact_categories: "frozenset[str] | None", available_tools: "set[str] | None",
+    compact_categories: "frozenset[str] | None", available_tools: "set[str] | None", unloadable: "list[str]" = (),
 ) -> str:
-    """Render the ## Skills block; "" when there is nothing to list."""
+    """Render the ## Skills block; "" when there is nothing to list. *unloadable* names (different skills
+    sharing a name AND relative path within one tier — one root or several) get a rename note instead of a row skill_view would refuse."""
     if not skills_by_category:
         return ""
     # Demoted categories collapse to one names-only line. NEVER drop entries — agent-created skills are the
@@ -1455,6 +1455,10 @@ def _render_skills_index(
         "context, so their descriptions are omitted — the skills work "
         "normally and load with skill_view(name) as usual.)"
     ) if demoted else ""
+    if unloadable:
+        hidden_note += (f"\n(A copy of {', '.join(unloadable)} is not listed: it shares both its name and its path "
+                        "with a different skill in the same skills directory tier (e.g. another external_dirs entry), "
+                        "so skill_view cannot load it — rename one.)")
     # Don't name web_search when the session has no web tools (dangling reference).
     _basic_tools = "terminal" if available_tools is not None and "web_search" not in available_tools else "web_search or terminal"
     index_lines = []
@@ -1506,16 +1510,14 @@ def _oneshot_prompt_variant() -> bool:
 
 
 def _build_skills_system_prompt_inner(
-    skills_dir: "Path", external_dirs: "list[Path]", available_tools: "set[str] | None",
+    skills_dir: "Path", extra_roots: "list[tuple[int, Path]]", available_tools: "set[str] | None",
     available_toolsets: "set[str] | None", compact_categories: "frozenset[str] | None",
-    project_dirs: "list[Path] | None" = None,
 ) -> str:
     # The resolved platform is part of the key: per-platform disabled-skill lists need distinct cache entries.
     _platform_hint = _current_session_platform_hint()
     disabled = get_disabled_skill_names(_platform_hint or None)
-    project_dirs = project_dirs or []
     cache_key = (
-        str(skills_dir), tuple(str(d) for d in external_dirs), tuple(str(d) for d in project_dirs),
+        str(skills_dir), tuple((t, str(d)) for t, d in extra_roots),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint, tuple(sorted(disabled)), tuple(sorted(compact_categories or ())),
@@ -1531,9 +1533,9 @@ def _build_skills_system_prompt_inner(
             _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
             return cached
 
-    def hides(frontmatter_name: str, skill_name: str, conditions: dict) -> bool:
+    def hides(skill_name: str, conditions: dict) -> bool:
         """Per-build visibility rule shared by every skill source (snapshot, scan, project, external)."""
-        return (frontmatter_name in disabled or skill_name in disabled
+        return (skill_name in disabled
                 or not _skill_should_show(conditions, available_tools, available_toolsets, _platform_hint or None))
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
@@ -1550,20 +1552,26 @@ def _build_skills_system_prompt_inner(
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
             candidates.append((_build_snapshot_entry(skill_file, skills_dir, frontmatter, desc), is_compatible))
-    visible_entries: list[dict] = [
-        entry for entry, is_compatible in candidates
-        if is_compatible and not hides(_entry_name(entry), entry.get("skill_name") or "", entry.get("conditions") or {})
-    ]
-
-    # Project-local skills (highest precedence) shadow same-named profile-local skills; tagged [project].
-    project_names: set[str] = set()
-    if project_dirs:
-        from agent.skill_utils import iter_project_skill_files
-        for proj_dir in (d for d in project_dirs if d.exists()):
-            _collect_extra_skills(proj_dir, iter_project_skill_files(proj_dir), hides, project_names, skills_by_category,
-                                  desc_prefix="[project] ", log_fmt="Error reading project skill %s: %s")
-    # Drop shadowed entries BEFORE org labeling so collision flags don't fire on intentional overrides.
-    _label_visible_entries([e for e in visible_entries if _entry_name(e) not in project_names], skills_by_category)
+    # Every tier is resolved together, exactly as skill_view resolves names (agent.skill_utils precedence:
+    # project > local > create_dir > external_dirs; same-tier duplicates listed by exact path). Hidden and
+    # incompatible copies still take part — skill_view sees them too.
+    from agent.skill_utils import TIER_PROJECT, is_disabled_entry, iter_project_skill_files, resolve_skill_catalog
+    project_roots = [d for t, d in extra_roots if t == TIER_PROJECT and d.exists()]
+    rows: list[tuple[dict, bool]] = []
+    for root in project_roots:
+        rows += _scan_extra_root(root, iter_project_skill_files(root), TIER_PROJECT, "Error reading project skill %s: %s")
+    rows += [({**entry, "tier": TIER_LOCAL, "root": skills_dir}, ok) for entry, ok in candidates]
+    for tier, root in ((t, d) for t, d in extra_roots if t != TIER_PROJECT and d.exists()):
+        rows += _scan_extra_root(root, iter_skill_index_files(root, "SKILL.md"), tier, "Error reading external skill %s: %s")
+        for cat, cat_desc in _read_category_descriptions(root, "Could not read external skill description %s: %s").items():
+            category_descriptions.setdefault(cat, cat_desc)
+    resolved = resolve_skill_catalog([
+        {**entry, "name": _entry_name(entry), "path": entry["root"] / entry["rel"],
+         "visible": ok and not hides(entry.get("skill_name") or "", entry.get("conditions") or {})}
+        for entry, ok in rows])
+    visible_entries = [e for e in resolved
+                       if e["visible"] and e["status"] != "shadowed" and not is_disabled_entry(e, disabled)]
+    _label_visible_entries(visible_entries, skills_by_category)
     if snapshot is None:  # persist for fast cold-start reuse (best-effort)
         category_descriptions.update(_read_category_descriptions(skills_dir, "Could not read skill description %s: %s"))
         try:
@@ -1574,15 +1582,8 @@ def _build_skills_system_prompt_inner(
         except Exception as e:
             logger.debug("Could not write skills prompt snapshot: %s", e)
 
-    # External skill directories: scanned directly (read-only, small); names already indexed are skipped.
-    seen_skill_names: set[str] = {name for cat in skills_by_category.values() for name, _ in cat}
-    for ext_dir in (d for d in external_dirs if d.exists()):
-        _collect_extra_skills(ext_dir, iter_skill_index_files(ext_dir, "SKILL.md"), hides, seen_skill_names,
-                              skills_by_category, desc_prefix="", log_fmt="Error reading external skill %s: %s")
-        for cat, cat_desc in _read_category_descriptions(ext_dir, "Could not read external skill description %s: %s").items():
-            category_descriptions.setdefault(cat, cat_desc)
-
-    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools)
+    unloadable = sorted({e["name"] for e in visible_entries if not e["load_name"]})
+    result = _render_skills_index(skills_by_category, category_descriptions, compact_categories, available_tools, unloadable)
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)

@@ -2858,6 +2858,63 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(FakeWebSocket.instances.at(-1)?.url).toBe(newPrimary.wsUrl)
     expect($connection.get()?.connectionId).toBe(newPrimary.connectionId)
   })
+
+  it('a reconnect ticket minted after a connection apply never dials the old primary', async () => {
+    const oldPrimary = { ...remotePrimaryConn, registryScoped: true }
+    const newPrimary = { ...coderConn, mode: 'remote' as const, profile: 'default', registryScoped: true }
+    const heldOldMint = deferred<string>()
+    let applied = false
+    let oldMints = 0
+
+    const desktop = {
+      ...fakeDesktop(),
+      getConnection: vi.fn(async () => (applied ? newPrimary : oldPrimary)),
+      getConnectionFor: vi.fn(async ({ connectionId }: { connectionId: string; profile: string }) =>
+        connectionId === newPrimary.connectionId ? newPrimary : oldPrimary
+      ),
+      // The boot mint resolves at once; the reconnect's re-mint parks.
+      getGatewayWsUrlFor: vi.fn(({ connectionId }: { connectionId: string; profile: string }) => {
+        if (connectionId === newPrimary.connectionId) {
+          return Promise.resolve(newPrimary.wsUrl)
+        }
+
+        oldMints += 1
+
+        return oldMints === 1 ? Promise.resolve(oldPrimary.wsUrl) : heldOldMint.promise
+      })
+    }
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect(FakeWebSocket.instances[0].url).toBe(oldPrimary.wsUrl)
+
+    act(() => FakeWebSocket.instances[0].drop())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    expect(oldMints).toBe(2)
+
+    applied = true
+    act(() => connectionApplied?.())
+    await flushAsync()
+    expect(FakeWebSocket.instances.at(-1)?.url).toBe(newPrimary.wsUrl)
+
+    // The applied socket drops while the stale mint is still parked, so
+    // connect() is no longer a no-op on an open socket.
+    act(() => FakeWebSocket.instances.at(-1)!.drop())
+    const sockets = FakeWebSocket.instances.length
+
+    await act(async () => {
+      heldOldMint.resolve(oldPrimary.wsUrl)
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(FakeWebSocket.instances.slice(sockets).map(s => s.url)).not.toContain(oldPrimary.wsUrl)
+
+    await advanceBackoff()
+    expect(FakeWebSocket.instances.at(-1)?.url).toBe(newPrimary.wsUrl)
+    expect($connection.get()?.connectionId).toBe(newPrimary.connectionId)
+  })
 })
 
 describe('window-state IPC before the first connection publishes (#108641)', () => {

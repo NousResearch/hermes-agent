@@ -425,6 +425,36 @@ describe('useGatewayRequest', () => {
     }
   )
 
+  it('does not dial the primary when the foreground moves while its ticket is minted', async () => {
+    const desktop = installRemoteDesktop()
+    const primary = makePrimaryGateway()
+    const failure = new Error('connection closed')
+    primary.connectionState = 'closed'
+    primary.request.mockRejectedValueOnce(failure)
+    let releaseMint!: () => void
+    desktop.getGatewayWsUrl.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          releaseMint = () => resolve({ ok: true as const, wsUrl: 'ws://127.0.0.1:5151/api/ws?token=fresh-local' })
+        })
+    )
+    setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('closed')
+    const { result } = renderHook(() => useGatewayRequest())
+    const pending = result.current.requestGateway('prompt.submit', { text: 'local-only' }).catch(error => error)
+    await vi.waitFor(() => expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      await ensureGatewayForAgent('home', 'default')
+    })
+    await act(async () => {
+      releaseMint()
+    })
+
+    expect(await pending).toBe(failure)
+    expect(primary.connect).not.toHaveBeenCalled()
+  })
+
   it('does not reconnect for a non-transport request failure', async () => {
     const { desktop, gateway } = await activateRemoteGateway()
     const failure = Object.assign(new Error('request rejected'), { code: 'EVALIDATION' })

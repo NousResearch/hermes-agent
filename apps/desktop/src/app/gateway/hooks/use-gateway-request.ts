@@ -130,6 +130,10 @@ export function useGatewayRequest() {
           'Timed out re-minting the gateway WebSocket URL'
         )
 
+        if (!ownsForeground()) {
+          return null
+        }
+
         await existing.connect(wsUrl)
 
         return existing

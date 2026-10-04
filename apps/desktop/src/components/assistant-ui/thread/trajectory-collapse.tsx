@@ -22,7 +22,7 @@ export type TrajectoryPlan = { elapsedSeconds: number | null; stepCount: number 
 
 const HideTrajectoryGroupsContext = createContext(false)
 
-/** Whether grouped execution rows should stay unmounted until the summary is opened. */
+/** Whether grouped execution rows should remain mounted but be hidden until opened. */
 export function useHideTrajectoryGroups() {
   return useContext(HideTrajectoryGroupsContext)
 }

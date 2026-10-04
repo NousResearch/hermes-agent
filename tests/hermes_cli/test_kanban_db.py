@@ -191,6 +191,44 @@ def test_create_task_idempotent_reports_replay(kanban_home):
     assert replay_id == first_id
 
 
+def test_empty_idempotency_key_is_no_key(kanban_home):
+    """``""`` never deduped, so it must not occupy the unique index either."""
+    with kbc.connect() as conn:
+        first = kb.create_task(conn, title="one", idempotency_key="")
+        second = kb.create_task(conn, title="two", idempotency_key="")
+    assert first != second
+
+
+def test_unique_idempotency_migration_holds_out_concurrent_writers(kanban_home):
+    """Dedupe + index build are one transaction: a writer still on the pre-index code cannot
+    slip a duplicate key in between and fail the build."""
+    with kbc.connect() as conn:
+        for task_id in ("t_a", "t_b"):
+            conn.execute(
+                "INSERT INTO tasks (id, title, status, created_at, workspace_kind) "
+                "VALUES (?, 'legacy', 'ready', 1, 'scratch')", (task_id,))
+        conn.execute("DROP INDEX idx_tasks_idempotency_unique")
+        other = sqlite3.connect(kb.kanban_db_path(), isolation_level=None, timeout=0)
+        refused: list[Exception] = []
+
+        def _old_writer(statement: str) -> None:
+            if statement.startswith("CREATE UNIQUE INDEX"):
+                try:
+                    other.execute("UPDATE tasks SET idempotency_key = 'dup' WHERE id IN ('t_a', 't_b')")
+                except sqlite3.OperationalError as exc:
+                    refused.append(exc)
+
+        conn.set_trace_callback(_old_writer)
+        try:
+            kbc._migrate_unique_idempotency_index(conn)
+        finally:
+            conn.set_trace_callback(None)
+            other.close()
+        assert refused
+        assert "idx_tasks_idempotency_unique" in {
+            row["name"] for row in conn.execute("PRAGMA index_list(tasks)")}
+
+
 def test_create_task_idempotent_resolves_lost_unique_index_race(
     kanban_home, monkeypatch
 ):

@@ -1335,6 +1335,7 @@ def create_task_idempotent(
     parents = tuple(p for p in parents if p)
     skills_list = _normalize_task_skills(skills)
 
+    idempotency_key = idempotency_key or None  # "" never deduped; keep it out of the unique index too
     # Idempotency fast path BEFORE the write txn (no lock held). The check alone is
     # racy, so the partial UNIQUE index on idempotency_key backstops it: the racing
     # loser's INSERT fails and is resolved to the winner's id below.
@@ -4466,8 +4467,8 @@ def worker_log_path(task_id: str, *, board: Optional[str] = None) -> Path:
 
 def read_worker_log(
     task_id: str, *, tail_bytes: Optional[int] = None, board: Optional[str] = None,
-) -> Optional[str]:
     whole_lines: bool = False,
+) -> Optional[str]:
     """Worker log text (last ``tail_bytes`` when set); None when the file is missing.
     ``whole_lines``: never start mid-line, even when that leaves nothing — for readers that
     redact, since a cut line can lose the context (``Bearer ``) a secret is recognised by."""

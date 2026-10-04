@@ -33,6 +33,10 @@ TOUCH_PROMPT = "Reply with exactly one word: the capital of France."
 TOUCH_EXPECT = "paris"
 _RESTART_BACKOFF_S = (1, 5, 15, 60)
 _RESIDENT = ("loaded", "ready")
+# ggml's verdict once a Metal command buffer has failed (an OOM, typically): every later decode on
+# that child answers HTTP 500 "Compute error" until the backend is recreated, i.e. the child is
+# replaced. The router does not do that on its own (#132778).
+BACKEND_ERROR_STATE_MARKER = "backend is in error state"
 
 # Chosen once and reused across restarts: sessions persist the resolved base_url as a snapshot, and
 # every resume path re-resolves llamacpp-alias sessions to the live endpoint (a stale port is
@@ -145,6 +149,14 @@ class LlamaServerSupervisor:
         self._idle_since: dict[str, float] = {}
         # Launch budget the preset file was last planned against (bootstrap.refit_idle_presets).
         self._refit_usable: int | None = None
+        # Poisoned-worker recycling (#132778): the router log is scanned from here for the
+        # backend-error marker, each model's child generation counts replacements, and the
+        # timestamp lets concurrent sessions share one replacement instead of racing.
+        self._log_scan_offset = 0
+        self._backend_verdict: str | None = None
+        self._recycle_lock = threading.Lock()
+        self._worker_generation: dict[str, int] = {}
+        self._recycled_at: dict[str, float] = {}
 
     # ── endpoints ────────────────────────────────────────────
 
@@ -202,6 +214,9 @@ class LlamaServerSupervisor:
         self._log_handle = open(self.log_path, "a", encoding="utf-8", errors="replace")
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
+        # An older router's verdicts are not this one's: scan from here, forget what was seen.
+        self._log_scan_offset = self._log_handle.tell()
+        self._backend_verdict = None
         # list-args, never a shell: spaced paths (user homes) must survive.
         self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
                                              cwd=str(exe.parent), env=server_child_env(os.environ))
@@ -390,6 +405,60 @@ class LlamaServerSupervisor:
             except Exception:  # noqa: BLE001
                 return
             time.sleep(0.3)
+
+    def backend_error_evidence(self) -> str | None:
+        """The newest ``BACKEND_ERROR_STATE_MARKER`` line the router log has gained since the last
+        recycle (or spawn), else None. Reads the log incrementally and remembers the newest verdict,
+        so every session striking the same poisoned child sees it; ``recycle_model`` forgets it (a
+        verdict against the old child must not condemn its replacement)."""
+        hit = self._scan_log_for_verdict()
+        if hit is not None:
+            self._backend_verdict = hit
+        return self._backend_verdict
+
+    def _scan_log_for_verdict(self) -> str | None:
+        """Newest marker line among the bytes appended since the previous scan; a truncated or
+        rotated log restarts the scan, a missing one is no verdict."""
+        try:
+            size = self.log_path.stat().st_size
+            if size < self._log_scan_offset:
+                self._log_scan_offset = 0
+            if size == self._log_scan_offset:
+                return None
+            with open(self.log_path, "rb") as fh:
+                fh.seek(self._log_scan_offset)
+                tail = fh.read().decode("utf-8", errors="replace")
+            self._log_scan_offset = size
+        except OSError:
+            return None
+        hits = [line.strip() for line in tail.splitlines() if BACKEND_ERROR_STATE_MARKER in line]
+        return hits[-1] if hits else None
+
+    def recycle_model(self, model_id: str, *, timeout_s: int = 600, min_interval_s: float = 60.0) -> int:
+        """Replace a model's child process (unload, then load) and return its new generation. A
+        child whose backend is in error state cannot recover in place: only a fresh process gets a
+        fresh backend. Sessions sharing the router share one replacement: a request within
+        ``min_interval_s`` of the last recycle rides on that child instead of killing it again."""
+        with self._recycle_lock:
+            generation = self._worker_generation.get(model_id, 0)
+            last = self._recycled_at.get(model_id)
+            if last is not None and time.monotonic() - last < min_interval_s:
+                return generation
+            self.unload_model(model_id)
+            self._idle_since.pop(model_id, None)
+            self.load_model(model_id, timeout_s=timeout_s)
+            generation += 1
+            self._worker_generation[model_id] = generation
+            self._recycled_at[model_id] = time.monotonic()
+            # The verdict condemned the child just replaced; only lines the replacement logs count now.
+            self._scan_log_for_verdict()
+            self._backend_verdict = None
+            logger.warning("recycled %s worker (generation %d): backend was in error state", model_id, generation)
+            return generation
+
+    def worker_generation(self, model_id: str) -> int:
+        """How many times ``recycle_model`` has replaced this model's child (0 = original)."""
+        return self._worker_generation.get(model_id, 0)
 
     def sweep_idle(self, now: float | None = None) -> list[str]:
         """Unload models idle past IDLE_UNLOAD_S; returns their ids. Idle = no busy slots and no

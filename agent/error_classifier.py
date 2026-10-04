@@ -29,6 +29,21 @@ PROVIDER_STREAM_NON_JSON_ERROR_CODE = "provider_stream_non_json_data"
 PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE = "provider_stream_empty_frame"
 
 
+class ManagedWorkerPoisonedError(Exception):
+    """The managed llama-server child serving ``model`` answered "Compute error" with its backend
+    in error state, was replaced once, and the replacement failed the same way (or could not be
+    started). Raised by the stream layer in place of the provider's 500 so the turn loop fails
+    fast instead of retrying a worker the server itself declared unrecoverable (#132778)."""
+
+    def __init__(self, model: str, detail: str, *, generation: int):
+        self.model = model
+        self.generation = generation
+        super().__init__(
+            f"Local model {model!r}: the llama-server worker's GPU backend is in an error state and a "
+            f"replacement worker (generation {generation}) failed too — {detail}"
+        )
+
+
 # ── Error taxonomy ──────────────────────────────────────────────────────
 
 class FailoverReason(enum.Enum):
@@ -57,6 +72,7 @@ class FailoverReason(enum.Enum):
     invalid_encrypted_content = "invalid_encrypted_content"  # Responses replay blob rejected — strip replay state and retry
     multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
     reasoning_mandatory = "reasoning_mandatory"  # Route rejects reasoning: {enabled: false} — send the disable no more this session and retry
+    local_backend_poisoned = "local_backend_poisoned"  # Managed llama-server child's GPU backend is in error state and a replacement child failed too — fail fast, no retry can help (#132778)
 
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
@@ -473,6 +489,7 @@ _V_FORMAT_ERROR = _v(_R.format_error, **_ABORT_FALLBACK)
 # A different provider (direct instead of the aggregator; another host's TLS chain) can fix these.
 _V_POLICY_BLOCKED = _v(_R.provider_policy_blocked, **_ABORT_FALLBACK)
 _V_SSL_CERT = _v(_R.ssl_cert_verification, **_ABORT_FALLBACK)
+_V_LOCAL_BACKEND_POISONED = _v(_R.local_backend_poisoned, **_ABORT_FALLBACK)
 _V_CONTEXT_OVERFLOW = _v(_R.context_overflow, should_compress=True)
 _V_PAYLOAD_TOO_LARGE = _v(_R.payload_too_large, should_compress=True)
 _V_OVERLOADED, _V_SERVER_ERROR, _V_TIMEOUT, _V_UNKNOWN = map(_v, (_R.overloaded, _R.server_error, _R.timeout, _R.unknown))
@@ -877,6 +894,12 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     return None
 
 
+def _local_runtime_special_cases(c: _Ctx) -> Optional[Verdict]:
+    # The stream layer already replaced the managed worker once; a second strike is deterministic
+    # for this backend, so neither the retry budget nor the same-route backoff can help.
+    return _V_LOCAL_BACKEND_POISONED if isinstance(c.error, ManagedWorkerPoisonedError) else None
+
+
 def _moa_special_cases(c: _Ctx) -> Optional[Verdict]:
     # Local MoA streaming adapter-shape bugs are not a provider outage; falling
     # back would silently replace the MoA route with a single model (#55933).
@@ -957,7 +980,8 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
 # HTTP status → MoA shapes → structured error code → message patterns → SSL → disconnect +
 # large session → transport types → unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
-    _plugin_verdict, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
+    _plugin_verdict, _profile_verdict, _provider_special_cases, _local_runtime_special_cases, _by_status,
+    _moa_special_cases,
     _by_error_code, _by_message, _by_transport,
 )
 

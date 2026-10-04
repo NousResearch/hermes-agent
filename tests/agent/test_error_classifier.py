@@ -2166,3 +2166,29 @@ class TestStreamingRenderFormatError:
         e = MockAPIError("Error rendering prompt with jinja template: ...", status_code=500)
         result = classify_api_error(e, provider="lm-studio", model="x")
         assert result.reason != FailoverReason.format_error
+
+
+class TestLocalBackendPoisoned:
+    """A managed llama-server worker whose GPU backend is in error state is recycled by the stream
+    layer (chat_completion_helpers); the classifier only sees the terminal error it raises after the
+    replacement failed too, and must fail fast on it (#132778)."""
+
+    def test_poisoned_worker_error_is_non_retryable(self):
+        from agent.error_classifier import ManagedWorkerPoisonedError
+
+        err = ManagedWorkerPoisonedError("qwen3-coder-30b", "Compute error.", generation=1)
+        result = classify_api_error(err, provider="custom", model="qwen3-coder-30b",
+                                    base_url="http://127.0.0.1:18434/v1")
+        assert result.reason == FailoverReason.local_backend_poisoned
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_rotate_credential is False
+        assert "generation 1" in str(err) and "qwen3-coder-30b" in str(err)
+
+    def test_plain_compute_error_500_stays_a_retryable_server_error(self):
+        """The 500 itself is not the verdict: a Compute error with no backend-state evidence (or
+        from an unmanaged server) keeps the ordinary server_error retry policy."""
+        e = MockAPIError("Error code: 500 - {'error': {'message': 'Compute error.'}}", status_code=500)
+        result = classify_api_error(e, provider="custom", model="qwen3-coder-30b")
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True

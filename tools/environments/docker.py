@@ -905,8 +905,9 @@ class DockerEnvironment(BaseEnvironment):
                 image)
         security_args = _build_security_args(
             run_as_host_user and bool(user_args), run_exec=image_uses_s6_init, snap_compat=snap_compat)
-        reuse_security_args = _build_security_args(
-            run_as_host_user and bool(user_args), snap_compat=snap_compat)
+        alternate_security_args = _build_security_args(
+            run_as_host_user and bool(user_args), run_exec=not image_uses_s6_init,
+            snap_compat=snap_compat)
         self._snap_compat = snap_compat
         if snap_compat:
             logger.warning(
@@ -914,9 +915,10 @@ class DockerEnvironment(BaseEnvironment):
 
         logger.info("Docker volume_args: %s", volume_args)
         # docker_extra_args go last so they can override defaults.
-        all_run_args = (
-            security_args + user_args + writable_args + resource_args
+        non_security_args = (
+            user_args + writable_args + resource_args
             + egress_host_args + volume_args + env_args + validated_extra)
+        all_run_args = security_args + non_security_args
         logger.info("Docker run_args: %s", all_run_args)
 
         # Labels identify hermes containers to the orphan reaper (hermes-agent=1),
@@ -930,8 +932,9 @@ class DockerEnvironment(BaseEnvironment):
         task_label = _sanitize_label_value(task_id)
         try:
             runtime_label = _runtime_reuse_fingerprint(
-                reuse_security_args + all_run_args[len(security_args):],
-                self._run_env_values)
+                all_run_args, self._run_env_values)
+            alternate_init_runtime_label = _runtime_reuse_fingerprint(
+                alternate_security_args + non_security_args, self._run_env_values)
         except (OSError, RuntimeError) as exc:
             raise EnvironmentConnectionError(
                 f"Docker runtime reuse identity could not load its private key: {exc}"
@@ -949,7 +952,8 @@ class DockerEnvironment(BaseEnvironment):
         self._all_run_args = all_run_args
 
         reused = persist_across_processes and self._attach_existing_container(
-            task_label, profile_name, egress_label, runtime_label, network)
+            task_label, profile_name, egress_label, runtime_label,
+            alternate_init_runtime_label, network)
         if not reused:
             self._container_id = self._docker_run(cwd)
 
@@ -1100,7 +1104,8 @@ class DockerEnvironment(BaseEnvironment):
         return volume_args, writable_args
 
     def _attach_existing_container(
-        self, task_label, profile_name, egress_label, runtime_label, network: bool,
+        self, task_label, profile_name, egress_label, runtime_label,
+        alternate_init_runtime_label, network: bool,
     ) -> bool:
         """Attach to a prior process's labeled container ("ONE long-lived container shared
         across sessions"; opt out via ``docker_persist_across_processes: false``).
@@ -1109,6 +1114,11 @@ class DockerEnvironment(BaseEnvironment):
         ``--network=none`` in extra args doesn't churn containers every startup."""
         existing = self._find_reusable_container(
             task_label, profile_name, egress_label, runtime_label)
+        matched_alternate_init = False
+        if existing is None and alternate_init_runtime_label != runtime_label:
+            existing = self._find_reusable_container(
+                task_label, profile_name, egress_label, alternate_init_runtime_label)
+            matched_alternate_init = existing is not None
         if existing is None:
             return False
         container_id, state = existing
@@ -1119,6 +1129,13 @@ class DockerEnvironment(BaseEnvironment):
         # keep it and let the CLI / Screen pane ask. Same rule Modal (snapshot wins) and Daytona
         # (labeled sandbox wins) already apply.
         actual_image = self._container_image(container_id)
+        if matched_alternate_init and (
+            actual_image is None or actual_image == self._image
+        ):
+            # The fallback exists only so a differently named default image can
+            # reach the image policy below. A same-name or uninspectable match
+            # would silently cross the effective /run exec/noexec posture.
+            return False
         if actual_image is not None and actual_image != self._image:
             if not self._image_pinned:
                 logger.warning(

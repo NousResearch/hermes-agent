@@ -1132,12 +1132,30 @@ def test_reuse_probe_filters_on_runtime_fingerprint(monkeypatch, tmp_path):
     env = _make_dummy_env(**config)
     changed_filters = reuse_filters()
     assert changed_filters != original_filters
-    assert f"label=hermes-runtime={env._labels['hermes-runtime']}" in changed_filters
-    assert set(f.removeprefix("label=") for f in changed_filters) <= _labels_in_run_args(_run_args_from_calls(calls))
+    requested_labels = {
+        value.removeprefix("label=") for value in changed_filters
+    }
+    requested_runtime_labels = {
+        value for value in requested_labels
+        if value.startswith("hermes-runtime=")
+    }
+    assert f"hermes-runtime={env._labels['hermes-runtime']}" in requested_runtime_labels
+    assert len(requested_runtime_labels) == 2
+    assert requested_labels - requested_runtime_labels <= _labels_in_run_args(
+        _run_args_from_calls(calls)
+    )
 
     calls.clear()
     assert env._recreate_container()
-    assert reuse_filters() == changed_filters
+    recovery_filters = reuse_filters()
+    recovery_labels = {
+        value.removeprefix("label=") for value in recovery_filters
+    }
+    assert recovery_labels <= _labels_in_run_args(_run_args_from_calls(calls))
+    assert {
+        value for value in recovery_labels
+        if value.startswith("hermes-runtime=")
+    } == {f"hermes-runtime={env._labels['hermes-runtime']}"}
 
 
 def test_shared_container_key_replaces_profile_identity(monkeypatch, tmp_path):
@@ -1359,10 +1377,67 @@ def test_default_image_flip_to_s6_reaches_existing_reuse_guard(monkeypatch):
         image="hermes-agent:latest",
     )
 
-    assert (
-        current._labels["hermes-runtime"],
-        current._container_id,
-    ) == (existing_runtime_label, "reused-cid")
+    assert current._labels["hermes-runtime"] != existing_runtime_label
+    assert current._container_id == "reused-cid"
+
+
+def test_same_image_init_style_change_does_not_cross_reuse_posture(monkeypatch):
+    """An alternate-init lookup is valid only for an actual image-name transition."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run_with_reuse(
+        monkeypatch, ps_state=None, entrypoint_json="null"
+    )
+    existing = _make_dummy_env(
+        task_id="same-image-s6-flip",
+        image="mutable/image:latest",
+        persist_across_processes=False,
+    )
+    existing_runtime_label = existing._labels["hermes-runtime"]
+    _mock_subprocess_run_with_reuse(
+        monkeypatch,
+        ps_state="running",
+        expected_runtime_label=existing_runtime_label,
+        entrypoint_json='["/init"]',
+        container_image="mutable/image:latest",
+    )
+
+    current = _make_dummy_env(
+        task_id="same-image-s6-flip",
+        image="mutable/image:latest",
+    )
+
+    assert current._labels["hermes-runtime"] != existing_runtime_label
+    assert current._container_id == "fresh-cid"
+
+
+def test_uninspectable_alternate_init_match_starts_fresh(monkeypatch):
+    """A broader init-style fallback must not attach when its image cannot be verified."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run_with_reuse(
+        monkeypatch, ps_state=None, entrypoint_json="null"
+    )
+    existing = _make_dummy_env(
+        task_id="uninspectable-s6-flip",
+        image="old/image:1",
+        persist_across_processes=False,
+    )
+    existing_runtime_label = existing._labels["hermes-runtime"]
+    _mock_subprocess_run_with_reuse(
+        monkeypatch,
+        ps_state="running",
+        expected_runtime_label=existing_runtime_label,
+        entrypoint_json='["/init"]',
+    )
+
+    current = _make_dummy_env(
+        task_id="uninspectable-s6-flip",
+        image="hermes-agent:latest",
+    )
+
+    assert current._labels["hermes-runtime"] != existing_runtime_label
+    assert current._container_id == "fresh-cid"
 
 
 def test_reuse_rejects_container_from_different_mount_posture(monkeypatch):

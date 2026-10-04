@@ -168,12 +168,56 @@ def test_idle_reaper_keeps_each_profiles_lifetime(tmp_path, monkeypatch):
     with tt._env_lock:
         for key in environments:
             tt._last_activity[key] = time.time() - 700
-    tt._cleanup_inactive_envs(300)
+    tt._cleanup_inactive_envs()
 
     assert "alpha" in tt._active_environments
     assert "beta" not in tt._active_environments
     environments["alpha"].cleanup.assert_not_called()
     environments["beta"].cleanup.assert_called_once()
+
+
+@pytest.mark.parametrize("surface", ["code", "file", "file_shared"])
+@pytest.mark.parametrize("lifetime,idle", [(1800, 700), (60, 100)])
+def test_nonterminal_environment_lifetime_on_creation_and_reuse(
+    tmp_path, monkeypatch, surface, lifetime, idle,
+):
+    import time
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    import tools.code_execution_tool as code
+    import tools.file_tools as files
+    import tools.terminal_tool as tt
+    import tools.terminal_tool_backends as backends
+    from tools.terminal_scope import install_and_reset_profile_terminal_scope
+
+    home = _profile(tmp_path, "owner", f"terminal:\n  backend: docker\n  lifetime_seconds: {lifetime}\n")
+    for slot in ("_active_environments", "_last_activity", "_env_lifetimes", "_creation_locks"):
+        monkeypatch.setattr(tt, slot, {})
+    monkeypatch.setattr(files, "_file_ops_cache", {})
+    monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
+    env = SimpleNamespace(cleanup=Mock(), cwd="/workspace")
+    monkeypatch.setattr(tt, "_create_configured_env", lambda *_a, **_kw: env)
+    monkeypatch.setattr(backends, "_create_environment", lambda **_kw: env)
+
+    def acquire():
+        return code._get_or_create_env("owner")[0] if surface == "code" else files._get_file_ops("owner").env
+
+    with install_and_reset_profile_terminal_scope(home):
+        assert acquire() is env
+        key = tt._resolve_container_task_id("owner")
+        assert tt._env_lifetimes.get(key) == tt._get_env_config()["lifetime_seconds"]
+        # Reuse must restore policy metadata too, including a file wrapper cache miss.
+        tt._env_lifetimes.pop(key)
+        if surface == "file_shared":
+            files.clear_file_ops_cache()
+        assert acquire() is env
+        assert tt._env_lifetimes.get(key) == tt._get_env_config()["lifetime_seconds"]
+
+    tt._last_activity[key] = time.time() - idle
+    tt._cleanup_inactive_envs()
+    assert (key in tt._active_environments) is (idle < lifetime)
+    assert env.cleanup.call_count == int(idle > lifetime)
 
 
 def test_profile_omitting_keys_gets_defaults_not_launch_values(tmp_path):

@@ -407,27 +407,28 @@ def _get_or_create_env(task_id: str):
     first use (same double-checked per-task lock pattern as file_tools._get_file_ops)."""
     from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
     from tools.terminal_tool import (
-        _active_environments, _env_lock, _get_env_config, _last_activity,
+        _active_environments, _env_lock, _env_lifetimes, _get_env_config, _last_activity,
         _start_cleanup_thread, _creation_locks, _creation_locks_lock, _task_env_overrides,
         _resolve_container_task_id, _resolve_task_host_cwd, _is_container_backend, _select_image,
     )
     effective_task_id = _resolve_container_task_id(task_id)
+    config = _get_env_config()
     def _cached():
         with _env_lock:
             env = _active_environments.get(effective_task_id)
             if env is not None:
                 _last_activity[effective_task_id] = time.time()
+                _env_lifetimes[effective_task_id] = config["lifetime_seconds"]
         return env
     env = _cached()
     if env is not None:
-        return env, _get_env_config()["env_type"]
+        return env, config["env_type"]
     with _creation_locks_lock:
         task_lock = _creation_locks.setdefault(effective_task_id, threading.Lock())
     with task_lock:
         env = _cached()
         if env is not None:
-            return env, _get_env_config()["env_type"]
-        config = _get_env_config()
+            return env, config["env_type"]
         env_type = config["env_type"]
         overrides = _task_env_overrides.get(effective_task_id, {})
         container_config = None
@@ -448,6 +449,7 @@ def _get_or_create_env(task_id: str):
         with _env_lock:
             _active_environments[effective_task_id] = env
             _last_activity[effective_task_id] = time.time()
+            _env_lifetimes[effective_task_id] = config["lifetime_seconds"]
         _start_cleanup_thread()
         logger.info("%s environment ready for execute_code task %s",
                      env_type, effective_task_id[:8])

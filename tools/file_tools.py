@@ -319,12 +319,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     with a registered env override keep their isolation.
     """
     from tools.terminal_tool import (
-        _active_environments, _env_lock, _last_activity, _start_cleanup_thread,
+        _active_environments, _env_lock, _env_lifetimes, _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _resolve_container_task_id,
         get_session_cwd, record_session_cwd)
 
     raw_task_id = task_id or "default"
     task_id = _resolve_container_task_id(raw_task_id)
+    lifetime_seconds = _get_env_config()["lifetime_seconds"]
 
     # Fast path: cached AND the environment is still alive (cleanup thread may have killed it).
     with _file_ops_lock:
@@ -333,6 +334,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         with _env_lock:
             if task_id in _active_environments:
                 _last_activity[task_id] = time.time()
+                _env_lifetimes[task_id] = lifetime_seconds
                 return cached
             # Env was cleaned up: rescue its cwd into the session record FILL-ONLY
             # (``cached.cwd`` is the SHARED env's cwd, not this session's own).
@@ -361,11 +363,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             terminal_env = _active_environments.get(task_id)
             if terminal_env is not None:
                 _last_activity[task_id] = time.time()
+                _env_lifetimes[task_id] = lifetime_seconds
         if terminal_env is None:
             env_type, terminal_env = _create_terminal_env_for_file_ops(raw_task_id, task_id)
             with _env_lock:
                 _active_environments[task_id] = terminal_env
                 _last_activity[task_id] = time.time()
+                _env_lifetimes[task_id] = lifetime_seconds
             _start_cleanup_thread()
             logger.info("%s environment ready for task %s", env_type, task_id[:8])
 

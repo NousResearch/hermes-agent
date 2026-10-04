@@ -45,8 +45,8 @@ export const WINDOWS_SANDBOX_MARKER_FILENAME = 'windows-sandbox-fallback.json'
  * Exit status Chromium uses to SIGTERM its GPU process when it never became
  * usable (#121954: sandbox-blocked GPU child dies pre-main on an
  * FD-ownership violation, browser prints "GPU process isn't usable.
- * Goodbye." and SIGTERMs it). Node reports signal deaths as `null` exitCode
- * + `signalName: 'SIGTERM'`; Electron serializes that as exitCode 143.
+ * Goodbye." and SIGTERMs it). Electron's `child-process-gone` Details reports
+ * this as `reason: 'killed'` and `exitCode: 143`; it has no signal-name field.
  */
 export const GPU_CHILD_SANDBOX_SIGTERM_EXIT = 143
 
@@ -355,12 +355,13 @@ export function grantAllApplicationPackagesAcl(
 }
 
 /**
- * True when a GPU child died with the #38216 breakpoint signature and we
- * should one-shot relaunch with `--no-sandbox` before Chromium FATAL-exits.
+ * True when a GPU child died with the Windows breakpoint or Linux killed/143
+ * signature and we should one-shot relaunch with `--no-sandbox` before Chromium
+ * FATAL-exits.
  */
 export function shouldRelaunchForGpuSandboxCrash(options: {
   platform?: NodeJS.Platform | string
-  details?: { type?: string; exitCode?: number | string } | null
+  details?: { type?: string; reason?: string; exitCode?: number | string } | null
   alreadyNoSandbox?: boolean
   relaunchAttempted?: boolean
 }): boolean {
@@ -381,11 +382,9 @@ export function shouldRelaunchForGpuSandboxCrash(options: {
   if (platform === 'linux') {
     // #121954: the sandbox-blocked GPU child never comes up; Chromium
     // SIGTERMs it (exit 143) right before its own FATAL "Goodbye." abort.
-    // Deliberately narrow: GPU-only, needs the explicit signature.
-    return (
-      options.details?.exitCode === GPU_CHILD_SANDBOX_SIGTERM_EXIT &&
-      String(options.details?.signalName || '').toUpperCase() === 'SIGTERM'
-    )
+    // Match Electron's actual Details, not Node ChildProcess signal metadata.
+    // Deliberately narrow: GPU-only, requires both killed reason and exit 143.
+    return options.details?.exitCode === GPU_CHILD_SANDBOX_SIGTERM_EXIT && options.details?.reason === 'killed'
   }
 
   return false

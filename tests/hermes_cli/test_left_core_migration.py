@@ -33,13 +33,35 @@ def _home(tmp_path: Path, name: str = "home", *, env: str = "", config: str = ""
     return home
 
 
+# The uncommented platform_toolsets block cli-config.yaml.example carried (the homeassistant row from
+# 1aa7badb3c until fb9fc8a3dd). The installers (install.sh, install.ps1, the Docker hook) and
+# `hermes doctor` seed config.yaml from that file, so the block alone says nothing about use.
+_EXAMPLE_PLATFORM_TOOLSETS = (
+    "platform_toolsets:\n"
+    "  cli: [hermes-cli]\n"
+    "  telegram: [hermes-telegram]\n"
+    "  discord: [hermes-discord]\n"
+    "  whatsapp: [hermes-whatsapp]\n"
+    "  slack: [hermes-slack]\n"
+    "  signal: [hermes-signal]\n"
+    "  homeassistant: [hermes-homeassistant]\n"
+    "  qqbot: [hermes-qqbot]\n"
+    "  yuanbao: [hermes-yuanbao]\n"
+    "  teams: [hermes-teams]\n"
+    "  google_chat: [hermes-google_chat]\n"
+)
+
+
 @pytest.mark.parametrize(("env", "config"), [
     ("HASS_TOKEN=abc\n", ""),
     ("", "platforms:\n  homeassistant:\n    enabled: true\n"),
     ("", "gateway:\n  platforms:\n    homeassistant:\n      enabled: true\n"),
     ("", "platforms:\n  homeassistant:\n    token: inline-token\n"),
     ("", "platform_toolsets:\n  cli: [hermes-cli, homeassistant]\n"),
-    ("", "platform_toolsets:\n  homeassistant: [hermes-homeassistant]\n"),
+    ("", "toolsets: [hermes-cli, homeassistant]\n"),
+    # The Home Assistant row counts once the platform itself is on.
+    ("", "platforms:\n  homeassistant:\n    enabled: true\n"
+         "platform_toolsets:\n  homeassistant: [hermes-homeassistant]\n"),
 ])
 def test_homeassistant_in_use_matches_what_core_activated(tmp_path, env, config):
     assert lcm.homeassistant_in_use(_home(tmp_path, env=env, config=config)) is True
@@ -51,6 +73,9 @@ def test_homeassistant_in_use_matches_what_core_activated(tmp_path, env, config)
     ("", "platforms:\n  homeassistant:\n    enabled: false\n    token: t\n"),
     ("", "platform_toolsets:\n  cli: [hermes-cli]\n"),
     ("OPENAI_API_KEY=sk\n", "platforms:\n  telegram:\n    enabled: true\n"),
+    # The platform's own row only scoped Home Assistant's own sessions, which need the platform on.
+    ("", "platform_toolsets:\n  homeassistant: [hermes-homeassistant]\n"),
+    ("", _EXAMPLE_PLATFORM_TOOLSETS),
 ])
 def test_homeassistant_not_in_use(tmp_path, env, config):
     assert lcm.homeassistant_in_use(_home(tmp_path, env=env, config=config)) is False

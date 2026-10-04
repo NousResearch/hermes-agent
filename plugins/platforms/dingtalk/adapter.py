@@ -477,8 +477,11 @@ class DingTalkAdapter(BasePlatformAdapter):
             if len(self._session_webhooks) >= _SESSION_WEBHOOKS_MAX:
                 self._session_webhooks.pop(next(iter(self._session_webhooks)))  # evict oldest (dict is non-empty here)
             self._session_webhooks[chat_id] = (session_webhook, getattr(message, "session_webhook_expired_time", 0) or 0)
-        await self._resolve_media_codes(message)  # download codes -> URLs so vision tools can use them
+        unresolved_media = await self._resolve_media_codes(message)
         text = self._extract_text(message)
+        if unresolved_media:
+            # Preserve the inbound signal without exposing download credentials as URLs.
+            text = "\n\n".join(filter(None, (text, "[Attachment unavailable: media download failed.]")))
         msg_type, media_urls, media_types = self._extract_media(message)
         if not text and not media_urls:
             return logger.debug("[%s] Empty message, skipping", self.name)
@@ -666,8 +669,8 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     _RICH_TEXT_CODE_CANDIDATES = ("downloadCode", "pictureDownloadCode", "download_code")
 
-    async def _resolve_media_codes(self, message: "ChatbotMessage") -> None:
-        """Resolve independent media concurrently, but alternatives in fallback order."""
+    async def _resolve_media_codes(self, message: "ChatbotMessage") -> int:
+        """Resolve media and count rich-text attachments whose codes all failed."""
         rich_items = [item for item in _rich_list(message) or () if isinstance(item, dict)]
         rich_ids = {id(item) for item in rich_items}
         token = await self._get_access_token()
@@ -681,20 +684,23 @@ class DingTalkAdapter(BasePlatformAdapter):
                 if code:
                     tasks.append(self._fetch_download_url(code, robot_code, token, obj, key))
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            return sum(result is True for result in results)
+        return 0
 
-    async def _resolve_rich_text_item(self, item: dict, robot_code: str, token: Optional[str]) -> None:
-        """Canonicalize the first successful candidate and discard every raw code."""
+    async def _resolve_rich_text_item(self, item: dict, robot_code: str, token: Optional[str]) -> bool:
+        """Discard raw codes; report failed attachments separately from their URLs."""
         candidates = [item.pop(key, None) for key in self._RICH_TEXT_CODE_CANDIDATES]
         if not token:
-            return
+            return any(candidates) and not item.get("downloadUrl")
         for code in candidates:
             if not code:
                 continue
             url = await self._resolve_single_code(code, robot_code, token)
             if url:
                 item["downloadUrl"] = url
-                return
+                return False
+        return any(candidates) and not item.get("downloadUrl")
 
     async def _resolve_single_code(self, code: str, robot_code: str, token: str) -> Optional[str]:
         """Resolve a credential-like code without logging it or SDK exception bodies."""

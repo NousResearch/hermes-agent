@@ -50,7 +50,8 @@ async def test_rich_media_first_success_reaches_extraction(monkeypatch, caplog, 
     await adapter._on_message(message)
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
-    assert event.text == "Please explain this image"
+    assert event.text.startswith("Please explain this image")
+    assert ("Attachment unavailable" in event.text) is (winner is None)
     assert event.media_urls == (["https://fixture.invalid/image.png"] if winner else [])
     assert event.raw_message is message
     _, urls, _ = adapter._extract_media(message)
@@ -61,6 +62,76 @@ async def test_rich_media_first_success_reaches_extraction(monkeypatch, caplog, 
     assert not {"downloadCode", "pictureDownloadCode", "download_code"}.intersection(item)
     for code in expected:
         assert code not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["no-token", "no-sdk", "raise", "empty"])
+@pytest.mark.parametrize("caption", ["", "keep me"])
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_unresolved_media_is_delivered_without_raw_codes(monkeypatch, caplog, failure, caption, legacy):
+    from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+    import plugins.platforms.dingtalk.adapter as dt
+
+    class Request:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    monkeypatch.setattr(dt, "dingtalk_robot_models", SimpleNamespace(
+        RobotMessageFileDownloadRequest=Request,
+        RobotMessageFileDownloadHeaders=Request,
+    ), raising=False)
+    adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+    adapter._get_access_token = AsyncMock(return_value=None if failure == "no-token" else "token")
+    adapter._robot_sdk = None if failure == "no-sdk" else SimpleNamespace(
+        robot_message_file_download_with_options_async=object())
+    adapter._sdk_call = AsyncMock(return_value=SimpleNamespace(body=None))
+    if failure == "raise":
+        adapter._sdk_call.side_effect = RuntimeError("secret-primary secret-alternate")
+    items = [{"text": caption}, {"type": "picture", "downloadCode": "secret-primary",
+             "pictureDownloadCode": "secret-alternate"}]
+    message = SimpleNamespace(message_type="richText", message_id="fixture-message",
+                              conversation_id="fixture-chat", sender_id="fixture-sender")
+    if legacy:
+        message.rich_text = items
+    else:
+        message.rich_text_content = SimpleNamespace(rich_text_list=items)
+    adapter.handle_message = AsyncMock()
+    await adapter._on_message(message)
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert "attachment" in event.text.lower() and "unavailable" in event.text.lower()
+    assert not caption or event.text.startswith(caption)
+    assert event.media_urls == []
+    for code in ("secret-primary", "secret-alternate"):
+        assert code not in event.text + repr(items) + caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["empty", "text", "resolved", "mixed"])
+async def test_failure_notice_preserves_other_inbound_content(kind):
+    from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+
+    adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+    adapter._get_access_token = AsyncMock(return_value=None)
+    items = [] if kind == "empty" else [{"text": "original"}]
+    if kind in {"resolved", "mixed"}:
+        items.append({"type": "picture", "downloadCode": "secret",
+                      "downloadUrl": "https://fixture.invalid/ready.png"})
+    if kind == "mixed":
+        items.append({"type": "picture", "downloadCode": "failed-secret"})
+    message = SimpleNamespace(message_type="richText", message_id="fixture-message",
+        conversation_id="fixture-chat", sender_id="fixture-sender", rich_text=items)
+    adapter.handle_message = AsyncMock()
+    await adapter._on_message(message)
+    if kind == "empty":
+        adapter.handle_message.assert_not_awaited()
+        return
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text.startswith("original")
+    assert ("Attachment unavailable" in event.text) is (kind == "mixed")
+    assert event.media_urls == (["https://fixture.invalid/ready.png"] if kind in {"resolved", "mixed"} else [])
+    assert "secret" not in event.text + repr(items)
 
 
 @pytest.mark.asyncio

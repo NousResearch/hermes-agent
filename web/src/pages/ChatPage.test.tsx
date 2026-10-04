@@ -593,6 +593,12 @@ describe("ChatPage side panel collapse", () => {
     expect(
       container.querySelector('[aria-controls="chat-side-panel"]'),
     ).toBeNull();
+    // The pill this test names: it used aria-label, so the aria-controls selector
+    // above never intersected it. Re-inserting the floating absolute button must
+    // fail here, or "never over the terminal" is not actually being checked.
+    expect(
+      container.querySelector('[aria-label="Show chat side panel"]'),
+    ).toBeNull();
 
     const header = document.createElement("div");
     document.body.append(header);

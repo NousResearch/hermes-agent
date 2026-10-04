@@ -1820,45 +1820,51 @@ def resolve_channel_prompt(config_extra: dict, channel_id: str, parent_id: str |
     return None
 
 
-def resolve_channel_project(config_extra: dict, channel_id: str, parent_id: str | None = None) -> str | None:
-    """Resolve an optional project binding for a channel or thread.
+def resolve_channel_project(config_extra, channel_id: str, parent_id: str | None = None) -> str | None:
+    """Resolve exact bindings before parent defaults, from typed or legacy config.
 
-    Exact channel/thread ids win over the parent id, matching the prompt and skill binding
-    lookup rules.  Both ``channel_overrides`` and the Telegram-style ``group_topics`` /
-    ``dm_topics`` forms are accepted; malformed entries fail open.
+    Malformed bindings are ignored. Typed channel_overrides are not extra keys.
     """
-    if not isinstance(config_extra, dict):
+    from gateway.config import PlatformConfig
+    if isinstance(config_extra, PlatformConfig):
+        overrides = config_extra.channel_overrides
+        extra = config_extra.extra
+    elif isinstance(config_extra, dict):
+        overrides = config_extra.get("channel_overrides", {})
+        extra = config_extra
+    else:
         return None
-    ids = [str(value) for value in (channel_id, parent_id) if value]
-
-    overrides = config_extra.get("channel_overrides") or {}
-    if isinstance(overrides, dict):
-        for key in ids:
-            entry = overrides.get(key)
-            if isinstance(entry, dict):
-                project = entry.get("project")
-                if isinstance(project, str) and (project := project.strip()):
-                    return project
-
+    if not isinstance(extra, dict):
+        extra = {}
+    bindings = []
     for section in ("group_topics", "dm_topics"):
-        entries = config_extra.get(section) or []
+        entries = extra.get(section) or []
+        if isinstance(entries, dict):
+            entries = [{"chat_id": key, "topics": value} for key, value in entries.items()]
         if not isinstance(entries, list):
             continue
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
-            chat_id = str(entry.get("chat_id", entry.get("id", "")))
+            chat = str(entry.get("chat_id", entry.get("id", "")))
+            if chat:
+                bindings.append((chat, entry.get("project")))
             topics = entry.get("topics") if isinstance(entry.get("topics"), list) else [entry]
             for topic in topics:
                 if not isinstance(topic, dict):
                     continue
-                topic_id = str(topic.get("thread_id", topic.get("id", chat_id)))
-                for candidate in ids:
-                    if candidate not in {topic_id, chat_id}:
-                        continue
-                    project = topic.get("project", entry.get("project"))
-                    if isinstance(project, str) and (project := project.strip()):
-                        return project
+                topic_id = str(topic.get("thread_id", topic.get("id", "")))
+                # A topic belongs to this parent; equal thread IDs in other chats must not bind.
+                if topic_id and (not parent_id or not chat or chat == str(parent_id)):
+                    bindings.append((topic_id, topic.get("project", entry.get("project"))))
+    for key in dict.fromkeys(str(value) for value in (channel_id, parent_id) if value is not None):
+        entry = overrides.get(key) if isinstance(overrides, dict) else None
+        project = entry.get("project") if isinstance(entry, dict) else getattr(entry, "project", None)
+        if isinstance(project, str) and project.strip():
+            return project.strip()
+        for binding_id, project in bindings:
+            if binding_id == key and isinstance(project, str) and project.strip():
+                return project.strip()
     return None
 
 

@@ -3380,10 +3380,60 @@ def _run_one_job_body(
             reset_terminal_scope(_terminal_scope_token)
 
 
+def _release_finished_run_fire_claim(job_id: str) -> bool:
+    """Release the ``fire_claim`` of a run the waiter just watched die (#OOM-recovery).
+
+    On the normal path ``mark_job_run`` clears the fire_claim. But when an out-of-band-killed
+    worker (OOM-kill, SIGKILL) is recovered to ``unknown``, ``_wait_for_external_cron_worker_body``
+    returns True without calling ``mark_job_run``, so the claim — stamped by THIS gateway and last
+    refreshed by the now-dead worker's heartbeat — survives. ``_claim_is_live`` then keeps reporting
+    it live for the full 300 s ``FIRE_CLAIM_TTL_SECONDS`` (the owner pid is the LIVE gateway, so the
+    dead-owner shortcut cannot shorten it), and every tick in that window dies on
+    ``claim_job_for_fire`` -> "Fire claim lost; execution was not started." — the measured 5-minute
+    schedule hole after the DK2 OOM.
+
+    Cleared owner-fenced: only a claim stamped by this machine (the waiter runs in the gateway that
+    stamped it) or by a provably-dead owner is dropped. The waiter still holds the in-flight guard,
+    so no concurrent run owns the claim. Returns True when a claim was released.
+    """
+    from cron.constants import FIRE_CLAIM_TTL_SECONDS
+    from cron.jobs import (
+        _claim_is_live,
+        _claim_owner_is_dead,
+        _hermes_now,
+        _machine_id,
+        _with_job,
+        save_jobs,
+    )
+
+    own_prefix = f"{_machine_id()}:"
+
+    def apply(jobs, _i, job):
+        claim = job.get("fire_claim")
+        if not isinstance(claim, dict):
+            return False
+        by = str(claim.get("by") or "")
+        if not (by.startswith(own_prefix) or _claim_owner_is_dead(claim)):
+            return False
+        # An already-expired claim is harmless; leave it for the age-based sweep's accounting.
+        if not _claim_is_live(claim, _hermes_now(), FIRE_CLAIM_TTL_SECONDS):
+            return False
+        job["fire_claim"] = None
+        save_jobs(jobs)
+        return True
+
+    try:
+        return bool(_with_job(job_id, apply, False))
+    except Exception:
+        logger.debug("Finished-run fire-claim release failed for job %s", job_id, exc_info=True)
+        return False
+
+
 def _wait_for_external_cron_worker_body(
     process: subprocess.Popen,
     *,
     execution_id: str,
+    job_id: Optional[str] = None,
 ) -> bool:
     """Preserve ``run_one_job``'s synchronous contract after handoff.
 
@@ -3396,6 +3446,20 @@ def _wait_for_external_cron_worker_body(
     def _is_terminal() -> bool:
         current = get_execution(execution_id)
         return bool(current and current.get("status") in _TERMINAL_STATES)
+
+    def _release_finished_run() -> None:
+        # The waiter owns the run's claims from handoff: the pool future already released the
+        # in-flight guard at handoff, and the recovered-worker-death path returns True WITHOUT
+        # mark_job_run, so nothing else clears the fire_claim. Without this, a killed worker's
+        # stale claim blocks every later tick for the 300 s FIRE_CLAIM_TTL (measured: ~5 minutes of
+        # the 20-minute DK2 cycle lost per OOM). The worker is provably gone, so re-arming is safe.
+        if job_id is None:
+            return
+        try:
+            release_running_job(job_id)
+        except Exception:
+            logger.debug("Could not release in-flight guard for job %s", job_id, exc_info=True)
+        _release_finished_run_fire_claim(job_id)
 
     # The worker commits its terminal row before its process exits, so exit is
     # the correct wakeup.  Each ledger read opens a connection and re-runs
@@ -3422,7 +3486,9 @@ def _wait_for_external_cron_worker_body(
         # would falsely assert that no side effect could have happened.
         recover_interrupted_executions()
         if _is_terminal():
+            _release_finished_run()
             return True
+        _release_finished_run()
         raise RuntimeError(
             "cron external worker exited before durable recovery could "
             f"terminalize its execution state (exit {returncode})"
@@ -3442,7 +3508,7 @@ def _wait_for_external_cron_worker(
 ) -> bool:
     try:
         return _wait_for_external_cron_worker_body(
-            process, execution_id=execution_id
+            process, execution_id=execution_id, job_id=job_id
         )
     except Exception as wait_error:
         raise _ExternalWorkerPostHandoffError(str(wait_error)) from wait_error

@@ -11,6 +11,7 @@ import re
 import smtplib
 import socket
 import ssl
+import time
 import uuid
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
@@ -494,6 +495,10 @@ class EmailAdapter(BasePlatformAdapter):
         # chat_id (sender email) -> last subject + message-id for threading
         # Track the last IMAP fetch attempt so the poll loop can distinguish "checked, nothing new" from
         # "the check itself failed" (#80016).
+        # Transient IMAP errors (timeouts, dropped connections) are retried a few times with
+        # backoff before the poll surfaces a failure; a single provider blip must not take the gateway down.
+        self._fetch_retry_attempts = 3
+        self._fetch_retry_delay = 2  # seconds, scaled linearly by attempt
         self._thread_context: dict[str, dict[str, str]] = {}
         logger.info("[Email] Adapter initialized for %s", self._address)
 
@@ -674,55 +679,75 @@ class EmailAdapter(BasePlatformAdapter):
             logger.warning("[Email] Could not mark rejected UID %s seen", uid)
 
     def _fetch_new_messages(self, preauthorize: Callable[[dict[str, Any]], bool]) -> list[dict[str, Any]]:
-        """Fetch unseen messages; bounded headers pass *preauthorize* before RFC822 is requested."""
-        results = []
-        try:
-            with self._inbox() as imap:
-                status, data = imap.uid("search", None, "UNSEEN")
-                for uid in (data[0].split() if status == "OK" and data and data[0] else []):
-                    if uid in self._seen_uids:
-                        continue
-                    header_status, header_data = imap.uid("fetch", uid, _PREAUTH_FETCH)
-                    if header_status != "OK":
-                        continue
-                    raw_headers = _imap_payload(header_data)
-                    if raw_headers is None or len(raw_headers) > _MAX_PREAUTH_HEADER_BYTES:
-                        logger.warning("[Email] Unusable pre-authorization headers for UID %s, skipping", uid)
-                        self._mark_uid_consumed(imap, uid)
-                        continue
-                    try:
-                        candidate = self._parse_fetched_headers(uid, raw_headers)
-                        accepted = candidate is not None and preauthorize(candidate)
-                    except Exception as auth_exc:
-                        logger.error("[Email] Failed to authorize message UID %s, skipping: %s", uid, auth_exc)
-                        accepted = False
-                    if not accepted:
-                        self._mark_uid_consumed(imap, uid)
-                        continue
-                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
-                    if status != "OK":
-                        continue  # transient per-UID refusal: leave unseen so the next poll retries
-                    # Mark seen once a response arrived (even malformed) so garbage is skipped once, not retried forever —
-                    # but NOT before the fetch: a connection failure must leave the rest of the batch eligible for the next poll.
-                    self._seen_uids.add(uid)
-                    self._trim_seen_uids()
-                    if (raw_email := _imap_payload(msg_data)) is None:
-                        logger.warning("[Email] Unexpected IMAP response structure for UID %s, skipping", uid)
-                        continue
-                    # One poison message (unparseable headers, pathological attachment, DNS hiccup) must not abort the batch or force a reconnect.
-                    try:
-                        # See #80032.
-                        parsed = self._parse_fetched_message(uid, raw_email)
-                    except Exception as parse_exc:
-                        logger.error("[Email] Failed to process message UID %s, skipping: %s", uid, parse_exc)
-                        continue
-                    if parsed is not None:
-                        results.append(parsed)
-        except Exception as e:
-            # _close_imap guarantees the socket dies even when logout() raises IMAP4.abort on a broken
-            # connection (#79889).
-            logger.error("[Email] IMAP fetch error: %s", e)
-            self._last_fetch_failed, self._last_fetch_error = True, str(e)
+        """Fetch unseen messages; bounded headers pass *preauthorize* before RFC822 is requested.
+
+        Retries transient IMAP errors (timeouts, dropped connections) a few times with a
+        short linear backoff before surfacing a failure. A single provider blip must not
+        take the gateway down: the reconnect/backoff machinery, not a process restart,
+        should handle it (#80016, gateway respawn-storm fix).
+        """
+        results: list[dict[str, Any]] = []
+        last_err: Optional[str] = None
+        for attempt in range(1, self._fetch_retry_attempts + 1):
+            try:
+                with self._inbox() as imap:
+                    status, data = imap.uid("search", None, "UNSEEN")
+                    for uid in (data[0].split() if status == "OK" and data and data[0] else []):
+                        if uid in self._seen_uids:
+                            continue
+                        header_status, header_data = imap.uid("fetch", uid, _PREAUTH_FETCH)
+                        if header_status != "OK":
+                            continue
+                        raw_headers = _imap_payload(header_data)
+                        if raw_headers is None or len(raw_headers) > _MAX_PREAUTH_HEADER_BYTES:
+                            logger.warning("[Email] Unusable pre-authorization headers for UID %s, skipping", uid)
+                            self._mark_uid_consumed(imap, uid)
+                            continue
+                        try:
+                            candidate = self._parse_fetched_headers(uid, raw_headers)
+                            accepted = candidate is not None and preauthorize(candidate)
+                        except Exception as auth_exc:
+                            logger.error("[Email] Failed to authorize message UID %s, skipping: %s", uid, auth_exc)
+                            accepted = False
+                        if not accepted:
+                            self._mark_uid_consumed(imap, uid)
+                            continue
+                        status, msg_data = imap.uid("fetch", uid, "(RFC822)")
+                        if status != "OK":
+                            continue  # transient per-UID refusal: leave unseen so the next poll retries
+                        # Mark seen once a response arrived (even malformed) so garbage is skipped once, not retried forever —
+                        # but NOT before the fetch: a connection failure must leave the rest of the batch eligible for the next poll.
+                        self._seen_uids.add(uid)
+                        self._trim_seen_uids()
+                        if (raw_email := _imap_payload(msg_data)) is None:
+                            logger.warning("[Email] Unexpected IMAP response structure for UID %s, skipping", uid)
+                            continue
+                        # One poison message (unparseable headers, pathological attachment, DNS hiccup) must not abort the batch or force a reconnect.
+                        try:
+                            # See #80032.
+                            parsed = self._parse_fetched_message(uid, raw_email)
+                        except Exception as parse_exc:
+                            logger.error("[Email] Failed to process message UID %s, skipping: %s", uid, parse_exc)
+                            continue
+                        if parsed is not None:
+                            results.append(parsed)
+                # Full pass completed without raising -> success; stop retrying.
+                last_err = None
+                break
+            except Exception as e:
+                last_err = str(e)
+                logger.warning(
+                    "[Email] IMAP fetch error (attempt %d/%d, retrying): %s",
+                    attempt, self._fetch_retry_attempts, e,
+                )
+                if attempt < self._fetch_retry_attempts:
+                    time.sleep(self._fetch_retry_delay * attempt)
+        if last_err is not None:
+            logger.error(
+                "[Email] IMAP fetch failed after %d attempts: %s",
+                self._fetch_retry_attempts, last_err,
+            )
+            self._last_fetch_failed, self._last_fetch_error = True, last_err
         # Keep the reconnect snapshot current so a mid-outage adapter recreation does not re-dispatch messages already processed.
         self._seen_uids_snapshot[self._address] = set(self._seen_uids)
         return results

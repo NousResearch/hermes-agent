@@ -578,10 +578,12 @@ def finalize_turn(
 
     # A Kanban worker's terminal tool call is staged while ``pre_verify`` can still
     # nudge the model. Publish ``done`` only after this turn has passed every stop gate.
-    if completed and not failed and not interrupted:
-        with suppress(Exception):
-            from tools.kanban_tools import finalize_pending_completion
-            finalize_pending_completion()
+    from tools.kanban_tools import finalize_pending_completion
+    if finalize_pending_completion(accepted=completed and not failed and not interrupted) is False:
+        completed = False
+        failed = True
+        _turn_exit_reason = 'kanban_completion_refused'
+        final_response = (final_response or '') + '\nKanban completion was refused; the card remains in-flight. Check kanban_show for the current refusal and retry.'
 
     _rollback_interrupted_preflight_display(agent, interrupted)
 

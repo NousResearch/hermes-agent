@@ -2732,7 +2732,7 @@ def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
-    fire_lifecycle_hook: bool = True, force: bool = False,
+    fire_lifecycle_hook: bool = True, force: bool = False, validate_only: bool = False,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -2782,6 +2782,12 @@ def complete_task(
         # _claim_is_live for what "live" means.
         if expected_run_id is None and not force and trow and _claim_is_live(trow):
             raise LiveClaimError(task_id)
+        if validate_only:
+            # Run the same refusal gates without publishing done or closing the run.
+            current = get_task(conn, task_id)
+            return bool(current and prior_status in ('running', 'ready', 'blocked', 'review') and (
+                expected_run_id is None or current.current_run_id == int(expected_run_id)
+            ))
         sql = """
                 UPDATE tasks
                    SET status       = 'done',

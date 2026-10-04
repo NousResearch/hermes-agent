@@ -59,22 +59,21 @@ def _defer_completion_until_turn_closes(
         return False
 
 
-def finalize_pending_completion() -> bool:
+def finalize_pending_completion(*, accepted: bool = True) -> Optional[bool]:
     """Commit a deferred worker completion after the turn stop gates finish."""
     raw = os.environ.pop("HERMES_KANBAN_PENDING_COMPLETION", None)
-    if not raw:
-        return False
+    if not raw or not accepted:
+        return None
     try:
         payload = json.loads(raw)
         from hermes_cli import kanban_db as kb
         with _board(None) as (board, conn):
-            board.complete_task(
+            return board.complete_task(
                 conn, payload["task_id"], result=payload.get("result"),
                 summary=payload.get("summary"), metadata=payload.get("metadata"),
                 created_cards=payload.get("created_cards") or [],
                 expected_run_id=_worker_run_id(payload["task_id"]),
             )
-        return True
     except Exception:
         logger.warning("deferred kanban completion failed", exc_info=True)
         return False
@@ -738,6 +737,7 @@ def _handle_list(args: dict, **kw) -> str:
 def _handle_complete(args: dict, **kw) -> str:
     """Mark the current task done with a structured handoff."""
     tid = _worker_guard("kanban_complete", args)
+    os.environ.pop("HERMES_KANBAN_PENDING_COMPLETION", None)
     summary = _redact_opt(args.get("summary"))
     result = _redact_opt(args.get("result"))
     metadata = args.get("metadata")
@@ -758,15 +758,14 @@ def _handle_complete(args: dict, **kw) -> str:
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
-        if not created_cards and not artifacts and _defer_completion_until_turn_closes(
-            task_id=tid, result=result, summary=summary, metadata=metadata,
-            created_cards=list(created_cards or []),
-        ):
-            return _ok(task_id=tid, pending_verification=True)
+        from hermes_cli.lifecycle import has_hook
+        defer = bool(not created_cards and not artifacts and
+                     os.environ.get('HERMES_KANBAN_TASK') and _is_dispatcher_owned_worker() and
+                     has_hook('pre_verify'))
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+                created_cards=created_cards, expected_run_id=_worker_run_id(tid), validate_only=defer)
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the
@@ -801,6 +800,7 @@ def _handle_complete(args: dict, **kw) -> str:
                 f"kanban_complete blocked: {empty_err}. Your task is still in-flight (no state "
                 f"change). Retry kanban_complete with a non-empty summary or result describing "
                 f"what was done.")
+        task = kb.get_task(conn, tid)
         if not ok:
             # complete_task reports every refusal as bare False; a reopened or
             # never-finished parent is the actionable one. Name the blockers so
@@ -813,6 +813,11 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"{detail}; complete the parents first (done or archived)")
             _check(False, (task.last_failure_error if task else None) or
                    f"could not complete {tid} (unknown id, stale run, or already terminal)")
+        if defer:
+            _check(_defer_completion_until_turn_closes(
+                task_id=tid, result=result, summary=summary, metadata=metadata,
+                created_cards=list(created_cards or [])), 'could not stage completion; retry')
+            return _ok(task_id=tid, pending_verification=True)
         run = kb.latest_run(conn, tid)
         # Artifact staging is atomic with the completion write, so a worker that
         # read `kanban_attachments` before completing saw an empty list and has

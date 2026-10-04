@@ -1310,7 +1310,8 @@ class BubblewrapEnvironment(LocalEnvironment):
         The backend does not try to hold such a chain in place with
         mounts. It walks the chain of each dot symlink at the top of HOME
         (dot_link_entries) and refuses to start when an entry on it lies
-        in the writable cwd or in a read-write operator bind. Not counted:
+        in the writable cwd, in a read-write operator bind or in the
+        profile home that a profile home mode binds read-write. Not counted:
         an entry at or under a hidden path, which no command can reach; a
         directory on the way that holds a hidden path, which is pinned as
         a mount point and cannot be renamed or replaced; and, under a
@@ -1322,7 +1323,15 @@ class BubblewrapEnvironment(LocalEnvironment):
             return
         sources: list[str] = [self._initial_cwd] if resolve_profile(self._config.profile).writable_cwd else []
         sources += [os.path.realpath(bind.src) for bind in self._config.binds if not bind.readonly]
-        if not sources:
+        # Under a profile home mode HERMES_HOME/home is bound read-write on
+        # top of the HERMES_HOME overlay, under every profile: what lies in
+        # it is writable although it is under a hidden path.
+        profile_home: str | None = None
+        if self._config.home_mode in PROFILE_HOME_MODES:
+            candidate = os.path.join(self._hermes_home, "home")
+            if os.path.isdir(candidate):
+                profile_home = os.path.realpath(candidate)
+        if not sources and profile_home is None:
             return
         try:
             names = sorted(
@@ -1333,6 +1342,8 @@ class BubblewrapEnvironment(LocalEnvironment):
             return
 
         def writable(entry: str, last: bool) -> bool:
+            if profile_home is not None and _is_within(entry, profile_home) and (last or entry != profile_home):
+                return True
             if any(_is_within(entry, hidden) for hidden in self._hidden_paths):
                 return False
             if not last and any(_is_within(hidden, entry) for hidden in self._hidden_paths):
@@ -1360,7 +1371,8 @@ class BubblewrapEnvironment(LocalEnvironment):
                 f"{', '.join(refused)} in the home directory {'is a symlink' if len(refused) == 1 else 'are symlinks'} "
                 "that a command in the bubblewrap sandbox could redirect or rewrite: the link leads "
                 "through, or ends in, a place that is writable inside the sandbox (terminal.cwd "
-                f"{self._initial_cwd} or a read-write terminal.bubblewrap_binds source). The host "
+                f"{self._initial_cwd}, a read-write terminal.bubblewrap_binds source or the profile "
+                "home HERMES_HOME/home). The host "
                 "reads such a file after the sandbox is gone, at the next login for a shell startup "
                 "file. Set terminal.cwd to a project directory that does not hold the link target, "
                 "or make the bind read-only."

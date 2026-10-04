@@ -1478,6 +1478,36 @@ class TestWritableDotLinkGuard:
         (fake_home / ".bashrc").symlink_to(".zz-hop")
         self._construct(fake_home)
 
+    @pytest.fixture
+    def hermes_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes-home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        return home
+
+    def test_profile_home_dot_link_into_a_plain_profile_home_is_refused(self, sandbox_root, work_dir, fake_home, hermes_home):
+        # HERMES_HOME is hidden, but the profile home is bound back read-write on top of it.
+        (hermes_home / "home").mkdir()
+        (hermes_home / "home" / ".bashrc").write_text("x")
+        (fake_home / ".bashrc").symlink_to(hermes_home / "home" / ".bashrc")
+        with pytest.raises(ValueError, match=r"\.bashrc"):
+            self._construct(work_dir, BubblewrapConfig(home_mode="profile"))
+
+    def test_profile_home_dot_link_into_a_symlinked_profile_home_is_refused(self, sandbox_root, work_dir, fake_home, hermes_home, tmp_path):
+        agent_home = tmp_path / "agent-home"
+        agent_home.mkdir()
+        (agent_home / ".gitconfig").write_text("x")
+        (hermes_home / "home").symlink_to(agent_home)
+        (fake_home / ".gitconfig").symlink_to(agent_home / ".gitconfig")
+        with pytest.raises(ValueError, match=r"\.gitconfig"):
+            self._construct(work_dir, BubblewrapConfig(home_mode="profile"))
+
+    def test_profile_home_dot_link_constructs_when_the_profile_home_is_not_bound(self, sandbox_root, work_dir, fake_home, hermes_home):
+        (hermes_home / "home").mkdir()
+        (hermes_home / "home" / ".bashrc").write_text("x")
+        (fake_home / ".bashrc").symlink_to(hermes_home / "home" / ".bashrc")
+        self._construct(work_dir, BubblewrapConfig(home_mode="real"))
+
     def test_a_link_loop_constructs(self, sandbox_root, fake_home, outside):
         (outside / "a").symlink_to(outside / "b")
         (outside / "b").symlink_to(outside / "a")

@@ -782,6 +782,19 @@ def _(rid, params: dict) -> dict:
         if turn_author:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
+        # The isolated dispatch returns BELOW before the inline persist, so the reopen
+        # cannot live only in _persist_session_row_for_submit: the turn is already
+        # admitted here (running, in flight, active-slot lease claimed, truncation
+        # applied inline), and the child's transcript writes must land in a live row
+        # (#85303 review: the early return made _reopen_if_finalized unreachable on
+        # this path). Best-effort like the helper: a failed read never blocks the send.
+        try:
+            with _session_db(session) as db:
+                if db is not None:
+                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
+        except Exception:
+            logger.debug("finalized-session reopen before isolated dispatch failed for %s",
+                         sid, exc_info=True)
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
         if not isolated_response.get("error"):

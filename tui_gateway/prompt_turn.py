@@ -1120,6 +1120,17 @@ def _run_prompt_submit(
         logger.warning(
             "prompt dispatch: session store unavailable for %s — this turn may not persist",
             session.get("session_key") or sid)
+    else:
+        # The first real turn reopens a finalized row (#85303): resume/mount is read-only, so
+        # the row's ended_at is cleared HERE — at the one seam every dispatch crosses, not in
+        # prompt.submit's persist. The isolated compute-host dispatch returns from prompt.submit
+        # before that persist (the child process runs the turn), so a reopen placed there never
+        # fires for isolated turns; here it covers inline and isolated dispatch equally, plus
+        # the synthesized turns that bypass prompt.submit entirely. Best-effort, like the
+        # reopen helper itself: a failed read never blocks the turn.
+        with _session_db(session) as db:
+            if db is not None:
+                _reopen_if_finalized(db, str(session.get("session_key") or ""))
     admitted = _admit_prompt_turn(
         sid, session, text, image_paths, queued_prompt_generation, display_kind, display_metadata)
     if admitted is None:

@@ -446,9 +446,12 @@ def _resolve_profile_db(profile: str):
 
 def _read_session(db, session_id: str, head: int = 20, tail: int = 10, link_profile: str = None) -> str:
     """Read shape: whole session, or ``head`` + ``tail`` messages with a scroll pointer."""
-    meta = _get_session_meta(db, session_id)
+    meta, err = _loud(lambda: db.get_session(session_id), "get_session failed for %s: %s", "failed to load session",
+                      session_id)
+    if err:
+        return err
     if not meta:
-        return tool_error(f"session_id not found: {session_id}", success=False)
+        return tool_error(f"session_id not found: {session_id}", success=False, reason="not_found")
     rows, err = _loud(lambda: db.get_messages(session_id), "get_messages failed for %s: %s", "failed to load session",
                       session_id)
     if err:
@@ -469,9 +472,16 @@ def _read_scoped(db, sid: str, profile: Optional[str]) -> str:
     a scan of every other profile's ``state.db`` — that returned another profile's full
     transcript to any caller holding the id (#106761). The hint tells the model how to
     ask properly: ``@session:<profile>/<id>`` or ``profile=``.
+
+    Only a genuine miss earns that hint. A failed read (a locked/corrupt store) is not a
+    miss, and re-labelling it as "not found in this profile" sends the model hunting for a
+    profile that was never the problem — the store error has to surface as itself.
     """
     result = _read_session(db, sid, link_profile=profile)
-    if json.loads(result).get("success") is not False or profile:
+    parsed = json.loads(result)
+    if parsed.get("success") is not False or profile:
+        return result
+    if parsed.get("reason") != "not_found":
         return result
     return tool_error(f"session_id not found in this profile: {sid}. If it belongs to another "
                       "profile, pass profile=<name> (or the @session:<profile>/<id> link).", success=False)
@@ -541,7 +551,10 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
     owning = (anchor_state or {}).get("session_id")
     if current_session_id and _anchor_in_live_context(db, anchor_state, owning or session_id, current_session_id):
         return tool_error("scroll rejected: anchor lives in the current session lineage (already in your active context)", success=False)
-    session_meta = _get_session_meta(db, session_id)
+    session_meta, err = _loud(lambda: db.get_session(session_id), "get_session failed for %s: %s",
+                              "failed to load session", session_id)
+    if err:
+        return err
     if not session_meta:
         return tool_error(f"session_id not found: {session_id}", success=False)
     view, err = _loud(lambda: db.get_messages_around(session_id, around_message_id, window=window),

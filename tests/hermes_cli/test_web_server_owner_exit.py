@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS, read_valid_backend_lock
+from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS, _lock_owned_serve_pids, read_valid_backend_lock
 from hermes_cli.web_server_owner_exit import should_retire_superseded, start_owner_watchdog
 
 OID, ME, NEW = "f" * 32, "a" * 16, "b" * 16
@@ -99,3 +99,6 @@ def test_lock_written_by_the_windows_ssh_runtime_lets_the_superseded_backend_ret
     lock_path.write_bytes(windows_ssh_runtime._lock_record(OID, desktop_record))
 
     assert should_retire_superseded(lock=read_valid_backend_lock(lock_path), my_nonce=ME, age_s=600.0)
+    # The same valid lock makes the backend lock-owned, so `hermes update`'s restart_managed sweep
+    # leaves it to the code-skew watchdog instead of terminating it, as on POSIX.
+    assert desktop_record["pid"] in _lock_owned_serve_pids(lock_path.parent.parent)

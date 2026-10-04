@@ -974,7 +974,12 @@ def _run_sequential_tool_execution_middleware(
             # A timed-out shell may still be unwinding. Never release a later
             # prepared command into overlapping execution.
             prepared.batch.close()
-            agent.interrupt("terminal batch tool did not complete")
+            # Label the abort as the batch guard's own, not a user stop: without an explicit
+            # ``tool_reason`` the soft path books this as "user sent a new message" (#130207).
+            agent.interrupt(
+                "terminal batch tool did not complete",
+                tool_reason="terminal batch aborted: call timed out",
+            )
         future.cancel()
         if state == "timeout":
             _interrupt_worker_tids(agent, worker_tid)

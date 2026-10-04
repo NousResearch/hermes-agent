@@ -4192,6 +4192,10 @@ export interface Translations {
   zones: {
     showTabStrip: string
     hideTabStrip: string
+    backgroundTint: string
+    defaultBackground: string
+    backgroundTintOption: (tint: string) => string
+    zoneActions: string
     showStripTab: (title: string) => string
     hideStripTab: (title: string) => string
     zoneMenuLabel: (title: string) => string

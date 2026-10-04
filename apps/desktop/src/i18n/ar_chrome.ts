@@ -489,6 +489,19 @@ export const arChrome = {
     addToChat: 'إضافة للمحادثة'
   },
   zones: {
+    backgroundTint: 'صبغة الخلفية',
+    defaultBackground: 'الخلفية الافتراضية',
+    backgroundTintOption: tint =>
+      ({
+        red: 'أحمر',
+        orange: 'برتقالي',
+        yellow: 'أصفر',
+        green: 'أخضر',
+        cyan: 'سماوي',
+        blue: 'أزرق',
+        purple: 'أرجواني'
+      })[tint] ?? tint,
+    zoneActions: 'إجراءات المنطقة',
     showTabStrip: 'إظهار علامات التبويب',
     hideTabStrip: 'إخفاء علامات التبويب',
     showStripTab: title => `إظهار ${title}`,

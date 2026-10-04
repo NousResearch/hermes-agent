@@ -38,11 +38,13 @@ import {
   removePane,
   reorderPanesInGroup as reorderPanesInGroupOp,
   setActivePane as setActivePaneOp,
+  setGroupBackgroundTint as setGroupBackgroundTintOp,
   setGroupMinimized,
   setGroupTabStrip as setGroupTabStripOp,
   setSplitWeights as setSplitWeightsOp,
   type SplitNode,
-  type TabStripMode
+  type TabStripMode,
+  type ZoneBackgroundTint
 } from './model'
 import { isTreePaneParked } from './parked-panes'
 import { FLOATING_PLACEMENT } from './renderer/floating-rect'
@@ -1881,6 +1883,16 @@ export function setTreeGroupMinimized(groupId: string, minimized: boolean) {
 
   if (tree) {
     commit(setGroupMinimized(tree, groupId, minimized))
+  }
+}
+
+/** Tint one zone and persist it as a custom layout choice. */
+export function setTreeGroupBackgroundTint(groupId: string, backgroundTint: ZoneBackgroundTint | undefined) {
+  const tree = $layoutTree.get()
+
+  if (tree) {
+    commit(setGroupBackgroundTintOp(tree, groupId, backgroundTint))
+    markActivePreset('custom')
   }
 }
 

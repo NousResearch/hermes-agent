@@ -5376,6 +5376,19 @@ export const esOverrides = {
     }
   },
   zones: {
+    backgroundTint: 'Tinte de fondo',
+    defaultBackground: 'Fondo predeterminado',
+    backgroundTintOption: tint =>
+      ({
+        red: 'Rojo',
+        orange: 'Naranja',
+        yellow: 'Amarillo',
+        green: 'Verde',
+        cyan: 'Cian',
+        blue: 'Azul',
+        purple: 'Morado'
+      })[tint] ?? tint,
+    zoneActions: 'Acciones de la zona',
     showTabStrip: 'Mostrar pestañas',
     hideTabStrip: 'Ocultar pestañas',
     showStripTab: title => `Mostrar ${title}`,

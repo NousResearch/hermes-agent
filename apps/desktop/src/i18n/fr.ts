@@ -5397,6 +5397,19 @@ export const frOverrides = {
     }
   },
   zones: {
+    backgroundTint: 'Teinte de fond',
+    defaultBackground: 'Fond par défaut',
+    backgroundTintOption: tint =>
+      ({
+        red: 'Rouge',
+        orange: 'Orange',
+        yellow: 'Jaune',
+        green: 'Vert',
+        cyan: 'Cyan',
+        blue: 'Bleu',
+        purple: 'Violet'
+      })[tint] ?? tint,
+    zoneActions: 'Actions de la zone',
     showTabStrip: 'Afficher les onglets',
     hideTabStrip: 'Masquer les onglets',
     showStripTab: title => `Afficher ${title}`,

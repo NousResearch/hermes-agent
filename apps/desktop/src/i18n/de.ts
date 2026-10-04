@@ -5382,6 +5382,19 @@ export const deOverrides = {
     }
   },
   zones: {
+    backgroundTint: 'Hintergrundtönung',
+    defaultBackground: 'Standardhintergrund',
+    backgroundTintOption: tint =>
+      ({
+        red: 'Rot',
+        orange: 'Orange',
+        yellow: 'Gelb',
+        green: 'Grün',
+        cyan: 'Cyan',
+        blue: 'Blau',
+        purple: 'Violett'
+      })[tint] ?? tint,
+    zoneActions: 'Zonenaktionen',
     showTabStrip: 'Tabs anzeigen',
     hideTabStrip: 'Tabs ausblenden',
     showStripTab: title => `${title} anzeigen`,

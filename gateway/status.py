@@ -822,25 +822,62 @@ def command_line_names_hermes_home(command_lc: str, home_lc: str) -> bool:
     return re.search(rf"(?:^|\s)hermes_home={re.escape(home_lc)}/?(?=\s|$)", command_lc) is not None
 
 
-def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
+def _pid_hermes_home_is(pid: Optional[int], profile_home: Path) -> Optional[bool]:
+    """Tri-state: does ``pid``'s own exec-time environment resolve to ``profile_home``? ``None``
+    when the environment is unreadable (another user, hardened ``/proc``, psutil denying a Windows
+    peer) or no PID is known — the caller keeps its existing fallback, never guesses. Late import:
+    ``hermes_cli`` is the layer above ``gateway``."""
+    if pid is None:
+        return None
+    try:
+        from hermes_cli.dashboard_procs import _hermes_home_for_pid
+
+        owner_home = _hermes_home_for_pid(pid)
+    except Exception:
+        return None
+    if owner_home is None:
+        return None
+    return _same_hermes_home(owner_home, profile_home)
+
+
+def _command_line_belongs_to_profile(
+    command: str, profile_home: Path, pid: Optional[int] = None
+) -> bool:
     """True when a gateway command line belongs to ``profile_home`` (mirrors
     ``hermes_cli.gateway._matches_current_profile``): a stale state file can record a PID recycled
     onto ANOTHER profile's live gateway. Named profiles carry ``-p``/``--profile <name>`` or
-    ``HERMES_HOME=`` on argv; the default gateway runs bare. Separators normalized."""
+    ``HERMES_HOME=`` on argv; the default gateway runs bare. Separators normalized. When argv
+    carries no profile and no home, the profile arrived through the environment (the sticky
+    ``active_profile`` selection re-homes without touching argv; launchd plists and systemd units
+    set only ``HERMES_HOME``), so ``pid``'s own environment decides — the mirror's fallback
+    (#126287); without a PID the legacy argv-only claim stands."""
     command_lc = command.lower().replace("\\", "/")
     profile_name = _profile_name_for_home(profile_home)
     home_lc = str(profile_home).lower().replace("\\", "/").rstrip("/")
     if profile_name is not None and profile_name != "default":
         if profile_flag_value(command_lc) == profile_name.lower():
             return True
-        return command_line_names_hermes_home(command_lc, home_lc)
+        if command_line_names_hermes_home(command_lc, home_lc):
+            return True
+        # argv silent: only the environment can claim this gateway for a NAMED profile; an
+        # unreadable environment proves nothing and must not adopt a foreign bare gateway (the
+        # default home keeps the legacy bare-argv claim instead, like the mirror).
+        return _pid_hermes_home_is(pid, profile_home) is True
     # Default profile: accept unless argv names another profile (any spelling the CLI pre-parser
     # accepts, ``--profile=ops`` included -- a substring test let that gateway pass as the default's)
     # or a conflicting explicit HERMES_HOME= (its absence is not disqualifying -- HERMES_HOME usually
     # arrives via the env).
     if profile_flag_value(command_lc) is not None:
         return False
-    return not hermes_home_assignments(command_lc) or command_line_names_hermes_home(command_lc, home_lc)
+    if hermes_home_assignments(command_lc):
+        return command_line_names_hermes_home(command_lc, home_lc)
+    # No home on argv: it came through the environment, and a bare argv alone cannot distinguish
+    # the default gateway from a sibling's sticky-profile one -- the env-carried spelling of
+    # #126287. The process's own environment decides; unreadable keeps the legacy bare-argv claim.
+    env_verdict = _pid_hermes_home_is(pid, profile_home)
+    if env_verdict is not None:
+        return env_verdict
+    return True
 
 
 def _host_gateway_serves_home(pid: int, profile_home: Path) -> bool:
@@ -865,8 +902,9 @@ def _record_matches_live_gateway_pid(
 ) -> bool:
     """True when a live PID still identifies as this gateway record. The live command line wins (a
     stale record's argv must not make a recycled PID count as a gateway; with ``expected_home`` it
-    must also belong to that profile — or serve it as the host multiplexer); unreadable cmdline
-    (Windows/EACCES) -> persisted record."""
+    must also belong to that profile — or serve it as the host multiplexer); argv-silent command
+    lines are claimed through the process's own environment; unreadable cmdline (Windows/EACCES)
+    -> persisted record."""
     live_cmdline = _read_process_cmdline(pid)
     if not live_cmdline:
         return _record_looks_like_gateway(record)
@@ -874,7 +912,7 @@ def _record_matches_live_gateway_pid(
         return False
     if expected_home is not None and _host_gateway_serves_home(pid, expected_home):
         return True
-    return expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home)
+    return expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home, pid)
 
 
 def _record_argv() -> list[str]:

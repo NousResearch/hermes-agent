@@ -456,7 +456,9 @@ class TestGatewayRuntimeStatus:
     def test_unscoped_running_pid_fallback_still_reports_own_profile_gateway(self, tmp_path, monkeypatch):
         """The sibling rejection must not over-block: this home's own default (bare) gateway
         record still resolves through the unscoped fallback — the launch-service gateway whose
-        ``gateway.pid`` is gone while ``gateway_state.json`` is fresh."""
+        ``gateway.pid`` is gone while ``gateway_state.json`` is fresh. An unreadable environment
+        keeps the legacy bare-argv claim (pinned deterministically; a live PID 9492 on the test
+        host could otherwise answer with a foreign environment)."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "gateway_state.json").write_text(json.dumps({
             "pid": 9492,
@@ -470,6 +472,79 @@ class TestGatewayRuntimeStatus:
             status, "_read_process_cmdline",
             lambda pid: "pythonw.exe -m hermes_cli.main gateway run",
         )
+        monkeypatch.setattr("hermes_cli.dashboard_procs._pid_environ", lambda pid: None)
+        assert status.get_running_pid() == 9492
+
+    def test_sticky_profile_gateway_with_bare_argv_still_reported_running(self, tmp_path, monkeypatch):
+        """Over-block regression (review of PR #126577): the sticky ``active_profile`` selection
+        re-homes a gateway through ``_apply_profile_override`` WITHOUT touching argv, so a live
+        own-profile gateway's command line is bare — argv can never claim it for the named
+        profile. The process's own environment must claim it instead, or the preflight guard
+        reads the live gateway as stopped and double-runs the profile."""
+        ops_home = tmp_path / "profiles" / "ops"
+        ops_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(ops_home))
+        (ops_home / "gateway_state.json").write_text(json.dumps({
+            "pid": 9492,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "hermes_home": str(ops_home),
+            "argv": ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"],
+        }))
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline",
+            lambda pid: "pythonw.exe -m hermes_cli.main gateway run",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.dashboard_procs._pid_environ",
+            lambda pid: {"HERMES_HOME": str(ops_home)},
+        )
+        assert status.get_running_pid() == 9492
+
+    def test_unscoped_running_pid_fallback_rejects_env_carried_sibling_profile(self, tmp_path, monkeypatch):
+        """#126287's env-carried spelling: a sibling profile's gateway launched through the sticky
+        ``active_profile`` selection runs a BARE command line, indistinguishable by argv from the
+        default gateway the root home's unscoped fallback asks about. The process's own
+        environment names ``profiles/mv``, so the fallback must not report it running here."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(json.dumps({
+            "pid": 4184,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"],
+        }))
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline",
+            lambda pid: "pythonw.exe -m hermes_cli.main gateway run",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.dashboard_procs._pid_environ",
+            lambda pid: {"HERMES_HOME": str(tmp_path / "profiles" / "mv")},
+        )
+        assert status.get_running_pid() is None
+
+    def test_unscoped_running_pid_fallback_keeps_bare_argv_claim_when_env_unreadable(self, tmp_path, monkeypatch):
+        """An unreadable environment (another user, hardened ``/proc``, a denied Windows peer)
+        proves nothing: the default home keeps the legacy bare-argv claim — the mirror's
+        asymmetry — so a real default gateway still resolves through the fallback."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "gateway_state.json").write_text(json.dumps({
+            "pid": 9492,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["pythonw.exe", "-m", "hermes_cli.main", "gateway", "run"],
+        }))
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline",
+            lambda pid: "pythonw.exe -m hermes_cli.main gateway run",
+        )
+        monkeypatch.setattr("hermes_cli.dashboard_procs._pid_environ", lambda pid: None)
         assert status.get_running_pid() == 9492
 
 

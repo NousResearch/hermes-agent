@@ -1,6 +1,6 @@
 name: progress-squash
 repo: https://github.com/pierrenode/hermes-progress-squash
-sha: 7af0df87e3ac3692abd1929f65869a6049d909b9
+sha: 044e6f1128037a58a76d5f6ff71df1607b4c1c63
 subdir: progress-squash
 description: >-
   Collapses carriage-return progress bars (tqdm, git clone --progress and similar) in terminal
@@ -15,6 +15,7 @@ category: tools
 requires_hermes: ">=0.21"
 docs_url: https://github.com/pierrenode/hermes-progress-squash
 version: "1.0.0"
+image: https://raw.githubusercontent.com/pierrenode/hermes-progress-squash/044e6f1128037a58a76d5f6ff71df1607b4c1c63/docs/card.png
 platforms: []
 capabilities:
   provides_tools: []

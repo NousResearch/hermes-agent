@@ -430,35 +430,38 @@ class CLIChatTurnMixin:
         interrupt_msg = None
         while agent_thread.is_alive():
             try:
-                interrupt_msg = self._interrupt_queue.get(timeout=0.1)
+                raw_interrupt = self._interrupt_queue.get(timeout=0.1)
+                interrupt_content, interrupt_visible, _interrupt_preview = self._unwrap_queued_input(raw_interrupt)
             except queue.Empty:
                 # Flush the StdoutProxy buffer: it otherwise only flushes on input-triggered
                 # renderer passes, so on macOS the CLI looks frozen until the user types.
                 # Force prompt_toolkit to flush any pending stdout output from the agent thread. (#1624)
                 self._invalidate(min_interval=0.15)
                 continue
-            if not interrupt_msg:
+            if not interrupt_content:
                 continue
             # With a clarify question active, Enter routes to the clarify queue; anything
             # landing here is a race — don't interrupt, park it as the next turn.
             if self._clarify_state or self._clarify_freetext:
                 try:
-                    self._pending_input.put(interrupt_msg)
+                    self._pending_input.put(raw_interrupt)
                 except Exception:
                     pass
                 interrupt_msg = None
                 continue
-            _cprint(f"\n{t('cli.chat.new_message_interrupting')}")
+            if interrupt_visible:
+                _cprint(f"\n{t('cli.chat.new_message_interrupting')}")
             if turn.stop_event is not None:
                 turn.stop_event.set()
-            self.agent.interrupt(interrupt_msg)
+            self.agent.interrupt(interrupt_content)
+            interrupt_msg = raw_interrupt
             # Modal prompts gate input until reset — otherwise the CLI freezes after an
             # interrupt until the prompt's own timeout.
             self._clear_active_overlays_for_interrupt()
             # Debug log to file (stdout may be devnull under redirect_stdout).
             try:
                 with open(_hermes_home / "interrupt_debug.log", "a", encoding="utf-8") as _f:
-                    _f.write(f"{time.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_msg)[:60]!r}, "
+                    _f.write(f"{time.strftime('%H:%M:%S')} interrupt fired: msg={str(interrupt_content)[:60]!r}, "
                              f"children={len(self.agent._active_children)}, "
                              f"parent._interrupt={self.agent._interrupt_requested}\n")
                     for _ci, _ch in enumerate(self.agent._active_children):
@@ -594,26 +597,14 @@ class CLIChatTurnMixin:
                         all_parts.append(extra)
                 except queue.Empty:
                     break
-            # Payloads may be (text, images) tuples when the message carried image
-            # attachments (bundled at cli_tui_mixin._tui_on_enter); unpack them here —
-            # "\n".join(all_parts) raises TypeError on a tuple and the outer
-            # handler swallows it, silently dropping the interrupt (#110737).
-            text_parts: list[str] = []
-            image_parts: list = []
-            for part in all_parts:
-                if isinstance(part, tuple):
-                    part_text, part_images = part
-                    text_parts.append(part_text)
-                    image_parts.extend(part_images or [])
+            payload, payload_visible, payload_preview = self._combine_queued_inputs(all_parts)
+            preview_source = str(payload_preview)
+            preview = preview_source[:50] + ("..." if len(preview_source) > 50 else "")
+            if payload_visible:
+                if len(all_parts) > 1:
+                    _cprint(f"\n{t('cli.chat.sending_after_interrupt_multi', count=len(all_parts), preview=preview)}")
                 else:
-                    text_parts.append(part)
-            combined = "\n".join(text_parts)
-            payload = (combined, image_parts) if image_parts else combined
-            preview = combined[:50] + ("..." if len(combined) > 50 else "")
-            if len(all_parts) > 1:
-                _cprint(f"\n{t('cli.chat.sending_after_interrupt_multi', count=len(all_parts), preview=preview)}")
-            else:
-                _cprint(f"\n{t('cli.chat.sending_after_interrupt', preview=preview)}")
+                    _cprint(f"\n{t('cli.chat.sending_after_interrupt', preview=preview)}")
             self._pending_input.put(payload)
 
         # A /steer the agent finished before absorbing becomes the next user turn.
@@ -637,7 +628,7 @@ class CLIChatTurnMixin:
         # Post-turn hooks (e.g. goal continuation) skip themselves on a user-cancelled turn.
         self._last_turn_interrupted = _interrupted_this_turn
         if _interrupted_this_turn:
-            pending_message = turn.result.get("interrupt_message") or interrupt_msg
+            pending_message = interrupt_msg or turn.result.get("interrupt_message")
             _show_interrupt_marker = bool(response and pending_message)
         elif interrupt_msg:
             # agent.interrupt() fired but the result doesn't acknowledge it (racy): either

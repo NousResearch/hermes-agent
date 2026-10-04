@@ -227,6 +227,15 @@ class LoadedPlugin:
     deferred: bool = False
 
 
+@dataclass(frozen=True)
+class InjectedMessage:
+    """Message injected by a plugin into a live CLI session."""
+
+    content: Any
+    visible: bool = True
+    preview: str | None = None
+
+
 class PluginContext:
     """Facade given to plugins so they can register tools and hooks."""
 
@@ -601,8 +610,13 @@ class PluginContext:
     # returns False. The profile-scoped config is passed through so a multi-profile process consults THIS
     # manager's home, never the active profile's (#65593 constraint).
     def inject_message(
-        self, content: str, role: str = "user", *, session_key: str | None = None,
+        self,
+        content: str,
+        role: str = "user",
+        *,
+        session_key: str | None = None,
         origin: Mapping[str, Any] | None = None,
+        visible: bool = True,
     ) -> bool:
         """Inject a message into a CLI, Ink TUI/desktop, or messaging-gateway conversation.
 
@@ -614,10 +628,14 @@ class PluginContext:
         chat's session in THIS plugin's own profile and runs a turn there; the plugin cannot
         target another profile. Non-CLI injection needs ``session_key`` or ``origin`` plus
         ``plugins.entries.<plugin_id>.allow_gateway_injection`` in the plugin's profile config.
+        ``visible=False`` suppresses live classic-CLI rendering only; the message is still
+        delivered as model-facing input and follows normal session behavior.
         ``True`` means a host accepted the request, not that the turn completed.
         """
         from hermes_cli.plugins_injection import inject_plugin_message
-        return inject_plugin_message(self, content, role, session_key=session_key, origin=origin)
+        return inject_plugin_message(
+            self, content, role, session_key=session_key, origin=origin, visible=visible,
+        )
 
     def _gateway_injection_allowed(self) -> bool:
         """Return whether this plugin may trigger gateway session turns (read from the plugin's

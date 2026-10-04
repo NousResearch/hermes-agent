@@ -14,8 +14,10 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -192,6 +194,78 @@ class TestAdapterPluginWiring:
         with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
             adapter._wire_plugin_handlers(None)
         assert seen == [None]
+
+
+def _async_value(value):
+    async def _inner():
+        return value
+    return _inner()
+
+
+class TestTransientInitRebuildRestoresPluginHandlers:
+    def test_rebuilt_app_receives_the_factory_before_core_registration(self, monkeypatch):
+        """A transient initialize failure discards the Application. The retry
+        must run the plugin factory on the replacement, and must do that
+        before core handlers, or PTB's first-match dispatch shadows them.
+        """
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+        first_app = MagicMock()
+        first_app.bot = MagicMock()
+        first_app.initialize = MagicMock(side_effect=OSError("transient"))
+        rebuilt_app = MagicMock()
+        rebuilt_app.bot = MagicMock()
+        rebuilt_app.initialize = MagicMock(side_effect=RuntimeError("stop after rebuild"))
+
+        builder = MagicMock()
+        builder.token.return_value = builder
+        builder.request.return_value = builder
+        builder.get_updates_request.return_value = builder
+        builder.concurrent_updates.return_value = builder
+        builder.build.side_effect = [first_app, rebuilt_app]
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.Application",
+            SimpleNamespace(builder=MagicMock(return_value=builder)),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.HTTPXRequest",
+            lambda **kwargs: MagicMock(),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.discover_fallback_ips",
+            lambda: _async_value([]),
+        )
+        monkeypatch.setattr("asyncio.sleep", MagicMock(return_value=_async_value(None)))
+        monkeypatch.setattr(
+            "gateway.status.acquire_scoped_lock",
+            lambda scope, identity, metadata=None: (True, None),
+        )
+
+        seen = []
+
+        def factory(native, _adapter):
+            seen.append(native)
+
+        mgr = MagicMock()
+        mgr.get_platform_handler_factories.return_value = [(factory, "p")]
+        order = []
+        real_wire = adapter._wire_plugin_handlers
+
+        def spy_wire(native=None):
+            order.append(("wire", native))
+            return real_wire(native)
+
+        def spy_register(app):
+            order.append(("register", app))
+
+        adapter._wire_plugin_handlers = spy_wire
+        adapter._register_handlers = spy_register
+
+        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
+            assert asyncio.run(adapter.connect()) is False
+
+        assert rebuilt_app in seen
+        assert order.index(("wire", rebuilt_app)) < order.index(("register", rebuilt_app))
+
 
 # ===========================================================================
 # Every adapter calls _wire_plugin_handlers in connect() — source invariant

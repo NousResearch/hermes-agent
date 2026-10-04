@@ -1322,6 +1322,15 @@ class GatewayAdapterLifecycleMixin:
             # Restore persisted /voice state for this bot (primary startup and reconnects do too).
             # See #84872.
             self._sync_voice_mode_state_to_adapter(adapter)
+            # Primary startup stamps "connected" per platform; without the same write under the
+            # <profile>:<platform> key, a runner-published adapter (email never calls _mark_connected)
+            # can only ever show a failure state — the fatal/retrying paths do write that key (#132953).
+            _degraded = getattr(adapter, "send_path_degraded", False)
+            self._update_platform_runtime_status(
+                f"{profile_name}:{platform.value}",
+                platform_state="retrying" if _degraded else "connected", error_code=None,
+                error_message=adapter.DEGRADED_STATUS_MESSAGE if _degraded else None,
+            )
             for claim in (credential_claim, listener_claim):
                 if claim is not None:
                     claimed[claim] = profile_name
@@ -1463,6 +1472,16 @@ class GatewayAdapterLifecycleMixin:
                         if platform not in profile_map:
                             profile_map[platform] = adapter
                             self._sync_voice_mode_state_to_adapter(adapter)
+                            # Mirror _install_reconnected_adapter for the primary queue: clear any
+                            # needs_attention the failed attempts flagged on <profile>:<platform>,
+                            # or that key can only ever move away from "connected" (#132953).
+                            _degraded = getattr(adapter, "send_path_degraded", False)
+                            self._update_platform_runtime_status(
+                                f"{profile_name}:{platform.value}",
+                                platform_state="retrying" if _degraded else "connected", error_code=None,
+                                error_message=adapter.DEGRADED_STATUS_MESSAGE if _degraded else None,
+                                needs_attention=False, retrying_since=None,
+                            )
                             logger.info("✓ %s reconnected (profile: %s)", platform.value, profile_name)
                             await self._redeliver_failed_obligations_for_platform(
                                 platform, profile=profile_name

@@ -601,19 +601,25 @@ def test_load_pool_serves_healthy_rows_beside_non_object_rows(tmp_path, monkeypa
                         "source": "manual",
                         "access_token": "sk-or-healthy",
                     },
-                ]
+                ],
+                # Plugin readers of the same namespace hold the same contract.
+                "photon": [pasted, {"access_token": "photon-healthy"}],
             },
         },
     )
 
-    from agent.credential_pool import load_pool
+    import agent.credential_pool as credential_pool
+    from plugins.platforms.photon import auth as photon_auth
 
+    monkeypatch.setattr(credential_pool, "_WARNED_NON_OBJECT_ROWS", set())
     with caplog.at_level("DEBUG"):
-        entry = load_pool("openrouter").select()
+        entry = credential_pool.load_pool("openrouter").select()
 
     assert entry is not None and entry.id == "healthy"
     assert entry.runtime_api_key == "sk-or-healthy"
+    assert "non-object row(s) of type NoneType, int, str" in caplog.text
     assert pasted not in caplog.text
+    assert photon_auth.load_photon_token() == "photon-healthy"
 
 
 def test_load_pool_does_not_persist_env_seeded_secret_value(tmp_path, monkeypatch):

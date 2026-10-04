@@ -873,7 +873,7 @@ def _update_root_pool_rows(
     """UPDATE-ONLY merge of *payloads* into the root store's rows for *provider*.
 
     A borrower may refresh the root's rows (rotation, cooldown state) but
-    never add or delete them — the root owns their lifecycle. In particular a
+    never add or delete credential rows — the root owns their lifecycle. In particular a
     profile's singleton-prune (it has no ``.anthropic_oauth.json`` of its own)
     must not delete the root grant, so ``removed_ids`` is ignored by callers.
     """
@@ -891,7 +891,11 @@ def _update_root_pool_rows(
         merged: List[Dict[str, Any]] = []
         changed = False
         for disk_entry in existing_list:
-            did = disk_entry.get("id") if isinstance(disk_entry, dict) else None
+            if not isinstance(disk_entry, dict):
+                # Not a credential (load_pool ignores it); the owner's save drops it the same way.
+                changed = True
+                continue
+            did = disk_entry.get("id")
             incoming = incoming_by_id.get(did) if did else None
             if incoming is None:
                 merged.append(disk_entry)

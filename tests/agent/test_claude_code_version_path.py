@@ -42,9 +42,9 @@ def test_gui_launch_reports_installed_version_not_fallback(monkeypatch, tmp_path
     monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
     monkeypatch.setattr(adapter, "_CLAUDE_CODE_PREFIXES", (str(tmp_path / "prefix"),))
     installed = _install(tmp_path / "prefix", "claude")
-    _cli_versions(monkeypatch, {installed: "2.1.276"})
+    _cli_versions(monkeypatch, {installed: "2.1.290"})
 
-    assert _detect_claude_code_version() == "2.1.276" != _CLAUDE_CODE_VERSION_FALLBACK
+    assert _detect_claude_code_version() == "2.1.290" != _CLAUDE_CODE_VERSION_FALLBACK
 
 
 @pytest.mark.platforms("posix")  # PATH lookup of an extensionless shim is POSIX-only

@@ -225,9 +225,16 @@ _FAST_MODE_BETA = "fast-mode-2026-02-01"
 _OAUTH_ONLY_BETAS = ["claude-code-20250219", "oauth-2025-04-20"]
 
 # Claude Code identity — OAuth requests without it intermittently 500. Anthropic rejects OAuth
-# requests whose user-agent version is too far behind the actual release, so the installed
-# version is detected and this fallback kept current.
-_CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
+# requests whose user-agent version is too far behind the actual release: each new model family
+# raises the minimum (Fable 5.x needed >= 2.1.251; Claude Opus 5.5 400s with
+# ``claude_code_version_too_old`` below 2.1.280), so the installed version is detected, clamped
+# to the floor below, and this fallback kept current with the npm ``@anthropic-ai/claude-code``
+# latest dist-tag.
+_CLAUDE_CODE_VERSION_FALLBACK = "2.1.280"
+# Oldest identity Anthropic accepts for the newest model families; a stale installed CLI would
+# otherwise undercut the fallback and re-break OAuth on exactly the machines that have Claude
+# Code installed.
+_CLAUDE_CODE_VERSION_FLOOR = (2, 1, 280)
 _claude_code_version_cache: Optional[str] = None
 
 # Install prefixes probed in addition to PATH. GUI launches (the Electron desktop app, macOS
@@ -265,8 +272,16 @@ def _claude_code_candidates() -> List[str]:
     return list(seen)
 
 
+def _version_tuple(version: str) -> Optional[tuple]:
+    """``"2.1.74"`` -> ``(2, 1, 74)``; None when any component is non-numeric."""
+    with suppress(ValueError):
+        return tuple(int(part) for part in version.split("."))
+    return None
+
+
 def _detect_claude_code_version() -> str:
-    """Installed Claude Code version (``claude --version``), else the static fallback."""
+    """Installed Claude Code version (``claude --version``), clamped to the identity floor,
+    else the static fallback."""
     for cmd in _claude_code_candidates():
         with suppress(Exception):
             result = subprocess.run(
@@ -276,6 +291,9 @@ def _detect_claude_code_version() -> str:
             if result.returncode == 0 and result.stdout.strip():
                 version = result.stdout.strip().split()[0]  # "2.1.74 (Claude Code)" or "2.1.74"
                 if version and version[0].isdigit():
+                    parsed = _version_tuple(version)
+                    if parsed is not None and parsed < _CLAUDE_CODE_VERSION_FLOOR:
+                        return _CLAUDE_CODE_VERSION_FALLBACK
                     return version
     return _CLAUDE_CODE_VERSION_FALLBACK
 

@@ -137,6 +137,7 @@ class TestStaleBridgeHandshake:
                 "status": "connected",
                 "scriptHash": disk_hash,
                 "sendReadReceipts": False,
+                "session": str(tmp_path / "session"),
             }
         )
         mock_proc = MagicMock()
@@ -155,7 +156,14 @@ class TestStaleBridgeHandshake:
         mock_popen.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_adopts_bridge_serving_same_session(self, tmp_path):
+    @pytest.mark.parametrize("session,status,adopted", [
+        ("own", "connected", True),
+        ("other", "connected", False),
+        ("other", "disconnected", False),
+    ], ids=["own-session-adopted", "other-session-connected", "other-session-starting"])
+    async def test_bridge_is_adopted_or_left_running_by_its_session(self, tmp_path, session, status, adopted):
+        """Two profiles default to one bridge_port; only this profile's own session may be adopted, and another
+        profile's bridge is never killed, even while it reports ``disconnected`` (startup, reconnect, QR wait)."""
         from plugins.platforms.whatsapp.adapter import _file_content_hash
 
         bridge_dir = _setup_bridge_dir(tmp_path)
@@ -164,149 +172,33 @@ class TestStaleBridgeHandshake:
             bridge_script=str(bridge_dir / "bridge.js"),
             session_path=tmp_path / "session",
         )
-        disk_hash = _file_content_hash(bridge_dir / "bridge.js")
+        reported = tmp_path / ("session" if session == "own" else "other-profile-session")
         mock_client = _mock_health(
             {
-                "status": "connected",
-                "scriptHash": disk_hash,
+                "status": status,
+                "scriptHash": _file_content_hash(bridge_dir / "bridge.js"),
                 "sendReadReceipts": False,
-                "session": str(tmp_path / "session"),
+                "session": str(reported),
             }
         )
-        mock_proc = MagicMock()
 
         with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
              patch("aiohttp.ClientSession", mock_client), \
              patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
              patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile") as mock_kill_pidfile, \
              patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port, \
-             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch("subprocess.Popen", return_value=MagicMock()) as mock_popen, \
              patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
-            assert await adapter.connect() is True
+            assert await adapter.connect() is adopted
 
         mock_popen.assert_not_called()
         mock_kill_pidfile.assert_not_called()
         mock_kill_port.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_foreign_session_bridge_is_fatal_and_not_killed(self, tmp_path):
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
-
-        bridge_dir = _setup_bridge_dir(tmp_path)
-        _fresh_node_modules(bridge_dir)
-        adapter = _make_adapter(
-            bridge_script=str(bridge_dir / "bridge.js"),
-            session_path=tmp_path / "session",
-        )
-        foreign_session = tmp_path / "other-profile-session"
-        disk_hash = _file_content_hash(bridge_dir / "bridge.js")
-        mock_client = _mock_health(
-            {
-                "status": "connected",
-                "scriptHash": disk_hash,
-                "sendReadReceipts": False,
-                "session": str(foreign_session),
-            }
-        )
-        mock_proc = MagicMock()
-
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
-             patch("aiohttp.ClientSession", mock_client), \
-             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
-             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile") as mock_kill_pidfile, \
-             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port, \
-             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
-             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
-            assert await adapter.connect() is False
-
-        mock_popen.assert_not_called()
-        mock_kill_pidfile.assert_not_called()
-        mock_kill_port.assert_not_called()
-        message = adapter._fatal_error_message or ""
-        assert str(adapter._bridge_port) in message
-        assert str(foreign_session) in message
-        assert "bridge_port" in message
-
-    @pytest.mark.asyncio
-    async def test_foreign_session_checked_before_connected_status(self, tmp_path):
-        """Cell (d), F1: the session check must precede the status check.
-
-        bridge.js reports only 'connected' or 'disconnected', so a FOREIGN
-        bridge sitting in startup/reconnect reports ``status: disconnected``
-        first. If the status check ran first, ``_reuse_running_bridge`` would
-        return False without marking the session foreign and ``connect()``
-        would kill the other profile's bridge.
-        """
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
-
-        bridge_dir = _setup_bridge_dir(tmp_path)
-        _fresh_node_modules(bridge_dir)
-        adapter = _make_adapter(
-            bridge_script=str(bridge_dir / "bridge.js"),
-            session_path=tmp_path / "session",
-        )
-        foreign_session = tmp_path / "other-profile-session"
-        disk_hash = _file_content_hash(bridge_dir / "bridge.js")
-        mock_client = _mock_health(
-            {
-                "status": "disconnected",
-                "scriptHash": disk_hash,
-                "sendReadReceipts": False,
-                "session": str(foreign_session),
-            }
-        )
-        mock_proc = MagicMock()
-
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
-             patch("aiohttp.ClientSession", mock_client), \
-             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
-             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile") as mock_kill_pidfile, \
-             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port, \
-             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
-             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
-            assert await adapter.connect() is False
-
-        mock_popen.assert_not_called()
-        mock_kill_pidfile.assert_not_called()
-        mock_kill_port.assert_not_called()
-        message = adapter._fatal_error_message or ""
-        assert str(adapter._bridge_port) in message
-        assert str(foreign_session) in message
-        assert "bridge_port" in message
-        # F2: the fatal error is stored on the adapter as non-retryable.
-        assert adapter._fatal_error_code == "whatsapp_bridge_foreign_session"
-        assert adapter._fatal_error_retryable is False
-
-    @pytest.mark.asyncio
-    async def test_restarts_when_bridge_reports_no_session(self, tmp_path):
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
-
-        bridge_dir = _setup_bridge_dir(tmp_path)
-        _fresh_node_modules(bridge_dir)
-        adapter = _make_adapter(
-            bridge_script=str(bridge_dir / "bridge.js"),
-            session_path=tmp_path / "session",
-        )
-        disk_hash = _file_content_hash(bridge_dir / "bridge.js")
-        mock_client = _mock_health(
-            {
-                "status": "connected",
-                "scriptHash": disk_hash,
-                "sendReadReceipts": False,
-            }
-        )
-        mock_proc = MagicMock()
-
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
-             patch("aiohttp.ClientSession", mock_client), \
-             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
-             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
-             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
-             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
-             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
-            assert await adapter.connect() is False  # not adopted; restart begins
-
-        mock_popen.assert_called_once()
+        if not adopted:
+            assert adapter._fatal_error_code == "whatsapp_bridge_foreign_session"
+            assert adapter._fatal_error_retryable is False
+            assert str(reported) in adapter._fatal_error_message
+            assert "bridge_port" in adapter._fatal_error_message
 
 
 class TestDepRefreshStamp:

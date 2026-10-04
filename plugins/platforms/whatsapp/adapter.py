@@ -312,9 +312,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             logger.warning("[whatsapp] %s; using port 3000", exc)
             self._bridge_port = 3000
         self._bridge_script: str = extra.get("bridge_script", str(self._DEFAULT_BRIDGE_DIR / "bridge.js"))
-        # F4: normalized ONCE here — the --session argv, the pidfile check and
-        # the /health comparison all use one absolute string, so a gateway
-        # restarted from a different cwd does not see its own bridge as foreign.
+        # Absolute once: --session, bridge.pid and the /health ``session`` comparison share one string, or a
+        # gateway restarted from another cwd would see its own bridge as foreign.
         self._session_path = Path(os.path.abspath(os.path.expanduser(str(extra.get("session_path", get_hermes_dir("platforms/whatsapp/session", "whatsapp/session"))))))
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         self._dm_policy = str(_extra_or_secret(extra, "dm_policy", "WHATSAPP_DM_POLICY", "pairing")).strip().lower()
@@ -402,30 +401,18 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def _reuse_running_bridge(self, bridge_path: Path) -> bool:
         """Adopt a connected bridge serving the on-disk bridge.js + same read-receipt config; else say why it restarts."""
-        # F2: reset the sentinel FIRST, before the probe — a failed probe or an
-        # exception path must never leave a stale value from an earlier call.
         self._foreign_bridge_session = None
         try:
             ok, data = await self._probe_bridge_health()
             if not ok or data is None:
                 return False
-            # Session handshake: /health reports the bridge's own session dir.
-            # A bridge serving a DIFFERENT profile's session must be left
-            # alone entirely — adopting it would cross wire two profiles, and
-            # falling through to the kill path would kill the other profile's
-            # bridge. connect() turns this into a fatal error telling the user
-            # to give each profile its own bridge_port. A bridge that predates
-            # the handshake reports no session and is treated as stale.
-            # F1: this check runs BEFORE the connected-status check — bridge.js
-            # reports only 'connected' or 'disconnected', so a foreign bridge
-            # during startup/reconnect/QR-wait reports 'disconnected' and would
-            # otherwise fall through to the kill path unmarked.
+            # Another profile's bridge (same default port) is neither adopted, which would answer as that
+            # profile's phone, nor killed: connect() reports it. Checked before status because a bridge in
+            # startup, reconnect or QR wait reports "disconnected". A bridge without ``session`` predates the
+            # field, so its scriptHash no longer matches bridge.js and it restarts as stale below.
             reported_session = data.get("session")
             if reported_session and reported_session != str(self._session_path):
                 self._foreign_bridge_session = reported_session
-                return False
-            if not reported_session:
-                print(f"[{self.name}] Running bridge predates the session handshake, restarting")
                 return False
             bridge_status = data.get("status", "unknown")
             if bridge_status != "connected":

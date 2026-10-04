@@ -115,13 +115,17 @@ class MyBackendWebSearchProvider(WebSearchProvider):
 
 ```python
 # plugins/web/my-backend/__init__.py
-from plugins.web.my_backend.provider import MyBackendWebSearchProvider
+from .provider import MyBackendWebSearchProvider
 
 
 def register(ctx) -> None:
     """Plugin entry point — called once at load time."""
     ctx.register_web_search_provider(MyBackendWebSearchProvider())
 ```
+
+:::note
+Import relatively. A plugin in `~/.hermes/plugins/` is not part of the bundled `plugins` package, so `from plugins.web.my_backend...` fails to load and the provider is never registered.
+:::
 
 ## plugin.yaml
 

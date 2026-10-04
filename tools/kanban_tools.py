@@ -713,7 +713,8 @@ def _handle_complete(args: dict, **kw) -> str:
         try:
             ok = kb.complete_task(
                 conn, tid, result=result, summary=summary, metadata=metadata,
-                created_cards=created_cards, expected_run_id=_worker_run_id(tid))
+                created_cards=created_cards, expected_run_id=_worker_run_id(tid),
+                off_board=True if _parse_bool_arg(args, "off_board") else None)
         except kb.ArtifactPreservationError as artifact_err:
             # Structured rejection — surface the phantom ids so the worker can retry with a corrected list
             # or drop the field. Audit event already landed in the DB. The task itself was NOT mutated (the

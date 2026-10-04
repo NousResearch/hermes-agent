@@ -303,6 +303,9 @@ _SPECS = [
         _arg("--force", action="store_true",
              help="Override the live-claim guard: complete a running, claimed task "
                   "even without owning its run (closes the worker's run)."),
+        _arg("--off-board", action="store_true", dest="off_board",
+             help="Declare this completion off-board (card NOT dispatched on-board): "
+                  "requires --metadata with a non-blank served_model."),
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,

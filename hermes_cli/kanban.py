@@ -920,7 +920,12 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             try:
                 done = kb.complete_task(conn, tid, result=args.result, summary=summary, metadata=metadata,
                                         expected_run_id=_worker_run_id_for(tid),
-                                        force=bool(getattr(args, "force", False)))
+                                        force=bool(getattr(args, "force", False)),
+                                        off_board=True if getattr(args, "off_board", False) else None)
+            except kb.OffBoardServedModelError as ob_err:
+                fail_msg[tid] = (f"cannot complete {tid}: {ob_err}. Re-run with "
+                                 f"--metadata '{{\"served_model\": \"<model>\"}}'.")
+                return False
             except kb.LiveClaimError:
                 fail_msg[tid] = (f"cannot complete {tid}: a live worker is running it. Wait for the "
                                  f"worker, `hermes kanban reclaim {tid}` to release it, or re-run with "

@@ -4559,7 +4559,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 continue
             if len(text) > _ACTIVE_TASK_MAX_CHARS:
                 # Past the cap, drop a gateway reply quote first so elision cannot keep the quote
-                # and cut the request; the split-turn gate measures the same authored text.
+                # and cut the request.
                 text = _redact_compaction_text(_authored_request_text(msg.get("content"))) or text
             text = re.sub(r"\s+", " ", text)
             # Elide AFTER repr: repr would escape the marker's "Hermes's" and hide a copy from the

@@ -9,8 +9,11 @@ real process tree that ``hermes.exe update`` (or the Desktop's hand-off script
 Each cell kills at one point of the update and then asserts what the user is owed:
 
 * the next ``hermes`` launch runs a turn (the install is runnable);
-* the checkout is at the commit before the update or at its target — never a third,
-  half-written state;
+* right after that launch the checkout IS the commit before the update or its target:
+  HEAD is one of them and every tracked byte agrees with it (``git status`` clean,
+  ``git diff --quiet HEAD``) — never a third, half-written tree. Each target edits
+  modules every launch imports (``RUNTIME_FILES``), so a torn tree differs in code
+  that runs, not only in a marker file;
 * nothing the dead update left blocks the next one: a plain ``hermes update`` then
   completes to the target and no ``.hermes-update-in-progress`` marker survives it
   (a marker naming a dead process that refuses every later update is the permanent
@@ -48,7 +51,9 @@ import pytest
 
 from tests.e2e.core._pending_fixes import known_failure
 
+from tests.e2e.core.windows._helpers import _decode
 from tests.e2e.core.windows_update._machine import (
+    REAL_GIT,
     REQUIRES_OPT_IN,
     UPDATE_TIMEOUT,
     Journey,
@@ -67,6 +72,8 @@ pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
 
 MARKER = ".hermes-update-in-progress"
 GIT_OPS = ("fetch", "merge", "reset", "checkout", "pull")
+# Imported by every `hermes` launch: each crash target appends one statement to both.
+RUNTIME_FILES = ("hermes_constants.py", "hermes_cli/main.py")
 
 
 def _git_child(proc, machine, target) -> str | None:
@@ -111,6 +118,32 @@ def _head_ref(machine) -> str:
     return ""
 
 
+def _tree(machine, label: str) -> dict:
+    """The checkout against its own commit: HEAD, tracked files that differ from it, and
+    whether the cell's target-only file is on disk. Read with the harness's git (never the
+    product's) without taking the index lock."""
+    def git(*args: str) -> tuple[int, str]:
+        res = subprocess.run([REAL_GIT, "--no-optional-locks", "-c", "safe.directory=*",
+                              "-C", str(machine.install_dir), *args],
+                             env=machine.env(), capture_output=True, timeout=300)
+        return res.returncode, (_decode(res.stdout) + _decode(res.stderr)).strip()
+
+    rc_head, head = git("rev-parse", "HEAD")
+    rc_status, status = git("status", "--porcelain=v1", "--untracked-files=no")
+    rc_diff, diff = git("diff", "--quiet", "HEAD", "--")
+    return {"head": head if rc_head == 0 else f"<rev-parse rc={rc_head}: {head[:200]}>",
+            "dirty": status.splitlines()[:20] if rc_status == 0 else [f"<status rc={rc_status}: {status[:300]}>"],
+            "diff_rc": rc_diff, "diff_err": diff[:300] if rc_diff not in (0, 1) else "",
+            "target_file": (machine.install_dir / f".hermes-e2e-{label}").exists()}
+
+
+def _tree_matches(tree: dict, commit: str, target: str) -> bool:
+    """``tree`` is exactly ``commit``: HEAD, index and every tracked byte agree, and the
+    target-only file exists iff ``commit`` is the target."""
+    return (tree["head"] == commit and not tree["dirty"] and tree["diff_rc"] == 0
+            and tree["target_file"] == (commit == target))
+
+
 def _kill_when(machine, proc, label: str, point, target: str) -> str:
     """Poll ``point(proc, machine, target)`` until it names the moment, then taskkill the whole tree.
 
@@ -144,19 +177,20 @@ def _crash(machine, srv, label: str, start, point) -> dict:
         leftover.unlink()
         machine.timings.append((f"(harness removed a prior cell's {leftover.name} before {label})", 0.0))
     pre = _head(machine)
-    target = machine.mint(pre, label)
+    target = machine.mint(pre, label, RUNTIME_FILES)
     machine.publish(target)
     with machine.gateway_phase():
         proc = start()
         seen = _kill_when(machine, proc, label, point, target)
-        after_kill = _head(machine)
+        tree_after_kill = _tree(machine, label)
         turn = one_shot_turn(machine, srv, f"{label}-next-launch")
-        after_launch = _head(machine)
+        tree_after_launch = _tree(machine, label)
         marker_after_launch = (machine.hermes_home / MARKER).is_file()
         follow_up = machine.hermes("update", "--yes", label=f"{label}-follow-up-update", timeout=UPDATE_TIMEOUT)
-    return {"pre": pre, "target": target, "seen": seen, "after_kill": after_kill,
-            "turn": turn, "after_launch": after_launch, "marker_after_launch": marker_after_launch,
-            "follow_up": follow_up, "final": _head(machine),
+    tree_final = _tree(machine, label)
+    return {"label": label, "pre": pre, "target": target, "seen": seen, "tree_after_kill": tree_after_kill,
+            "turn": turn, "tree_after_launch": tree_after_launch, "marker_after_launch": marker_after_launch,
+            "follow_up": follow_up, "tree_final": tree_final,
             "marker_final": (machine.hermes_home / MARKER).is_file()}
 
 
@@ -306,10 +340,13 @@ def _orphan(machine, srv, label: str) -> dict:
     """Start the hand-off script, kill ONLY its powershell once its ``hermes update``
     child runs under the claimed marker, and watch that orphaned update to its end."""
     pre = _head(machine)
-    target = machine.mint(pre, label)
+    target = machine.mint(pre, label, RUNTIME_FILES)
     machine.publish(target)
     with machine.gateway_phase():
+        # Both baselines BEFORE the script starts: a completion logged at any point after
+        # this (even while taskkill / wait below run) is this run's, never the baseline's.
         banners = _update_banners(machine)
+        done_before = _update_banners(machine, UPDATE_DONE)
         proc = _handoff(machine, f"{label}-script")()
         deadline = time.monotonic() + UPDATE_TIMEOUT
         child = None
@@ -334,7 +371,6 @@ def _orphan(machine, srv, label: str) -> dict:
         subprocess.run(["taskkill", "/PID", str(proc.pid), "/F"], capture_output=True, timeout=60)
         proc.wait(timeout=60)
         killed_at = time.monotonic()
-        done_before = _update_banners(machine, UPDATE_DONE)
         dead_while_running = None
         holders: set[str] = set()
         rc = None
@@ -365,20 +401,20 @@ def _orphan(machine, srv, label: str) -> dict:
         orphan_finished = not child.is_running()
         if not orphan_finished:
             machine.kill_owned()
-        after_orphan = _head(machine)
+        tree_after_orphan = _tree(machine, label)
         orphan_reported_done = _update_banners(machine, UPDATE_DONE) > done_before
         marker_after_orphan = _read_marker(machine)
         marker_after_orphan_text = _marker_text(machine)
         turn = one_shot_turn(machine, srv, f"{label}-next-launch")
         follow_up = machine.hermes("update", "--yes", label=f"{label}-follow-up-update", timeout=UPDATE_TIMEOUT)
-    return {"pre": pre, "target": target, "seen": f"update child {child.pid}",
+    return {"label": label, "pre": pre, "target": target, "seen": f"update child {child.pid}",
             "marker_at_kill": marker_at_kill, "orphan_finished": orphan_finished, "orphan_rc": rc,
             "orphan_reported_done": orphan_reported_done,
             "dead_while_running": dead_while_running, "holders": sorted(holders),
-            "after_orphan": after_orphan, "marker_after_orphan": marker_after_orphan,
+            "tree_after_orphan": tree_after_orphan, "marker_after_orphan": marker_after_orphan,
             "marker_after_orphan_text": marker_after_orphan_text,
-            "turn": turn, "after_launch": _head(machine), "follow_up": follow_up,
-            "final": _head(machine), "marker_final": (machine.hermes_home / MARKER).is_file()}
+            "turn": turn, "follow_up": follow_up,
+            "tree_final": _tree(machine, label), "marker_final": (machine.hermes_home / MARKER).is_file()}
 
 
 @pytest.fixture(scope="module")
@@ -403,20 +439,35 @@ def journey(tmp_path_factory):
             machine.teardown()
 
 
+def _tree_text(tree: dict) -> str:
+    return (f"HEAD {tree['head']}, dirty tracked {tree['dirty'] or 'none'}, diff HEAD rc={tree['diff_rc']}"
+            f"{' ' + tree['diff_err'] if tree['diff_err'] else ''}, target file present={tree['target_file']}")
+
+
+def _assert_tree_is(m, cell: str, when: str, tree: dict, allowed: dict[str, str], target: str, run=None) -> None:
+    """``tree`` is exactly one of ``allowed`` (name -> commit), byte for byte."""
+    assert any(_tree_matches(tree, sha, target) for sha in allowed.values()), fail_with(
+        m, f"{cell}: {when} the checkout is not the tree of "
+           f"{' or '.join(f'the {name} {sha}' for name, sha in allowed.items())}: {_tree_text(tree)}", run)
+
+
 def _assert_recovered(journey: Journey, cell: str) -> None:
     m, r = journey.machine, journey[cell]
     turn = r["turn"]
     assert turn.ok, fail_with(
         m, f"{cell}: the first launch after the killed update ran no turn "
            f"(killed at {r['seen']}; reply printed={turn.reply_id in turn.run.stdout}, "
-           f"prompt reached provider={turn.reached_wire})", turn.run)
-    assert r["after_launch"] in (r["pre"], r["target"]), fail_with(
-        m, f"{cell}: after the killed update and the next launch the checkout is at {r['after_launch']}, "
-           f"neither the pre-update {r['pre']} nor the target {r['target']}", turn.run)
+           f"prompt reached provider={turn.reached_wire}; tree after the kill: {_tree_text(r['tree_after_kill'])})",
+        turn.run)
+    _assert_tree_is(m, cell, "after the killed update and the next launch",
+                    r["tree_after_launch"], {"pre-update commit": r["pre"], "target": r["target"]},
+                    r["target"], turn.run)
     follow = r["follow_up"]
-    assert follow.returncode == 0 and r["final"] == r["target"], fail_with(
-        m, f"{cell}: the update after the killed one did not complete (rc={follow.returncode}, "
-           f"checkout {r['final']}, target {r['target']}): {failure_line(follow)}", follow)
+    assert follow.returncode == 0, fail_with(
+        m, f"{cell}: the update after the killed one did not complete (rc={follow.returncode}): "
+           f"{failure_line(follow)}", follow)
+    _assert_tree_is(m, cell, "after the follow-up update", r["tree_final"], {"target": r["target"]},
+                    r["target"], follow)
     assert not r["marker_final"], fail_with(
         m, f"{cell}: {MARKER} survived a completed follow-up update: "
            f"{_marker_text(m)}", follow)
@@ -443,7 +494,9 @@ def test_desktop_handoff_killed_mid_run_leaves_a_runnable_install(journey: Journ
 # under that claim without naming itself, so the marker reads DEAD the moment the
 # script dies while the update still runs (a second update is admitted), and nothing
 # removes it afterwards. The line-4 delegate (#132354 script side, #132365 Python side)
-# keeps it LIVE. Merge-order safe: XFAILs only on exactly this gap.
+# keeps it LIVE. Merge-order safe: XFAILs only on exactly this gap, and only after every
+# other assertion of the cell passed; an acceptance run of the integrated batch
+# (HERMES_E2E_STRICT_ACCEPTANCE=upd-txn) fails on it instead.
 ORPHAN_MARKER_GAP = (r"orphaned_update: \.hermes-update-in-progress (read DEAD|survived)",
                      "upd-txn: the line-4 delegate lands in #132354 + #132365")
 
@@ -454,24 +507,27 @@ def test_desktop_handoff_script_killed_alone_keeps_the_marker_live_until_its_upd
     assert r["orphan_finished"], fail_with(
         m, f"orphaned_update: the orphaned hermes update was still running {UPDATE_TIMEOUT:.0f}s after "
            f"the script died")
-    with known_failure(*ORPHAN_MARKER_GAP):
-        assert r["dead_while_running"] is None, fail_with(
-            m, f"orphaned_update: {MARKER} read DEAD {r['dead_while_running'][0]}s after the script died "
-               f"while its hermes update still ran: {r['dead_while_running'][1]} "
-               f"(at kill: {r['marker_at_kill']!r})")
-    finished = r["after_orphan"] == r["target"] and r["orphan_reported_done"] and (
-        r["orphan_rc"] in (0, PY_FINAL_FLUSH_FAILED))
+    finished = r["orphan_reported_done"] and r["orphan_rc"] in (0, PY_FINAL_FLUSH_FAILED)
     assert finished, fail_with(
         m, f"orphaned_update: the hermes update orphaned by the dead script did not finish the update "
            f"(rc={r['orphan_rc']}, '{UPDATE_DONE}' logged={r['orphan_reported_done']}, "
-           f"checkout {r['after_orphan']}, target {r['target']}; marker holders seen: {r['holders']})")
-    with known_failure(*ORPHAN_MARKER_GAP):
-        assert r["marker_after_orphan"] is None, fail_with(
-            m, f"orphaned_update: {MARKER} survived the orphaned update's exit: "
-               f"{r['marker_after_orphan_text']}")
+           f"tree {_tree_text(r['tree_after_orphan'])}, target {r['target']}; marker holders seen: {r['holders']})")
+    _assert_tree_is(m, "orphaned_update", "after the orphaned update finished", r["tree_after_orphan"],
+                    {"target": r["target"]}, r["target"])
     turn = r["turn"]
     assert turn.ok, fail_with(m, "orphaned_update: the launch after the orphaned update ran no turn", turn.run)
     follow = r["follow_up"]
-    assert follow.returncode == 0 and r["final"] == r["target"] and not r["marker_final"], fail_with(
+    assert follow.returncode == 0 and not r["marker_final"], fail_with(
         m, f"orphaned_update: the next update did not complete cleanly (rc={follow.returncode}, "
-           f"checkout {r['final']}, marker left={r['marker_final']}): {failure_line(follow)}", follow)
+           f"marker left={r['marker_final']}): {failure_line(follow)}", follow)
+    _assert_tree_is(m, "orphaned_update", "after the next update", r["tree_final"],
+                    {"target": r["target"]}, r["target"], follow)
+    # The marker contract last: the batch-owned gap, so its xfail can hide nothing above.
+    gaps = []
+    if r["dead_while_running"] is not None:
+        gaps.append(f"{MARKER} read DEAD {r['dead_while_running'][0]}s after the script died while its "
+                    f"hermes update still ran: {r['dead_while_running'][1]} (at kill: {r['marker_at_kill']!r})")
+    if r["marker_after_orphan"] is not None:
+        gaps.append(f"{MARKER} survived the orphaned update's exit: {r['marker_after_orphan_text']}")
+    with known_failure(*ORPHAN_MARKER_GAP):
+        assert not gaps, fail_with(m, "orphaned_update: " + "; ".join(gaps))

@@ -262,8 +262,12 @@ class Machine:
         """Publish NEXT on main: an update becomes available the way it does for a user."""
         harness_git("-C", str(self.serve), "update-ref", "refs/heads/main", self.next)
 
-    def mint(self, parent: str, tag: str) -> str:
-        """A child of ``parent`` in serve.git adding ``.hermes-e2e-<tag>`` (unpublished)."""
+    def mint(self, parent: str, tag: str, runtime_files: tuple[str, ...] = ()) -> str:
+        """A child of ``parent`` in serve.git adding ``.hermes-e2e-<tag>`` (unpublished).
+
+        ``runtime_files`` (repo paths of modules every launch imports) each gain one harmless
+        statement naming ``tag``, so a checkout torn between ``parent`` and the child differs
+        from both commits in bytes the next launch actually runs, not only in a marker file."""
         blob_src = self.root / f"{tag}-marker.txt"
         blob_src.write_text(f"synthetic {tag} commit for the Windows update E2E\n", encoding="utf-8")
         blob = harness_git("-C", str(self.serve), "hash-object", "-w", "--no-filters", str(blob_src))
@@ -274,6 +278,15 @@ class Machine:
         harness_git("-C", str(self.serve), "read-tree", parent, env=env)
         harness_git("-C", str(self.serve), "update-index", "--add", "--cacheinfo",
                     f"100644,{blob},.hermes-e2e-{tag}", env=env)
+        for n, rel in enumerate(runtime_files):
+            mode = harness_git("-C", str(self.serve), "ls-tree", parent, "--", rel).split(" ", 1)[0]
+            old = subprocess.run([REAL_GIT, "-C", str(self.serve), "cat-file", "blob", f"{parent}:{rel}"],
+                                 env={k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+                                 capture_output=True, timeout=120, check=True).stdout
+            edited = self.root / f"{tag}-runtime-{n}"
+            edited.write_bytes(old.rstrip(b"\n") + f'\n_E2E_UPDATE_TARGET = "{tag}"\n'.encode())
+            sha = harness_git("-C", str(self.serve), "hash-object", "-w", "--no-filters", str(edited))
+            harness_git("-C", str(self.serve), "update-index", "--cacheinfo", f"{mode},{sha},{rel}", env=env)
         tree = harness_git("-C", str(self.serve), "write-tree", env=env)
         index.unlink(missing_ok=True)
         return harness_git("-C", str(self.serve), "commit-tree", tree, "-p", parent,

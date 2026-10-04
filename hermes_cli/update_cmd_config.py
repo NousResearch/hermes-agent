@@ -205,6 +205,10 @@ def _check_and_apply_config_migration(
         except Exception as _mig_err:
             print(f"  ⚠️  Config format update failed: {_mig_err}")
             print("     Run 'hermes config migrate' to retry.")
+            # Not a silent success: the caller's owed-step guard records ``config_migration`` as
+            # a receipt follow-up and keeps the source-update tail pending, so it is retried.
+            raise RuntimeError(
+                f"config format v{current_ver} → v{latest_ver} was not written: {_mig_err}") from _mig_err
     elif needs_migration:
         print()
         # Show WHAT changed, not just a count, for an informed yes/no.

@@ -276,8 +276,13 @@ def _complete_selected(request: dict) -> bool:
     # Launchers, products and post-build maintenance live in one place so an
     # install and an update cannot end in different states.
     followups: list[tuple[str, str]] = []
+    # Exit status and runtime safety are separate facts (R8): an unsafe SQLite runtime keeps the
+    # committed update at exit 0 (reported as the ``sqlite_runtime`` follow-up), but fleet
+    # verification still needs the real verdict so it never auto-migrates the gateway topology
+    # on a runtime that can corrupt sessions. Unknown (the tail raised) is not proven safe.
+    runtime_safe = False
     try:
-        complete_source_checkout(
+        runtime_safe = complete_source_checkout(
             root, desktop=request["desktop"], assume_yes=request["assume_yes"],
             gateway_mode=request["gateway_mode"], pre_update_snapshot_id=request["snapshot_id"],
             pre_update_version=request["pre_update_version"],
@@ -318,7 +323,8 @@ def _complete_selected(request: dict) -> bool:
     record_stage("restart", "failed" if getattr(restart, "incomplete", False) else "success")
     update_cmd._resume_windows_gateways_and_merge_outcome(restart, request["windows_resume"], request["gateway_mode"])
     update_cmd._verify_fleet_after_update(
-        restart, _pre_update_plan=plan, _windows_gateway_resume=request["windows_resume"], update_complete=True)
+        restart, _pre_update_plan=plan, _windows_gateway_resume=request["windows_resume"],
+        update_complete=bool(runtime_safe) and complete)
     return complete
 
 

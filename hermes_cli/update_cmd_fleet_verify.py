@@ -327,8 +327,8 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             _record_owed_gateway_inventory(_pre_update_plan)
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt
-        # ``update_complete`` is kept for the historical takeover caller; a False verdict (the
-        # SQLite runtime) is reported as a follow-up by the maintenance step, not a failed run.
+        # A False ``update_complete`` (unsafe SQLite runtime, owed tail work) never fails the
+        # run: maintenance already reported it as a follow-up. It only vetoes migration below.
         _receipt_path = finalize_update_receipt("success", fleet=_fleet_snapshot)
         if _receipt_path is not None:
             logger.info("Update receipt written: %s", _receipt_path)
@@ -337,8 +337,8 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         return
     fleet._clear_fleet_restart_pending_marker()
     if not update_complete:
-        # Fleet caught up, but the selected runtime's SQLite is unsafe (reported by maintenance):
-        # leave the topology alone until the runtime is repaired.
+        # Fleet caught up, but the selected runtime's SQLite is unsafe or the tail is still owed
+        # (both reported by the completion): leave the topology alone until they are repaired.
         return
     # Fleet is healthy on the new code: fold per-profile gateways into one multiplexer when nothing
     # blocks it (deterministic; never prompts), else print the blockers and the one-liner to run later.

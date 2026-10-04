@@ -289,8 +289,10 @@ def begin_update_receipt(*, previous: dict | None = None, correlation_id: str | 
             receipt.data.setdefault("pid_create_time", _process_create_time(receipt.data["pid"]))
         if not previous:
             reconcile_interrupted_runs()
-            # The running record is about to replace latest.json: snapshot the previous record's
-            # manual serve rows (raw, no side effects) for finalize's carry-forward.
+        # The running record is about to replace latest.json: snapshot the previous record's
+        # manual serve rows (raw, no side effects) for finalize's carry-forward. A handed-off
+        # receipt from an older interpreter predates the field, so it needs the same snapshot.
+        if not previous or "carried_manual_serves" not in previous:
             with suppress(Exception):
                 prior = read_latest_receipt() or {}
                 rows = list((prior.get("plan") or {}).get("runtimes") or [])

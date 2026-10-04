@@ -23,6 +23,7 @@ from gateway.platforms._shared import (
     get_scoped_secret as _get_wsecret
 )
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
+from gateway.platforms.helpers import parse_chat_id_set
 
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,20 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         """``extra.free_response_chats`` (blank = unset) else the scoped env CSV."""
         return self._coerce_allow_list(
             _extra_or_wsecret(self.config.extra, "free_response_chats", "WHATSAPP_FREE_RESPONSE_CHATS"))
+
+    def _whatsapp_native_mention_only_chats(self) -> set[str]:
+        """Return group chat IDs where ONLY a native @mention counts.
+
+        In these groups ``mention_patterns`` wake words do NOT satisfy
+        mention gating — the bot is addressed exclusively via a real
+        WhatsApp @mention (mentionedIds) or a reply to the bot. Mirrors
+        Slack's ``native_mention_only_channels``. Empty set means wake
+        words count everywhere.
+        """
+        raw = self.config.extra.get("native_mention_only_chats")
+        if raw is None:
+            raw = _get_wsecret("WHATSAPP_NATIVE_MENTION_ONLY_CHATS", default="")
+        return parse_chat_id_set(raw)
 
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
@@ -261,7 +276,9 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
             str(data.get("body") or "").strip().startswith("/")
             or self._message_is_reply_to_bot(data)
             or self._message_mentions_bot(data)
-            or self._message_matches_mention_patterns(data)
+            # Wake words do not count in native-mention-only chats.
+            or (chat_id not in self._whatsapp_native_mention_only_chats()
+                and self._message_matches_mention_patterns(data))
         )
 
     # ------------------------------------------------------------------ formatting

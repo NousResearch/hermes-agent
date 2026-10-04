@@ -2456,7 +2456,10 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     setup.max_iterations = _resolve_turn_limit(_mt)
     _cron_cfg = _cfg.get("cron") if isinstance(_cfg, dict) else {}
     _global_max_tokens = _cron_cfg.get("max_tokens_default") if isinstance(_cron_cfg, dict) else None
-    setup.max_tokens = job.get("max_tokens", _global_max_tokens)
+    # Clearing a stored pin writes null; that must resume config inheritance.
+    setup.max_tokens = job.get("max_tokens")
+    if setup.max_tokens is None:
+        setup.max_tokens = _global_max_tokens
 
     # Runtime backstop (CWE-200/522): fail closed BEFORE resolution on a provider/base_url pair
     # that would ship a stored credential off-host; hand-written jobs bypass create-time checks.
@@ -2494,9 +2497,10 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
 def _resolve_cron_max_tokens(requested: Any, *, provider: str, model: str) -> int | None:
     """Resolve the cron cap against the selected provider route default only."""
     from providers import get_provider_profile
+    from cron.jobs import _normalize_max_tokens
 
     try:
-        requested = int(requested) if requested is not None else None
+        requested = _normalize_max_tokens(requested)
     except (TypeError, ValueError):
         requested = None
     profile = get_provider_profile(provider)

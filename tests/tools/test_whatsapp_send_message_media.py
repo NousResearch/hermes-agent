@@ -66,9 +66,10 @@ def _resp(status, json_data=None, text_data=None):
     return r
 
 
-def _session_with(responses):
-    """Build a mocked aiohttp.ClientSession that returns *responses* in order
-    and records every GET/POST (url, json_payload)."""
+def _session_with(responses, health=None):
+    """Build a mocked aiohttp.ClientSession: GET /health answers *health* (default an
+    empty 200), POSTs return *responses* in order; every GET/POST is recorded as
+    (url, json_payload)."""
     calls = []
     idx = [0]
 
@@ -81,9 +82,16 @@ def _session_with(responses):
         ctx.__aexit__ = AsyncMock(return_value=False)
         return ctx
 
+    def _get(url, **kwargs):
+        calls.append((url, kwargs.get("json")))
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=health or _resp(200))
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
     session = MagicMock()
     session.post = MagicMock(side_effect=_post)
-    session.get = MagicMock(side_effect=_post)
+    session.get = MagicMock(side_effect=_get)
     session_ctx = MagicMock()
     session_ctx.__aenter__ = AsyncMock(return_value=session)
     session_ctx.__aexit__ = AsyncMock(return_value=False)
@@ -124,13 +132,14 @@ def test_text_plus_mixed_media_routes_native_types():
                 )
             )
         assert res["success"] is True
-        # text first, then three media uploads in order
-        assert calls[0][0].endswith("/send")
-        assert calls[0][1]["message"] == "hello"
+        # health check, text first, then three media uploads in order
+        assert calls[0][0].endswith("/health")
+        assert calls[1][0].endswith("/send")
+        assert calls[1][1]["message"] == "hello"
         media_types = [c[1]["mediaType"] for c in calls if c[0].endswith("/send-media")]
         assert media_types == ["image", "video", "audio"]
         # chat id normalized to a WhatsApp JID
-        assert "@" in calls[0][1]["chatId"]
+        assert "@" in calls[1][1]["chatId"]
     finally:
         for p in (img, vid, voice):
             os.unlink(p)
@@ -154,9 +163,8 @@ def test_missing_captioned_file_falls_back_to_text():
     assert "error" in res
     assert "not found" in res["error"]
     # ...but the caption text was delivered on its own first.
-    assert len(calls) == 1
-    assert calls[0][0].endswith("/send")
-    assert calls[0][1]["message"] == "floor plan"
+    assert [url for url, _ in calls] == ["http://localhost:3000/health", "http://localhost:3000/send"]
+    assert calls[1][1]["message"] == "floor plan"
 
 
 def test_standalone_send_uses_persisted_secondary_bridge_port(tmp_path, monkeypatch):
@@ -170,7 +178,7 @@ def test_standalone_send_uses_persisted_secondary_bridge_port(tmp_path, monkeypa
     with patch("aiohttp.ClientSession", return_value=session_ctx):
         result = asyncio.run(_standalone_send(SimpleNamespace(token="", extra={}), "12345", "hello"))
     assert result["success"] is True
-    assert calls[0][0] == "http://localhost:3042/send"
+    assert [url for url, _ in calls] == ["http://localhost:3042/health", "http://localhost:3042/send"]
 
 
 @pytest.mark.parametrize(
@@ -197,11 +205,10 @@ def test_secondary_standalone_sends_use_active_profile_port_for_text_media_and_m
         (secondary_home, extra, expected_port),
         (launch_home, {}, 3000),
     ):
-        session_ctx, calls = _session_with([
-            _resp(200, {"capabilities": {"outboundMentions": True}}),
-            _resp(200, {"messageId": "text"}),
-            _resp(200, {"messageId": "media"}),
-        ])
+        session_ctx, calls = _session_with(
+            [_resp(200, {"messageId": "text"}), _resp(200, {"messageId": "media"})],
+            health=_resp(200, {"capabilities": {"outboundMentions": True}}),
+        )
         override = set_hermes_home_override(home)
         try:
             with patch("aiohttp.ClientSession", return_value=session_ctx):
@@ -224,3 +231,28 @@ def test_secondary_standalone_sends_use_active_profile_port_for_text_media_and_m
         assert not record.exists()
     else:
         assert record.read_text(encoding="utf-8") == str(persisted_port)
+
+
+@pytest.mark.parametrize("reported", ["own", "other", None, "unhealthy"],
+                         ids=["own-session", "other-profile-session", "pre-session-bridge", "health-503"])
+def test_standalone_send_posts_only_through_this_profiles_bridge(tmp_path, reported):
+    """Profiles sharing a bridge_port must not send from each other's WhatsApp account, text or media."""
+    own = tmp_path / "b" / "session"
+    media = tmp_path / "image.png"
+    media.write_bytes(b"image")
+    sessions = {"own": own, "other": tmp_path / "a" / "session"}
+    health = _resp(503) if reported == "unhealthy" else _resp(200, {"session": str(sessions[reported])} if reported else {})
+    session_ctx, calls = _session_with(
+        [_resp(200, {"messageId": "text"}), _resp(200, {"messageId": "media"})], health=health)
+    with patch("aiohttp.ClientSession", return_value=session_ctx):
+        result = asyncio.run(_standalone_send(
+            SimpleNamespace(token="", extra={"bridge_port": 3000, "session_path": str(own)}), "12345", "hello",
+            media_files=[(str(media), False)],
+        ))
+    posted = [url for url, _ in calls if not url.endswith("/health")]
+    if reported in ("other", "unhealthy"):
+        assert "nothing was sent" in result["error"]
+        assert posted == []
+    else:
+        assert result.get("success") is True, result
+        assert posted == ["http://localhost:3000/send", "http://localhost:3000/send-media"]

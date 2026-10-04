@@ -4559,11 +4559,12 @@ Write only the summary body. Do not include any preamble or prefix."""
                 continue
             if len(text) > _ACTIVE_TASK_MAX_CHARS:
                 # Past the cap, drop a gateway reply quote first so elision cannot keep the quote
-                # and cut the request; the split-turn gate measures the same authored text.
+                # and cut the request.
                 text = _redact_compaction_text(_authored_request_text(msg.get("content"))) or text
             text = re.sub(r"\s+", " ", text)
             # Elide AFTER repr: repr would escape the marker's "Hermes's" and hide a copy from the
-            # guard. Authored text within the cap stays whole (the split-turn path relies on that).
+            # guard. Authored text within the cap stays whole; a longer request split out of an
+            # oversized turn is restated verbatim by _reappend_inflight_user_task, not by this snapshot.
             text = repr(text) if len(text) <= _ACTIVE_TASK_MAX_CHARS else elide(repr(text), _ACTIVE_TASK_MAX_CHARS)
             return (
                 f"User asked (deterministic, from compacted turns): {text}\n"
@@ -5227,9 +5228,8 @@ Write only the summary body. Do not include any preamble or prefix."""
             # A single oversized user message is indivisible and must stay verbatim in the tail; this
             # exception is only for aggregate turn growth after a normally sized opening request.
             and _estimate_msg_budget_tokens(messages[last_user_idx]) <= soft_ceiling
-            # Measure what the user wrote: a gateway reply pointer quotes another message and
-            # would otherwise disable the split for a short reply to a long answer.
-            and len(_authored_request_text(messages[last_user_idx].get("content"))) <= _ACTIVE_TASK_MAX_CHARS
+            # The token ceiling is the only size guard: the request is restated verbatim after the
+            # handoff, so a character cap only pinned long requests (e.g. /goal prompts) in place.
             # Only split when there is real turn body to summarize: if the oversized weight is the
             # active turn's own newest group, the pre-anchor cut retains it anyway, so taking the
             # active request out of the tail buys no reclaim and loses the #10896 anchor.

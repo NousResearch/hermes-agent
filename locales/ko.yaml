@@ -1448,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent를 종료하는 중"
     standalone_quit: "전송됨"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "한 번 승인"
     confirm_always_approve: "항상 승인"

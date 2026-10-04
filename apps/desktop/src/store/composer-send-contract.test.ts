@@ -1,7 +1,20 @@
-import { describe, expect, it } from 'vitest'
+/**
+ * The shared composer-send contract: the defaults, the window clamps, and the
+ * config round trip.
+ *
+ * It lives in the desktop workspace rather than beside the module, because
+ * `apps/shared` declares no test runner: no vitest dependency, no `test` script,
+ * and no vitest config in the repo collects `apps/shared/src/**`. A test kept
+ * next to the module there would never execute. Importing through
+ * `@hermes/shared` also proves the package surface exports what the app needs,
+ * which is what caught `resetClampWarnings` missing from the index.
+ */
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   activeSendGestures,
+  clampHoldMs,
+  clampIdleSendMs,
   composerConfigFromPrefs,
   composerPrefsFromConfig,
   DOUBLE_ENTER_DEFAULT_MS,
@@ -14,6 +27,7 @@ import {
   IDLE_SEND_MAX_MS,
   IDLE_SEND_MIN_MS,
   normalizeComposerSendPrefs,
+  resetClampWarnings,
   SEND_GRACE_DEFAULT_MS,
   SEND_GRACE_DEFAULT_REASONS,
   SEND_GRACE_MAX_MS,
@@ -21,18 +35,18 @@ import {
   TYPING_IDLE_DEFAULT_MS,
   TYPING_IDLE_MAX_MS,
   TYPING_IDLE_MIN_MS
-} from './composer-send'
+} from '@hermes/shared'
 
 /** Every field the prefs carry, so a new one cannot be added without a test
  *  noticing that the shape moved. */
 const DEFAULTS = {
   doubleEnterMs: DOUBLE_ENTER_DEFAULT_MS,
-  enterNewline: true,
+  enterNewline: false,
   enterSends: true,
   holdMs: HOLD_DEFAULT_MS,
   idleSendMs: IDLE_SEND_DEFAULT_MS,
-  sendOnDoubleTap: false,
-  sendOnHold: false,
+  sendOnDoubleTap: true,
+  sendOnHold: true,
   sendOnIdle: false,
   sendOnPause: false,
   sendGraceFor: SEND_GRACE_DEFAULT_REASONS,
@@ -41,14 +55,20 @@ const DEFAULTS = {
 }
 
 describe('composer send contract', () => {
-  it('defaults to Enter sending, with every gesture off', () => {
+  it('defaults to Enter sending, with the deliberate gestures already armed', () => {
     // The historical binding: an upgrade must not change what Enter does.
     expect(normalizeComposerSendPrefs({})).toEqual(DEFAULTS)
     expect(activeSendGestures(DEFAULTS)).toEqual([])
   })
 
   it('arms only the gestures that were switched on, once Enter stops sending', () => {
-    const both = { ...DEFAULTS, enterSends: false, sendOnHold: true, sendOnPause: true }
+    const both = {
+      ...DEFAULTS,
+      enterSends: false,
+      sendOnDoubleTap: false,
+      sendOnHold: true,
+      sendOnPause: true
+    }
 
     expect(activeSendGestures(both)).toEqual(['pause', 'hold'])
 
@@ -129,5 +149,86 @@ describe('composer send contract', () => {
     // A scalar where a list belongs is not a reason, so the default stands.
     expect(handEdited.sendGraceFor).toEqual(SEND_GRACE_DEFAULT_REASONS)
     expect(handEdited.typingIdleMs).toBe(TYPING_IDLE_DEFAULT_MS)
+  })
+})
+
+describe('clamp warnings', () => {
+  /** Capture the warnings so a case can assert on both the text and the count. */
+  function captureWarnings() {
+    // Error level is what the desktop log captures, so that is the level asserted.
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    resetClampWarnings()
+
+    return warn
+  }
+
+  it('names the key, the value and the bound when a hand-edited window is too large', () => {
+    const warn = captureWarnings()
+
+    expect(clampHoldMs(HOLD_MAX_MS + 1)).toBe(HOLD_MAX_MS)
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    const line = String(warn.mock.calls[0][0])
+
+    expect(line).toContain('desktop.composer.hold_ms')
+    expect(line).toContain(String(HOLD_MAX_MS + 1))
+    expect(line).toContain(`${HOLD_MIN_MS}-${HOLD_MAX_MS}`)
+
+    warn.mockRestore()
+  })
+
+  it('names the key when the value is too small, and says what it used instead', () => {
+    const warn = captureWarnings()
+
+    expect(clampIdleSendMs(0)).toBe(IDLE_SEND_MIN_MS)
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    const line = String(warn.mock.calls[0][0])
+
+    expect(line).toContain('desktop.composer.idle_send_ms')
+    expect(line).toContain(String(IDLE_SEND_MIN_MS))
+
+    warn.mockRestore()
+  })
+
+  it('says a value that is not a number, rather than defaulting in silence', () => {
+    const warn = captureWarnings()
+
+    expect(clampHoldMs('soon')).toBe(HOLD_DEFAULT_MS)
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    const line = String(warn.mock.calls[0][0])
+
+    expect(line).toContain('is not a number')
+    expect(line).toContain(String(HOLD_DEFAULT_MS))
+
+    warn.mockRestore()
+  })
+
+  it('reports each key once, so a config refresh does not repeat the same line', () => {
+    const warn = captureWarnings()
+
+    clampHoldMs(HOLD_MAX_MS + 1)
+    clampHoldMs(HOLD_MAX_MS + 1)
+    clampIdleSendMs(0)
+
+    // Two keys, two lines: one per key, not one per read.
+    expect(warn).toHaveBeenCalledTimes(2)
+
+    warn.mockRestore()
+  })
+
+  it('stays quiet for a value inside the bounds, and for a key that is absent', () => {
+    const warn = captureWarnings()
+
+    expect(clampHoldMs(HOLD_MIN_MS)).toBe(HOLD_MIN_MS)
+    expect(clampHoldMs(HOLD_MAX_MS)).toBe(HOLD_MAX_MS)
+    expect(clampHoldMs(undefined)).toBe(HOLD_DEFAULT_MS)
+    expect(clampHoldMs(null)).toBe(HOLD_DEFAULT_MS)
+
+    expect(warn).not.toHaveBeenCalled()
+
+    warn.mockRestore()
   })
 })

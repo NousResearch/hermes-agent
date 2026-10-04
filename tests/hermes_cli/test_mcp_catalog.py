@@ -942,6 +942,26 @@ class TestShippedCatalog:
         assert slugs
         assert len(slugs) == len(set(slugs))
 
+    def test_senpi_manifest_is_remote_oauth_guide_first(self, monkeypatch):
+        """Senpi: vendor-hosted remote MCP with native OAuth (CIMD client, so no
+        pre-registered oauth block and no env prompts), every tool enabled with
+        the read-only guide listed first, and a post_install that spells out
+        the trade-approval gate."""
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import _catalog_root, _parse_manifest
+
+        entry = _parse_manifest(_catalog_root() / "senpi" / "manifest.yaml")
+        assert entry.transport.type == "http"
+        assert entry.transport.url == "https://agents.senpi.ai/mcp"
+        assert entry.auth.type == "oauth"
+        assert entry.auth.oauth == {}
+        assert entry.auth.env == []
+        assert entry.tools.default_enabled[0] == "read_senpi_guide"
+        assert {"ask_agent", "resolve_approval", "abort_run"} <= set(entry.tools.default_enabled)
+        assert "senpi.ai" in entry.suggest.hosts
+        assert "senpi" in entry.suggest.keywords
+        assert "needs_approval" in entry.post_install
+
     def test_all_shipped_manifests_parse(self, monkeypatch):
         """Every manifest in optional-mcps/ must parse cleanly.
 

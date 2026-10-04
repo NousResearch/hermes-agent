@@ -1,0 +1,68 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: senpi
+description: >-
+  Your AI quant for Hyperliquid: market read, ranked signals, smart-money
+  positioning, trader research, Quant Desk wallet scoring and strategy design
+  through your own Senpi agent. Trades wait for your approval.
+source: https://github.com/Senpi-ai/senpi-plugin#readme
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native MCP OAuth 2.1 over Streamable HTTP: the 401
+# carries RFC 9728 protected-resource metadata and the authorization server
+# advertises PKCE S256. It identifies clients by Client ID Metadata Document
+# (no Dynamic Client Registration); Hermes's published client document
+# (loopback callbacks on ports 27890-27894) is registered there, so Hermes's
+# MCP client + mcp_oauth_manager handle discovery, PKCE, token exchange, and
+# refresh with no pre-registered client block. Scopes: agent:read, agent:chat.
+transport:
+  type: http
+  url: https://agents.senpi.ai/mcp
+
+auth:
+  type: oauth
+
+# Seven tools, all enabled. read_senpi_guide is read-only and meant to be
+# called first in a conversation (sessions, approvals, where money moves).
+# ask_agent, resolve_approval and abort_run carry destructiveHint, so Hermes's
+# normal tool-approval flow applies to them.
+tools:
+  default_enabled:
+    - read_senpi_guide
+    - ask_agent
+    - list_sessions
+    - read_messages
+    - list_approvals
+    - resolve_approval
+    - abort_run
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - senpi
+    - hyperliquid
+    - quant desk
+  hosts:
+    - senpi.ai
+  examples:
+    - "What's moving the markets today?"
+    - "Run senpi-signals and find market anomalies"
+    - "Where is smart money positioned on ETH right now?"
+    - "Score this Hyperliquid wallet with the Quant Desk: 0x..."
+    - "Help me design a quant strategy, or pick one from the Senpi templates"
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with Senpi (or run
+  `hermes mcp login senpi`). The consent step needs an interactive terminal
+  and a browser on the same machine. Approve access, then restart the session
+  or run /reload-mcp so the tools load. Ask the agent to call read_senpi_guide
+  first: it explains sessions and approvals.
+  You need a Senpi account (https://senpi.ai). Market research works without
+  depositing funds.
+  CAUTION: through ask_agent your Senpi agent can open or close positions on
+  Hyperliquid in your own account. Every such action pauses and returns
+  status "needs_approval"; it proceeds only if you answer through
+  resolve_approval (allow-once or deny), and an unanswered approval expires
+  after ten minutes. No tool here can withdraw funds from your Senpi account.

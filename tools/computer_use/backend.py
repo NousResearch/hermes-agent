@@ -12,9 +12,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 _JPEG_SOF_MARKERS = frozenset({0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
 
-def valid_verification_expect(expect: Any) -> bool:
-    """Empty predicate sets are not evidence, even if a driver reports success."""
-    return isinstance(expect, list) and bool(expect) and all(isinstance(item, dict) and bool(item) for item in expect)
 
 def image_dimensions_from_bytes(raw: bytes) -> Optional[Tuple[int, int]]:
     """(width, height) for PNG / JPEG bytes, or None when unreadable. PNG: IHDR. JPEG: walk

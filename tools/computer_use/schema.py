@@ -9,6 +9,7 @@ than pixel coordinates, which remain supported for models trained on them.
 from __future__ import annotations
 
 from typing import Any, Dict
+from tools.computer_use.verification import EXPECT_SCHEMA
 
 # One consolidated tool with an `action` discriminator keeps the schema compact
 # and the per-turn token cost low. Property groups: capture (mode, app, pid,
@@ -179,7 +180,7 @@ _PROPERTIES: Dict[str, Any] = {
             "Default false."
         ),
     },
-    "expect": {"type": "array", "minItems": 1, "items": {"type": "object", "minProperties": 1}, "description": "Required nonempty predicates for action=verify_state; unknown never implies success."},
+    "expect": EXPECT_SCHEMA,
     "capture_after": {
         "type": "boolean",
         "description": (

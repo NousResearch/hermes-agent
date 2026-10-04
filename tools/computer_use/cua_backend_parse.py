@@ -52,9 +52,17 @@ def _action_result_from(name: str, ok: bool, message: str, meta: Dict[str, Any],
     def _typed(value: Any, typ) -> Any:
         return value if isinstance(value, typ) else None
 
+    verified, effect = _typed(_raw("verified"), bool), _typed(_raw("effect"), str)
+    if name == "verify_state":
+        # Verification has a tri-state contract, not the input-action flags.
+        # Preserve the driver's evidence in meta; transport success alone and
+        # contradictory generic flags must never turn unknown into success.
+        verified = ok and _raw("status") == "satisfied" and _raw("stable") is True
+        effect = "confirmed" if verified else "unverifiable"
+
     return ActionResult(
         ok=ok, action=name, message=message, meta=meta,
-        verified=_typed(_raw("verified"), bool), effect=_typed(_raw("effect"), str),
+        verified=verified, effect=effect,
         escalation=_typed(_raw("escalation"), dict), path=_typed(_raw("path"), str),
         degraded=_typed(_raw("degraded"), bool),
         # What we asked for; the driver's `path` records the rung that ran.

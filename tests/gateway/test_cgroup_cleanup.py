@@ -112,6 +112,7 @@ class TestForegroundScopeSweep:
         import gateway.status
 
         monkeypatch.setattr(gateway.status, "_read_pid_record", lambda path=None: {"pid": 4242})
+        monkeypatch.setattr(gateway.status, "_pid_exists", lambda pid: False)
         seen: dict = {}
         monkeypatch.setattr(
             "tools.environments.local.stop_foreground_scopes",
@@ -120,10 +121,13 @@ class TestForegroundScopeSweep:
 
         assert cgroup_cleanup.reap_foreground_scopes() is True
         # KillMode=mixed never reaches the scope, so $MAINPID would have to — and it is
-        # unset in ExecStopPost. The record is the substitute; the PID stays in the glob.
+        # unset in ExecStopPost. The record is the handle; the PID stays in the glob.
         assert seen == {"pid": 4242, "no_block": True}
 
     def test_sweep_accepts_an_explicit_pid(self, monkeypatch):
+        import gateway.status
+
+        monkeypatch.setattr(gateway.status, "_pid_exists", lambda pid: False)
         seen: list = []
         monkeypatch.setattr(
             "tools.environments.local.stop_foreground_scopes",
@@ -132,6 +136,38 @@ class TestForegroundScopeSweep:
 
         assert cgroup_cleanup.reap_foreground_scopes(777) is True
         assert seen == [(777, {"no_block": True})]
+
+    def test_live_recorded_pid_is_never_swept(self, monkeypatch):
+        # A record naming a LIVE gateway (a --replace whose unlink no-oped, or a status
+        # read that rewrote it) must not turn into a sweep of that gateway's scopes.
+        import gateway.status
+
+        monkeypatch.setattr(gateway.status, "_read_pid_record", lambda path=None: {"pid": 4243})
+        monkeypatch.setattr(gateway.status, "_pid_exists", lambda pid: True)
+        called: list = []
+        monkeypatch.setattr(
+            "tools.environments.local.stop_foreground_scopes", lambda *a, **kw: called.append(a)
+        )
+
+        assert cgroup_cleanup.reap_foreground_scopes() is False
+        assert called == []
+        # Explicit-PID callers (tests, future callers) get the same guard.
+        assert cgroup_cleanup.reap_foreground_scopes(4243) is False
+
+    def test_liveness_check_fails_closed(self, monkeypatch):
+        import gateway.status
+
+        monkeypatch.setattr(gateway.status, "_read_pid_record", lambda path=None: {"pid": 4244})
+        monkeypatch.setattr(
+            gateway.status, "_pid_exists", lambda pid: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
+        called: list = []
+        monkeypatch.setattr(
+            "tools.environments.local.stop_foreground_scopes", lambda *a, **kw: called.append(a)
+        )
+
+        assert cgroup_cleanup.reap_foreground_scopes() is False
+        assert called == []
 
     def test_no_sweep_without_a_record(self, monkeypatch):
         # A graceful stop unlinks the record before exiting, and it also stops its own

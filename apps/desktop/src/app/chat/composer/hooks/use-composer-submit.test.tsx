@@ -388,19 +388,62 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(onCancel).not.toHaveBeenCalled()
   })
 
-  it.each(['interrupt', 'steer', 'turbo'] satisfies unknown[])(
-    'still steers a busy plain-text submit when busy_input_mode is %s',
+  it.each(['interrupt', 'turbo'] satisfies unknown[])(
+    'still redirects a busy plain-text submit when busy_input_mode is %s',
     async mode => {
       setBusyInputModeFromConfig(mode)
-      const { hook, queueCurrentDraft } = renderSubmitHook({ busy: true, text: 'redirect me' })
+
+      const { hook, onSteer, onSteerHidden, queueCurrentDraft } = renderSubmitHook({
+        busy: true,
+        text: 'redirect me'
+      })
 
       act(() => {
         hook.result.current.submitDraft()
       })
 
-      await waitFor(() => expect(queueCurrentDraft).not.toHaveBeenCalled())
+      await waitFor(() => expect(onSteer).toHaveBeenCalledWith('redirect me'))
+      expect(onSteerHidden).not.toHaveBeenCalled()
+      expect(queueCurrentDraft).not.toHaveBeenCalled()
     }
   )
+
+  it('injects a busy plain-text submit via session.steer when busy_input_mode is steer', async () => {
+    // CLI parity: `steer` must not stop-and-correct — the text rides
+    // session.steer into the model's next tool result and records no user
+    // turn, exactly like the TUI's handleBusyInput (#125983).
+    setBusyInputModeFromConfig('steer')
+
+    const { hook, onSteer, onSteerHidden, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      busy: true,
+      text: 'nudge the model'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(onSteerHidden).toHaveBeenCalledWith('nudge the model'))
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+  })
+
+  it('queues a busy steer submit when the gateway refuses the injection', async () => {
+    // The TUI contract falls back to the queue when session.steer is
+    // rejected (no agent / no tool window) so the words are never lost.
+    setBusyInputModeFromConfig('steer')
+
+    const { hook, onSteerHidden } = renderSubmitHook({ busy: true, text: 'hold this' })
+    onSteerHidden.mockRejectedValueOnce(new Error('request timed out: session.steer'))
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['hold this']))
+    clearQueuedPrompts('stored-session')
+  })
 
   it('runs a slash command immediately even when busy_input_mode is queue', () => {
     // Queuing them would make every slash command wait for the current turn —

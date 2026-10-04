@@ -427,9 +427,31 @@ def _process_handles(tree: ast.Module) -> dict[str, str]:
 _PROCESS_WAITS = {"communicate": 1, "wait": 0}
 
 
+def _reaped_after_kill(tree: ast.Module, handles: dict[str, str]) -> set[int]:
+    """ids of a sync ``proc.wait()`` that directly follows ``proc.kill()``: SIGKILL bounds it.
+    Not ``communicate()`` (it reads until every grandchild holding the pipe exits) and not the
+    asyncio ``Process.wait()`` (it waits for the pipe transports too); both measured to hang."""
+    reaped: set[int] = set()
+    for node in ast.walk(tree):
+        for field in ("body", "orelse", "finalbody"):
+            stmts = getattr(node, field, None)
+            if not isinstance(stmts, list):
+                continue
+            for first, second in zip(stmts, stmts[1:]):
+                kill = first.value if isinstance(first, ast.Expr) else None
+                wait = second.value if isinstance(second, (ast.Expr, ast.Assign)) else None
+                if not (isinstance(kill, ast.Call) and isinstance(wait, ast.Call)):
+                    continue
+                head, _, leaf = _call_name(kill).rpartition(".")
+                if (leaf == "kill" and handles.get(head) == "sync"
+                        and _call_name(wait) == f"{head}.wait"):
+                    reaped.add(id(wait))
+    return reaped
+
+
 def missing_timeout(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
-    bounded = _bounded_calls(tree)
     handles = _process_handles(tree)
+    bounded = _bounded_calls(tree) | _reaped_after_kill(tree, handles)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or id(node) in bounded:
             continue

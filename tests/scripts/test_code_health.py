@@ -116,6 +116,13 @@ _STUB = {"pkg/b.py": "def legacy(x):\n    return x\n"}
     ({}, {"pkg/p.py": _PROC.format("    return await asyncio.wait_for(fut=proc.communicate(), timeout=1)")}, False),
     # a BOM reads the same from git and from disk, so a new BOM file's debt is still measured
     ({}, {"pkg/bom.py": "\ufeff" + _LEGACY}, True),
+    # after kill(), a sync wait() is bounded by SIGKILL; communicate() and asyncio's wait() block
+    # while a grandchild holds the pipe (measured), so those stay flagged
+    *(({}, {"pkg/k.py": "import subprocess\n\n\ndef f(c):\n    proc = subprocess.Popen(c)\n"
+            f"    try:\n        proc.wait(timeout=1)\n    except subprocess.TimeoutExpired:\n"
+            f"        proc.kill()\n        {tail}\n"}, blocked)
+      for tail, blocked in (("proc.wait()", False), ("proc.communicate()", True))),
+    ({}, {"pkg/k.py": _PROC.format("    proc.kill()\n    await proc.wait()")}, True),
     # rules see through import aliases and require the real asyncio deadline API
     ({}, {"pkg/c.py": "from subprocess import run as execute\n\n\ndef f(c):\n    return execute(c)\n"}, True),
     ({}, {"pkg/c.py": "def run(c):\n    return c\n\n\ndef f(c):\n    return run(c)\n"}, False),

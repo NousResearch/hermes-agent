@@ -73,7 +73,8 @@ RULES: tuple[Rule, ...] = (
     Rule("S113", "HTTP request without timeout", "pass `timeout=`", "ruff"),
     Rule("HX006", "subprocess/urlopen without timeout", "pass `timeout=`; an asyncio"
          " `proc.communicate()` goes inside `asyncio.wait_for(..., timeout=...)` (a child or"
-         " socket that never answers hangs forever)", "ast"),
+         " socket that never answers hangs forever); after `proc.kill()` reap with `proc.wait()`,"
+         " never a bare `communicate()` (it blocks while a grandchild holds the pipe)", "ast"),
     Rule("HX007", "sync config I/O inside async def", "`await asyncio.to_thread(load_config)`"
          " or read it before entering the event loop", "ast"),
     Rule("HX008", "asyncio.get_event_loop()", "`asyncio.get_running_loop()` inside a"

@@ -271,6 +271,11 @@ def journey(tmp_path_factory):
         try:
             install = machine.install()
             assert install.returncode == 0, fail_with(machine, f"install.ps1 exited {install.returncode}", install)
+            # The cells start and stop the gateway ~10 times in a few minutes on purpose; the respawn-storm
+            # breaker (5 starts / 120 s, then a 40 s sleep before boot) would otherwise outlast a resume's
+            # 30 s readiness window and make "not verified" a property of the harness, not the code.
+            off = machine.hermes("config", "set", "gateway.respawn_storm.max_starts", "0", label="storm-breaker-off")
+            assert off.returncode == 0, fail_with(machine, "harness: could not disable the respawn-storm breaker", off)
             with machine.gateway_phase():
                 for cell in (_claim_race, _publish_crash, _draining, _readiness):
                     started = time.monotonic()

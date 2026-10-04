@@ -81,8 +81,11 @@ threading.excepthook = lambda args: _record_crash(
     "thread exception", args.exc_type, args.exc_value, args.exc_traceback, thread_name=args.thread.name)
 
 with contextlib.suppress(Exception):
+    # Runs at import, before entry.main()'s TLS setup: trust the OS store first.
+    from agent.ssl_verify import install_truststore
     from hermes_cli.banner import prefetch_update_check
 
+    install_truststore()
     prefetch_update_check()
 
 from tui_gateway.render import make_stream_renderer, render_diff, render_message  # noqa: F401

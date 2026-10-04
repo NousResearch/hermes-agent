@@ -1,10 +1,13 @@
 """Pre-import startup fast paths — THE canonical lightweight helpers.
 
 This module is imported by ``hermes_cli/main.py`` BEFORE its heavy import
-wall (config, argparse tree, logging, providers). Everything here must stay
-**stdlib-only and cheap** (os/sys file probes; no yaml, no hermes_cli.config,
-no argparse). A guard test (``test_startup_fast_import_weight``) subprocess-
-imports this module and fails if any heavy module sneaks into sys.modules.
+wall (config, argparse tree, logging, providers). Importing this module must
+stay **stdlib-only and cheap** (os/sys file probes; no yaml, no
+hermes_cli.config, no argparse). A guard test
+(``test_startup_fast_import_weight``) subprocess-imports this module and fails
+if any heavy module sneaks into sys.modules. Heavier imports belong inside the
+functions that need them, e.g. ``--version``'s update check loads the OS trust
+store (``agent.ssl_verify``) and ``source_check`` only when it runs.
 
 Why this module exists (the bug class it kills): version-printing kept being
 reimplemented as ``*_fast()`` copies at the top of main.py, each duplicating

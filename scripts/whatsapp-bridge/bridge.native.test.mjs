@@ -14,8 +14,11 @@ import { getAggregateVotesInPollMessage } from '@whiskeysockets/baileys';
 
 import {
   addMentions,
+  buildGroupRoster,
   buildPollPayload,
   buildTextSendPayload,
+  mentionsInChunk,
+  resolveAtNameMentions,
   createBoundedMessageStore,
   extractBridgeEvent,
   inboundReadReceiptKeys,
@@ -91,6 +94,57 @@ import {
   assert.deepEqual(content.mentions, mentions);
   assert.deepEqual(media.mentions, mentions);
   console.log('  ✓ outbound text and media payloads preserve native mention JIDs');
+}
+
+// -- group roster + "@Name" mentions ------------------------------------
+{
+  const roster = buildGroupRoster(
+    [
+      { id: '15550001111@s.whatsapp.net' },
+      { id: '183082158141655@lid', phoneNumber: '15550002222@s.whatsapp.net' },
+      { id: '15550003333:4@s.whatsapp.net', notify: 'Bob Smith' },
+      {},
+    ],
+    new Map([['15550001111@s.whatsapp.net', 'John'], ['15550002222@s.whatsapp.net', 'Alice']]),
+  );
+  assert.deepEqual(roster, [
+    { id: '15550001111@s.whatsapp.net', name: 'John' },
+    { id: '183082158141655@lid', name: 'Alice' },
+    { id: '15550003333@s.whatsapp.net', name: 'Bob Smith' },
+  ]);
+  console.log('  ✓ roster names come from pushName (LID or phone), contact name, then number');
+}
+
+{
+  const roster = [
+    { id: '15550001111@s.whatsapp.net', name: 'John' },
+    { id: '183082158141655@lid', name: 'Alice Shah' },
+    { id: '15550003333@s.whatsapp.net', name: 'Bob Smith' },
+    { id: '15550004444@s.whatsapp.net', name: 'Bob Jones' },
+  ];
+  // Full name wins; the tag becomes "@<id>" so WhatsApp renders a highlighted name.
+  assert.deepEqual(resolveAtNameMentions('@bob smith please check', roster),
+    { text: '@15550003333 please check', mentions: ['15550003333@s.whatsapp.net'] });
+  // Unique first name, LID member, trailing punctuation.
+  assert.deepEqual(resolveAtNameMentions('thanks @Alice.', roster),
+    { text: 'thanks @183082158141655.', mentions: ['183082158141655@lid'] });
+  // Ambiguous first name, unknown name, and e-mail stay literal.
+  assert.deepEqual(resolveAtNameMentions('@Bob hi @nobody mail a@b.com', roster),
+    { text: '@Bob hi @nobody mail a@b.com', mentions: [] });
+  // Already-numeric tag of a member keeps its text and gains the JID.
+  assert.deepEqual(resolveAtNameMentions('@15550001111 ok, @John', roster),
+    { text: '@15550001111 ok, @15550001111', mentions: ['15550001111@s.whatsapp.net'] });
+  // Two members with the same full name: never guess.
+  assert.deepEqual(resolveAtNameMentions('@Bob hi', [...roster, { id: '15550005555@s.whatsapp.net', name: 'Bob' },
+    { id: '15550006666@s.whatsapp.net', name: 'bob' }]), { text: '@Bob hi', mentions: [] });
+  console.log('  ✓ @Name resolves to native mentions; ambiguous/unknown tags stay literal');
+}
+
+{
+  const jids = ['15550001111@s.whatsapp.net', '183082158141655@lid'];
+  assert.deepEqual(mentionsInChunk('hey @15550001111', jids), ['15550001111@s.whatsapp.net']);
+  assert.deepEqual(mentionsInChunk('@1555000111122 is not a tag', jids), []);
+  console.log('  ✓ resolved mentions ride only the chunk that shows the tag');
 }
 
 // -- inbound quote/media/native metadata --------------------------------

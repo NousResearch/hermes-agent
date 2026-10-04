@@ -9,6 +9,7 @@ import platform
 import re
 import signal
 import subprocess
+import time
 from contextlib import suppress
 from functools import wraps
 from pathlib import Path
@@ -967,6 +968,55 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             print(f"[{self.name}] Attached quoted-reply media: {path}", flush=True)
         return accepted
 
+    _ROSTER_TTL_S = 10 * 60
+    _ROSTER_MAX_NAMES = 100
+
+    async def _group_roster(self, chat_id: str) -> list:
+        """``[{id, name}]`` members of a group, cached per chat; a failed fetch keeps the last good list."""
+        cache = self.__dict__.setdefault("_roster_cache", {})
+        now = time.monotonic()
+        cached = cache.get(chat_id)
+        if cached and now - cached[0] < self._ROSTER_TTL_S:
+            return cached[1]
+        try:
+            info = await self.get_chat_info(chat_id)
+        except Exception:
+            info = {}
+        # Older bridges return bare JID strings here; those carry no names, so they are skipped.
+        roster = [p for p in info.get("participants") or () if isinstance(p, dict) and p.get("id") and p.get("name")]
+        if not roster:
+            return cached[1] if cached else []
+        cache[chat_id] = (now, roster)
+        return roster
+
+    async def _with_group_roster(self, data: Dict[str, Any], body: str) -> str:
+        """Make a group message readable like a human sees it.
+
+        WhatsApp puts ``@<number>`` (or ``@<lid>``) in the text for a mention; swap it for
+        ``@<name>``. Then prepend the member list so the model knows who is in the group and can
+        tag someone by writing ``@<name>`` (the bridge turns that back into a native mention).
+        """
+        from gateway.session import neutralize_untrusted_inline_text
+
+        roster = await self._group_roster(str(data.get("chatId") or ""))
+        if not roster:
+            return body
+        bot_ids = self._bot_ids_from_message(data)
+        # Display names are user-controlled: flatten control chars/newlines before they reach the prompt.
+        names = {
+            self._normalize_whatsapp_id(r["id"]).split("@", 1)[0]: neutralize_untrusted_inline_text(r["name"], max_chars=64)
+            for r in roster if self._normalize_whatsapp_id(r["id"]) not in bot_ids
+        }
+        for jid in data.get("mentionedIds") or ():
+            user = self._normalize_whatsapp_id(jid).split("@", 1)[0]
+            if names.get(user):
+                body = re.sub(rf"(?<!\w)@{re.escape(user)}(?!\w)", lambda _m, n=names[user]: f"@{n}", body)
+        listed = [n for n in names.values() if n]
+        # Note: the whole list rides every group message; send it only on change if token cost matters for big groups.
+        more = len(listed) - self._ROSTER_MAX_NAMES
+        members = ", ".join(listed[: self._ROSTER_MAX_NAMES]) + (f" (+{more} more)" if more > 0 else "")
+        return "\n".join(part for part in (f"[Group members: {members}]" if members else "", body) if part)
+
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
@@ -992,10 +1042,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             media_text_inlined: list[bool] = []
             if msg_type == MessageType.DOCUMENT and cached_urls:
                 body, media_text_inlined = self._inject_document_text(cached_urls, body)
+            if data.get("isGroup"):
+                body = await self._with_group_roster(data, body)
             native_metadata = data.get("nativeMetadata")
             metadata: Dict[str, Any] = {k: v for k, v in (
                 ("whatsapp_native_type", str(data.get("nativeType") or "").strip()),
                 ("whatsapp_native", native_metadata if isinstance(native_metadata, dict) else None),
+                # JIDs this message @mentions (bridge reads contextInfo.mentionedJid), so the agent sees who is addressed.
+                ("whatsapp_mentioned_ids", list(data.get("mentionedIds") or [])),
             ) if v}
             # ``fromOwner`` = owner-typed inbound fromMe (gated by WHATSAPP_FORWARD_OWNER_MESSAGES at the bridge); surfaced as
             # metadata AND a text prefix so the marker survives downstream failures before silent_ingest.

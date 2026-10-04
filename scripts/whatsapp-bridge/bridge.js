@@ -12,7 +12,7 @@
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName?, mentions? }
  *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
  *   POST /typing         - Send typing indicator { chatId }
- *   GET  /chat/:id       - Get chat info
+ *   GET  /chat/:id       - Get chat info (group participants as [{ id, name }])
  *   GET  /health         - Health check
  *
  * Usage:
@@ -41,6 +41,7 @@ import {
   installConsoleStamps,
   buildLocationPayload,
   buildTextSendPayload,
+  buildGroupRoster,
   createBoundedMessageStore,
   createQuotedMediaCache,
   extractBridgeEvent,
@@ -48,9 +49,11 @@ import {
   inboundReadReceiptKeys,
   inferMediaType,
   mediaPayloadForFile,
+  mentionsInChunk,
   normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  resolveAtNameMentions,
   writeJsonLine,
 } from './bridge_helpers.js';
 
@@ -271,6 +274,35 @@ const messageStore = createBoundedMessageStore(512);
 // uncaptioned photo/video/document/voice note can still surface the original
 // file — see createQuotedMediaCache's doc comment in bridge_helpers.js.
 const quotedMediaCache = createQuotedMediaCache(512);
+// jid -> WhatsApp display name (pushName), learned from inbound messages so the group
+// roster shows names instead of bare numbers.
+// Note: unbounded, one entry per sender seen; cap it like messageStore if the bot joins huge groups.
+const nameCache = new Map();
+// chatId -> { roster, ts }, so "@Name" resolution does not fetch group metadata on every send.
+const rosterCache = new Map();
+const ROSTER_TTL_MS = 5 * 60 * 1000;
+
+async function getGroupRoster(chatId) {
+  if (!String(chatId).endsWith('@g.us') || !sock) return [];
+  const cached = rosterCache.get(chatId);
+  if (cached && Date.now() - cached.ts < ROSTER_TTL_MS) return cached.roster;
+  try {
+    const metadata = await sock.groupMetadata(chatId);
+    const roster = buildGroupRoster(metadata.participants, nameCache);
+    rosterCache.set(chatId, { roster, ts: Date.now() });
+    return roster;
+  } catch {
+    return cached ? cached.roster : [];
+  }
+}
+
+// Rewrite "@Name" tags in group text into native mentions; explicit caller mentions are kept.
+async function withResolvedMentions(chatId, text, mentions) {
+  const explicit = Array.isArray(mentions) ? mentions : [];
+  if (!text || !String(chatId).endsWith('@g.us')) return { text, explicit, resolved: [] };
+  const { text: rewritten, mentions: resolved } = resolveAtNameMentions(text, await getGroupRoster(chatId));
+  return { text: rewritten, explicit, resolved: resolved.filter((jid) => !explicit.includes(jid)) };
+}
 
 function normalizePollUpdateOptions(aggregation, pollUpdateMessage, meId) {
   const selected = [];
@@ -543,6 +575,10 @@ async function startSocket() {
       const resolvedSenderId = senderAltId.endsWith('@s.whatsapp.net') ? senderAltId : senderId;
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = resolvedSenderId.replace(/@.*/, '');
+      if (msg.pushName && !msg.key.fromMe) {
+        // Store under both id forms (LID and phone) so either roster id finds the name.
+        for (const id of [normalizeWhatsAppId(senderId), senderAltId]) if (id) nameCache.set(id, msg.pushName);
+      }
       emitDebugEvent({
         stage: 'upsert',
         type,
@@ -849,13 +885,16 @@ app.post('/send', async (req, res) => {
   }
 
   try {
-    const chunks = splitLongMessage(formatOutgoingMessage(message));
+    const { text, explicit, resolved } = await withResolvedMentions(chatId, message, mentions);
+    const chunks = splitLongMessage(formatOutgoingMessage(text));
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
+      // Explicit mentions ride the first chunk only; "@Name" mentions ride the chunk that shows the tag.
+      const chunkMentions = [...(i === 0 ? explicit : []), ...mentionsInChunk(chunks[i], resolved)];
       const { content: payload, options } = buildTextSendPayload(chunks[i], {
         chatId,
         replyTo: i === 0 ? replyTo : undefined,
-        mentions: i === 0 ? mentions : undefined,
+        mentions: chunkMentions,
         messageStore,
       });
       const sent = await sendWithTimeout(chatId, payload, options);
@@ -917,12 +956,14 @@ app.post('/send-media', async (req, res) => {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }
 
-  const { chatId, filePath, mediaType, caption, fileName, mentions } = req.body;
+  const { chatId, filePath, mediaType, fileName } = req.body;
   if (!chatId || !filePath) {
     return res.status(400).json({ error: 'chatId and filePath are required' });
   }
 
   try {
+    const { text: caption, explicit, resolved } = await withResolvedMentions(chatId, req.body.caption, req.body.mentions);
+    const mentions = [...explicit, ...resolved];
     if (!existsSync(filePath)) {
       return res.status(404).json({ error: `File not found: ${filePath}` });
     }
@@ -1110,7 +1151,7 @@ app.get('/chat/:id', async (req, res) => {
       return res.json({
         name: metadata.subject,
         isGroup: true,
-        participants: metadata.participants.map(p => p.id),
+        participants: buildGroupRoster(metadata.participants, nameCache),
       });
     } catch {
       // Fall through to default

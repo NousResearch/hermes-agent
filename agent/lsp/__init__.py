@@ -43,8 +43,10 @@ def get_service() -> Optional[LSPService]:
 
     Also registers an :mod:`atexit` hook so a clean exit tears down spawned servers:
     without it every ``hermes chat`` exit leaks pyright processes for a few seconds
-    while their stdout buffers drain.  (SIGKILL/os._exit skip atexit — fine, the
-    kernel reaps the stateless servers with their parent.)
+    while their stdout buffers drain.  (SIGKILL/os._exit skip atexit, and the server
+    runs session-detached, so the kernel does NOT reap it with its parent — each
+    spawned group is instead registered with the shared parent-death supervisor;
+    see ``agent/lsp/client.py::_supervise_process_group``.)
     """
     global _service
     from hermes_constants import get_hermes_home_override, hermes_home_key

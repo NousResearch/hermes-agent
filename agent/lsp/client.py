@@ -28,6 +28,52 @@ from agent.lsp.protocol import (
 
 logger = logging.getLogger("agent.lsp.client")
 
+def _register_process_group_with_parent_death_supervisor(pgid: int) -> bool:
+    """Hand a spawned server's process group to the process-wide parent-death supervisor.
+
+    Servers are started with ``start_new_session=True`` (see :meth:`LSPClient._spawn`), so the
+    kernel's parent-death semantics do NOT apply: the server is session-detached and reparents to
+    init when Hermes dies, and the ``atexit`` teardown never runs on the ``os._exit`` exit paths
+    (CLI exit watchdog, one-shot / kanban-worker exit, TUI hard exit), leaving a live server
+    holding the whole workspace index in memory.  The shared supervisor — the same process that
+    already covers stdio MCP servers — kills a registered group when this process dies by any
+    means (it watches a pipe we hold the only write end of, so detection is exact and instant).
+    Best-effort: an unavailable supervisor must never block the LSP path.
+    """
+    try:
+        from tools.mcp_tool import _update_death_supervisor
+
+        _update_death_supervisor("register", [pgid])
+        return True
+    except Exception:  # noqa: BLE001 — diagnostics must never break a spawn
+        logger.debug("LSP: parent-death supervisor registration failed", exc_info=True)
+        return False
+
+
+def _unregister_process_group_with_parent_death_supervisor(pgid: int) -> None:
+    """Stop covering a group whose server (and descendants) are gone — see the register twin."""
+    try:
+        from tools.mcp_tool import _update_death_supervisor
+
+        _update_death_supervisor("unregister", [pgid])
+    except Exception:  # noqa: BLE001
+        logger.debug("LSP: parent-death supervisor unregistration failed", exc_info=True)
+
+
+def _process_group_alive(pgid: int) -> bool:
+    """Whether any member of ``pgid`` is still alive.  False where process groups do not exist."""
+    if not hasattr(os, "killpg"):
+        return False
+    try:
+        os.killpg(pgid, 0)  # windows-footgun: ok — POSIX-only, guarded by hasattr
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # EPERM: the group exists but is not ours to signal — treat as alive and keep coverage.
+        return True
+    return True
+
+
 # asyncio's 64 KiB StreamReader default makes readline() raise on one long LSP
 # stderr line (#31417); 16 MiB covers realistic output while staying bounded.
 _STREAM_LIMIT = 16 * 1024 * 1024
@@ -155,6 +201,11 @@ class LSPClient:
         self._seed_first_push = seed_diagnostics_on_first_push
 
         self._proc: Optional[asyncio.subprocess.Process] = None
+        # Process group of the live server, registered with the shared parent-death
+        # supervisor so an ungraceful Hermes exit (os._exit paths, kill -9, OOM) cannot
+        # orphan it.  Cleared once the group is observed gone.  See
+        # _register_process_group_with_parent_death_supervisor.
+        self._supervised_pgid: Optional[int] = None
         self._stderr_task: Optional[asyncio.Task] = None
         # Ring buffer of the most recent server stderr lines, surfaced when spawn/initialize fails.
         self._stderr_tail: List[str] = []
@@ -267,9 +318,46 @@ class LSPClient:
             )
         except FileNotFoundError as e:
             raise LSPProtocolError(f"LSP server binary not found: {cmd[0]} ({e})") from e
+        # Cover the server's process group for parent death BEFORE anything else can run: the
+        # supervisor reaps it if this process dies without running cleanup (see the helper).
+        self._supervise_process_group()
         # stderr must be drained or the pipe buffer fills and the server hangs.
         self._stderr_task = asyncio.create_task(self._drain_stderr())
         self._reader_task = asyncio.create_task(self._reader_loop())
+
+    def _supervise_process_group(self) -> None:
+        """Register the live server's process group with the shared parent-death supervisor.
+
+        POSIX only: a Windows child cannot be reached by pgid (and there is no supervisor there),
+        so the graceful teardown stays the whole story on that platform.
+        """
+        proc = self._proc
+        if proc is None or os.name != "posix":
+            return
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
+            # The child exited between spawn and here — nothing to cover.
+            return
+        if _register_process_group_with_parent_death_supervisor(pgid):
+            self._supervised_pgid = pgid
+
+    def _release_process_group_supervision(self) -> None:
+        """Drop supervisor coverage once the group has no members left.
+
+        A group still holding live members stays registered on purpose: a server (or a descendant
+        it left behind) that survived teardown would otherwise be orphaned with nobody to reap it —
+        the supervisor kills it when this process dies, and prunes the registration if the members
+        exit on their own first.
+        """
+        pgid = self._supervised_pgid
+        if pgid is None:
+            return
+        self._supervised_pgid = None
+        if _process_group_alive(pgid):
+            logger.debug("LSP: process group %s outlived teardown; keeping supervisor coverage", pgid)
+            return
+        _unregister_process_group_with_parent_death_supervisor(pgid)
 
     async def _drain_stderr(self) -> None:
         if self._proc is None or self._proc.stderr is None:
@@ -426,10 +514,14 @@ class LSPClient:
                 t.cancel()
             await asyncio.gather(*live, return_exceptions=True)
             if proc is None:
+                self._release_process_group_supervision()
                 return
             if proc.returncode is not None:
                 if self._exit_code is None:
                     self._exit_code = proc.returncode
+                # The leader is already gone, but a descendant may outlive it — the release check
+                # looks at the whole group, not just the leader.
+                self._release_process_group_supervision()
                 return
             try:
                 # ``shutdown`` has already given the protocol a grace period.  Hard-kill
@@ -447,6 +539,7 @@ class LSPClient:
                 pass
             if self._exit_code is None and proc.returncode is not None:
                 self._exit_code = proc.returncode
+            self._release_process_group_supervision()
 
     # ---- request / notification plumbing ----
 

@@ -8,6 +8,7 @@ the same heavy build/test could still kill the control plane.
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import os
 import shutil
@@ -76,7 +77,7 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     # No real snapshot bootstrap (it would wait out its timeouts against the fake Popen) and
     # never a real `systemctl --user stop` from the kill path.
     monkeypatch.setattr(local_env.LocalEnvironment, "init_session", lambda self: None)
-    monkeypatch.setattr(process_registry, "_stop_systemd_unit", lambda unit: True)
+    monkeypatch.setattr(process_registry, "_stop_systemd_unit", lambda unit, **kw: True)
     env = local_env.LocalEnvironment()
     caplog.set_level("WARNING", logger=local_env.logger.name)
     monkeypatch.setattr(local_env, "_foreground_scope_issued", False)
@@ -121,7 +122,7 @@ def test_scope_is_stopped_even_when_the_group_kill_raises_and_survives_adoption(
 
     monkeypatch.setattr(local_env, "_kill_process_group_posix", boom)
     monkeypatch.setattr(process_registry, "_stop_systemd_unit",
-                        lambda unit: stopped.append(unit) or True)
+                        lambda unit, **kw: stopped.append(unit) or True)
     monkeypatch.setattr(local_env.LocalEnvironment, "init_session", lambda self: None)
     env = local_env.LocalEnvironment()
     proc = _FakeProc(pid=4244)
@@ -246,3 +247,58 @@ def test_real_systemd_timeout_removes_detached_process_and_unit(real_systemd_gat
             break
         time.sleep(0.1)
     assert state.stdout.strip() == "not-found", state
+
+
+def test_real_systemd_crash_sweep_stops_a_dead_gateways_scope(real_systemd_gateway):
+    """A scope issued by a PID that is gone is stopped by the PID-scoped sweep.
+
+    This is the ExecStopPost half: systemd's ``$MAINPID`` is unset there, so the sweep
+    takes the dead gateway's PID from its record and stops ``hermes-fg-<pid>-*.scope``.
+    The PID stays in the glob, so a live gateway's scopes (another PID, same user
+    manager) are never in the match — asserted here by a second, live scope.
+    """
+    fake_pid = 999999  # no live process: exactly what a SIGKILLed gateway leaves behind
+    dead_unit = f"hermes-fg-{fake_pid}-c0ffee01.scope"
+    live_unit = f"hermes-fg-{fake_pid + 1}-c0ffee02.scope"
+    if not shutil.which("systemd-run"):
+        pytest.skip("systemd-run is unavailable")
+    bus_env = process_registry.systemd_user_bus_env()
+
+    def spawn_scope(unit: str) -> subprocess.Popen:
+        # `systemd-run --scope` stays attached to the command, so it is launched as a child.
+        return subprocess.Popen(
+            ["systemd-run", "--user", "--scope", f"--unit={unit}", "--collect", "/bin/sleep", "300"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**os.environ, **bus_env})
+
+    def load_state(unit: str) -> str:
+        state = subprocess.run(
+            ["systemctl", "--user", "show", unit, "-p", "LoadState", "--value"],
+            env=bus_env, capture_output=True, text=True, timeout=15)
+        assert state.returncode == 0, state
+        return state.stdout.strip()
+
+    dead, live = spawn_scope(dead_unit), spawn_scope(live_unit)
+    try:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and not (load_state(dead_unit) == load_state(live_unit) == "loaded"):
+            time.sleep(0.1)
+        assert load_state(dead_unit) == "loaded" and load_state(live_unit) == "loaded"
+
+        local_env.stop_foreground_scopes(fake_pid)
+
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and dead.poll() is None:
+            time.sleep(0.1)
+        assert dead.poll() is not None, f"{dead_unit} survived the sweep"
+        assert load_state(dead_unit) == "not-found", dead_unit
+        # The neighbouring gateway's PID is not in the glob: it keeps its command.
+        assert live.poll() is None and load_state(live_unit) == "loaded", live_unit
+    finally:
+        for proc in (dead, live):
+            if proc.poll() is None:
+                proc.kill()
+                with contextlib.suppress(Exception):
+                    proc.wait(timeout=15)
+        with contextlib.suppress(Exception):
+            subprocess.run(["systemctl", "--user", "stop", live_unit],
+                           env=bus_env, capture_output=True, timeout=15)

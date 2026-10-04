@@ -74,16 +74,15 @@ _AUTH_METHOD_RE = re.compile(r"\s*(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECAS
 _NO_AUTH_RESULTS_REASON = "no Authentication-Results header"
 _UNTRUSTED_AUTHSERV_REASON = "no Authentication-Results from trusted authserv-id"
 _MISSING_AUTHSERV_REASON = "authserv-id is not configured; refusing to trust Authentication-Results"
+_OPT_OUT_HINT = "set platforms.email.require_authenticated_sender: false (or EMAIL_TRUST_FROM_HEADER=true) to accept the risk."
 # Operator-fixable reasons a granted sender's mail fails authentication, and the fix each log line names.
 _DROP_HINTS = {
-    _NO_AUTH_RESULTS_REASON: " If your mail server does not stamp Authentication-Results, set "
-    "platforms.email.require_authenticated_sender: false (or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
+    _NO_AUTH_RESULTS_REASON: " If your mail server does not stamp Authentication-Results, " + _OPT_OUT_HINT,
     _UNTRUSTED_AUTHSERV_REASON: " Check that platforms.email.authserv_id (EMAIL_AUTHSERV_ID) names your mail server.",
 }
 # A missing pin is account config, not one sender's mail, so connect() names its fix once per account.
 _MISSING_AUTHSERV_HINT = (" Set EMAIL_AUTHSERV_ID (or platforms.email.authserv_id) to the receiving MTA's exact authserv-id, "
-                          "or set platforms.email.require_authenticated_sender: false (or EMAIL_TRUST_FROM_HEADER=true) "
-                          "to accept the risk.")
+                          "or " + _OPT_OUT_HINT)
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
 _QUOTED = r'"(?:[^"\\]|\\.)*"'

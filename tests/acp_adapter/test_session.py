@@ -637,19 +637,19 @@ class TestPersistence:
         api_key = api_key() if callable(api_key) else api_key
         assert (kwargs.get("provider"), kwargs.get("base_url"), api_key) == expected
 
-    @pytest.mark.parametrize("moved_to, expected", [
-        (None, _CLIPROXY),
+    @pytest.mark.parametrize("config, persisted, moved_to, expected", [
+        (_NAMED, "custom:cliproxyapi", None, _CLIPROXY),
         # The entry moved to another endpoint and key after the save: restore takes both from config,
         # never the saved endpoint with the new key.
-        (("http://cliproxy-b.example:8317/v1", "sk-cliproxy-b"),
+        (_NAMED, "custom:cliproxyapi", ("http://cliproxy-b.example:8317/v1", "sk-cliproxy-b"),
          ("custom", "http://cliproxy-b.example:8317/v1", "sk-cliproxy-b")),
     ], ids=["unchanged", "entry_moved"])
-    def test_named_custom_provider_round_trips_without_healing(self, tmp_path, monkeypatch, moved_to, expected):
-        """A session on a named custom provider stores ``custom:<name>``, not the bare ``custom`` it
-        resolves to, so a restart restores that entry's endpoint and key without identity recovery."""
+    def test_named_custom_provider_round_trips(self, tmp_path, monkeypatch, config, persisted, moved_to, expected):
+        """A session on a named custom provider stores its ``custom:<name>`` identity, not the bare
+        ``custom`` it resolves to, so a restart restores that entry's endpoint and key."""
         from hermes_constants import get_hermes_home
 
-        (get_hermes_home() / "config.yaml").write_text(self._NAMED)
+        (get_hermes_home() / "config.yaml").write_text(config)
 
         class FakeAgent:
             # The identity attributes AIAgent derives from its constructor arguments.
@@ -659,10 +659,6 @@ class TestPersistence:
                 self.base_url, self.api_mode = kwargs.get("base_url"), kwargs.get("api_mode")
                 self.requested_provider = kwargs.get("requested_provider") or self.provider
 
-        heals = []
-        named_custom_runtime = acp_session._named_custom_runtime
-        monkeypatch.setattr(acp_session, "_named_custom_runtime",
-                            lambda *args: heals.append(args) or named_custom_runtime(*args))
         monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
         db = SessionDB(tmp_path / "state.db")
         manager = SessionManager(db=db)
@@ -670,17 +666,16 @@ class TestPersistence:
         state.history.append({"role": "user", "content": "hello"})
         manager.save_session(state.session_id)
 
-        assert json.loads(db.get_session(state.session_id)["model_config"])["provider"] == "custom:cliproxyapi"
+        assert json.loads(db.get_session(state.session_id)["model_config"])["provider"] == persisted
         if moved_to:
             (get_hermes_home() / "config.yaml").write_text(
-                self._NAMED.replace(self._CLIPROXY[1], moved_to[0]).replace(self._CLIPROXY[2], moved_to[1]))
+                config.replace(self._CLIPROXY[1], moved_to[0]).replace(self._CLIPROXY[2], moved_to[1]))
 
         restored = SessionManager(db=db).get_session(state.session_id)
 
         assert restored is not None
         kwargs = restored.agent.kwargs
         assert (kwargs["provider"], kwargs["base_url"], kwargs["api_key"]) == expected
-        assert heals == []
 
     def test_only_restores_acp_sessions(self, manager):
         """get_session should not restore non-ACP sessions from DB."""

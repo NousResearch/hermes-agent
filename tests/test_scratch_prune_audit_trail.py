@@ -233,6 +233,143 @@ def test_audit_records_reach_durable_sink_early_boot(tmp_path, audit_records, mo
     assert "removed entry='early-boot-lane'" in content, content
 
 
+def test_redact_cmdline_masks_split_credentials():
+    """PR review (ehz0ah, blocking): split-form credentials (``--api-key`` VALUE)
+    must never reach a durable sink raw. The redaction happens at capture, so it
+    covers BOTH the formatter path and the fallback file."""
+    from hermes_constants_scratch import _redact_cmdline
+
+    argv = ["python", "worker.py", "--api-key", "sk-live-abcdef1234567890", "--user", "bob"]
+    rendered = _redact_cmdline(argv)
+    assert "sk-live-abcdef1234567890" not in rendered, rendered
+    assert "sk-l...7890" in rendered or "sk-l" in rendered, rendered
+    assert "--user bob" in rendered or "--user" in rendered, rendered  # non-secrets pass
+
+    # = form and env-style form mask too
+    eq = _redact_cmdline(["curl", "--password=hunter20000secret", "https://x"])
+    assert "hunter20000secret" not in eq, eq
+    env = _redact_cmdline(["sh", "-c", "AWS_SECRET_ACCESS_KEY=abcd1234efgh5678 curl"])
+    assert "abcd1234efgh5678" not in env, env
+
+
+def test_fallback_fires_when_root_logger_rejects_info(tmp_path, audit_records, monkeypatch):
+    """PR review (ehz0ah, blocking): a root HANDLER at INFO is not enough — if the
+    root LOGGER's effective level is above INFO, records reach neither the handler
+    nor (previously) the fallback. The fallback must fire on actual deliverability."""
+    import logging as _logging
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "root-level-lane"
+    entry.mkdir()
+    (entry / "f").write_text("x", encoding="utf-8")
+    _age(entry)
+    _age(entry / "f")
+
+    audit_home = tmp_path / "audit-home3"
+    monkeypatch.setenv("HERMES_HOME", str(audit_home))
+
+    real_root = _logging.getLogger()
+    saved_handlers = list(real_root.handlers)
+    saved_level = real_root.level
+    # The exact reviewer state: handler present at INFO, root logger WARNING —
+    # Python drops the record before the handler ever sees it.
+    real_root.addHandler(_logging.StreamHandler())
+    real_root.setLevel(_logging.WARNING)
+    try:
+        assert prune_scratch_dir(scratch) == 1
+    finally:
+        real_root.handlers = saved_handlers
+        real_root.setLevel(saved_level)
+
+    sink = audit_home / "logs" / "scratch-prune.log"
+    assert sink.exists(), "fallback did not fire despite undeliverable INFO"
+    assert "removed entry='root-level-lane'" in sink.read_text(encoding="utf-8-sig")
+
+
+def test_reap_failed_kill_not_reported_as_reaped(tmp_path, audit_records, monkeypatch):
+    """PR review (ehz0ah, blocking): a victim that resists TERM and KILL must be
+    reported as reap failed — never as reaped. The count claims confirmed exits."""
+    import hermes_constants_scratch as scratch_mod
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "unkillable-lane"
+    entry.mkdir()
+    (entry / "f").write_text("x", encoding="utf-8")
+    _age(entry)
+    _age(entry / "f")
+
+    import subprocess
+    import sys
+
+    sleeper = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        cwd=str(entry), stdin=subprocess.DEVNULL,
+    )
+    time.sleep(0.3)
+
+    import psutil
+
+    class _FakeProcess:
+        """One object, both roles (selection + kill): resists every signal,
+        reports itself alive, carries resolved cwd and redactable argv."""
+
+        def __init__(self, pid=None):
+            self.pid = sleeper.pid if pid is None else pid
+
+        def uids(self):
+            class _U:
+                real = os.getuid() if hasattr(os, "getuid") else None
+            return _U()
+
+        def cwd(self):
+            # psutil returns resolved paths; the reap resolves its root —
+            # match that or victim selection rejects the entry.
+            return os.path.realpath(str(entry))
+
+        def cmdline(self):
+            return [sys.executable, "-c", "import time; time.sleep(60)"]
+
+        def terminate(self):
+            raise psutil.AccessDenied(self.pid)
+
+        def kill(self):
+            raise psutil.AccessDenied(self.pid)
+
+        def is_running(self):
+            return True  # resisted TERM and KILL: still alive
+
+    class _FakePsutil:
+        Error = psutil.Error
+        AccessDenied = psutil.AccessDenied
+        Process = _FakeProcess
+
+        @staticmethod
+        def process_iter(attrs=None):
+            return [_FakeProcess()]
+
+        @staticmethod
+        def wait_procs(procs, timeout=None):
+            return [], list(procs)  # nothing exited within grace
+
+        @staticmethod
+        def pid_exists(pid):
+            return pid == sleeper.pid
+
+    monkeypatch.setitem(sys.modules, "psutil", _FakePsutil)
+    monkeypatch.setattr(scratch_mod, "_own_lineage", lambda: set())
+    try:
+        removed = scratch_mod.prune_idle_entries(scratch, 25.0, frozenset())
+        assert removed == 1  # the ENTRY was removed (confirmed)
+        all_records = [r.message for r in audit_records.records]
+        failed = [m for m in all_records if "reap failed" in m and str(sleeper.pid) in m]
+        assert failed, all_records
+        assert not any("reaped pid=" + str(sleeper.pid) in m for m in all_records), all_records
+    finally:
+        if sleeper.poll() is None:
+            sleeper.kill()
+            sleeper.wait(timeout=10)
+
+
 def test_audit_no_double_write_when_log_sink_live(tmp_path, audit_records, monkeypatch):
     """When the normal file handler IS live (post-setup), records go only through
     the logger — no duplication into the durable sink file."""

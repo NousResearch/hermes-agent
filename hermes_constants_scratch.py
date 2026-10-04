@@ -25,6 +25,67 @@ logger = logging.getLogger(__name__)
 _REAP_GRACE_SECONDS = 3.0
 # ``.git`` files (linked worktrees) are looked for this deep; lanes nest repo/tree/subtree.
 _GIT_FILE_MAX_DEPTH = 4
+# argv flags whose FOLLOWING token is a credential value (``--password`` / ``-p`` VALUE).
+# Command lines routinely carry secrets as separate arguments; the audit record must
+# never persist them raw (PR review: split-form credentials reach the durable log).
+_SECRET_ARGV_FLAGS = (
+    "--password", "-p", "--pass", "--passwd", "--secret", "--api-key", "--apikey",
+    "--token", "--auth-token", "--access-token", "--client-secret", "--private-key",
+    "--aws-secret-access-key", "--secret-access-key", "-k", "--key",
+)
+_SECRET_ARGV_KEYS = ("password", "passwd", "secret", "token", "api-key", "apikey", "api_key")
+
+
+def _redact_cmdline(argv: list[str]) -> str:
+    """Render an argv for the audit record with credential-shaped arguments masked.
+
+    Three shapes are masked, at capture, before ANY sink: ``--password VALUE``
+    (value as the following token), ``--password=VALUE`` (inline form), and
+    env-style ``KEY=VALUE`` tokens whose key carries a secret-bearing word.
+    Mirrors ``agent.redact``'s mask-shape (head+tail) without importing it —
+    the reap path must stay stdlib-only and import-safe before ``setup_logging``.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if "=" in tok:
+            key, _, value = tok.partition("=")
+            base = key.lower().lstrip("-").replace("_", "-")
+            if key in _SECRET_ARGV_FLAGS or any(w in base for w in _SECRET_ARGV_KEYS):
+                out.append(f"{key}={mask_secret(value)}")
+            else:
+                out.append(tok)
+            i += 1
+            continue
+        if tok in _SECRET_ARGV_FLAGS:
+            if i + 1 < len(argv):
+                out.append(f"{tok} {mask_secret(argv[i + 1])}")
+                i += 2
+                continue
+            out.append(f"{tok}=<missing>")
+            i += 1
+            continue
+        base = tok.lower().lstrip("-").replace("_", "-")
+        if any(w in base for w in _SECRET_ARGV_KEYS) and i + 1 < len(argv):
+            out.append(f"{tok} {mask_secret(argv[i + 1])}")
+            i += 2
+            continue
+        out.append(tok)
+        i += 1
+    return " ".join(out)[:200]
+
+
+def _mask(value: str) -> str:
+    """Head+tail mask, ``agent.redact.mask_secret``-shaped, stdlib-local."""
+    if len(value) <= 8:
+        return "****"
+    return f"{value[:4]}...{value[-4:]}" if len(value) <= 64 else f"{value[:4]}...****"
+
+
+def mask_secret(value: str) -> str:
+    """Public mask used by ``_redact_cmdline`` (kept stdlib: import-safe pre-logging)."""
+    return _mask(value)
 
 
 def _audit_log_path() -> Path:
@@ -49,13 +110,25 @@ def audit_info(log: logging.Logger, msg: str, *args: object) -> None:
     the root would capture INFO (the early-boot case) it appends the record to
     ``<home>/logs/scratch-prune.log`` directly: an audit line either reaches
     ``agent.log`` or the audit file, never nowhere. Never raises — the prune
-    must not fail for want of a log line.
+    must not fail for want of a log line. The fallback text passes through
+    ``redact_sensitive_text`` when importable (the fallback file has no
+    formatter); ``_redact_cmdline`` has already masked argv-shaped secrets
+    regardless, so the stdlib-only early-boot path is never raw.
     """
     try:
         log.info(msg, *args)
-        if any(h.level <= logging.INFO for h in logging.getLogger().handlers):
+        # Delivery check: a handler at INFO level counts only if INFO would actually
+        # be PROCESSED — Python's logger-level filter runs BEFORE handlers, so a root
+        # logger above INFO swallows records even when a low-level handler waits.
+        root = logging.getLogger()
+        root_will_process = logging.INFO >= root.getEffectiveLevel()
+        sink_live = root_will_process and any(
+            h.level <= logging.INFO for h in root.handlers
+        )
+        if sink_live:
             return  # the log file sink is live; no fallback duplication
         text = (msg % args) if args else msg
+        text = _redact_for_disk(text)
         path = _audit_log_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         # Appends are one short line per rare event; POSIX O_APPEND makes each
@@ -65,6 +138,18 @@ def audit_info(log: logging.Logger, msg: str, *args: object) -> None:
             fh.write("%s\t%s\n" % (time.strftime("%Y-%m-%dT%H:%M:%S"), text))
     except Exception:  # noqa: BLE001 — audit must never break the prune
         pass
+
+
+def _redact_for_disk(text: str) -> str:
+    """Redact before the fallback sink: argv secrets were masked at capture
+    (``_redact_cmdline``); this adds the repo's own redactor when importable so
+    formatter-level coverage extends to the file the formatter never sees."""
+    try:
+        from agent.redact import redact_sensitive_text  # lazy: post-boot import is safe
+
+        return redact_sensitive_text(text)
+    except Exception:  # noqa: BLE001 — stdlib-only environments (early boot)
+        return text
 
 
 def subtree_touched_since(path: Path, cutoff: float) -> bool:
@@ -177,10 +262,12 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path]) -> int:
         return 0
     # Evidence is captured BEFORE the kill: a terminated process's cmdline is gone,
     # so the audit record reads from this snapshot, not from post-mortem queries.
+    # argv is redacted at capture: split-form credentials (``--password`` VALUE)
+    # never reach any sink raw (PR review round 3).
     evidence: list[tuple[int, str]] = []
     for proc in victims:
         try:
-            evidence.append((proc.pid, " ".join(proc.cmdline() or [])[:200]))
+            evidence.append((proc.pid, _redact_cmdline(list(proc.cmdline() or []))))
         except (psutil.Error, OSError):
             evidence.append((proc.pid, "<unavailable>"))
     for proc in victims:
@@ -194,12 +281,27 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path]) -> int:
             proc.kill()
         except (psutil.Error, OSError):
             continue
+    # Confirmed exits only: the record distinguishes what the reap actually achieved.
+    # A victim that resisted TERM and KILL is reported as failed, never as reaped —
+    # an audit receipt must not claim a kill that did not happen (PR review round 3).
+    confirmed = 0
     for pid, cmdline in evidence:
-        audit_info(logger, "scratch prune: reaped pid=%d cmdline=%s", pid, cmdline)
+        proc = next((p for p in victims if p.pid == pid), None)
+        exited = True
+        if proc is not None:
+            try:
+                exited = not (psutil.pid_exists(pid) and psutil.Process(pid).is_running())
+            except (psutil.Error, OSError):
+                exited = False  # cannot establish the exit: do not claim it
+        if exited:
+            confirmed += 1
+            audit_info(logger, "scratch prune: reaped pid=%d cmdline=%s", pid, cmdline)
+        else:
+            audit_info(logger, "scratch prune: reap failed pid=%d cmdline=%s", pid, cmdline)
     audit_info(
-        logger, "scratch prune: reaped %d process(es) rooted in pruned entries", len(victims)
+        logger, "scratch prune: reaped %d process(es) rooted in pruned entries", confirmed
     )
-    return len(victims)
+    return confirmed
 
 
 def _linked_worktree_repos(entry: Path) -> set[str]:

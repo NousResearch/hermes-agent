@@ -116,11 +116,7 @@ test('an exited shell releases its PTY handle without waiting for tab dispose', 
   assert.deepEqual(exitSend?.[1], { code: 0, signal: null })
 
   // …and once the exit is flushed the session is fully gone.
-  const write = handles.map.get('hermes:terminal:write') as (
-    event: unknown,
-    id: string,
-    data: string
-  ) => boolean
+  const write = handles.map.get('hermes:terminal:write') as (event: unknown, id: string, data: string) => boolean
 
   assert.equal(write({}, session.id, 'echo hi'), false)
 })
@@ -133,11 +129,7 @@ test('explicit dispose kills the PTY and drops the session', async () => {
   assert.equal(dispose({}, session.id), true)
   assert.equal(fake.pty.kill.mock.calls.length >= 1, true)
 
-  const write = handles.map.get('hermes:terminal:write') as (
-    event: unknown,
-    id: string,
-    data: string
-  ) => boolean
+  const write = handles.map.get('hermes:terminal:write') as (event: unknown, id: string, data: string) => boolean
 
   assert.equal(write({}, session.id, 'echo hi'), false)
   assert.equal(dispose({}, session.id), false)

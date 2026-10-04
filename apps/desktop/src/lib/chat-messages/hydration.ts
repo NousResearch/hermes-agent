@@ -31,8 +31,24 @@ const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const LEGACY_HEARTBEAT_ROW_RE = /^\[Background process \S+ heartbeat #\d+ /
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
-const LEGACY_CONTINUATION_NUDGE_RE =
-  /^\[System: (?:The previous response was cut off|Your previous response was truncated)/
+// Older sessions persisted these internal user-role prompts before they were typed
+// display_kind=hidden. Use exact text except for the dynamically named dropped-tools
+// prompt, so an actual user question that merely starts similarly stays visible.
+const LEGACY_CONTINUATION_NUDGES = new Set([
+  '[System: The previous response was cut off by a network error mid-stream — a transport interruption, NOT a change in your capabilities. Your tools are still fully available; call them as normal and ignore any earlier claim that you lack tool access. Continue the task from where you left off. Do not restart or repeat prior text.]',
+  '[System: The previous response was cut off by a network error mid-stream. Continue exactly where you left off. Do not restart or repeat prior text. Finish the answer directly.]',
+  '[System: Your previous response was truncated by the output length limit. Continue exactly where you left off. Do not restart or repeat prior text. Finish the answer directly.]',
+  '[System: Your previous response contained only internal reasoning and never produced a visible answer or tool call. Do not keep thinking. Produce your final answer as plain text now (or make the tool call you were planning).]',
+  '[System: Continue now. Execute the required tool calls and only send your final answer after completing the task.]',
+  '[System: Your previous message ended the turn with a fragment that is not a usable answer. If the task is unfinished, continue it and then give the complete answer. If that fragment WAS your complete answer, send it again exactly as before.]',
+  'Your previous turn indicated a tool call but none was included. Do not narrate a plan or restate intent — issue the actual tool call now to continue the task.',
+  'You just executed tool calls but returned an empty response. Please process the tool results above and continue with the task.',
+  "You've reached the maximum number of tool-calling iterations allowed. Please provide a final response summarizing what you've found and accomplished so far, without calling any more tools.",
+  'Continue from the compressed conversation context above. This marker exists because no human user turn was available.',
+  'Continue from the compressed conversation context above. This marker exists because the compacted transcript contained no preserved user turn.'
+])
+const LEGACY_DROPPED_TOOLS_NUDGE_RE =
+  /^\[System: Your previous tool call \([^)]+\) was too large and the stream timed out before it could be delivered\./
 
 // Gateway routing note for Discord turns (gateway/run_inbound.py::discord_triggering_note).
 // Current gateways persist the authored text; this heals rows written before that fix. Only
@@ -153,7 +169,13 @@ function transcriptContent(
     return null
   }
 
-  if (role === 'user' && (LEGACY_HEARTBEAT_ROW_RE.test(content.trim()) || LEGACY_CONTINUATION_NUDGE_RE.test(content.trim()))) {
+  // Already typed rows have an authoritative display kind. Fallback detection
+  // only applies to historical, untyped user messages.
+  if (role !== 'user' || displayKind) {
+    return content
+  }
+  const text = content.trim()
+  if (LEGACY_HEARTBEAT_ROW_RE.test(text) || LEGACY_CONTINUATION_NUDGES.has(text) || LEGACY_DROPPED_TOOLS_NUDGE_RE.test(text)) {
     return null
   }
   return content

@@ -1465,8 +1465,6 @@ platform:
   irc:
     quit_message: "Hermes Agent leáll"
     standalone_quit: "kézbesítve"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Jóváhagyás egyszer"
     confirm_always_approve: "Mindig jóváhagy"
@@ -2372,6 +2370,7 @@ cli:
     removed: "A(z) {index}. sorelem eltávolítva: {preview}"
     item_not_found: "A(z) {index}. sorelem nem található. Jelenlegi méret: {size}"
     usage_edit: "Használat: /queue edit <number> <new prompt>"
+    usage_remove: "Használat: /queue rm <number>"
     updated: "A(z) {index}. sorelem frissítve: {preview}"
     usage_move: "Használat: /queue move <from> <to>"
     move_out_of_range: "A mozgatás kívül esik a soron. Jelenlegi méret: {size}"
@@ -2737,6 +2736,7 @@ cli:
       restored: "Állapot visszaállítva innen: {snapshot_id}"
       restart_recommended: "Az átjáró/dashboard folyamatok újraindítása ajánlott, hogy átvegyék a state.db változásait."
       not_found: "A pillanatkép nem található: {snapshot_id}"
+      restore_incomplete: "A(z) {snapshot_id} pillanatkép nem állt vissza teljesen; néhány fájl elutasítva (lásd a naplókat)"
       usage_prune: "Használat: /snapshot prune [megtartandó-darabszám]"
       pruned: "{deleted} régi pillanatkép törölve ({keep} megtartva)."
     export:

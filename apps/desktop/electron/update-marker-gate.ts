@@ -119,6 +119,31 @@ export function markerHoldId(raw: Buffer, file?: { ino: number; mtimeMs: number 
 }
 
 /**
+ * The blocked screen's holds, one per blocked wait: the primary boot wait
+ * (`PRIMARY_HOLD_OWNER`) and each pool/profile backend wait. The primary's
+ * own hold wins; otherwise the first blocked pool wait is shown, so a hold
+ * only a profile backend meets (a remote primary, or a hold that appeared
+ * after boot) still gets a screen with its ways out (review R8 M6).
+ */
+export const PRIMARY_HOLD_OWNER = 'primary'
+
+export class UpdateHoldBoard {
+  private readonly holds = new Map<string, HeldState>()
+
+  set(owner: string, state: HeldState): void {
+    this.holds.set(owner, state)
+  }
+
+  clear(owner: string): void {
+    this.holds.delete(owner)
+  }
+
+  shown(): HeldState | null {
+    return this.holds.get(PRIMARY_HOLD_OWNER) ?? this.holds.values().next().value ?? null
+  }
+}
+
+/**
  * The user confirmed "Start anyway" over this exact held marker body. The
  * caller logs the override; the marker is left in place.
  */

@@ -17,8 +17,10 @@ import {
   type HeldState,
   heldWaitMessage,
   liveMarkerProbe,
+  PRIMARY_HOLD_OWNER,
   requestHoldRecheck,
-  resetHoldStateForTests
+  resetHoldStateForTests,
+  UpdateHoldBoard
 } from './update-marker-gate'
 import { cleanupMarkerFixtures, deadPid, liveOwner, minutesAgo, tmpHome } from './update-marker.test-helpers'
 import { runMarkerHelper } from './updater/marker-helper'
@@ -269,6 +271,29 @@ describe.skipIf(process.platform === 'win32')('gate over a dead marker (R6)', ()
     assert.equal(await hasLiveMarker(), true)
     assert.deepEqual(helperCalls(home), [])
   })
+})
+
+test("a pool/profile hold reaches the screen when the primary shows none; the primary's own clear never drops it (R8 M6)", () => {
+  const state = (holdId: string): HeldState => ({
+    verdict: 'held',
+    ownerPid: 7,
+    livePid: null,
+    holdId,
+    since: 1,
+    checkedAt: 2,
+    blocking: true
+  })
+
+  const board = new UpdateHoldBoard()
+  assert.equal(board.shown(), null)
+  board.set('pool:work', state('p'))
+  assert.equal(board.shown()?.holdId, 'p', 'a remote primary / an already-booted primary: the pool hold is shown')
+  board.set(PRIMARY_HOLD_OWNER, state('m'))
+  assert.equal(board.shown()?.holdId, 'm', 'the primary boot wait wins')
+  board.clear(PRIMARY_HOLD_OWNER)
+  assert.equal(board.shown()?.holdId, 'p', 'clearing the primary leaves the pool hold on screen')
+  board.clear('pool:work')
+  assert.equal(board.shown(), null)
 })
 
 test('without a protocol-2 script the gate judges dead = not running and deletes nothing', async () => {

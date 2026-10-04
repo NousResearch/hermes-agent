@@ -604,8 +604,10 @@ import {
   heldWaitMessage,
   HOLD_SCREEN_GRACE_MS,
   liveMarkerProbe,
+  PRIMARY_HOLD_OWNER,
   requestHoldRecheck,
-  startAnywayLogLine
+  startAnywayLogLine,
+  UpdateHoldBoard
 } from './update-marker-gate'
 import { updateConnectionsBeforeLocal } from './update-order'
 import {
@@ -3108,6 +3110,9 @@ interface UpdateHoldWire {
 // The hold the boot screen currently shows; the IPC handlers below act on it
 // only (a Start anyway for a hold the user never saw is refused).
 let currentUpdateHold: HeldState | null = null
+// Every wait blocked past the grace: the primary boot and each pool/profile
+// backend (R8 M6). The screen shows the primary's, else the first pool one.
+const updateHoldBoard = new UpdateHoldBoard()
 
 function updateHoldWire(state: HeldState): UpdateHoldWire {
   return {
@@ -3120,7 +3125,16 @@ function updateHoldWire(state: HeldState): UpdateHoldWire {
   }
 }
 
-function clearUpdateHold() {
+function clearUpdateHold(owner = PRIMARY_HOLD_OWNER) {
+  updateHoldBoard.clear(owner)
+  const shown = updateHoldBoard.shown()
+
+  if (shown) {
+    renderUpdateHold(shown, false)
+
+    return
+  }
+
   if (!currentUpdateHold && !bootProgressState.updateHold) {
     return
   }
@@ -3129,7 +3143,13 @@ function clearUpdateHold() {
   updateBootProgress({ updateHold: null })
 }
 
-function showUpdateHold(state: HeldState) {
+// A pool/profile wait publishes only the hold (its boot is not the window's).
+function showUpdateHold(state: HeldState, owner = PRIMARY_HOLD_OWNER) {
+  updateHoldBoard.set(owner, state)
+  renderUpdateHold(updateHoldBoard.shown()!, owner === PRIMARY_HOLD_OWNER)
+}
+
+function renderUpdateHold(state: HeldState, bootPhase: boolean) {
   const previous = currentUpdateHold
   const sameHold = previous?.holdId === state.holdId && previous.verdict === state.verdict
 
@@ -3146,6 +3166,13 @@ function showUpdateHold(state: HeldState) {
   }
 
   currentUpdateHold = state
+
+  if (!bootPhase) {
+    updateBootProgress({ updateHold: updateHoldWire(state) })
+
+    return
+  }
+
   updateBootProgress({
     phase: 'backend.update-held',
     // Logged by updateBootProgress: only when what holds the install changes,
@@ -12448,32 +12475,54 @@ async function runPoolBackendStart(
   {
     let poolAnnounced = false
     let poolHoldLogged: string | null = null
+    let poolHeld: HeldState | null = null
+    let poolBlockedSince: number | null = null
+    const holdOwner = `pool:${poolKey}`
 
-    // A blocking hold never ages out here either (R8 D3). Pool backends have
-    // no boot screen of their own: the primary window's Start anyway (scoped
-    // to the same marker body) releases this wait too.
+    // A blocking hold never ages out here either (R8 D3). Past the grace it is
+    // published on the window's blocked screen like the primary's (R8 M6): a
+    // remote primary, or one that booted before the hold appeared, never
+    // shows one of its own. Check again / Start anyway act on its hold id.
     const poolGateDeps = updateGateDeps(undefined, state => {
+      poolHeld = state
+
       if (state.blocking && poolHoldLogged !== state.holdId) {
         poolHoldLogged = state.holdId
         rememberLog(
           `[updates] pool backend start for profile "${profile}" blocked: update marker ${state.verdict}, ` +
-            `hold ${state.holdId}; waiting for the hold to end or a Start anyway on the boot screen`
+            `hold ${state.holdId}; waiting for the hold to end or a Start anyway on the blocked screen`
         )
       }
     })
 
-    await waitForUpdateClearance(poolGateDeps, {
-      signal: localBackendLifecycle.signal,
-      isCancelled: (): boolean => backendPool.get(poolKey) !== entry,
-      onWaitTick: reason => {
-        if (!poolAnnounced) {
-          poolAnnounced = true
-          rememberLog(`[updates] update in progress (${reason}); deferring pool backend start for profile "${profile}"`)
-        }
-      },
-      pollMs: UPDATE_WAIT_POLL_MS,
-      timeoutMs: UPDATE_WAIT_TIMEOUT_MS
-    })
+    try {
+      await waitForUpdateClearance(poolGateDeps, {
+        signal: localBackendLifecycle.signal,
+        isCancelled: (): boolean => backendPool.get(poolKey) !== entry,
+        onWaitTick: reason => {
+          if (!poolAnnounced) {
+            poolAnnounced = true
+            rememberLog(
+              `[updates] update in progress (${reason}); deferring pool backend start for profile "${profile}"`
+            )
+          }
+
+          const heldNow: HeldState | null = poolHeld
+          poolHeld = null
+          poolBlockedSince = reason === 'marker' && heldNow?.blocking ? (poolBlockedSince ?? Date.now()) : null
+
+          if (heldNow && poolBlockedSince !== null && Date.now() - poolBlockedSince >= HOLD_SCREEN_GRACE_MS) {
+            showUpdateHold(heldNow, holdOwner)
+          } else {
+            clearUpdateHold(holdOwner)
+          }
+        },
+        pollMs: UPDATE_WAIT_POLL_MS,
+        timeoutMs: UPDATE_WAIT_TIMEOUT_MS
+      })
+    } finally {
+      clearUpdateHold(holdOwner)
+    }
   }
 
   profileDeletionGate.assertCanStart(profile)

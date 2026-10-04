@@ -558,6 +558,42 @@ describe('primary failure foreground isolation', () => {
     expect($desktopBoot.get().error).toBeNull()
     expect($desktopBoot.get().visible).toBe(false)
   })
+
+  it('a hold published after boot (a pool/profile backend) still reaches the blocked screen (R8 M6)', async () => {
+    const desktop = fakeDesktop()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    const hold = {
+      holdId: 'a1b2c3d4e5f60718',
+      verdict: 'held' as const,
+      ownerPid: 4242,
+      since: Date.now() - 6_000,
+      checkedAt: Date.now(),
+      logPath: '/x/logs/update.log'
+    }
+
+    const progress = {
+      error: null,
+      fakeMode: false,
+      message: 'Hermes is ready',
+      phase: 'backend.ready',
+      progress: 100,
+      retryable: false,
+      running: false,
+      timestamp: Date.now()
+    }
+
+    act(() => desktop.emitBootProgress({ ...progress, updateHold: hold }))
+    expect($desktopBoot.get().updateHold).toEqual(hold)
+    expect($desktopBoot.get().phase).not.toBe('backend.ready')
+    act(() => desktop.emitBootProgress({ ...progress, updateHold: null }))
+    expect($desktopBoot.get().updateHold).toBeNull()
+  })
+
   it('ignores a boot snapshot superseded by a newer progress event', async () => {
     const snapshot = deferred<Awaited<ReturnType<ReturnType<typeof fakeDesktop>['getBootProgress']>>>()
     const connection = deferred<typeof primaryConn>()

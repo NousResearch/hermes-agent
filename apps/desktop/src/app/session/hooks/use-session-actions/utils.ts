@@ -1627,6 +1627,15 @@ export function removeRepresentedLocalLiveProjection(
   )
 }
 
+/** Whether `candidate` already carries every tool occurrence `live` holds. */
+function carriesToolOccurrences(candidate: ChatMessage, live: ChatMessage): boolean {
+  const candidateTools = new Set(
+    candidate.parts.flatMap(part => (part.type === 'tool-call' && part.toolCallId ? [part.toolCallId] : []))
+  )
+
+  return live.parts.every(part => part.type !== 'tool-call' || !part.toolCallId || candidateTools.has(part.toolCallId))
+}
+
 /**
  * Overlay messages that changed while activation waited on REST. Existing ids
  * replace the older activation row; only rows added or changed since the warm
@@ -1665,7 +1674,8 @@ export function overlayConcurrentMessageChanges(
           !(index > lastUser) ||
           message.role !== 'assistant' ||
           baselineById.has(message.id) ||
-          isLiveTailRow(message)
+          isLiveTailRow(message) ||
+          (current.pending === true && !carriesToolOccurrences(message, current))
         ) {
           return false
         }
@@ -1760,9 +1770,15 @@ export function overlayConcurrentMessageChanges(
     // The page can still carry the row's older streaming copy by id when it
     // was composed from the baseline; the committed row replaces both — or the
     // live run's parts, which the committed fold already spells out (walk
-    // above).
+    // above). A still-pending row is the turn's stream target, so it folds on
+    // a stricter proof: the committed row must carry every tool occurrence the
+    // live row holds as well (`committedOnPage` above), or a text collision
+    // with an unrelated row would drop the only copy of a running tool
+    // (#123047). The turn persists its assistant row before the tool round
+    // runs, so a window that re-attaches mid-turn holds exactly that pair —
+    // committed row plus its own pending copy — and exempting it painted one
+    // reply twice (#127288).
     (current.role === 'assistant' &&
-      current.pending !== true &&
       !current.error &&
       isLiveTailReplyId(current.id) &&
       (committedOnPage(current) || coveredLiveRunIds.has(current.id))) ||

@@ -2,7 +2,7 @@ manifest_version: 1
 name: tareno
 connector_slug: tareno
 description: >-
-  Manage social accounts, calendars, drafts, media, analytics and Get Viral
+  Manage social accounts, posting schedules, drafts, media, analytics and Get Viral
   research through Tareno's hosted OAuth MCP server.
 source: https://tareno.co/docs/mcp
 transport:
@@ -29,7 +29,12 @@ post_install: |
 
   The default tool selection is read-only. Use hermes mcp configure tareno
   to opt into drafting, media import, scheduling, publishing or Get Viral tools.
+  Also enable get_action_status for approval-based actions and
+  get_viral_run_status for Get Viral analysis before checking their status.
   Start a new session or use /reload-mcp after changing the connection.
+
+  Read posting-calendar entries with list_posts using status, from and to
+  filters. Scheduling and rescheduling tools operate on those posts.
 
   Publishing, scheduling, editing scheduled posts, deleting drafts/scheduled
   posts and starting paid Get Viral analysis use Tareno approval requests.

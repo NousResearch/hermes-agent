@@ -18,8 +18,18 @@ describe('single-line display math promotion', () => {
     expect(preprocessMarkdown(input)).toBe('Intro paragraph.\n\n$$\nE = mc^2\n$$\n\nAfter the equation.')
   })
 
-  it('keeps the container prefix (blockquote/list) on every emitted line', () => {
+  it('replays the blockquote prefix on every emitted line', () => {
     expect(preprocessMarkdown('> $$x^2$$')).toBe('> $$\n> x^2\n> $$')
+  })
+
+  it('keeps a list item whole — marker on the first line, indented continuations', () => {
+    expect(preprocessMarkdown('- $$x^2$$')).toBe('- $$\n  x^2\n  $$')
+    expect(preprocessMarkdown('1. $$x^2$$')).toBe('1. $$\n   x^2\n   $$')
+    expect(preprocessMarkdown('  - $$x^2$$')).toBe('  - $$\n    x^2\n    $$')
+  })
+
+  it('keeps a quoted list item whole', () => {
+    expect(preprocessMarkdown('> - $$x^2$$')).toBe('> - $$\n>   x^2\n>   $$')
   })
 
   it('preserves CRLF line endings in the promoted form', () => {

@@ -66,6 +66,19 @@ const HUGGING_DISPLAY_MATH_OPEN_RE =
   /^([ \t]*(?:>[ \t]*)*(?:(?:[-+*]|\d+[.)])[ \t]+)?[ \t]*)\$\$[ \t]*(\S[^\n]*?)[ \t]*\r?$/
 
 const HUGGING_DISPLAY_MATH_CLOSE_RE = /^([ \t]*(?:>[ \t]*)*[ \t]*)(\S[^\n]*?)\$\$[ \t]*\r?$/
+
+// The prefix group of HUGGING_DISPLAY_MATH_OPEN_RE may carry a list marker
+// (`- `, `1. `). Replaying that prefix verbatim onto every emitted line would
+// repeat the marker on the delimiter and body lines, which markdown parses as
+// sibling list items instead of one item. Blockquote markers must repeat (`>`
+// on every line keeps the block inside the quote), but a list marker is
+// replaced with an equal-width run of spaces: the marker stays on the first
+// line only and the continuation lines indent by its width — the same shape
+// normalizeDisplayMathForMarkdown pins in markdown-text.test.ts ('keeps
+// display math inside its markdown container').
+function containerContinuationPrefix(prefix: string): string {
+  return prefix.replace(/(?:[-+*]|\d+[.)])[ \t]+/g, marker => ' '.repeat(marker.length))
+}
 // Bare-URL autolink matcher. The character classes EXCLUDE `*` so a URL that
 // abuts markdown emphasis with no separating space (e.g. `**label: https://x**`,
 // a very common LLM pattern) doesn't swallow the trailing `**` into the href.
@@ -860,8 +873,11 @@ function escapeCjkProseDollars(text: string): string {
  * loses its first line, never closes, and KaTeX paints the remains as raw source
  * text. Models emit this form constantly.
  *
- * Single-line `$$…$$` is left alone — it routes through the inline math-text
- * construct and already renders.
+ * A single-line `$$…$$` that owns its whole line is promoted to the same flow
+ * form: left alone, the compact form routes through remark-math's inline
+ * math-text construct and renders flush left instead of as centered display
+ * math. Empty bodies and bodies containing an embedded `$$` are left as-is —
+ * an inner `$$` would close the flow fence early.
  */
 function splitHuggingDisplayMath(text: string): string {
   const lines = text.split('\n')
@@ -883,18 +899,22 @@ function splitHuggingDisplayMath(text: string): string {
 
       if (compactBody && !compactBody.includes('$$')) {
         const carriageReturn = lines[index].endsWith('\r') ? '\r' : ''
+        const openingPrefix = openingMatch[1]
+        const continuationPrefix = containerContinuationPrefix(openingPrefix)
 
         out.push(
-          `${openingMatch[1]}$$${carriageReturn}`,
-          `${openingMatch[1]}${compactBody}${carriageReturn}`,
-          `${openingMatch[1]}$$${carriageReturn}`
+          `${openingPrefix}$$${carriageReturn}`,
+          `${continuationPrefix}${compactBody}${carriageReturn}`,
+          `${continuationPrefix}$$${carriageReturn}`
         )
 
         continue
       }
     }
 
-    // `$$x^2$$` closes on the same line — not our case.
+    // A compact span the guards above rejected (empty body or an embedded
+    // `$$`) is left as-is; only the open-ended hugging form proceeds to the
+    // closing search below.
     if (!openingMatch || openingMatch[2].endsWith('$$')) {
       out.push(lines[index])
 

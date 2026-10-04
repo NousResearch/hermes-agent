@@ -495,6 +495,12 @@ _TEXT_SEND_DEADLINE = 30.0
 # period would re-hang the lock on exactly the wedged socket this bounds, so the rare late landing is
 # accepted; httpx's own timeouts free the pool slot.
 _MEDIA_SEND_DEADLINE = 300.0
+# Inline-button prefixes owned by plugins (samimizer approval cards), forwarded as a
+# ``gateway_platform_event`` of type ``callback_query``. The plugin answers the tap itself; when no
+# plugin claims it (truthy hook result) within the window, the adapter answers so the button stops spinning.
+_PLUGIN_CALLBACK_PREFIXES = ("ok:", "edit:")
+_PLUGIN_CALLBACK_ANSWER_WINDOW = 10.0
+_PLUGIN_CALLBACK_UNHANDLED_TEXT = "Niet verwerkt"
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar("telegram_polling_generation", default=None)
 
 
@@ -930,7 +936,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _is_callback_user_authorized(
         self, user_id: str, *, chat_id: Optional[str] = None, chat_type: Optional[str] = None,
-        thread_id: Optional[str] = None, user_name: Optional[str] = None) -> bool:
+        thread_id: Optional[str] = None, user_name: Optional[str] = None, is_bot: bool = False) -> bool:
         """Return whether a Telegram inline-button caller may perform gated actions."""
         normalized_user_id = str(user_id or "").strip()
         if not normalized_user_id:
@@ -942,7 +948,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if getattr(self, "_authorization_check", None) is not None:
             injected = self._is_sender_authorized(
                 normalized_user_id, chat_type=normalized_chat_type, chat_id=str(chat_id or normalized_user_id),
-                thread_id=str(thread_id) if thread_id is not None else None)
+                thread_id=str(thread_id) if thread_id is not None else None, is_bot=is_bot)
             if injected is not None:
                 return injected
         auth_fn = self._legacy_runner_auth_fn()
@@ -952,7 +958,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 source = SessionSource(
                     platform=Platform.TELEGRAM, chat_id=str(chat_id or normalized_user_id), chat_type=normalized_chat_type,
                     user_id=normalized_user_id, user_name=str(user_name).strip() if user_name else None,
-                    thread_id=str(thread_id) if thread_id is not None else None)
+                    thread_id=str(thread_id) if thread_id is not None else None, is_bot=bool(is_bot))
                 return bool(auth_fn(source))
             except Exception:
                 logger.debug(
@@ -4786,11 +4792,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _handle_callback_query(self, update: "Update", context: "ContextTypes.DEFAULT_TYPE") -> None:
         """Dispatch inline keyboard button clicks on the callback_data prefix."""
+        received_at = time.time()  # tap arrival on the gateway, not the card's message.date
         query = update.callback_query
         if not query or not query.data:
             return
         self._accept_update()
         data = query.data
+        if data.startswith(_PLUGIN_CALLBACK_PREFIXES):
+            self._spawn_plugin_callback_forward(query, received_at)
+            return
         cb = self._callback_ctx(query)
         # Model picker / generic choice picker (/reasoning, /fast) need a chat id.
         for prefixes, handler in (
@@ -4809,6 +4819,85 @@ class TelegramAdapter(BasePlatformAdapter):
             if data.startswith(prefix):
                 await handler(query, data, cb)
                 return
+
+    def _spawn_plugin_callback_forward(self, query, received_at: float) -> None:
+        """Forward a plugin-owned button tap without holding up PTB's update processing."""
+        task = asyncio.create_task(self._forward_plugin_callback(query, received_at))
+        tracked = getattr(self, "_background_tasks", None)
+        if isinstance(tracked, set):
+            tracked.add(task)
+            task.add_done_callback(tracked.discard)
+
+    async def _forward_plugin_callback(self, query, received_at: float) -> bool:
+        """Publish an ``ok:``/``edit:`` tap as ``gateway_platform_event`` ``callback_query``.
+
+        Goes through the runner's auth boundary like reactions do. The plugin answers the callback
+        itself; a plugin claims the tap by returning a truthy hook result. When nothing claims it
+        within ``_PLUGIN_CALLBACK_ANSWER_WINDOW`` (no subscriber, unauthorized, malformed, error or
+        timeout) the adapter answers ``_PLUGIN_CALLBACK_UNHANDLED_TEXT`` so the button stops spinning.
+        Returns whether a plugin claimed it."""
+        handled = False
+        try:
+            handler = getattr(self, "_platform_event_handler", None)
+            from hermes_cli.lifecycle import has_hook
+            if handler is not None and has_hook("gateway_platform_action"):
+                event = self._normalize_callback_query_event(query, received_at)
+                if event is not None:
+                    source = self._source_from_callback_query_for_auth(query)
+                    results = await asyncio.wait_for(handler(event, source), timeout=_PLUGIN_CALLBACK_ANSWER_WINDOW)
+                    handled = any(bool(r) for r in (results or ()))
+        except asyncio.TimeoutError:
+            logger.warning("[%s] callback_query %r not claimed by a plugin within %gs", self.name,
+                           str(getattr(query, "data", ""))[:16], _PLUGIN_CALLBACK_ANSWER_WINDOW)
+        except Exception:
+            logger.debug("[%s] callback_query forward error", self.name, exc_info=True)
+        if not handled:
+            try:
+                await query.answer(text=_PLUGIN_CALLBACK_UNHANDLED_TEXT)
+            except Exception:  # already answered by the plugin, or the query expired
+                logger.debug("[%s] callback_query fallback answer failed", self.name, exc_info=True)
+        return handled
+
+    def _normalize_callback_query_event(self, query, received_at: float) -> Optional[Dict[str, Any]]:
+        """Tap → ``callback_query`` envelope (samimizer contract); ``None`` without tapper, card chat or card id."""
+        data = getattr(query, "data", None)
+        user_id = getattr(getattr(query, "from_user", None), "id", None)
+        message = getattr(query, "message", None)
+        chat_id = getattr(getattr(message, "chat", None), "id", None)
+        message_id = getattr(message, "message_id", None)
+        callback_id = getattr(query, "id", None)
+        if not isinstance(data, str) or not data.startswith(_PLUGIN_CALLBACK_PREFIXES):
+            return None
+        if not all(self._is_id_like(v) and str(v).strip() for v in (user_id, chat_id, message_id, callback_id)):
+            return None
+        return {
+            "platform": "telegram",
+            "event_type": "callback_query",
+            "payload": {
+                "platform": "telegram", "internal": False, "user_id": str(user_id), "chat_id": str(chat_id),
+                "message_id": str(message_id), "data": data, "date": float(received_at),
+                "callback_query_id": str(callback_id)},
+        }
+
+    def _source_from_callback_query_for_auth(self, query):
+        """SessionSource for the tapper of an inline button; raises ``ValueError`` without identities."""
+        user = getattr(query, "from_user", None)
+        message = getattr(query, "message", None)
+        chat = getattr(message, "chat", None)
+        user_id = str(getattr(user, "id", "") or "").strip() or None
+        chat_id = str(getattr(chat, "id", "") or "").strip() or None
+        message_id = getattr(message, "message_id", None)
+        if not user_id or not chat_id or message_id is None:
+            raise ValueError("gateway_platform_event callback_query requires tapper, chat, and message identities")
+        user_name = str(getattr(user, "username", "") or getattr(user, "full_name", "") or "").strip() or None
+        thread_id_raw = getattr(message, "message_thread_id", None)
+        is_topic = bool(getattr(message, "is_topic_message", False))
+        chat_type = self._normalize_chat_type(
+            getattr(chat, "type", "dm"), is_forum=getattr(chat, "is_forum", False) is True)
+        thread_id = str(thread_id_raw) if thread_id_raw is not None and is_topic else None
+        return self.build_source(
+            chat_id=chat_id, chat_type=chat_type, user_id=user_id, user_name=user_name,
+            is_bot=bool(getattr(user, "is_bot", False)), thread_id=thread_id, message_id=str(message_id))
 
     async def _claim_callback_state(self, query, cb: Dict[str, Any], state: dict, key, denial: str, resolved: str, *, pop: bool = True):
         """Auth-gate a button tap, then claim its pending entry; None (after answering) when refused or expired."""

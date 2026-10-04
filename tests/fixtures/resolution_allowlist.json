@@ -440,6 +440,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "pm/libatomic.py",
+    "symbol": "warm_sudo_before_install",
+    "kind": "bare_which"
+  },
+  {
     "path": "pm/native_build.py",
     "symbol": "prepare_windows_environment",
     "kind": "bare_which"

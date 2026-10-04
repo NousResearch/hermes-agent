@@ -85,6 +85,42 @@ def _command_plan(command: tuple[str, ...]) -> tuple[list[str] | None, str, str]
     return None, "", f"as root: {shlex.join(command)}"
 
 
+def warm_sudo_before_install() -> None:
+    """Let a terminal user authorize sudo before PM takes its install lock.
+
+    The staged repair can only use ``sudo -n``, so on a password-sudo host it
+    succeeds only with a cached ticket. Updates enter PM directly, without the
+    shell installer's prerequisites stage, so cache the ticket here: only on a
+    glibc Linux host still missing libatomic.so.1, non-root, interactive, and
+    only when sudo would actually ask.
+    """
+    import ctypes
+    import sys
+
+    from pm.store import MUSL_TARGETS, current_target
+
+    if not sys.platform.startswith("linux") or _is_root():
+        return
+    if not (sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty()):
+        return
+    if current_target() in MUSL_TARGETS or current_target().endswith("-bionic"):
+        return
+    try:
+        ctypes.CDLL("libatomic.so.1")
+        return
+    except OSError:
+        pass
+    sudo = shutil.which("sudo")
+    if sudo is None or subprocess.run([sudo, "-n", "true"], stdin=subprocess.DEVNULL,
+                                      capture_output=True, check=False).returncode == 0:
+        return
+    print("→ Node.js needs libatomic.so.1; sudo may ask for your password to install it", flush=True)
+    try:
+        subprocess.run([sudo, "-v"], timeout=300, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
 def _run(argv: list[str]) -> bool:
     try:
         return subprocess.run(argv, stdin=subprocess.DEVNULL, timeout=300, check=False).returncode == 0

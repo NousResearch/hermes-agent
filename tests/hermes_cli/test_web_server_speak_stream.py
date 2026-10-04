@@ -12,6 +12,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from hermes_cli import web_server
 import hermes_cli.web_server_gateway as _web_server_gateway
+from hermes_cli.web_routers import audio as _audio
 
 
 @pytest.fixture
@@ -156,6 +157,81 @@ def test_split_text_respects_cap_and_preserves_content():
     joined = " ".join(pieces)
     for word in text.replace(".", "").split():
         assert word in joined
+
+
+# --- the idle flush must never cut a word, and must never drop the remainder ---------------------
+#
+# Live symptom (a lesson, 2026-10-03): the tutor's audio stopped mid-sentence while the transcript
+# was complete. The idle force-flush drained the whole buffer wherever the delta happened to stop,
+# and the remainder was then spoken as an unrelated fragment (or lost entirely).
+
+
+def test_idle_flush_speaks_at_a_clause_boundary_and_keeps_the_rest():
+    head, rest = _audio._speakable_head("Dobro jutro vsem skupaj, danes se učimo naprej", 20)
+    assert head == "Dobro jutro vsem skupaj,"
+    assert rest == " danes se učimo naprej"
+
+
+def test_idle_flush_falls_back_to_the_last_whitespace():
+    head, rest = _audio._speakable_head("ena dva tri štiri pet šest sedem", 12)
+    assert head == "ena dva tri štiri pet šest"
+    assert rest.strip() == "sedem"
+
+
+def test_idle_flush_waits_when_there_is_no_safe_boundary():
+    """One long token has no boundary to cut at: keep it buffered — end-of-text still speaks it."""
+    head, rest = _audio._speakable_head("nenavadnooolgabeseda", 3)
+    assert head == "" and rest == "nenavadnooolgabeseda"
+
+
+def test_idle_flush_keeps_a_head_shorter_than_min_len_buffered():
+    head, rest = _audio._speakable_head("Da, naprej", 20)
+    assert head == "" and rest == "Da, naprej"
+
+
+def test_idle_flush_never_drops_content():
+    buf = "  Alpha beta, gamma delta epsilon  "
+    head, rest = _audio._speakable_head(buf, 5)
+    assert " ".join(f"{head} {rest}".split()) == " ".join(buf.split())
+
+
+def test_an_idle_flush_speaks_a_word_safe_head_and_loses_nothing(stream_client, monkeypatch):
+    """The wiring, not just the helper: a silent gap mid-message yields a boundary-safe clip AND
+    the remainder still reaches the provider."""
+    streamer = _FakeStreamer([b"\x00\x00"])
+    _patch_provider(monkeypatch, streamer)
+    monkeypatch.setattr(_audio, "IDLE_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(_audio, "IDLE_POLLS_BEFORE_FORCE_FLUSH", 2)
+
+    text = "Alpha beta gamma delta epsilon zeta eta theta"  # no terminator → stays buffered
+    with stream_client.websocket_connect(_url()) as conn:
+        conn.send_text(json.dumps({"text": text}))
+        time.sleep(0.6)  # > 2 idle polls → one flush fires
+        conn.send_text(json.dumps({"done": True}))
+        while True:
+            message = conn.receive()
+            if message.get("bytes") is None and json.loads(message["text"]).get("type") == "end":
+                break
+
+    assert len(streamer.requests) >= 2, streamer.requests
+    # Nothing lost and nothing mangled: every request is a literal slice of the reply.
+    for request in streamer.requests:
+        assert request in text, request
+    assert " ".join(" ".join(streamer.requests).split()) == text
+    # The first clip ends at a word boundary, not inside one.
+    assert text.startswith(streamer.requests[0] + " "), streamer.requests[0]
+
+
+@pytest.mark.parametrize("barge_in,saw_done,abort", [
+    (True, False, True),    # explicit stop frame
+    (True, True, True),     # stop after `done` — still an interruption
+    (False, False, True),   # the client vanished before saying it was done
+    (False, True, False),   # normal completion: the client closed after `done`
+])
+def test_only_a_real_interruption_aborts_synthesis(barge_in, saw_done, abort):
+    """`stop` used to be armed whenever the client's receive loop ended — including the normal
+    completion path — which aborted the producer mid-chunk and dropped the tail of the reply."""
+    assert _audio._should_abort_synthesis(barge_in=barge_in, saw_done=saw_done) is abort
 
 
 def test_edge_speak_stream_speaks_each_sentence_instead_of_whole_text_fallback(

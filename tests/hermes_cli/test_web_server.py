@@ -2105,6 +2105,45 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert "sk-super-secret" not in yaml.safe_dump(cfg)
 
 
+    @pytest.mark.parametrize("clear_key", [False, True])
+    def test_custom_endpoint_edit_preserves_or_clears_api_key_env(self, clear_key):
+        """An omitted key preserves the alias; an explicit blank clears it."""
+        from hermes_cli.config import load_config, load_env, save_config, save_env_value
+        from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+
+        save_env_value("SHARED_ENDPOINT_KEY", "shared-placeholder")
+        cfg = load_config()
+        cfg["providers"] = {
+            "local": {
+                "name": "Local", "base_url": "http://127.0.0.1:8000/v1",
+                "model": "local-model", "api_key_env": "SHARED_ENDPOINT_KEY",
+            },
+        }
+        save_config(cfg)
+        assert _get_named_custom_provider("custom:local")["api_key"] == "shared-placeholder"
+
+        payload = {
+            "id": "local", "name": "Local edited",
+            "base_url": "http://127.0.0.1:8000/v1", "model": "local-model",
+        }
+        if clear_key:
+            payload["api_key"] = ""
+        response = self.client.post("/api/providers/custom-endpoints", json=payload)
+        assert response.status_code == 200, response.text
+
+        entry = load_config()["providers"]["local"]
+        runtime = _get_named_custom_provider("custom:local")
+        if clear_key:
+            assert "api_key_env" not in entry
+            assert "key_env" not in entry
+            assert "api_key" not in entry
+            assert runtime["api_key"] == ""
+        else:
+            assert entry["api_key_env"] == "SHARED_ENDPOINT_KEY"
+            assert runtime["api_key"] == "shared-placeholder"
+        # Other endpoints may still reference this externally named variable.
+        assert load_env()["SHARED_ENDPOINT_KEY"] == "shared-placeholder"
+
     def test_custom_endpoint_save_pins_api_mode_and_resolves_reasoning_alias(self):
         """Desktop's Custom Endpoints form pins the transport and keeps alias metadata (#93622).
 

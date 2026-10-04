@@ -699,9 +699,11 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
         entry["key_env"] = env_var
         entry.pop("api_key", None)
     elif submitted_key is not None:
-        # Blank field means "clear the key", not "leave it alone".
+        # Blank clears both credential-reference spellings. Omission preserves
+        # them; a shared env variable is left for its other consumers.
         remove_env_value(env_var)
         entry.pop("key_env", None)
+        entry.pop("api_key_env", None)
         entry.pop("api_key", None)
     elif str(entry.get("api_key") or "").strip() and not _config_api_key_is_env_ref(endpoint_id):
         # Migrate a plaintext key an earlier release wrote, on the next save,

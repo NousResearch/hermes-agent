@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -113,6 +114,13 @@ class DispatchResult:
     :func:`reap_terminal_workers`."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """``(task_id, assignee, workspace_path)`` triples."""
+    skipped_blocked: list[str] = field(default_factory=list)
+    """``blocked`` task ids a lane query handed over despite the lane being
+    ready/review. Under normal operation this list stays empty — blocked is
+    not a dispatch lane; it is parked for a human. It exists as a defensive
+    fence (audit 2026-10-03, P2): if a lane refactor ever leaks parked rows
+    into the dispatch loops, they are skipped and surfaced here instead of
+    being claimed underneath a pending human decision."""
     skipped_unassigned: list[str] = field(default_factory=list)
     """Ready task ids with no assignee at all — operator-actionable (usually a
     misfiled task waiting for routing)."""
@@ -1973,7 +1981,7 @@ def dispatch_once(
     ``skipped_locked=True`` and writes nothing; the lock is keyed on the
     resolved DB path so unrelated boards tick in parallel.
     """
-    def _locked_tick() -> DispatchResult:
+    def _locked_tick(dispatch_lock_held: bool = True) -> DispatchResult:
         return _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
@@ -1987,20 +1995,23 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            dispatch_lock_held=dispatch_lock_held,
         )
 
     try:
         db_path = _kb.kanban_db_path(board=board)
     except Exception:
-        # Must not lose the tick — fall through to an unguarded dispatch.
-        result = _locked_tick()
+        # Must not lose the tick — fall through to an unguarded dispatch
+        # (S6-05: the fallback passes the REAL lock state downstream; the
+        # provenance must not claim a lock this tick never held).
+        result = _locked_tick(dispatch_lock_held=False)
         _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
         return result
     with _kbc._dispatch_tick_lock(db_path) as held:
         if not held:
             result = DispatchResult(skipped_locked=True)
         else:
-            result = _locked_tick()
+            result = _locked_tick(dispatch_lock_held=True)
             # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.
             _kbc._maybe_checkpoint_wal(conn, db_path)
     # Lock released. Fire the tick observer strictly OUTSIDE the critical
@@ -2022,6 +2033,191 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
 
 
+# ---------------------------------------------------------------------------
+# P4 route provenance (audit 2026-10-03 F-05 / PARTE III P4)
+# ---------------------------------------------------------------------------
+
+# Schema of the ``resolved_route_provenance`` record written onto the run row
+# (``task_runs.metadata["resolved_route_provenance"]``) and appended per spawn
+# as one JSON line to ``<kanban_home>/runtime/kanban_routing_dispatches.jsonl``.
+# v1 fields: schema, dispatch_ts, selected_model, selected_provider,
+# profile_default_slug, policy_source, dispatch_lock_held (+ task_id and run_id
+# on the JSONL line only, so the file can be correlated without opening a DB).
+_ROUTE_PROVENANCE_SCHEMA = "v1"
+
+
+def _read_profile_default_model(profile_name: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """ONE best-effort read of the assignee profile's default model+provider
+    (S6-03, review 6: the old code read ``_read_config_model`` twice — two
+    reads can straddle a config edit and fabricate a model/provider pair no
+    snapshot ever contained). ``(None, None)`` on any unreadable profile."""
+    if not profile_name:
+        return None, None
+    try:
+        from hermes_cli.profiles import _read_config_model, get_profile_dir
+
+        model, provider = _read_config_model(get_profile_dir(profile_name))
+        return model or None, provider or None
+    except Exception as exc:
+        _kb._log.debug(
+            "kanban dispatch: route provenance could not resolve the "
+            "profile default for profile %r (%s)", profile_name, exc,
+        )
+        return None, None
+
+
+def _route_provenance_record(
+    task: Task, board: Optional[str], *, dispatch_lock_held: bool,
+) -> dict:
+    """One provenance record for the route THIS dispatcher resolved.
+
+    ``model_override`` wins when set (it was policy-checked by
+    ``assert_model_route_allowed`` inside :func:`_worker_argv`); otherwise the
+    worker runs the assignee profile's own default model, best-effort read
+    from that profile's ``config.yaml`` — read ONCE (S6-03) and the pair used
+    as-is. ``profile_default_slug`` is the profile's configured default model
+    REGARDLESS of which policy won — the datum the audit needs to tell
+    "override matched the default" apart from "override changed the route".
+
+    Never raises: provenance is observability. An unreadable profile
+    contributes ``selected_model=None`` with ``policy_source`` still stamped
+    (the honest "dispatcher resolved unknown-profile-default" state).
+    """
+    now = int(time.time())
+    profile_default_model, profile_default_provider = _read_profile_default_model(
+        task.assignee,
+    )
+    if task.model_override:
+        # The route policy was re-checked at argv composition; provenance
+        # names the very slug the worker argv carries.
+        selected_model = task.model_override
+        selected_provider = task.provider_override or None
+        policy_source = "model_override"
+    else:
+        # profile_default policy: the worker argv carries NO -m, so the
+        # worker itself resolves the profile's own default model. Record the
+        # best-effort read of that same default so the run says what the
+        # worker would resolve to.
+        selected_model = profile_default_model
+        selected_provider = profile_default_provider
+        policy_source = "profile_default"
+    return {
+        "schema": _ROUTE_PROVENANCE_SCHEMA,
+        "dispatch_ts": now,
+        "selected_model": selected_model,
+        "selected_provider": selected_provider,
+        "profile_default_slug": profile_default_model,
+        "policy_source": policy_source,
+        "dispatch_lock_held": bool(dispatch_lock_held),
+    }
+
+
+def _append_route_jsonl(
+    record: dict, task: Task, run_id: Optional[int], board: Optional[str],
+) -> None:
+    """Append the provenance line to ``runtime/kanban_routing_dispatches.jsonl``.
+
+    Best-effort: the stalled predecessor of this file (last line 2026-08-14)
+    shows the operator wants the stream even when the board DB is busy, and
+    conversely a provenance failure must NEVER break the spawn. Appends only —
+    the file is shared across boards and its old 2.6-contract lines are kept.
+
+    ``board`` is the EXPLICIT slug this tick was dispatched against (S6-02,
+    review 6: the old stub read the process-current board instead — on a
+    named-board tick run from a different current board, the line said the
+    wrong board). A board the operator never resolved stays ``None``-honest:
+    the slug is never guessed from ambient context.
+    """
+    line = dict(record)
+    line["task_id"] = task.id
+    if run_id is not None:
+        line["run_id"] = int(run_id)
+    line["board"] = _kb._normalize_board_slug(board)
+    try:
+        path = _kb.kanban_home() / "runtime" / "kanban_routing_dispatches.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, ensure_ascii=False, sort_keys=True) + "\n")
+    except Exception:
+        _kb._log.debug(
+            "kanban dispatch: route provenance JSONL append failed for task %s",
+            task.id, exc_info=True,
+        )
+
+
+def _record_route_provenance(
+    conn: sqlite3.Connection, task: Task, board: Optional[str],
+    *, dispatch_lock_held: bool,
+) -> None:
+    """Stamp ``resolved_route_provenance`` (schema v1) onto the CLAIMED run.
+
+    Dispatcher-owned write, right after the claim/workspace resolution and
+    BEFORE the spawn call, inside its own short write txn. The run row is
+    open (claim ran) with ``metadata`` still NULL, so the merge below
+    normally writes a fresh dict; if some earlier writer put metadata there,
+    the provenance key is MERGED in, never clobbering their fields.
+
+    ``dispatch_lock_held`` mirrors what this tick actually held (S6-05, review
+    6): ``True`` on the normal locked path, the real value on the documented
+    no-lock fallback in :func:`dispatch_once` — the record must not assert
+    protection that was not in force.
+
+    Failure policy: the record-sink crashes must not fail the spawn (this is
+    observability), but they must be debuggable — hence the debug log with
+    the exception. The JSONL is attempted EVEN WHEN the DB write failed
+    (S6-04, review 6): the sinks are independent, loss of one must not
+    suppress the other.
+    """
+    record = _route_provenance_record(task, board, dispatch_lock_held=dispatch_lock_held)
+    try:
+        with _kb.write_txn(conn):
+            run_id = _kb._current_run_id(conn, task.id)
+            row = (
+                conn.execute(
+                    "SELECT metadata FROM task_runs WHERE id = ?", (run_id,)
+                ).fetchone()
+                if run_id is not None
+                else None
+            )
+            existing = {}
+            if row is not None and row["metadata"]:
+                try:
+                    existing = json.loads(row["metadata"])
+                    if not isinstance(existing, dict):
+                        existing = {}
+                except (ValueError, TypeError):
+                    existing = {}
+            existing["resolved_route_provenance"] = record
+            if run_id is not None:
+                conn.execute(
+                    "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                    (json.dumps(existing, ensure_ascii=False), run_id),
+                )
+            _kb._append_event(
+                conn, task.id, "route_resolved", record, run_id=run_id,
+            )
+    except Exception:
+        _kb._log.debug(
+            "kanban dispatch: route provenance run-metadata write failed for task %s",
+            task.id, exc_info=True,
+        )
+    finally:
+        # S6-04: the JSONL sink is INDEPENDENT of the DB sink — attempted
+        # whatever the DB write's outcome. run_id re-read here is best-effort;
+        # on DB failure None just omits the correlation field.
+        try:
+            run_id = _kb._current_run_id(conn, task.id)
+        except Exception:
+            run_id = None
+        try:
+            _append_route_jsonl(record, task, run_id, board)
+        except Exception:
+            _kb._log.debug(
+                "kanban dispatch: route provenance JSONL sink raised for task %s",
+                task.id, exc_info=True,
+            )
+
+
 def _dispatch_lane_task(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
@@ -2036,6 +2232,7 @@ def _dispatch_lane_task(
     spawn_fn,
     per_profile_cap: Optional[int],
     per_profile_running: dict[str, int],
+    dispatch_lock_held: bool,
 ) -> bool:
     """Guard, claim, resolve the workspace and spawn one ready/review row.
     Returns True when a spawn slot was consumed (real or ``dry_run``); every
@@ -2116,6 +2313,13 @@ def _dispatch_lane_task(
     if claimed.workspace_kind == "worktree":
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+    # P4 route provenance: the route is resolved HERE (this dispatcher, pre-spawn).
+    # Stamped onto the open run row and appended to the runtime JSONL —
+    # best-effort, never breaks the spawn; ``dispatch_lock_held`` mirrors the
+    # protection this tick actually held (S6-05).
+    _record_route_provenance(
+        conn, claimed, board, dispatch_lock_held=dispatch_lock_held,
+    )
     if lane == "review":
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
@@ -2269,10 +2473,28 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT id, assignee, status FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
+
+
+def _record_blocked_lane_skip(conn: sqlite3.Connection, task_id: str, lane: str) -> None:
+    """Audit event for a parked row a lane query handed over (P2 fence).
+
+    Written once per state change like the other dispatcher diagnostics:
+    a repeat only when the previous event differs, not one row per tick.
+    """
+    if lane == "review" and not review_dispatch_enabled():
+        return
+    with _kb.write_txn(conn):
+        last = conn.execute(
+            "SELECT kind, payload FROM task_events WHERE task_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1", (task_id,),
+        ).fetchone()
+        payload = _kb._json_or_null({"lane": lane})
+        if last is None or last["kind"] != "skipped_blocked_lane" or last["payload"] != payload:
+            _kb._append_event(conn, task_id, "skipped_blocked_lane", {"lane": lane})
 
 
 def _any_spawnable_review(
@@ -2339,12 +2561,18 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    dispatch_lock_held: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
     call ``spawn_fn(task, workspace_path, board) -> Optional[int]``, recording
     the PID so later ticks catch crashes before the TTL. Cap semantics:
-    :func:`_tick_spawn_budget`."""
+    :func:`_tick_spawn_budget`.
+
+    ``dispatch_lock_held``: what THIS tick held while spawning (S6-05,
+    review 6) — ``True`` on the locked path, ``False`` on dispatch_once's
+    documented no-lock fallback; the route provenance records it verbatim
+    instead of asserting protection that was not in force."""
     result = DispatchResult()
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
@@ -2394,12 +2622,20 @@ def _dispatch_once_locked(
         dry_run=dry_run, ttl_seconds=ttl_seconds, board=board,
         failure_limit=failure_limit, spawn_fn=spawn_fn,
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
+        dispatch_lock_held=dispatch_lock_held,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
     spawned = 0
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
+        # Defensive fence (P2): 'blocked' is never a dispatch lane. If a lane
+        # query ever hands a parked row over (lane soup / future refactor),
+        # skip it and surface it instead of claiming under a pending decision.
+        if row["status"] == "blocked":
+            result.skipped_blocked.append(row["id"])
+            _record_blocked_lane_skip(conn, row["id"], "ready")
+            continue
         row_assignee = row["assignee"]
         if not row_assignee:
             # Honour kanban.default_assignee so an unassigned task doesn't
@@ -2421,6 +2657,11 @@ def _dispatch_once_locked(
     for row in review_rows:
         if spawn_budget is not None and spawned >= spawn_budget:
             break
+        # Same defensive fence for the review lane (P2).
+        if row["status"] == "blocked":
+            result.skipped_blocked.append(row["id"])
+            _record_blocked_lane_skip(conn, row["id"], "review")
+            continue
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
@@ -2759,6 +3000,12 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
         if sk:
             cmd.extend(["--skills", sk])
     if task.model_override:
+        # Policy re-check at the moment the model is HANDED to the worker, so a
+        # `set-model` after PREFLIGHT_PASS (TOCTOU) cannot slip a prohibited slug
+        # through. Import inside the branch keeps the module import graph flat.
+        from hermes_cli.kanban_db import assert_model_route_allowed
+
+        assert_model_route_allowed(task.model_override, source="_worker_argv")
         cmd.extend(["-m", task.model_override])
         # Pin the provider too so the worker resolves the model against the
         # intended backend (model X with provider Y is the classic board-stall).

@@ -3437,6 +3437,26 @@ display:
     aux_failure_label: "백그라운드 리뷰"
   notice:
     uncompressed_context_overflow: "⚠️ 세션 컨텍스트(약 {tokens} 토큰)가 압축이 비활성화된 상태(compression.enabled: false)에서 모델 컨텍스트 창(약 {context_length} 토큰)을 초과했어요. /compact로 기록을 압축하거나 config.yaml에서 압축을 활성화해 주세요."
+turn_failure:
+  notice: "요청이 처리되지 않았습니다. 여전히 실행을 원하시면 다시 보내 주세요."
+  partial_notice: "이번 턴이 완료되지 않았습니다. 일부 작업은 이미 실행되었을 수 있으므로 다시 보내기 전에 그 결과를 확인해 주세요."
+  interrupted_waiting: "작업 중단: 모델 응답을 기다리는 중 ({elapsed}s 경과)."
+  interrupted_retry_api: "작업 중단: 오류 후 API 호출을 재시도하는 중 (재시도 {detail})."
+  interrupted_retry_empty: "작업 중단: 모델의 빈 응답 후 재시도하는 중 (재시도 {detail})."
+  interrupted_fallback: "작업이 중단되었습니다."
+  exhausted_reset: "사용량 한도는 {window} 후 초기화됩니다. 그 후 /retry 를 보내거나 /model 로 모델을 전환하세요."
+  exhausted_temporary: "일시적으로 사용할 수 없는 것 같습니다. 1분 기다린 후 /retry 를 보내거나 /model 로 모델을 전환하세요."
+  exhausted_backup: "앞으로 이 문제를 방지하려면 `hermes fallback add` 로 예비 제공업체를 추가하세요."
+  provider_said: "제공업체 메시지: {summary}"
+  exhausted_lead:
+    rate_limit: "{label} 에서 {attempts} 번의 모든 시도에 요청 속도 제한을 적용했습니다"
+    upstream_rate_limit: "{label} 에서 {attempts} 번의 모든 시도에 요청 속도 제한을 적용했습니다"
+    overloaded: "{label} 에서 {attempts} 번의 모든 시도에 과부하를 보고했습니다"
+    server_error: "{label} 에서 {attempts} 번의 모든 시도에 서버 오류를 반환했습니다"
+    timeout: "{label} 에서 {attempts} 번의 시도 중 어느 것에도 제시간에 응답하지 않았습니다"
+  site:
+    truncated: "모델의 답변이 완료되기 전에 잘렸으므로 (출력 길이 한도에 도달함) Hermes는 불완전한 작업을 실행하지 않았습니다. 아무것도 변경되지 않았습니다. `continue` 를 보내거나, 작업을 더 작은 단계로 나누어 요청하거나, 이 모델의 max_tokens 를 늘리세요."
+
 explainer:
   no_reply_prefix: "⚠️ 응답 없음: "
   empty_response: "{model}이(가) 다시 시도했지만 이번에는 답변을 만들지 못했어요. `continue`를 보내 다시 시도하거나 /model로 모델을 바꿔 보세요."

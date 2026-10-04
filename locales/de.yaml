@@ -3437,6 +3437,26 @@ display:
     aux_failure_label: "Hintergrund-Review"
   notice:
     uncompressed_context_overflow: "⚠️ Der Sitzungskontext (~{tokens} Tokens) überschreitet das Kontextfenster des Modells (~{context_length} Tokens), während die Komprimierung deaktiviert ist (compression.enabled: false). Verwenden Sie /compact, um den Verlauf zu komprimieren, oder aktivieren Sie die Komprimierung in config.yaml."
+turn_failure:
+  notice: "Deine Anfrage wurde nicht verarbeitet. Sende sie erneut, wenn ich sie weiterhin ausführen soll."
+  partial_notice: "Dieser Durchlauf wurde nicht abgeschlossen. Einige Aktionen wurden möglicherweise bereits ausgeführt; prüfe ihre Auswirkungen, bevor du die Anfrage erneut sendest."
+  interrupted_waiting: "Vorgang unterbrochen: Warten auf die Modellantwort ({elapsed}s vergangen)."
+  interrupted_retry_api: "Vorgang unterbrochen: erneuter API-Aufruf nach einem Fehler (Wiederholung {detail})."
+  interrupted_retry_empty: "Vorgang unterbrochen: erneuter Versuch nach einer leeren Modellantwort (Wiederholung {detail})."
+  interrupted_fallback: "Vorgang unterbrochen."
+  exhausted_reset: "sein Nutzungslimit wird in {window} zurückgesetzt. Sende danach /retry oder wechsle das Modell mit /model."
+  exhausted_temporary: "es scheint vorübergehend nicht verfügbar zu sein. Warte eine Minute und sende /retry oder wechsle das Modell mit /model."
+  exhausted_backup: "Um dies künftig zu vermeiden, füge mit `hermes fallback add` einen Ersatzanbieter hinzu."
+  provider_said: "Der Anbieter meldete: {summary}"
+  exhausted_lead:
+    rate_limit: "{label} hat alle {attempts} Versuche wegen des Anfragelimits abgewiesen"
+    upstream_rate_limit: "{label} hat alle {attempts} Versuche wegen des Anfragelimits abgewiesen"
+    overloaded: "{label} meldete bei allen {attempts} Versuchen eine Überlastung"
+    server_error: "{label} gab bei allen {attempts} Versuchen einen Serverfehler zurück"
+    timeout: "{label} antwortete bei keinem der {attempts} Versuche rechtzeitig"
+  site:
+    truncated: "Die Modellantwort wurde vor dem Ende abgeschnitten (die Ausgabelängenbegrenzung wurde erreicht), daher hat Hermes die unvollständige Aktion nicht ausgeführt. Nichts wurde geändert. Sende `continue`, bitte um kleinere Arbeitsschritte oder erhöhe max_tokens für dieses Modell."
+
 explainer:
   no_reply_prefix: "⚠️ Keine Antwort: "
   empty_response: "{model} hat diesmal auch nach mehreren Versuchen keine Antwort erzeugt. Senden Sie `continue`, um es erneut zu versuchen, oder wechseln Sie das Modell mit /model."

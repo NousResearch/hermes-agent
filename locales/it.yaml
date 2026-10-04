@@ -3437,6 +3437,26 @@ display:
     aux_failure_label: "revisione in background"
   notice:
     uncompressed_context_overflow: "⚠️ Il contesto della sessione (~{tokens} token) supera la finestra di contesto del modello (~{context_length} token) con la compressione disattivata (compression.enabled: false). Usa /compact per comprimere la cronologia o attiva la compressione in config.yaml."
+turn_failure:
+  notice: "La tua richiesta non è stata elaborata. Inviala di nuovo se vuoi ancora che la esegua."
+  partial_notice: "Questo turno non è stato completato. Alcune azioni potrebbero essere già state eseguite; verificane gli effetti prima di inviare di nuovo la richiesta."
+  interrupted_waiting: "Operazione interrotta: in attesa della risposta del modello ({elapsed}s trascorsi)."
+  interrupted_retry_api: "Operazione interrotta: nuovo tentativo di chiamata API dopo un errore (tentativo {detail})."
+  interrupted_retry_empty: "Operazione interrotta: nuovo tentativo dopo una risposta vuota del modello (tentativo {detail})."
+  interrupted_fallback: "Operazione interrotta."
+  exhausted_reset: "il suo limite di utilizzo si ripristina tra {window}. Invia /retry dopo quel tempo, oppure cambia modello con /model."
+  exhausted_temporary: "sembra temporaneamente non disponibile. Attendi un minuto e invia /retry, oppure cambia modello con /model."
+  exhausted_backup: "Per evitarlo in futuro, aggiungi un fornitore di riserva con `hermes fallback add`."
+  provider_said: "Il fornitore ha indicato: {summary}"
+  exhausted_lead:
+    rate_limit: "{label} ha imposto un limite alla frequenza delle richieste in ciascuno dei {attempts} tentativi"
+    upstream_rate_limit: "{label} ha imposto un limite alla frequenza delle richieste in ciascuno dei {attempts} tentativi"
+    overloaded: "{label} ha segnalato un sovraccarico in tutti i {attempts} tentativi"
+    server_error: "{label} ha restituito un errore del server in tutti i {attempts} tentativi"
+    timeout: "{label} non ha risposto in tempo in nessuno dei {attempts} tentativi"
+  site:
+    truncated: "La risposta del modello è stata tagliata prima del termine (ha raggiunto il limite di lunghezza dell’output), quindi Hermes non ha eseguito l’azione incompleta. Nulla è stato modificato. Invia `continue`, chiedi di suddividere il lavoro in passaggi più piccoli, oppure aumenta max_tokens per questo modello."
+
 explainer:
   no_reply_prefix: "⚠️ Nessuna risposta: "
   empty_response: "{model} non ha prodotto una risposta questa volta, nemmeno dopo i tentativi ripetuti. Invia `continue` per riprovare, oppure cambia modello con /model."

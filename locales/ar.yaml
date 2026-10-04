@@ -3437,6 +3437,26 @@ display:
     aux_failure_label: "المراجعة في الخلفية"
   notice:
     uncompressed_context_overflow: "⚠️ سياق الجلسة (~{tokens} رمزًا) يتجاوز نافذة سياق النموذج (~{context_length} رمزًا) مع تعطيل الضغط (compression.enabled: false). استخدم /compact لضغط السجل أو فعّل الضغط في config.yaml."
+turn_failure:
+  notice: "لم تتم معالجة طلبك. أرسله مرة أخرى إذا كنت لا تزال تريد مني تنفيذه."
+  partial_notice: "لم تكتمل هذه الجولة. ربما نُفذت بعض الإجراءات بالفعل؛ تحقق من آثارها قبل إعادة الإرسال."
+  interrupted_waiting: "توقفت العملية: انتظار استجابة النموذج (انقضى {elapsed}s)."
+  interrupted_retry_api: "توقفت العملية: إعادة محاولة استدعاء API بعد خطأ (المحاولة الإضافية {detail})."
+  interrupted_retry_empty: "توقفت العملية: إعادة المحاولة بعد استجابة فارغة من النموذج (المحاولة الإضافية {detail})."
+  interrupted_fallback: "توقفت العملية."
+  exhausted_reset: "سيُعاد تعيين حد الاستخدام بعد {window}. أرسل /retry بعد ذلك، أو بدّل النموذج باستخدام /model."
+  exhausted_temporary: "يبدو أنه غير متاح مؤقتًا. انتظر دقيقة وأرسل /retry، أو بدّل النموذج باستخدام /model."
+  exhausted_backup: "لتجنب ذلك مستقبلًا، أضف مزوّدًا احتياطيًا باستخدام `hermes fallback add`."
+  provider_said: "رسالة المزوّد: {summary}"
+  exhausted_lead:
+    rate_limit: "فرض {label} حدًا لمعدل الطلبات في كل المحاولات البالغ عددها {attempts}"
+    upstream_rate_limit: "فرض {label} حدًا لمعدل الطلبات في كل المحاولات البالغ عددها {attempts}"
+    overloaded: "أبلغ {label} عن حمل زائد في كل المحاولات البالغ عددها {attempts}"
+    server_error: "أعاد {label} خطأ خادم في كل المحاولات البالغ عددها {attempts}"
+    timeout: "لم يستجب {label} في الوقت المحدد في أي من المحاولات البالغ عددها {attempts}"
+  site:
+    truncated: "اقتُطع رد النموذج قبل اكتماله (بلغ حد طول المخرجات)، لذا لم ينفذ Hermes الإجراء غير المكتمل. لم يتغير شيء. أرسل `continue`، أو اطلب تقسيم العمل إلى خطوات أصغر، أو ارفع max_tokens لهذا النموذج."
+
 explainer:
   no_reply_prefix: "⚠️ لا رد: "
   empty_response: "لم ينتج {model} ردًا هذه المرة، حتى بعد إعادة المحاولات. أرسل `continue` للمحاولة مجددًا، أو بدّل النموذج عبر /model."

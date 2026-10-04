@@ -3437,6 +3437,26 @@ display:
     aux_failure_label: "后台审查"
   notice:
     uncompressed_context_overflow: "⚠️ 会话上下文（约 {tokens} 个 token）在压缩已禁用（compression.enabled: false）的情况下超出了模型上下文窗口（约 {context_length} 个 token）。请使用 /compact 压缩历史记录，或在 config.yaml 中启用压缩。"
+turn_failure:
+  notice: "你的请求未被处理。如果你仍希望我执行，请重新发送。"
+  partial_notice: "本轮未完成。部分操作可能已经执行；重新发送前，请先核实其影响。"
+  interrupted_waiting: "操作已中断：正在等待模型响应（已等待 {elapsed}s）。"
+  interrupted_retry_api: "操作已中断：出错后正在重试 API 调用（第 {detail} 次重试）。"
+  interrupted_retry_empty: "操作已中断：模型返回空响应后正在重试（第 {detail} 次重试）。"
+  interrupted_fallback: "操作已中断。"
+  exhausted_reset: "其用量限制将在 {window} 后重置。届时发送 /retry，或使用 /model 切换模型。"
+  exhausted_temporary: "它似乎暂时不可用。请等待一分钟后发送 /retry，或使用 /model 切换模型。"
+  exhausted_backup: "为避免以后出现此问题，可使用 `hermes fallback add` 添加备用提供商。"
+  provider_said: "提供商返回：{summary}"
+  exhausted_lead:
+    rate_limit: "{label} 在全部 {attempts} 次尝试中都触发了请求速率限制"
+    upstream_rate_limit: "{label} 在全部 {attempts} 次尝试中都触发了请求速率限制"
+    overloaded: "{label} 在全部 {attempts} 次尝试中都报告服务过载"
+    server_error: "{label} 在全部 {attempts} 次尝试中都返回了服务器错误"
+    timeout: "{label} 在全部 {attempts} 次尝试中都未能及时响应"
+  site:
+    truncated: "模型的回复尚未完成就被截断了（达到输出长度限制），因此 Hermes 没有执行不完整的操作。没有任何改动。发送 `continue`、要求分成更小的步骤执行，或提高此模型的 max_tokens。"
+
 explainer:
   no_reply_prefix: "⚠️ 无回复："
   empty_response: "{model} 这次即使重试后也没有生成回复。发送 `continue` 重试，或用 /model 切换模型。"

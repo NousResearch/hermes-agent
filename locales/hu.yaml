@@ -3454,6 +3454,26 @@ display:
     aux_failure_label: "háttér-áttekintés"
   notice:
     uncompressed_context_overflow: "⚠️ A munkamenet kontextusa (~{tokens} token) meghaladja a modell kontextusablakát (~{context_length} token), miközben a tömörítés ki van kapcsolva (compression.enabled: false). Használd a /compact parancsot az előzmények tömörítéséhez, vagy kapcsold be a tömörítést a config.yaml fájlban."
+turn_failure:
+  notice: "A kérésed nem lett feldolgozva. Küldd el újra, ha továbbra is szeretnéd, hogy végrehajtsam."
+  partial_notice: "Ez a kör nem fejeződött be. Néhány művelet már végrehajtódhatott; az újraküldés előtt ellenőrizd a hatásukat."
+  interrupted_waiting: "A művelet megszakadt: várakozás a modell válaszára ({elapsed}s telt el)."
+  interrupted_retry_api: "A művelet megszakadt: az API-hívás újrapróbálása hiba után (újrapróbálás: {detail})."
+  interrupted_retry_empty: "A művelet megszakadt: újrapróbálás a modell üres válasza után (újrapróbálás: {detail})."
+  interrupted_fallback: "A művelet megszakadt."
+  exhausted_reset: "a használati korlátja {window} múlva alaphelyzetbe áll. Ezután küldd el a /retry parancsot, vagy válts modellt a /model paranccsal."
+  exhausted_temporary: "úgy tűnik, átmenetileg nem érhető el. Várj egy percet, és küldd el a /retry parancsot, vagy válts modellt a /model paranccsal."
+  exhausted_backup: "Ennek jövőbeli elkerüléséhez adj hozzá egy tartalék szolgáltatót a `hermes fallback add` paranccsal."
+  provider_said: "A szolgáltató üzenete: {summary}"
+  exhausted_lead:
+    rate_limit: "{label} mind a(z) {attempts} próbálkozásnál korlátozta a kérések gyakoriságát"
+    upstream_rate_limit: "{label} mind a(z) {attempts} próbálkozásnál korlátozta a kérések gyakoriságát"
+    overloaded: "{label} mind a(z) {attempts} próbálkozásnál túlterhelést jelzett"
+    server_error: "{label} mind a(z) {attempts} próbálkozásnál szerverhibát adott vissza"
+    timeout: "{label} a(z) {attempts} próbálkozás egyikénél sem válaszolt időben"
+  site:
+    truncated: "A modell válasza a befejezés előtt megszakadt (elérte a kimeneti hosszkorlátot), ezért a Hermes nem hajtotta végre a hiányos műveletet. Semmi sem változott. Küldd el a `continue` üzenetet, kérd a munka kisebb lépésekre bontását, vagy növeld ennél a modellnél a max_tokens értékét."
+
 explainer:
   no_reply_prefix: "⚠️ Nincs válasz: "
   empty_response: "A(z) {model} ezúttal az újrapróbálkozások után sem adott választ. Küldj egy `continue` üzenetet az újrapróbáláshoz, vagy válts modellt a /model paranccsal."

@@ -3437,6 +3437,26 @@ display:
     aux_failure_label: "バックグラウンドレビュー"
   notice:
     uncompressed_context_overflow: "⚠️ セッションのコンテキスト（約{tokens}トークン）が、圧縮が無効（compression.enabled: false）の状態でモデルのコンテキストウィンドウ（約{context_length}トークン）を超えています。/compact で履歴を圧縮するか、config.yaml で圧縮を有効にしてください。"
+turn_failure:
+  notice: "リクエストは処理されませんでした。引き続き実行を希望する場合は、もう一度送信してください。"
+  partial_notice: "このターンは完了しませんでした。一部の操作は既に実行された可能性があります。再送信する前に、その結果を確認してください。"
+  interrupted_waiting: "操作が中断されました：モデルの応答を待機中（{elapsed}s 経過）。"
+  interrupted_retry_api: "操作が中断されました：エラー後に API 呼び出しを再試行中（再試行 {detail}）。"
+  interrupted_retry_empty: "操作が中断されました：モデルの空の応答を受けて再試行中（再試行 {detail}）。"
+  interrupted_fallback: "操作が中断されました。"
+  exhausted_reset: "使用量の上限は {window} 後にリセットされます。その後 /retry を送信するか、/model でモデルを切り替えてください。"
+  exhausted_temporary: "一時的に利用できないようです。1 分待って /retry を送信するか、/model でモデルを切り替えてください。"
+  exhausted_backup: "今後これを避けるには、`hermes fallback add` で予備のプロバイダーを追加してください。"
+  provider_said: "プロバイダーからのメッセージ：{summary}"
+  exhausted_lead:
+    rate_limit: "{label} は {attempts} 回すべての試行でリクエストのレート制限を適用しました"
+    upstream_rate_limit: "{label} は {attempts} 回すべての試行でリクエストのレート制限を適用しました"
+    overloaded: "{label} は {attempts} 回すべての試行で過負荷を報告しました"
+    server_error: "{label} は {attempts} 回すべての試行でサーバーエラーを返しました"
+    timeout: "{label} は {attempts} 回の試行のいずれでも時間内に応答しませんでした"
+  site:
+    truncated: "モデルの返信が完了前に途切れたため（出力の長さの上限に達しました）、Hermes は不完全な操作を実行しませんでした。変更はありません。`continue` を送信するか、作業をより小さな手順に分けて依頼するか、このモデルの max_tokens を増やしてください。"
+
 explainer:
   no_reply_prefix: "⚠️ 応答なし: "
   empty_response: "{model} は再試行後も応答を生成しませんでした。`continue` を送信して再試行するか、/model でモデルを切り替えてください。"

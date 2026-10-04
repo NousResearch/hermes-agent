@@ -3437,6 +3437,26 @@ display:
     aux_failure_label: "agtergrond-hersiening"
   notice:
     uncompressed_context_overflow: "⚠️ Die sessiekonteks (~{tokens} tokens) oorskry die model se konteksvenster (~{context_length} tokens) terwyl kompressie gedeaktiveer is (compression.enabled: false). Gebruik /compact om die geskiedenis te komprimeer of aktiveer kompressie in config.yaml."
+turn_failure:
+  notice: "Jou versoek is nie verwerk nie. Stuur dit weer as jy steeds wil hê ek moet dit uitvoer."
+  partial_notice: "Hierdie beurt is nie voltooi nie. Sommige aksies is moontlik reeds uitgevoer; gaan hul uitwerking na voordat jy die versoek weer stuur."
+  interrupted_waiting: "Bewerking onderbreek: wag vir die model se antwoord ({elapsed}s verstreke)."
+  interrupted_retry_api: "Bewerking onderbreek: API-oproep word weer ná 'n fout probeer (herpoging {detail})."
+  interrupted_retry_empty: "Bewerking onderbreek: probeer weer ná 'n leë antwoord van die model (herpoging {detail})."
+  interrupted_fallback: "Bewerking onderbreek."
+  exhausted_reset: "die gebruikslimiet word oor {window} teruggestel. Stuur daarna /retry, of wissel modelle met /model."
+  exhausted_temporary: "dit lyk tydelik onbeskikbaar. Wag 'n minuut en stuur /retry, of wissel modelle met /model."
+  exhausted_backup: "Om dit in die toekoms te vermy, voeg 'n rugsteunverskaffer met `hermes fallback add` by."
+  provider_said: "Die verskaffer het gesê: {summary}"
+  exhausted_lead:
+    rate_limit: "{label} het die versoektempo by elkeen van die {attempts} pogings beperk"
+    upstream_rate_limit: "{label} het die versoektempo by elkeen van die {attempts} pogings beperk"
+    overloaded: "{label} het by al {attempts} pogings oorlading gerapporteer"
+    server_error: "{label} het by al {attempts} pogings 'n bedienerfout teruggestuur"
+    timeout: "{label} het by geeneen van die {attempts} pogings betyds geantwoord nie"
+  site:
+    truncated: "Die model se antwoord is afgesny voordat dit klaar was (die uitvoerlengtelimiet is bereik), dus het Hermes nie die onvolledige aksie uitgevoer nie. Niks is verander nie. Stuur `continue`, vra dat die werk in kleiner stappe gedoen word, of verhoog max_tokens vir hierdie model."
+
 explainer:
   no_reply_prefix: "⚠️ Geen antwoord: "
   empty_response: "{model} het hierdie keer geen antwoord gelewer nie, selfs na herpogings. Stuur `continue` om weer te probeer, of verander modelle met /model."

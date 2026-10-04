@@ -3437,6 +3437,26 @@ display:
     aux_failure_label: "arka plan incelemesi"
   notice:
     uncompressed_context_overflow: "⚠️ Oturum bağlamı (~{tokens} token) sıkıştırma devre dışıyken (compression.enabled: false) modelin bağlam penceresini (~{context_length} token) aşıyor. Geçmişi sıkıştırmak için /compact kullanın veya config.yaml içinde sıkıştırmayı etkinleştirin."
+turn_failure:
+  notice: "İsteğiniz işlenmedi. Hâlâ yerine getirmemi istiyorsanız tekrar gönderin."
+  partial_notice: "Bu tur tamamlanmadı. Bazı işlemler zaten yürütülmüş olabilir; tekrar göndermeden önce etkilerini doğrulayın."
+  interrupted_waiting: "İşlem kesildi: model yanıtı bekleniyor ({elapsed}s geçti)."
+  interrupted_retry_api: "İşlem kesildi: hatadan sonra API çağrısı yeniden deneniyor (yeniden deneme {detail})."
+  interrupted_retry_empty: "İşlem kesildi: modelden boş yanıt alındıktan sonra yeniden deneniyor (yeniden deneme {detail})."
+  interrupted_fallback: "İşlem kesildi."
+  exhausted_reset: "kullanım sınırı {window} sonra sıfırlanacak. Ardından /retry gönderin veya /model ile model değiştirin."
+  exhausted_temporary: "geçici olarak kullanılamıyor gibi görünüyor. Bir dakika bekleyip /retry gönderin veya /model ile model değiştirin."
+  exhausted_backup: "Bunu gelecekte önlemek için `hermes fallback add` ile yedek bir sağlayıcı ekleyin."
+  provider_said: "Sağlayıcının mesajı: {summary}"
+  exhausted_lead:
+    rate_limit: "{label}, {attempts} denemenin tümünde istek hızını sınırladı"
+    upstream_rate_limit: "{label}, {attempts} denemenin tümünde istek hızını sınırladı"
+    overloaded: "{label}, {attempts} denemenin tümünde aşırı yük bildirdi"
+    server_error: "{label}, {attempts} denemenin tümünde sunucu hatası döndürdü"
+    timeout: "{label}, {attempts} denemenin hiçbirinde zamanında yanıt vermedi"
+  site:
+    truncated: "Modelin yanıtı tamamlanmadan kesildi (çıktı uzunluğu sınırına ulaşıldı), bu yüzden Hermes tamamlanmamış işlemi yürütmedi. Hiçbir şey değiştirilmedi. `continue` gönderin, işin daha küçük adımlara bölünmesini isteyin veya bu model için max_tokens değerini artırın."
+
 explainer:
   no_reply_prefix: "⚠️ Yanıt yok: "
   empty_response: "{model} bu kez, yeniden denemelere rağmen bir yanıt üretmedi. Tekrar denemek için `continue` gönderin veya /model ile model değiştirin."

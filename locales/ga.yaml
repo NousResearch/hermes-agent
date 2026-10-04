@@ -3437,6 +3437,26 @@ display:
     aux_failure_label: "athbhreithniú cúlra"
   notice:
     uncompressed_context_overflow: "⚠️ Sáraíonn comhthéacs an tseisiúin (~{tokens} comhartha) fuinneog chomhthéacs an mhúnla (~{context_length} comhartha) agus an comhbhrú díchumasaithe (compression.enabled: false). Úsáid /compact chun an stair a chomhbhrú nó cumasaigh an comhbhrú i config.yaml."
+turn_failure:
+  notice: "Níor próiseáladh d’iarratas. Seol arís é más mian leat fós go ndéanfainn é."
+  partial_notice: "Níor críochnaíodh an seal seo. Seans go bhfuil roinnt gníomhartha curtha i gcrích cheana; seiceáil a n-éifeachtaí sula seolann tú an t-iarratas arís."
+  interrupted_waiting: "Cuireadh isteach ar an oibríocht: ag fanacht le freagra ón tsamhail ({elapsed}s caite)."
+  interrupted_retry_api: "Cuireadh isteach ar an oibríocht: ag triail an ghlao API arís tar éis earráide (atriail {detail})."
+  interrupted_retry_empty: "Cuireadh isteach ar an oibríocht: ag triail arís tar éis freagra folamh ón tsamhail (atriail {detail})."
+  interrupted_fallback: "Cuireadh isteach ar an oibríocht."
+  exhausted_reset: "athshocrófar a teorainn úsáide i gceann {window}. Seol /retry ina dhiaidh sin, nó athraigh samhail le /model."
+  exhausted_temporary: "is cosúil nach bhfuil sé ar fáil go sealadach. Fan nóiméad agus seol /retry, nó athraigh samhail le /model."
+  exhausted_backup: "Chun é seo a sheachaint amach anseo, cuir soláthraí cúltaca leis le `hermes fallback add`."
+  provider_said: "Dúirt an soláthraí: {summary}"
+  exhausted_lead:
+    rate_limit: "chuir {label} teorainn le ráta na n-iarratas i ngach ceann de na {attempts} iarracht"
+    upstream_rate_limit: "chuir {label} teorainn le ráta na n-iarratas i ngach ceann de na {attempts} iarracht"
+    overloaded: "thuairiscigh {label} go raibh sé ró-ualaithe i ngach ceann de na {attempts} iarracht"
+    server_error: "thug {label} earráid freastalaí ar ais i ngach ceann de na {attempts} iarracht"
+    timeout: "níor fhreagair {label} in am in aon cheann de na {attempts} iarracht"
+  site:
+    truncated: "Gearradh freagra na samhla sular chríochnaigh sé (shroich sé a theorainn faid aschuir), mar sin níor rith Hermes an gníomh neamhiomlán. Níor athraíodh aon rud. Seol `continue`, iarr an obair i gcéimeanna níos lú, nó méadaigh max_tokens don tsamhail seo."
+
 explainer:
   no_reply_prefix: "⚠️ Gan freagra: "
   empty_response: "Níor thug {model} freagra an uair seo, fiú tar éis atrialacha. Seol `continue` chun triail eile a bhaint as, nó athraigh an tsamhail le /model."

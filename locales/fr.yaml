@@ -3754,6 +3754,26 @@ display:
     aux_failure_label: "revue en arrière-plan"
   notice:
     uncompressed_context_overflow: "⚠️ Le contexte de session (~{tokens} tokens) dépasse la fenêtre de contexte du modèle (~{context_length} tokens) alors que la compression est désactivée (compression.enabled: false). Utilisez /compact pour compresser l'historique ou activez la compression dans config.yaml."
+turn_failure:
+  notice: "Votre demande n’a pas été traitée. Renvoyez-la si vous souhaitez toujours que je l’exécute."
+  partial_notice: "Ce tour ne s’est pas terminé. Certaines actions ont peut-être déjà été exécutées ; vérifiez leurs effets avant de renvoyer votre demande."
+  interrupted_waiting: "Opération interrompue : attente de la réponse du modèle ({elapsed}s écoulées)."
+  interrupted_retry_api: "Opération interrompue : nouvel appel à l’API après une erreur (tentative {detail})."
+  interrupted_retry_empty: "Opération interrompue : nouvelle tentative après une réponse vide du modèle (tentative {detail})."
+  interrupted_fallback: "Opération interrompue."
+  exhausted_reset: "sa limite d’utilisation sera réinitialisée dans {window}. Envoyez /retry après ce délai, ou changez de modèle avec /model."
+  exhausted_temporary: "il semble temporairement indisponible. Attendez une minute et envoyez /retry, ou changez de modèle avec /model."
+  exhausted_backup: "Pour éviter cela à l’avenir, ajoutez un fournisseur de secours avec `hermes fallback add`."
+  provider_said: "Le fournisseur a indiqué : {summary}"
+  exhausted_lead:
+    rate_limit: "{label} a limité le débit à chacune des {attempts} tentatives"
+    upstream_rate_limit: "{label} a limité le débit à chacune des {attempts} tentatives"
+    overloaded: "{label} a signalé une surcharge lors des {attempts} tentatives"
+    server_error: "{label} a renvoyé une erreur serveur lors des {attempts} tentatives"
+    timeout: "{label} n’a répondu à temps à aucune des {attempts} tentatives"
+  site:
+    truncated: "La réponse du modèle a été coupée avant la fin (limite de longueur de sortie atteinte), donc Hermes n’a pas exécuté l’action incomplète. Rien n’a été modifié. Envoyez `continue`, demandez des étapes plus petites, ou augmentez max_tokens pour ce modèle."
+
 explainer:
   no_reply_prefix: "⚠️ Pas de réponse : "
   empty_response: "{model} n'a produit aucune réponse cette fois, même après plusieurs tentatives. Envoyez `continue` pour réessayer, ou changez de modèle avec /model."

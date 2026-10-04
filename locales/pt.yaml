@@ -3437,6 +3437,26 @@ display:
     aux_failure_label: "revisão em segundo plano"
   notice:
     uncompressed_context_overflow: "⚠️ O contexto da sessão (~{tokens} tokens) excede a janela de contexto do modelo (~{context_length} tokens) com a compressão desativada (compression.enabled: false). Use /compact para comprimir o histórico ou ative a compressão em config.yaml."
+turn_failure:
+  notice: "Sua solicitação não foi processada. Envie-a novamente se ainda quiser que eu a execute."
+  partial_notice: "Este turno não foi concluído. Algumas ações podem já ter sido executadas; verifique seus efeitos antes de reenviar a solicitação."
+  interrupted_waiting: "Operação interrompida: aguardando a resposta do modelo ({elapsed}s decorridos)."
+  interrupted_retry_api: "Operação interrompida: tentando novamente a chamada à API após um erro (nova tentativa {detail})."
+  interrupted_retry_empty: "Operação interrompida: tentando novamente após uma resposta vazia do modelo (nova tentativa {detail})."
+  interrupted_fallback: "Operação interrompida."
+  exhausted_reset: "seu limite de uso será redefinido em {window}. Envie /retry depois disso, ou mude de modelo com /model."
+  exhausted_temporary: "parece estar temporariamente indisponível. Aguarde um minuto e envie /retry, ou mude de modelo com /model."
+  exhausted_backup: "Para evitar isso no futuro, adicione um provedor de reserva com `hermes fallback add`."
+  provider_said: "O provedor informou: {summary}"
+  exhausted_lead:
+    rate_limit: "{label} limitou a frequência de solicitações em cada uma das {attempts} tentativas"
+    upstream_rate_limit: "{label} limitou a frequência de solicitações em cada uma das {attempts} tentativas"
+    overloaded: "{label} informou sobrecarga em todas as {attempts} tentativas"
+    server_error: "{label} retornou um erro do servidor em todas as {attempts} tentativas"
+    timeout: "{label} não respondeu a tempo em nenhuma das {attempts} tentativas"
+  site:
+    truncated: "A resposta do modelo foi cortada antes de terminar (atingiu o limite de comprimento da saída), então o Hermes não executou a ação incompleta. Nada foi alterado. Envie `continue`, peça o trabalho em etapas menores, ou aumente max_tokens para este modelo."
+
 explainer:
   no_reply_prefix: "⚠️ Sem resposta: "
   empty_response: "{model} não produziu uma resposta desta vez, mesmo após novas tentativas. Envie `continue` para tentar novamente ou troque de modelo com /model."

@@ -345,6 +345,18 @@ def _kill_windows_process_tree(pid: int, sig: int) -> None:
                 pass
 
 
+def _group_alive(pgid: Optional[int], my_pgid: Optional[int]) -> bool:
+    """A reaped leader's descendants that ignored SIGTERM keep its group alive, so the
+    SIGKILL pass must probe the group, not only the leader PID."""
+    if pgid is None or pgid == my_pgid or not hasattr(os, "killpg"):
+        return False
+    try:
+        os.killpg(pgid, 0)  # windows-footgun: ok — POSIX-only, guarded by hasattr
+        return True
+    except OSError:
+        return False
+
+
 def _kill_orphaned_mcp_children(include_active: bool = False, server_name: Optional[str] = None) -> None:
     """Best-effort reap of stdio MCP subprocesses: SIGTERM, wait 2s, SIGKILL survivors. By
     default only ``_orphan_stdio_pids`` are reaped so concurrent cron jobs / live sessions are
@@ -368,7 +380,7 @@ def _kill_orphaned_mcp_children(include_active: bool = False, server_name: Optio
     sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
     from gateway.status import _pid_exists  # ``os.kill(pid, 0)`` is NOT a no-op on Windows
     for pid, owner in pids.items():
-        if _pid_exists(pid):  # survived SIGTERM
+        if _pid_exists(pid) or _group_alive(pgids.get(pid), my_pgid):  # leader or descendants survived SIGTERM
             _signal_mcp_process(pid, sigkill, owner, pgids.get(pid), my_pgid, starts.get(pid))
             logger.warning("Force-killed MCP process %d (%s) after SIGTERM timeout", pid, owner)
     # These groups are reaped. Release them last, so a crash partway through the SIGTERM/SIGKILL

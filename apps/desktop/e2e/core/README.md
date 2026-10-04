@@ -64,6 +64,10 @@ A small, deterministic Electron suite that guards three issue classes end to end
   client's picture folder from the backend with a private mount namespace
   (unprivileged user namespaces; without them the test is annotated
   `fidelity` because a same-host path would resolve on the backend).
+  `fleet-condensed-default.spec.ts`: local primary + a remote connection with
+  enough profiles to condense the sidebar rail; the profile menu lists the
+  ACTIVE gateway's default (checked, home glyph) on both sides of a switch
+  (#106017, #131632).
 - **Packaged build** — `packaged-smoke.spec.ts`: asarUnpack contract of the
   `electron-builder --dir` output (#121097) and the packaged binary booting to
   a first chat (≤60 s to interactive, main-process log tail on failure). It

@@ -209,13 +209,10 @@ def _read_jobs_for_home(home: Path) -> List[Dict[str, Any]]:
     load/save.
     """
     from cron.jobs import list_jobs, use_cron_store
-    from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+    from hermes_cli.profiles import get_active_profile_name, profile_matches_home
 
-    try:
-        if Path(get_profile_dir(get_active_profile_name())).resolve() == Path(home).resolve():
-            return list_jobs(include_disabled=True)
-    except (ValueError, OSError):
-        pass
+    if profile_matches_home(get_active_profile_name(), home):
+        return list_jobs(include_disabled=True)
     with use_cron_store(home):
         return list_jobs(include_disabled=True)
 
@@ -238,10 +235,9 @@ def _aggregate_cron_jobs(
     read = read_jobs or _read_jobs_for_home
     # Default profile first AND first-writer-wins, so its copy of a shared id is the one kept.
     # Overwriting instead would hand the row to whichever profile was visited last.
-    default_first = sorted(stores, key=lambda item: item[0] != "default")
     by_id: Dict[str, tuple[str, Dict[str, Any]]] = {}
     unkeyed: List[tuple[str, Dict[str, Any]]] = []
-    for name, home in default_first:
+    for name, home in sorted(stores, key=lambda item: item[0] != "default"):
         try:
             jobs = read(home)
         except Exception:

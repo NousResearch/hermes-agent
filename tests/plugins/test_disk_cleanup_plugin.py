@@ -140,8 +140,6 @@ class TestJunctionedHomeStillTracked:
     ``on_session_end`` cleaned nothing.
     """
 
-    @pytest.mark.skipif(not hasattr(os, "symlink") and sys.platform != "win32",
-                        reason="needs symlink support")
     def test_symlinked_hermes_home_is_tracked_and_cleaned(self, _isolate_env, tmp_path, monkeypatch):
         dg = _load_lib()
         # The real home lives in tmp_path; HERMES_HOME points at a symlink to it.
@@ -171,15 +169,19 @@ class TestJunctionedHomeStillTracked:
         assert dg.quick()["deleted"] == 1
         assert not scratch.exists()
 
-    @pytest.mark.skipif(sys.platform != "win32", reason="Windows junction semantics")
+    @pytest.mark.platforms("windows")
     def test_windows_junction_hermes_home(self, _isolate_env, tmp_path, monkeypatch):
         import subprocess
         dg = _load_lib()
         real_home = tmp_path / "real-home"
         real_home.mkdir()
         link_home = tmp_path / "link-home"
+        # encoding/errors: `mklink` writes in the OEM code page (e.g. CP936 on a
+        # Chinese host), so a bare text=True let the reader thread raise
+        # UnicodeDecodeError while building the skip message.
         proc = subprocess.run(["cmd", "/c", "mklink", "/J", str(link_home), str(real_home)],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
         if proc.returncode != 0:
             pytest.skip(f"mklink /J unavailable: {proc.stderr.strip()[:120]}")
         monkeypatch.setenv("HERMES_HOME", str(link_home))

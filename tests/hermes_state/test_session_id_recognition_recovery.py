@@ -84,26 +84,25 @@ def _infer_like_recovery(conn: sqlite3.Connection, columns: list[str],
 
 
 @pytest.fixture
-def store(tmp_path, monkeypatch):
+def store(tmp_path):
     """A real post-upgrade store; the factory seeds sessions through the real SessionDB."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    db = SessionDB(db_path=tmp_path / "state.db")
+    with SessionDB(db_path=tmp_path / "state.db") as db:
 
-    def add(session_id: str, **kwargs) -> str:
-        db.create_session(session_id, source=kwargs.pop("source", "cli"),
-                          model="claude-opus-5", cwd=str(tmp_path), **kwargs)
-        return session_id
+        def add(session_id: str, **kwargs) -> str:
+            db.create_session(session_id, source=kwargs.pop("source", "cli"),
+                              model="claude-opus-5", cwd=str(tmp_path), **kwargs)
+            return session_id
 
-    def bulk(count: int) -> None:
-        for _ in range(count):
-            add(f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}")
+        def bulk(count: int) -> None:
+            for _ in range(count):
+                add(f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}")
 
-    return db, add, bulk, lambda: sqlite3.connect(str(tmp_path / "state.db"))
+        yield add, bulk, lambda: sqlite3.connect(str(tmp_path / "state.db"))
 
 
 def test_layout_inference_survives_every_derived_id_shape(store) -> None:
     """Each derived shape, present as a parent id, must leave inference intact."""
-    _db, add, bulk, connect = store
+    add, bulk, connect = store
     bulk(20)
     for index, parent in enumerate(DERIVED_IDS):
         add(parent, source="cron" if parent.startswith("cron_") else "cli")

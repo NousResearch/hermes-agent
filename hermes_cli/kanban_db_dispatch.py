@@ -2015,13 +2015,14 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str], s
     import inspect
     try:
         sig = inspect.signature(spawn_fn)
-        if "source_status" in sig.parameters:
-            return spawn_fn(task, workspace, board=board, source_status=source_status)
-        if "board" in sig.parameters:
-            return spawn_fn(task, workspace, board=board)
-        return spawn_fn(task, workspace)
     except (TypeError, ValueError):
         return spawn_fn(task, workspace)
+    kwargs = {}
+    if "source_status" in sig.parameters:
+        kwargs["source_status"] = source_status
+    if "board" in sig.parameters:
+        kwargs["board"] = board
+    return spawn_fn(task, workspace, **kwargs)
 
 
 def _dispatch_lane_task(

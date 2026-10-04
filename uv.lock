@@ -2536,7 +2536,7 @@ piper = [
     { name = "piper-tts", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
 ]
 silk = [
-    { name = "pilk" },
+    { name = "pilk", marker = "python_full_version < '3.12'" },
 ]
 slack = [
     { name = "aiohttp" },

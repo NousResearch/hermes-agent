@@ -113,8 +113,28 @@ def test_faster_whisper_targets_are_gated(monkeypatch):
     assert supported == {"win32-arm64": False, "darwin-x64": False, "linux-x64": True}
 
 
+@pytest.mark.parametrize("python", ["3.11", "3.12", "3.14"])
+def test_silk_lock_selection_matches_declaration(python):
+    import tomllib
+    from pathlib import Path
+    from packaging.markers import Marker, default_environment
+    from packaging.requirements import Requirement
+
+    root = Path(__file__).resolve().parents[2]
+    metadata = tomllib.loads((root / "pyproject.toml").read_text())
+    lock = tomllib.loads((root / "uv.lock").read_text())
+    package = next(p for p in lock["package"] if p["name"] == metadata["project"]["name"])
+    dependency = next(d for d in package["optional-dependencies"]["silk"] if d["name"] == "pilk")
+    environment = {**default_environment(), "python_version": python,
+                   "python_full_version": python + ".0"}
+    declared = Requirement(metadata["project"]["optional-dependencies"]["silk"][0])
+    selected = "marker" not in dependency or Marker(dependency["marker"]).evaluate(environment)
+    assert selected == declared.marker.evaluate(environment)
+    assert selected == (python == "3.11")
+
+
 def test_silk_is_not_supported_on_python_312_or_newer(monkeypatch):
-    monkeypatch.setattr(extras, "_PLATFORM_GATES", {"silk": "python_version < '3.12'"})
+    monkeypatch.setattr(extras, "_PLATFORM_GATES", None)
     assert not extras.extra_supported(
         "silk",
         environment={

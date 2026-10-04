@@ -170,14 +170,12 @@ git -C $repo rev-list --objects --missing=error --all | Out-Null; $LASTEXITCODE 
 
 The installer's checkout is a partial clone: git downloads trees and blobs on demand, and each
 on-demand download is written as its own small pack. `hermes update` and `hermes update --check`
-fold them back together with `git gc --auto` (git's own `gc.autoPackLimit`, 50 by default), so a
-healthy checkout pays a no-op. They also set `maintenance.commit-graph.enabled`,
-`gc.writeCommitGraph` and `fetch.writeCommitGraph` to `false` in that checkout, because a
-commit-graph write over commits the graph has not seen yet downloads every one of their trees. Leave those settings alone, and leave
-`gc.auto` at its default: `gc.auto=0` stops the fold. The first fold on a checkout that has
-piled up thousands of packs is a full repack and can take several minutes; the update says so
-before it starts, and if the fold runs past 20 minutes it stops and prints the command below.
-To fold by hand (with Hermes closed):
+set `maintenance.commit-graph.enabled`, `gc.writeCommitGraph` and `fetch.writeCommitGraph` to
+`false` in that checkout, because a commit-graph write over commits the graph has not seen yet
+downloads every one of their trees. Leave those settings alone, and leave `gc.auto` at its
+default so git's own automatic gc can still fold packs. The update does not fold them itself:
+on a large checkout that fold is a full repack that can run for many minutes. To fold by hand
+(with Hermes closed):
 
 ```bash
 git -C "$repo" -c gc.writeCommitGraph=false gc --auto

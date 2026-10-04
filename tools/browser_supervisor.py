@@ -449,10 +449,11 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 10.0)
 
-    def bind_driver_page(self, url: str, timeout: float = 3.0) -> bool:
+    def bind_driver_page(self, url: str, timeout: float = 10.0) -> bool:
         """Bind to the tab showing ``url`` (the driver's current page) — exact, where
         ``_prefer_web_page`` can only guess "first web tab" when several are open. Called once
-        before the first evaluation; True when bound."""
+        before the first evaluation; True when bound. ``timeout`` covers the whole candidate
+        walk (attach + domain setup + URL probe per same-origin tab), not one round trip."""
         if not url.startswith(_WEB_SCHEMES):
             return False
         from agent.vault_store import normalize_origin

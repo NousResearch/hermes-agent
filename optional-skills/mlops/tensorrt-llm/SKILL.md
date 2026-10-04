@@ -5,7 +5,7 @@ version: 1.0.1
 author: Orchestra Research
 license: MIT
 dependencies: [tensorrt-llm, torch]
-platforms: [linux, macos]
+platforms: [linux]
 metadata:
   hermes:
     tags: [Inference Serving, TensorRT-LLM, NVIDIA, Inference Optimization, High Throughput, Low Latency, Production, FP8, INT4, In-Flight Batching, Multi-GPU]
@@ -14,7 +14,7 @@ metadata:
 
 # TensorRT-LLM
 
-NVIDIA's open-source library for optimizing LLM inference with state-of-the-art performance on NVIDIA GPUs.
+NVIDIA's open-source library for optimizing LLM inference with high performance on NVIDIA GPUs.
 
 ## When to use TensorRT-LLM
 
@@ -78,8 +78,9 @@ for output in outputs:
 
 ```bash
 # Start server (automatic model download and compilation)
+# Tensor parallelism across 4 GPUs
 trtllm-serve meta-llama/Meta-Llama-3-8B \
-    --tp_size 4 \              # Tensor parallelism (4 GPUs)
+    --tp_size 4 \
     --max_batch_size 256 \
     --max_num_tokens 4096
 

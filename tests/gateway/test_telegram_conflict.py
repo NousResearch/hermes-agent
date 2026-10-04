@@ -1,39 +1,10 @@
 import asyncio
-import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.config import PlatformConfig
-
-
-def _ensure_telegram_mock():
-    if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
-        return
-
-    telegram_mod = MagicMock()
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    telegram_mod.constants.ChatType.GROUP = "group"
-    telegram_mod.constants.ChatType.SUPERGROUP = "supergroup"
-    telegram_mod.constants.ChatType.CHANNEL = "channel"
-    telegram_mod.constants.ChatType.PRIVATE = "private"
-
-    # Provide real exception classes so ``except (NetworkError, ...)`` in
-    # connect() doesn't blow up with "catching classes that do not inherit
-    # from BaseException" when another xdist worker pollutes sys.modules.
-    telegram_mod.error.NetworkError = type("NetworkError", (OSError,), {})
-    telegram_mod.error.TimedOut = type("TimedOut", (OSError,), {})
-    telegram_mod.error.BadRequest = type("BadRequest", (Exception,), {})
-
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
-    sys.modules.setdefault("telegram.error", telegram_mod.error)
-
-
-_ensure_telegram_mock()
-
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
@@ -112,6 +83,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
@@ -268,6 +240,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
@@ -349,6 +322,7 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -417,6 +391,7 @@ async def test_connect_does_not_block_on_post_connect_housekeeping(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -493,6 +468,7 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -555,6 +531,7 @@ def _build_polling_app(monkeypatch, adapter):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -652,6 +629,7 @@ async def test_conflict_callback_disarms_before_scheduling(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.concurrent_updates.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",

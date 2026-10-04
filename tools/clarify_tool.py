@@ -1,179 +1,125 @@
-#!/usr/bin/env python3
-"""
-Clarify Tool Module - Interactive Clarifying Questions
-
-Allows the agent to present structured multiple-choice questions or open-ended
-prompts to the user. In CLI mode, choices are navigable with arrow keys. On
-messaging platforms, choices are rendered as a numbered list.
-
-Supports both single-select (radio) and multi-select (checkbox) modes via the
-``multi_select`` parameter.
-
-The actual user-interaction logic lives in the platform layer (cli.py for CLI,
-gateway/run.py for messaging). This module defines the schema, validation, and
-a thin dispatcher that delegates to a platform-provided callback.
-"""
+"""Clarify tool: structured multiple-choice / open-ended questions to the user.
+Schema, validation and a thin dispatcher; the UI lives in a platform-provided
+callback (cli.py, gateway/run.py, tui_gateway)."""
 
 import json
-from typing import List, Optional, Callable
+from typing import Callable, Dict, List, Optional
+
+MAX_CHOICES = 4  # the UI always appends an "Other (type your answer)" row
+MAX_QUESTIONS = 5  # independent questions per call
+# Per-choice cap. Surfaces wrap long choice text (newlines kept), so anything longer is rejected here, at the
+# source, instead of a surface silently dropping a choice that ``choices_offered`` still reports as shown.
+MAX_CHOICE_CHARS = 8000
+# Applied to the first choice here (not per-surface) so every adapter renders it identically.
+RECOMMENDED_LABEL = "(Recommended)"
+_UNAVAILABLE = "Clarify tool is not available in this execution context."
+_SHAPE = "Pass questions=[{question, choices?, multi_select?}]; a single question is a one-entry array."
 
 
-# Maximum number of predefined choices the agent can offer.
-# A 5th "Other (type your answer)" option is always appended by the UI.
-MAX_CHOICES = 4
+def mark_recommended(choices: List[str]) -> List[str]:
+    """Suffix the first choice (schema says best-first) with RECOMMENDED_LABEL; idempotent,
+    and a lone choice is left untouched (nothing to prefer it over)."""
+    first = str(choices[0]).strip() if choices else ""
+    if len(choices) < 2 or first != strip_recommended(first):
+        return choices
+    return [f"{first} {RECOMMENDED_LABEL}"] + list(choices[1:])
 
 
-def _flatten_choice(c) -> str:
-    """Coerce a single choice into its user-facing display string.
-
-    The schema declares choices as bare strings, but LLMs sometimes emit
-    dict-shaped choices like ``[{"description": "..."}]``. A naive ``str(c)``
-    turns the whole dict into its Python repr — ``{'description': '...'}`` —
-    which then leaks onto every surface that renders the choice (CLI panel,
-    Discord buttons, Telegram numbered list) AND is returned verbatim as the
-    user's answer. Normalising here, at the one platform-agnostic entry point,
-    fixes the whole class in one place instead of per-adapter.
-
-    Dict unwrap order is the canonical LLM tool-call user-facing keys:
-    ``label`` → ``description`` → ``text`` → ``title``. ``name`` and ``value``
-    are deliberately excluded — they're component-shaped fields that could
-    carry raw enum values or short identifiers, not human-readable labels. A
-    dict with none of the canonical keys is dropped (returns ""), since a
-    garbage label is worse than no choice at all.
-    """
-    if c is None:
-        return ""
-    if isinstance(c, str):
-        return c.strip()
-    if isinstance(c, dict):
-        for key in ("label", "description", "text", "title"):
-            v = c.get(key)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-        return ""
-    if isinstance(c, (list, tuple)):
-        return " ".join(_flatten_choice(x) for x in c).strip()
-    return str(c).strip()
+def strip_recommended(text: str) -> str:
+    """Remove the recommendation label so presentation never leaks into ``user_response``."""
+    stripped = str(text).strip()
+    if stripped.casefold().endswith(RECOMMENDED_LABEL.casefold()):
+        return stripped[: -len(RECOMMENDED_LABEL)].strip()
+    return stripped
 
 
-def _invoke_callback(callback, question, choices, multi_select):
-    """Invoke the platform callback, passing multi_select if supported.
-
-    Uses signature inspection (not a ``TypeError`` retry) to decide whether
-    the callback accepts the ``multi_select`` keyword — a retry-on-TypeError
-    approach would re-invoke a *compatible* callback that raised TypeError
-    internally, potentially prompting the user twice.
-    """
-    import inspect
-
-    accepts_multi = False
-    try:
-        sig = inspect.signature(callback)
-        params = sig.parameters
-        accepts_multi = "multi_select" in params or any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-        )
-    except (TypeError, ValueError):
-        # Builtins / C callables without introspectable signatures:
-        # be conservative and use the legacy 2-arg form.
-        accepts_multi = False
-
-    if accepts_multi:
-        return callback(question, choices, multi_select=multi_select)
-    return callback(question, choices)
-
-
-def _parse_multi_select_response(raw_response) -> List[str]:
-    """Parse a multi-select response into a list of cleaned choice strings.
-
-    Handles three forms:
-      - Already a list  →  stringify + strip each element
-      - JSON array      →  parse and strip
-      - Comma-separated →  split, strip, drop empties
-    """
-    if isinstance(raw_response, list):
-        return [str(r).strip() for r in raw_response if str(r).strip()]
-
-    raw = str(raw_response).strip()
-
-    # Try JSON array
-    if raw.startswith("["):
+def _clean_answer(raw, multi: bool):
+    """Strip presentation (the label, multi-select JSON) from a locked answer: a multi-select
+    answer is a list, a JSON array string, or one typed ("Other") answer."""
+    if not multi:
+        return strip_recommended(raw)
+    if isinstance(raw, str):
         try:
             parsed = json.loads(raw)
-            if isinstance(parsed, list):
-                return [str(p).strip() for p in parsed if str(p).strip()]
         except json.JSONDecodeError:
-            pass
+            parsed = None
+        raw = parsed if isinstance(parsed, list) else [raw]
+    return [strip_recommended(item) for item in raw if str(item).strip()]
 
-    # Fall back to comma-separated
-    return [s.strip() for s in raw.split(",") if s.strip()]
+
+def _normalize_questions(questions) -> tuple:
+    """Validate ``questions`` -> ``(normalized, error)``. Entries carry ``qid`` (stable wire id
+    ``q<index>`` surfaces key answers by), ``question``, decorated ``choices``, bare
+    ``choices_offered`` and ``multi_select``."""
+    if not isinstance(questions, list) or not questions:
+        return None, f"questions must be a non-empty array. {_SHAPE}"
+    if len(questions) > MAX_QUESTIONS:
+        return None, f"questions supports at most {MAX_QUESTIONS} items."
+    normalized = []
+    for index, item in enumerate(questions):
+        if not isinstance(item, dict):
+            return None, f"questions[{index}] must be an object. {_SHAPE}"
+        text = str(item.get("question") or "").strip()
+        if not text:
+            return None, f"questions[{index}].question must be non-empty text."
+        choices = item.get("choices")
+        if choices is not None:
+            if not isinstance(choices, list) or not all(isinstance(c, str) for c in choices):
+                return None, f"questions[{index}].choices must be a list of strings."
+            for pos, choice in enumerate(choices):
+                if len(choice.strip()) > MAX_CHOICE_CHARS:
+                    return None, (f"questions[{index}].choices[{pos}] is {len(choice.strip())} characters; the limit is "
+                                  f"{MAX_CHOICE_CHARS}. Move detail into the question text and resend.")
+            cleaned = [c.strip() for c in choices if c.strip()][:MAX_CHOICES]
+            if choices and not cleaned:
+                # A card with no options strands the turn: say so instead of silently asking open-ended.
+                return None, (f"questions[{index}].choices has {len(choices)} entries but all are blank. "
+                              "Send real labels, or omit choices to ask open-ended.")
+            choices = cleaned or None
+        normalized.append({
+            "qid": f"q{index}", "question": text,
+            "choices": mark_recommended(list(choices)) if choices else None,
+            "choices_offered": list(choices) if choices else None,
+            "multi_select": bool(item.get("multi_select")) and bool(choices)})
+    return normalized, None
 
 
-def clarify_tool(
-    question: str,
-    choices: Optional[List[str]] = None,
-    multi_select: bool = False,
-    callback: Optional[Callable] = None,
-) -> str:
-    """
-    Ask the user a question, optionally with multiple-choice options.
+def _response_status(qid: str, answers: dict, multi: bool) -> tuple:
+    raw = answers.get(qid)
+    cleaned = _clean_answer(raw, multi) if raw not in (None, "") else None
+    if cleaned:
+        return "answered", cleaned
+    return ("skipped" if qid in answers else "unanswered"), None
 
-    Args:
-        question:     The question text to present.
-        choices:      Up to 4 predefined answer choices. When omitted the
-                      question is purely open-ended.
-        multi_select: When True, the user can select multiple choices
-                      (checkboxes).  The ``user_response`` in the output JSON
-                      will be a list of strings instead of a single string.
-                      Has no effect when ``choices`` is omitted.
-        callback:     Platform-provided function that handles the actual UI
-                      interaction.  Signature:
-                      ``callback(question, choices, multi_select=False) -> str``.
-                      The optional ``multi_select`` keyword is passed so the
-                      platform can render checkboxes instead of radio buttons.
-                      Injected by the agent runner (cli.py / gateway).
 
-    Returns:
-        JSON string with the user's response.
-    """
-    if not question or not question.strip():
-        return tool_error("Question text is required.")
+def _result(normalized: List[dict], reply: dict) -> str:
+    """Result JSON from a callback reply ``{"answers": {qid: raw | None}, "outcome", "notice"?}``:
+    every response carries ``status`` and ``user_response`` (null unless answered); ``outcome``
+    says how the wait ended and ``notice`` (surface-supplied) says why."""
+    answers = reply.get("answers") or {}
+    responses = []
+    for entry in normalized:
+        status, value = _response_status(entry["qid"], answers, entry["multi_select"])
+        responses.append({"question": entry["question"], "choices_offered": entry["choices_offered"],
+                          "status": status, "user_response": value})
+    result: Dict[str, object] = {"responses": responses, "outcome": reply["outcome"]}
+    if reply.get("notice"):
+        result["notice"] = str(reply["notice"])
+    return json.dumps(result, ensure_ascii=False)
 
-    question = question.strip()
 
-    # Validate and trim choices
-    if choices is not None:
-        if not isinstance(choices, list):
-            return tool_error("choices must be a list of strings.")
-        # LLMs sometimes emit dict-shaped choices (e.g. [{"description": "..."}])
-        # instead of bare strings. _flatten_choice unwraps them to their
-        # user-facing text here — the single platform-agnostic entry point —
-        # so the CLI panel, Discord buttons, and Telegram list all render clean
-        # text and the resolved answer is never a raw Python dict repr.
-        choices = [s for s in (_flatten_choice(c) for c in choices) if s]
-        if len(choices) > MAX_CHOICES:
-            choices = choices[:MAX_CHOICES]
-        if not choices:
-            choices = None  # empty list → open-ended
-
+def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
+    """Ask 1-5 questions in one call. ``callback(questions) -> {"answers", "outcome", "notice"?}``
+    is platform injected (cli.py / gateway / tui_gateway) and receives the normalized list."""
+    normalized, error = _normalize_questions(questions)
+    if error:
+        return tool_error(error)
     if callback is None:
-        return tool_error("Clarify tool is not available in this execution context.")
-
+        return tool_error(_UNAVAILABLE)
     try:
-        raw_response = _invoke_callback(callback, question, choices, multi_select)
+        return _result(normalized, callback(normalized))
     except Exception as exc:
         return tool_error(f"Failed to get user input: {exc}")
-
-    if multi_select and choices is not None:
-        user_response = _parse_multi_select_response(raw_response)
-    else:
-        user_response = str(raw_response).strip()
-
-    return json.dumps({
-        "question": question,
-        "choices_offered": choices,
-        "user_response": user_response,
-    }, ensure_ascii=False)
 
 
 def check_clarify_requirements() -> bool:
@@ -181,73 +127,60 @@ def check_clarify_requirements() -> bool:
     return True
 
 
-# =============================================================================
-# OpenAI Function-Calling Schema
-# =============================================================================
-
 CLARIFY_SCHEMA = {
     "name": "clarify",
     "description": (
-        "Ask the user a question when you need clarification, feedback, or a "
-        "decision before proceeding. Supports three modes:\n\n"
-        "1. **Single-select multiple choice** — provide up to 4 choices. The user picks one "
-        "or types their own answer via a 5th 'Other' option.\n"
-        "2. **Multi-select multiple choice** — set multi_select=true. The user can select "
-        "multiple options via checkboxes. user_response will be a list of selected choices.\n"
-        "3. **Open-ended** — omit choices entirely. The user types a free-form "
-        "response.\n\n"
-        "CRITICAL: when you are offering options, put each option ONLY in the "
-        "`choices` array — NEVER enumerate the options inside the `question` "
-        "text. The UI renders `choices` as selectable rows; options written "
-        "into the question string render as dead prose the user can't pick. "
-        "Right: question='Which deployment target?', choices=['staging', "
-        "'prod']. Wrong: question='Which target? 1) staging 2) prod', choices=[].\n\n"
-        "Use this tool when:\n"
-        "- The task is ambiguous and you need the user to choose an approach\n"
-        "- You want post-task feedback ('How did that work out?')\n"
-        "- You want to offer to save a skill or update memory\n"
-        "- A decision has meaningful trade-offs the user should weigh in on\n\n"
-        "Do NOT use this tool for simple yes/no confirmation of dangerous "
-        "commands (the terminal tool handles that). Prefer making a reasonable "
-        "default choice yourself when the decision is low-stakes."
+        "Ask the user one or more questions when you need a decision, "
+        "clarification, or feedback before proceeding. Pass every question "
+        f"in `questions` (1-{MAX_QUESTIONS} entries) — a single question is a "
+        "one-entry array, and several INDEPENDENT questions belong in ONE "
+        "call (one form beats a chain of clarify calls; if one answer would "
+        "change another question, ask separately). Per question: "
+        f"single-select (up to {MAX_CHOICES} choices — put your recommended "
+        "option FIRST, the UI marks it '(Recommended)' and auto-appends an "
+        "'Other' free-text row), multi-select (multi_select=true), or "
+        "open-ended (omit choices). Options go ONLY in `choices`, never "
+        "enumerated inside the question text (choices render as pickable "
+        "rows; options written into the question are dead prose the user "
+        "can't click). Result: {responses: [...], outcome} in question order. "
+        "Each response has status answered, skipped or unanswered "
+        "(user_response is null unless answered); outcome is submitted, "
+        "cancelled, timed_out or undelivered, with a notice saying why "
+        "when the wait ended without a submit. Prefer deciding "
+        "low-stakes questions yourself; don't use this for dangerous-command "
+        "confirmation (the terminal tool handles that)."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "question": {
-                "type": "string",
-                "description": (
-                    "The question itself, and ONLY the question (e.g. 'Which "
-                    "deployment target?'). Do NOT embed the answer options here "
-                    "— pass them as separate elements in `choices`."
-                ),
-            },
-            "choices": {
+            "questions": {
                 "type": "array",
-                "items": {"type": "string"},
-                "maxItems": MAX_CHOICES,
+                "minItems": 1,
+                "maxItems": MAX_QUESTIONS,
                 "description": (
-                    "REQUIRED whenever you are presenting selectable options: "
-                    "each distinct option is its own array element (up to 4). "
-                    "The UI renders these as pickable rows and auto-appends an "
-                    "'Other (type your answer)' option. Omit this parameter "
-                    "entirely ONLY for a genuinely open-ended free-text question."
+                    "The question(s). Each: question text (options excluded), "
+                    "optional choices (recommended first; omit for free-text), "
+                    "optional multi_select. Responses come back in question "
+                    "order with the question text echoed."
                 ),
-            },
-            "multi_select": {
-                "type": "boolean",
-                "description": (
-                    "When true, the user can select MULTIPLE options (like checkboxes). "
-                    "The user_response will be a list of selected choices. "
-                    "When false (default), single selection (radio). "
-                    "Has no effect when choices is omitted (open-ended question)."
-                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "choices": {
+                            "type": "array",
+                            "items": {"type": "string"},  # no maxLength: llama.cpp's grammar converter rejects >=2000 (#131278); the limit is enforced above
+                            "maxItems": MAX_CHOICES,
+                        },
+                        "multi_select": {"type": "boolean"},
+                    },
+                    "required": ["question"],
+                },
             },
         },
-        "required": ["question"],
+        "required": ["questions"],
     },
 }
-
 
 # --- Registry ---
 from tools.registry import registry, tool_error
@@ -256,11 +189,7 @@ registry.register(
     name="clarify",
     toolset="clarify",
     schema=CLARIFY_SCHEMA,
-    handler=lambda args, **kw: clarify_tool(
-        question=args.get("question", ""),
-        choices=args.get("choices"),
-        multi_select=args.get("multi_select", False),
-        callback=kw.get("callback")),
+    handler=lambda args, **kw: clarify_tool(args.get("questions"), callback=kw.get("callback")),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )

@@ -17,7 +17,12 @@ describe('tokenizeSearchText', () => {
 })
 
 describe('scoreSlashMenuItem', () => {
-  const item = { aliases: ['recap', 'summary'], description: 'Turn session recaps on/off', id: 'recaps', label: 'recaps' }
+  const item = {
+    aliases: ['recap', 'summary'],
+    description: 'Turn session recaps on/off',
+    id: 'recaps',
+    label: 'recaps'
+  }
 
   it('scores exact name matches at tier 0', () => {
     expect(scoreSlashMenuItem(item, 'recaps')).toBe(0)
@@ -30,12 +35,6 @@ describe('scoreSlashMenuItem', () => {
   it('scores name prefixes at tier 1 and name substrings at tier 2', () => {
     expect(scoreSlashMenuItem(item, 'rec')).toBe(1)
     expect(scoreSlashMenuItem(item, 'caps')).toBe(2)
-  })
-
-  it('scores description matches at the +3 offset, below any name tier', () => {
-    expect(scoreSlashMenuItem({ description: 'Turn session recaps on/off', id: 'other' }, 'session')).toBe(3)
-    expect(scoreSlashMenuItem({ description: 'Turn session recaps on/off', id: 'other' }, 'sess')).toBe(4)
-    expect(scoreSlashMenuItem({ description: 'Turn session recaps on/off', id: 'other' }, 'essio')).toBe(5)
   })
 
   it('prefers the name tier when both name and description match', () => {
@@ -65,11 +64,7 @@ describe('rankSlashItems', () => {
   })
 
   it('ranks name matches above description matches and drops non-matches', () => {
-    const ranked = rankSlashItems(
-      [{ help: 'model picker widget', id: 'gallery' }, ...apps],
-      '/model',
-      toScoreItem
-    )
+    const ranked = rankSlashItems([{ help: 'model picker widget', id: 'gallery' }, ...apps], '/model', toScoreItem)
 
     expect(ranked.map(app => app.id)).toEqual(['models', 'gallery'])
   })

@@ -1,5 +1,7 @@
 """Tests for the delivery routing module."""
 
+from pathlib import Path
+
 import pytest
 from typing import Any, cast
 
@@ -62,8 +64,8 @@ class TestPlatformNameCaseInsensitivity:
 class _RelayDeliveryTransport:
     """Relay transport that advertises Slack and records outbound wire frames."""
 
-    def __init__(self):
-        self._identities = [("slack", "bot-1")]
+    def __init__(self, platform="slack"):
+        self._identities = [(platform, "bot-1")]
         self.sent = []
 
     async def send_outbound(self, action, *, platform=None):
@@ -73,18 +75,18 @@ class _RelayDeliveryTransport:
         return {"success": True, "message_id": "relay-message-1"}
 
 
-def _make_relay(transport):
+def _make_relay(transport, platform="slack", max_message_length=4000):
     return RelayAdapter(
         PlatformConfig(enabled=True),
         CapabilityDescriptor(
             contract_version=CONTRACT_VERSION,
-            platform="slack",
-            label="Slack",
-            max_message_length=4000,
+            platform=platform,
+            label=platform.capitalize(),
+            max_message_length=max_message_length,
             supports_draft_streaming=False,
             supports_edit=True,
             supports_threads=True,
-            markdown_dialect="slack",
+            markdown_dialect=platform,
             len_unit="chars",
         ),
         transport=cast(Any, transport),
@@ -92,8 +94,9 @@ def _make_relay(transport):
 
 
 @pytest.mark.asyncio
-async def test_relay_fronted_target_delivers_without_prior_inbound_chat_state(tmp_path, monkeypatch):
-    """A persisted Slack home must work immediately after a gateway restart."""
+@pytest.mark.parametrize("content", ["scheduled result", "x" * 5000], ids=["short", "oversized"])
+async def test_relay_fronted_target_delivers_without_prior_inbound_chat_state(tmp_path, monkeypatch, content):
+    """A persisted Slack home receives the complete payload from the gateway."""
     monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
     transport = _RelayDeliveryTransport()
     relay = _make_relay(transport)
@@ -115,16 +118,23 @@ async def test_relay_fronted_target_delivers_without_prior_inbound_chat_state(tm
 
     result = await router._deliver_to_platform(
         DeliveryTarget(platform=Platform.SLACK, chat_id="D123"),
-        "scheduled result",
+        content,
         metadata={"job_id": "cron-1", "user_id": "stale-user"},
     )
 
     assert getattr(result, "success", False) is True
-    assert len(transport.sent) == 1
+    assert transport.sent
     action, wire_platform = transport.sent[0]
     assert wire_platform == "slack"
     assert action["chat_id"] == "D123"
     assert action["metadata"] == {"job_id": "cron-1", "user_id": "U123"}
+    assert action["content"] == content
+    saved_files = list(tmp_path.glob("cron/output/cron-1_*.txt"))
+    if len(content) > 4000:
+        assert len(saved_files) == 1
+        assert saved_files[0].read_text(encoding="utf-8") == content
+    else:
+        assert saved_files == []
 
 
 class RecordingAdapter:
@@ -329,3 +339,117 @@ async def test_long_output_truncated_for_non_chunking_adapter(tmp_path, monkeypa
     assert saved_files[0].read_text() == long_content
 
 
+def _simulate_windows_codepage_write(monkeypatch):
+    """Make ``Path.write_text`` behave like a non-UTF-8 Windows console.
+
+    On Windows ``Path.write_text(data)`` with no ``encoding=`` encodes through
+    the platform code page (cp1252), which raises ``UnicodeEncodeError`` for
+    emoji/CJK/accented text. POSIX CI runs default to UTF-8 and would hide the
+    regression, so we reproduce the Windows default deterministically: encode
+    with cp1252 when the caller omits ``encoding=``, otherwise honor it.
+    """
+    import pathlib
+
+    real_write_text = pathlib.Path.write_text
+
+    def fake_write_text(self, data, encoding=None, *args, **kwargs):
+        effective = encoding or "cp1252"
+        data.encode(effective)  # mirrors the encode open() performs on write
+        return real_write_text(self, data, encoding=effective, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "write_text", fake_write_text)
+
+
+# Non-ASCII content larger than MAX_PLATFORM_OUTPUT (4000) to force the
+# truncate-and-save branch in _deliver_to_platform.
+_NON_ASCII_OVERSIZED = ("数据备份完成 🎉 résumé — " * 250)
+
+
+@pytest.mark.asyncio
+async def test_oversized_non_ascii_output_is_delivered_on_windows_codepage(tmp_path, monkeypatch):
+    """Oversized cron output containing emoji/CJK must still be delivered.
+
+    Without an explicit utf-8 encoding the full-output save raises
+    UnicodeEncodeError on a Windows code page, aborting the whole
+    truncate-and-send path so the user receives nothing.
+    """
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    _simulate_windows_codepage_write(monkeypatch)
+
+    adapter = RecordingAdapter()
+    router = DeliveryRouter(GatewayConfig(), adapters={Platform.TELEGRAM: adapter})
+    target = DeliveryTarget.parse("telegram:12345")
+
+    result = await router._deliver_to_platform(
+        target, _NON_ASCII_OVERSIZED, metadata={"job_id": "nightly"}
+    )
+
+    # The truncated message reached the adapter unharmed.
+    assert len(adapter.calls) == 1
+    assert "🎉" in adapter.calls[0]["content"]
+    assert "truncated, full output saved to" in adapter.calls[0]["content"]
+
+    # The full-output backup was written and round-trips as UTF-8.
+    saved = list((tmp_path / "cron" / "output").glob("nightly_*.txt"))
+    assert len(saved) == 1
+    assert saved[0].read_text(encoding="utf-8") == _NON_ASCII_OVERSIZED
+    assert result["success"] is True
+
+
+def test_local_delivery_writes_non_ascii_on_windows_codepage(tmp_path, monkeypatch):
+    """Local file delivery must persist emoji/CJK content as UTF-8."""
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    _simulate_windows_codepage_write(monkeypatch)
+
+    router = DeliveryRouter(GatewayConfig())
+
+    result = router._deliver_local(
+        "完了 ✅ café", job_id="job1", job_name="日次レポート", metadata=None
+    )
+
+    written = Path(result["path"]).read_text(encoding="utf-8")
+    assert "完了 ✅ café" in written
+    assert "日次レポート" in written
+
+
+@pytest.mark.asyncio
+async def test_relay_fronted_telegram_target_receives_payload_above_its_own_limit(tmp_path, monkeypatch):
+    """The gateway does not pre-truncate for a relay-fronted Telegram chat.
+
+    The connector splits egress against the negotiated max_message_length
+    (4096 for Telegram), so the full payload must reach the transport intact.
+    """
+    monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+    transport = _RelayDeliveryTransport(platform="telegram")
+    relay = _make_relay(transport, platform="telegram", max_message_length=4096)
+    config = GatewayConfig(
+        platforms={
+            Platform.RELAY: PlatformConfig(enabled=True),
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=False,
+                home_channel=HomeChannel(
+                    platform=Platform.TELEGRAM,
+                    chat_id="12345",
+                    name="Owner",
+                    user_id="777",
+                ),
+            ),
+        },
+    )
+    router = DeliveryRouter(config, adapters={Platform.RELAY: relay})
+    content = "y" * 30_000
+
+    result = await router._deliver_to_platform(
+        DeliveryTarget(platform=Platform.TELEGRAM, chat_id="12345"),
+        content,
+        metadata={"job_id": "cron-2", "user_id": "stale-user"},
+    )
+
+    assert getattr(result, "success", False) is True
+    action, wire_platform = transport.sent[0]
+    assert wire_platform == "telegram"
+    assert action["content"] == content
+    assert len(action["content"]) > 4096
+    saved_files = list(tmp_path.glob("cron/output/cron-2_*.txt"))
+    assert len(saved_files) == 1
+    assert saved_files[0].read_text(encoding="utf-8") == content

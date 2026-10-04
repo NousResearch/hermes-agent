@@ -15,45 +15,17 @@ that actually reaches the Bot API.
 
 from __future__ import annotations
 
-import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-
-def _ensure_telegram_mock():
-    """Install mock telegram modules only when the real library is absent.
-
-    Probe with a real import rather than inspecting ``sys.modules``: when PTB
-    is installed but not yet imported, a ``sys.modules`` check alone would
-    install the mock first and poison every later test that needs the real
-    library (``tests/test_telegram_polling_progress_ptb.py`` exercises the
-    genuine ``BaseRequest``).
-    """
-    try:
-        import telegram  # noqa: F401
-
-        return
-    except ImportError:
-        pass
-    telegram_mod = MagicMock()
-    telegram_mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    telegram_mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    for name in ("GROUP", "SUPERGROUP", "CHANNEL", "PRIVATE"):
-        setattr(telegram_mod.constants.ChatType, name, name.lower())
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
-        sys.modules.setdefault(name, telegram_mod)
-
-
-_ensure_telegram_mock()
-
 from gateway.config import PlatformConfig  # noqa: E402
 from plugins.platforms.telegram import adapter as tg  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda *a, **k: True)
     a = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
     a._bot = MagicMock()
     a._metadata_thread_id = lambda metadata: None

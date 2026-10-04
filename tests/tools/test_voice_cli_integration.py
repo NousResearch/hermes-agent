@@ -1,12 +1,15 @@
 """Tests for CLI voice mode integration -- markdown stripping, voice state
 management, TTS/STT wiring, barge-in and the full-duplex listener."""
 
+import json
 import queue
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from agent.i18n import t
 
 
 def _make_voice_cli(**overrides):
@@ -45,7 +48,7 @@ def _make_voice_cli(**overrides):
 # Markdown stripping — import real function from tts_tool
 # ============================================================================
 
-from tools.tts_tool import _strip_markdown_for_tts
+from tools.tts_text_normalize import _strip_markdown_for_tts
 
 
 class TestMarkdownStripping:
@@ -226,7 +229,9 @@ class TestMaxRecordingSecondsConfigReal:
         # become a 1-second cap; it falls back to the documented 120 default,
         # mirroring the silence-param corruption handling.
         recorder = self._start_with_voice_cfg({"max_recording_seconds": True})
-        assert recorder._max_recording_seconds == 120.0
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert recorder._max_recording_seconds == DEFAULT_CONFIG["voice"]["max_recording_seconds"]
 
 class TestDisableVoiceModeReal:
     """Tests _disable_voice_mode with real CLI instance."""
@@ -287,21 +292,28 @@ class TestVoiceSpeakResponseReal:
     @patch("cli.os.makedirs")
     @patch("tools.voice_mode.play_audio_file")
     @patch("tools.tts_tool.text_to_speech_tool")
-    def test_play_audio_prefers_requested_mp3_over_returned_ogg(
+    def test_play_audio_uses_returned_file_paths(
         self, mock_tts, mock_play, _mkd, _isf, _gsz, _unl, _cp
     ):
         def fake_tts(**kwargs):
             mp3_path = kwargs["output_path"]
             ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
-            return f'{{"success": true, "file_path": "{ogg_path}"}}'
+            # The tool result is authoritative — file_paths drives playback
+            return json.dumps({
+                "success": True,
+                "file_path": ogg_path,
+                "file_paths": [ogg_path],
+            })
 
         mock_tts.side_effect = fake_tts
 
         cli = _make_voice_cli(_voice_tts=True)
         cli._voice_speak_response("Hello world")
 
-        requested_path = mock_tts.call_args.kwargs["output_path"]
-        mock_play.assert_called_once_with(requested_path)
+        # Should play the returned OGG path, not the requested MP3 path
+        mock_play.assert_called_once_with(
+            mock_tts.call_args.kwargs["output_path"].rsplit(".", 1)[0] + ".ogg"
+        )
 
 
 class TestVoiceStopAndTranscribeReal:
@@ -362,7 +374,7 @@ class TestVoiceStopAndTranscribeReal:
             cli._voice_stop_and_transcribe()
 
         messages = [call.args[0] for call in mock_print.call_args_list]
-        assert any("Transcribing..." in message for message in messages)
+        assert any(t("cli.voice.transcribing") in message for message in messages)
         assert all("Hugging Face" not in message for message in messages)
         mock_transcribe.assert_called_once_with("/tmp/test.wav", model="whisper-1")
 
@@ -464,7 +476,6 @@ class TestVoiceBargeCaptureSubmit:
         cli._voice_submit_barge_utterance(str(wav))
 
         queued = cli._pending_input.get_nowait()
-        from cli import _VoiceInputMessage
         assert str(queued) == "actually can you check my calendar for tomorrow"
 
     def test_generation_phase_transcript_not_echo_checked(self, tmp_path, monkeypatch):
@@ -485,7 +496,6 @@ class TestVoiceBargeCaptureSubmit:
         cli._voice_submit_barge_utterance(str(wav))
 
         queued = cli._pending_input.get_nowait()
-        from cli import _VoiceInputMessage
         assert str(queued) == "stop, do it differently"
 
 
@@ -592,7 +602,7 @@ class TestVoiceFullDuplexListener:
             lambda path, model=None: {"success": True, "transcript": "stop"},
         )
         monkeypatch.setattr(
-            "tools.voice_mode.is_voice_stop_phrase",
+            "tools.voice_mode_transcript.is_voice_stop_phrase",
             lambda text: text.strip().lower() == "stop",
         )
 
@@ -622,7 +632,7 @@ class TestTypedVoiceStop:
         # Hermetic: don't let a dev machine's voice.stop_phrases config
         # change which utterances count as a stop phrase.
         monkeypatch.setattr(
-            "tools.voice_mode._load_voice_stop_phrases", lambda: ("stop",)
+            "tools.voice_mode_transcript._load_voice_stop_phrases", lambda: ("stop",)
         )
 
     def test_typed_stop_ends_voice_chat_when_voice_on(self):

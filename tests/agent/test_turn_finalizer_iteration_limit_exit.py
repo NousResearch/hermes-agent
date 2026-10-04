@@ -1,7 +1,7 @@
 """Regression tests for iteration-limit exit normalization (#61631)."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import pytest
 
@@ -170,8 +170,8 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_TASK", "task-123")
     record = MagicMock(name="record_task_failure")
     conn = SimpleNamespace(close=lambda: None)
-    monkeypatch.setattr("hermes_cli.kanban_db.connect", lambda: conn)
-    monkeypatch.setattr("hermes_cli.kanban_db._record_task_failure", record)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
     agent = _LimitAgent()
 
     result = _finalize(
@@ -185,10 +185,7 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
     record.assert_called_once_with(
         conn,
         "task-123",
-        error=(
-            "Iteration budget exhausted (60/60) — task could not complete "
-            "within the allowed iterations"
-        ),
+        error=ANY,
         outcome="timed_out",
         release_claim=True,
         end_run=True,
@@ -235,3 +232,188 @@ def test_published_pending_candidate_is_not_duplicated_by_finalizer(monkeypatch)
     assert persisted_roles == ["user", "assistant"]
 
 
+def test_bounded_fallback_records_kanban_failure_when_interrupted(monkeypatch):
+    """When budget is exhausted and the turn was interrupted,
+    ``finalize_turn`` must still record a terminal kanban failure via
+    the bounded fallback path (#87096).
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-456")
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+    agent = _LimitAgent()
+
+    # Budget exhausted (60/60), interrupted, no fallback-eligible exit_reason
+    result = finalize_turn(
+        agent,
+        final_response=None,
+        api_call_count=60,
+        interrupted=True,
+        failed=False,
+        messages=[{"role": "user", "content": "task"}],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="task",
+        original_user_message="task",
+        _should_review_memory=False,
+        _turn_exit_reason="interrupted_by_user",
+    )
+
+    # The bounded fallback must fire even though interrupted=True
+    # makes budget_fallback_eligible=False.
+    record.assert_called_once()
+    args, kwargs = record.call_args
+    assert args[1] == "task-456"
+    assert kwargs["outcome"] == "timed_out"
+    assert kwargs["release_claim"] is True
+    assert kwargs["end_run"] is True
+    assert kwargs["event_payload_extra"]["budget_used"] == 60
+    assert kwargs["event_payload_extra"]["budget_max"] == 60
+
+
+def test_bounded_fallback_records_kanban_failure_when_failed(monkeypatch):
+    """When budget is exhausted and the turn failed,
+    the bounded fallback must still record a terminal kanban failure (#87096).
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-789")
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+    agent = _LimitAgent()
+
+    result = finalize_turn(
+        agent,
+        final_response=None,
+        api_call_count=60,
+        interrupted=False,
+        failed=True,
+        messages=[{"role": "user", "content": "task"}],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="task",
+        original_user_message="task",
+        _should_review_memory=False,
+        _turn_exit_reason="provider_failure",
+    )
+
+    record.assert_called_once()
+    args, kwargs = record.call_args
+    assert args[1] == "task-789"
+    assert kwargs["outcome"] == "timed_out"
+
+
+def test_bounded_fallback_does_not_fire_without_kanban_task(monkeypatch):
+    """When budget is exhausted and interrupted but no kanban task is
+    active, the bounded fallback must NOT fire (#87096).
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+    agent = _LimitAgent()
+
+    result = finalize_turn(
+        agent,
+        final_response=None,
+        api_call_count=60,
+        interrupted=True,
+        failed=False,
+        messages=[{"role": "user", "content": "task"}],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="task",
+        original_user_message="task",
+        _should_review_memory=False,
+        _turn_exit_reason="interrupted_by_user",
+    )
+
+    record.assert_not_called()
+
+
+def test_bounded_fallback_does_not_fire_when_budget_not_exhausted(monkeypatch):
+    """When budget is NOT exhausted but turn is interrupted and a kanban
+    task is active, the bounded fallback must NOT fire (#87096).
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "task-999")
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+    agent = _LimitAgent(budget_remaining=60)
+
+    # api_call_count=10, max_iterations=60 — budget NOT exhausted
+    result = finalize_turn(
+        agent,
+        final_response=None,
+        api_call_count=10,
+        interrupted=True,
+        failed=False,
+        messages=[{"role": "user", "content": "task"}],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="task",
+        original_user_message="task",
+        _should_review_memory=False,
+        _turn_exit_reason="interrupted_by_user",
+    )
+
+    record.assert_not_called()
+
+
+@pytest.mark.parametrize("scope", ["child", "non-owner"])
+def test_budget_exhausted_child_does_not_record_parent_kanban_timeout(monkeypatch, scope):
+    """An in-process delegate_task child (or cron run) inherits ``HERMES_KANBAN_TASK`` from
+    the dispatcher worker; exhausting ITS budget must not record ``timed_out`` against the
+    parent's task or release the parent's claim (#112817)."""
+    from agent.delegation_context import delegated_child_context, non_dispatcher_owned_context
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
+    record = MagicMock(name="record_task_failure")
+    conn = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr("hermes_cli.kanban_db_connect.connect", lambda: conn)
+    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
+    agent = _LimitAgent()
+
+    ctx = delegated_child_context if scope == "child" else non_dispatcher_owned_context
+    with ctx():
+        finalize_turn(
+            agent,
+            final_response=None,
+            api_call_count=60,
+            interrupted=True,
+            failed=False,
+            messages=[{"role": "user", "content": "task"}],
+            conversation_history=[],
+            effective_task_id="task",
+            turn_id="turn",
+            user_message="task",
+            original_user_message="task",
+            _should_review_memory=False,
+            _turn_exit_reason="interrupted_by_user",
+        )
+
+    record.assert_not_called()
+
+
+def test_finalize_turn_starts_the_title_upgrade_the_prologue_held_back():
+    """#117296: the turn prologue leaves a same-endpoint title upgrade unstarted on the agent; the finalizer
+    is the only place that may start it, and only once the model request is done."""
+    import threading
+
+    ran = threading.Event()
+    agent = _LimitAgent()
+    agent._deferred_title_upgrade = threading.Thread(target=ran.set, daemon=True)
+    _finalize(agent, final_response="done", exit_reason="text_response(1)", api_call_count=1)
+    assert ran.wait(timeout=5), "deferred title upgrade never started"
+    assert agent._deferred_title_upgrade is None

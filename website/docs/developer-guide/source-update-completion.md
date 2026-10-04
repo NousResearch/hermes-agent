@@ -46,7 +46,7 @@ TUI/web/desktop is attempted even when another failed), profile sync, config mig
 bytecode sweep, gateway restart/verification, Windows resume or retired-channel adoption
 prints a `⚠` line and is appended to the receipt's `followups` as `{step, reason}` while the
 receipt's `outcome` stays `"success"`. The step's own obligation stays armed:
-`source-completion-pending` for the tail (launchers, build, maintenance, config migration),
+`source-completion-pending` for the tail (launchers, build, maintenance, profile sync, config migration),
 the host fleet-restart obligation for gateways (the CLI startup warning keeps naming it; an
 owed restart records the pre-update gateways on the obligation, so a gateway that died at boot
 stays owed until it serves the checkout instead of being settled by the gateway-less discharge),
@@ -70,6 +70,14 @@ yet — the next launch retries"), exit 0, with the tail obligation armed; a pre
 dies without a result is a `completion` follow-up. A Ctrl-C after the commit point closes the run
 as `interrupted` (exit 130, never `failed`) and says the new code is in place with its remaining
 steps owed.
+
+Two more post-commit channels follow the same rule. The gateway `/update` marker
+(`.update_exit_code`) keeps the committed result when a gateway restart fails (systemd unit,
+abort recovery or Windows service resume): the restart debt is the `gateway_restart` follow-up,
+the host obligation and the `⚠` lines in the forwarded output, never a "failed" notice. A receipt
+store that refuses the terminal write prints `⚠ Update receipt not written` and the completion
+child answers its parent with the correlated terminal record it finalized in memory, so the exit
+status stays 0; only a user action (local changes left in the stash) still exits 1.
 
 ## Parent lifecycle and failures
 

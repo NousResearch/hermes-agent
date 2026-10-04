@@ -1036,18 +1036,23 @@ def _foreground_scope_argv(args: list[str], run_env: dict) -> "tuple[list[str], 
     return scoped, f"{_FOREGROUND_SCOPE_PREFIX}-{suffix}.scope", bus_env
 
 
-def stop_foreground_scopes() -> None:
-    """Stop every foreground scope this process issued (host-exit funnel).
+def stop_foreground_scopes(pid: int | None = None, *, no_block: bool = False) -> None:
+    """Stop foreground scopes: this process's at host exit, or a dead gateway's (crash sweep).
 
-    A command that exits normally can leave a daemonized descendant (``tmux new -d``,
-    ``ssh-agent``) holding its scope; that unit is no longer in the gateway cgroup, so the
-    gateway's ``KillMode`` stops reaping it and it would outlive every restart. One glob
-    ``systemctl stop`` matches only units still loaded, so no per-command record is kept
-    (nothing grows with the number of commands) and collected scopes cost nothing.
+    ``pid`` names the gateway that *issued* the scopes. The host-exit funnel passes
+    nothing and therefore only runs once a scope was issued; the ExecStopPost sweep
+    passes the PID of the gateway that just died, because systemd unsets ``$MAINPID``
+    before that hook runs (``man systemd.service``: it is unset if the main process
+    exited by the time the stop commands are called). The PID stays in the glob either
+    way, so profiles sharing one user manager never stop each other's commands, and a
+    glob that matches nothing is a no-op (``systemctl stop`` exits 0).
     """
-    if _foreground_scope_issued:
-        from tools.process_registry import _stop_systemd_unit
-        _stop_systemd_unit(f"{_FOREGROUND_SCOPE_PREFIX}-{os.getpid()}-*.scope")
+    if pid is None:
+        if not _foreground_scope_issued:
+            return
+        pid = os.getpid()
+    from tools.process_registry import _stop_systemd_unit
+    _stop_systemd_unit(f"{_FOREGROUND_SCOPE_PREFIX}-{pid}-*.scope", no_block=no_block)
 
 
 class LocalEnvironment(BaseEnvironment):

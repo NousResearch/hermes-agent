@@ -80,7 +80,7 @@ compression:
   enabled: true              # Enable/disable compression (default: true)
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
-  tail_mode: legacy          # 尾部保留策略：legacy | lean（默认 legacy）
+  tail_mode: lean            # 尾部保留策略：lean | legacy（默认 lean）
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
 
 # Summarization model/provider configured under auxiliary:
@@ -97,7 +97,7 @@ auxiliary:
 |-----------|---------|-------|-------------|
 | `threshold` | `0.50` | 0.0-1.0 | 当 prompt token 数 ≥ `threshold × context_length` 时触发压缩 |
 | `target_ratio` | `0.20` | 0.10-0.80 | 控制尾部保护 token 预算：`threshold_tokens × target_ratio` |
-| `tail_mode` | `legacy` | `legacy`、`lean` | 尾部保留策略。`legacy` 保留 `target_ratio` 大小的逐字尾部（大窗口模型约 100K+ token）。`lean` 保留截取后的尾部（窗口的 2.5%，下限 10K、上限 25K），并将连续性移入摘要：压缩区域的分块保标识符摘录、机械提取的锚点索引（PR 编号、SHA、路径、报错文本 — 正则提取，绝不改写）、逐字引用的全部真实用户消息，以及 `session_search` 恢复指引。在 500K token 的真实会话上：保留约 49K（对比 162K）。压缩边界会多出数次摘要模型调用。lean 尾部中较旧的工具输出会降级为带恢复指引的单行占位 |
+| `tail_mode` | `lean` | `lean`、`legacy` | 尾部保留策略。`legacy` 保留 `target_ratio` 大小的逐字尾部（大窗口模型约 100K+ token）。`lean` 保留截取后的尾部（窗口的 2.5%，下限 10K、上限 25K），并将连续性移入摘要：压缩区域的分块保标识符摘录、机械提取的锚点索引（PR 编号、SHA、路径、报错文本 — 正则提取，绝不改写）、逐字引用的全部真实用户消息，以及 `session_search` 恢复指引。在 500K token 的真实会话上：保留约 49K（对比 162K）。压缩边界会多出数次摘要模型调用。lean 尾部中较旧的工具输出会降级为带恢复指引的单行占位 |
 | `protect_last_n` | `20` | ≥1 | 始终保留的最近消息最小数量 |
 | `protect_first_n` | `3` | （硬编码）| 系统提示词 + 首次交互始终保留 |
 

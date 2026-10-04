@@ -2,6 +2,7 @@
 session prompt."""
 
 import asyncio
+import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -64,11 +65,7 @@ def test_multi_bot_addressing_survives_real_handlers(media, observe):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("trigger", [
-    "mention", "approval", "prefixed_command", "prefixed_addressed_command", "prefixed_command_argument",
-    "repeated_prefix_command", "ordinary_text_prefix", "punctuated_prefix", "other_bot_prefix",
-    "shared_command", "text_mention", "reply", "wake_word", "open", "code", "command", "dm",
-])
+@pytest.mark.parametrize("trigger", ["mention", "text_mention", "reply", "wake_word", "open", "code", "command", "dm"])
 def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
     """Our own handle is still stripped when nobody else is named (clarify answers like ``@bot 2``
     keep resolving), and the identity block is identical across turns: it rides the cached-agent
@@ -85,40 +82,11 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
         elif trigger == "command":
             msg_type = MessageType.COMMAND
             msg = _group_message("/new@hermes_bot", entities=[SimpleNamespace(type="bot_command", offset=0, length=15)])
-        elif trigger == "shared_command":
-            # Another participant is named, so a closing @hermes_bot stays, as for conversational text.
-            msg_type = MessageType.COMMAND
-            msg = _group_message("/btw what did @ops_bot tell @hermes_bot", entities=_command_entities("/btw what did @ops_bot tell @hermes_bot"))
         elif trigger == "text_mention":
             msg = _group_message("Hermes hello", entities=[SimpleNamespace(type="text_mention", offset=0, length=6, user=SimpleNamespace(id=999))])
-        elif trigger in {
-            "mention", "approval", "prefixed_command", "prefixed_addressed_command", "prefixed_command_argument",
-            "repeated_prefix_command", "ordinary_text_prefix", "punctuated_prefix", "other_bot_prefix",
-        }:
-            text = {"mention": "😀 @hermes_bot 2", "approval": "@hermes_bot ok",
-                    "prefixed_command": "@hermes_bot /status",
-                    "prefixed_addressed_command": "@hermes_bot /model@hermes_bot gpt-5",
-                    "prefixed_command_argument": "@hermes_bot /btw did @hermes_bot answer Alice?\nKeep it short  ",
-                    "repeated_prefix_command": " @HeRmEs_BoT, @hermes_bot: /btw did @hermes_bot answer? ",
-                    "ordinary_text_prefix": "@hermes_bot explain /model gpt-5",
-                    "punctuated_prefix": "@hermes_bot ! /model gpt-5",
-                    "other_bot_prefix": "@hermes_bot @ops_bot /model gpt-5"}[trigger]
-            offset = 3 if trigger == "mention" else (1 if trigger == "repeated_prefix_command" else 0)
-            entities = [SimpleNamespace(type="mention", offset=offset, length=11)]
-            if trigger in {"prefixed_addressed_command", "prefixed_command_argument"}:
-                token = text.split(maxsplit=1)[1].split(maxsplit=1)[0]
-                entities.append(_bot_command_entity(text, token))
-                if trigger == "prefixed_command_argument":
-                    entities.append(SimpleNamespace(type="mention", offset=text.rfind("@hermes_bot"), length=11))
-            elif trigger == "repeated_prefix_command":
-                entities.extend([
-                    SimpleNamespace(type="mention", offset=text.index("@hermes_bot"), length=11),
-                    _bot_command_entity(text, "/btw"),
-                    SimpleNamespace(type="mention", offset=text.rfind("@hermes_bot"), length=11),
-                ])
-            elif trigger == "other_bot_prefix":
-                entities.append(SimpleNamespace(type="mention", offset=text.index("@ops_bot"), length=8))
-            msg = _group_message(text, entities=entities)
+        elif trigger == "mention":
+            text = "😀 @hermes_bot 2"
+            msg = _group_message(text, entities=[SimpleNamespace(type="mention", offset=3, length=11)])
         elif trigger == "code":
             # Telegram says this is code, not a mention; a reply admits the turn.
             msg = _group_message("@hermes_bot", reply_to_bot=True, entities=[SimpleNamespace(type="code", offset=0, length=11)])
@@ -138,23 +106,8 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
 
         assert len(events) == 2
         first, second = events
-        expected_text = {"command": "/new", "mention": "😀 2", "approval": "ok", "prefixed_command": "/status",
-                         "prefixed_addressed_command": "/model gpt-5",
-                         "prefixed_command_argument": "/btw did @hermes_bot answer Alice?\nKeep it short  ",
-                         "repeated_prefix_command": "/btw did @hermes_bot answer? ",
-                         "ordinary_text_prefix": "explain /model gpt-5", "punctuated_prefix": "! /model gpt-5",
-                         "code": "@hermes_bot"}.get(trigger, msg.text)
+        expected_text = {"command": "/new", "mention": "😀 2", "code": "@hermes_bot"}.get(trigger, msg.text)
         assert first.text == expected_text
-        command_cases = {"command": ("new", ""), "shared_command": ("btw", "what did @ops_bot tell @hermes_bot"),
-                         "prefixed_command": ("status", ""),
-                         "prefixed_addressed_command": ("model", "gpt-5"),
-                         "prefixed_command_argument": ("btw", "did @hermes_bot answer Alice?\nKeep it short  "),
-                         "repeated_prefix_command": ("btw", "did @hermes_bot answer? ")}
-        if trigger in command_cases:
-            assert (first.get_command(), first.get_command_args()) == command_cases[trigger]
-        if trigger in {"ordinary_text_prefix", "punctuated_prefix", "other_bot_prefix"}:
-            assert not first.is_command()
-            assert first.get_command() is None
         if trigger == "dm":
             assert not first.channel_prompt
         else:
@@ -166,15 +119,67 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
     asyncio.run(run())
 
 
-def _command_entities(text):
-    token = text.lstrip().split(maxsplit=1)[0]
-    entities = [_bot_command_entity(text, token)]
+async def _sole_addressee_turns(msg, msg_type=MessageType.TEXT):
+    """Send ``msg`` and a reply follow-up in the same chat through the real handlers."""
+    adapter = _make_adapter(require_mention=True)
+    adapter._ensure_forum_commands = AsyncMock()
+    events = []
+    adapter._enqueue_text_event = events.append
+    adapter.handle_message = AsyncMock(side_effect=events.append)
+    handler = adapter._handle_command if msg_type == MessageType.COMMAND else adapter._handle_text_message
+    await handler(SimpleNamespace(update_id=1002, message=msg, effective_message=None), SimpleNamespace())
+    follow_up = _group_message("thanks", reply_to_bot=True)
+    for attr in ("photo", "video", "voice", "audio", "document"):
+        setattr(follow_up.reply_to_message, attr, None)
+    await adapter._handle_text_message(SimpleNamespace(update_id=1003, message=follow_up, effective_message=None), SimpleNamespace())
+    return events
+
+
+def _addressed_entities(text, command=None):
+    """Telegram's entities for ``text``: the bot command, plus every bot mention outside it."""
+    start = text.index(command) if command else -1
+    entities = [_bot_command_entity(text, command)] if command else []
     for handle in ("@hermes_bot", "@ops_bot"):
-        start = text.index(token) + len(token)
-        while (start := text.find(handle, start)) >= 0:
-            entities.append(SimpleNamespace(type="mention", offset=start, length=len(handle)))
-            start += len(handle)
-    return entities
+        for match in re.finditer(re.escape(handle), text, re.IGNORECASE):
+            if not start <= match.start() < start + len(command or ""):
+                entities.append(SimpleNamespace(type="mention", offset=match.start(), length=len(handle)))
+    return sorted(entities, key=lambda entity: entity.offset)
+
+
+@pytest.mark.parametrize("text,command,expected_text,parsed", [
+    ("@hermes_bot ok", None, "ok", None),
+    ("@hermes_bot /status", None, "/status", ("status", "")),
+    ("@hermes_bot /model@hermes_bot gpt-5", "/model@hermes_bot", "/model gpt-5", ("model", "gpt-5")),
+    ("@hermes_bot /btw did @hermes_bot answer Alice?\nKeep it short  ", "/btw",
+     "/btw did @hermes_bot answer Alice?\nKeep it short  ", ("btw", "did @hermes_bot answer Alice?\nKeep it short  ")),
+    (" @HeRmEs_BoT, @hermes_bot: /btw did @hermes_bot answer? ", "/btw",
+     "/btw did @hermes_bot answer? ", ("btw", "did @hermes_bot answer? ")),
+    ("@hermes_bot explain /model gpt-5", None, "explain /model gpt-5", None),
+    ("@hermes_bot ! /model gpt-5", None, "! /model gpt-5", None),
+    ("@hermes_bot @ops_bot /model gpt-5", None, "@hermes_bot @ops_bot /model gpt-5", None),
+    ("/btw what did @ops_bot tell @hermes_bot", "/btw",
+     "/btw what did @ops_bot tell @hermes_bot", ("btw", "what did @ops_bot tell @hermes_bot")),
+])
+def test_addressed_commands_keep_their_arguments_and_a_stable_prompt(text, command, expected_text, parsed):
+    """A leading own address is removed and the command's arguments keep every byte, including our
+    own handle inside them. Text that only mentions a command, or that names another bot, stays
+    plain text. A slash-first command that names another participant keeps its text. The identity
+    block stays identical across turns, as for every other addressing shape."""
+    msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
+    first, second = asyncio.run(_sole_addressee_turns(_group_message(text, entities=_addressed_entities(text, command)), msg_type))
+    assert first.text == expected_text
+    if parsed:
+        assert (first.get_command(), first.get_command_args()) == parsed
+    else:
+        assert not first.is_command()
+    assert "@hermes_bot" in first.channel_prompt
+    assert first.channel_prompt == second.channel_prompt
+    assert _prompt_signature(first) == _prompt_signature(second)
+    assert first.source.user_id == "111"
+
+
+def _command_entities(text):
+    return _addressed_entities(text, text.lstrip().split(maxsplit=1)[0])
 
 
 @pytest.mark.parametrize("chat", ["group", "observed_group", "private"])

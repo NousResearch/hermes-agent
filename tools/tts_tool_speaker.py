@@ -174,7 +174,14 @@ class _StreamerPlayback:
         self._use_device = self._device_usable()
         self._audio_queue: "queue.Queue[Optional[queue.Queue[Optional[bytes]]]]" = queue.Queue()
         self._prefetch_threads: List[threading.Thread] = []
-        self._prefetch_sem = threading.Semaphore(3)
+        # Local MLX streamers (qwen3tts-mlx) spawn one MLX worker process per
+        # sentence — each holds 2-3GB RAM + GPU. A 3-way prefetch would run three
+        # workers concurrently, multiplying memory/GPU pressure (measured 2026-08).
+        # Serialize local streamers (structural marker: a class that spawns a venv
+        # subprocess carries ``_VENV``); keep 3-way for cloud APIs (network-bound,
+        # no local resource cost). PR #85071.
+        _is_local_mlx_streamer = bool(getattr(streamer, "_VENV", None))
+        self._prefetch_sem = threading.Semaphore(1 if _is_local_mlx_streamer else 3)
         self._worker = threading.Thread(target=self._playback_worker, daemon=True)
         self._worker.start()
 

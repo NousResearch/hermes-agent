@@ -444,7 +444,7 @@ stage_prerequisites() {
     # glibc Node links libatomic.so.1, absent on minimal Debian/RHEL hosts. PM
     # installs the distro package with `sudo -n` under its install lock, so
     # cache sudo credentials now, while the terminal can answer the prompt.
-    if [[ "$_target" == linux-* && "$_target" != *-musl ]] \
+    if [ "$NON_INTERACTIVE" != true ] && [[ "$_target" == linux-* && "$_target" != *-musl ]] \
         && [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && has_terminal \
         && ! { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; then
         log "Node.js needs libatomic.so.1; sudo may ask for your password to install it"

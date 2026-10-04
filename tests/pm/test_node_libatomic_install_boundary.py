@@ -63,3 +63,34 @@ def test_auto_repair_never_reads_a_tty(monkeypatch):
     assert attempted is False
     assert captured["argv"][:2] == ["/usr/bin/sudo", "-n"]
     assert captured["stdin"] is libatomic.subprocess.DEVNULL
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("flags", ["", "NON_INTERACTIVE=true"])
+def test_installer_sudo_warmup_honours_non_interactive(tmp_path, flags):
+    """The prerequisites warm-up may prompt for sudo, but never under --non-interactive."""
+    import os
+    import pty
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "install.sh"
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "sudo.log"
+    _node_script(bin_dir / "ldconfig", "#!/bin/sh\nexit 0\n")
+    _node_script(bin_dir / "id", "#!/bin/sh\necho 1000\n")
+    _node_script(bin_dir / "sudo", f'#!/bin/sh\necho "$*" >> "{log}"\nexit 0\n')
+    probe = f'source "$1" --manifest\n{flags}\nuv_bootstrap_target() {{ echo linux-x64; }}\nstage_prerequisites\n'
+    env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}", HOME=str(tmp_path))
+    # A real controlling terminal: has_terminal() and `sudo -v </dev/tty` open it.
+    pid, fd = pty.fork()
+    if pid == 0:
+        os.execvpe("bash", ["bash", "-c", probe, "probe", str(script)], env)
+    while True:
+        try:
+            if not os.read(fd, 4096):
+                break
+        except OSError:
+            break
+    os.waitpid(pid, 0)
+
+    prompted = log.is_file() and "-v" in log.read_text().split()
+    assert prompted is (flags == "")

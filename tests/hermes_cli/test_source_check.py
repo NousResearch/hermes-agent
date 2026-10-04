@@ -542,3 +542,83 @@ def test_branch_tip_failure_names_the_cause(installation):
     status = check_for_updates(install_root=root, home=home, force=True)
     assert status["error"] == "fetch-failed"
     assert "HTTP 503" in status["message"]
+
+
+def test_tag_pinned_checkout_compares_against_the_latest_release(installation):
+    """HEAD exactly at a release tag is "at" a release, never N commits behind main."""
+    from hermes_cli.source_check import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    git("tag", "v2026.9.24")
+    responses["/repos/fixture/fork/releases/latest"] = (
+        200, {"tag_name": "v2026.9.24", "target_commitish": head})
+    status = check_for_updates(install_root=root, home=home)
+    assert status["behind"] == 0 and status["updateAvailable"] is False
+    assert status["tag"] == "v2026.9.24" and status["targetSha"] == head
+    assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/releases/latest"]
+
+
+def test_tag_pinned_checkout_with_newer_release_reports_update_available(installation):
+    from hermes_cli.source_check import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    git("tag", "v2026.9.24")
+    newer = "b" * 40
+    responses["/repos/fixture/fork/releases/latest"] = (
+        200, {"tag_name": "v2026.9.25", "target_commitish": newer})
+    status = check_for_updates(install_root=root, home=home)
+    assert status["behind"] == UPDATE_AVAILABLE_NO_COUNT and status["updateAvailable"] is True
+    assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/releases/latest"]
+
+
+def test_annotated_release_tag_is_peeled_to_its_commit(installation):
+    from hermes_cli.source_check import check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    git("tag", "-a", "v2026.9.24", "-m", "release")
+    responses["/repos/fixture/fork/releases/latest"] = (
+        200, {"tag_name": "v2026.9.24", "target_commitish": "main"})
+    tag_object = {"sha": "c" * 40, "type": "tag"}
+    commit = {"object": {"sha": head, "type": "commit"}}
+    responses["/repos/fixture/fork/git/ref/tags/v2026.9.24"] = (200, {"object": tag_object})
+    responses["/repos/fixture/fork/git/tags/" + "c" * 40] = (200, commit)
+    status = check_for_updates(install_root=root, home=home)
+    assert status["behind"] == 0 and status["targetSha"] == head
+
+
+def test_release_lookup_failure_falls_back_to_the_branch_tip(installation):
+    from hermes_cli.source_check import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    git("tag", "v2026.9.24")
+    tip = "b" * 40
+    responses["/repos/fixture/fork/releases/latest"] = (404, {})
+    responses["/repos/fixture/fork/commits/main"] = (200, tip)
+    responses[f"/repos/fixture/fork/compare/{head}...{tip}"] = (200, {"ahead_by": 5, "commits": []})
+    status = check_for_updates(install_root=root, home=home)
+    assert status["behind"] == 5
+    assert requests == [MAIN_CHANNEL, "/repos/fixture/fork/releases/latest",
+                        "/repos/fixture/fork/commits/main",
+                        f"/repos/fixture/fork/compare/{head}...{tip}"]
+
+
+def test_no_tag_at_head_never_probes_the_release_endpoint(installation):
+    from hermes_cli.source_check import check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    responses["/repos/fixture/fork/commits/main"] = (200, head)
+    status = check_for_updates(install_root=root, home=home)
+    assert status["behind"] == 0  # branch tip resolved; local ancestry finds HEAD current
+    assert all("releases/latest" not in seen for seen in requests)
+
+
+def test_explicit_branch_query_keeps_the_branch_comparison(installation):
+    """An explicit branch asks about that branch, even with a tag at HEAD."""
+    from hermes_cli.source_check import check_for_updates
+
+    root, linked, home, base, head, responses, requests, git = installation
+    git("tag", "v2026.9.24")
+    responses["/repos/fixture/fork/commits/main"] = (200, head)
+    status = check_for_updates(install_root=root, home=home, branch="main")
+    assert status["branch"] == "main"
+    assert all("releases/latest" not in seen for seen in requests)

@@ -173,14 +173,13 @@ def _unverified_targets(unverified) -> str:
 
 _STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[completed]", Colors.BLUE)}
 
-# cron.jobs._normalize_job_record() substitutes this literal for a job record that carries no
-# id. It is truthy, so deduplicating on a falsy check alone would fold two genuinely different
-# id-less jobs from different profiles into a single row.
+# cron.jobs._normalize_job_record() substitutes this truthy literal for a record with no id,
+# so a plain falsy check would fold two distinct id-less jobs from different profiles into one.
 _MISSING_JOB_ID = "unknown"
 
 
 def _cron_profile_stores() -> List[tuple[str, Path]]:
-    """``(profile name, HERMES_HOME)`` for every live profile, default first.
+    """``(profile name, HERMES_HOME)`` for every live profile.
 
     ``list_profile_names()`` is the cheap name-only listing (``default`` + LIVE profile dirs,
     tombstones skipped) that cron already uses for delivery-target validation.
@@ -197,16 +196,12 @@ def _cron_profile_stores() -> List[tuple[str, Path]]:
 
 
 def _read_jobs_for_home(home: Path) -> List[Dict[str, Any]]:
-    """Read one profile's jobs without disturbing the active profile's own store.
+    """Read one profile's jobs.
 
-    The active profile is read through the plain path on purpose: it is already pinned by
-    ``_current_cron_store()``, which honours the documented store re-pointing escape hatch
-    (deliberately re-pointed module constants and an active ``HERMES_HOME``). Wrapping it in
-    ``use_cron_store`` would override that and read a different file than the rest of the CLI.
-
-    Any other profile's store does need the override: ``use_cron_store`` is an
-    execution-context override, so it never retargets a concurrently ticking scheduler's
-    load/save.
+    The active profile goes through the plain path: ``_current_cron_store()`` already pins it
+    and honours the documented store re-pointing escape hatch, which ``use_cron_store`` would
+    override — reading a different file than the rest of the CLI reads. Other profiles do need
+    the override, and being execution-context scoped it never retargets a ticking scheduler.
     """
     from cron.jobs import list_jobs, use_cron_store
     from hermes_cli.profiles import get_active_profile_name, profile_matches_home
@@ -233,10 +228,10 @@ def _aggregate_cron_jobs(
     ``"unknown"`` sentinel — are never deduplicated.
     """
     read = read_jobs or _read_jobs_for_home
-    # Default profile first AND first-writer-wins, so its copy of a shared id is the one kept.
-    # Overwriting instead would hand the row to whichever profile was visited last.
     by_id: Dict[str, tuple[str, Dict[str, Any]]] = {}
     unkeyed: List[tuple[str, Dict[str, Any]]] = []
+    # Default profile first, and first writer wins, so a shared id resolves to the default's
+    # copy no matter what order the caller passed the stores in.
     for name, home in sorted(stores, key=lambda item: item[0] != "default"):
         try:
             jobs = read(home)

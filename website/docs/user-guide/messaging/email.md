@@ -98,9 +98,9 @@ EMAIL_SMTP_HOST=smtp.gmail.com
 
 # Security (recommended)
 EMAIL_ALLOWED_USERS=your@email.com,colleague@work.com
-# Exact authserv-id on the receiving MTA's topmost Authentication-Results header.
-# With an allowlist, leave sender authentication enabled only after confirming
-# that MTA strips inbound headers claiming this id before adding its own stamp.
+# Required: exact authserv-id on your receiving server's topmost
+# Authentication-Results header (Gmail: mx.google.com).
+# That server must strip inbound headers claiming this id before adding its own.
 EMAIL_AUTHSERV_ID=mx.google.com
 
 # Optional
@@ -181,9 +181,9 @@ Email access is stricter by default than chat-style platforms:
 
 Allowlist entries match whole addresses. A bare entry such as `alice` (a chat username in `GATEWAY_ALLOWED_USERS`, say) never admits `alice@` at any domain, and mail from such an address is dropped rather than paired or declined.
 
-Hermes acts on a message only when the `Authentication-Results` header stamped by your receiving server authenticates its `From:` domain (DMARC, or aligned SPF/DKIM). This applies with open access (`EMAIL_ALLOW_ALL_USERS` / `GATEWAY_ALLOW_ALL_USERS`) too: open access admits any sender, but each conversation and every reply is keyed on `From:`, so a forged `From:` would put the attacker's text into that address's session and make Hermes mail it. Pairing codes and declines likewise need an authenticated `From:`, so neither is mailed to a forged address. If your mail server does not stamp that header, set `platforms.email.require_authenticated_sender: false` (or `EMAIL_TRUST_FROM_HEADER=true`) to accept the risk; otherwise mail from an admitted sender that carries no such header is dropped with a `Dropping sender with unauthenticated From` warning in the gateway log. The same warning, pointing at `platforms.email.authserv_id` (`EMAIL_AUTHSERV_ID`) instead, fires when the topmost `Authentication-Results` header (the one your server prepends; lower ones are never consulted) does not name exactly the pinned `authserv_id`. `authserv_id` must equal the exact host your server writes; if that host varies per message, leave `authserv_id` unset. Mail from an address listed in `EMAIL_ALLOWED_USERS` / `GATEWAY_ALLOWED_USERS` that fails authentication otherwise (for example a sender whose DKIM is broken, or a forwarder that breaks alignment) is dropped with the same warning and its verdict, with no opt-out hint. Other senders' failing mail, such as forged `From:` under open access, is dropped quietly, logged at debug level only.
+Hermes acts on a message only when the `Authentication-Results` header stamped by your receiving server authenticates its `From:` domain (DMARC, or aligned SPF/DKIM). This applies with open access (`EMAIL_ALLOW_ALL_USERS` / `GATEWAY_ALLOW_ALL_USERS`) too: open access admits any sender, but each conversation and every reply is keyed on `From:`, so a forged `From:` would put the attacker's text into that address's session and make Hermes mail it. Pairing codes and declines likewise need an authenticated `From:`, so neither is mailed to a forged address. If your mail server does not stamp that header, set `platforms.email.require_authenticated_sender: false` (or `EMAIL_TRUST_FROM_HEADER=true`) to accept the risk; otherwise mail from an admitted sender that carries no such header is dropped with a `Dropping sender with unauthenticated From` warning in the gateway log. The same warning, pointing at `platforms.email.authserv_id` (`EMAIL_AUTHSERV_ID`) instead, fires when the topmost `Authentication-Results` header (the one your server prepends; lower ones are never consulted) does not name exactly the pinned `authserv_id`. `authserv_id` must equal exactly the authserv-id your server writes before the first `;` of that header. Mail from an address listed in `EMAIL_ALLOWED_USERS` / `GATEWAY_ALLOWED_USERS` that fails authentication otherwise (for example a sender whose DKIM is broken, or a forwarder that breaks alignment) is dropped with the same warning and its verdict, with no opt-out hint. Other senders' failing mail, such as forged `From:` under open access, is dropped quietly, logged at debug level only.
 
-When `EMAIL_ALLOWED_USERS` grants access, sender authentication is enabled by default. Set `EMAIL_AUTHSERV_ID` to the exact id stamped on the **topmost** `Authentication-Results` header by your receiving MTA. Hermes fails closed without that pin, or when the top header does not match it. Confirm that your MTA strips inbound `Authentication-Results` headers claiming its id before it prepends its own; a copied id alone does not prove provenance. If your provider cannot meet this requirement, you may explicitly accept the risk with `platforms.email.require_authenticated_sender: false` or `EMAIL_TRUST_FROM_HEADER=true`.
+**The `authserv_id` pin is required while sender authentication is on.** Without `platforms.email.authserv_id` (`EMAIL_AUTHSERV_ID`), Hermes cannot tell your server's `Authentication-Results` header from one the sender wrote (a self-hosted MTA that adds none of its own leaves the sender's on top), so it trusts none: every message that needs an authenticated `From:` is dropped, and the gateway log says so once, with the fix. To find the value, open a message your server delivered ("show original" / raw source) and copy the token before the first `;` of the **topmost** `Authentication-Results` header, for example `mx.google.com` for Gmail. If that token seems to change between messages, it is a per-relay hostname rather than an authserv-id: RFC 8601 defines the authserv-id as a stable name for the administrative domain, so configure your MTA to stamp one (for example `AuthservID` in OpenDKIM / OpenDMARC) and pin that. A matching id is a pin, not proof of provenance: confirm your MTA strips inbound `Authentication-Results` headers claiming its id before it prepends its own. If you cannot pin a stable id, opt out explicitly with `platforms.email.require_authenticated_sender: false` (or `EMAIL_TRUST_FROM_HEADER=true`) and accept that `From:` is then trusted as written.
 
 :::warning
 **Use a dedicated inbox and configure `EMAIL_ALLOWED_USERS` for normal operation.** Email pairing is opt-in because shared inboxes often contain unrelated unread messages, and Hermes should not reply to those contacts by default.
@@ -197,7 +197,7 @@ When `EMAIL_ALLOWED_USERS` grants access, sender authentication is enabled by de
 |---------|----------|
 | **"IMAP connection failed"** at startup | Verify `EMAIL_IMAP_HOST` and `EMAIL_IMAP_PORT`. Ensure IMAP is enabled on the account. For Gmail, enable it in Settings → Forwarding and POP/IMAP. |
 | **"SMTP connection failed"** at startup | Verify `EMAIL_SMTP_HOST` and `EMAIL_SMTP_PORT`. Check that your password is correct (use App Password for Gmail). |
-| **Messages not received** | Check `EMAIL_ALLOWED_USERS` includes the sender's email. With an allowlist, set `EMAIL_AUTHSERV_ID` to the exact receiving-MTA stamp and verify it is the topmost `Authentication-Results` header. Check spam folder — some providers flag automated replies. |
+| **Messages not received** | Check `EMAIL_ALLOWED_USERS` includes the sender's email. If the gateway log shows `authserv-id is not configured`, set `EMAIL_AUTHSERV_ID` to the exact id on the topmost `Authentication-Results` header your server writes. Check spam folder — some providers flag automated replies. |
 | **"Authentication failed"** | For Gmail, you must use an App Password, not your regular password. Ensure 2FA is enabled first. |
 | **Duplicate replies** | Ensure only one gateway instance is running. Check `hermes gateway status`. |
 | **Slow response** | The default poll interval is 15 seconds. Reduce with `EMAIL_POLL_INTERVAL=5` for faster response (but more IMAP connections). |
@@ -213,7 +213,7 @@ When `EMAIL_ALLOWED_USERS` grants access, sender authentication is enabled by de
 
 - Use **App Passwords** instead of your main password (required for Gmail with 2FA)
 - Set `EMAIL_ALLOWED_USERS` to restrict who can interact with the agent
-- With an allowlist, set `EMAIL_AUTHSERV_ID` to the exact id of the receiving MTA's topmost `Authentication-Results` stamp, and verify that MTA strips inbound headers claiming that id
+- Set `EMAIL_AUTHSERV_ID` to the exact id of the receiving MTA's topmost `Authentication-Results` stamp, and verify that MTA strips inbound headers claiming that id
 - The password is stored in `~/.hermes/.env` — protect this file (`chmod 600`)
 - IMAP uses SSL (port 993) and SMTP uses STARTTLS (port 587) by default — connections are encrypted
 
@@ -231,6 +231,6 @@ When `EMAIL_ALLOWED_USERS` grants access, sender authentication is enabled by de
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP server port |
 | `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
-| `EMAIL_AUTHSERV_ID` | No | — | Exact authserv-id on the receiving MTA's topmost `Authentication-Results`; required when using an allowlist unless sender authentication is disabled |
+| `EMAIL_AUTHSERV_ID` | Yes, unless sender authentication is off | — | Exact authserv-id on your receiving server's topmost `Authentication-Results` header; without it every message needing an authenticated `From:` is dropped |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |

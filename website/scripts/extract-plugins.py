@@ -251,6 +251,7 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None,
             "sha": sha,
             "shaShort": sha[:7],
             "tier": tier,
+            "featured": raw.get("featured") is True,
             "category": category,
             "maintainer": str(raw.get("maintainer") or "").strip(),
             "subdir": subdir,
@@ -315,7 +316,7 @@ def load_raw_entries(catalog_dir: Path) -> list[dict]:
         except (yaml.YAMLError, OSError):
             continue
         if isinstance(raw, dict) and raw.get("name") and raw.get("repo") and raw.get("sha"):
-            entries.append(raw)
+            entries.append({"featured": False, **raw})
     return entries
 
 

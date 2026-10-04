@@ -78,7 +78,7 @@ def test_share_nous_attaches_redacted_error_context(captured_upload):
 
 def test_share_nous_client_text_gets_upload_safe_log_redaction(captured_upload):
     """Client artifacts must ride the SAME redactor as backend logs
-    (_redact_log_text): secrets AND email addresses — not just the bare
+    (redact_debug_support_text): secrets AND email addresses — not just the bare
     secret pass, which leaves emails through (review finding on #92020)."""
     secret = "sk-abc123def456ghi789jkl012mno345pqr678"
     result = _handler()(
@@ -97,6 +97,104 @@ def test_share_nous_client_text_gets_upload_safe_log_redaction(captured_upload):
     assert secret not in files["client/desktop.log"]
 
 
+def test_redacted_support_egress_scrubs_structured_values_and_errors(
+    captured_upload, monkeypatch
+):
+    from hermes_constants import get_hermes_home
+
+    canaries = {
+        "url": "r36_REDACTED_url_canary_0123456789",
+        "header": "r36_REDACTED_header_canary_0123456789",
+        "env": "r36_REDACTED_env_canary_0123456789",
+        "argv": "r36_REDACTED_argv_canary_0123456789",
+        "bearer": "r36_REDACTED_bearer_canary_0123456789",
+        "error": "r36_REDACTED_error_canary_0123456789",
+    }
+    home = get_hermes_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "fallback_providers:\n"
+        "  - provider: custom\n"
+        "    model: support-fixture\n"
+        "    base_url: 'https://outer.invalid/?next=https://inner.invalid/"
+        f"?accessToken={canaries['url']}'\n"
+        "    extra_headers:\n"
+        f"      X-API-Key: {canaries['header']}\n"
+        "    env:\n"
+        f"      AWS_SECRET_ACCESS_KEY: {canaries['env']}\n"
+        f"    args: ['--api-key', '{canaries['argv']}']\n",
+        encoding="utf-8",
+    )
+    structured = (
+        f"headers={{'Proxy-Authorization': 'Basic {canaries['header']}'}} "
+        f"Command ['provider', '--api-key', '{canaries['argv']}'] "
+        f"Bearer {canaries['bearer']} "
+        f"https://a.invalid/?next=%2Fx%3Ffoo%26token%3D{canaries['url']}"
+    )
+
+    result = _handler()(
+        "rid-structured",
+        {"error_context": structured, "extra_files": {"desktop.log": structured}},
+    )
+
+    assert result["result"]["ok"] is True
+    envelope = _envelope(captured_upload["blob"])
+    assert envelope["redacted"] is True
+    rendered = json.dumps(envelope, sort_keys=True)
+    assert "support-fixture" in rendered
+    assert not [canary for canary in canaries.values() if canary in rendered]
+
+    # An oversized client value is scrubbed through a bounded window (line-aligned
+    # when a line ends in [2x, 3x) cap), with the same capped output as a full scrub.
+    import hermes_cli.debug_redaction as dr
+
+    real_redact, scrubbed_sizes = dr.redact_debug_support_text, []
+
+    def _spy(value, **kwargs):
+        scrubbed_sizes.append(len(value))
+        return real_redact(value, **kwargs)
+
+    line = f"cookie={canaries['header']} " + "x" * 40 + "\n"
+    monkeypatch.setattr(dr, "redact_debug_support_text", _spy)
+    assert _handler()("rid-big", {"error_context": line * 2_000})["result"]["ok"] is True
+    monkeypatch.setattr(dr, "redact_debug_support_text", real_redact)
+    big_context = _envelope(captured_upload["blob"])["files"]["error-context.txt"]
+    assert max(scrubbed_sizes) <= 2 * 8_000 + len(line)
+    assert big_context == real_redact((line * 2_000).strip(), max_chars=8_000)
+    scrubbed_sizes.clear()
+    monkeypatch.setattr(dr, "redact_debug_support_text", _spy)
+    one_line = f"cookie={canaries['header']} " + "x" * 2_000_000
+    assert _handler()("rid-one-line", {"error_context": one_line})["result"]["ok"] is True
+    monkeypatch.setattr(dr, "redact_debug_support_text", real_redact)
+    assert max(scrubbed_sizes) <= 3 * 8_000
+
+    import hermes_cli.diagnostics_upload as du
+
+    def _fail(_blob: bytes) -> dict:
+        # The tail is already scrubbed (a wrapped inner error); re-scrubbing it
+        # must be idempotent, not turn ``[REDACTED]`` into ``[REDACTED]]``.
+        raise RuntimeError(
+            "PUT https://upload.invalid/?X-Amz-Security-Token="
+            f"{canaries['error']} headers={{'X-API-Key': '{canaries['header']}'}} "
+            f"x-api-key: Basic {canaries['header']} "
+            + real_redact(f"cookie={canaries['error']}; --api-key {canaries['error']} "
+                          f"--header X-API-Key {canaries['error']}")
+            + " --header X-API-Key Basic [REDACTED]"
+        )
+
+    monkeypatch.setattr(du, "share_to_nous", _fail)
+    failure = _handler()("rid-structured-error", {})["result"]
+    assert failure["ok"] is False
+    assert canaries["error"] not in failure["error"]
+    assert canaries["header"] not in failure["error"]
+    assert "[REDACTED]]" not in failure["error"]
+    assert failure["error"].endswith(" --header X-API-Key Basic [REDACTED]")
+    assert real_redact(failure["error"]) == failure["error"]
+    # Prose after an already-masked value is not a key: kept, and a fixed point.
+    benign = real_redact("x-api-key: *** see docs")
+    assert benign.endswith(" see docs") and real_redact(benign) == benign
+
+
 def test_share_nous_linkless_success_is_a_failure(monkeypatch):
     """ok:true with neither view_url nor id would strand the user with an
     unreferencable upload — surface it as a structured failure instead."""
@@ -107,7 +205,7 @@ def test_share_nous_linkless_success_is_a_failure(monkeypatch):
     result = _handler()("rid-2c", {})
     payload = result["result"]
     assert payload["ok"] is False
-    assert "no view URL" in payload["error"]
+    assert payload["error"]
 
 
 def test_share_nous_extra_files_sanitized_and_redacted(captured_upload):

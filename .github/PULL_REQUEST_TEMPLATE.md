@@ -16,7 +16,7 @@ Fixes #
 
 - [ ] 🐛 Bug fix (non-breaking change that fixes an issue)
 - [ ] ✨ New feature (non-breaking change that adds functionality)
-- [ ] 🔒 Security fix
+- [ ] 🔒 Security fix (undisclosed vulnerabilities in [SECURITY.md](https://github.com/NousResearch/hermes-agent/blob/main/SECURITY.md) §3.1 scope go to [Security Advisories](https://github.com/NousResearch/hermes-agent/security/advisories/new) first, not a public PR)
 - [ ] 📝 Documentation update
 - [ ] ✅ Tests (adding or improving test coverage)
 - [ ] ♻️ Refactor (no behavior change)

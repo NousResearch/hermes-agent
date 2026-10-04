@@ -301,7 +301,7 @@ hermes sessions export session.jsonl --session-id 20250305_091523_a1b2c3d4
 hermes sessions export backup.jsonl --redact
 ```
 
-导出文件每行包含一个 JSON 对象，包含完整的 session 元数据和所有消息。
+导出文件每行包含一个 JSON 对象，包含完整的 session 元数据和每一条已存储的消息，每条都带有 `active`/`compacted` 标记。其中包括原地压缩归档的轮次，以及被 rewind 或编辑移除的消息。导入该文件（dashboard 的 session 导入）时，这些行会恢复为已归档的历史，而不会成为活跃的模型上下文。CLI 和消息平台的 `/save json` 快照同样如此。请把备份视为包含该 session 曾经有过的全部内容；要分享对话，请用 `--redact` 导出显示格式（`--format md` 或 `html`，只包含 session 显示的历史）。每个 session 的备份在内存中构建，因此已存储行数超过 `sessions.max_export_messages` 的 session 会被拒绝。
 
 #### HTML
 
@@ -382,6 +382,8 @@ hermes sessions delete 20250305_091523_a1b2c3d4
 hermes sessions delete 20250305_091523_a1b2c3d4 --yes
 ```
 
+删除一个仍在运行中的对话所使用的 session 并不会结束该对话：它下一次保存时会以同一个 id 重建 session，并写入完整的内存中对话记录。如果希望该 session 彻底消失，请先关闭对话。
+
 ### 重命名 Session
 
 ```bash
@@ -412,6 +414,7 @@ hermes sessions prune --older-than 30 --yes
 
 :::info
 清理仅删除**已结束**的 session（已被显式结束或自动重置的 session）。活跃 session 永远不会被清理。
+被压缩拆分成多个 session 的对话作为一个整体清理：只要后续任一段仍保留，较早的段就会保留。
 :::
 
 ### Session 统计
@@ -431,7 +434,7 @@ Total messages: 3847
 Database size: 12.4 MB
 ```
 
-如需更深入的分析——token 用量、费用估算、工具分解和活动模式——请使用 [`hermes insights`](/reference/cli-commands#hermes-insights)。
+如需更深入的分析——token 用量、费用估算、工具分解和活动模式——请使用 [`hermes insights`](../reference/cli-commands.md#hermes-insights)。
 
 ## Session 搜索工具
 
@@ -589,7 +592,7 @@ sessions:
   min_interval_hours: 24    # 清理间隔不短于此值
 ```
 
-活跃 session 永远不会被自动清理，无论时间多长。
+活跃 session 永远不会被自动清理，无论时间多长。被压缩拆分成多个 session 的对话同样如此：只要后续任一段仍保留，其较早的段就会保留，并在整个对话符合条件后一起清理。
 
 ### 手动清理
 

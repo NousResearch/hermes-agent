@@ -1,3 +1,4 @@
+import { waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -5,21 +6,20 @@ import { NO_PROJECT_ID, type SidebarProjectTree } from '@/app/chat/sidebar/proje
 import { $sidebarAgentsGrouped, setSidebarAgentsGrouped } from '@/store/layout'
 import { $activeGatewayProfile, $profileScope, ALL_PROFILES, setShowAllProfiles } from '@/store/profile'
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
+import { deferred } from '@/test/deferred'
 import type { ProjectInfo } from '@/types/hermes'
 
+import { $projectScope, ALL_PROJECTS, exitProjectScope } from './project-scope'
 import {
   $activeProjectId,
   $projects,
-  $projectScope,
   $projectsRpcAvailable,
   $projectTree,
-  $worktreeRefreshToken,
   addProjectFolder,
-  ALL_PROJECTS,
+  applyRenamedSessionTitle,
   createProject,
   deleteProject,
   enterProject,
-  exitProjectScope,
   fetchProjectSessions,
   openProjectCreate,
   pickProjectFolder,
@@ -27,7 +27,6 @@ import {
   projectNameForCwd,
   refreshProjects,
   refreshProjectTree,
-  refreshWorktrees,
   resolveNewSessionCwd,
   scanAndRecordRepos,
   startWorkInRepo,
@@ -92,24 +91,10 @@ const getHermesConfig = vi.mocked(hermes.getHermesConfig)
 const notifications = await import('@/store/notifications')
 const notify = vi.mocked(notifications.notify)
 
-function deferred<T>() {
-  let resolve!: (value: T) => void
-
-  const promise = new Promise<T>(done => {
-    resolve = done
-  })
-
-  return { promise, resolve }
-}
-
 describe('project scope', () => {
   beforeEach(() => {
     window.localStorage.clear()
     $projectScope.set(ALL_PROJECTS)
-  })
-
-  it('defaults to ALL_PROJECTS', () => {
-    expect($projectScope.get()).toBe(ALL_PROJECTS)
   })
 
   it('enterProject scopes the sidebar to the project id', () => {
@@ -170,6 +155,41 @@ describe('projects RPC profile forwarding', () => {
       profile: 'coder',
       project_id: 'p_123'
     })
+  })
+
+  it('keeps unchanged project nodes by reference across tree refreshes (#77591)', async () => {
+    const payload = () => ({
+      active_id: null,
+      projects: [
+        { id: 'p_a', label: 'a', path: '/a', repos: [], sessionCount: 1, sessionIds: ['s1'] },
+        { id: 'p_b', label: 'b', path: '/b', repos: [], sessionCount: 0, sessionIds: [] }
+      ],
+      scoped_session_ids: ['s1']
+    })
+
+    const next = payload()
+    next.projects[1] = { ...next.projects[1], sessionCount: 1, sessionIds: ['s2'] }
+
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(payload())
+      .mockResolvedValueOnce(payload())
+      .mockResolvedValueOnce(next)
+
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    await refreshProjectTree()
+    const first = $projectTree.get()
+
+    await refreshProjectTree()
+    expect($projectTree.get()).toBe(first)
+
+    await refreshProjectTree()
+    expect($projectTree.get()).not.toBe(first)
+    expect($projectTree.get()[0]).toBe(first[0])
+    expect($projectTree.get()[1].sessionIds).toEqual(['s2'])
   })
 
   it('skips project reads in the all-profiles view rather than forwarding its sentinel', async () => {
@@ -341,14 +361,6 @@ describe('projectNameForCwd', () => {
   })
 })
 
-describe('worktree refresh', () => {
-  it('refreshWorktrees bumps the probe token so useRepoWorktreeMap refetches', () => {
-    const before = $worktreeRefreshToken.get()
-    refreshWorktrees()
-    expect($worktreeRefreshToken.get()).toBe(before + 1)
-  })
-})
-
 describe('startWorkInRepo remote capability gate (#81724)', () => {
   it('names the stale-backend remedy when a remote gateway lacks the worktree route', async () => {
     isDesktopFsRemoteMode.mockReturnValue(true)
@@ -379,14 +391,6 @@ describe('startWorkInRepo remote capability gate (#81724)', () => {
 describe('pickProjectFolder', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-  })
-
-  it('uses the remote-aware directory picker locally', async () => {
-    isDesktopFsRemoteMode.mockReturnValue(false)
-    selectDesktopPaths.mockResolvedValue(['/local/repo'])
-
-    await expect(pickProjectFolder()).resolves.toBe('/local/repo')
-    expect(selectDesktopPaths).toHaveBeenCalledWith({ defaultPath: undefined, directories: true, multiple: false })
   })
 
   it('seeds the picker with the backend cwd on a remote gateway', async () => {
@@ -467,6 +471,52 @@ describe('createProject', () => {
     expect(request).not.toHaveBeenCalled()
   })
 
+  it.each(['connection', 'profile'] as const)(
+    'does not write a project idea or publish its row on a new %s after creation on the old owner',
+    async changed => {
+      const created = { folders: [], id: 'p_created_on_a', name: 'Original project', primary_path: '/shared/project' }
+      const pendingCreate = deferred<{ project: typeof created }>()
+
+      const request = vi.fn((method: string) =>
+        method === 'projects.create' ? pendingCreate.promise : Promise.resolve({ active_id: null, projects: [] })
+      )
+
+      const ownerGateway = { connectionState: 'open', request }
+      const otherGateway = { connectionState: 'open', request: vi.fn() }
+      let currentGateway = ownerGateway
+
+      activeGateway.mockImplementation(() => currentGateway as never)
+
+      const result = createProject({
+        folders: ['/shared/project'],
+        idea: 'idea from A',
+        name: created.name,
+        use: true
+      })
+
+      await waitFor(() =>
+        expect(request).toHaveBeenCalledWith('projects.create', expect.objectContaining({ profile: 'default' }))
+      )
+
+      if (changed === 'connection') {
+        currentGateway = otherGateway
+      } else {
+        $activeGatewayProfile.set('other')
+      }
+
+      pendingCreate.resolve({ project: created })
+      await expect(result).resolves.toBeNull()
+
+      expect(vi.mocked(fs.writeDesktopFileText)).not.toHaveBeenCalled()
+      expect($projects.get()).not.toContainEqual(created)
+      expect($activeProjectId.get()).toBeNull()
+      expect(notify).toHaveBeenCalledWith({
+        kind: 'info',
+        message: 'sidebar.projects.createdInPreviousContext'
+      })
+    }
+  )
+
   it('creates the project and flips into the grouped view so a blank slate shows it', async () => {
     const created = { folders: [], id: 'p_new', name: 'Demo', primary_path: '/srv/demo' }
 
@@ -500,6 +550,22 @@ describe('createProject', () => {
       'sidebar.projects.staleBackend'
     )
     expect($projectsRpcAvailable.get()).toBe(false)
+
+    // A missing-method rejection that lands after the owner changed says
+    // nothing about the new owner's backend, so it must not mark it stale.
+    const pendingCreate = deferred<never>()
+    const request = vi.fn(() => pendingCreate.promise)
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    $projectsRpcAvailable.set(true)
+
+    const result = createProject({ folders: ['/srv/demo'], name: 'Demo' })
+    await waitFor(() => expect(request).toHaveBeenCalled())
+    $activeGatewayProfile.set('other')
+    pendingCreate.reject(new Error('unknown method: projects.create'))
+
+    await expect(result).rejects.toThrow('sidebar.projects.staleBackend')
+    expect($projectsRpcAvailable.get()).toBe(true)
   })
 })
 
@@ -524,7 +590,15 @@ describe('project writes while viewing all profiles', () => {
     $projectsRpcAvailable.set(null)
     $projects.set([project])
     $projectTree.set([
-      { id: project.id, label: project.name, path: project.primary_path, color: null, icon: null, repos: [], sessionCount: 0 }
+      {
+        id: project.id,
+        label: project.name,
+        path: project.primary_path,
+        color: null,
+        icon: null,
+        repos: [],
+        sessionCount: 0
+      }
     ])
     $activeGatewayProfile.set('default')
     setShowAllProfiles(false)
@@ -535,49 +609,58 @@ describe('project writes while viewing all profiles', () => {
     $activeGatewayProfile.set('default')
   })
 
-  it.each(['default', 'coder'])('updates appearance in the active %s profile without leaving All profiles', async profile => {
-    const request = vi.fn().mockResolvedValue({})
-    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
-    $activeGatewayProfile.set(profile)
-    setShowAllProfiles(true)
+  it.each(['default', 'coder'])(
+    'updates appearance in the active %s profile without leaving All profiles',
+    async profile => {
+      const request = vi.fn().mockResolvedValue({})
+      activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+      $activeGatewayProfile.set(profile)
+      setShowAllProfiles(true)
 
-    await expect(updateProject(project.id, { color: '#ff0000' })).resolves.toBeUndefined()
+      await expect(updateProject(project.id, { color: '#ff0000' })).resolves.toBeUndefined()
 
-    expect(request).toHaveBeenCalledWith(
-      'projects.update',
-      expect.objectContaining({ profile, id: project.id, color: '#ff0000' })
-    )
-    expect($profileScope.get()).toBe(ALL_PROFILES)
-    expect($projects.get()).toEqual([expect.objectContaining({ id: project.id, color: '#ff0000' })])
-  })
+      expect(request).toHaveBeenCalledWith(
+        'projects.update',
+        expect.objectContaining({ profile, id: project.id, color: '#ff0000' })
+      )
+      expect($profileScope.get()).toBe(ALL_PROFILES)
+      expect($projects.get()).toEqual([expect.objectContaining({ id: project.id, color: '#ff0000' })])
+    }
+  )
 
-  it.each(['default', 'coder'])('adds a folder in the active %s profile without leaving All profiles', async profile => {
-    const request = vi.fn().mockResolvedValue({})
-    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
-    $activeGatewayProfile.set(profile)
-    setShowAllProfiles(true)
+  it.each(['default', 'coder'])(
+    'adds a folder in the active %s profile without leaving All profiles',
+    async profile => {
+      const request = vi.fn().mockResolvedValue({})
+      activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+      $activeGatewayProfile.set(profile)
+      setShowAllProfiles(true)
 
-    await expect(addProjectFolder(project.id, '/srv/ws/extra')).resolves.toBeUndefined()
+      await expect(addProjectFolder(project.id, '/srv/ws/extra')).resolves.toBeUndefined()
 
-    expect(request).toHaveBeenCalledWith(
-      'projects.add_folder',
-      expect.objectContaining({ profile, id: project.id, path: '/srv/ws/extra' })
-    )
-    expect($profileScope.get()).toBe(ALL_PROFILES)
-  })
+      expect(request).toHaveBeenCalledWith(
+        'projects.add_folder',
+        expect.objectContaining({ profile, id: project.id, path: '/srv/ws/extra' })
+      )
+      expect($profileScope.get()).toBe(ALL_PROFILES)
+    }
+  )
 
-  it.each(['default', 'coder'])('deletes a project in the active %s profile without leaving All profiles', async profile => {
-    const request = vi.fn().mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: [] })
-    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
-    $activeGatewayProfile.set(profile)
-    setShowAllProfiles(true)
+  it.each(['default', 'coder'])(
+    'deletes a project in the active %s profile without leaving All profiles',
+    async profile => {
+      const request = vi.fn().mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: [] })
+      activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+      $activeGatewayProfile.set(profile)
+      setShowAllProfiles(true)
 
-    await expect(deleteProject(project.id)).resolves.toBeUndefined()
+      await expect(deleteProject(project.id)).resolves.toBeUndefined()
 
-    expect(request).toHaveBeenCalledWith('projects.delete', expect.objectContaining({ profile, id: project.id }))
-    expect($profileScope.get()).toBe(ALL_PROFILES)
-    expect($projects.get()).toEqual([])
-  })
+      expect(request).toHaveBeenCalledWith('projects.delete', expect.objectContaining({ profile, id: project.id }))
+      expect($profileScope.get()).toBe(ALL_PROFILES)
+      expect($projects.get()).toEqual([])
+    }
+  )
 })
 
 describe('projects RPC capability', () => {
@@ -866,6 +949,79 @@ describe('project tree profile isolation', () => {
     $activeGatewayProfile.set('default')
     $projects.set([])
     $projectTree.set([])
+  })
+
+  it('mirrors a renamed title into cached tree rows and refreshes the tree (#123337)', async () => {
+    // The rename wrote the backend row; the cached snapshot (overview
+    // previews + hydrated lanes) kept the old title until an unrelated
+    // refetch. applyRenamedSessionTitle patches every cached copy by lineage
+    // id and re-pulls the authoritative tree.
+    const sess = (id: string, title: string) => ({ id, title })
+
+    const treeProject = {
+      id: 'p_1',
+      label: 'One',
+      path: '/one',
+      repos: [
+        {
+          id: '/one',
+          label: 'one',
+          path: '/one',
+          sessionCount: 2,
+          groups: [
+            {
+              id: '/one::branch::main',
+              label: 'main',
+              path: '/one',
+              sessions: [
+                sess('tip-row', 'Old title'),
+                sess('other-row', 'Untouched'),
+                { ...sess('preview-only', 'Old title'), _lineage_root_id: 'root-x' }
+              ]
+            }
+          ]
+        }
+      ],
+      sessionCount: 2,
+      previewSessions: [sess('tip-row', 'Old title')]
+    }
+
+    $projectTree.set([treeProject as never])
+
+    const request = vi.fn().mockResolvedValue({ active_id: null, projects: [], scoped_session_ids: [] })
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    gatewayAtom.set({ connectionState: 'open', request } as never)
+
+    applyRenamedSessionTitle('tip-row', 'New title')
+
+    // Synchronous patch: every cached copy carries the new title.
+    const project = $projectTree.get()[0]
+    const lane = project.repos[0].groups[0]
+    expect(lane.sessions.find(s => s.id === 'tip-row')?.title).toBe('New title')
+    expect(lane.sessions.find(s => s.id === 'other-row')?.title).toBe('Untouched')
+    expect(lane.sessions.find(s => s.id === 'preview-only')?.title).toBe('Old title')
+    expect(project.previewSessions?.[0].title).toBe('New title')
+
+    // A lineage-root rename reaches a row the snapshot holds under its tip.
+    applyRenamedSessionTitle('root-x', 'Root renamed')
+    expect($projectTree.get()[0].repos[0].groups[0].sessions.find(s => s.id === 'preview-only')?.title).toBe(
+      'Root renamed'
+    )
+
+    // And the authoritative tree is re-pulled.
+    await waitFor(() => expect(request).toHaveBeenCalledWith('projects.tree', expect.anything()))
+  })
+
+  it('keeps the tree reference when no cached row matches the rename', () => {
+    const before = [{ id: 'p_2', label: 'Two', path: '/two', repos: [], sessionCount: 0 }]
+    $projectTree.set(before as never)
+
+    const request = vi.fn()
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    applyRenamedSessionTitle('absent-row', 'Whatever')
+
+    expect($projectTree.get()).toBe(before)
   })
 
   it('retries a dropped projects.tree request once on the active gateway', async () => {

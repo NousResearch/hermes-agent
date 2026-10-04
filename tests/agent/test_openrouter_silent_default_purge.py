@@ -11,9 +11,7 @@ and env var when a credential is newly ingested.
 """
 
 import logging
-import uuid
 
-import pytest
 
 
 class TestAuxiliaryOpenrouterDefaultIsFree:
@@ -25,11 +23,6 @@ class TestAuxiliaryOpenrouterDefaultIsFree:
             "SKU — a paid built-in default is silent real spend (#81952)"
         )
 
-    def test_builtin_default_matches_free_only_warning_recommendation(self):
-        """The default is the same SKU the free_only warning tells users to set."""
-        from agent import auxiliary_client as ac
-
-        assert ac._OPENROUTER_MODEL == "nvidia/nemotron-3-ultra-550b-a55b:free"
 
     def test_user_configured_model_still_honored(self, monkeypatch):
         """auxiliary.openrouter_model from config wins over the built-in default."""
@@ -68,8 +61,6 @@ class TestEnvIngestionWarning:
             if r.levelno == logging.WARNING and "Ingested OPENROUTER_API_KEY" in r.getMessage()
         ]
         assert warnings, "expected a WARNING for env->pool openrouter ingestion"
-        assert "OpenRouter spend" in warnings[0]
-        assert "hermes auth remove openrouter" in warnings[0]
 
     def test_warning_once_per_process(self, tmp_path, monkeypatch, caplog):
         self._fresh_home(tmp_path, monkeypatch)

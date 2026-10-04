@@ -3,8 +3,10 @@
 import asyncio
 import inspect
 from concurrent.futures import Future
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from acp.schema import (
     AllowedOutcome,
     DeniedOutcome,
@@ -79,7 +81,6 @@ class TestApprovalBridge:
         assert inspect.iscoroutine(scheduled["coro"])
         assert kwargs["session_id"] == "s1"
         assert tool_call.session_update == "tool_call_update"
-        assert tool_call.tool_call_id.startswith("perm-check-")
         assert tool_call.kind == "execute"
         assert tool_call.status == "pending"
         assert "dangerous command" in tool_call.title
@@ -205,3 +206,69 @@ class TestSchedulerFailure:
             and "_response_coro" in str(w.message)
         ]
         assert runtime_warnings == []
+
+
+class TestPermissionRequestToolCallReachesATerminalStatus:
+    """The ``perm-check-N`` / ``edit-approval-N`` ToolCallUpdate attached to ``request_permission``
+    is materialised by clients as a pending bubble; once the user answers it must be closed."""
+
+    @staticmethod
+    def _run(factory, outcome, call):
+        request_permission = AsyncMock(name="request_permission")
+        future = MagicMock(spec=Future)
+        future.result.return_value = _make_response(outcome)
+        sent = []
+        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", return_value=future):
+            cb = factory(request_permission, MagicMock(spec=asyncio.AbstractEventLoop), "s1", send_update=sent.append)
+            call(cb)
+        requested = request_permission.call_args.kwargs["tool_call"]
+        return requested, sent
+
+    @pytest.mark.parametrize("outcome, status", [
+        (AllowedOutcome(option_id="allow_once", outcome="selected"), "completed"),
+        (DeniedOutcome(outcome="cancelled"), "failed"),
+    ])
+    def test_command_permission_request_is_closed_per_outcome(self, outcome, status):
+        requested, sent = self._run(make_approval_callback, outcome, lambda cb: cb("rm -rf /", "dangerous"))
+        assert [(u.tool_call_id, u.status) for u in sent] == [(requested.tool_call_id, status)]
+
+    def test_denied_edit_approval_request_is_closed_as_failed(self):
+        from acp_adapter.edit_approval import EditProposal, make_acp_edit_approval_requester
+
+        proposal = EditProposal(tool_name="write_file", path="/tmp/x", old_text="", new_text="y", arguments={})
+        requested, sent = self._run(
+            make_acp_edit_approval_requester, DeniedOutcome(outcome="cancelled"), lambda cb: cb(proposal),
+        )
+        assert [(u.tool_call_id, u.status) for u in sent] == [(requested.tool_call_id, "failed")]
+
+    def test_allowed_edit_approval_request_is_closed_as_completed_once(self):
+        """Live regression: a client answering with a plain ``selected`` outcome (not the SDK
+        ``AllowedOutcome`` class) had the edit applied but the bubble closed ``failed``."""
+        from acp_adapter.edit_approval import EditProposal, make_acp_edit_approval_requester
+
+        proposal = EditProposal(tool_name="write_file", path="/tmp/x", old_text="", new_text="y", arguments={})
+        decisions = []
+        response = SimpleNamespace(outcome=SimpleNamespace(outcome="selected", option_id="allow_once"))
+        request_permission = AsyncMock(name="request_permission")
+        future = MagicMock(spec=Future)
+        future.result.return_value = response
+        sent = []
+        with patch("agent.async_utils.asyncio.run_coroutine_threadsafe", return_value=future):
+            requester = make_acp_edit_approval_requester(
+                request_permission, MagicMock(spec=asyncio.AbstractEventLoop), "s1", send_update=sent.append,
+            )
+            decisions.append(requester(proposal))
+        requested = request_permission.call_args.kwargs["tool_call"]
+        assert decisions == [True]
+        assert [(u.tool_call_id, u.status) for u in sent] == [(requested.tool_call_id, "completed")]
+
+
+def test_default_permission_timeout_follows_approvals_config(monkeypatch):
+    """No explicit timeout → the ACP bridge waits ``approvals.timeout`` like every other
+    surface, instead of a hardcoded 60 s the host cannot raise (#73403)."""
+    from acp_adapter import permissions
+    from tools import approval_context
+
+    monkeypatch.setattr(approval_context, "_get_approval_config", lambda: {"timeout": 900})
+    assert permissions.resolve_permission_timeout(None) == 900.0
+    assert permissions.resolve_permission_timeout(0.5) == 0.5

@@ -1616,7 +1616,7 @@ class CLITuiMixin:
     def _tui_enter_clarify_freetext(self, event) -> None:
         """Clarify "Other": lock the typed answer; empty input skips the question."""
         buf = event.app.current_buffer
-        text = buf.text.strip()
+        text = self._expand_paste_references(buf.text.strip())
         state = self._clarify_state
         base = getattr(self, '_clarify_multi_base', None)
         if not text:

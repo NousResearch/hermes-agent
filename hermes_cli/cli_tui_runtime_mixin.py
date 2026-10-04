@@ -78,10 +78,6 @@ class CLITuiRuntimeMixin:
             user_input, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(user_input)
             if _had_mouse_reports:
                 self._recover_terminal_input_modes(reason="mouse reports leaked into submitted input")
-            # Expand collapsed pastes before slash-command dispatch so command arguments
-            # carry the content inline instead of a host-local path.
-            if _PASTE_REF_RE.search(user_input):
-                user_input = self._expand_paste_references(user_input)
 
         # A typed bare stop phrase ends an active voice chat (transcripts are checked earlier).
         if not is_voice_input and self._typed_voice_stop(user_input):
@@ -107,10 +103,15 @@ class CLITuiRuntimeMixin:
                 if self.handle_bang_shell(user_input):
                     return
                 if _looks_like_slash_command(user_input):
+                    # Only typed slash commands may expand before dispatch. Pasted data
+                    # must not become a bang command or an automatic attachment.
+                    user_input = self._expand_paste_references(user_input)
                     user_input = self._tui_run_slash_input(user_input)
                     if user_input is None:
                         return
 
+        if isinstance(user_input, str) and _PASTE_REF_RE.search(user_input):
+            user_input = self._expand_paste_references(user_input)
         _cprint("")
         self._print_user_message_preview(notification_preview or user_input)
 

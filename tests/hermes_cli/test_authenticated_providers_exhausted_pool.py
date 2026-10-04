@@ -10,6 +10,16 @@ the session provider (the "sticky provider fallback pollution" bug).
 import pytest
 
 
+class _FakeEntry:
+    """A pool row in 429 cooldown: present, holds material, not requestable right now."""
+
+    last_status = "exhausted"
+    auth_type = "api_key"
+    access_token = "test-exhausted-key"
+    refresh_token = None
+    runtime_api_key = "test-exhausted-key"
+
+
 class _FakePool:
     def __init__(self, available: bool):
         self._available = available
@@ -21,6 +31,10 @@ class _FakePool:
     def has_available(self, **_kwargs) -> bool:
         # ...but none of them are usable when exhausted/dead.
         return self._available
+
+    def entries(self):
+        # The picker reads the rows themselves to tell recoverable material from a DEAD husk.
+        return [_FakeEntry()]
 
 
 def _patch_opencode_pool(monkeypatch, *, available: bool):

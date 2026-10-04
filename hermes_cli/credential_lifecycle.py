@@ -30,6 +30,12 @@ def _providers_for_env_var(env_var: str) -> List[str]:
                 hits.append(pid)
         except Exception:
             continue
+    # Some runtime providers (notably OpenRouter) live in the profile registry
+    # rather than PROVIDER_REGISTRY. Re-add must lift their source suppression too.
+    from providers import list_providers
+    for profile in list_providers():
+        if env_var in profile.env_vars and profile.name not in hits:
+            hits.append(profile.name)
     return hits
 
 

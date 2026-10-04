@@ -11,7 +11,7 @@ import logging
 import os
 from pathlib import Path
 from typing import List, Dict, Any
-from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, _terminal_env_value
 from utils import fast_safe_load
 
 # Log-record parity with the origin module.
@@ -133,7 +133,7 @@ def _mirror_config_to_env(defaults, _file_has_terminal_config):
             if not _is_gateway:
                 os.environ[env_var] = str(val)
         elif _file_has_terminal_config or env_var not in os.environ:
-            os.environ[env_var] = json.dumps(val) if isinstance(val, (list, dict)) else str(val)
+            os.environ[env_var] = _terminal_env_value(val)
 
     browser_config = defaults.get("browser", {})
     if "inactivity_timeout" in browser_config:

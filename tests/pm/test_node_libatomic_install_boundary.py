@@ -38,12 +38,13 @@ def test_staged_repair_installs_libatomic_then_reprobes(tmp_path, monkeypatch):
     repaired = package.repair_staged_verification(tmp_path, "linux-x64", first)
 
     assert calls["n"] == 1
-    assert repaired == ""
+    assert repaired == ("", "")
 
 
 def test_auto_repair_never_reads_a_tty(monkeypatch):
     from pm import libatomic
 
+    monkeypatch.setattr(libatomic, "_ATTEMPT", None)
     monkeypatch.setattr(libatomic, "_is_root", lambda: False)
     monkeypatch.setattr(libatomic, "_host_install_command", lambda: ("dnf", "install", "-y", "libatomic"))
     monkeypatch.setattr(libatomic.shutil, "which", lambda name: "/usr/bin/sudo" if name == "sudo" else None)

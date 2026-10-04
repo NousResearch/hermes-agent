@@ -447,11 +447,11 @@ def _install(
                     raise DownloadPaused("install paused")
                 if progress is not None:
                     progress("verify", 0, 0, "")
-                reason = package.verify(staged, target)
+                reason, remedy = package.verify(staged, target), ""
                 if reason:
-                    reason = package.repair_staged_verification(staged, target, reason)
+                    reason, remedy = package.repair_staged_verification(staged, target, reason)
                 if reason:
-                    raise InstallError(package.name, f"staged entry failed verification: {reason}")
+                    raise InstallError(package.name, f"staged entry failed verification: {reason}", remedy)
                 if facts is None:
                     (staged / ".pm-stage-pin.json").write_text(pin, encoding="utf-8")
                 with _publish_entry(package, store, staged, entry, previous_entry, target):

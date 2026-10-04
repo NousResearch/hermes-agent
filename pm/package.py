@@ -150,16 +150,16 @@ class Package:
             return ""
         return self._binary_reason(binary, entry, target)
 
-    def repair_staged_verification(self, entry: Path, target: str, reason: str) -> str:
+    def repair_staged_verification(self, entry: Path, target: str, reason: str) -> tuple[str, str]:
         """Install-time remediation for a failed staged verification.
 
         verify() is also used by read-only inspection paths such as
         hermes pm doctor and must stay side-effect free. The installer
         calls this hook only after a freshly staged entry fails verification.
-        Return the remaining failure reason, or an empty string when
-        remediation made the staged entry usable.
+        Return (remaining reason, remedy): an empty reason when remediation
+        made the staged entry usable; an empty remedy keeps InstallError's.
         """
-        return reason
+        return reason, ""
 
     def _binary_reason(self, binary: Path, entry: Path, target: str) -> str:
         """'' when the binary is present and arch-plausible on target."""

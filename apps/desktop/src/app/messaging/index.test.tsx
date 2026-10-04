@@ -33,7 +33,8 @@ vi.mock('@/hermes', () => ({
   approvePairing: (platformId: string, requestId: string, profile?: null | string) =>
     approvePairing(platformId, requestId, profile),
   getMessagingPlatforms: (profile?: null | string) => getMessagingPlatforms(profile),
-  preflightTeamsConfig: (config: Record<string, string>, profile?: null | string) => preflightTeamsConfig(config, profile),
+  preflightTeamsConfig: (config: Record<string, string>, profile?: null | string) =>
+    preflightTeamsConfig(config, profile),
   getPairing: (profile?: null | string) => getPairing(profile),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   revokePairing: (platformId: string, userId: string, profile?: null | string) =>
@@ -527,13 +528,45 @@ describe('MessagingView allowlist editor', () => {
 describe('MessagingView Teams preflight', () => {
   it('tests edited configuration without saving or restarting', async () => {
     getMessagingPlatforms.mockResolvedValue({
-      platforms: [platform({
-        env_vars: [
-          { advanced: false, description: 'Client', is_password: false, is_set: false, key: 'TEAMS_CLIENT_ID', prompt: 'Client ID', redacted_value: null, required: true, url: null },
-          { advanced: false, description: 'Secret', is_password: true, is_set: false, key: 'TEAMS_CLIENT_SECRET', prompt: 'Client secret', redacted_value: null, required: true, url: null },
-          { advanced: false, description: 'Tenant', is_password: false, is_set: false, key: 'TEAMS_TENANT_ID', prompt: 'Tenant ID', redacted_value: null, required: true, url: null }
-        ]
-      })]
+      platforms: [
+        platform({
+          env_vars: [
+            {
+              advanced: false,
+              description: 'Client',
+              is_password: false,
+              is_set: false,
+              key: 'TEAMS_CLIENT_ID',
+              prompt: 'Client ID',
+              redacted_value: null,
+              required: true,
+              url: null
+            },
+            {
+              advanced: false,
+              description: 'Secret',
+              is_password: true,
+              is_set: false,
+              key: 'TEAMS_CLIENT_SECRET',
+              prompt: 'Client secret',
+              redacted_value: null,
+              required: true,
+              url: null
+            },
+            {
+              advanced: false,
+              description: 'Tenant',
+              is_password: false,
+              is_set: false,
+              key: 'TEAMS_TENANT_ID',
+              prompt: 'Tenant ID',
+              redacted_value: null,
+              required: true,
+              url: null
+            }
+          ]
+        })
+      ]
     })
     preflightTeamsConfig.mockResolvedValue({ ok: true, category: 'success', message: 'Passed.' })
 
@@ -541,7 +574,7 @@ describe('MessagingView Teams preflight', () => {
     fireEvent.change(await screen.findByLabelText('Client ID'), { target: { value: 'client-id' } })
     await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Testar configuração' })))
 
-    await waitFor(() => expect(preflightTeamsConfig).toHaveBeenCalledWith({ TEAMS_CLIENT_ID: 'client-id' }, undefined))
+    await waitFor(() => expect(preflightTeamsConfig).toHaveBeenCalledWith({ TEAMS_CLIENT_ID: 'client-id' }, 'default'))
     expect(updateMessagingPlatform).not.toHaveBeenCalled()
     expect(runGatewayRestart).not.toHaveBeenCalled()
     expect(screen.getByText('Passed.')).toBeTruthy()
@@ -554,10 +587,21 @@ describe('MessagingView Teams preflight', () => {
       category: 'success',
       message: 'Passed.',
       checklist: {
-        capabilities: [{ name: 'Bot Framework messaging', status: 'verified', next_step: 'Ready for a local send test.' }],
+        capabilities: [
+          { name: 'Bot Framework messaging', status: 'verified', next_step: 'Ready for a local send test.' }
+        ],
         permissions: [
-          { name: 'Microsoft Entra admin consent', status: 'not_verifiable', note: 'The token request cannot inspect tenant consent.', next_step: 'Ask an administrator to confirm consent.' },
-          { name: 'Teams channel messaging', status: 'failed', next_step: 'Review the Teams app permissions and try again.' }
+          {
+            name: 'Microsoft Entra admin consent',
+            status: 'not_verifiable',
+            note: 'The token request cannot inspect tenant consent.',
+            next_step: 'Ask an administrator to confirm consent.'
+          },
+          {
+            name: 'Teams channel messaging',
+            status: 'failed',
+            next_step: 'Review the Teams app permissions and try again.'
+          }
         ]
       }
     })

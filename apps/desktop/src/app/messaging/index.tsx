@@ -771,7 +771,9 @@ function TeamsChecklist({ checklist }: { checklist: TeamsPreflightChecklist }) {
                 <div className="rounded border p-2" key={`${label}:${item.name}`}>
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <span className="font-medium">{item.name}</span>
-                    <span className={cn('text-xs font-medium', statusClass(item.status))}>{statusLabel(item.status)}</span>
+                    <span className={cn('text-xs font-medium', statusClass(item.status))}>
+                      {statusLabel(item.status)}
+                    </span>
                   </div>
                   {item.note && <p className="mt-1 text-xs text-muted-foreground">{item.note}</p>}
                   <p className="mt-1 text-xs">Próximo passo: {item.next_step || fallbackNextStep(item.status)}</p>
@@ -868,10 +870,20 @@ function PlatformDetail({
         <section className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
           <p className="font-medium">Teste a configuração do Teams antes de salvar</p>
           <p className="mt-1 text-muted-foreground">Este teste não habilita o Teams nem reinicia o gateway.</p>
-          <Button className="mt-2" disabled={preflight === 'loading'} onClick={() => void handleTeamsPreflight()} size="sm" variant="secondary">
+          <Button
+            className="mt-2"
+            disabled={preflight === 'loading'}
+            onClick={() => void handleTeamsPreflight()}
+            size="sm"
+            variant="secondary"
+          >
             {preflight === 'loading' ? 'Testando…' : 'Testar configuração'}
           </Button>
-          {preflightMessage && <p className={cn('mt-2', preflight === 'success' ? 'text-primary' : 'text-destructive')}>{preflightMessage}</p>}
+          {preflightMessage && (
+            <p className={cn('mt-2', preflight === 'success' ? 'text-primary' : 'text-destructive')}>
+              {preflightMessage}
+            </p>
+          )}
           {preflightChecklist && <TeamsChecklist checklist={preflightChecklist} />}
         </section>
       )}

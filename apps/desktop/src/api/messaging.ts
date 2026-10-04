@@ -75,7 +75,10 @@ export interface TeamsPreflightResponse {
   ok: boolean
 }
 
-export function preflightTeamsConfig(config: Record<string, string>, profile?: null | string): Promise<TeamsPreflightResponse> {
+export function preflightTeamsConfig(
+  config: Record<string, string>,
+  profile?: null | string
+): Promise<TeamsPreflightResponse> {
   return hermesApi<TeamsPreflightResponse>({
     ...profileScoped(profile),
     path: '/api/messaging/teams/preflight',

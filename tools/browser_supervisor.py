@@ -209,7 +209,8 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         return {"ok": True, "dialog": dialog.to_dict()}
 
     def evaluate_runtime(self, expression: str, *, return_by_value: bool = True,
-                         await_promise: bool = True, timeout: float = 10.0) -> Dict[str, Any]:
+                         await_promise: bool = True, timeout: float = 10.0,
+                         throw_on_side_effect: bool = False) -> Dict[str, Any]:
         """Evaluate ``expression`` in the page's Runtime context over the live WS.
         Returns ``{"ok": True, "result", "result_type"}`` or ``{"ok": False, "error"}``.
         ``return_by_value=True`` JSON-serializes the result (DevTools-console
@@ -228,6 +229,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
             # userGesture: clipboard / fullscreen APIs need user activation.
             params = {"expression": expression, "returnByValue": by_value,
                       "awaitPromise": await_promise, "userGesture": True}
+            if throw_on_side_effect:
+                from tools.browser_tool_eval_policy import _readonly_evaluate_params
+                params = _readonly_evaluate_params(params)
             coro = self._cdp("Runtime.evaluate", params, session_id=session_id, timeout=timeout)
             return _schedule(coro, loop, timeout=timeout + 1)
 

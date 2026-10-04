@@ -1037,7 +1037,7 @@ def _eval_result_or_blocked(effective_task_id: str, parsed: Any, result: Dict[st
     return _dumps(_lp._copy_fallback_warning(_eval_ok_response(parsed, **extra), result), default=str)
 
 
-def _eval_supervisor_fast_path(effective_task_id: str, expression: str) -> Optional[str]:
+def _eval_supervisor_fast_path(effective_task_id: str, expression: str, *, readonly: bool = False) -> Optional[str]:
     """``Runtime.evaluate`` on the CDP supervisor's persistent WebSocket (no subprocess cost).
     Tool JSON when the supervisor gave a definitive answer (value, blocked page, or a real
     JS-side exception — NOT retried via subprocess, that would just reproduce it slower);
@@ -1047,7 +1047,8 @@ def _eval_supervisor_fast_path(effective_task_id: str, expression: str) -> Optio
         supervisor = SUPERVISOR_REGISTRY.get(effective_task_id)
         if supervisor is None:
             return None
-        sup_result = supervisor.evaluate_runtime(expression)
+        sup_result = (supervisor.evaluate_runtime(expression, throw_on_side_effect=True, await_promise=False)
+                      if readonly else supervisor.evaluate_runtime(expression))
         if sup_result.get("ok"):
             return _eval_result_or_blocked(
                 effective_task_id, _parse_eval_value(sup_result.get("result")), {}, method="cdp_supervisor")
@@ -1083,7 +1084,8 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate JS in the page context. Private-network guard in two halves: the literal
     pre-scan closes direct fetches (they never update ``location.href``); the post-eval
     page-URL recheck closes navigate-then-read."""
-    effective_task_id = _last_session_key(task_id or "default")
+    effective_task_id = (task_id or "default") if _is_camofox_mode() else _last_session_key(task_id or "default")
+    readonly = _eval_policy._guarded_evaluate_required(effective_task_id)
 
     if _eval_policy._eval_ssrf_guard_active(effective_task_id):
         blocked_literal = _eval_policy._expression_targets_private_url(expression)
@@ -1094,22 +1096,26 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                 "endpoints via browser_console is not permitted in this "
                 "browser mode."
             ))
-        if not _eval_policy._allow_unsafe_browser_evaluate():
-            expression = _eval_policy._guard_network_expression(expression)
 
-    # Camofox keeps its own raw-task_id-keyed session map, so pass the raw id.
+    # REST/subprocess eval has no engine-level read-only option. Never silently
+    # fall back to unrestricted execution when a guarded supervisor is missing.
+    unavailable = ("Blocked: guarded browser evaluation requires a CDP supervisor with "
+                   "read-only (throwOnSideEffect) support. Async/side-effecting JavaScript "
+                   "is unsupported in this browser mode; use browser_snapshot/browser_vision.")
     if _is_camofox_mode():
-        return _camofox_eval(expression, task_id)
+        return _dumps(_err(unavailable)) if readonly else _camofox_eval(expression, task_id)
 
     # The supervisor answers over its own WebSocket and never reaches _run_browser_command, so the Bot
     # Desktop lease fence has to bracket it here too — otherwise the one command that reads arbitrary
     # page state is the one a human's takeover does not stop. Same fence, same session identity.
     fenced = _session.run_fenced(_active_sessions.get(effective_task_id) or {},
-                                 lambda: {"fast": _eval_supervisor_fast_path(effective_task_id, expression)})
+                                 lambda: {"fast": _eval_supervisor_fast_path(effective_task_id, expression, readonly=readonly)})
     if fenced.get("code") == "human_has_control":
         return _dumps(fenced)
     if fenced["fast"] is not None:
         return fenced["fast"]
+    if readonly:
+        return _dumps(_err(unavailable))
 
     result = _session._run_browser_command(effective_task_id, "eval", [expression])
     if not result.get("success"):

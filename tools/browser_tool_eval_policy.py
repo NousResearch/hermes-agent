@@ -41,16 +41,30 @@ def _expression_targets_private_url(expression: str) -> Optional[str]:
     return next((c for c in (m.rstrip(".,;") for m in literals) if _url_blocked(_bt, c)), None)
 
 
-def _guard_network_expression(expression: str) -> str:
-    """Disable browser-side network primitives for one guarded evaluation."""
-    return """(() => {
-const hermesDenyNetwork = () => { throw new Error('Network requests are blocked during guarded browser evaluation'); };
-try { window.fetch = hermesDenyNetwork; } catch (_) {}
-try { window.XMLHttpRequest = hermesDenyNetwork; } catch (_) {}
-try { window.WebSocket = hermesDenyNetwork; } catch (_) {}
-try { window.EventSource = hermesDenyNetwork; } catch (_) {}
-try { navigator.sendBeacon = hermesDenyNetwork; } catch (_) {}
-return (""" + expression + "\n); })()"
+def _guarded_evaluate_required(task_id: str) -> bool:
+    """Require engine-enforced read-only evaluation, not page-global API patches.
+
+    A scoped patch restored in finally lets detached promise/timer callbacks use
+    the restored APIs. Keeping it installed instead breaks the page's own traffic.
+    CDP's throwOnSideEffect rejects both network calls and callback registration
+    before they execute, without altering globals or rewriting JavaScript syntax.
+    This is deliberately a read-only inspection contract, not an egress firewall
+    for all browser operations. Backends without this capability must fail closed.
+    """
+    return _eval_ssrf_guard_active(task_id) and not _allow_unsafe_browser_evaluate()
+
+
+def _readonly_evaluate_params(params: dict) -> dict:
+    """Preserve program text; never permit asynchronous/debug-console execution.
+
+    Global declarations/mutations, promises and some getters are rejected by V8
+    as possible side effects. Local computation in an IIFE remains supported.
+    Do not retry an engine rejection without throwOnSideEffect.
+    """
+    if params.get("awaitPromise") or params.get("replMode"):
+        raise ValueError("Blocked: guarded browser evaluation is read-only; awaitPromise/replMode "
+                         "and asynchronous execution are unsupported. Use synchronous inspection.")
+    return {**params, "throwOnSideEffect": True, "awaitPromise": False}
 
 
 def _current_page_private_url(effective_task_id: str) -> Optional[str]:

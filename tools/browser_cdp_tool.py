@@ -166,12 +166,22 @@ def _browser_cdp_private_guard(*, task_id: str, method: str, params: Dict[str, A
 
 
 def _guard_runtime_evaluate(task_id: str, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Apply the same guarded-eval network fence as browser_console."""
-    if method != "Runtime.evaluate" or not isinstance(params.get("expression"), str):
-        return params
+    """Enforce read-only JS identically before direct and OOPIF dispatch.
+
+    Persistent/compiled script execution cannot honor a per-evaluation fence.
+    Reject it rather than allowing a deferred bypass or silently altering source.
+    """
     from tools import browser_tool_eval_policy as policy
-    if policy._eval_ssrf_guard_active(task_id) and not policy._allow_unsafe_browser_evaluate():
-        return {**params, "expression": policy._guard_network_expression(params["expression"])}
+    if not policy._guarded_evaluate_required(task_id):
+        return params
+    if method in {"Page.addScriptToEvaluateOnNewDocument", "Runtime.runScript", "Debugger.setScriptSource"}:
+        raise ValueError(f"Blocked: {method} cannot enforce guarded read-only browser evaluation; "
+                         "persistent/compiled script execution is unsupported in this browser mode.")
+    if method in {"Runtime.evaluate", "Runtime.callFunctionOn", "Debugger.evaluateOnCallFrame"}:
+        guarded = policy._readonly_evaluate_params(params)
+        if method == "Debugger.evaluateOnCallFrame":
+            guarded.pop("awaitPromise", None)  # This method has no awaitPromise parameter.
+        return guarded
     return params
 
 
@@ -275,16 +285,23 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
     hit signed-URL expiry (Browserbase). Both paths share the same private-page/SSRF guard. Returns JSON
     ``{"success": True, "method", "result"}`` or ``{"error": ...}``."""
     effective_task_id = task_id or "default"
-
-    if frame_id:
-        blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=params or {})
-        if blocked:
-            return blocked
-        return _browser_cdp_via_supervisor(task_id=effective_task_id, frame_id=frame_id, method=method,
-                                           params=params, timeout=timeout)
-
     if not method or not isinstance(method, str):
         return tool_error("'method' is required (e.g. 'Target.getTargets')", cdp_docs=CDP_DOCS_URL)
+    call_params: Dict[str, Any] = params if params is not None else {}
+    if not isinstance(call_params, dict):
+        return tool_error(f"'params' must be an object/dict, got {type(call_params).__name__}")
+    blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=call_params)
+    if blocked:
+        return blocked
+    try:
+        call_params = _guard_runtime_evaluate(effective_task_id, method, call_params)
+    except ValueError as exc:
+        return _blocked(str(exc), method)
+
+    if frame_id:
+        return _browser_cdp_via_supervisor(task_id=effective_task_id, frame_id=frame_id, method=method,
+                                           params=call_params, timeout=timeout)
+
     if not _WS_AVAILABLE:
         return tool_error("The 'websockets' Python package is required but not installed. "
                           "Run: hermes pm repair")
@@ -297,14 +314,6 @@ def browser_cdp(method: str, params: Optional[Dict[str, Any]] = None, target_id:
         return tool_error(f"CDP endpoint is not a WebSocket URL: {endpoint!r}. Expected ws://... or wss://... — "
                           "the /browser connect resolver should have rewritten this. Check that a Chromium-family "
                           "browser is actually listening on the debug port.")
-    call_params: Dict[str, Any] = params or {}
-    if not isinstance(call_params, dict):
-        return tool_error(f"'params' must be an object/dict, got {type(call_params).__name__}")
-
-    blocked = _browser_cdp_private_guard(task_id=effective_task_id, method=method, params=call_params)
-    if blocked:
-        return blocked
-    call_params = _guard_runtime_evaluate(effective_task_id, method, call_params)
 
     try:
         safe_timeout = float(timeout) if timeout else 30.0

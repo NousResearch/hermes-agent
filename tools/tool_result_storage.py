@@ -80,12 +80,14 @@ def _prune_spillover_once() -> None:
 
 def _is_host_side_env(env) -> bool:
     """True when this process should write the spill file directly: ``env=None`` (no sandbox
-    yet) or the local backend. Remote backends resolve ``read_file`` inside the sandbox."""
+    yet) or the local backend. Remote backends resolve ``read_file`` inside the sandbox. A
+    local-derived backend that hides HERMES_HOME from its commands is not host-side: the
+    archive under ``cache/spillover`` would be out of their reach."""
     if env is None:
         return True
     try:
         from tools.environments.local import LocalEnvironment
-        return isinstance(env, LocalEnvironment)
+        return isinstance(env, LocalEnvironment) and not getattr(env, "hides_hermes_home", False)
     except Exception:
         return False
 

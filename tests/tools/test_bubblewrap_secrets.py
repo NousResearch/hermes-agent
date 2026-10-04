@@ -1112,6 +1112,41 @@ class TestStagedDataIntegration:
         assert attachment.read_text().strip() == VISIBLE
         assert not (hermes_home / "attachments" / "from-sandbox").exists()
 
+    def test_spillover_archive_of_the_profile_is_not_readable(self, work_dir, hermes_home):
+        # Oversized tool results of every session land in one directory.
+        other = _write(hermes_home / "cache" / "spillover" / "call_of_another_session.txt")
+        attachment = _write(hermes_home / "attachments" / "report.pdf", VISIBLE)
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            out = env.execute(f"ls -A {other.parent} 2>&1; cat {other} {other.parent}/* 2>&1")["output"]
+            assert MARKER not in out
+            assert other.name not in out.replace(f"{other}: No such file", "")
+            assert "spillover" not in env.execute(f"ls -A {hermes_home}/cache")["output"].split()
+            assert env.execute(f"cat {attachment}")["output"].strip() == VISIBLE
+            assert env.execute(f"printf changed > {attachment}")["returncode"] != 0
+        finally:
+            env.cleanup()
+
+    def test_oversized_tool_result_is_readable_by_the_commands_of_its_own_environment(self, work_dir, hermes_home):
+        from tools.tool_result_storage import extract_persisted_path, maybe_persist_tool_result
+
+        content = "".join(f"line {i} of the result\n" for i in range(4000))
+        first = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        second = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            message = maybe_persist_tool_result(content, "terminal", "call_1", env=first, threshold=1000)
+            path = extract_persisted_path(message)
+            assert path and not path.startswith(str(hermes_home / "cache" / "spillover"))
+            assert path.startswith(first.get_temp_dir() + os.sep)
+            assert first.execute(f"wc -c < {path}")["output"].strip() == str(len(content))
+            assert first.execute(f"tail -n 1 {path}")["output"].strip() == "line 3999 of the result"
+            # The host-side file tools read the same path.
+            assert Path(path).read_text() == content
+            assert second.execute(f"cat {path} 2>&1 | head -c 200")["output"].count("of the result") == 0
+        finally:
+            first.cleanup()
+            second.cleanup()
+
     def test_staged_root_removed_after_construction_does_not_fail_the_spawn(self, work_dir, hermes_home):
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
         try:

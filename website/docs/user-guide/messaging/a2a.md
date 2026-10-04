@@ -94,7 +94,7 @@ Secure by default; every widening step is explicit:
 |---|---|---|
 | `A2A_PEER_TOKENS` | _(unset)_ | Per-peer credentials `name:token,…` (preferred) |
 | `A2A_BEARER_TOKEN` | _(unset)_ | Shared token; identity falls back to caller IP |
-| `A2A_HOST` | `127.0.0.1` | Bind host — only widens when a token is set. IPv6 literals such as `::1` or `::` work too |
+| `A2A_HOST` | `127.0.0.1` | Bind host — only widens when a token is set. IPv6 literals such as `::1` or `::` work too, bare or bracketed (`[::1]`) |
 | `A2A_PORT` | `9900` | Inbound port |
 | `A2A_AGENT_NAME` | hostname-derived | Name on the Agent Card |
 | `A2A_PUBLIC_URL` | _(unset)_ | Routable URL advertised on the card (reverse proxies / k8s) |

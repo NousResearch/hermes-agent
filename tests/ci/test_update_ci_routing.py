@@ -358,15 +358,31 @@ def _tracked_mentions(name: str) -> list[str]:
     return out.stdout.split()
 
 
+# Listed consumers that land in a named sibling PR merged BEFORE this one (the update batch
+# lands LOCK, COMMIT, WIN, DESK, SCRIPTS, POST, then this CI PR). Only these may be absent,
+# and only while the sibling is unmerged; once it lands, its files are in every tree this
+# guard sees. Empty this table when the siblings are on main: nothing else changes.
+_LANDS_IN_SIBLING_PR: dict[str, str] = {
+    "apps/desktop/electron/update-marker-corpus.test.ts": "#132345 desktop update gate",
+    "tests/scripts/desktop_update/test_desktop_update_posix_marker_corpus.py": "#132354 hand-off scripts",
+    "tests/scripts/desktop_update/test_desktop_update_windows_marker_corpus.py": "#132354 hand-off scripts",
+}
+
+
 def test_every_test_that_reads_a_shared_fixture_is_routed_by_it():
     """Derived, not remembered: every test file in the tree that names a shared fixture is
     a listed consumer, and the fixture selects each test lane that consumer's own edit would."""
     assert _CORPUS in cc._SHARED_FIXTURE_CONSUMERS
+    every_listed = {c for listed in cc._SHARED_FIXTURE_CONSUMERS.values() for c in listed}
+    stale = sorted(set(_LANDS_IN_SIBLING_PR) - every_listed)
+    assert not stale, f"sibling-PR allowance names no listed consumer: {stale}"
     for fixture, listed in cc._SHARED_FIXTURE_CONSUMERS.items():
         assert (_REPO / fixture).is_file(), f"missing shared fixture: {fixture}"
         assert listed, f"{fixture}: no listed consumers"
-        for consumer in listed:
-            assert (_REPO / consumer).is_file(), f"{fixture}: missing consumer: {consumer}"
+        absent = [c for c in listed if not (_REPO / c).is_file()]
+        unowned = [c for c in absent if c not in _LANDS_IN_SIBLING_PR]
+        assert not unowned, f"{fixture}: missing consumer(s) no sibling PR lands: {unowned}"
+        assert len(absent) < len(listed), f"{fixture}: every listed consumer is absent"
         readers = {p for p in _tracked_mentions(Path(fixture).name) if _TEST_FILE.search(p)}
         assert readers, f"{fixture}: no discovered test readers"
         assert readers <= set(listed), f"{fixture}: unlisted consumer(s) {sorted(readers - set(listed))}"
@@ -464,6 +480,35 @@ def test_shared_fixture_guard_rejects_phantom_graph(monkeypatch, tmp_path, missi
     monkeypatch.setattr(sys.modules[__name__], "_tracked_mentions", lambda _: [] if missing in ("readers", "listed") else [consumer])
     with pytest.raises(AssertionError):
         test_every_test_that_reads_a_shared_fixture_is_routed_by_it()
+
+
+@pytest.mark.parametrize("case,error", [
+    ("sibling-absent", None),  # the stacked PR: one reader here, one landing in a sibling
+    ("unowned-absent", "no sibling PR lands"),
+    ("only-sibling", "every listed consumer is absent"),
+    ("stale-allowance", "names no listed consumer"),
+])
+def test_sibling_pr_allowance_admits_only_named_pending_consumers(monkeypatch, tmp_path, case, error):
+    fixture, here, pending = ("tests/fixtures/owned_corpus.json", "tests/test_owned_corpus.py",
+                              "tests/scripts/test_sibling_corpus.py")
+    (tmp_path / fixture).parent.mkdir(parents=True)
+    (tmp_path / fixture).write_text("{}", encoding="utf-8")
+    if case != "only-sibling":
+        (tmp_path / here).write_text("def test_reader(): pass\n", encoding="utf-8")
+    allowance = {} if case == "unowned-absent" else {pending: "#1 sibling"}
+    if case == "stale-allowance":
+        allowance["tests/test_removed_corpus.py"] = "#2 sibling"
+    monkeypatch.setattr(sys.modules[__name__], "_REPO", tmp_path)
+    monkeypatch.setattr(sys.modules[__name__], "_CORPUS", fixture)
+    monkeypatch.setattr(sys.modules[__name__], "_LANDS_IN_SIBLING_PR", allowance)
+    monkeypatch.setattr(cc, "_SHARED_FIXTURE_CONSUMERS",
+                        {fixture: (pending,) if case == "only-sibling" else (here, pending)})
+    monkeypatch.setattr(sys.modules[__name__], "_tracked_mentions", lambda _: [here])
+    if error is None:
+        test_every_test_that_reads_a_shared_fixture_is_routed_by_it()
+    else:
+        with pytest.raises(AssertionError, match=error):
+            test_every_test_that_reads_a_shared_fixture_is_routed_by_it()
 
 
 # -- ownership: the update entry points' real imports ---------------------------------------

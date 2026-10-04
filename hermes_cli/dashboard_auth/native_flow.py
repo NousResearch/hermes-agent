@@ -24,8 +24,13 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from hermes_cli.dashboard_auth.base import Session
+from hermes_cli.dashboard_auth.cookies import _PKCE_MAX_AGE
 
-_PENDING_TTL_SECONDS = 600  # whole interactive login (mirrors the PKCE cookie)
+# Whole interactive login. Both TTLs guard the same round trip — the pending entry is
+# keyed by the broker_state riding in the PKCE cookie — so they must move together:
+# for t in (600, 1800] the cookie still validates but a shorter pending TTL turns a
+# successful callback into a "Native login expired" 400.
+_PENDING_TTL_SECONDS = _PKCE_MAX_AGE
 _CODE_TTL_SECONDS = 120  # loopback redirect + immediate token POST only
 _MAX_ENTRIES = 256  # global cap so a misbehaving client cannot grow the store unbounded
 # Per-IP cap on PENDING entries: /auth/native/authorize is a public pre-auth route, so one

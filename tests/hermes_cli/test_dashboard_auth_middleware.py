@@ -238,14 +238,17 @@ def test_login_non_interactive_provider_returns_404_not_500(gated_app):
     assert "stub" in names
 
 
-def test_callback_invalid_code_returns_400(gated_app):
+def test_callback_invalid_code_lands_on_login_notice(gated_app):
+    """An invalid/replayed code is a normal user-facing dead end, so the callback must
+    bounce to the readable login notice page instead of a raw 400 JSON body (#126061)."""
     r1 = gated_app.get("/auth/login?provider=stub", follow_redirects=False)
     state = r1.headers["location"].split("state=")[1]
     r2 = gated_app.get(
         f"/auth/callback?code=BAD_CODE&state={state}",
         follow_redirects=False,
     )
-    assert r2.status_code == 400
+    assert r2.status_code == 302
+    assert r2.headers["location"].endswith("/login?notice=signin_failed")
 
 
 # ---------------------------------------------------------------------------

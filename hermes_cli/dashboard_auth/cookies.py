@@ -4,7 +4,8 @@ All HttpOnly, ``SameSite=Lax`` unless noted, Path = proxy prefix or /: ``hermes_
 (access token; Max-Age = token TTL), ``hermes_session_rt`` (rotating refresh token; written only
 when the provider returned one, always cleared on logout/expiry), ``hermes_session_provider``
 (non-secret routing hint so an RT is not handed to the wrong provider), ``hermes_session_pkce``
-(PKCE state + CSRF nonce + provider hint, 10 min; ``SameSite=None; Secure`` over HTTPS because it
+(PKCE state + CSRF nonce + provider hint, 30 min — one interactive login that may wait on an
+emailed code, #126061; ``SameSite=None; Secure`` over HTTPS because it
 is set on the /auth/login 302 and must survive the cross-site redirect chain — Chromium drops Lax
 cookies set on such a 302, crbug 40508226), ``hermes_sso_attempt`` (auto-SSO loop guard, 60 s).
 ``Secure`` only when ``request.url.scheme`` is https. Cookie-prefix hardening per

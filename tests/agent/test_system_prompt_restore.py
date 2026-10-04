@@ -35,6 +35,7 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent.provider = "openrouter"
     agent.platform = "cli"
     agent._session_db = session_db
+    agent._persist_disabled = False
     # MagicMock attributes are truthy by default; the static-prefix
     # reconstruction is gated on _use_prompt_caching, so default it off
     # for the legacy restore tests (the reconstruction tests enable it).
@@ -638,6 +639,34 @@ def test_null_stored_prompt_does_not_take_the_stale_probe_path(tmp_path):
             )
         probe.assert_not_called()
         restoring._build_system_prompt.assert_called_once()
+
+
+def test_detached_fork_never_persists_system_prompt(tmp_path):
+    """A detached fork (background_review, /btw) shares the PARENT's session_id with
+    persistence off (``_persist_disabled``). Its first-build write must never reach the
+    DB: a fork racing the parent's own ``update_system_prompt`` call can otherwise null
+    out the parent's persisted row, forcing an expensive rebuild + cache miss on the
+    parent's NEXT real turn (the exact failure mode: 'Stored system prompt for session
+    ... is null; rebuilding from scratch ... Investigate the previous turn's
+    update_system_prompt write path')."""
+    from hermes_state import SessionDB
+
+    session_id = "parent-session-id"
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        db.create_session(session_id, source="cli")
+        db.update_system_prompt(session_id, "PARENT_PROMPT")
+        assert db.get_session(session_id)["system_prompt"] == "PARENT_PROMPT"
+
+        fork = _make_agent(session_db=db, prebuilt_prompt="FORK_PROMPT")
+        fork.session_id = session_id
+        fork._persist_disabled = True
+
+        _restore_or_build_system_prompt(fork, None, [])
+
+        # The fork built its own in-memory prompt...
+        assert fork._cached_system_prompt == "FORK_PROMPT"
+        # ...but the parent's persisted row must be untouched.
+        assert db.get_session(session_id)["system_prompt"] == "PARENT_PROMPT"
 
 
 if __name__ == "__main__":

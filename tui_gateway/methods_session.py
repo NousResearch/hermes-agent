@@ -576,6 +576,27 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"verification": {"status": "unknown", "evidence": None}})
 
 
+def _restore_session_yolo(session_key: str, session_meta: dict | None) -> None:
+    """Re-enable YOLO bypass for a freshly-minted resume runtime key when the stored session row's
+    ``model_config.yolo_mode`` says so. ``session.resume`` always mints a NEW runtime ``session_key``
+    (``_new_runtime_ids``), so the in-memory ``tools.approval._session_yolo`` set — keyed on the OLD
+    key — never covers it; without this call YOLO silently reverts to per-command approval on every
+    reconnect/resume even though the DB row and the UI toggle both still say it's on (mirrors
+    ``hermes_cli/cli_session_mixin.py::_restore_session_yolo``, which this surface lacked)."""
+    if not session_key:
+        return
+    try:
+        from hermes_state import SessionDB
+        from tools.approval import _YOLO_MODE_FROZEN, enable_session_yolo, is_session_yolo_enabled
+    except Exception:
+        return
+    if _YOLO_MODE_FROZEN or not SessionDB.session_yolo_enabled(session_meta):
+        return
+    if is_session_yolo_enabled(session_key):
+        return
+    enable_session_yolo(session_key)
+
+
 # ── session.resume ───────────────────────────────────────────────────
 class _Resume:
     """Per-call ``session.resume`` state. ``owns_db``: the DEDICATED profile handle is ours
@@ -857,6 +878,7 @@ def _resume_deferred(ctx: _Resume) -> dict:
                   resume_message_count=int(ctx.found.get("message_count") or 0))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
+    _restore_session_yolo(sid, ctx.found)
     # Desktop owns the visible transcript through bounded REST pages, not this model-history restore.
     _schedule_resume_hydration(
         sid, ctx.target, ctx.db, close_db=ctx.owns_db,
@@ -882,6 +904,7 @@ def _resume_cold(ctx: _Resume) -> dict:
                         todo_state=_todo_state_from_history(history))
     if (reused := ctx.claim(sid, record)) is not None:
         return reused
+    _restore_session_yolo(sid, ctx.found)
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
     return _resume_response(ctx, sid, record, info=ctx.info(cwd, overrides), display=display_history,
@@ -923,6 +946,7 @@ def _resume_eager(ctx: _Resume) -> dict:
                 if ctx.owns_db:
                     _transfer_db_to_agent(agent, ctx.db)
                 ctx.owns_db = False
+            _restore_session_yolo(sid, ctx.found)
             if (session := _sessions.get(sid)) is not None:
                 if stored_runtime_overrides.get("model_override") is not None:
                     session["model_override"] = stored_runtime_overrides["model_override"]

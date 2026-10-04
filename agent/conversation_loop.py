@@ -684,8 +684,16 @@ def _bot_chat_prompt_stale(agent, stored_prompt: str | None) -> bool:
 def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool = False) -> None:
     """Persist ``agent._cached_system_prompt`` to the session row; failures log at WARNING
     (with ``failure_message``) because the gateway path (fresh AIAgent per turn) reads
-    this row every turn, so a silent failure breaks prefix-cache reuse."""
-    if not agent._session_db:
+    this row every turn, so a silent failure breaks prefix-cache reuse.
+
+    Detached forks (background_review, /btw's cache-parity fork) share the PARENT's
+    session_id with persistence intentionally off (``_persist_disabled``); without this
+    guard a fork's first-build write races the parent's live ``update_system_prompt`` call
+    and can leave the row NULL, forcing an expensive rebuild + cache miss on the parent's
+    next turn (#104980). ``_restore_pinned_tools`` already carries the same guard for
+    ``tool_names`` — mirror it here so prompt and tools stay consistent.
+    """
+    if not agent._session_db or getattr(agent, "_persist_disabled", False):
         return
     try:
         agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)

@@ -888,7 +888,12 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     # Structured billing-wall descriptor: the client renders recovery without re-parsing text.
     if _billing_block := result.get("billing_block"):
         payload["billing"] = _billing_block
-        payload["failure_reason"] = result.get("failure_reason")
+    # failure_reason (content_policy_blocked, auth, rate_limit, ...) must reach every error
+    # payload, not just the billing-wall case: without it the client falls back to the generic
+    # "request failed" copy for provider safety refusals and other non-billing failures, even
+    # though the agent already classified the exact cause (agent/turn_truncation.py et al.).
+    if _failure_reason := result.get("failure_reason"):
+        payload["failure_reason"] = _failure_reason
     if rendered := render_message(raw, cols):
         payload["rendered"] = rendered
     error_value = result.get("error")

@@ -51,7 +51,8 @@ from tools.vision_tools_image_prep import (
     _determine_mime_type,
     _image_exceeds_dimension,
     _normalize_to_supported_image,
-    _validate_raster_image_decodable)
+    _validate_raster_image_decodable,
+    upright_image_bytes)
 
 logger = logging.getLogger(__name__)
 
@@ -660,6 +661,13 @@ async def _prepare_image(
             _unlink_quietly(path)
             path = normalized_path
             size_bytes = path.stat().st_size
+        else:
+            # Before the crop: a region is read off the full image as delivered, so both
+            # passes must see the same upright pixels, including the no-resize fast path.
+            upright, mime = await _run_encode_on_cpu_executor(upright_image_bytes, resolved.data, mime)
+            if upright is not resolved.data:
+                await asyncio.to_thread(_write_private_bytes, path, upright)
+                size_bytes = len(upright)
         if validate_decode:
             decode_error = await _run_encode_on_cpu_executor(
                 _validate_raster_image_decodable, path,
@@ -987,7 +995,7 @@ VISION_ANALYZE_SCHEMA = {
                 "maxItems": 4,
                 "description": (
                     "Optional [x1, y1, x2, y2] crop in ORIGINAL-image pixel "
-                    "coordinates, applied before any downscaling — the crop "
+                    "coordinates (upright, as you see the image), applied before any downscaling — the crop "
                     "keeps full resolution. Load the full image first, then "
                     "re-call with a region to zoom into small text or fine "
                     "detail."

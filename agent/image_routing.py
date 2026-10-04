@@ -436,7 +436,7 @@ def _transcode_to_png(raw: bytes) -> Optional[bytes]:
     AVIF need optional Pillow plugins, registered on demand; a missing plugin just
     looks like "can't decode" so the caller skips the image and the turn proceeds."""
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
     except ImportError:
         logger.info(
             "image_routing: Pillow not installed; cannot transcode "
@@ -451,7 +451,8 @@ def _transcode_to_png(raw: bytes) -> Optional[bytes]:
     with suppress(Exception):
         import pillow_avif  # type: ignore  # noqa: F401  -- registers AVIF on import
     try:
-        with Image.open(BytesIO(raw)) as im:
+        with Image.open(BytesIO(raw)) as src:
+            im = ImageOps.exif_transpose(src)  # PNG output has no EXIF to carry the rotation
             # Normalise exotic modes to RGBA so PNG can serialise and transparency survives.
             if im.mode not in {"RGB", "RGBA", "L", "LA", "P"}:
                 im = im.convert("RGBA")
@@ -514,13 +515,18 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
     mime = _guess_mime(path, raw=raw)
-    if mime not in _accepted_mimes():
-        if (transcoded := _transcode_to_png(raw)) is None:
-            logger.warning(
-                "image_routing: %s is %s which is not accepted by the active provider "
-                "and could not be transcoded to PNG; skipping this attachment.", path, mime,
-            )
-            return None
+    if mime in _accepted_mimes():
+        from tools.vision_tools_image_prep import upright_image_bytes
+
+        # vision_analyze crops index the upright image; the attachment must show the same pixels.
+        raw, mime = upright_image_bytes(raw, mime)
+    elif (transcoded := _transcode_to_png(raw)) is None:
+        logger.warning(
+            "image_routing: %s is %s which is not accepted by the active provider "
+            "and could not be transcoded to PNG; skipping this attachment.", path, mime,
+        )
+        return None
+    else:
         logger.info("image_routing: transcoded %s (%s) -> image/png for provider compatibility", path.name, mime)
         raw, mime = transcoded, "image/png"
     return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"

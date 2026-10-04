@@ -767,6 +767,12 @@ async def fs_list(path: str, profile: Optional[str] = None):
             return await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
         except Exception as exc:
             _raise_fs_backend_error(exc)
+    return await asyncio.to_thread(_fs_list_local, path)
+
+
+def _fs_list_local(path: str) -> dict:
+    """Local branch of :func:`fs_list`. Blocking (scandir plus a stat per entry);
+    call it via ``asyncio.to_thread``."""
     target = _fs_path(path)
     try:
         entries = []

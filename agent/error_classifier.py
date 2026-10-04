@@ -358,6 +358,11 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = (
     "prompt was flagged by our safety", "responses cannot be generated due to safety",
     "content_filter", "responsibleaipolicyviolation", "new_sensitive",
     "content exists risk",
+    # OpenRouter's injection guardrail rejects the request body before any model sees it
+    # ("403 Request blocked: prompt injection patterns detected", metadata patterns like
+    # role_tag_injection / show_prompt). The generic "request blocked" substring belongs to
+    # a WAF block, whose User-Agent/firewall advice cannot fix request content (#132504).
+    "prompt injection patterns detected", "role_tag_injection", "role_delimiter_injection",
 )
 
 # Auth patterns (non-status-code signals).

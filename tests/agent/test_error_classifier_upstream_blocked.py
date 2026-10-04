@@ -32,3 +32,20 @@ def test_403_waf_block_is_upstream_blocked_not_auth(body):
 ])
 def test_generic_403_and_all_401_keep_auth(body, status, reason):
     assert classify_api_error(_APIError(body, status), provider="openai-api").reason == reason
+
+
+@pytest.mark.parametrize("body", [
+    "Error code: 403 - Request blocked: prompt injection patterns detected",
+    "Error code: 403 - Request blocked: prompt injection patterns detected "
+    "metadata: {'patterns': ['role_tag_injection']}",
+    "Error code: 403 - Request blocked metadata: {'patterns': ['role_delimiter_injection']}",
+])
+def test_openrouter_guardrail_403_is_content_policy_not_waf(body):
+    """OpenRouter's injection guardrail rejects the request CONTENT before any model sees
+    it (#132504): it shares the "request blocked" wording with a WAF block, but firewall /
+    User-Agent advice cannot fix request content — and the session keeps 403ing until the
+    offending token leaves the context, so it must not read as a credential problem either."""
+    result = classify_api_error(_APIError(body, 403), provider="openrouter")
+    assert result.reason == FailoverReason.content_policy_blocked
+    assert result.retryable is False and result.should_fallback is True
+    assert result.should_rotate_credential is False and result.is_auth is False

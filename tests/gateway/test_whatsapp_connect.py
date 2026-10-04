@@ -544,3 +544,69 @@ class TestNoCredsPreflight:
         # but the fatal-error code is NOT the "not paired" one.
         assert result is False
         assert adapter._fatal_error_code != "whatsapp_not_paired"
+
+# ---------------------------------------------------------------------------
+# Bridge exit after a WhatsApp logout
+# ---------------------------------------------------------------------------
+
+
+class TestLoggedOutBridgeExit:
+    """A bridge that exits because WhatsApp unlinked the device needs a new pairing, so the
+    adapter reports a non-retryable fatal error and the reconnect watcher stands down (#80088)."""
+
+    @staticmethod
+    def _exited_bridge(returncode):
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = returncode
+        mock_proc.returncode = returncode
+        return mock_proc
+
+    @pytest.mark.asyncio
+    async def test_runtime_exit_is_non_retryable(self):
+        from plugins.platforms.whatsapp.adapter import _BRIDGE_LOGGED_OUT_EXIT_CODE
+
+        adapter = _make_adapter()
+        fatal_handler = AsyncMock()
+        adapter.set_fatal_error_handler(fatal_handler)
+        adapter._running = True
+        adapter._bridge_log_fh = MagicMock()
+        adapter._bridge_process = self._exited_bridge(_BRIDGE_LOGGED_OUT_EXIT_CODE)
+
+        assert await adapter._check_managed_bridge_exit() is not None
+        assert adapter.fatal_error_code == "whatsapp_logged_out"
+        assert adapter.fatal_error_retryable is False
+        fatal_handler.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_exit_during_connect_is_non_retryable(self):
+        from plugins.platforms.whatsapp.adapter import _BRIDGE_LOGGED_OUT_EXIT_CODE
+
+        adapter = _make_adapter()
+        adapter._bridge_process = self._exited_bridge(_BRIDGE_LOGGED_OUT_EXIT_CODE)
+
+        with patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
+            assert await adapter._wait_for_bridge() is False
+        assert adapter.fatal_error_code == "whatsapp_logged_out"
+        assert adapter.fatal_error_retryable is False
+
+    @pytest.mark.asyncio
+    async def test_crash_during_connect_stays_retryable(self):
+        adapter = _make_adapter()
+        adapter._bridge_process = self._exited_bridge(1)
+
+        with patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
+            assert await adapter._wait_for_bridge() is False
+        assert adapter.has_fatal_error is False
+
+    def test_bridge_and_adapter_share_the_exit_code(self):
+        import re
+
+        from plugins.platforms.whatsapp.adapter import _BRIDGE_LOGGED_OUT_EXIT_CODE
+
+        bridge = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge" / "bridge.js"
+        source = bridge.read_text(encoding="utf-8")
+        declared = re.search(r"^const LOGGED_OUT_EXIT_CODE = (\d+);$", source, re.MULTILINE)
+
+        assert declared is not None
+        assert int(declared.group(1)) == _BRIDGE_LOGGED_OUT_EXIT_CODE
+        assert "process.exit(LOGGED_OUT_EXIT_CODE)" in source

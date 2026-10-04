@@ -432,7 +432,9 @@ stage_prerequisites() {
     command -v curl >/dev/null 2>&1 || fail "curl is required. Install it with your system package manager."
     # PM's Node on musl is the unofficial-builds musl archive, which links the
     # system libstdc++; without it every node/npm stage fails verification.
-    if [[ "$(uv_bootstrap_target 2>/dev/null)" == *-musl ]]; then
+    local _target
+    _target="$(uv_bootstrap_target 2>/dev/null)" || _target=""
+    if [[ "$_target" == *-musl ]]; then
         local _libdir _stdcxx=""
         for _libdir in /lib /usr/lib /usr/local/lib; do
             compgen -G "$_libdir/libstdc++.so.6*" >/dev/null && { _stdcxx=yes; break; }
@@ -442,8 +444,6 @@ stage_prerequisites() {
     # glibc Node links libatomic.so.1, absent on minimal Debian/RHEL hosts. PM
     # installs the distro package with `sudo -n` under its install lock, so
     # cache sudo credentials now, while the terminal can answer the prompt.
-    local _target
-    _target="$(uv_bootstrap_target 2>/dev/null)" || _target=""
     if [[ "$_target" == linux-* && "$_target" != *-musl ]] \
         && [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && has_terminal \
         && ! { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; then
@@ -674,6 +674,9 @@ bootstrap_pm() {
     [ "$SKIP_BROWSER" = true ] && pm_args+=(--without agent-browser)
     [ "$SKIP_COMPUTER_USE" = true ] && pm_args+=(--without cua-driver)
     bootstrap_python
+    # Refresh the sudo ticket cached in prerequisites (never prompts): the
+    # clone and downloads can outlast sudo's timestamp_timeout.
+    if [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1; then sudo -n -v 2>/dev/null || :; fi
     (cd "$INSTALL_DIR" && run_logged "Installing dependencies (hash-verified via uv.lock)" \
         "$boot_py" -m pm.cli "${pm_args[@]}") \
         || fail "pm install failed"

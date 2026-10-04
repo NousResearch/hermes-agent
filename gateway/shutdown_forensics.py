@@ -226,22 +226,43 @@ def check_systemd_timing_alignment(
 
 
 def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
-    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual)."""
+    """``TimeoutStopUSec`` of ``unit_name`` in microseconds; ``--user`` first (hermes' usual).
+
+    ``systemctl --user show`` on a unit that does *not* exist in the user manager still
+    returns rc=0 with the manager default (``1min 30s`` / 90s) rather than an error
+    (#132565). Trust a ``--user`` result only when ``LoadState`` is not ``not-found``;
+    otherwise fall through to the system-level query.
+    """
     for flag in (["--user"], []):
         try:
             result = subprocess.run(
-                ["systemctl", *flag, "show", unit_name, "--property=TimeoutStopUSec"],
+                ["systemctl", *flag, "show", unit_name,
+                 "--property=TimeoutStopUSec", "--property=LoadState"],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=2.0,
             )
         except (subprocess.TimeoutExpired, OSError):
             continue
-        # Output: "TimeoutStopUSec=1min 30s" or "TimeoutStopUSec=90000000"
-        for line in result.stdout.splitlines() if result.returncode == 0 else ():
-            if line.startswith("TimeoutStopUSec="):
-                value = line.split("=", 1)[1].strip()
-                timeout_us = int(value) if value.isdigit() else parse_systemd_duration_to_us(value)
-                if timeout_us is not None:
-                    return timeout_us
+        if result.returncode != 0:
+            continue
+        # Output: "TimeoutStopUSec=1min 30s" / "TimeoutStopUSec=90000000" and "LoadState=loaded"
+        load_state = None
+        timeout_raw = None
+        for line in result.stdout.splitlines():
+            if line.startswith("LoadState="):
+                load_state = line.split("=", 1)[1].strip()
+            elif line.startswith("TimeoutStopUSec="):
+                timeout_raw = line.split("=", 1)[1].strip()
+        # Non-existent --user unit: default 90s, not a real unit TimeoutStopSec.
+        if flag == ["--user"] and load_state == "not-found":
+            continue
+        if timeout_raw is None:
+            continue
+        timeout_us = (
+            int(timeout_raw) if timeout_raw.isdigit()
+            else parse_systemd_duration_to_us(timeout_raw)
+        )
+        if timeout_us is not None:
+            return timeout_us
     return None
 
 

@@ -165,3 +165,81 @@ class TestParseSystemdDuration:
 # ---------------------------------------------------------------------------
 # check_systemd_timing_alignment
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _systemd_timeout_stop_us — LoadState gate (#132565)
+# ---------------------------------------------------------------------------
+
+
+class TestSystemdTimeoutStopUs:
+    """``systemctl --user show`` of a missing user unit returns rc=0 + default 90s.
+
+    A gateway running as a *system* service must fall through to the system-level
+    query instead of treating that default as the real TimeoutStopSec.
+    """
+
+    def test_user_not_found_falls_through_to_system(self, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            if "--user" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout="LoadState=not-found\nTimeoutStopUSec=1min 30s\n",
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout="LoadState=loaded\nTimeoutStopUSec=3min 30s\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 210 * 1_000_000
+        assert any("--user" in c for c in calls)
+        assert any(c[:1] == ["systemctl"] and "--user" not in c for c in calls)
+
+    def test_user_loaded_unit_is_trusted(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            if "--user" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout="LoadState=loaded\nTimeoutStopUSec=2min\n",
+                    stderr="",
+                )
+            raise AssertionError("system-level query must not run when --user unit is loaded")
+
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 120 * 1_000_000
+
+    def test_alignment_no_false_stale_when_system_unit_matches(self, monkeypatch):
+        """End-to-end: system unit TimeoutStopSec=210 with drain 180+30 must not mismatch."""
+        monkeypatch.setenv("INVOCATION_ID", "test-invocation")
+
+        def fake_open(path, *args, **kwargs):
+            if str(path) == "/proc/self/cgroup":
+                from io import StringIO
+                return StringIO("0::/system.slice/hermes-gateway.service\n")
+            raise FileNotFoundError(path)
+
+        def fake_run(cmd, **kwargs):
+            if "--user" in cmd:
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout="LoadState=not-found\nTimeoutStopUSec=1min 30s\n",
+                    stderr="",
+                )
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout="LoadState=loaded\nTimeoutStopUSec=3min 30s\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr("builtins.open", fake_open)
+        monkeypatch.setattr(sf.subprocess, "run", fake_run)
+        result = sf.check_systemd_timing_alignment(180.0, 30.0)
+        assert result is not None
+        assert result["timeout_stop_sec"] == 210.0
+        assert result["mismatch"] is False

@@ -106,7 +106,13 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import Iterable, Mapping, Sequence
 
-from hermes_constants import SCRATCH_TMP_ENV_VARS, get_hermes_home, get_real_home, get_scratch_dir
+from hermes_constants import (
+    SCRATCH_DIR_MARKER_ENV,
+    SCRATCH_TMP_ENV_VARS,
+    get_hermes_home,
+    get_real_home,
+    get_scratch_dir,
+)
 from tools.environments import bubblewrap_home
 from tools.environments.base import EnvironmentConnectionError, get_sandbox_dir
 from tools.environments.local import LocalEnvironment, _resolve_local_initial_cwd
@@ -1214,10 +1220,18 @@ class BubblewrapEnvironment(LocalEnvironment):
         # gets an empty view of that path and a directory of this
         # environment inside it. get_scratch_dir makes the directory;
         # pruning stays with the process that owns the home.
-        scratch_as_named = str(get_scratch_dir(self._hermes_home, prune=False))
-        self._scratch_dir: str = os.path.realpath(scratch_as_named)
-        # The spellings of that path a process environment can carry.
-        self._scratch_names: tuple[str, ...] = tuple(dict.fromkeys((scratch_as_named, self._scratch_dir)))
+        self._scratch_dir: str = os.path.realpath(str(get_scratch_dir(self._hermes_home, prune=False)))
+        # The spellings of that path a process environment can carry: the
+        # real one, the one under HERMES_HOME as it is named (a symlinked
+        # home), and whatever the temp variables of this process hold now.
+        spellings = [
+            self._scratch_dir,
+            os.path.join(str(get_hermes_home()), "cache", "scratch"),
+            *(os.environ.get(name, "") for name in (*SCRATCH_TMP_ENV_VARS, SCRATCH_DIR_MARKER_ENV)),
+        ]
+        self._scratch_names: tuple[str, ...] = tuple(dict.fromkeys(
+            spelling for spelling in spellings if spelling and os.path.realpath(spelling) == self._scratch_dir
+        ))
         self._staged_roots = staged_data_roots()
         # Archive files of oversized tool results this environment was
         # handed (expose_spillover_file), newest last.
@@ -1721,7 +1735,27 @@ class BubblewrapEnvironment(LocalEnvironment):
             f"reset to {self._initial_cwd}]\n"
         )
 
+    def _refresh_private_scratch(self) -> None:
+        """Keep the scratch dir of this environment in place for the next spawn.
+
+        It is an entry of the Hermes scratch dir, whose idle entries any
+        Hermes process prunes. A spawn marks it as used, and makes it
+        again when a prune took it while the environment sat idle: its
+        bind has no source otherwise and every command would fail. A
+        symlink at that path is left alone, so the bind fails rather than
+        follow it.
+        """
+        path = self._scratch_private
+        try:
+            if os.path.islink(path):
+                return
+            os.makedirs(path, mode=0o700, exist_ok=True)
+            os.utime(path)
+        except OSError:
+            logger.debug("bubblewrap: could not refresh the scratch dir %s", path, exc_info=True)
+
     def _wrap_popen_args(self, args: list[str]) -> list[str]:
+        self._refresh_private_scratch()
         return self._prlimit_prefix() + self._bwrap_prefix(self.cwd) + self._process_limit_prefix() + list(args)
 
     def _wrap_command(self, command: str, cwd: str) -> str:

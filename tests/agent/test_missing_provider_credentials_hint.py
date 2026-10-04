@@ -203,3 +203,23 @@ def test_model_cooldown_mixed_with_exhausted_keeps_credential_wide_wording(tmp_p
     assert message is not None
     assert "cooling down" in message
     assert "the credentials themselves are healthy" not in message
+
+
+def test_model_cooldown_empty_model_string_stays_unscoped(tmp_path, monkeypatch):
+    """``model=""`` is ``init_agent``'s default and must behave like the unscoped route.
+
+    ``model_cooldown_until`` treats a falsy model the same as ``None`` — any active model
+    cooldown blocks — so the verdict must collect the benched model names on the falsy string
+    too instead of silently falling back to the generic 429 wording (review of #129047).
+    """
+    from agent.auxiliary_unavailable import pool_cooldown_message
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _write_model_cooldown_pool(tmp_path, model="claude-opus-5-5", until_offset=2 * 3600)
+
+    message = pool_cooldown_message("anthropic", model="")
+    assert message is not None
+    assert "model-scoped" in message
+    assert "claude-opus-5-5" in message
+    assert "cooling down after a" not in message

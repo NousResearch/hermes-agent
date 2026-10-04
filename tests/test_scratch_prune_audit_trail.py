@@ -469,3 +469,98 @@ def test_prune_oserror_failure_logged_not_counted(tmp_path, audit_records, monke
     failed = [m for m in all_records if "removal failed" in m and "doomed-lane" in m]
     assert failed, all_records
     assert entry.exists()  # and the entry itself survives the failed attempt
+
+def test_audit_real_setup_no_fallback_duplication(tmp_path, monkeypatch):
+    """Review round 4: after the REAL setup_logging(), the root logger holds only
+    the queue handler (_hermes_queue); file handlers live behind the QueueListener
+    in hermes_logging._queued_file_handlers. The durable-sink check must recognize
+    that topology so post-setup pruning does NOT also append scratch-prune.log.
+    Reviewer's protocol: real setup in an isolated HERMES_HOME, flush, assert the
+    audit line is in agent.log and scratch-prune.log was never created."""
+    import hermes_logging
+
+    real_home = tmp_path / "real-setup-home"
+    real_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(real_home))
+
+    # Production shape only: under pytest the root logger carries harness
+    # machinery (_FileHandler for log capture, LogCaptureHandler) that
+    # production never has — a root FileHandler would satisfy the OLD check and
+    # mask the regression. Swap the full root handler set for the real
+    # installer's output, then restore it in the finally.
+    real_root = logging.getLogger()
+    saved_handlers = list(real_root.handlers)
+    real_root.handlers = []
+
+    # The real installer — no manual handler surgery.
+    hermes_logging.setup_logging(hermes_home=real_home, log_level="INFO")
+    try:
+        scratch = get_scratch_dir(tmp_path, prune=False)
+        entry = scratch / "real-setup-lane"
+        entry.mkdir()
+        (entry / "f").write_text("x", encoding="utf-8")
+        _age(entry)
+        _age(entry / "f")
+
+        assert prune_scratch_dir(scratch) == 1
+
+        # Queue is async: block until every queued record is written.
+        hermes_logging.flush_log_queue()
+    finally:
+        hermes_logging._reset_queued_handlers()
+        real_root.handlers = saved_handlers
+
+    agent_log = real_home / "logs" / "agent.log"
+    sink = real_home / "logs" / "scratch-prune.log"
+    assert agent_log.exists(), "real setup produced no agent.log"
+    assert "removed" in agent_log.read_text(encoding="utf-8"), (
+        "audit line never reached the queued durable sink"
+    )
+    assert not sink.exists(), (
+        "fallback fired despite the real queued file sink being live — double write"
+    )
+
+
+def test_audit_queue_handler_without_file_backend_still_falls_back(tmp_path, monkeypatch):
+    """Inverse boundary (review round 4): a queue handler on root whose listener
+    has NO file-backed handlers (e.g. the queue stripped in tests, or a
+    console-only router) must still trigger the fallback — a queue handler
+    alone proves nothing about durability."""
+    import queue as queue_mod
+
+    import hermes_logging
+    from logging.handlers import QueueHandler
+
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    entry = scratch / "queue-bare-lane"
+    entry.mkdir()
+    (entry / "f").write_text("x", encoding="utf-8")
+    _age(entry)
+    _age(entry / "f")
+
+    audit_home = tmp_path / "queue-bare-home"
+    monkeypatch.setenv("HERMES_HOME", str(audit_home))
+
+    # Queue handler on root, marked like the real one — but no file handlers
+    # registered behind it. The old check would see a handler and skip the
+    # fallback; durability is still unproven, so the fallback must fire.
+    qh = QueueHandler(queue_mod.SimpleQueue())
+    qh._hermes_queue = True
+    real_root = logging.getLogger()
+    saved_handlers = list(real_root.handlers)
+    saved_level = real_root.level
+    real_root.handlers = [qh]
+    real_root.setLevel(logging.INFO)
+    saved_file_handlers = list(hermes_logging._queued_file_handlers)
+    hermes_logging._queued_file_handlers.clear()
+    try:
+        assert prune_scratch_dir(scratch) == 1
+    finally:
+        real_root.handlers = saved_handlers
+        real_root.setLevel(saved_level)
+        hermes_logging._queued_file_handlers[:] = saved_file_handlers
+
+    sink = audit_home / "logs" / "scratch-prune.log"
+    assert sink.exists(), (
+        "queue handler without file backend satisfied the check; durable sink never created"
+    )

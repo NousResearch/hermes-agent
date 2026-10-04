@@ -100,6 +100,43 @@ def _audit_log_path() -> Path:
         return home / "logs" / "scratch-prune.log"
 
 
+def _hermes_queue_sink_live() -> bool:
+    """True when Hermes' real queued logging (the post-setup topology) is live.
+
+    ``setup_logging()`` never attaches file handlers to the root logger: root gets
+    only a ``_NonFormattingQueueHandler`` (marked ``_hermes_queue``) and the
+    rotating file handlers sit behind a ``QueueListener`` in
+    ``hermes_logging._queued_file_handlers``. The root-only ``FileHandler`` test
+    above cannot see that queue — treating the real post-setup state as
+    fallback-needed duplicates every audit line into ``scratch-prune.log`` on
+    top of ``agent.log`` (review round 4's probe finding).
+
+    Durable when the queue handler is attached to root AND the listener has at
+    least one file-backed handler at INFO or below. Stdlib-only and
+    import-guarded: early-boot may run before ``hermes_logging`` is importable,
+    and a failed import must never break the prune (the caller swallows
+    nothing here — this function returns False and the fallback fires, which
+    is the safe direction).
+    """
+    try:
+        root = logging.getLogger()
+        queue_on_root = any(
+            getattr(h, "_hermes_queue", False) for h in root.handlers
+        )
+        if not queue_on_root:
+            return False
+        import hermes_logging  # noqa: PLC0415 — lazy: circular at module load
+
+        file_backed = [
+            h
+            for h in getattr(hermes_logging, "_queued_file_handlers", [])
+            if h.level <= logging.INFO
+        ]
+        return bool(file_backed)
+    except Exception:  # noqa: BLE001 — must never break the prune
+        return False
+
+
 def audit_info(log: logging.Logger, msg: str, *args: object) -> None:
     """Audit record at INFO with a durable fallback sink (#132401).
 
@@ -117,18 +154,24 @@ def audit_info(log: logging.Logger, msg: str, *args: object) -> None:
     """
     try:
         log.info(msg, *args)
-        # Delivery check, tightened per review: a root handler counts as the
-        # durable sink only if it is a FILE handler (agent.log and friends).
-        # A console StreamHandler / NullHandler proves the record was emitted,
-        # not that it reached a durable file — console-only setups must still
-        # get the fallback. Python's logger-level filter runs BEFORE handlers,
-        # so a root logger above INFO swallows records even when a low-level
-        # file handler waits; both conditions must hold.
+        # Delivery check, per review round 4: a durable Hermes sink exists in two
+        # topologies. (1) A FileHandler attached directly to the root logger
+        # (tests, third-party embedders, plain-stdlib setups). (2) The real
+        # Hermes post-setup path: setup_logging() attaches ONLY a queue handler
+        # (marked `_hermes_queue`) to root and keeps the rotating file handlers
+        # behind a QueueListener in hermes_logging._queued_file_handlers — a
+        # root-only FileHandler test misses that queue and wrongly duplicates
+        # records into the fallback file. A console StreamHandler / NullHandler
+        # proves emission, not durability; a root above INFO swallows records
+        # before handlers see them (the level filter runs first).
         root = logging.getLogger()
         root_will_process = logging.INFO >= root.getEffectiveLevel()
-        sink_live = root_will_process and any(
-            h.level <= logging.INFO and isinstance(h, logging.FileHandler)
-            for h in root.handlers
+        sink_live = root_will_process and (
+            any(
+                h.level <= logging.INFO and isinstance(h, logging.FileHandler)
+                for h in root.handlers
+            )
+            or _hermes_queue_sink_live()
         )
         if sink_live:
             return  # the log file sink is live; no fallback duplication

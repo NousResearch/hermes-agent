@@ -261,6 +261,14 @@ def test_consolidate_folds_lazy_fetch_packs_that_the_maintenance_keys_leave_fold
     assert blob == "v1", "the folded repository must still read its objects without the promisor"
 
 
+def test_a_fold_shown_to_the_user_writes_gits_own_output_to_their_terminal(
+        partial_clone: Path, capfd: pytest.CaptureFixture[str]) -> None:
+    """A large checkout's fold is a full repack that runs for many minutes; captured, it looked hung."""
+    disable_tree0_auto_maintenance(partial_clone)
+    assert consolidate_lazy_fetch_packs(partial_clone, show_progress=True) > 0
+    assert "Auto packing the repository" in capfd.readouterr().err
+
+
 def test_fold_does_not_lazy_fetch_the_trees_of_commits_a_bloom_graph_has_not_seen(tmp_path: Path) -> None:
     """The same gc that folds the packs, left to write a commit-graph, adds one pack per unseen commit."""
     seed, up, clone = _blobless_clone(tmp_path, 12)

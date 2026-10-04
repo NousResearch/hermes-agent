@@ -616,7 +616,8 @@ def _gc_auto_pack_limit(repo_root: Path) -> int:
 
 
 def consolidate_lazy_fetch_packs(repo_root: Path, *,
-                                 on_fold_start: Optional[Callable[[int], None]] = None) -> Optional[int]:
+                                 on_fold_start: Optional[Callable[[int], None]] = None,
+                                 show_progress: bool = False) -> Optional[int]:
     """Fold a partial clone's lazy-fetch packfiles back into one; returns how many packs went away.
 
     Every on-demand fetch a promisor remote serves writes its own small packfile, and nothing in
@@ -630,8 +631,10 @@ def consolidate_lazy_fetch_packs(repo_root: Path, *,
     Runs under ``bounded_probe_run`` because ``subprocess.run(timeout=)`` kills only ``git gc``
     and leaves its ``pack-objects`` child running. ``on_fold_start(pack_count)`` fires just before
     a fold gc will actually do (pack count past the limit), so the caller can say why the update
-    went quiet. Best-effort like every helper here: never raises, returns 0 for a non-partial
-    checkout or when nothing folded, and ``None`` when the fold hit its time limit.
+    went quiet. ``show_progress`` lets git draw its own meter on our stderr: a fold of a large
+    checkout is a full repack that runs for many minutes, and captured it looked hung. Best-effort
+    like every helper here: never raises, returns 0 for a non-partial checkout or when nothing
+    folded, and ``None`` when the fold hit its time limit.
     """
     try:
         if _partial_clone_filter(repo_root, creationflags=windows_hide_flags()) is None:
@@ -644,7 +647,7 @@ def consolidate_lazy_fetch_packs(repo_root: Path, *,
         if bounded_probe_run(
             ["git", "-c", "gc.autoDetach=false", "-c", "gc.writeCommitGraph=false", "gc", "--auto"],
             timeout=LAZY_FETCH_GC_TIMEOUT_SECONDS, cwd=str(repo_root),
-            env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV},
+            env={**noninteractive_git_env(), **NO_LAZY_FETCH_ENV}, inherit_stderr=show_progress,
         ) is None:
             logger.warning("Folding %d lazy-fetch pack(s) in %s timed out after %ds",
                            before, repo_root, LAZY_FETCH_GC_TIMEOUT_SECONDS)

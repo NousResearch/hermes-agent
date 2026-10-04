@@ -176,7 +176,8 @@ healthy checkout pays a no-op. They also set `maintenance.commit-graph.enabled`,
 commit-graph write over commits the graph has not seen yet downloads every one of their trees. Leave those settings alone, and leave
 `gc.auto` at its default: `gc.auto=0` stops the fold. The first fold on a checkout that has
 piled up thousands of packs is a full repack and can take several minutes; the update says so
-before it starts, and if the fold runs past 20 minutes it stops and prints the command below.
+before it starts, shows git's own progress (`Counting objects`, `Writing objects`) when run in a
+terminal, and if the fold runs past 20 minutes it stops and prints the command below.
 To fold by hand (with Hermes closed):
 
 ```bash

@@ -54,7 +54,8 @@ def fold_lazy_fetch_packs(root: Path) -> None:
     from hermes_cli.gitlock import LAZY_FETCH_GC_TIMEOUT_SECONDS, consolidate_lazy_fetch_packs
 
     folded = consolidate_lazy_fetch_packs(root, on_fold_start=lambda count: print(
-        f"  Folding {count} lazy-fetch packs into one (one-time; can take several minutes)...", flush=True))
+        f"  Folding {count} lazy-fetch packs into one (one-time; can take several minutes)...", flush=True),
+        show_progress=sys.stderr.isatty())
     if folded is None:
         print(f"  ⚠ Folding lazy-fetch packs did not finish within {LAZY_FETCH_GC_TIMEOUT_SECONDS // 60} min."
               " With Hermes closed, run:")

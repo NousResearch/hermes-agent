@@ -777,9 +777,12 @@ def _legacy_kill_process_tree(proc: "subprocess.Popen") -> None:
 def bounded_probe_run(
     argv: Sequence[str], *, timeout: float, errors: str = "replace",
     env: "Mapping[str, str] | None" = None, cwd: "str | os.PathLike[str] | None" = None,
-    raise_on_spawn_failure: bool = False,
+    raise_on_spawn_failure: bool = False, inherit_stderr: bool = False,
 ) -> "subprocess.CompletedProcess[str] | None":
     """Deadlock-safe ``subprocess.run(argv, capture_output=True, timeout=…)`` for fail-open probes.
+
+    ``inherit_stderr=True`` hands the child our stderr instead of capturing it (``stderr`` is then
+    ``None``), so a long git operation can draw its own progress meter on the user's terminal.
 
     Returns a ``CompletedProcess`` when the child finished within *timeout* (any exit code), or
     ``None`` on spawn failure or timeout. With ``raise_on_spawn_failure=True`` the ``Popen``
@@ -803,7 +806,8 @@ def bounded_probe_run(
         from hermes_cli.local_runtime.processes import spawn_server
 
         proc, job = spawn_server(
-            list(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+            list(argv), stdout=subprocess.PIPE, stderr=None if inherit_stderr else subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors=errors,
             env=dict(env) if env is not None else None, cwd=cwd, **_popen_kwargs)
     except Exception:

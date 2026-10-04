@@ -26,6 +26,7 @@ import time
 import traceback
 from collections import defaultdict
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Any, Tuple
 from urllib.parse import quote, urljoin
 
@@ -78,6 +79,15 @@ class _Snowflake:
 
     def __init__(self, id: int) -> None:  # noqa: A002 - matches discord API
         self.id = id
+
+
+@dataclass
+class _SemanticThreadRename:
+    replaced: str
+    set_name: str
+    event_name: str
+    set_seen: bool = False
+
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
@@ -1114,9 +1124,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._voice_fx_cfg: Dict[str, Any] = self._load_voice_fx_config()
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
         self._threads = ThreadParticipationTracker("discord")
-        # thread id -> (name it replaced, name it set, set name seen yet) for Hermes's own semantic
-        # renames; see _format_thread_chat_name. In memory: after a restart the next turn re-renders once.
-        self._semantic_thread_renames: Dict[str, Tuple[str, str, bool]] = {}
+        # Hermes's semantic rename per thread, identified per REST attempt; see _format_thread_chat_name.
+        # In memory: after a restart each renamed thread re-renders on its next turn.
+        self._semantic_thread_renames: Dict[str, _SemanticThreadRename] = {}
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
@@ -1377,6 +1387,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             @self._client.event
             async def on_thread_create(thread):
                 await adapter_self._on_platform_thread_create(thread)
+
+            @self._client.event
+            async def on_raw_thread_update(payload):
+                await adapter_self._on_platform_raw_thread_update(payload)
 
             @self._client.event
             async def on_thread_update(before, after):
@@ -1711,15 +1725,22 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             }
         await self._emit_platform_event("thread_created", lambda: self._thread_event_parts(thread, _extra))
 
+    async def _on_platform_raw_thread_update(self, payload) -> None:
+        # Cached ``after`` objects can be changed by later updates before their
+        # callbacks run. Raw payloads retain each name, even for uncached threads.
+        thread_key = str(payload.thread_id)
+        renamed = self._semantic_thread_renames.get(thread_key)
+        if renamed:
+            new_name = payload.data.get("name")
+            if isinstance(new_name, str) and new_name != renamed.event_name:
+                if (renamed.event_name, new_name) == (renamed.replaced, renamed.set_name):
+                    renamed.event_name = new_name
+                else:
+                    # This state belongs to the adapter, not the optional hook.
+                    self._semantic_thread_renames.pop(thread_key, None)
+
     async def _on_platform_thread_update(self, before, after) -> None:
         """Normalize ``on_thread_update`` renames into ``thread_renamed``; non-rename updates are dropped."""
-        # The event is the only provenance signal: any name other than the one Hermes set came from
-        # someone else, even when its text matches the name Hermes replaced (cache lag looks the same).
-        thread_key = str(getattr(after, "id", ""))
-        renamed = self._semantic_thread_renames.get(thread_key)
-        if renamed and getattr(after, "name", None) != renamed[1]:
-            self._semantic_thread_renames.pop(thread_key, None)
-
         def _build():
             old_name = getattr(before, "name", None)
             new_name = getattr(after, "name", None)
@@ -5463,14 +5484,21 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         edit = getattr(thread, "edit", None)
         if edit is None:
             return False
+        thread_key = str(thread_id_int)
+        renamed = None
+        if only_if_current_name is not None:
+            # Gateway updates can arrive before the REST edit returns. Publish now
+            # so a subsequent external rename can retire this attempt permanently.
+            renamed = _SemanticThreadRename(current_name, cleaned, event_name=current_name)
+            renames = self._semantic_thread_renames
+            renames.pop(thread_key, None)
+            renames[thread_key] = renamed
+            while len(renames) > _SEMANTIC_THREAD_RENAMES_MAX:
+                renames.pop(next(iter(renames)))
+        edit_completed = False
         try:
             await edit(name=cleaned, reason="Hermes semantic session title")
-            if only_if_current_name is not None:
-                renames = self._semantic_thread_renames
-                renames.pop(str(thread_id_int), None)
-                renames[str(thread_id_int)] = (current_name, cleaned, False)
-                while len(renames) > _SEMANTIC_THREAD_RENAMES_MAX:
-                    renames.pop(next(iter(renames)))
+            edit_completed = True
             logger.info(
                 "[%s] Renamed Discord thread %s from %r to %r",
                 self.name, thread_id, current_name, cleaned,
@@ -5479,6 +5507,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         except Exception:
             logger.debug("[%s] Failed to rename Discord thread %s", self.name, thread_id, exc_info=True)
             return False
+        finally:
+            # Covers cancellation too; a newer attempt with the same names owns a
+            # different record and must survive this attempt's failed completion.
+            if not edit_completed and renamed is not None:
+                if self._semantic_thread_renames.get(thread_key) is renamed:
+                    self._semantic_thread_renames.pop(thread_key, None)
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
         """Create a handoff thread under a text channel; returns the thread id or ``None``.
@@ -5820,14 +5854,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         thread_key = str(getattr(thread, "id", ""))
         renamed = self._semantic_thread_renames.get(thread_key)
         if renamed:
-            replaced, set_name, set_seen = renamed
-            if thread_name == set_name:
-                if not set_seen:
-                    self._semantic_thread_renames[thread_key] = (replaced, set_name, True)
-                thread_name = replaced
-            elif set_seen or thread_name != replaced:
-                # Someone else renamed it (the old name before Hermes's title is first seen is only
-                # cache lag). Equal text is not provenance: if they later restore Hermes's title,
+            if thread_name == renamed.set_name:
+                renamed.set_seen = True
+                thread_name = renamed.replaced
+            elif renamed.set_seen or thread_name != renamed.replaced:
+                # Without a raw event, an unseen title's opening name may be cache lag
+                # or a moderator restore missed during re-IDENTIFY (no RESUME replay).
+                # Equal text is not provenance: if they later restore Hermes's title,
                 # that is their choice of name and must show as itself.
                 self._semantic_thread_renames.pop(thread_key, None)
         parent = getattr(thread, "parent", None)

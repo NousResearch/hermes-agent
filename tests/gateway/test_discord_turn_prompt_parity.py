@@ -62,7 +62,8 @@ def _adapter(monkeypatch, bound_id) -> DiscordAdapter:
 async def _typed(adapter, channel):
     await adapter._handle_message(SimpleNamespace(
         id=123, content="what broke?", mentions=[], attachments=[], reference=None,
-        created_at=datetime.now(timezone.utc), channel=channel, author=_USER))
+        created_at=datetime.now(timezone.utc), channel=channel,
+        guild=getattr(channel, "guild", None), author=_USER))
     return adapter.handle_message.await_args.args[0]
 
 
@@ -78,6 +79,7 @@ def _assert_same_prompt_inputs(typed, other):
         pinned.append((runner._pinned_session_context_prompt(context, False, "k"), channel_prompt))
     assert typed.channel_prompt == "Answer in haiku."
     assert len(set(pinned)) == 1, (pinned[0][0], pinned[1][0])
+    assert all(prompt is pinned[0][0] for prompt, _ in pinned)
     assert other.auto_skill == typed.auto_skill == ["triage"]
 
 
@@ -95,6 +97,7 @@ def _interaction(channel):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["dm", "channel", "thread", "thread-starter"])
 async def test_slash_and_thread_starter_turns_match_a_message_turn(monkeypatch, case):
+    monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: True)
     parent = _parent()
     channel = {"dm": _DM(500), "channel": parent}.get(case) or _Thread(800, parent)
     adapter = _adapter(monkeypatch, channel.id)
@@ -107,12 +110,15 @@ async def test_slash_and_thread_starter_turns_match_a_message_turn(monkeypatch, 
     else:
         await adapter._run_simple_slash(_interaction(channel), "/skill triage what broke?")
     assert adapter.handle_message.await_count == 2
-    _assert_same_prompt_inputs(typed, adapter.handle_message.await_args.args[0])
+    other = adapter.handle_message.await_args.args[0]
+    assert typed.source.message_id and other.source.message_id is None
+    _assert_same_prompt_inputs(typed, other)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["channel", "thread-under-bound-parent", "renamed-after-join", "speaker-uncached"])
 async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch, case):
+    monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: True)
     parent = _parent()
     channel = _Thread(800, parent) if case == "thread-under-bound-parent" else parent
     adapter = _adapter(monkeypatch, parent.id)
@@ -138,6 +144,7 @@ async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch, case):
 
     spoken = adapter.handle_message.await_args.args[0]
     assert spoken is not typed
+    assert typed.source.message_id and spoken.source.message_id is None
     _assert_same_prompt_inputs(typed, spoken)
     # The join-time name belongs to the joiner only; another uncached speaker never borrows it.
     other = runner._voice_input_source(adapter, 1, 43, channel.id).user_name

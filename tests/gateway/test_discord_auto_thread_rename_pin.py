@@ -8,6 +8,7 @@ change and still re-renders, including one that later restores Hermes's title: e
 edit provenance.
 """
 
+import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -31,6 +32,8 @@ class _Thread:
     def __init__(self, channel_id, parent, name):
         self.id, self.name, self.parent, self.parent_id = channel_id, name, parent, parent.id
         self.guild = parent.guild
+        self.owner_id = 42
+        self.archived = False
 
     async def edit(self, *, name, reason=None):
         self.name = name
@@ -45,9 +48,8 @@ def _message(channel, message_id):
         created_at=datetime.now(timezone.utc), channel=channel, author=_USER)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("moderator_name", ["Renamed by a moderator", "what broke?"])
-async def test_hermes_title_rename_keeps_the_pin_and_a_human_rename_does_not(monkeypatch, moderator_name):
+@pytest.fixture
+def conversation(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "Thread", _Thread, raising=False)
     monkeypatch.setattr(discord_platform, "DISCORD_AVAILABLE", True)
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
@@ -70,6 +72,13 @@ async def test_hermes_title_rename_keeps_the_pin_and_a_human_rename_does_not(mon
         assert source.chat_id == "800"
         return runner._pinned_session_context_prompt(build_session_context(source, config), False, "k")
 
+    return adapter, parent, thread, turn
+
+
+@pytest.mark.asyncio
+async def test_hermes_title_rename_keeps_the_pin_and_a_human_rename_does_not(conversation):
+    moderator_name = "what broke?"
+    adapter, parent, thread, turn = conversation
     first = await turn(parent, 100)
     # The title lane's call, as gateway/run_topics.py makes it for a native auto-thread.
     assert await adapter.rename_thread("800", "Database outage", only_if_current_name="what broke?")
@@ -88,25 +97,72 @@ async def test_hermes_title_rename_keeps_the_pin_and_a_human_rename_does_not(mon
 
 
 @pytest.mark.asyncio
-async def test_a_restore_before_any_turn_retires_the_mask_through_the_update_event(monkeypatch):
-    # Restoring the opening name before Hermes's title was ever read looks like cache lag to the
-    # formatter; only the THREAD_UPDATE says someone else named it, so that event retires the record.
-    monkeypatch.setattr(discord_platform.discord, "Thread", _Thread, raising=False)
-    monkeypatch.setattr(discord_platform, "DISCORD_AVAILABLE", True)
-    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
-    parent = _Text(700)
-    thread = _Thread(800, parent, name="what broke?")
-    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake"))
-    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999), get_channel=lambda _id: thread)
+async def test_raw_renames_retire_the_pin_before_http_completion(conversation):
+    """Raw names, including a return to the opening name, outrank a late REST result."""
+    adapter, parent, thread, turn = conversation
+    first = await turn(parent, 100)
 
-    async def rename(name):
-        before = SimpleNamespace(id=thread.id, name=thread.name)
+    async def update(data):
+        await adapter._on_platform_raw_thread_update(SimpleNamespace(thread_id=800, data=data))
+
+    async def edit(*, name, reason=None):
+        # Unrelated metadata and unchanged names are not moderator renames.
+        await update({"archived": False})
+        await update({"name": thread.name})
+        await update({"name": name})
         thread.name = name
-        await adapter._on_platform_thread_update(before, thread)
+        assert await turn(thread, 101) == first
+        # No typed turn occurs between these moderator edits. The pending edit
+        # succeeds afterward and must not resurrect the retired alias.
+        await update({"name": "what broke?"})
+        await update({"name": name})
+        return _Thread(thread.id, parent, name)
 
+    thread.edit = edit
     assert await adapter.rename_thread("800", "Database outage", only_if_current_name="what broke?")
-    await adapter._on_platform_thread_update(SimpleNamespace(id=800, name="what broke?"), thread)
-    await rename("what broke?")
-    assert adapter._format_thread_chat_name(thread).endswith("what broke?")
-    await rename("Database outage")
-    assert adapter._format_thread_chat_name(thread) == "Hermes Server / #ops / Database outage"
+    prompt = await turn(thread, 102)
+    assert "Hermes Server / #ops / Database outage" in prompt
+    assert prompt != first
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True], ids=["failure", "cancelled"])
+@pytest.mark.parametrize("newer_rename", [False, True], ids=["owned", "superseded"])
+async def test_unfinished_rename_cleans_up_only_its_own_record(conversation, cancelled, newer_rename):
+    """Failure/cancellation removes only the alias created by that REST attempt."""
+    adapter, parent, thread, turn = conversation
+    first = await turn(parent, 100)
+    started, finish = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def edit(*, name, reason=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            started.set()
+            await finish.wait()
+            raise RuntimeError("REST edit failed")
+        return _Thread(thread.id, parent, name)
+
+    thread.edit = edit
+    attempt = asyncio.create_task(adapter.rename_thread(
+        "800", "Database outage", only_if_current_name="what broke?",
+    ))
+    await started.wait()
+    # A later attempt for the same names has its own provenance.
+    if newer_rename:
+        assert await adapter.rename_thread("800", "Database outage", only_if_current_name="what broke?")
+    if cancelled:
+        attempt.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await attempt
+    else:
+        finish.set()
+        assert not await attempt
+
+    thread.name = "Database outage"
+    prompt = await turn(thread, 101)
+    if newer_rename:
+        assert prompt == first
+    else:
+        assert "Hermes Server / #ops / Database outage" in prompt

@@ -43,14 +43,15 @@ _LOG_REDACTION_CONTEXT = 32_768
 _ABSOLUTE_PATH_RE = re.compile(
     r"(?<![\w:])(?:"
     r"(?:[A-Za-z]:[\\/]+|\\{2,})(?:[^\\/\r\n<>:\"|?*]+[\\/]+)*[^\s\\/]*"
-    r"|/[^/\s]+(?:/[^/\s]*)*)"
+    r"|/(?=[^/\s])(?:[^/\s]+(?: [^/\s<>:\"|?*,;()\[\]{}'=]+)*/+)*[^/\s]*)"
 )
 # The id shape ``hermes_state_ids.new_session_id`` mints; a worker prints its own on exit.
 _SESSION_ID_RE = re.compile(r"\b\d{8}_\d{6}_[0-9a-f]{6,}\b")
 # Match an ``Authorization: Bearer/Basic <token>`` header anywhere in a line,
 # not just at its start — the token can appear mid-line inside a dumped curl
 # command (``curl -H 'Authorization: Bearer ...'``) or a shell trace. A bare
-# ``Bearer <token>`` (logged without its header name) is redacted too.
+# ``Bearer <token>`` (logged without its header name) is redacted too. Quotes (possibly
+# escaped) around the name and value cover a header dumped as a JSON or dict entry.
 _AUTH_HEADER_RE = re.compile(
     r"""(?i)(authorization\\?["']?\s*[:=]\s*\\?["']?(?:bearer|basic)\s+|\bbearer\s+)[^\s"'\\]+"""
 )

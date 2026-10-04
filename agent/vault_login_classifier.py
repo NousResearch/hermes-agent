@@ -224,6 +224,35 @@ def select_checkout_fills(classified: List[ClassifiedLoginControl], secret: Dict
 # neither a DOM reflow nor a second inspection in between can redirect the password into another field.
 INSPECTION_STAMP_ATTR = "data-hermes-vault-slot"
 
+# JS walker shared by the inspection/fill scripts and the tab probes (build_deep_probe_js):
+# query ``sel`` across open shadow roots, not just the light DOM. Web-component pages
+# (Shoelace/Lit, Home Assistant) keep their login inputs inside shadow trees, where a bare
+# ``document.querySelectorAll`` sees nothing and the page classifies as "no login form" (#132686).
+# Inspection and fill MUST route through the same walker: a control's ``index`` is how the fill
+# stamp-resolves it, so a traversal mismatch would redirect the password into another field.
+DEEP_QUERY_ALL_JS = """\
+const deepAll = (sel, root, out) => {
+  root = root || document; out = out || [];
+  for (const el of root.querySelectorAll(sel)) out.push(el);
+  for (const el of root.querySelectorAll("*")) if (el.shadowRoot) deepAll(sel, el.shadowRoot, out);
+  return out;
+};
+"""
+
+
+def build_deep_probe_js(selector: str) -> str:
+    """A JS expression that is truthy when ``selector`` matches in the light DOM or any open
+    shadow root — the boolean counterpart of ``DEEP_QUERY_ALL_JS`` for tab probes evaluated by
+    ``focus_page(accept=...)`` via Runtime.evaluate."""
+    return (
+        "(() => { const has = (sel, root) => {"
+        "root = root || document;"
+        "if (root.querySelector(sel)) return true;"
+        "for (const e of root.querySelectorAll('*')) if (e.shadowRoot && has(sel, e.shadowRoot)) return true;"
+        "return false; };"
+        f"return has({json.dumps(selector)}); }})()"
+    )
+
 
 def build_otp_fills(otp_controls: List[ClassifiedLoginControl], code: str) -> List[Dict[str, Any]]:
     """One fill per box. Default: the single best-scoring code field takes the whole code.
@@ -242,12 +271,15 @@ def build_otp_fills(otp_controls: List[ClassifiedLoginControl], code: str) -> Li
 
 
 def build_inspection_js(nonce: str) -> str:
-    return _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE.replace("__NONCE__", json.dumps(nonce))
+    return _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE.replace(
+        "__NONCE__", json.dumps(nonce)
+    ).replace("__DEEP_QUERY_ALL__", DEEP_QUERY_ALL_JS)
 
 
 _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
-  const elements = Array.from(document.querySelectorAll("input, select"));
+  __DEEP_QUERY_ALL__
+  const elements = deepAll("input, select");
   const forms = Array.from(document.forms);
   elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
   const out = elements.flatMap((element, index) => {
@@ -296,8 +328,12 @@ def build_fill_js(fills: List[Dict[str, Any]], expected_origin: str, nonce: str 
     payload = json.dumps(
         [{"index": f["index"], "token": f.get("token", "current-password"), "value": f["value"]} for f in fills]
     )
-    return (_FILL_JS_TEMPLATE.replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
-            .replace("__FILLS__", payload).replace("__NONCE__", json.dumps(nonce)))
+    return (
+        _FILL_JS_TEMPLATE.replace("__EXPECTED_ORIGIN__", json.dumps(expected_origin))
+        .replace("__FILLS__", payload)
+        .replace("__NONCE__", json.dumps(nonce))
+        .replace("__DEEP_QUERY_ALL__", DEEP_QUERY_ALL_JS)
+    )
 
 
 _FILL_JS_TEMPLATE = """(() => {
@@ -307,10 +343,11 @@ _FILL_JS_TEMPLATE = """(() => {
   }
   const fills = __FILLS__;
   const nonce = __NONCE__;
+  __DEEP_QUERY_ALL__
   let filled = 0;
   const norm = (t) => String(t || "").trim().toLowerCase();
   for (const f of fills) {
-    const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
+    const el = deepAll('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0];
     if (!el || (f.token === "current-password" && el.type !== "password")) continue;
     try {
       if (el.tagName === "SELECT") {
@@ -328,6 +365,6 @@ _FILL_JS_TEMPLATE = """(() => {
       if (el.value.length > 0) filled += 1;
     } catch (e) { /* skip */ }
   }
-  document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  deepAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
   return JSON.stringify({ filled });
 })()"""

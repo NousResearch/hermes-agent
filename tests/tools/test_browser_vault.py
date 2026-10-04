@@ -27,8 +27,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from agent.vault_login_classifier import (  # noqa: E402
     ClassifiedLoginControl,
+    DEEP_QUERY_ALL_JS,
     LoginControl,
     build_fill_js,
+    build_inspection_js,
     classify_login_control,
     select_password_fill,
 )
@@ -248,6 +250,44 @@ class TestClassifier:
         assert "window.location.origin" in js
         assert "origin_changed" in js
         assert js.index("origin_changed") < js.index("querySelectorAll")
+
+
+class TestShadowDomPiercing:
+    """#132686: web-component pages (Shoelace/Lit, Home Assistant) keep their login inputs inside
+    open shadow roots, where a light-DOM-only querySelectorAll sees nothing. The inspection, the
+    fill stamp-resolution/cleanup, and every _TAB_PROBES probe must walk open shadow roots."""
+
+    def test_inspection_js_walks_open_shadow_roots(self):
+        js = build_inspection_js("n")
+        assert "shadowRoot" in js
+        assert 'deepAll("input, select")' in js
+        assert 'document.querySelectorAll("input, select")' not in js  # light-DOM-only query is gone
+
+    def test_fill_js_resolves_stamps_through_shadow_roots_and_strips_them_there(self):
+        # A control inside a shadow tree must be fillable by its inspection stamp, and the marker
+        # cleanup must pierce too, or data-hermes-vault-slot survives inside the shadow tree.
+        js = build_fill_js([{"index": 1, "token": "current-password", "value": "x"}], "https://example.com")
+        assert "shadowRoot" in js
+        stamp_lookup = """deepAll('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]')[0]"""
+        assert stamp_lookup in js
+        assert 'deepAll("[data-hermes-vault-slot]").forEach' in js
+        assert 'document.querySelectorAll("[data-hermes-vault-slot]")' not in js
+
+    def test_inspection_and_fill_embed_the_same_traversal(self):
+        # The fill addresses a control by the index of ITS inspection, so the two scripts must
+        # enumerate controls through one shared walker: divergent traversals would reorder the
+        # index space and redirect the password into another field.
+        insp = build_inspection_js("n")
+        fill = build_fill_js([], "https://example.com")
+        assert DEEP_QUERY_ALL_JS in insp and DEEP_QUERY_ALL_JS in fill
+
+    def test_every_tab_probe_pierces_open_shadow_roots(self):
+        from tools.browser_vault_tool import _TAB_PROBES
+
+        assert set(_TAB_PROBES) >= {"login", "payment", "address", "otp"}
+        for kind, probe in _TAB_PROBES.items():
+            assert "shadowRoot" in probe, kind
+            assert "document.querySelector(" not in probe, kind  # light-DOM-only probe is gone
 
 
 # ---------------------------------------------------------------------------

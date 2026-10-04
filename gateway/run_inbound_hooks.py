@@ -128,9 +128,18 @@ class GatewayInboundHooksMixin:
                 break
         return event
 
-    def _hm_quick_commands(self) -> dict:
-        """User-defined ``quick_commands`` mapping from config (empty dict when unset/malformed)."""
+    def _hm_quick_commands(self, source: Optional[SessionSource] = None) -> dict:
+        """User-defined ``quick_commands`` of the profile that runs *source*'s turn (empty dict when
+        unset/malformed)."""
         cfg = self.config
+        if source is not None and getattr(cfg, "multiplex_profiles", False):
+            # ``self.config`` is the launch profile's alone. Key on the runtime profile, whose scope
+            # the turn (and a ``type: exec`` snippet) runs under, so the lookup and the env agree.
+            from gateway.session_identity import identity_of
+            identity = identity_of(source)
+            profile = identity.runtime_profile if identity is not None else getattr(source, "profile", None)
+            if profile:
+                cfg = (getattr(self, "_profile_configs", None) or {}).get(profile, cfg)
         qc = (cfg.get("quick_commands") if isinstance(cfg, dict) else getattr(cfg, "quick_commands", None)) or {}
         return qc if isinstance(qc, dict) else {}
 
@@ -234,7 +243,7 @@ class GatewayInboundHooksMixin:
             return True, t("gateway.busy.drain_rejected_new_work", action=self._status_action_gerund()), command
 
         # User-defined quick commands (bypass agent loop, no LLM call)
-        qcmd = self._hm_quick_commands().get(command) if command else None
+        qcmd = self._hm_quick_commands(source).get(command) if command else None
         if qcmd is not None:
             # Quick commands are slash capabilities too — and type:exec ones run a shell command in
             # the gateway process. They are never in the registry, so the early gate never fires for

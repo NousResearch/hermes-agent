@@ -1372,7 +1372,7 @@ class GatewayBusySessionMixin:
         from hermes_cli.commands import is_gateway_known_command
         command = event.get_command()
         if (not command or event.internal or active_authority(self) is None or executing_admission.get()
-                or command in self._hm_quick_commands() or is_gateway_known_command(command)):
+                or command in self._hm_quick_commands(source) or is_gateway_known_command(command)):
             return False, None
         epoch_key = self._session_key_for_source(source)
         epoch = self._route_stop_epoch(epoch_key)

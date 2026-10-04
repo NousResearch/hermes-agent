@@ -1448,8 +1448,6 @@ platform:
   irc:
     quit_message: "جارٍ إيقاف تشغيل Hermes Agent"
     standalone_quit: "تم التسليم"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "الموافقة مرة"
     confirm_always_approve: "الموافقة دائمًا"
@@ -2721,6 +2719,7 @@ cli:
       restored: "تمت استعادة الحالة من: {snapshot_id}"
       restart_recommended: "يُنصح بإعادة تشغيل عمليات البوّابة/لوحة التحكم لاعتماد تغييرات state.db."
       not_found: "اللقطة غير موجودة: {snapshot_id}"
+      restore_incomplete: "لم تتم استعادة اللقطة {snapshot_id} بالكامل؛ تم رفض بعض الملفات (راجع السجلات)"
       usage_prune: "الاستخدام: /snapshot prune [keep-count]"
       pruned: "تم حذف {deleted} لقطة قديمة (مع الاحتفاظ بـ {keep})."
     export:

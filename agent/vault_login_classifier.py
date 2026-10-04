@@ -308,15 +308,36 @@ _FILL_JS_TEMPLATE = """(() => {
   const fills = __FILLS__;
   const nonce = __NONCE__;
   let filled = 0;
+  const skipped = [];
   const norm = (t) => String(t || "").trim().toLowerCase();
+  // Year-width tolerant option matching. A vault value of "2031" must find an option whose value
+  // is "31" (2-digit controls, the common case) and vice versa. Matching literally finds nothing,
+  // the select keeps its default, and the wrong expiry reaches the acquirer -- so compare the
+  // last two digits numerically as a fallback. Returns null when the control genuinely cannot
+  // express the value; the caller must treat that as a failure, never as "leave the default".
+  const digits = (t) => String(t == null ? "" : t).replace(/\\D/g, "");
+  const shortYear = (t) => { const d = digits(t); if (!d) return null; return String(Number(d.slice(-2))); };
+  const matchOption = (el, raw) => {
+    const want = norm(raw);
+    const wantBare = want.replace(/^0/, "");
+    const exact = Array.from(el.options).find((o) => [o.value, o.textContent]
+      .some((t) => norm(t) === want || norm(t) === wantBare));
+    if (exact) return exact;
+    // year-width fallback, only for numeric values (never for country/state/month text)
+    const wShort = shortYear(raw);
+    if (wShort === null) return null;
+    const numericish = (t) => { const d = digits(t); return d.length > 0 && d.length === String(t).trim().length; };
+    return Array.from(el.options).find((o) => numericish(o.value) && shortYear(o.value) === wShort
+      && (digits(o.value).length === 2 || digits(o.value).length === 4));
+  };
   for (const f of fills) {
     const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
-    if (!el || (f.token === "current-password" && el.type !== "password")) continue;
+    if (!el || (f.token === "current-password" && el.type !== "password")) { skipped.push({ index: f.index, token: f.token, reason: "no_target" }); continue; }
     try {
       if (el.tagName === "SELECT") {
-        const want = norm(f.value);
-        const opt = Array.from(el.options).find((o) => [o.value, o.textContent].some((t) => norm(t) === want || norm(t) === want.replace(/^0/, "")));
+        const opt = matchOption(el, f.value);
         if (opt) { el.value = opt.value; el.dispatchEvent(new Event("change", { bubbles: true })); filled += 1; }
+        else { skipped.push({ index: f.index, token: f.token, reason: "no_matching_option" }); }
         continue;
       }
       el.focus();
@@ -326,8 +347,10 @@ _FILL_JS_TEMPLATE = """(() => {
       el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText" }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
       if (el.value.length > 0) filled += 1;
-    } catch (e) { /* skip */ }
+      else skipped.push({ index: f.index, token: f.token, reason: "empty_after_set" });
+    } catch (e) { skipped.push({ index: f.index, token: f.token, reason: "write_failed" }); }
   }
   document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
-  return JSON.stringify({ filled });
+  // `filled` counts writes; `requested` and `skipped` are what let the caller detect a silent miss.
+  return JSON.stringify({ filled, requested: fills.length, skipped });
 })()"""

@@ -393,6 +393,21 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
     if isinstance(parsed, dict) and parsed.get("refused") == "origin_changed":
         return json.dumps({"success": False, "error_type": "origin_changed", "error": "The page navigated before the code could be entered. Nothing was written."})
     filled = int(parsed.get("filled", 0)) if isinstance(parsed, dict) else 0
+    # Same guard as the payment path: a partial fill must not read as success. A code entered
+    # into 5 of 6 digit boxes looks like a completed fill and can auto-submit a wrong code.
+    requested = parsed.get("requested", len(fills)) if isinstance(parsed, dict) else len(fills)
+    skipped = parsed.get("skipped", []) if isinstance(parsed, dict) else []
+    if requested and filled < int(requested):
+        missed = ", ".join(f"{s.get('token') or '?'} ({s.get('reason') or 'skipped'})" for s in skipped) or "unknown"
+        return json.dumps({
+            "success": False,
+            "error_type": "partial_fill",
+            "filled_fields": filled,
+            "requested_fields": int(requested),
+            "skipped": skipped,
+            "error": (f"Only {filled} of {requested} code boxes were written; not filled: {missed}. "
+                      "Do not submit: a partial code will be rejected or may auto-submit wrong."),
+        })
     return json.dumps({"success": bool(filled), "filled_fields": filled, "origin": origin, "source": source,
                        "next": "Submit the form (many sites auto-submit when the last digit lands)."})
 
@@ -558,6 +573,34 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
             }
         )
     filled = parsed.get("filled", 0) if isinstance(parsed, dict) else 0
+    # A partial fill used to report success, so a card could reach the acquirer with a field the
+    # page silently refused (a 4-digit vault year against a 2-digit control did exactly that, and
+    # the bank declined while the tool reported success). Any requested control that was not
+    # written is now a hard failure naming the field, never a quiet success.
+    requested = parsed.get("requested", len(fills)) if isinstance(parsed, dict) else len(fills)
+    skipped = parsed.get("skipped", []) if isinstance(parsed, dict) else []
+    if requested and int(filled) < int(requested):
+        missed = ", ".join(
+            f"{s.get('token') or '?'} ({s.get('reason') or 'skipped'})" for s in skipped
+        ) or "unknown"
+        out = {
+            "success": False,
+            "error_type": "partial_fill",
+            "filled_fields": int(filled),
+            "requested_fields": int(requested),
+            "skipped": skipped,
+            "kind": meta.kind,
+            "origin": page_origin,
+            "error": (
+                f"Only {filled} of {requested} payment fields were written; not filled: {missed}. "
+                "The page did not accept one or more values (a control whose options do not match "
+                "the stored format is the usual cause). Nothing further should be submitted: the "
+                "form would go to the bank with a wrong or empty field."
+            ),
+        }
+        if meta.kind != "login":
+            out["fields"] = sorted(f["token"] for f in fills)
+        return json.dumps(out)
 
     out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
            "kind": meta.kind, "origin": page_origin}

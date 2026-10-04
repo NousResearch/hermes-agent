@@ -130,12 +130,46 @@ terminal:
     - ~/Documents/keys
 ```
 
-A symlink at the top of the home directory is shown as a symlink. A
-`~/.bashrc` that links into `~/dotfiles` reads as on the host, and its
-target is read-only. A link that points into a hidden directory leads
+A symlink at the top of the home directory is shown as a symlink when
+its entry is visible. A link that points into a hidden directory leads
 nowhere inside the sandbox. A hidden entry that is itself a symlink (a
 dotfiles repository that links `~/.ssh` to `~/dotfiles/ssh`) is hidden at
 its target, resolved when the backend starts.
+
+### Dot entries that are symlinks
+
+Your shells read `~/.bashrc` wherever it points. When it is a link into a
+directory a command can write to (`~/dotfiles` with the home directory as
+the working directory), a command that changed the target would run code
+in your next login. So the backend reads the chain of every dot symlink
+at the top of the home directory once, when it starts, whether the entry
+is on the allowlist or not, and keeps what a command could write to
+read-only:
+
+- the file or directory the chain ends at;
+- the directory that holds a middle link of a longer chain
+  (`~/.bashrc -> dotfiles/bashrc -> sub/bashrc` makes `~/dotfiles`
+  read-only as a whole), because a link cannot be protected on its own.
+  A working directory inside such a directory is read-only, and Hermes
+  logs a warning that says which directory causes it;
+- the directory a missing target would be created in.
+
+The rest of the directory stays writable. The backend refuses to start,
+with a message that names the entry and the path, when a chain passes
+through a place it cannot hold read-only:
+
+- a directory that contains the home directory, while the working
+  directory makes it writable;
+- the Hermes scratch directory or the profile home;
+- a read-write entry of `bubblewrap_binds` whose `dest` differs from its
+  `src`;
+- any writable place, while a bind puts another directory over the home
+  directory.
+
+Use a project directory as the working directory, or bind the directory
+at its own path, to get past the refusal. The chains are read at start
+only: a link you create or change later is not protected until the
+backend starts again, which is the next Hermes session.
 
 The allowlist and the hidden set are fixed when the backend starts, so a
 command cannot widen them by changing `PATH`. The listing of the home

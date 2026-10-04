@@ -31,6 +31,27 @@ describe('withoutCoveredAssistantPrefix', () => {
     expect(remaining[0].parts).toEqual([assistantTextPart('more')])
   })
 
+  // The mirror asymmetry: `appendReasoningDelta`'s replace branch attaches
+  // reasoning as a live row's FIRST part when no visible text has arrived yet,
+  // and settling does not strip it. The same stall must not happen from the
+  // live side of the walk.
+  it('subtracts a live answer the durable row already holds when the live row leads with narration', () => {
+    const durable = [assistant([assistantTextPart('same reply'), ...tools('running')])]
+
+    const local = [
+      assistant([reasoningPart('Need user input.'), assistantTextPart('same reply'), ...tools('complete')])
+    ]
+
+    expect(withoutCoveredAssistantPrefix(durable, local)).toEqual([])
+  })
+
+  it('never folds a live row that is narration only', () => {
+    const durable = [assistant([assistantTextPart('same reply'), ...tools('running')])]
+    const local = [assistant([reasoningPart('Still thinking.')])]
+
+    expect(withoutCoveredAssistantPrefix(durable, local)).toBe(local)
+  })
+
   it('keeps every row when no tool occurrence anchors the match', () => {
     const durable = [assistant([assistantTextPart('same reply')])]
     const local = [assistant([assistantTextPart('same reply')])]

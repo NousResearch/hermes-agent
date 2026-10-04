@@ -85,8 +85,8 @@ export const $composerDraft = atom('')
 export const $composerAttachments = atom<ComposerAttachment[]>([])
 export const $composerTerminalSelections = atom<Record<string, string>>({})
 
-// Latched because opening a fresh session may remount the main composer before
-// it can start voice. Session-tile composers deliberately never consume this.
+// Latched across composer remounts. A runtime target routes to its owning
+// composer; null is reserved for a fresh main draft without a runtime yet.
 export const $voiceConversationStartRequest = atom(0)
 export const $voiceConversationStartSessionId = atom<string | null>(null)
 let nextVoiceStartRequest = 0

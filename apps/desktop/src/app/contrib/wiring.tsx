@@ -40,11 +40,8 @@ import { emitGatewayEvent } from '@/contrib/events'
 import { translateNow } from '@/i18n'
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
-import { activateWakeIndicator } from '@/lib/wake-indicator'
-import { playWakeSound } from '@/lib/wake-sound'
 import { $billingSettingsRequest } from '@/store/billing-block'
 import { $desktopBoot } from '@/store/boot'
-import { requestVoiceConversationStart } from '@/store/composer'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { requestGatewayForProfile } from '@/store/gateway'
@@ -59,8 +56,6 @@ import {
   $freshSessionRequest,
   $profileScope,
   ALL_PROFILES,
-  ensureGatewayProfile,
-  newSessionInProfile,
   normalizeProfileKey,
   refreshActiveProfile
 } from '@/store/profile'
@@ -91,7 +86,7 @@ import {
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
-import { armWakeWord, stopClientCapture } from '@/store/wake-word'
+import { armWakeWord } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 import type { SessionInfo } from '@/types/hermes'
@@ -174,6 +169,7 @@ import { $restartPreviewServer, useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
+import { handleWakeVoiceEvent } from './wake-voice'
 import { POOL_LIMITS_SETTINGS_ROUTE } from './wiring-routing'
 
 // Overlay views the controller mounts over the shell — lazy, load on demand.
@@ -874,46 +870,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     (event: Parameters<typeof handleDesktopGatewayEvent>[0]) => {
       emitGatewayEvent(event)
 
-      if (event.type === 'wake.detected') {
-        const payload = event.payload as { profile?: null | string; start_new_session?: boolean } | undefined
-
-        // Free the Mac mic so voice conversation can open getUserMedia.
-        // Server already pauses the detector lease; this stops client PCM feed.
-        stopClientCapture()
-
-        // Audible confirmation that the wake registered, before voice capture
-        // starts. Gated by the shared sound-mute toggle.
-        playWakeSound()
-        activateWakeIndicator()
-
-        // Multi-profile routing: a wake phrase enrolled by another profile
-        // re-homes the gateway to that profile first (live swap — same path
-        // as clicking it in the profile rail), then opens the fresh session
-        // and starts voice there.
-        const targetProfile = payload?.profile?.trim()
-        const activeProfile = normalizeProfileKey($activeGatewayProfile.get())
-
-        if (targetProfile && normalizeProfileKey(targetProfile) !== activeProfile) {
-          if (payload?.start_new_session !== false) {
-            newSessionInProfile(targetProfile)
-          } else {
-            void ensureGatewayProfile(normalizeProfileKey(targetProfile)).catch((error: unknown) => {
-              // #81094: the voice-path switch must surface its failure too.
-              notifyError(error, `Failed to switch to profile "${normalizeProfileKey(targetProfile)}"`)
-            })
-          }
-        } else if (payload?.start_new_session !== false) {
-          startFreshSessionDraft()
-        }
-
-        requestVoiceConversationStart(payload?.start_new_session === false ? selectedStoredSessionIdRef.current : null)
-
+      if (handleWakeVoiceEvent(event, { openNewSessionTile, startFreshSessionDraft })) {
         return
       }
 
       handleDesktopGatewayEvent(event)
     },
-    [handleDesktopGatewayEvent, startFreshSessionDraft]
+    [handleDesktopGatewayEvent, openNewSessionTile, startFreshSessionDraft]
   )
 
   useGatewayBoot({

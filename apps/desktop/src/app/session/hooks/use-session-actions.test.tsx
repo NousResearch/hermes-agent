@@ -7,10 +7,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { NO_PROJECT_ID } from '@/app/chat/sidebar/projects/workspace-groups'
+import { handleWakeVoiceEvent } from '@/app/contrib/wake-voice'
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { group } from '@/components/pane-shell/tree/model'
-import { $activeTreeGroup, $layoutTree, noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
+import {
+  $activeTreeGroup,
+  $layoutTree,
+  activateTreePane,
+  noteActiveTreeGroup,
+  revealTreePane
+} from '@/components/pane-shell/tree/store'
 import {
   deleteSession,
   getAllSessionMessages,
@@ -23,7 +30,12 @@ import {
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
-import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import {
+  $voiceConversationStartSessionId,
+  clearSessionDraft,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import {
   activeGatewayConnectionId,
   requestGatewayForAgent,
@@ -150,6 +162,10 @@ vi.mock('@/components/pane-shell/tree/store', async importOriginal => ({
   noteActiveTreeGroup: vi.fn(),
   revealTreePane: vi.fn()
 }))
+
+vi.mock('@/lib/wake-sound', () => ({ playWakeSound: vi.fn() }))
+vi.mock('@/lib/wake-indicator', () => ({ activateWakeIndicator: vi.fn() }))
+vi.mock('@/store/wake-word', () => ({ stopClientCapture: vi.fn() }))
 
 const RUNTIME_SESSION_ID = 'rt-new-001'
 
@@ -5294,6 +5310,64 @@ describe('openNewSessionTile workspace target', () => {
     setConnection(null)
     setSessions([])
     vi.restoreAllMocks()
+  })
+
+  it('wake fresh-session event creates a real adjacent tile and latches its backend runtime without replacing main', async () => {
+    $activeGatewayProfile.set('default')
+    $newChatProfile.set(null)
+    $newChatRoute.set(null)
+    setConnection(null)
+    setSelectedStoredSessionId('wake-main-stored')
+    setActiveSessionId('wake-main-runtime')
+    $sessionTiles.set([
+      { storedSessionId: 'wake-B', runtimeId: 'wake-runtime-B', dir: 'center' },
+      { storedSessionId: 'wake-C', runtimeId: 'wake-runtime-C', dir: 'center' }
+    ])
+    $layoutTree.set(group(['workspace', 'session-tile:wake-B', 'session-tile:wake-C'], { id: 'wake-integration' }))
+    $activeTreeGroup.set('wake-integration')
+    activateTreePane('wake-integration', 'session-tile:wake-C')
+    const navigate = vi.fn()
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.create') {
+        return {
+          session_id: 'wake-new-runtime',
+          stored_session_id: 'wake-new-stored',
+          info: { cwd: '', model: 'test-model', tools: {}, skills: {} }
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId="wake-main-runtime"
+        navigate={navigate}
+        onReady={value => (handle = value)}
+        requestGateway={requestGateway}
+        selectedStoredSessionId="wake-main-stored"
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+    await act(async () => {
+      handleWakeVoiceEvent({ type: 'wake.detected', payload: { start_new_session: true } }, handle!)
+    })
+    await waitFor(() => expect($voiceConversationStartSessionId.get()).toBe('wake-new-runtime'))
+    expect(requestGateway).toHaveBeenCalledWith('session.create', expect.any(Object))
+    expect($sessionTiles.get()).toContainEqual(
+      expect.objectContaining({
+        storedSessionId: 'wake-new-stored',
+        runtimeId: 'wake-new-runtime',
+        dir: 'center',
+        anchor: 'session-tile:wake-C'
+      })
+    )
+    expect($selectedStoredSessionId.get()).toBe('wake-main-stored')
+    expect($activeSessionId.get()).toBe('wake-main-runtime')
+    expect(navigate).not.toHaveBeenCalled()
+    expect($sessions.get().some(session => session.id === 'wake-new-stored')).toBe(false)
   })
 
   it('omits cwd for a Home tile even when project scope resolves to a repo', async () => {

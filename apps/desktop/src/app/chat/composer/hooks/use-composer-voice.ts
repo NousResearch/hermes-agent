@@ -337,13 +337,22 @@ export function useComposerVoice({
   useEffect(() => {
     if (
       !disabled &&
-      ((voiceStartSessionId === null && target === 'main') || voiceStartSessionId === sessionId) &&
+      ((voiceStartSessionId === null && target === 'main') ||
+        (voiceStartSessionId !== null && voiceStartSessionId === sessionId)) &&
       takeVoiceConversationStart(voiceStartRequest) &&
       !voiceConversationActive
     ) {
       activateConversation()
     }
-  }, [activateConversation, disabled, sessionId, target, voiceConversationActive, voiceStartRequest, voiceStartSessionId])
+  }, [
+    activateConversation,
+    disabled,
+    sessionId,
+    target,
+    voiceConversationActive,
+    voiceStartRequest,
+    voiceStartSessionId
+  ])
 
   const resumeWakeIfPaused = useCallback(() => {
     if (!wakePausedRef.current) {

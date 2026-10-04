@@ -1081,6 +1081,8 @@ export function useSessionActions({
         if (listed) {
           broadcastSessionsChanged()
         }
+
+        return created.session_id
       } catch (error) {
         notifyError(error, copy.createSessionFailed)
       }

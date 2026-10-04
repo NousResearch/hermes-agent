@@ -307,11 +307,9 @@ def _gateway_reply(text: str, *, own: bool = False, discord_id: str | None = Non
     ids=["reply", "own-reply", "discord-note"],
 )
 def test_reply_pointer_does_not_count_toward_the_request_size(gateway_kwargs: dict[str, Any]) -> None:
-    """A short reply to a long answer must still split: the quote is not the request.
-
-    The gateway prepends ``[Replying to: "<quoted message>"]``; measured whole, a reply to a
-    long assistant answer exceeded the active-task cap, the split never fired, and every
-    automatic pass hit an empty window (structural backoff) while the turn kept growing.
+    """A short reply to a long answer must still split, and the snapshot must keep the request
+    rather than the quote: past the cap it drops the gateway ``[Replying to: …]`` pointer
+    before eliding.
     """
     request = _gateway_reply(_ACTIVE_REQUEST, **gateway_kwargs)
     assert len(request) > _ACTIVE_TASK_MAX_CHARS
@@ -339,8 +337,8 @@ def test_reply_pointer_does_not_count_toward_the_request_size(gateway_kwargs: di
 
 
 def test_restated_reply_keeps_splitting_on_later_compactions() -> None:
-    """After the first split the request is restated behind the replay header; the next
-    passes must still measure the authored text, not the header plus the quote.
+    """After the first split the request is restated behind the replay header; later passes
+    must keep splitting and restate it once.
 
     ``protect_first_n=3`` (the default) keeps the restated row standalone, so the second
     pass anchors on it instead of on the summary carrier.

@@ -145,12 +145,11 @@ def test_failed_consumer_checkpoint_keeps_request_and_user_stop_is_not_update_de
         # An actual directory at the atomic writer's temp path rejects publication.
         obstruction = r.record_path().with_name(f"{r.record_path().name}.{pid}.tmp")
         obstruction.mkdir()
+        # The checkpoint cannot land: the stop is still planned, and the request stays on disk.
         try:
-            status.consume_planned_stop_marker_for_self()
-        except OSError:
-            pass
-        else:
-            raise AssertionError("consume succeeded without its durable checkpoint")
+            planned = status.consume_planned_stop_marker_for_self()
+        except OSError as exc:
+            planned = type(exc).__name__
         retained = path.exists() and r.read()["token"]["stop_sent"] == []
         obstruction.rmdir()
         marker = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -159,11 +158,41 @@ def test_failed_consumer_checkpoint_keeps_request_and_user_stop_is_not_update_de
         user_debt = r.read()["token"]["stop_sent"]
         assert _write_update_planned_stop_marker(home, pid)
         accepted = status.consume_planned_stop_marker_for_self()
-        print(json.dumps({"retained": retained, "user_consumed": user_consumed, "user_debt": user_debt,
-                          "accepted": accepted, "sent": r.read()["token"]["stop_sent"], "pid": pid}))
+        print(json.dumps({"planned": planned, "retained": retained, "user_consumed": user_consumed,
+                          "user_debt": user_debt, "accepted": accepted, "sent": r.read()["token"]["stop_sent"],
+                          "pid": pid}))
     '''))
-    assert result == {"retained": True, "user_consumed": True, "user_debt": [],
+    assert result == {"planned": True, "retained": True, "user_consumed": True, "user_debt": [],
                       "accepted": True, "sent": [str(result["pid"])], "pid": result["pid"]}
+
+
+def test_a_busy_pause_mutex_never_turns_a_planned_stop_into_an_unplanned_one(cell):
+    base, _, launch = cell
+    holder = launch('''
+        with r._mutex():
+            Path(sys.argv[2]).touch()
+            while not Path(sys.argv[3]).exists(): time.sleep(.05)
+    ''', base / "held", base / "release")
+    _wait(base / "held", holder)
+    try:
+        result = _result(launch('''
+            from gateway import status
+            from hermes_cli.update_cmd_windows import _write_update_planned_stop_marker
+            pid = os.getpid()
+            home = Path(os.environ["HERMES_HOME"])
+            assert _write_update_planned_stop_marker(home, pid)
+            started = time.monotonic()
+            try:
+                planned = status.consume_planned_stop_marker_for_self()
+            except OSError as exc:
+                planned = type(exc).__name__
+            print(json.dumps({"planned": planned, "seconds": time.monotonic() - started,
+                              "retained": (home / ".gateway-planned-stop.json").exists()}))
+        '''))
+    finally:
+        (base / "release").touch()
+    assert result["planned"] is True and result["retained"], result
+    assert result["seconds"] < 5, f"the gateway's shutdown blocked {result['seconds']:.1f}s on the pause mutex"
 
 
 def test_recovery_only_accepts_markers_the_live_consumer_accepts(cell):

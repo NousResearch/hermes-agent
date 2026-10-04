@@ -1814,7 +1814,7 @@ def _pid_marker_names_self(target_pid: int, target_start_time: Any) -> bool:
     return None in (target_start_time, our_start_time) or target_start_time == our_start_time
 
 
-def _consume_pid_marker_for_self(path: Path, *, ttl_s: int, on_consume=None) -> bool:
+def _consume_pid_marker_for_self(path: Path, *, ttl_s: int, on_consume=None, keep: bool = False) -> bool:
     parsed = _read_live_pid_marker(path, ttl_s)
     if parsed is None:
         return False
@@ -1835,7 +1835,8 @@ def _consume_pid_marker_for_self(path: Path, *, ttl_s: int, on_consume=None) -> 
     matches = _pid_marker_names_self(target_pid, target_start_time)
     if matches and on_consume is not None:
         on_consume(path, record)
-    _unlink_quietly(path)
+    if not keep:
+        _unlink_quietly(path)
     return matches
 
 
@@ -2071,16 +2072,27 @@ def write_planned_stop_marker(target_pid: int) -> bool:
     })
 
 
+_PLANNED_STOP_MUTEX_WAIT_S = 2.0
+
+
 def consume_planned_stop_marker_for_self() -> bool:
     """Return True when the current process is being intentionally stopped."""
     from hermes_cli import update_pause_record
     # Recovery must see either the request or its checkpoint, never the gap
     # between validating/consuming the marker and scheduling asynchronous stop.
-    with update_pause_record._mutex():
+    try:
+        with update_pause_record._mutex(_PLANNED_STOP_MUTEX_WAIT_S):
+            return _consume_pid_marker_for_self(
+                _get_planned_stop_marker_path(), ttl_s=_PLANNED_STOP_MARKER_TTL_S,
+                on_consume=update_pause_record.mark_stop_consumed,
+            )
+    except OSError as exc:
+        # The pause bookkeeping (a busy mutex, a checkpoint that cannot be written) never decides
+        # whether this stop was planned: classify without consuming, so the request stays on
+        # disk as the evidence recovery reads in place of the checkpoint (it expires by TTL).
+        logger.warning("Planned-stop checkpoint skipped (%s); the stop request stays on disk", exc)
         return _consume_pid_marker_for_self(
-            _get_planned_stop_marker_path(), ttl_s=_PLANNED_STOP_MARKER_TTL_S,
-            on_consume=update_pause_record.mark_stop_consumed,
-        )
+            _get_planned_stop_marker_path(), ttl_s=_PLANNED_STOP_MARKER_TTL_S, keep=True)
 
 
 def planned_stop_marker_targets_self() -> bool:

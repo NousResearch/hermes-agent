@@ -49,7 +49,8 @@ export function LocalModelsModelsSection({
             <Button
               onClick={() => {
                 const browse = document.getElementById('local-model-browse')
-                browse?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+                browse?.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' })
                 browse?.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true })
               }
               size="sm"

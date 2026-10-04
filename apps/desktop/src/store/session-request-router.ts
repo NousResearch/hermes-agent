@@ -1,4 +1,9 @@
-import { requestGatewayForAgent, requestGatewayForProfile, retainGatewayForSessionTurn } from '@/store/gateway'
+import {
+  requestGatewayForAgent,
+  requestGatewayForProfile,
+  retainGatewayForSessionTurn,
+  type SpawnPriority
+} from '@/store/gateway'
 
 import { resetBackgroundPollingGuardAfterRebind } from './session-gone-latch'
 
@@ -27,6 +32,21 @@ export interface SessionOwnerRoute {
 export type SessionProfileRoute = SessionOwnerRoute
 
 export type SessionOwnerScope = undefined | null | string | SessionOwnerRoute
+
+/**
+ * Dial policy for a routed session RPC.
+ *
+ * `spawnPriority` decides whether this RPC may RE-ARM a pool backend main has
+ * retired: main refuses a BACKGROUND dial to a retired key by design ("Backend
+ * for X was retired; open it explicitly to reconnect"). The RPC that carries a
+ * user's intent — a send or a slash command, never a poller or a hydration
+ * sweep — must therefore say 'foreground', or the user's action is lost with
+ * that message instead of reconnecting the chat. Left unset, the historical
+ * background default applies.
+ */
+export interface SessionRouteOptions {
+  spawnPriority?: SpawnPriority
+}
 
 /** Exact owner reconstructed from a CONNECTION-TAGGED session row (the
  *  Electron unified-list splice tags foreign registry rows; an optimistic row
@@ -104,7 +124,8 @@ async function withRoutedTurnLease<T>(
   profile: string,
   method: string,
   params: Record<string, unknown>,
-  request: () => Promise<T>
+  request: () => Promise<T>,
+  spawnPriority?: SpawnPriority
 ): Promise<T> {
   const sessionId = promptSessionId(method, params)
 
@@ -112,7 +133,7 @@ async function withRoutedTurnLease<T>(
     return requestWithRebindGuard(method, params, request)
   }
 
-  const release = await retainGatewayForSessionTurn(connectionId, profile, sessionId)
+  const release = await retainGatewayForSessionTurn(connectionId, profile, sessionId, { spawnPriority })
 
   try {
     const result = await request()
@@ -167,6 +188,11 @@ export function sessionRpcNeedsProfileRoute(ownerProfile: SessionOwnerScope | un
  * falling back to the ambient dispatcher when the active gateway already
  * serves that profile (keeps the primary's reauth-aware reconnect path).
  * The route is decided at CALL time, not at swap time.
+ *
+ * `options.spawnPriority` reaches every dial this makes AND the turn lease it
+ * takes first, so a user-initiated RPC can re-arm a retired pool backend
+ * (@see SessionRouteOptions); unset keeps every existing caller on the
+ * background default.
  */
 export function requestForSessionProfile<T>(
   ownerProfile: SessionOwnerScope | undefined,
@@ -179,7 +205,8 @@ export function requestForSessionProfile<T>(
   method: string,
   params: Record<string, unknown> = {},
   timeoutMs?: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: SessionRouteOptions = {}
 ): Promise<T> {
   if (isRoute(ownerProfile)) {
     const connectionId = ownerProfile.connectionId.trim()
@@ -191,12 +218,26 @@ export function requestForSessionProfile<T>(
     const routedParams = routeParams(ownerProfile, params)
 
     const profile = normKey(ownerProfile.profile)
+    // Only a FOREGROUND dial carries the policy object: 'background' is the
+    // dials' own default, and every existing caller's exact call shape is
+    // asserted across the suite — the policy must not turn into arity churn on
+    // unrelated surfaces.
+    const foreground = options.spawnPriority === 'foreground'
 
-    return withRoutedTurnLease(connectionId, profile, method, routedParams, () =>
-      timeoutMs === undefined && signal === undefined
-        ? requestGatewayForAgent<T>(connectionId, profile, method, routedParams)
-        : requestGatewayForAgent<T>(connectionId, profile, method, routedParams, timeoutMs, signal)
-    )
+    const dialRoute = () =>
+      foreground
+        ? timeoutMs === undefined && signal === undefined
+          ? requestGatewayForAgent<T>(connectionId, profile, method, routedParams, undefined, undefined, {
+              spawnPriority: 'foreground'
+            })
+          : requestGatewayForAgent<T>(connectionId, profile, method, routedParams, timeoutMs, signal, {
+              spawnPriority: 'foreground'
+            })
+        : timeoutMs === undefined && signal === undefined
+          ? requestGatewayForAgent<T>(connectionId, profile, method, routedParams)
+          : requestGatewayForAgent<T>(connectionId, profile, method, routedParams, timeoutMs, signal)
+
+    return withRoutedTurnLease(connectionId, profile, method, routedParams, dialRoute, options.spawnPriority)
   }
 
   if (!sessionRpcNeedsProfileRoute(ownerProfile)) {
@@ -219,7 +260,15 @@ export function requestForSessionProfile<T>(
 
   const profile = normKey(ownerProfile)
 
-  return withRoutedTurnLease(null, profile, method, params, () =>
-    requestGatewayForProfile<T>(profile, method, params, timeoutMs, signal)
+  return withRoutedTurnLease(
+    null,
+    profile,
+    method,
+    params,
+    () =>
+      options.spawnPriority === 'foreground'
+        ? requestGatewayForProfile<T>(profile, method, params, timeoutMs, signal, { spawnPriority: 'foreground' })
+        : requestGatewayForProfile<T>(profile, method, params, timeoutMs, signal),
+    options.spawnPriority
   )
 }

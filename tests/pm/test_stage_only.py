@@ -92,7 +92,10 @@ def test_bionic_deb_stages_real_packages_without_host_execution(tmp_path, monkey
         files.append(("data/data/com.termux/files/usr/lib/python3.14/os.py", b"stdlib"))
     _build_deb(deb, files)
     digest = _sha(deb.read_bytes())
-    lock.set_pin(name, "1.0", {TARGET: {"url": "https://example.invalid/tool.deb", "sha256": digest}})
+    # The lock version drives the stdlib dir the python marker lands in;
+    # pin the real termux deb shape so it matches the fixture's 3.14 tree.
+    pin_version = "3.14.6-1" if name == "python" else "1.0"
+    lock.set_pin(name, pin_version, {TARGET: {"url": "https://example.invalid/tool.deb", "sha256": digest}})
     lock.save()
     cached = paths.store_root() / f"fetch-{digest}"
     cached.mkdir(parents=True)

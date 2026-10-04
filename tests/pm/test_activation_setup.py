@@ -147,9 +147,12 @@ def test_activation_real_setup_pm_lifecycle(tmp_path, served):
 
     def pin_python(revision):
         filename = f"python-{revision}.tar.gz"
+        pydir = f"python{sys.version_info.major}.{sys.version_info.minor}"
         _, digest = make_tar(docroot, filename, {
             "python/bin/python3": python_script,
             "python/revision": revision,
+            # stdlib dir the EXTERNALLY-MANAGED marker guard in Python.stage() requires
+            f"python/{pydir}/os.py": "",
         })
         lock.set_pin("python", version, {target: {"url": f"{base_url}/{filename}", "sha256": digest}})
         lock.save()

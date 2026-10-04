@@ -112,7 +112,10 @@ def test_registered_bionic_stage_preserves_host_facts(tmp_path, monkeypatch, loc
         build_deb(deb, {"Package": name, "Version": "1.0"}, files)
         digest = hashlib.sha256(deb.read_bytes()).hexdigest()
         lock = Lockfile(paths.lockfile_path())
-        lock.set_pin(name, "1.0", {target: {"url": "https://example.test/fixture.deb", "sha256": digest}})
+        # The lock version drives the stdlib dir the python marker lands in;
+        # pin the real termux deb shape so it matches the fixture's 3.14 tree.
+        pin_version = "3.14.6-1" if name == "python" else "1.0"
+        lock.set_pin(name, pin_version, {target: {"url": "https://example.test/fixture.deb", "sha256": digest}})
         lock.save()
         cached = store.entry(f"fetch-{digest}")
         cached.mkdir(parents=True)

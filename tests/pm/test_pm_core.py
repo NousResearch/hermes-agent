@@ -690,20 +690,23 @@ def test_python_stage_keeps_vc_runtimes_on_other_targets(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("target", "rel"),
+    ("target", "version", "rel"),
     [
-        ("darwin-arm64", "lib/python3.14/EXTERNALLY-MANAGED"),
-        ("win32-x64", "Lib/EXTERNALLY-MANAGED"),
-        ("linux-arm64-bionic", "data/data/com.termux/files/usr/lib/python3.14/EXTERNALLY-MANAGED"),
+        ("darwin-arm64", "3.14.7+20260901", "lib/python3.14/EXTERNALLY-MANAGED"),
+        ("darwin-arm64", "3.15.0+20261001", "lib/python3.15/EXTERNALLY-MANAGED"),
+        ("win32-x64", "3.14.7+20260901", "Lib/EXTERNALLY-MANAGED"),
+        ("linux-arm64-bionic", "3.14.7+20260901", "data/data/com.termux/files/usr/lib/python3.14/EXTERNALLY-MANAGED"),
     ],
 )
 def test_python_stage_marks_the_store_interpreter_externally_managed(
-    monkeypatch, tmp_path, target, rel
+    monkeypatch, tmp_path, target, version, rel
 ):
     """A digest-pinned entry must not be pip-installable: the PEP 668
     marker lands in the stdlib dir for every target layout, so a bare
     `pip install` inside the store entry is refused instead of silently
-    deleted by the next repair."""
+    deleted by the next repair. The lock version — not any hardcoded
+    minor — supplies the stdlib dir, so a minor bump cannot strand the
+    marker in a directory pip no longer reads."""
     from pm.registry import get_package
 
     staged = tmp_path / "staged"
@@ -714,7 +717,7 @@ def test_python_stage_marks_the_store_interpreter_externally_managed(
     (staged / "bin").mkdir()
 
     monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
-    get_package("python").stage(None, staged, "3.14.7+20260901", target)
+    get_package("python").stage(None, staged, version, target)
 
     assert stdlib.is_file()
     assert "hash-verified" in stdlib.read_text()

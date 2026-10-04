@@ -256,14 +256,18 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         "python_3.14.6-1_aarch64.deb"
     )
 
-    def _externally_managed_marker(self, staged: Path, target: str) -> Path:
+    def _externally_managed_marker(
+        self, staged: Path, target: str, version: str
+    ) -> Path:
         """Where pip/uv look for the PEP 668 marker in the staged tree:
         PBS flattens to the entry root, bionic keeps the termux prefix.
-        main_bin_rel is the minor-line authority (verify reads it for the
-        deb arm), so the stdlib dir derived from it cannot drift."""
-        pydir = Path(self.main_bin_rel).name  # python3.14 (not .stem: it eats .14)
+        The lock version is the supplier authority for the stdlib dir on
+        every arm (main_bin_rel only binds on the deb arm; the archive
+        filename is authoritative elsewhere)."""
         if target.startswith("win32"):
             return staged / "Lib" / "EXTERNALLY-MANAGED"
+        # lock version is "<python>+<release tag>", e.g. "3.14.7+20260901"
+        pydir = "python" + ".".join(version.partition("+")[0].split(".")[:2])
         root = staged / self.prefix_rel if target == "linux-arm64-bionic" else staged
         return root / "lib" / pydir / "EXTERNALLY-MANAGED"
 
@@ -275,12 +279,14 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         # deleting what was installed. The marker makes pip/uv refuse; PM's
         # own uv commands all target venvs, which PEP 668 leaves alone.
         # Written HERE like the dll drop below: the recorded digest covers it.
-        marker = self._externally_managed_marker(staged, target)
+        marker = self._externally_managed_marker(staged, target, version)
         if not marker.parent.is_dir():
             raise InstallError(self.name, f"staged tree has no stdlib dir at {marker.parent}")
         marker.write_text(_EXTERNALLY_MANAGED_NOTICE)
         binary = self.binary(staged, target)
-        if binary is not None and sys.platform == "darwin":
+        # bionic's binary() is file evidence for a foreign-arch tree, never
+        # a host-executable Mach-O; signing it on the staging host is noise.
+        if binary is not None and sys.platform == "darwin" and target != "linux-arm64-bionic":
             from hermes_cli.macos_signing import sign_managed_python
 
             sign_managed_python(binary)

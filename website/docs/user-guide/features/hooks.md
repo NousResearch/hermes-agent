@@ -393,7 +393,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility.
 - Callback exceptions are logged and skipped; later callbacks continue. A callback that fails the same way on every call (typically a signature naming a field the hook does not send, e.g. `tool_data` instead of `tool_name`/`args`) is reported **once** at WARNING — the message lists the fields the hook provides — and identical repeats go to DEBUG, so a mis-declared plugin cannot flood the log.
-- If a Python plugin callback on a **timeout-bounded** hook (hot-path observers such as `post_tool_call` / `pre_llm_call`, plus the policy hook `pre_tool_call`) **blocks** longer than `plugins.hook_callback_timeout` (default 30s, set `0` to disable, max 600), it is abandoned without joining the worker so the agent loop continues. Timed-out or still-running `pre_tool_call` callbacks **fail closed** (block the tool); other bounded hooks fail open (skip). Hooks with a documented caller-thread contract (`subagent_stop`) are never moved onto a timeout worker. Shell hooks keep their own per-entry `timeout`.
+- If a Python plugin callback on a **timeout-bounded** hook (hot-path observers such as `post_tool_call` / `pre_llm_call`, plus the policy hooks `pre_tool_call` and `before_turn_end`) **blocks** longer than `plugins.hook_callback_timeout` (default 30s, set `0` to disable, max 600), it is abandoned without joining the worker so the agent loop continues. Timed-out or still-running `pre_tool_call` callbacks **fail closed** (block the tool); `before_turn_end` fails the turn; other bounded hooks fail open (skip). Hooks with a documented caller-thread contract (`subagent_stop`) are never moved onto a timeout worker. Shell hooks keep their own per-entry `timeout`.
 - The catalog below is descriptive: **observers** ignore returns, **transforms** accept the first valid string replacement, and **directive/control** hooks consume documented return shapes. Plugin middleware is a separate registry and surface, not another hook category.
 - Correlation fields such as `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are hook-specific and may be absent. Treat IDs as opaque.
 - Runtime event-name validity comes from `hermes_cli.plugins.VALID_HOOKS`. `hermes hooks list` lists configured shell/outbound hooks, not every available event; `hermes hooks test <event>` reports the valid set only when an invalid event is supplied.
@@ -456,6 +456,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
+| `before_turn_end` | Directive/control | Before final-answer delivery and persistence. | `final_response`, `messages`, `attempt`, `can_continue`, `model`, `provider`, `effort` | Allow, continue with feedback, or fail. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
 | `post_api_request` | Observer | After normalized provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
@@ -816,6 +817,88 @@ def register(ctx):
 ```
 
 ---
+
+### `before_turn_end`
+
+A Python plugin can review an answer before Hermes sends or stores it. The hook can
+accept the answer, request more evidence, or end the turn with a controlled failure.
+The hook also reviews partial answers and iteration-limit summaries. It runs on the
+shared agent loop used by the CLI, gateway, Desktop/TUI, and Agent Client Protocol (ACP).
+
+Register the callback with `ctx.register_hook("before_turn_end", callback)`. Shell hooks
+do not support this control contract.
+
+```python
+def register(ctx):
+    def require_evidence(final_response, messages, can_continue, **kwargs):
+        has_evidence = any(row.get("role") == "tool" for row in messages)
+        if has_evidence:
+            return {"action": "allow"}
+        if can_continue:
+            return {"action": "continue", "message": "Read the source before you answer."}
+        return {"action": "fail", "message": "The answer has no source evidence.",
+                "code": "evidence_missing"}
+
+    ctx.register_hook("before_turn_end", require_evidence)
+```
+
+This example checks that a tool ran. A production evidence check must also validate
+the tool result and the answer's claims.
+
+#### Callback fields
+
+| Field | Meaning |
+|---|---|
+| `final_response` | Candidate answer after `transform_llm_output` and the file-change footer. |
+| `messages` | Separate deep copy of this turn's user request, assistant rows, tool results, and internal repair context. Prior turns are excluded. |
+| `user_message` | Current user request. This can contain multimodal content. |
+| `session_id`, `task_id`, `turn_id`, `platform` | Identities for the same logical turn across all repair requests. |
+| `model`, `provider` | Current Hermes model and provider route. These fields do not prove which deployment a proxy uses. |
+| `effort` | Explicit effort in the most recent main-loop request, or `None` if that request has no effort field. |
+| `requested_effort` | Effort in the agent's reasoning configuration, before provider translation. |
+| `attempt` | Number of repair rounds already requested by this hook. Starts at `0`. |
+| `already_blocked` | `True` after the first repair round. |
+| `can_continue` | `True` only when both the iteration budget and the repair limit permit another request. |
+| `source_identity` | Host-supplied source identity, or `None` when the host does not supply one. |
+
+Callback changes to `messages` cannot change the live transcript or another callback's
+copy. A callback should accept `**kwargs` for additional fields.
+
+#### Decisions and limits
+
+- `None` or `{"action": "allow"}` accepts the candidate.
+- `{"action": "continue", "message": "..."}` with a nonempty string requests another
+  model call in the same turn. The model receives the candidate and the internal feedback.
+- `{"action": "fail", "message": "...", "code": "..."}` with a nonempty message ends
+  the turn. Hermes returns that message with `failed=True`, `completed=False`, and a
+  non-retryable `failure_reason`. The optional code defaults to `final_response_rejected`.
+
+All callbacks run. Any failure takes precedence over continuation. Hermes combines
+continuation feedback in registration order. An invalid result, callback error, or
+callback timeout fails the turn. Exception details stay in the diagnostic log.
+
+`agent.max_final_continuations` defaults to `2`. A nonnegative integer sets the maximum
+number of repair rounds; `0` permits review but no repair. The limit does not add to the
+agent's iteration budget. The callback still reviews a candidate when `can_continue=False`.
+It can accept or fail that candidate. A continuation request at that point fails with
+`final_continuation_limit` or `final_iteration_limit`.
+
+#### Delivery and history
+
+Registration defers text, reasoning, interim answer, and text-to-speech callbacks until
+review completes. Stream observers receive no candidate deltas; `on_stream_end` carries
+an empty `final_text`. The calling surface delivers the approved `final_response` once. Hermes returns
+`pre_transform_response=None` so it cannot expose an unreviewed earlier draft.
+Tool progress continues. A user interrupt takes precedence over the policy decision.
+
+Rejected candidates and internal feedback stay out of returned history, SQLite history,
+trajectory exports, and compression inputs. Raw API request observers and trusted plugin
+callbacks can still see provider data. This hook is not a security boundary against other
+plugins. If no callback registers the hook, Hermes keeps its existing delivery behavior.
+
+The native `codex_app_server` runtime owns a separate conversation loop. Hermes refuses
+that runtime before it starts a turn when this hook is active. Use the regular SDK runtime
+for completion review. Hermes tool guardrail halts retain their own authoritative decision.
 
 ### `pre_verify`
 

@@ -1,3 +1,5 @@
+# ABOUTME: Finalizes turn history, persistence, transforms, and result metadata.
+# ABOUTME: Withholds rejected completion drafts and reports controlled policy failures.
 """Post-loop turn finalization for ``run_conversation``.
 
 Budget summary, trajectory save, persist, diagnostics, response transforms, result
@@ -25,7 +27,7 @@ from agent.served_model import result_model_fields
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
 # returned/live history to avoid role-alternation breaks; the assistant response is
 # real content and is not flagged. (#65919)
-_VERIFICATION_CONTINUATION_FLAGS = ("_verification_stop_synthetic", "_pre_verify_synthetic")
+_VERIFICATION_CONTINUATION_FLAGS = ("_verification_stop_synthetic", "_pre_verify_synthetic", "_turn_end_synthetic")
 
 _SENTENCE_END = {".", "!", "?", "。", "！", "？", "`", ")"}
 
@@ -490,6 +492,8 @@ def apply_llm_output_transform(
     same turn get the recorded outcome instead of a second hook firing. Only the current
     turn's not-yet-written text is touched — earlier turns and the system prompt are never
     rewritten (prompt-cache invariant)."""
+    if getattr(agent, "_turn_end_failure", None) is not None:
+        return final_response, False, None
     if logger is None:
         from agent.conversation_loop import logger
     recorded = getattr(agent, "_llm_output_transform", None)
@@ -526,6 +530,13 @@ def finalize_turn(
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
 
+    from agent.turn_end_hooks import before_turn_end, defers_text_delivery, prepare_response, _failure
+    if getattr(agent, "_turn_end_pending", False) and not interrupted:
+        _failure(agent, "The answer could not pass completion review before the turn ended.", "final_review_incomplete")
+    _gate_failure = getattr(agent, "_turn_end_failure", None)
+    if _gate_failure is not None and not interrupted:
+        final_response, _turn_exit_reason, failed = _gate_failure.message, _gate_failure.code, True
+
     final_response, _turn_exit_reason, preserved_verification_fallback, interrupted = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
         interrupted=interrupted, failed=failed, messages=messages,
@@ -534,6 +545,22 @@ def finalize_turn(
         _pending_verification_response_previewed=_pending_verification_response_previewed,
         logger=logger,
     )
+
+    # Recovery summaries have no repair budget. Their policy verdict must precede all durable writes.
+    if (final_response and not interrupted and _gate_failure is None and defers_text_delivery()
+            and not getattr(agent, "_tool_guardrail_halt_decision", None)
+            and getattr(agent, "_turn_end_checked", None) != (turn_id, final_response)):
+        final_response = prepare_response(agent, final_response)
+        _gate = before_turn_end(agent, final_response, {}, messages,
+                               user_message=original_user_message, can_continue=False)
+        if _gate.action == "fail":
+            _gate_failure = _gate
+            final_response, _turn_exit_reason, failed = _gate.message, _gate.code, True
+        elif _gate.action == "interrupt":
+            final_response, _turn_exit_reason, interrupted = "", "interrupted_during_completion_review", True
+
+    from agent.turn_end_hooks import without_rejected_messages
+    messages[:] = without_rejected_messages(messages)
 
     # A non-interrupted turn that fell out of the loop after a tool result, with no
     # follow-up assistant text, is the Desktop/TUI "silent stop" (#55316, #54756): the
@@ -639,7 +666,8 @@ def finalize_turn(
     _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger)
 
     # Response transforms apply only to real, uninterrupted responses.
-    if final_response and not interrupted:
+    from agent.turn_end_hooks import prepared_response
+    if final_response and not interrupted and not prepared_response(agent, final_response):
         final_response = _append_file_mutation_footer(agent, final_response, logger)
     if not interrupted:
         final_response = _explain_abnormal_exit(
@@ -690,7 +718,7 @@ def finalize_turn(
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,
         "response_transformed": _response_transformed,
-        "pre_transform_response": _pre_transform_response,
+        "pre_transform_response": None if defers_text_delivery() else _pre_transform_response,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
         "model": agent.model,
         # requested_model / served_model: proxy-reported deployment or Hermes' own fallback route.
@@ -731,6 +759,9 @@ def finalize_turn(
         if failed:
             result["error"] = final_response or str(_turn_exit_reason)
         stamp_failure(result, _exit_failure.reason, _exit_failure.retryable)
+    if _gate_failure is not None and not interrupted:
+        result["error"] = _gate_failure.message
+        stamp_failure(result, _gate_failure.code, False)
     # Cleanup failures are surfaced, but the response is returned either way (#8049).
     if _cleanup_errors:
         result["cleanup_errors"] = _cleanup_errors

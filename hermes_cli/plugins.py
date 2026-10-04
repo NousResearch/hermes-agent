@@ -1,3 +1,5 @@
+# ABOUTME: Discovers plugins and exposes registration APIs for tools and lifecycle hooks.
+# ABOUTME: Defines supported policy hooks and plugin capability boundaries.
 """Hermes Plugin System — discovers, loads, and manages plugins.
 
 Sources, later overriding earlier on key collision: bundled ``<repo>/plugins/<name>/`` (``memory/``
@@ -107,6 +109,8 @@ def _install_plugin_debug_handler(force: bool = False) -> None:
 _install_plugin_debug_handler()
 
 VALID_HOOKS: Set[str] = {
+    # Review a candidate before persistence and delivery: allow, continue with feedback, or fail.
+    "before_turn_end",
     "pre_tool_call", "post_tool_call", "transform_terminal_output", "transform_tool_result",
     # transform_llm_output: return a replacement string (first non-None wins) or None.
     "transform_llm_output", "pre_llm_call", "post_llm_call",
@@ -206,7 +210,7 @@ VALID_HOOKS: Set[str] = {
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification", "before_turn_end"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

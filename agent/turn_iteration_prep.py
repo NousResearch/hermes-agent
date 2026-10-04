@@ -409,7 +409,8 @@ class RetryRestartVerdict:
     current_turn_user_idx: Any
     final_response: Any
     retry_count: Any
-    restart_count: Any
+    redirect_restart_count: Any
+    rebuilt_restart_count: Any
     api_call_count: Any
     _preflight_compression_blocked: Any
     _turn_exit_reason: Any
@@ -419,7 +420,7 @@ def apply_retry_restarts(
     agent: Any, *, _retry: Any, response: Any, interrupted: Any, messages: Any,
     conversation_history: Any, user_message: Any, api_kwargs: Any, current_turn_user_idx: Any,
     final_response: Any, retry_count: Any, max_retries: Any, redirect_restart_limit: Any = 10, api_call_count: Any = None,
-    restart_count: Any = 0, length_continue_retries: Any = 0,
+    redirect_restart_count: Any = 0, rebuilt_restart_count: Any = 0, length_continue_retries: Any = 0,
     _preflight_compression_blocked: Any, _turn_exit_reason: Any,
 ) -> RetryRestartVerdict:
     """Consume the ``TurnRetryState`` restart flags after the retry loop, in the original
@@ -427,10 +428,10 @@ def apply_retry_restarts(
     assistant item; ``restart_with_rebuilt_messages`` is the single consumer that clears
     ``_preflight_compression_blocked`` so the fallback gets a fresh preflight (#84733).
 
-    The two refunding restart paths (redirect and rebuilt-for-fallback) are bounded by
-    ``max_retries`` via ``restart_count`` (a per-turn accumulator) so a runaway
-    interrupt/redirect that keeps re-arming a restart flag cannot refund the budget
-    forever and hold the turn lease indefinitely."""
+    Redirects use ``redirect_restart_count`` against ``redirect_restart_limit``;
+    rebuilt-for-fallback restarts use ``rebuilt_restart_count`` against ``max_retries``.
+    Both counters accumulate independently for the whole turn so neither path can
+    consume the other's budget or refund indefinitely."""
 
     from agent.conversation_loop import (
         _HANDOFF_SKIP_FINAL_RESPONSE, _should_skip_model_call_for_reference_handoff
@@ -439,15 +440,16 @@ def apply_retry_restarts(
     def _verdict(action: str) -> RetryRestartVerdict:
         return RetryRestartVerdict(
             action=action, current_turn_user_idx=current_turn_user_idx,
-            final_response=final_response, retry_count=retry_count, restart_count=restart_count,
+            final_response=final_response, retry_count=retry_count,
+            redirect_restart_count=redirect_restart_count, rebuilt_restart_count=rebuilt_restart_count,
             api_call_count=api_call_count,
             _preflight_compression_blocked=_preflight_compression_blocked,
             _turn_exit_reason=_turn_exit_reason,
         )
 
     if _retry.restart_with_redirected_messages:
-        restart_count += 1
-        if restart_count > redirect_restart_limit:
+        redirect_restart_count += 1
+        if redirect_restart_count > redirect_restart_limit:
             # A redirect/interrupt keeps re-arming this flag: stop refunding the iteration
             # budget and re-issuing the same logical iteration, or a runaway turn holds the
             # turn lease indefinitely (redirect restarts previously had no bound).
@@ -504,8 +506,8 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if _retry.restart_with_rebuilt_messages:
-        restart_count += 1
-        if restart_count > max_retries:
+        rebuilt_restart_count += 1
+        if rebuilt_restart_count > max_retries:
             # A stall/failure keeps re-escalating to the fallback chain: stop refunding the
             # iteration budget and re-issuing, or a runaway turn holds the turn lease
             # indefinitely (rebuilt restarts previously had no bound).

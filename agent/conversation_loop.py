@@ -1421,7 +1421,8 @@ class _LoopState:
     # Unlike ``retry_count`` (rebound to 0 each iteration) this accumulates for the whole
     # turn so a runaway interrupt/redirect that keeps re-arming a restart flag cannot
     # refund the iteration budget forever and hold the turn lease indefinitely.
-    restart_count: int = 0
+    redirect_restart_count: int = 0
+    rebuilt_restart_count: int = 0
     # User redirects are independent of provider retries; tuning api_max_retries must not
     # make interactive turns fail after the same number of messages.
     redirect_restart_limit: int = 10

@@ -780,3 +780,78 @@ def test_github_get_fails_fast_on_a_guarded_client_block(monkeypatch):
     with pytest.raises(SSRFConnectionBlocked):
         github._github_get("https://api.github.com/repos/o/r")
     assert (len(calls), sleeps, github.is_unreachable) == (1, [], True)
+
+
+def _routed_github(monkeypatch, routes):
+    """Fake GitHub at the shared HTTP helper: the first matching key decides the reply (503, 404 or refused)."""
+    import httpx
+    import tools.skills_hub as hub
+    import tools.skills_hub_github as gh
+
+    def fake_get(url, **kwargs):
+        request = httpx.Request("GET", url)
+        for key, reply in routes.items():
+            if key in url:
+                if reply == "refused":
+                    raise httpx.ConnectError("connection refused", request=request)
+                return httpx.Response(reply, request=request)
+        return httpx.Response(404, request=request)
+
+    monkeypatch.setattr(hub, "_skills_hub_http_get", fake_get)
+    monkeypatch.setattr(gh.time, "sleep", lambda _seconds: None)
+    return type("Anonymous", (), {"get_headers": lambda self: {}})()
+
+
+def _install_output(monkeypatch, identifier, sources):
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(cli_hub, "_sources", lambda: sources)
+    sink = StringIO()
+    do_install(identifier, console=Console(file=sink, force_terminal=False, color_system=None), skip_confirm=True)
+    return sink.getvalue()
+
+
+def test_do_install_ignores_unanswered_requests_from_before_the_lookup(monkeypatch):
+    """A request that went unanswered before the source's own lookup (e.g. during short-name search, which
+    runs over the same adapters) must not turn that source's real 404 into "Could not download" (#130443)."""
+    from tools.skills_hub_github import GitHubSource
+
+    anonymous = _routed_github(monkeypatch, {"/repos/tap/": 503})
+    github = GitHubSource(auth=anonymous)
+    assert github._github_json("https://api.github.com/repos/tap/skills") is None  # the earlier, unanswered request
+    meta = type("Meta", (), {"identifier": "owner/repo/skill"})()
+
+    class Listing:
+        def __init__(self):
+            self.github = github
+
+        def source_id(self):
+            return "github"
+
+        def inspect(self, identifier):
+            return meta
+
+        def fetch(self, identifier):
+            return self.github._github_json("https://api.github.com/repos/owner/repo/contents/skill")  # 404
+
+    out = _install_output(monkeypatch, "owner/repo/skill", [Listing()])
+    assert "Stale index entry" in out
+    assert "Could not download" not in out
+
+
+def test_do_install_counts_an_unanswered_request_anywhere_in_the_lookup(monkeypatch):
+    """Within one source's lookup every request counts: hermes-index's resolved location unanswered and its
+    repo/path fallback answering 404 is a download failure, not a stale entry (#130443)."""
+    from tools.skills_hub_official import HermesIndexSource
+
+    anonymous = _routed_github(monkeypatch, {"/repos/org/a": "refused", "/repos/org/b": 404})
+    entry = {"identifier": "official/category/skill", "name": "skill", "resolved_github_id": "org/a/skill",
+             "repo": "org/b", "path": "skill", "source": "official"}
+    index = HermesIndexSource(auth=anonymous)
+    monkeypatch.setattr(index, "_find_entry", lambda identifier: entry)
+
+    out = _install_output(monkeypatch, "official/category/skill", [index])
+    assert "Could not download" in out
+    assert "Stale index entry" not in out

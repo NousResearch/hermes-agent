@@ -227,6 +227,10 @@ def _resolve_source_meta_and_bundle(identifier: str, sources):
     first_meta = None
     first_meta_source = None
     for src in sources:
+        # The no-answer flag describes this lookup only, not requests made earlier (short-name search).
+        for client in (src, getattr(src, "github", None)):
+            if callable(getattr(client, "reset_unreachable", None)):
+                client.reset_unreachable()
         meta = _try(src.inspect, identifier)
         bundle = _try(src.fetch, identifier)
         if bundle:

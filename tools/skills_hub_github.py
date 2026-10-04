@@ -243,6 +243,9 @@ class GitHubSource(SkillSource):
     def is_unreachable(self) -> bool:  # whether a request ended without an answer (transport error or 5xx)
         return self._unreachable
 
+    def reset_unreachable(self) -> None:  # start of a lookup: earlier requests (e.g. search) don't count
+        self._unreachable = False
+
     def trust_level_for(self, identifier: str) -> str:
         # identifier format: "owner/repo/path/to/skill"
         parts = identifier.split("/", 2)

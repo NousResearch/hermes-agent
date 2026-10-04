@@ -35,6 +35,7 @@ async def test_secondary_ports_and_foreign_listener(tmp_path, monkeypatch):
     import plugins.platforms.whatsapp.adapter as module
     adapters = []
     listener = socket.socket()
+    monkeypatch.setattr(module, "find_node_executable", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(module, "_write_bridge_pidfile", lambda *a: None)
     for name in ("a", "b"):
         home = tmp_path / name
@@ -90,6 +91,23 @@ def _hold_port():
     return sock, sock.getsockname()[1]
 
 
+def test_allocation_skips_ports_recorded_by_siblings(tmp_path):
+    """A sibling whose bridge is down leaves its recorded port unbound; a new profile must not take it,
+    or the sibling hits a non-retryable port conflict on its next start. A corrupt record names itself."""
+    from plugins.platforms.whatsapp.bridge_ownership import port_is_free, secondary_bridge_port
+    profiles = tmp_path / "profiles"
+    sibling, fresh = profiles / "a", profiles / "b"
+    recorded = next(p for p in range(3001, 4000) if port_is_free(p))
+    (sibling / "platforms/whatsapp").mkdir(parents=True)
+    (sibling / "platforms/whatsapp/bridge_port").write_text(str(recorded))
+    fresh.mkdir()
+    assert secondary_bridge_port(fresh, None) != recorded
+    assert secondary_bridge_port(sibling, None) == recorded
+    (fresh / "platforms/whatsapp/bridge_port").write_text("30o1")
+    with pytest.raises(ValueError, match="delete it"):
+        secondary_bridge_port(fresh, None)
+
+
 def test_ownership_verdicts(tmp_path):
     """free: unbound port (a stale pidfile changes nothing, and nothing is signalled). ours: bound port
     and this profile's pidfile names a live process by pid + kernel start time. Anything else bound
@@ -119,6 +137,7 @@ async def test_secondary_adopts_its_own_orphaned_bridge(tmp_path, monkeypatch):
     instead of dying with a port conflict. Only the identity-checked pidfile path may reap it."""
     import plugins.platforms.whatsapp.adapter as module
     from plugins.platforms.whatsapp.adapter import _write_bridge_pidfile
+    monkeypatch.setattr(module, "find_node_executable", lambda name: f"/usr/bin/{name}")
     home = tmp_path / "c"
     home.mkdir()
     with _profile_runtime_scope(home, hydrate_secrets=False):

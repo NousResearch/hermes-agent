@@ -1,5 +1,6 @@
 """Non-destructive bridge allocation for multiplexed secondary profiles."""
 import socket
+from contextlib import suppress
 from pathlib import Path
 
 # 3000 stays the default profile's historical port; secondaries allocate above it. 999 ports
@@ -17,14 +18,34 @@ def port_is_free(port: int) -> bool:
     return True
 
 
+def _read_port_record(record: Path) -> int:
+    try:
+        return int(record.read_text(encoding="utf-8-sig").strip())
+    except ValueError:
+        raise ValueError(f"Bridge port record {record} is not a port number; delete it to allocate a new port") from None
+
+
+def _sibling_claims(home: Path) -> set:
+    """Ports other profiles' records claim. A sibling whose bridge is down leaves its port unbound, so a
+    bind probe alone would hand it to this profile and the sibling would hit a conflict on its next start."""
+    claims = set()
+    for record in home.parent.glob("*/platforms/whatsapp/bridge_port"):
+        if record.parents[2] != home:
+            with suppress(OSError, ValueError):
+                claims.add(_read_port_record(record))
+    return claims
+
+
 def secondary_bridge_port(home: Path, explicit) -> int:
     record = home / "platforms/whatsapp/bridge_port"
     if explicit is not None:
         port = int(explicit)
     elif record.exists():
-        port = int(record.read_text().strip())
+        port = _read_port_record(record)
     else:
-        port = next((p for p in range(SECONDARY_PORT_FIRST, SECONDARY_PORT_LAST + 1) if port_is_free(p)), None)
+        claimed = _sibling_claims(home)
+        port = next((p for p in range(SECONDARY_PORT_FIRST, SECONDARY_PORT_LAST + 1)
+                     if p not in claimed and port_is_free(p)), None)
         if port is None:
             raise ValueError(f"No free bridge port in {SECONDARY_PORT_FIRST}..{SECONDARY_PORT_LAST}")
         record.parent.mkdir(parents=True, exist_ok=True)
@@ -47,7 +68,7 @@ def standalone_bridge_port(home: Path, explicit) -> int:
         record = home / "platforms/whatsapp/bridge_port"
         if not record.exists():
             return 3000
-        port = int(record.read_text(encoding="utf-8").strip())
+        port = _read_port_record(record)
     if not 1 <= port <= 65535:
         raise ValueError(f"Invalid bridge port {port}")
     return port

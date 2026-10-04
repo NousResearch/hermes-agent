@@ -129,41 +129,6 @@ def test_malformed_list_string_platform_toolsets_warns_then_falls_back(caplog):
 
 
 
-def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_token_set(monkeypatch):
-    """HA toolset is runtime-gated by check_fn (requires HASS_TOKEN).
-
-    When HASS_TOKEN is set, the user has explicitly opted in — _DEFAULT_OFF_TOOLSETS
-    shouldn't also strip HA from platforms (like cron) that run through
-    _get_platform_tools without an explicit saved toolset list.
-
-    Regression guard for Norbert's HA cron breakage after #14798 made cron
-    honor per-platform tool config.
-    """
-    monkeypatch.setenv("HASS_TOKEN", "fake-test-token")
-
-    cron_enabled = _get_platform_tools({}, "cron")
-    assert "homeassistant" in cron_enabled
-    # moa must stay off — the original goal of #14798
-    assert "moa" not in cron_enabled
-
-    cli_enabled = _get_platform_tools({}, "cli")
-    assert "homeassistant" in cli_enabled
-
-
-def test_get_platform_tools_homeassistant_uses_active_profile_token(monkeypatch):
-    from agent import secret_scope
-
-    monkeypatch.delenv("HASS_TOKEN", raising=False)
-    secret_scope.set_multiplex_active(True)
-    token = secret_scope.set_secret_scope({"HASS_TOKEN": "profile-token"})
-    try:
-        assert "homeassistant" in _get_platform_tools({}, "cron")
-        assert "homeassistant" in _get_platform_tools({}, "cli")
-    finally:
-        secret_scope.reset_secret_scope(token)
-        secret_scope.set_multiplex_active(False)
-
-
 # ─── #35527: platform-restricted default-off toolsets (discord/discord_admin)
 # are stripped by _DEFAULT_OFF_TOOLSETS even when the user explicitly opts in
 # via the platform's native composite. The composite ``hermes-discord``

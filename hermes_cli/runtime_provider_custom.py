@@ -243,10 +243,10 @@ def codex_model_provider_id(requested_provider: str) -> Optional[str]:
 # ── identity recovery (bare "custom" -> durable ``custom:<name>``) ─────────────────────────
 
 
-def _custom_entries() -> Iterator[Tuple[str, frozenset, Dict[str, Any]]]:
-    """``(custom:<name> slug, aliases, entry)`` for entries in ``providers:`` then legacy
+def _custom_entries() -> Iterator[Tuple[str, frozenset, Dict[str, Any], bool]]:
+    """``(custom:<name> slug, aliases, entry, legacy)`` for entries in ``providers:`` then legacy
     ``custom_providers:``, in config order. ``aliases`` are the names :func:`_get_named_custom_provider`
-    matches the entry by."""
+    matches the entry by; ``legacy`` marks a ``custom_providers:`` listing."""
     rp = _rp()
     try:
         config = rp.load_config()
@@ -257,7 +257,7 @@ def _custom_entries() -> Iterator[Tuple[str, frozenset, Dict[str, Any]]]:
         for ep_name, entry in providers.items():
             if isinstance(entry, dict):
                 yield (custom_provider_slug(str(ep_name), str(ep_name)),
-                       custom_provider_aliases(str(entry.get("name", "") or ep_name), str(ep_name)), entry)
+                       custom_provider_aliases(str(entry.get("name", "") or ep_name), str(ep_name)), entry, False)
     try:
         custom_providers = rp.get_compatible_custom_providers(config)
     except Exception:
@@ -266,12 +266,13 @@ def _custom_entries() -> Iterator[Tuple[str, frozenset, Dict[str, Any]]]:
         name = entry.get("name") if isinstance(entry, dict) else None
         if isinstance(name, str) and name.strip():
             provider_key = str(entry.get("provider_key", "") or "")
-            yield custom_provider_slug(name, provider_key), custom_provider_aliases(name, provider_key), entry
+            yield (custom_provider_slug(name, provider_key), custom_provider_aliases(name, provider_key), entry,
+                   not provider_key)
 
 
 def _find_custom_identity(matches: Callable[[Dict[str, Any]], bool]) -> Optional[str]:
     """First entry where ``matches(entry)`` holds, as its canonical ``custom:<name>`` slug."""
-    return next((slug for slug, _, entry in _custom_entries() if matches(entry)), None)
+    return next((slug for slug, _, entry, _ in _custom_entries() if matches(entry)), None)
 
 
 def find_custom_provider_identity(base_url: str) -> Optional[str]:
@@ -324,8 +325,25 @@ def recover_custom_account(*, base_url: Optional[str] = None,
     or failing that by the configured provider. Every matched entry, and every entry the recovered
     slug also answers to, must be the same account; otherwise the slug could resolve to another
     endpoint or key, and recovery declines. The caller still checks that the slug resolves to the
-    returned endpoint."""
-    entries = list(_custom_entries())
+    returned endpoint.
+
+    A legacy ``custom_providers:`` listing is no account of its own when live ``providers:`` entries
+    at its endpoint answer every name it could be requested by: name resolution scans ``providers:``
+    first, so its key_env and key_cmd are never read, and without an inline api_key it seeds nothing
+    into the credential pool either."""
+    from hermes_cli.config import is_provider_enabled
+    listed = list(_custom_entries())
+    live = [(aliases, _normalize_base_url_for_match(_entry_url(entry))) for _, aliases, entry, legacy in listed
+            if not legacy and is_provider_enabled(entry) and _entry_url(entry)]
+
+    def _unreachable(aliases: frozenset, entry: Dict[str, Any]) -> bool:
+        endpoint = _normalize_base_url_for_match(_entry_url(entry))
+        answered = frozenset().union(*(names for names, url in live if url == endpoint))
+        requestable = {name for name in aliases if name == _normalize_custom_provider_name(name)}
+        return not _clean(entry.get("api_key")) and requestable <= answered
+
+    entries = [(slug, aliases, entry) for slug, aliases, entry, legacy in listed
+               if not (legacy and _unreachable(aliases, entry))]
     if base_url:
         target = _normalize_base_url_for_match(base_url)
         matched = [(slug, entry) for slug, _, entry in entries

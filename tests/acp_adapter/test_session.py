@@ -518,6 +518,46 @@ class TestPersistence:
         "    base_url: http://cliproxy.example:8317/v1\n"
         "    api_key: sk-cliproxy-test\n"
     )
+    # ``model.base_url`` with no model key: bare ``custom`` resolves the endpoint with the keyless
+    # placeholder, since the pool seeds inline api_key only and the entry mints its key with key_cmd.
+    _KEY_CMD_AT_MODEL_ENDPOINT = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:cliproxyapi\n"
+        "  base_url: http://127.0.0.1:8317/v1\n"
+        "  api_mode: chat_completions\n"
+        "providers:\n"
+        "  cliproxyapi:\n"
+        "    api: http://127.0.0.1:8317/v1\n"
+        "    key_cmd: printf sk-from-key-cmd\n"
+        "    api_mode: chat_completions\n"
+    )
+    # A local server that takes no key at all.
+    _KEYLESS_LOCAL = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:local\n"
+        "  base_url: http://127.0.0.1:8080/v1\n"
+        "providers:\n"
+        "  local:\n"
+        "    base_url: http://127.0.0.1:8080/v1\n"
+    )
+    # The ``providers:`` entry answers to every name of the legacy listing, so the resolver never
+    # reads the legacy key_env, and without an inline api_key the pool holds nothing from it.
+    _SHADOWED_LEGACY_LISTING = (
+        "model:\n"
+        "  default: proxy-model\n"
+        "  provider: custom:cliproxyapi\n"
+        "providers:\n"
+        "  cliproxyapi:\n"
+        "    api: http://cliproxy.example:8317/v1\n"
+        "    key_cmd: printf sk-from-key-cmd\n"
+        "    models: [proxy-model]\n"
+        "custom_providers:\n"
+        "  - name: CLIProxyAPI\n"
+        "    base_url: http://cliproxy.example:8317/v1\n"
+        "    key_env: CLIPROXY_LEGACY_KEY\n"
+    )
 
     @pytest.mark.parametrize("config, model_config, billing, env, expected", [
         (_NAMED, {"cwd": "/work", "provider": "custom", "base_url": "http://cliproxy.example:8317/v1",
@@ -551,9 +591,20 @@ class TestPersistence:
         (_DUPLICATED_ACCOUNT, {"cwd": "/work", "provider": "custom", "base_url": "http://cliproxy.example:8317/v1/"},
          {}, {}, ("custom", "http://cliproxy.example:8317/v1/", "sk-cliproxy-test")),
         (_DUPLICATED_ACCOUNT, {"cwd": "/work", "provider": "custom"}, {}, {}, _CLIPROXY),
+        # Bare ``custom`` resolves, but only to the keyless placeholder: the endpoint's one entry mints the key.
+        (_KEY_CMD_AT_MODEL_ENDPOINT, {"cwd": "/work", "provider": "custom", "base_url": "http://127.0.0.1:8317/v1",
+                                      "api_mode": "chat_completions"}, {"billing_provider": "custom"}, {},
+         ("custom", "http://127.0.0.1:8317/v1", "sk-from-key-cmd")),
+        # Nothing at the endpoint holds a key, so the placeholder stays.
+        (_KEYLESS_LOCAL, {"cwd": "/work", "provider": "custom", "base_url": "http://127.0.0.1:8080/v1"}, {}, {},
+         ("custom", "http://127.0.0.1:8080/v1", "no-key-required")),
+        # The legacy listing's key_env is unreachable, so it is not a second account.
+        (_SHADOWED_LEGACY_LISTING, {"cwd": "/work", "provider": "custom", "base_url": "http://cliproxy.example:8317/v1"},
+         {}, {"CLIPROXY_LEGACY_KEY": "sk-legacy-env"}, ("custom", "http://cliproxy.example:8317/v1", "sk-from-key-cmd")),
     ], ids=["model_config", "billing_only", "no_saved_endpoint", "case_distinct_endpoint", "unmatched_endpoint",
             "shared_endpoint", "openrouter", "alias_collision", "slug_collision", "shared_model",
-            "duplicated_account", "duplicated_account_by_model"])
+            "duplicated_account", "duplicated_account_by_model", "key_cmd_at_model_endpoint", "keyless_local",
+            "shadowed_legacy_listing"])
     def test_restore_resolves_stored_provider(self, tmp_path, monkeypatch, config, model_config, billing, env,
                                               expected):
         """A row whose stored provider is the bare ``custom`` label (what a named custom provider
@@ -581,7 +632,10 @@ class TestPersistence:
 
         assert restored is not None
         kwargs = restored.agent.kwargs
-        assert (kwargs.get("provider"), kwargs.get("base_url"), kwargs.get("api_key")) == expected
+        api_key = kwargs.get("api_key")
+        # A key_cmd credential reaches the agent as a per-request callable; call it for the key it sends.
+        api_key = api_key() if callable(api_key) else api_key
+        assert (kwargs.get("provider"), kwargs.get("base_url"), api_key) == expected
 
     def test_only_restores_acp_sessions(self, manager):
         """get_session should not restore non-ACP sessions from DB."""

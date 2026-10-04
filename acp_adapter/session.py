@@ -153,8 +153,14 @@ class SessionState:
     message_ids: Any = None
 
 
+# What custom runtimes send when no credential resolved (keyless local servers). The resolver has
+# no shared constant for it.
+_NOAUTH_PLACEHOLDER = "no-key-required"
+
+
 def _named_custom_runtime(requested_provider: str | None, base_url: str | None, model: str | None) -> dict | None:
-    """Runtime of the named entry behind a requested bare ``custom`` label that failed to resolve on its own.
+    """Runtime of the named entry behind a requested bare ``custom`` label that failed to resolve on its
+    own, or resolved only to the keyless placeholder.
 
     Session rows store the agent's resolved provider, which for a named custom provider is the bare
     label, and that label carries no credentials of its own. Recovery uses the saved endpoint, else
@@ -568,6 +574,13 @@ class SessionManager:
                 runtime = _named_custom_runtime(requested_provider, base_url, target_model)
                 if runtime is None:
                     raise
+            else:
+                # ``model.base_url`` gives bare ``custom`` the endpoint but not a key the named entry
+                # holds in key_env or key_cmd. A heal that finds no key either keeps the bare runtime.
+                if runtime.get("api_key") == _NOAUTH_PLACEHOLDER:
+                    named = _named_custom_runtime(requested_provider, base_url or runtime.get("base_url"), target_model)
+                    if named and named.get("api_key") != _NOAUTH_PLACEHOLDER:
+                        runtime = named
             kwargs.update({
                 "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),

@@ -199,7 +199,9 @@ def run_git(git_cmd: Sequence[str], args: Sequence[str], **kwargs) -> subprocess
 # A stdlib launcher for children whose Popen the updater never sees (``run_contained``): it
 # joins the job named by an inherited handle, drops that handle (only the owner's handle may
 # keep the job open) and runs the real command with the same stdio. A refused join never fails
-# the build: the command runs outside the job (the pre-custody behavior) and says so on stderr.
+# the build: the command runs outside the job (the pre-custody behavior), says so on stderr and
+# writes the notice to the report file (argv[2]) so the updater can log it and note it in the
+# update receipt — run_contained captures the child's stderr, so stderr alone is not seen (m1).
 _CUSTODY_UNAVAILABLE = "hermes: update custody unavailable"
 _JOIN_JOB = (
     "import ctypes, subprocess, sys\n"
@@ -209,12 +211,41 @@ _JOIN_JOB = (
     "k.CloseHandle.argtypes = [ctypes.c_void_p]\n"
     "h = ctypes.c_void_p(int(sys.argv[1]))\n"
     "if not k.AssignProcessToJobObject(h, k.GetCurrentProcess()):\n"
-    f"    sys.stderr.write('{_CUSTODY_UNAVAILABLE} (could not join the update job: %d); '\n"
-    "                     'this child runs outside it\\n' % ctypes.get_last_error())\n"
+    f"    note = ('{_CUSTODY_UNAVAILABLE} (could not join the update job: %d); '\n"
+    "            'this child runs outside it' % ctypes.get_last_error())\n"
+    "    sys.stderr.write(note + '\\n')\n"
     "    sys.stderr.flush()\n"
+    "    try:\n"
+    "        with open(sys.argv[2], 'w', encoding='utf-8') as report:\n"
+    "            report.write(note)\n"
+    "    except OSError:\n"
+    "        pass\n"
     "k.CloseHandle(h)\n"
-    "sys.exit(subprocess.call(sys.argv[2:], stdin=subprocess.DEVNULL))\n"
+    "sys.exit(subprocess.call(sys.argv[3:], stdin=subprocess.DEVNULL))\n"
 )
+
+
+def _report_refused_join(report: str, argv: Sequence[str]) -> str | None:
+    """Make a refused job join visible: a warning (errors.log) and a receipt step. The notice,
+    or None when the child joined (or never ran the launcher)."""
+    import os
+
+    try:
+        with open(report, encoding="utf-8-sig") as fh:
+            note = fh.read().strip()
+    except OSError:
+        note = ""
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(report)
+    if not note:
+        return None
+    logger.warning("%s: %s", note, " ".join(str(arg) for arg in argv[:2]))
+    with contextlib.suppress(Exception):
+        from hermes_cli.update_receipt import record_step
+
+        record_step("update_custody", False, f"{note}: {' '.join(str(arg) for arg in argv[:2])}")
+    return note
 
 
 def _join_launcher_python() -> str:
@@ -249,14 +280,21 @@ def contained_command(argv: Sequence[str], *, inherit_lock: bool = True):
     if handle is None:
         yield argv, {}
         return
+    import os
+    import tempfile
+
+    fd, report = tempfile.mkstemp(prefix="hermes-custody-", suffix=".txt")
+    os.close(fd)
     try:
         info = subprocess.STARTUPINFO()
         info.lpAttributeList = {"handle_list": [handle]}
-        yield [_join_launcher_python(), "-I", "-S", "-c", _JOIN_JOB, str(handle), *argv], {"startupinfo": info}
+        yield ([_join_launcher_python(), "-I", "-S", "-c", _JOIN_JOB, str(handle), report, *argv],
+               {"startupinfo": info})
     finally:
         import ctypes
 
         ctypes.WinDLL("kernel32").CloseHandle(ctypes.c_void_p(handle))
+        _report_refused_join(report, argv)
 
 
 def _inheritable_job_handle() -> int | None:

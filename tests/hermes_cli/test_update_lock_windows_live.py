@@ -185,8 +185,11 @@ def test_a_refused_job_join_still_runs_the_child(tmp_path):
     child = "import sys; print('built'); sys.exit(3)"
     launcher = tmp_path / "join_job.py"  # a file, not -c: the guard reads argv text as a command line
     launcher.write_text(_JOIN_JOB, encoding="utf-8")
-    out = subprocess.run([sys.executable, "-I", "-S", str(launcher), "0", sys.executable, "-c", child],
+    report = tmp_path / "report.txt"
+    out = subprocess.run([sys.executable, "-I", "-S", str(launcher), "0", str(report), sys.executable, "-c", child],
                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     assert out.returncode == 3, out
     assert out.stdout.strip() == "built"
     assert _CUSTODY_UNAVAILABLE in out.stderr
+    # m1: the notice also lands in the report the updater turns into a warning + receipt step
+    assert _CUSTODY_UNAVAILABLE in report.read_text(encoding="utf-8")

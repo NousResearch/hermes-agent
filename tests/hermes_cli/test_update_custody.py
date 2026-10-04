@@ -164,3 +164,34 @@ def _state(pid: int) -> str:
     except OSError:
         return "Z"
     return stat[stat.rfind(")") + 2:][:1]
+
+
+def test_a_refused_build_join_is_logged_and_noted_in_the_receipt(tmp_path, monkeypatch, caplog):
+    """m1: the job-joining launcher's notice used to reach only the build's captured stderr
+    (run_contained merges it into the output it drops on success). The report it leaves is now
+    a warning (errors.log) and a receipt step; the build's outcome is untouched."""
+    import json
+    import logging
+
+    import hermes_cli.update_receipt as ur
+    from hermes_cli import update_custody
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    report = tmp_path / "report.txt"
+    note = f"{update_custody._CUSTODY_UNAVAILABLE} (could not join the update job: 5); this child runs outside it"
+    report.write_text(note, encoding="utf-8")
+    with ur.update_receipt_scope():
+        ur.begin_update_receipt()
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.update_custody"):
+            assert update_custody._report_refused_join(str(report), ["node", "scripts/build/tui.mjs"]) == note
+        payload = json.loads(ur.finalize_update_receipt("success").read_text(encoding="utf-8-sig"))
+    assert any(note in rec.getMessage() and "tui.mjs" in rec.getMessage() for rec in caplog.records)
+    steps = [s for s in payload["steps"] if s["name"] == "update_custody"]
+    assert steps and steps[0]["ok"] is False and note in steps[0]["detail"], payload["steps"]
+    assert payload["outcome"] == "success"
+    assert not report.exists()
+    empty = tmp_path / "joined.txt"
+    empty.write_text("", encoding="utf-8")
+    assert update_custody._report_refused_join(str(empty), ["node"]) is None  # joined: silent

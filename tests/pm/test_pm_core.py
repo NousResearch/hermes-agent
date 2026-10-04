@@ -5,7 +5,9 @@ stores."""
 
 from __future__ import annotations
 
+import os
 import shutil
+import stat
 import threading
 from pathlib import Path
 
@@ -509,6 +511,36 @@ def test_held_replaced_entry_does_not_fail_reinstall_and_is_reclaimed(pm_env, mo
     cmd_gc(None)
     assert not list(runtime.glob(".reclaim-*"))
     assert (runtime / entry_name / "bin/faketool").is_file()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores directory modes")
+def test_unremovable_replaced_entry_on_posix_is_set_aside_without_touching_outside(pm_env, tmp_path):
+    """A POSIX permission failure inside the replaced entry (an unreadable dir, an
+    unwritable dir holding a symlink) sets the tree aside as before; cleanup never
+    raises past that and never chmods the symlink's target outside the tree."""
+    from pm.install import ensure
+
+    _, runtime, *_ = pm_env
+    ensure("faketool", base_env={})
+    entry = runtime / Facts(runtime / "facts.json").get("faketool")["entry"]
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep", encoding="utf-8")
+    outside.chmod(0o644)
+    (entry / "sealed").mkdir()
+    (entry / "pinned").mkdir()
+    (entry / "pinned" / "link").symlink_to(outside)
+    (entry / "sealed").chmod(0)
+    (entry / "pinned").chmod(0o500)
+    try:
+        (entry / "bin/faketool").unlink()
+        ensure("faketool", base_env={})
+        assert (entry / "bin/faketool").read_bytes() == b"#!x"
+        assert stat.S_IMODE(outside.stat().st_mode) == 0o644
+        assert list(runtime.glob(".reclaim-*"))
+    finally:
+        for held in [*runtime.glob(".reclaim-*/*"), *runtime.glob(".previous-*/*")]:
+            held.chmod(0o700)
 
 
 def test_held_displacement_does_not_fail_restore_and_gc_spares_interrupted_one(pm_env, monkeypatch):

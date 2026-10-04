@@ -4985,8 +4985,13 @@ class TelegramAdapter(BasePlatformAdapter):
         word = t("platform.telegram.prompt.affirm_word" if answer == "y" else "platform.telegram.prompt.negate_word")
         await self._edit_md_quiet(query, f"☤ {t('platform.telegram.prompt.update_answered', answer=f'*{word}*')}")
         try:
-            from hermes_constants import get_hermes_home
-            response_path = get_hermes_home() / ".update_response"
+            # get_process_hermes_home(), not get_hermes_home(): a multiplexed gateway's
+            # secondary-profile callback runs under a context-local HERMES_HOME override, but the
+            # detached `hermes update --gateway` polls the LAUNCH home's `.update_response`. Writing
+            # to the override home left the answer unread and the update fell through to its
+            # 300s default.
+            from hermes_constants import get_process_hermes_home
+            response_path = get_process_hermes_home() / ".update_response"
             tmp = response_path.with_suffix(".tmp")
             tmp.write_text(answer, encoding="utf-8")
             tmp.replace(response_path)

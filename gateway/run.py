@@ -449,6 +449,18 @@ def _ensure_windows_gateway_venv_imports() -> None:
             continue
         seen.add(venv_key)
 
+        # Never mount a venv built for another interpreter: a PATH race that
+        # boots the gateway under system Python must not load that venv's
+        # ABI-bound extensions (fixes #123185; same class as #122555).
+        try:
+            from pm.environments import venv_python_version
+            venv_version = venv_python_version(resolved_venv)
+        except Exception:
+            venv_version = None
+        if (venv_version is not None
+                and venv_version != (sys.version_info.major, sys.version_info.minor)):
+            continue
+
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():
             continue

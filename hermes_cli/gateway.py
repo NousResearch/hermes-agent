@@ -5619,6 +5619,9 @@ def _cmd_status(args):
     full = getattr(args, "full", False)
     system = getattr(args, "system", False)
     snapshot = get_gateway_runtime_snapshot(system=system)
+    # Only the launchd backend judges the installed definition itself; the other kinds leave this
+    # None and keep the historical "status exited 0" behavior.
+    service_definition_ok: bool | None = None
     # The marker records intent, not runtime: a `--force` gateway bypasses parking and stays live
     # beside it, so only a parked profile with nothing running stops here.
     if print_parked_status() and not snapshot.running:
@@ -5642,7 +5645,7 @@ def _cmd_status(args):
         if kind == "systemd":
             systemd_status(deep, system=system, full=full)
         elif kind == "launchd":
-            launchd_status(deep)
+            service_definition_ok = launchd_status(deep)
         else:
             _gw_windows().status(deep=deep)
         _print_gateway_process_mismatch(snapshot)
@@ -5676,6 +5679,9 @@ def _cmd_status(args):
     _print_duplicate_credential_warnings()
     _print_other_profiles_gateway_status()
     _print_standalone_by_config()
+    # A definition this install cannot start from is a verdict a scripted caller has to be able to
+    # act on; None (the other service kinds) stays "status succeeded".
+    return 1 if service_definition_ok is False else None
 
 
 def _print_standalone_by_config() -> None:
@@ -5720,7 +5726,8 @@ _GATEWAY_SUBCOMMANDS = {
 def _gateway_command_inner(args):
     handler = _GATEWAY_SUBCOMMANDS.get(getattr(args, "gateway_command", None))
     if handler is not None:
-        handler(args)
+        return handler(args)
+    return None
 
 
 def _pm_runtime_venv_dir(project_root: Path | None = None) -> Path | None:

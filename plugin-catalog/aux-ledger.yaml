@@ -1,0 +1,24 @@
+name: aux-ledger
+repo: https://github.com/olric3015/hermes-plugins
+sha: 7bcb571d22a96cad9cf52c34710a11356bd66b8e
+subdir: aux-ledger
+description: >-
+  Local ledger of Hermes's auxiliary LLM calls (titling, compression, vision,
+  approval): /aux shows tokens, time and failures per task or model for the
+  last 24 hours, the latest session or everything recorded. Disclosure — no
+  network, no subprocess, no credentials; writes one JSON line per auxiliary
+  call (identifiers, timings and token counts, never prompt, response or error
+  text) to plugin-data/aux-ledger/calls.jsonl, capped at 5,000 rows.
+maintainer: olric3015
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/olric3015/hermes-plugins/tree/main/aux-ledger
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+  - post_auxiliary_call
+  provides_middleware: []
+  requires_env: []

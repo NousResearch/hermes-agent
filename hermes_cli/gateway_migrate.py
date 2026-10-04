@@ -1014,6 +1014,46 @@ def _resume_findings(plan: MigrationPlan, target, run_as_user) -> list[str]:
             *[f"    • {f}" for f in findings]]
 
 
+def _rekey_standalone_history(plan: MigrationPlan) -> None:
+    """Give a folded standalone gateway's history the namespace the multiplexer reads.
+
+    A standalone per-profile gateway keys its sessions ``agent:main:...`` inside that profile's own
+    ``state.db``. Once the default gateway multiplexes, it looks them up as ``agent:<profile>:...``
+    and the identity fence refuses the old rows, so every existing thread opens empty (#132848,
+    same symptom as #113884). At this point the migration knows for certain which stores belonged
+    to a standalone gateway, which is the one thing ``hermes sessions repair-profiles`` cannot
+    tell, so it applies the same ``--legacy-main rekey`` repair (snapshot first, idempotent).
+    A failure here is reported, never fatal: the migration itself already succeeded.
+    """
+    from hermes_cli.sessions_repair_profiles import Store, default_snapshot
+    from hermes_state_registry import acquire, release_or_close
+    homes = dict(_profile_homes())
+    # A resume has no standalone secondaries left to find (their units are already removed); the
+    # manifest written before the first destructive step still names every folded profile.
+    names = {gw.name for gw in plan.standalone_secondaries}
+    names |= {str(rec.get("profile")) for rec in (_manifest_secondaries(plan.manifest) or [])} if plan.manifest else set()
+    for name in sorted(names):
+        home = homes.get(name)
+        if name == "default" or home is None or not (home / "state.db").exists():
+            continue
+        gw = SimpleNamespace(name=name, home=home)
+        try:
+            db = acquire(gw.home / "state.db")
+            try:
+                ids = [r["id"] for r in db.find_crossed_profile_sessions(gw.name)["foreign"]
+                       if r["key_profile"] == "default"]
+                if not ids:
+                    continue
+                default_snapshot(Store(gw.name, gw.home))
+                moved = db.rekey_legacy_main_sessions(ids, gw.name)
+            finally:
+                release_or_close(db)
+            print(f"  ✓ {gw.name}: kept {moved} standalone session(s) reachable under agent:{gw.name}:")
+        except Exception as exc:
+            print(f"  ⚠ {gw.name}: could not re-key its standalone history ({exc}); run "
+                  f"`hermes sessions repair-profiles --legacy-main rekey --apply` to restore it")
+
+
 def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SECONDS) -> bool:
     """Flip the flag, stop/uninstall every secondary gateway, bring up the multiplexer, verify.
     Returns True when the multiplexer verifiably serves every profile.
@@ -1067,6 +1107,7 @@ def apply_migration(plan: MigrationPlan, *, served_wait: float = _SERVED_WAIT_SE
         _write_multiplex_flag(plan.default_home, True)
         print(f"  ✓ default: gateway.multiplex_profiles: true ({plan.default_home / 'config.yaml'})")
         _remove_secondary_gateways(plan)  # on resume: whatever an apply killed mid-removal left installed
+        _rekey_standalone_history(plan)
         print(f"  ✓ {_restart_default(plan.default, target, plan.default_home, run_as_user=run_as_user)}")
     except Exception as exc:
         _print([f"  ✗ migration failed ({exc})",

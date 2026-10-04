@@ -3351,7 +3351,17 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 job.get("name") or job.get("id") or "?")
 
     if scan.needs_save:
-        save_jobs(raw_jobs, removed_ids=scan.removed or None)
+        try:
+            save_jobs(raw_jobs, removed_ids=scan.removed or None)
+        except OSError as exc:
+            # The repairs above are already applied in memory — that is what the scan keys off — so a
+            # store that cannot be written right now (full disk, read-only mount, permissions) must
+            # not take the whole tick down with it: every job on the profile would stop firing until
+            # a write succeeds, the exact fast-forward freeze the normalization above prevents.
+            # Persisting is retried by the next tick.
+            logger.warning(
+                "Cron store repairs could not be persisted (%s); due jobs still dispatched",
+                exc)
     return due
 
 

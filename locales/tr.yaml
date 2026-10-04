@@ -1448,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent kapatılıyor"
     standalone_quit: "teslim edildi"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Bir Kez Onayla"
     confirm_always_approve: "Her Zaman Onayla"
@@ -2721,6 +2719,7 @@ cli:
       restored: "Durum şuradan geri yüklendi: {snapshot_id}"
       restart_recommended: "Gateway/panel süreçlerinin state.db değişikliklerini alması için yeniden başlatma önerilir."
       not_found: "Anlık görüntü bulunamadı: {snapshot_id}"
+      restore_incomplete: "Anlık görüntü {snapshot_id} tamamen geri yüklenmedi; bazı dosyalar reddedildi (günlüklere bakın)"
       usage_prune: "Kullanım: /snapshot prune [tutulacak-sayı]"
       pruned: "{deleted} eski anlık görüntü silindi ({keep} tanesi tutuluyor)."
     export:

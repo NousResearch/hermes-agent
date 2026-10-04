@@ -301,6 +301,24 @@ describe('requestGatewayForProfile', () => {
 })
 
 describe('requestGatewayForAgent', () => {
+  it('keeps custom-home consent on its owning primary without inventing a profile directory', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'custom')
+    setPrimaryGatewayConnection({ connectionId: 'custom-source', mode: 'local' })
+
+    const getConnectionFor = vi.fn()
+
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { getConnectionFor }
+
+    const params = { enabled: true, send: false, profile: undefined }
+    await requestGatewayForAgent('custom-source', 'custom', 'shared_metrics.set', params)
+
+    expect(primary.request).toHaveBeenCalledWith('shared_metrics.set', params)
+    expect(JSON.parse(JSON.stringify(primary.request.mock.calls[0][1]))).toEqual({ enabled: true, send: false })
+    expect(getConnectionFor).not.toHaveBeenCalled()
+    expect(secondaryGateways).toHaveLength(0)
+  })
+
   it('reuses the active primary socket when its registry connection owns the session', async () => {
     const primary = makePrimary()
 

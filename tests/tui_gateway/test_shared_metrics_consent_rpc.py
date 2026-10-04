@@ -80,3 +80,36 @@ def test_only_the_first_run_answer_records_desktop_setup_completed(tmp_path, mon
     _call("shared_metrics.set", {"profile": "code", "enabled": True, "send": True})
 
     assert calls == [{"surface": "desktop", "provider": "nous"}]
+
+
+def test_unknown_named_consent_target_fails_closed(tmp_path, monkeypatch):
+    launch = tmp_path / ".hermes"
+    worker = launch / "profiles" / "code"
+    for home in (launch, worker):
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text("model:\n  provider: nous\n", encoding="utf-8")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setattr(server, "_hermes_home", launch)
+    before = {home: (home / "config.yaml").read_bytes() for home in (launch, worker)}
+    for profile in ("missing", "custom"):
+        for method in ("shared_metrics.status", "shared_metrics.set"):
+            response = server.handle_request({
+                "jsonrpc": "2.0", "id": "rid", "method": method,
+                "params": {"profile": profile, **({"enabled": True, "send": True} if method.endswith(".set") else {})},
+            })
+            assert response["error"]["code"] == 4064
+    for home in (launch, worker):
+        assert (home / "config.yaml").read_bytes() == before[home]
+        assert not (home / "telemetry").exists()
+
+
+def test_custom_home_omitted_profile_consent_stays_on_owning_launch_home(tmp_path, monkeypatch):
+    launch, worker = _bind_homes(monkeypatch, tmp_path)
+    worker_before = (worker / "config.yaml").read_bytes()
+    assert _call("shared_metrics.status", {}) == {"enabled": False, "send": False, "decided": False}
+    assert _call("shared_metrics.set", {"enabled": True, "send": False}) == {
+        "enabled": True, "send": False, "decided": True}
+    assert _shared_metrics(launch) == {"enabled": True, "send": False}
+    assert (worker / "config.yaml").read_bytes() == worker_before
+    assert not (worker / "telemetry").exists()

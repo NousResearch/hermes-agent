@@ -59,8 +59,9 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
   const detailsOpen = useStore($sharedMetricsDetailsOpen)
   const [expanded, setExpanded] = useState(true)
   const [saving, setSaving] = useState(false)
+
   const scopedRequest = useCallback<SharedMetricsRequester>(
-    (method, params = {}) => requestGateway(method, { ...params, profile }),
+    (method, params = {}) => requestGateway(method, { ...params, profile: profile === 'custom' ? undefined : profile }),
     [profile, requestGateway]
   )
 
@@ -90,7 +91,7 @@ export function SharedMetricsConsentDialog({ enabled, profile, requestGateway }:
     })
 
     return () => void (cancelled = true)
-  }, [ready, profile, requestGateway])
+  }, [ready, scopedRequest])
 
   if (!ready || !detailsOpen || !sharedMetricsOfferPending(consent)) {
     return null

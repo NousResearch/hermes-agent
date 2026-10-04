@@ -8,7 +8,7 @@ import { setDesktopMetricsGate } from '@/store/desktop-metrics'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { $settingsScopeProfile } from '@/store/settings-scope'
+import { $settingsRequestProfile, $settingsScopeProfile } from '@/store/settings-scope'
 import {
   readSharedMetricsConsent,
   saveSharedMetricsConsent,
@@ -28,6 +28,7 @@ export function SharedMetricsSettings() {
   const { t } = useI18n()
   const copy = t.sharedMetrics
   const scopeProfile = useStore($settingsScopeProfile)
+  const requestProfile = useStore($settingsRequestProfile)
   const connectionId = useStore($activeConnectionId)
   const [consent, setConsent] = useState<SharedMetricsConsent | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -35,10 +36,18 @@ export function SharedMetricsSettings() {
 
   const request = useCallback(
     <T,>(method: string, params: Record<string, unknown> = {}) =>
-      requestGatewayForAgent<T>(connectionId, scopeProfile, method, { ...params, profile: scopeProfile ?? 'default' }, undefined, undefined, {
-        spawnPriority: 'foreground'
-      }),
-    [connectionId, scopeProfile]
+      // Keep the concrete key for socket ownership; only custom homes omit the
+      // backend profile param because they have no named profile directory.
+      requestGatewayForAgent<T>(
+        connectionId,
+        scopeProfile,
+        method,
+        { ...params, profile: requestProfile },
+        undefined,
+        undefined,
+        { spawnPriority: 'foreground' }
+      ),
+    [connectionId, scopeProfile, requestProfile]
   )
 
   useEffect(() => {
@@ -68,8 +77,7 @@ export function SharedMetricsSettings() {
 
       // This page applies to the focused profile (unscoped, or scoped to it by name): Desktop
       // telemetry follows its switch at once.
-      const focused =
-        scopeProfile === null || normalizeProfileKey(scopeProfile) === normalizeProfileKey($activeGatewayProfile.get())
+      const focused = normalizeProfileKey(scopeProfile) === normalizeProfileKey($activeGatewayProfile.get())
 
       if (saved && focused) {
         setDesktopMetricsGate(saved.enabled ? 'on' : 'off')

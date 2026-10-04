@@ -70,8 +70,18 @@ URLs.
    (b) a broad `"First Last" <ZIP OR unique-address>` search (no `site:`) surfaces **brokers not yet in
    your DB** (e.g. information.com, peoplefinders.com) - record those as bonus exposures. Note: empty
    `site:` results are INCONCLUSIVE (many broker pages aren't indexed / are `noindex`), not `not_found`.
+1c. **Cheap public-route reads before a browser (the insane-search idea).** When `web_extract` hits a
+   403 / WAF wall, try the site's *other* public routes before spinning up a browser: a `/rss` or
+   syndication feed, a mobile or `.json` URL variant, an OGP / JSON-LD block in the partial HTML, or the
+   internal JSON API the page's own frontend calls (watch the network tab once in a browser, then reuse
+   that endpoint). These are faster and cheaper than a full browser and often return the listing text
+   outright. This is the escalation pattern of the `insane-search` project (a Claude Code plugin: public
+   API/feed readers -> TLS impersonation -> headless browser); its browser rung is redundant with
+   Hermes' native stealth backends (rung 3), but the **public-endpoint/feed/JSON-reuse rungs are worth
+   borrowing**. It is a READER only (helps this scan phase, never the opt-out) and stops at logins.
 2. If the page is JS-rendered or returns nothing useful, `browser_navigate` + `browser_snapshot`
-   (and `browser_type`/`browser_click` to run the site's search box).
+   (and `browser_type`/`browser_click` to run the site's search box; `browser_vision` to read a static
+   image/text CAPTCHA or a visual layout the accessibility tree misses).
 3. If blocked by stealth/Cloudflare, use the `scrapling` skill via `terminal`. **If the broker record
    has `search.antibot` set (e.g. `datadome`), results are behind a device-check CAPTCHA**: a
    cloud/stealth browser (Browserbase) or `scrapling` may get through; if none is available, do **not**
@@ -266,13 +276,17 @@ T2 and become human tasks. **Never use a third-party CAPTCHA-defeating service.*
 Two different jobs need two different browsers. Getting this wrong is the single biggest cause of a
 run stalling in Phase 2.
 
-- **Phase 1 (scan, read-only):** a cloud stealth browser (Browserbase) or the `scrapling` skill is
-  ideal. On a residential IP with a real fingerprint it passes managed challenges (Cloudflare
-  Turnstile, hCaptcha checkbox) and reads anti-bot people-search pages that `web_extract` and the
-  proxyless agent browser cannot. This is what the skill's `browser_backend` setting governs
-  (`auto` picks Browserbase when `BROWSERBASE_API_KEY` is present - now also read from
-  `$HERMES_HOME/.env`, not just the shell env, so `doctor`/`setup --auto` detect the key Hermes
-  already loads for its own tools).
+- **Phase 1 (scan, read-only):** a stealth browser reads anti-bot people-search pages that
+  `web_extract` and the proxyless browser cannot. Any of Hermes' stealth backends works (see the Hermes
+  docs → Features → Browser): **Browserbase** (a built-in gateway tool - available via a **Nous Portal
+  subscription with NO keys**, or direct with BOTH `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`),
+  **Browser Use** (`BROWSER_USE_API_KEY`), **Firecrawl** (`FIRECRAWL_API_KEY`), or **Camofox**
+  (`CAMOFOX_URL`, local anti-detect Firefox). On a
+  residential IP / real fingerprint they pass managed challenges (Turnstile, hCaptcha checkbox). The
+  skill's `browser_backend` (`auto` picks up any of these creds, read from the shell env AND
+  `$HERMES_HOME/.env`) only governs the Phase-1 scan browser and captcha tiering; the `scrapling` skill
+  is a further option. For a static image/arithmetic CAPTCHA on the subject's own opt-out, read it with
+  `browser_vision`; never defeat behavioral/token/slider challenges.
 - **Phase 2 (execute: opt-out forms, webmail sends, session-bound multi-step gates):** the work must
   run in the **operator's own everyday browser** - real fingerprint, residential IP, AND the
   operator's logged-in sessions. A headless cloud browser is the WRONG default here for two reasons:
@@ -294,6 +308,13 @@ run stalling in Phase 2.
   endpoint (`webSocketDebuggerUrl`). `pdd.py cdp --check` reports whether a debug browser is already
   live (and never launches a second one); `pdd.py cdp --print` just emits the exact command for the
   operator to run themselves. Point the browser tools at the `endpoint` it returns.
+  **Hermes-native attach:** in the interactive Hermes CLI, `/browser connect` does this officially - it
+  auto-launches a Chromium-family browser at `127.0.0.1:9222` (same `--user-data-dir` recipe) or
+  attaches to a given CDP endpoint; or set `browser.cdp_url` in `config.yaml`. Note `/browser connect`
+  is a CLI-only slash command (not dispatched by the gateway), so for a gateway-driven run use
+  `pdd.py cdp` to launch the browser and set `browser.cdp_url`. Once attached over CDP, `browser_cdp`
+  (raw DevTools passthrough) and `browser_dialog` (native JS dialogs) become available for the fiddly
+  multi-step gates.
 - **Always-available fallback:** if no CDP browser is wired up, use the operator-in-the-loop path
   (scan ladder 3b) - hand over paste-ready URLs and field-by-field least-disclosure guidance, pausing
   before submit. It never fails; it just needs a human present.

@@ -66,13 +66,26 @@ verifying re-scan.
   one it detects, reading credentials from the shell env **and from `$HERMES_HOME/.env`** so keys
   Hermes already loads for its own tools are picked up without re-exporting - each one converts a
   class of human tasks into agent actions):
-  - **Cloud browser (recommended default): `BROWSERBASE_API_KEY`.** `setup --auto` selects it
-    whenever the key is present, and it is the intended baseline: a real residential-IP cloud
-    browser **clears soft/managed CAPTCHAs (Cloudflare Turnstile, hCaptcha/reCAPTCHA checkbox) as
-    normal operation**, so those brokers stay automated (T1) instead of becoming human tasks. This
-    is not CAPTCHA "solving" - no solver service, no fingerprint spoofing; only interactive/behavioral
-    ("hard") challenges the browser genuinely cannot pass fall back to a human task. Without the key,
-    the plain agent browser is used and soft-CAPTCHA brokers drop to T2 (human).
+  - **A stealth browser (recommended default).** A real residential-IP / anti-detect browser
+    **clears soft/managed CAPTCHAs (Cloudflare Turnstile, hCaptcha/reCAPTCHA checkbox) as normal
+    operation**, so those brokers stay automated (T1) instead of becoming human tasks. This is not
+    CAPTCHA "solving" - no solver service; only interactive/behavioral ("hard") challenges fall back
+    to a human. `setup --auto` turns it on when configured. Hermes provides several backends (any one
+    works; see the Hermes docs → Features → Browser, and `references/methods.md` → "Browser backends"):
+    - **Browserbase, two ways (recommended):** it is a built-in Hermes browser tool, so it works via
+      **either** a **Nous Portal subscription** (the Tool Gateway provides it with **no keys** -
+      `hermes setup --portal`; easiest) **or** **direct credentials** - set **BOTH**
+      `BROWSERBASE_API_KEY` **and** `BROWSERBASE_PROJECT_ID` in `~/.hermes/.env` (the key alone will not
+      run). Either path gives residential proxies + CAPTCHA solving by default.
+    - **Browser Use** (`BROWSER_USE_API_KEY`) or **Firecrawl** (`FIRECRAWL_API_KEY`): alternative
+      managed cloud browsers.
+    - **Camofox** (`CAMOFOX_URL`): local anti-detect Firefox, no cloud cost.
+    - **Your own Chrome over CDP:** `/browser connect` in the Hermes CLI (auto-launches at
+      `127.0.0.1:9222`), or run `$PDD cdp` to launch the dedicated debug profile and set
+      `browser.cdp_url`. Best for Phase-2 webmail + session-bound gates.
+    Without any of these, the plain local browser is used and soft-CAPTCHA brokers drop to T2. For
+    reading a **static distorted-text or arithmetic** CAPTCHA on the subject's own opt-out, use
+    `browser_vision` (screenshot + AI); never defeat behavioral/token/slider challenges.
   - Email automation, two credential-free-or-not options:
     - **Browser mode (no password): `setup --email-mode browser`.** The agent sends opt-out/CCPA
       emails and opens verification links through the operator's **logged-in webmail** using

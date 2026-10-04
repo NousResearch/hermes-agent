@@ -136,6 +136,17 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
     ),
 )
 
+def platform_install_hint(platform: str) -> str:
+    """For an unknown platform name that left core: the sentence that names its install command for
+    the active home, else ``""``. Appended to "unknown platform" errors (``send_message``)."""
+    from hermes_constants import get_hermes_home
+    feature = next((f for f in LEFT_CORE if f.platform and f.platform == platform), None)
+    if feature is None:
+        return ""
+    return (f". {feature.label} moved out of core into the '{feature.plugin}' plugin: install it with "
+            f"`{_install_command(feature.plugin, Path(get_hermes_home()))}`")
+
+
 _attempted: set[str] = set()
 _undelivered: dict[str, list[str]] = {}
 

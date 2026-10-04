@@ -266,3 +266,79 @@ def test_handback_preserves_ownership_when_not_safe_to_refresh(handback, monkeyp
     h.agent.close.assert_not_called()
     h.agent._persist_session.assert_not_called()
     h.agent.commit_memory_session.assert_not_called()
+
+
+def test_handback_refresh_intent_survives_failed_admission_and_agent_rebuild(handback, monkeypatch):
+    """The session keeps the one-shot refresh until an agent actually adopts the reload."""
+    h = handback
+    assert h.rpc("handoff.request", session_id=h.sid, platform="discord")["result"]["queued"] is True
+    assert h.db.claim_handoff(h.key)
+    h.db.complete_handoff(h.key)
+    h.destination()
+    assert h.rpc("session.activate", session_id=h.sid)["result"]["session_id"] == h.sid
+    with monkeypatch.context() as busy:
+        assert h.db.try_acquire_session_turn_lease(h.key, "fake-gateway-turn")
+        busy.setattr("agent.turn_facade_lease.LEASE_WAIT_SECONDS", 0)
+        assert h.rpc("prompt.submit", session_id=h.sid, text="blocked attempt")["result"]["status"] == "streaming"
+        assert h.called.wait(5)
+        h.session["_run_thread"].join(timeout=5)
+    h.db.release_session_turn_lease(h.key, "fake-gateway-turn")
+    assert not h.seen
+    assert h.session["handoff_history_refresh"] is True
+
+    # The live agent is rebuilt before the retry: the replacement must still reload.
+    rebuilt = SimpleNamespace(**{k: v for k, v in vars(h.agent).items() if k != "_reload_history_after_handoff"})
+
+    def run(prompt, conversation_history=None, **_kwargs):
+        h.called.set()
+        admission = admit_durable_turn_lease(
+            rebuilt, session_id=h.key, relay_turn_id="rebuilt-local-turn",
+            task_context={"session_id": h.key, "platform": "tui"}, conversation_history=conversation_history)
+        assert admission.early_result is None
+        admission.lease.release()
+        return {"final_response": "local answer", "messages": [
+            *admission.conversation_history, {"role": "user", "content": prompt},
+            {"role": "assistant", "content": "local answer"}]}
+
+    rebuilt.run_conversation = run
+    h.session["agent"] = rebuilt
+    reloads = []
+    real_reload = h.db.get_messages_as_conversation
+    monkeypatch.setattr(h.db, "get_messages_as_conversation",
+                        lambda *a, **kw: reloads.append(a) or real_reload(*a, **kw))
+    h.called.clear()
+    assert h.rpc("prompt.submit", session_id=h.sid, text="continue locally")["result"]["status"] == "streaming"
+    assert h.called.wait(5)
+    h.session["_run_thread"].join(timeout=5)
+    assert reloads, "rebuilt agent never received the handback refresh"
+    assert rebuilt._reload_history_after_handoff is False
+    assert "handoff_history_refresh" not in h.session
+
+
+@pytest.mark.parametrize("settle", ["reattached", "timeout_cancelled", "write_failed"])
+def test_handoff_request_mark_is_retired_once_settled(handback, monkeypatch, settle):
+    """A consumed or disproven handoff mark must not force reloads on every later reattach."""
+    h = handback
+    if settle == "write_failed":
+        with monkeypatch.context() as broken:
+            broken.setattr(h.db, "request_handoff", Mock(side_effect=RuntimeError("database is locked")))
+            assert h.rpc("handoff.request", session_id=h.sid, platform="discord")["error"]["code"] == 5007
+        # An uncertain write keeps the mark until the durable state is consulted.
+        assert h.session["handoff_requested"] is True
+        assert h.rpc("session.activate", session_id=h.sid)["result"]["session_id"] == h.sid
+        assert "handoff_history_refresh" not in h.session
+    else:
+        assert h.rpc("handoff.request", session_id=h.sid, platform="discord")["result"]["queued"] is True
+    if settle == "timeout_cancelled":
+        failed = h.rpc("handoff.fail", session_id=h.sid, error="timed out waiting for gateway")["result"]
+        assert failed == {"failed": True, "state": "failed"}
+    elif settle == "reattached":
+        assert h.db.claim_handoff(h.key)
+        h.db.complete_handoff(h.key)
+        assert h.rpc("session.activate", session_id=h.sid)["result"]["session_id"] == h.sid
+        assert h.session.pop("handoff_history_refresh") is True
+    assert "handoff_requested" not in h.session
+    for entry in ("session.activate", "session.resume"):
+        resumed = h.rpc(entry, session_id=h.key if entry == "session.resume" else h.sid)
+        assert resumed["result"]["session_id"] == h.sid
+        assert "handoff_history_refresh" not in h.session

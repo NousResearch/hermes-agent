@@ -859,16 +859,22 @@ def _resume_guard(ctx: _Resume) -> dict | None:
 
 
 def _prepare_handoff_reattach(rid, session: dict, state: str) -> dict | None:
-    """Preserve the runtime; an idle handback reloads at the next durable turn admission."""
-    if not state:
+    """Preserve the runtime; an idle handback reloads at the next durable turn admission.
+
+    Only a session that requested a handoff here consults the durable outcome, and the request
+    mark is retired once that outcome is consumed, so a later reattach stays cache-stable."""
+    if not session.get("handoff_requested"):
         return None
-    session["handoff_requested"] = True
     with session["history_lock"]:
-        if not session.get("running"):
+        if not state:
+            # No handoff row was ever written for this request: the live cache is authoritative.
+            session.pop("handoff_requested", None)
+        elif not session.get("running"):
             if state not in {"completed", "failed"}:
                 return _err(rid, 4009, "session handoff still settling; retry resume when it finishes")
             # The destination can append even between reattachment and the prompt.
             session["handoff_history_refresh"] = True
+            session.pop("handoff_requested", None)
     return None
 
 
@@ -1418,6 +1424,8 @@ def _(rid, params: dict, session: dict) -> dict:
                 db.set_session_title(key, f"handoff-{key[:8]}")
             # Remember even an uncertain write acknowledgement; picker reattachment
             # must consult the durable outcome rather than trust the old live cache.
+            # A 4027 keeps the mark too: some handoff of this row is in flight, so a later
+            # reattach must still consult its outcome.
             session["handoff_requested"] = True
             if not db.request_handoff(key, platform_name):
                 return _err(rid, 4027, "session is already in flight for handoff — wait for it to settle, then retry")
@@ -1453,6 +1461,10 @@ def _(rid, params: dict) -> dict:
             if failed := ((db.get_handoff_state(key) or {}).get("state") or "") == "pending":
                 db.fail_handoff(key, reason)
         state = "failed" if failed else (db.get_handoff_state(key) or {}).get("state") or ""
+    if failed:
+        # The CAS proves the gateway never claimed the row: nothing was delivered, so the live
+        # cache stays authoritative and a later reattach needs no durable refresh.
+        session.pop("handoff_requested", None)
     return _ok(rid, {"failed": bool(failed), "state": state})
 
 

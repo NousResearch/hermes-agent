@@ -131,3 +131,33 @@ def test_interrupt_turn_only_while_active():
     assert calls == ["lost"] and lease.interrupt_message == "lost"
     lease.deactivate_after_liveness_abort()
     assert lease.stop.is_set() and lease.is_turn_active() is False
+
+
+def test_post_wait_reload_keeps_this_turns_staged_submit_row_out_of_history(monkeypatch):
+    """The submit-time user row is staged as the turn's own user dict; a reload must not repeat it."""
+    monkeypatch.setattr(
+        "agent.turn_liveness.resolve_turn_liveness_settings", lambda cfg: (None, 1.0)
+    )
+    rows = [
+        {"role": "user", "content": "earlier", "_row_id": 1},
+        {"role": "assistant", "content": "reply", "_row_id": 2},
+        {"role": "user", "content": "this turn", "_row_id": 3},
+    ]
+
+    class _WaitedDb(_Db):
+        def acquire_session_turn_lease(self, session_id, holder, **kwargs):
+            kwargs["on_wait"](0.0)  # another holder ran first: reload after admission
+            return super().acquire_session_turn_lease(session_id, holder)
+
+        def resolve_resume_session_id(self, session_id):
+            return session_id
+
+        def get_messages_as_conversation(self, session_id, **kwargs):
+            return [dict(row) for row in rows]
+
+    staged = {"role": "user", "content": "this turn", "_row_id": 3, "_db_persisted": True}
+    admission = _admit(_agent(_WaitedDb(), _pending_cli_user_message=staged), [])
+    try:
+        assert [m["_row_id"] for m in admission.conversation_history] == [1, 2]
+    finally:
+        admission.lease.release()

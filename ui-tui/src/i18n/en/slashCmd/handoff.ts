@@ -21,6 +21,7 @@ export const slashCmdHandoffEn = {
       `handoff outcome unknown: ${error} — check the destination before resuming; /new starts a fresh session`,
     statusUnknown: 'handoff outcome unknown',
     pollTimedOut: 'handoff status polling timed out',
+    timedOutRestored: 'handoff timed out before the gateway picked it up — cancelled; this session is restored',
     rejected: (error: string) => `handoff: ${error}`
   }
 }

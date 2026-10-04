@@ -840,6 +840,7 @@
   "slashCmd.handoff.statusFailed",
   "slashCmd.handoff.statusPending",
   "slashCmd.handoff.statusUnknown",
+  "slashCmd.handoff.timedOutRestored",
   "slashCmd.handoff.unknown",
   "slashCmd.handoff.unknownError",
   "slashCmd.handoff.unknownWithError",

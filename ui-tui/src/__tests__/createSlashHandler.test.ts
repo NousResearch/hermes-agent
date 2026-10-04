@@ -151,14 +151,10 @@ describe('createSlashHandler', () => {
     }
   )
 
-  it.each(['request', 'state'])('keeps the source detached after an uncertain %s RPC failure', async stage => {
+  it('keeps the source detached after an uncertain request RPC failure', async () => {
     patchUiState({ sid: 'sid-abc' })
     const ctx = buildCtx()
-    const lost = new Error('gateway request timed out')
-    scriptGateway(ctx, {
-      'handoff.request': [stage === 'state' ? { queued: true, platform: 'slack', home_name: 'test home' } : lost],
-      'handoff.state': [lost]
-    })
+    scriptGateway(ctx, { 'handoff.request': [new Error('gateway request timed out')] })
 
     createSlashHandler(ctx)('/handoff slack')
     await new Promise<void>(resolve => setTimeout(resolve, 0))
@@ -166,25 +162,79 @@ describe('createSlashHandler', () => {
     expect(getUiState().handoffSessionId).toBeNull()
     expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('outcome unknown'))
     expect(ctx.session.closeSession).not.toHaveBeenCalled()
-    expect(gatewayMethods(ctx)).not.toContain('handoff.fail')
+    expect(gatewayMethods(ctx)).toEqual(['handoff.request'])
   })
 
-  it('bounds handoff polling without cancelling a possibly delivered request', async () => {
+  it('rides out failing state polls and stays detached when the cancel is unconfirmed', async () => {
+    vi.useFakeTimers()
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+    const lost = new Error('gateway request timed out')
+    scriptGateway(ctx, {
+      'handoff.request': [{ queued: true, platform: 'slack', home_name: 'test home' }],
+      'handoff.state': [lost],
+      'handoff.fail': [lost]
+    })
+
+    try {
+      createSlashHandler(ctx)('/handoff slack')
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(getUiState().handoffSessionId).toBe('sid-abc')
+      await vi.advanceTimersByTimeAsync(31_000)
+      expect(gatewayMethods(ctx).filter(method => method === 'handoff.fail')).toHaveLength(1)
+      expect(getUiState().sid).toBeNull()
+      expect(getUiState().handoffSessionId).toBeNull()
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('outcome unknown'))
+      expect(ctx.session.closeSession).not.toHaveBeenCalled()
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancels an unclaimed handoff after the pending bound and restores the source', async () => {
     vi.useFakeTimers()
     patchUiState({ sid: 'sid-abc' })
     const ctx = buildCtx()
     scriptGateway(ctx, {
       'handoff.request': [{ queued: true, platform: 'slack', home_name: 'test home' }],
-      'handoff.state': [{ state: 'running' }]
+      'handoff.state': [{ state: 'pending' }],
+      'handoff.fail': [{ failed: true, state: 'failed' }]
     })
 
     try {
       createSlashHandler(ctx)('/handoff slack')
-      await vi.advanceTimersByTimeAsync(181_000)
-      expect(getUiState().handoffSessionId).toBeNull()
-      expect(getUiState().sid).toBeNull()
-      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('timed out'))
-      expect(gatewayMethods(ctx)).not.toContain('handoff.fail')
+      await vi.advanceTimersByTimeAsync(61_000)
+      expect(ctx.gateway.gw.request).toHaveBeenCalledWith('handoff.fail', {
+        session_id: 'sid-abc',
+        error: 'timed out waiting for gateway'
+      })
+      expect(getUiState()).toMatchObject({ sid: 'sid-abc', handoffSessionId: null, status: 'ready' })
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('restored'))
+      expect(ctx.session.closeSession).not.toHaveBeenCalled()
+    } finally {
+      vi.clearAllTimers()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps watching when a gateway claim wins the race against the timeout cancel', async () => {
+    vi.useFakeTimers()
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+    const states: unknown[] = Array.from({ length: 61 }, () => ({ state: 'pending' }))
+    scriptGateway(ctx, {
+      'handoff.request': [{ queued: true, platform: 'slack', home_name: 'test home' }],
+      'handoff.state': [...states, { state: 'running' }, { state: 'completed' }],
+      'handoff.fail': [{ failed: false, state: 'running' }]
+    })
+
+    try {
+      createSlashHandler(ctx)('/handoff slack')
+      await vi.advanceTimersByTimeAsync(70_000)
+      expect(gatewayMethods(ctx).filter(method => method === 'handoff.fail')).toHaveLength(1)
+      expect(getUiState()).toMatchObject({ sid: null, handoffSessionId: null })
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringContaining('completed'))
     } finally {
       vi.clearAllTimers()
       vi.useRealTimers()

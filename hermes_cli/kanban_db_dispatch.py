@@ -153,6 +153,9 @@ class DispatchResult:
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
 
+    requested_task_reason: Optional[str] = None
+    """Why an exact-task request did not spawn (None on success or an ordinary tick)."""
+
 
 def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
     """One line naming why the tick(s) held ready work back, or ``""``.
@@ -1964,6 +1967,7 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    task_id: Optional[str] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1972,7 +1976,16 @@ def dispatch_once(
     frames. The loser returns an empty ``DispatchResult`` with
     ``skipped_locked=True`` and writes nothing; the lock is keyed on the
     resolved DB path so unrelated boards tick in parallel.
+    ``task_id`` restricts spawning to that task (including review work);
+    normal reclaim and readiness bookkeeping still run for the board.
     """
+    if task_id is not None:
+        from agent.estop import check_paused
+        if not task_id.strip():
+            return DispatchResult(requested_task_reason="task_id_required")
+        if check_paused("kanban", _kb._log):
+            return DispatchResult(requested_task_reason="paused")
+
     def _locked_tick() -> DispatchResult:
         return _dispatch_once_locked(
             conn,
@@ -1987,18 +2000,24 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            task_id=task_id,
         )
 
     try:
         db_path = _kb.kanban_db_path(board=board)
     except Exception:
+        if task_id is not None:
+            return DispatchResult(requested_task_reason="board_unavailable")
         # Must not lose the tick — fall through to an unguarded dispatch.
         result = _locked_tick()
         _kb._fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
         return result
     with _kbc._dispatch_tick_lock(db_path) as held:
         if not held:
-            result = DispatchResult(skipped_locked=True)
+            result = DispatchResult(
+                skipped_locked=True,
+                requested_task_reason="dispatcher_locked" if task_id is not None else None,
+            )
         else:
             result = _locked_tick()
             # Still under the dispatch lock: periodic PASSIVE WAL checkpoint.
@@ -2339,6 +2358,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    task_id: Optional[str] = None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -2346,20 +2366,44 @@ def _dispatch_once_locked(
     the PID so later ticks catch crashes before the TTL. Cap semantics:
     :func:`_tick_spawn_budget`."""
     result = DispatchResult()
+    if task_id is not None and _kb.get_task(conn, task_id) is None:
+        result.requested_task_reason = "not_found"
+        return result
     _run_reclaim_phase(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
     )
+    if task_id is not None:
+        task = _kb.get_task(conn, task_id)
+        if task is None:
+            result.requested_task_reason = "not_found"
+            return result
+        if task.status not in {"ready", "review"}:
+            result.requested_task_reason = f"state:{task.status}"
+            return result
+        if task.claim_lock is not None:
+            result.requested_task_reason = "already_claimed"
+            return result
+        if task.status == "review" and not review_dispatch_enabled():
+            result.requested_task_reason = "review_dispatch_disabled"
+            return result
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )
     if not may_spawn:
+        if task_id is not None:
+            result.requested_task_reason = (
+                f"memory_pressure:{result.memory_pressure}" if result.memory_pressure else "capacity"
+            )
         return result
 
     ready_rows = _lane_rows(conn, "ready")
     # Review rows are enumerated up front so the budget split can see whether
     # review work exists at all.
     review_rows = _lane_rows(conn, "review") if review_dispatch_enabled() else []
+    if task_id is not None:
+        ready_rows = [row for row in ready_rows if row["id"] == task_id]
+        review_rows = [row for row in review_rows if row["id"] == task_id]
     # Per-profile cap. Deferred tasks go to skipped_per_profile_capped, not
     # skipped_unassigned — "busy, retry later" differs from "needs routing".
     # Resolved BEFORE the review reservation so the reservation can see which
@@ -2426,6 +2470,16 @@ def _dispatch_once_locked(
             continue
         if _dispatch_lane_task(conn, row, row["assignee"], result, lane="review", **lane_kwargs):
             spawned += 1
+    if task_id is not None and not result.spawned:
+        reasons = (
+            (result.skipped_unassigned, "unassigned"),
+            (result.skipped_nonspawnable, "assignee_not_spawnable"),
+            (result.skipped_per_profile_capped, "profile_capacity"),
+            (result.respawn_guarded, "respawn_guarded"),
+        )
+        result.requested_task_reason = next(
+            (reason for matches, reason in reasons if matches), "claim_or_spawn_failed",
+        )
     return result
 
 

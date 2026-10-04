@@ -375,9 +375,24 @@ def _boto3_chain_has_credentials() -> bool:
     return False
 
 
+def _aws_auth_detection_env() -> dict[str, str]:
+    """Default env for AWS auth detection: the routed profile's secret scope under a HERMES_HOME
+    override — the same switch ``resolve_bedrock_bearer_token`` makes — else ``os.environ``. Under
+    multiplexing the process env holds the LAUNCH profile's ``AWS_*``, which must neither gate the
+    auxiliary Bedrock clients nor label a served profile's ``auth_source`` (#132685)."""
+    from hermes_constants import get_hermes_home_override
+    if get_hermes_home_override() is not None:
+        from agent.secret_scope import current_secret_scope
+        return dict(current_secret_scope() or {})
+    return dict(os.environ)
+
+
 def resolve_aws_auth_env_var(env: Optional[dict[str, str]] = None) -> Optional[str]:
-    """Name of the active AWS auth source: env vars first (no I/O), then ``"iam-role"`` via boto3's chain, else None."""
-    env = env if env is not None else os.environ
+    """Name of the active AWS auth source: env vars first (no I/O), then ``"iam-role"`` via boto3's chain, else None.
+
+    Unscoped, the env-var read defaults to the routed profile's secret scope under a HERMES_HOME
+    override, so a served profile's own bearer/key pair answers — never the launch env's (#132685)."""
+    env = env if env is not None else _aws_auth_detection_env()
     for group in _AWS_AUTH_ENV_CHAIN:
         if all(env.get(var, "").strip() for var in group):
             return group[0]

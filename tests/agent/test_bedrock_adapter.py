@@ -221,6 +221,56 @@ class TestScopedAwsSessionKwargs:
             secret_scope.reset_secret_scope(s_tok)
             reset_hermes_home_override(h_tok)
 
+    def test_multiplex_bearer_only_scope_passes_aux_credential_gate(self, tmp_path, monkeypatch):
+        """``has_aws_credentials()`` (the auxiliary-client gate behind title generation) must read the
+        routed profile's scope too: inside a bearer-only scope, with the process env cleared, it is
+        True — the aux tasks keep Bedrock instead of silently skipping it (#132685)."""
+        from agent import secret_scope
+        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home = tmp_path / "home-bearer"
+        home.mkdir()
+        (home / ".env").write_text("AWS_BEARER_TOKEN_BEDROCK=bearer-scoped\n")
+        for var in ("AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE"):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        # IMDS/task-role probe is a separate leg: pin it off so the test sees only the env-var read.
+        monkeypatch.setattr("agent.bedrock_adapter._boto3_chain_has_credentials", lambda: False)
+
+        h_tok = set_hermes_home_override(str(home))
+        s_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
+        try:
+            assert resolve_aws_auth_env_var() == "AWS_BEARER_TOKEN_BEDROCK"
+            assert has_aws_credentials() is True
+        finally:
+            secret_scope.reset_secret_scope(s_tok)
+            reset_hermes_home_override(h_tok)
+
+    def test_multiplex_launch_keypair_does_not_label_served_profile(self, tmp_path, monkeypatch):
+        """``resolve_aws_auth_env_var()`` reads the served profile's scope, so the LAUNCH env's key
+        pair neither answers for a cred-less profile nor labels it — the same scoped switch the
+        bearer probe and the session-kwarg guard already make (#132685)."""
+        from agent import secret_scope
+        from agent.bedrock_adapter import resolve_aws_auth_env_var
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home = tmp_path / "home-empty"
+        home.mkdir()
+        (home / ".env").write_text("")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "launch-key")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "launch-secret")
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        monkeypatch.setattr("agent.bedrock_adapter._boto3_chain_has_credentials", lambda: False)
+
+        h_tok = set_hermes_home_override(str(home))
+        s_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
+        try:
+            assert resolve_aws_auth_env_var() is None
+        finally:
+            secret_scope.reset_secret_scope(s_tok)
+            reset_hermes_home_override(h_tok)
+
 
 class TestResolveBedrocRegion:
     def test_prefers_aws_region(self):

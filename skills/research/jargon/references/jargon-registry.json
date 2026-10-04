@@ -1,0 +1,338 @@
+{
+  "API": {
+    "term": "API",
+    "expanded": "Application Programming Interface",
+    "plainspeak": {
+      "doctor": "A defined contract enabling software components to communicate via structured requests and responses over a network or within a process boundary.",
+      "high-school": "A set of rules that lets one program talk to another program, like a waiter taking your order to the kitchen.",
+      "kindergarten": "A way for computer programs to ask each other for things."
+    },
+    "category": "infra",
+    "saturated": true,
+    "since": "2023-01-01"
+  },
+  "CLI": {
+    "term": "CLI",
+    "expanded": "Command-Line Interface",
+    "plainspeak": {
+      "doctor": "A text-based interface for interacting with a computer system by issuing commands as lines of text, typically through a shell or terminal emulator.",
+      "high-school": "A way to control a computer by typing commands instead of clicking buttons.",
+      "kindergarten": "Talking to a computer by typing words."
+    },
+    "category": "infra",
+    "saturated": true,
+    "since": "2023-01-01"
+  },
+  "CPU": {
+    "term": "CPU",
+    "expanded": "Central Processing Unit",
+    "plainspeak": {
+      "doctor": "The primary processor in a computer that executes instructions from programs through fetch-decode-execute cycles, containing arithmetic-logic and control units.",
+      "high-school": "The brain of a computer that does all the calculations and runs your programs.",
+      "kindergarten": "The part of a computer that does the thinking."
+    },
+    "category": "hardware",
+    "saturated": true,
+    "since": "2023-01-01"
+  },
+  "CRDT": {
+    "term": "CRDT",
+    "expanded": "Conflict-Free Replicated Data Type",
+    "plainspeak": {
+      "doctor": "A data structure that allows multiple users to edit concurrently without coordination, automatically resolving conflicts through mathematically guaranteed merge semantics.",
+      "high-school": "A way for multiple people to edit the same document at the same time without getting conflicts, even if they're offline.",
+      "kindergarten": "A trick that lets two people write on the same page at the same time without messing it up."
+    },
+    "category": "distributed-systems",
+    "saturated": false,
+    "since": "2024-06-01"
+  },
+  "CUDA": {
+    "term": "CUDA",
+    "expanded": "Compute Unified Device Architecture",
+    "plainspeak": {
+      "doctor": "NVIDIA's parallel computing platform that enables general-purpose computation on GPUs, allowing thousands of threads to execute concurrently.",
+      "high-school": "A technology that lets programmers use graphics cards to do math really fast, which is great for AI training.",
+      "kindergarten": "A special way to make the powerful part of a graphics card do super-fast calculations."
+    },
+    "category": "hardware",
+    "saturated": false,
+    "since": "2023-01-01"
+  },
+  "DAG": {
+    "term": "DAG",
+    "expanded": "Directed Acyclic Graph",
+    "plainspeak": {
+      "doctor": "A finite directed graph with no directed cycles, representing a partially ordered set of nodes where edges define dependencies and topological ordering is always possible.",
+      "high-school": "A flowchart where arrows go one way and you can never loop back to where you started. Used to manage task dependencies.",
+      "kindergarten": "A drawing of connected boxes where the arrows never come back to the start."
+    },
+    "category": "cs",
+    "saturated": false,
+    "since": "2023-06-01"
+  },
+  "GPU": {
+    "term": "GPU",
+    "expanded": "Graphics Processing Unit",
+    "plainspeak": {
+      "doctor": "A specialized processor with thousands of cores designed for parallel computation, originally for rendering graphics but now essential for AI workloads.",
+      "high-school": "A powerful chip originally made for games that turned out to be amazing for AI because it can do many calculations at once.",
+      "kindergarten": "A super-fast calculator chip that helps AI learn."
+    },
+    "category": "hardware",
+    "saturated": true,
+    "since": "2023-01-01"
+  },
+  "IDE": {
+    "term": "IDE",
+    "expanded": "Integrated Development Environment",
+    "plainspeak": {
+      "doctor": "A comprehensive software application combining a source code editor, build automation tools, debugger, and often language server support into a single interface.",
+      "high-school": "An all-in-one app for writing code that includes a text editor, tools to run your code, and ways to find bugs.",
+      "kindergarten": "A special program for writing computer programs."
+    },
+    "category": "devtools",
+    "saturated": false,
+    "since": "2023-01-01"
+  },
+  "JSON": {
+    "term": "JSON",
+    "expanded": "JavaScript Object Notation",
+    "plainspeak": {
+      "doctor": "A lightweight, language-independent data interchange format using human-readable key-value pairs and arrays, defined by ECMA-404 and RFC 8259.",
+      "high-school": "A way to write data using curly braces and colons that's easy for both humans and computers to read.",
+      "kindergarten": "A way to write down information that computers can understand."
+    },
+    "category": "infra",
+    "saturated": true,
+    "since": "2023-01-01"
+  },
+  "LLM": {
+    "term": "LLM",
+    "expanded": "Large Language Model",
+    "plainspeak": {
+      "doctor": "A neural network with billions to trillions of parameters trained auto-regressively on massive text corpora, capable of generating coherent text and performing in-context learning.",
+      "high-school": "A computer program that has read billions of pages of text and can write essays, answer questions, and have conversations.",
+      "kindergarten": "A super smart computer that can talk and write like a person."
+    },
+    "category": "ai",
+    "saturated": false,
+    "since": "2023-01-01"
+  },
+  "LSP": {
+    "term": "LSP",
+    "expanded": "Language Server Protocol",
+    "plainspeak": {
+      "doctor": "A protocol (JSON-RPC based) that standardizes communication between a code editor and a language server, providing features like autocomplete, go-to-definition, and diagnostics.",
+      "high-school": "A standard way for code editors to get smart features like auto-complete and error checking by talking to a background program.",
+      "kindergarten": "A helper that makes coding programs better at guessing what you are trying to type."
+    },
+    "category": "devtools",
+    "saturated": false,
+    "since": "2023-01-01"
+  },
+  "MCP": {
+    "term": "MCP",
+    "expanded": "Model Context Protocol",
+    "plainspeak": {
+      "doctor": "An open protocol standardized by Anthropic that defines how LLMs connect to external tools, data sources, and services through a unified server-client architecture.",
+      "high-school": "A standard way for AI models to plug into tools and databases, like a USB port for AI capabilities.",
+      "kindergarten": "A way to plug AI into other computer programs so it can do more things."
+    },
+    "category": "ai",
+    "saturated": false,
+    "since": "2024-11-01"
+  },
+  "ML": {
+    "term": "ML",
+    "expanded": "Machine Learning",
+    "plainspeak": {
+      "doctor": "A subset of AI where algorithms improve through experience by identifying patterns in data, typically via statistical models trained on labeled or unlabeled datasets.",
+      "high-school": "Teaching a computer to learn from examples instead of giving it step-by-step instructions.",
+      "kindergarten": "Showing a computer lots of examples so it can learn to do things on its own."
+    },
+    "category": "ai",
+    "saturated": true,
+    "since": "2023-01-01"
+  },
+  "NER": {
+    "term": "NER",
+    "expanded": "Named Entity Recognition",
+    "plainspeak": {
+      "doctor": "An NLP task that identifies and classifies named entities (persons, organizations, locations, dates, etc.) in unstructured text into predefined categories.",
+      "high-school": "A computer skill that picks out names, places, and dates from text and labels what they are.",
+      "kindergarten": "Teaching a computer to find people's names and place names in stories."
+    },
+    "category": "ai",
+    "saturated": false,
+    "since": "2023-06-01"
+  },
+  "NLP": {
+    "term": "NLP",
+    "expanded": "Natural Language Processing",
+    "plainspeak": {
+      "doctor": "A subfield of AI focused on the interaction between computers and human language, encompassing tasks like parsing, generation, translation, and sentiment analysis.",
+      "high-school": "Technology that helps computers understand, process, and generate human language like English.",
+      "kindergarten": "Teaching computers to understand what people say and write."
+    },
+    "category": "ai",
+    "saturated": false,
+    "since": "2023-01-01"
+  },
+  "RAG": {
+    "term": "RAG",
+    "expanded": "Retrieval-Augmented Generation",
+    "plainspeak": {
+      "doctor": "A technique that enhances LLM outputs by first retrieving relevant documents from a knowledge base and conditioning the model's generation on that retrieved context.",
+      "high-school": "A method where an AI looks up facts in a database before answering, like checking your notes before a test.",
+      "kindergarten": "Letting the AI peek at a book for the right answer before it speaks."
+    },
+    "category": "ai",
+    "saturated": false,
+    "since": "2023-10-01"
+  },
+  "RLHF": {
+    "term": "RLHF",
+    "expanded": "Reinforcement Learning from Human Feedback",
+    "plainspeak": {
+      "doctor": "A fine-tuning paradigm where a reward model trained on human preference data guides policy optimization of an LLM using reinforcement learning.",
+      "high-school": "A training method where humans rate AI outputs, and the AI learns to produce better answers based on those ratings.",
+      "kindergarten": "Teaching an AI by telling it which answers are good and which are bad, like giving a gold star or a frown."
+    },
+    "category": "ai",
+    "saturated": false,
+    "since": "2023-06-01"
+  },
+  "SDK": {
+    "term": "SDK",
+    "expanded": "Software Development Kit",
+    "plainspeak": {
+      "doctor": "A collection of libraries, tools, documentation, and sample code that enables developers to build applications for a specific platform or service.",
+      "high-school": "A toolkit with code libraries and instructions that helps programmers build apps for a specific platform.",
+      "kindergarten": "A box of tools for building programs that work with a particular service."
+    },
+    "category": "devtools",
+    "saturated": false,
+    "since": "2023-01-01"
+  },
+  "SLO": {
+    "term": "SLO",
+    "expanded": "Service Level Objective",
+    "plainspeak": {
+      "doctor": "A target metric (e.g., 99.9% uptime) defining the desired reliability level for a service, used with SLIs and SLAs to manage operational risk.",
+      "high-school": "A promise about how reliable a service will be, like 'this website will work 99.9% of the time.'",
+      "kindergarten": "A goal for how often a service should work without breaking."
+    },
+    "category": "devops",
+    "saturated": false,
+    "since": "2023-01-01"
+  },
+  "SSH": {
+    "term": "SSH",
+    "expanded": "Secure Shell",
+    "plainspeak": {
+      "doctor": "A cryptographic network protocol for operating services securely over an unsecured network, providing encrypted remote login and command execution.",
+      "high-school": "A secure way to log into another computer over the internet and run commands on it.",
+      "kindergarten": "A secret tunnel to another computer so you can use it from far away."
+    },
+    "category": "infra",
+    "saturated": true,
+    "since": "2023-01-01"
+  },
+  "TLS": {
+    "term": "TLS",
+    "expanded": "Transport Layer Security",
+    "plainspeak": {
+      "doctor": "A cryptographic protocol providing end-to-end encryption, authentication, and integrity for communications over a computer network, the successor to SSL.",
+      "high-school": "The technology that keeps your internet traffic private by encrypting it so nobody can spy on it.",
+      "kindergarten": "A secret code that keeps what you see on the internet safe from snoops."
+    },
+    "category": "infra",
+    "saturated": false,
+    "since": "2023-01-01"
+  },
+  "TPU": {
+    "term": "TPU",
+    "expanded": "Tensor Processing Unit",
+    "plainspeak": {
+      "doctor": "Google's custom ASIC designed specifically for accelerating machine learning workloads, optimized for TensorFlow operations with matrix arithmetic.",
+      "high-school": "A special chip Google made just for AI calculations, even faster than a GPU for certain tasks.",
+      "kindergarten": "A super-fast computer chip made just for AI."
+    },
+    "category": "hardware",
+    "saturated": false,
+    "since": "2023-01-01"
+  },
+  "UI": {
+    "term": "UI",
+    "expanded": "User Interface",
+    "plainspeak": {
+      "doctor": "The point of human-computer interaction comprising visual elements, controls, and feedback mechanisms that enable a user to operate a software application.",
+      "high-school": "The screens, buttons, and menus you see and click on when using an app or website.",
+      "kindergarten": "The pictures and buttons you see on a screen that you can tap or click."
+    },
+    "category": "devtools",
+    "saturated": true,
+    "since": "2023-01-01"
+  },
+  "UX": {
+    "term": "UX",
+    "expanded": "User Experience",
+    "plainspeak": {
+      "doctor": "The overall quality of interaction a person has with a system, encompassing usability, accessibility, aesthetics, and emotional response throughout the user journey.",
+      "high-school": "How easy and pleasant it feels to use a website or app.",
+      "kindergarten": "How much fun and easy it is to use something."
+    },
+    "category": "devtools",
+    "saturated": false,
+    "since": "2023-01-01"
+  },
+  "VLLM": {
+    "term": "VLLM",
+    "expanded": "Virtual Large Language Model / vLLM Engine",
+    "plainspeak": {
+      "doctor": "A high-throughput, memory-efficient serving engine for LLMs featuring PagedAttention, continuous batching, and tensor parallelism for production inference.",
+      "high-school": "A system that runs AI models efficiently and handles lots of users at the same time without running out of memory.",
+      "kindergarten": "A smart program that lets lots of people use a big AI at the same time."
+    },
+    "category": "mlops",
+    "saturated": false,
+    "since": "2024-01-01"
+  },
+  "WSL": {
+    "term": "WSL",
+    "expanded": "Windows Subsystem for Linux",
+    "plainspeak": {
+      "doctor": "A compatibility layer in Windows that enables running Linux binary executables natively through a Linux kernel interface provided by Microsoft.",
+      "high-school": "A way to run Linux programs directly on Windows without needing a separate computer or virtual machine.",
+      "kindergarten": "Lets you use Linux programs on a Windows computer."
+    },
+    "category": "infra",
+    "saturated": false,
+    "since": "2023-01-01"
+  },
+  "YAML": {
+    "term": "YAML",
+    "expanded": "YAML Ain't Markup Language",
+    "plainspeak": {
+      "doctor": "A human-readable data serialization language using indentation-based structure, commonly used for configuration files in CI/CD and application deployments.",
+      "high-school": "A way to write configuration files using indentation (spaces) that's easy for humans to read and edit.",
+      "kindergarten": "A way to write settings for programs using spaces and dashes."
+    },
+    "category": "infra",
+    "saturated": true,
+    "since": "2023-01-01"
+  },
+  "YOLO": {
+    "term": "YOLO",
+    "expanded": "You Only Look Once",
+    "plainspeak": {
+      "doctor": "A real-time object detection system that frames detection as a single regression problem, directly predicting bounding boxes and class probabilities from full images in one pass.",
+      "high-school": "An AI system that can spot objects in images or video in real time by looking at the whole picture at once.",
+      "kindergarten": "A clever computer program that can find things in pictures really fast."
+    },
+    "category": "ai",
+    "saturated": false,
+    "since": "2023-01-01"
+  }
+}

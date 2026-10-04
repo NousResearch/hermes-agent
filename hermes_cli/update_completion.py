@@ -263,7 +263,8 @@ def _complete_selected(request: dict) -> bool:
     from hermes_cli import main, update_cmd, update_cmd_config
     from hermes_cli.source_completion import complete_source_checkout
     from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
-    from hermes_cli.update_receipt import TAIL_FOLLOWUPS, record_followup, record_skip, record_stage
+    from hermes_cli.update_receipt import (
+        TAIL_FOLLOWUPS, record_build_stage, record_followup, record_skip, record_stage)
 
     root = Path(request["source"])
     main.PROJECT_ROOT = root
@@ -294,7 +295,7 @@ def _complete_selected(request: dict) -> bool:
         record_followup("completion", reason)
         followups.append(("completion", reason))
     tail_owed = any(step in TAIL_FOLLOWUPS for step, _ in followups)
-    record_stage("build", "failed" if tail_owed else "success")
+    record_build_stage(followups)
     if not tail_owed:
         from hermes_cli.venv_sync import clear_completion
         clear_completion(root)

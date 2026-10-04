@@ -155,6 +155,7 @@ def transition(tmp_path):
         "_current = contextvars.ContextVar('receipt', default=None)\n"
         "class UpdateReceipt: pass\n"
         "def record_stage(*args, **kwargs): pass\n"
+        "def record_build_stage(*args, **kwargs): pass\n"
         "def record_skip(*args, **kwargs): pass\n"
         "TAIL_FOLLOWUPS = frozenset({'dependencies', 'launchers', 'build', 'maintenance', 'config_migration', 'completion'})\n"
         "def record_followup(step, reason, **kwargs):\n"

@@ -428,6 +428,8 @@ def test_real_compiler_failure_is_owed_build_and_completion_continues(completion
     receipt = json.loads((home / "logs/update_receipts/latest.json").read_text())
     assert receipt["outcome"] == "success"
     assert [row["step"] for row in receipt["followups"]] == ["build"]
+    # Only a build follow-up marks the build stage failed (an owed config/dependency step does not).
+    assert {mark["name"]: mark["outcome"] for mark in receipt["stages"]}.get("build") == "failed"
     assert receipt["update_id"] == request["update_id"]
     assert receipt["steps"][0] == request["receipt"]["steps"][0]
     assert receipt["pm_venv_rebuild"] == request["pm_receipt"]["venv_rebuild"]

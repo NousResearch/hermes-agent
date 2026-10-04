@@ -317,6 +317,17 @@ def persist_running_receipt() -> None:
 #: Follow-up steps whose failure leaves the source-update tail owed (``source-completion-pending``).
 TAIL_FOLLOWUPS = frozenset({"dependencies", "launchers", "build", "maintenance", "config_migration", "completion"})
 
+#: Follow-ups that mean the BUILD stage did not succeed (C3: the receipt names what actually failed):
+#: the products or the launchers the build publishes failed, or the tail raised before proving them.
+#: Owed dependencies, config migration or maintenance keep the tail armed but say nothing about the
+#: build; they are reported as their own follow-ups.
+BUILD_FOLLOWUPS = frozenset({"launchers", "build", "completion"})
+
+
+def record_build_stage(followups) -> None:
+    """Mark the build stage from the owed ``(step, reason)`` follow-ups: failed only for a build one."""
+    record_stage("build", "failed" if any(step in BUILD_FOLLOWUPS for step, _ in followups) else "success")
+
 
 def record_followup(step: str, reason: str, *, retry: str = "the next launch or `hermes update` retries it") -> None:
     """A post-commit step failed: print ⚠, keep the run a success, and say what is still owed.

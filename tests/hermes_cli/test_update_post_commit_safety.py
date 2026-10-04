@@ -87,6 +87,7 @@ _CHILD = textwrap.dedent('''
     (cell / "summary.json").write_text(json.dumps({
         "code": code, "outcome": latest.get("outcome"),
         "followups": [row["step"] for row in latest.get("followups", [])],
+        "stages": {mark["name"]: mark["outcome"] for mark in latest.get("stages", [])},
         "config_version": yaml.safe_load((home / "config.yaml").read_text())["_config_version"],
         "latest_config_version": DEFAULT_CONFIG["_config_version"],
         "pending": completion_pending_path(source).is_file(),
@@ -153,6 +154,8 @@ def test_config_format_write_failure_is_owed_not_reported_complete(tmp_path):
     assert summary["followups"] == ["config_migration"]
     assert summary["pending"] is True
     assert summary["stamp"] is False
+    # C3: the receipt names what actually failed. The build succeeded; only the config is owed.
+    assert summary["stages"].get("build") == "success", summary["stages"]
 
 
 _RECEIPT_CHILD = textwrap.dedent('''

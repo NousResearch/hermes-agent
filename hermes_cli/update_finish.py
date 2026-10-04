@@ -22,7 +22,7 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
         _restart_gateway_fleet_after_update, _verify_fleet_after_update,
         _write_gateway_update_exit_code, _resume_windows_gateways_and_merge_outcome,
     )
-    from hermes_cli.update_receipt import TAIL_FOLLOWUPS, record_followup, record_stage
+    from hermes_cli.update_receipt import TAIL_FOLLOWUPS, record_build_stage, record_followup
 
     owed = followups if followups is not None else []
     runtime_safe = False
@@ -38,7 +38,7 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
         record_followup("maintenance", reason)
         owed.append(("maintenance", reason))
     tail_owed = any(step in TAIL_FOLLOWUPS for step, _ in owed)
-    record_stage("build", "failed" if tail_owed else "success")
+    record_build_stage(owed)
     if not tail_owed:
         from hermes_cli.source_stamp import write_source_stamp
         from hermes_cli.venv_sync import clear_completion

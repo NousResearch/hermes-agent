@@ -362,7 +362,9 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
         # Keep the catalog's output modality alongside the existing picker
         # capability flags. This is deliberately best-effort: custom endpoints
         # and stale models.dev entries must remain selectable when metadata is
-        # unavailable.
+        # unavailable. Aggregator rows carry vendor-prefixed ids the provider
+        # namespace doesn't list, so fall back to the openrouter namespace —
+        # the same ladder its ``_apply_featured`` sibling uses.
         modalities: dict[str, list[str]] = {}
         try:
             from agent.models_dev import get_model_info
@@ -371,7 +373,8 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
         if get_model_info is not None:
             for model in row.get("models") or []:
                 try:
-                    info = get_model_info(slug, model, config=metadata_config)
+                    info = (get_model_info(slug, model, config=metadata_config)
+                            or get_model_info("openrouter", model, config=metadata_config))
                     values = getattr(info, "output_modalities", ()) if info is not None else ()
                     normalized = [str(value).strip().lower() for value in values if str(value).strip()]
                     if normalized:

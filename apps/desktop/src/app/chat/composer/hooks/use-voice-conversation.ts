@@ -706,7 +706,7 @@ export function useVoiceConversation({
 
   /** Non-streaming providers still speak completed sentences during generation. */
   const awaitFallbackSpeech = useCallback(
-    (responseId: string) => {
+    (responseId: string, responseTurnKey: string) => {
       const sentenceBuffer = new IncrementalSpeechSentenceBuffer()
       const speechQueue: string[] = []
       let sourceLength = 0
@@ -815,7 +815,7 @@ export function useVoiceConversation({
 
         const response = pendingResponse()
 
-        if (!response || response.id !== responseId) {
+        if (!response || (response.turnKey ?? response.id) !== responseTurnKey) {
           finishFallback(false)
 
           return
@@ -895,7 +895,7 @@ export function useVoiceConversation({
 
           // No streaming backend/provider: speak the whole reply once it lands.
           speechSessionRef.current = null
-          awaitFallbackSpeech(responseId)
+          awaitFallbackSpeech(responseId, responseTurnKey)
 
           return
         }
@@ -931,7 +931,7 @@ export function useVoiceConversation({
         }
 
         if (outcome === 'fallback') {
-          awaitFallbackSpeech(responseId)
+          awaitFallbackSpeech(responseId, responseTurnKey)
 
           return
         }

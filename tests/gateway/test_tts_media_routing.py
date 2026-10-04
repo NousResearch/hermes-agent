@@ -583,3 +583,34 @@ async def test_queued_resend_branch_delivers_media_and_preserves_protected_examp
     assert any(str(media_file) in unquote(img["image_path"]) for img in adapter.images), (
         f"expected native image delivery via queued resend, got: {adapter.images!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_streaming_delivery_explicit_media_tag_can_attach_yaml(tmp_path, monkeypatch):
+    event = _event(thread_id="topic-1")
+    yaml_file = _allowed_media_path(tmp_path, monkeypatch, "generated.yaml")
+    adapter = SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+        send_multiple_images=AsyncMock(return_value=SendResult(success=True, message_id="images")),
+    )
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "topic-1"}),
+        f"MEDIA:{yaml_file}",
+        event,
+        adapter,
+    )
+
+    adapter.send_document.assert_awaited_once_with(
+        chat_id="chat-1",
+        file_path=str(yaml_file),
+        metadata={"thread_id": "topic-1"},
+    )
+    adapter.send_voice.assert_not_awaited()

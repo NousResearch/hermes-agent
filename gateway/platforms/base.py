@@ -1285,7 +1285,9 @@ SUPPORTED_IMAGE_DOCUMENT_TYPES = {
 # can actually deliver, so an unknown-extension path survives in the body instead of vanishing. Covers
 # images (inline), video (inline where supported), audio (voice/audio), documents/spreadsheets/presentations
 # (send_document), archives, and rendered web output. The dispatch partition (image vs video vs document)
-# lives in ``gateway/run.py``. ---------------------------------------------------------------------------
+# lives in ``gateway/run.py``. Bare-path auto-attach (``extract_local_files``) uses the narrower
+# BARE_LOCAL_FILE_EXTS subset below plus a sensitive-path guard; explicit MEDIA: tags keep this full set.
+# ---------------------------------------------------------------------------
 MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg",  # images (embed inline)
     ".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp",  # video (embed inline where supported)
@@ -1296,6 +1298,94 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     ".pptx", ".ppt", ".odp", ".key",  # presentations
     ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".apk", ".ipa",  # archives
     ".html", ".htm")  # web / rendered output
+
+# Bare-path auto-attach is intentionally narrower than explicit MEDIA: tags.
+# YAML is overwhelmingly configuration, not a safe generated artifact. Agents can
+# still intentionally send YAML with an explicit MEDIA: tag, which uses
+# MEDIA_DELIVERY_EXTS above.
+BARE_LOCAL_FILE_EXTS: Tuple[str, ...] = tuple(
+    ext for ext in MEDIA_DELIVERY_EXTS if ext not in {".yaml", ".yml"}
+)
+
+_SENSITIVE_BARE_FILE_NAMES = frozenset({
+    "config.yaml",
+    "config.yml",
+    ".env",
+    "auth.json",
+    "credentials.json",
+    "secrets.json",
+    "known_hosts",
+})
+_SENSITIVE_BARE_FILE_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
+_SENSITIVE_BARE_FILE_PREFIXES = ("id_rsa", "id_ed25519", ".env")
+# Sensitive *words* are matched as whole filename components (split on dots,
+# dashes, underscores and spaces), never as bare substrings, and only on
+# extensions that can plausibly HOLD a credential. A raw substring test rejects
+# legitimate artifacts whose names merely contain one of these words --
+# ``tokenization.json``, ``tokenizer.json`` -- and applying it to binary render
+# formats rejects ``token_counts.png`` / ``secret-santa.pdf``, which are charts
+# and documents, not credential stores.
+_SENSITIVE_BARE_FILE_WORDS = frozenset({
+    "secret", "secrets",
+    "credential", "credentials",
+    "token", "tokens",
+    "password", "passwords",
+})
+
+# Extensions the word heuristic applies to: text/config formats that can
+# actually contain a secret. Binary render/artifact formats (images, video,
+# audio, pdf, office, archives) are exempt -- a chart named
+# ``token_counts.png`` is not a credential. Name-, prefix- and suffix-based
+# rules (``.env*``, ``id_rsa*``, ``*.pem``, ``*.key``, ``.hermes/``) are NOT
+# scoped this way and still apply to every extension.
+# Archive containers are NOT render artifacts. The exemption above is for
+# formats whose content is a picture/document of something (a chart named
+# ``token_counts.png``); an archive is an opaque container that can hold
+# anything, so ``secrets.zip`` / ``credentials.tar`` are exactly as dangerous
+# as ``secrets.json`` and must be word-scoped too. Without these, every
+# archive extension in BARE_LOCAL_FILE_EXTS bypassed the word heuristic.
+_SENSITIVE_ARCHIVE_EXTS = frozenset({
+    ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar",
+})
+
+_SENSITIVE_WORD_SCOPED_EXTS = frozenset({
+    ".json", ".txt", ".yaml", ".yml", ".xml", ".toml", ".ini", ".conf",
+    ".cfg", ".csv", ".tsv", ".log", ".md", ".env", ".properties", ".sh",
+}) | _SENSITIVE_ARCHIVE_EXTS
+
+# Filename component separators: dots, dashes, underscores and spaces.
+_FILENAME_COMPONENT_RE = re.compile(r"[.\-_ ]+")
+
+
+def _sensitive_name_components(name: str) -> set:
+    """Split a filename into lowercase word components for exact matching."""
+    return {part for part in _FILENAME_COMPONENT_RE.split(name) if part}
+
+
+def _is_sensitive_bare_local_file_path(path: str) -> bool:
+    """Return True when a bare path should never be auto-attached.
+
+    This guard applies only to automatic bare-path extraction. Explicit MEDIA:
+    tags remain the deliberate escape hatch for attachments that happen to look
+    config-like.
+    """
+    lowered = os.path.expanduser(path).lower()
+    parts = {part for part in re.split(r"[/\\]+", lowered) if part}
+    name = next((part for part in reversed(re.split(r"[/\\]+", lowered)) if part), "")
+
+    if ".hermes" in parts:
+        return True
+    if name in _SENSITIVE_BARE_FILE_NAMES:
+        return True
+    if name.endswith(_SENSITIVE_BARE_FILE_SUFFIXES):
+        return True
+    if name.startswith(_SENSITIVE_BARE_FILE_PREFIXES):
+        return True
+    _, _, ext = name.rpartition(".")
+    if ext and f".{ext}" not in _SENSITIVE_WORD_SCOPED_EXTS:
+        # Binary render/artifact format -- word heuristic does not apply.
+        return False
+    return bool(_sensitive_name_components(name) & _SENSITIVE_BARE_FILE_WORDS)
 
 # Bare extensions (no dot) longest-first so a shorter ext never matches as a prefix of a longer one.
 _MEDIA_EXT_ALTERNATION = "|".join(sorted((e.lstrip(".") for e in MEDIA_DELIVERY_EXTS), key=len, reverse=True))
@@ -3371,8 +3461,12 @@ class BasePlatformAdapter(ABC):
         """Bare local file paths (absolute, ``~/`` or drive-letter) with deliverable extensions ->
         ``(expanded_paths, cleaned_text)``. Candidates must exist on disk (URLs / hallucinated paths
         ignored); paths inside fenced or inline code are skipped so code samples are never
-        mutilated. Dispatch by type lives in ``gateway/run.py``."""
-        ext_part = '|'.join(e.lstrip('.') for e in MEDIA_DELIVERY_EXTS)
+        mutilated. Dispatch by type lives in ``gateway/run.py``.
+
+        The bare-path allow-list is intentionally narrower than explicit ``MEDIA:`` tags: YAML/YML is
+        excluded, and config/credential-looking paths (including anything under a ``.hermes``
+        directory) are never auto-attached. Use explicit ``MEDIA:`` for intentional uploads."""
+        ext_part = '|'.join(e.lstrip('.') for e in BARE_LOCAL_FILE_EXTS)
         # Lookbehind rejects URL/relative matches (https://…/img.png, ./foo.png).
         # (?<![/:\w.]) prevents matching inside URLs (e.g. https://…/img.png) and relative paths (./foo.png)
         # (?:~/|/)    anchors to absolute or home-relative Unix paths (?:[A-Za-z]:[/\\]) anchors to Windows
@@ -3387,6 +3481,8 @@ class BasePlatformAdapter(ABC):
                 continue
             raw = match.group(0)
             expanded = os.path.expanduser(raw)
+            if _is_sensitive_bare_local_file_path(expanded):
+                continue
             if os.path.isfile(expanded):
                 unique.setdefault(expanded, raw)
             else:

@@ -406,7 +406,7 @@ def test_real_compiler_failure_is_owed_build_and_completion_continues(completion
     and the fleet restart still run, the exit is 0, and the tail stays pending until it builds."""
     from hermes_cli.config_defaults import DEFAULT_CONFIG
     from hermes_cli.venv_sync import completion_pending_path
-    import yaml
+    import hermes_yaml
 
     source, home, request, context, result, run = completion
     _npm_graph(source)
@@ -420,7 +420,7 @@ def test_real_compiler_failure_is_owed_build_and_completion_continues(completion
     assert (source / "ui-tui/dist/entry.js").is_file()
     assert not (source / "hermes_cli/web_dist/index.html").exists()
     # Maintenance and the fleet restart were not skipped by the build failure.
-    config = yaml.safe_load((home / "config.yaml").read_text())
+    config = hermes_yaml.safe_load((home / "config.yaml").read_text())
     assert config["_config_version"] == DEFAULT_CONFIG["_config_version"]
     assert config["model"]["default"] == "retained-model"
     assert (source / "restarted-plan.json").is_file()

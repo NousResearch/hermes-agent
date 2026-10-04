@@ -30,21 +30,31 @@ class _ButtonAdapter:
     def __init__(self, *, editable: bool = True) -> None:
         self.sends: List[str] = []
         self.edits: List[tuple] = []
+        self.card_metadata: List[Any] = []
+        self.send_metadata: List[Any] = []
         self._editable = editable
 
     def pause_typing_for_chat(self, chat_id: str) -> None:
         return None
 
     async def send_exec_approval(self, *a: Any, **k: Any) -> SendResult:
+        self.card_metadata.append(k.get("metadata"))
         return SendResult(success=True, message_id="card-1")
 
     async def send(self, chat_id: str, message: str, **k: Any) -> SendResult:
         self.sends.append(message)
+        self.send_metadata.append(k.get("metadata"))
         return SendResult(success=True, message_id="m2")
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, **k: Any) -> SendResult:
         self.edits.append((message_id, content))
         return SendResult(success=self._editable, error=None if self._editable else "cannot edit")
+
+
+class _PlainAdapter(_ButtonAdapter):
+    """No native buttons (``send_exec_approval is None`` per-class): plain-text fallback."""
+
+    send_exec_approval = None
 
 
 def _runner(adapter):
@@ -113,3 +123,24 @@ def test_other_settle_reasons_post_nothing(pending_entry, reason):
     pending_entry.settle(reason)
 
     assert adapter.edits == [] and adapter.sends == []
+
+
+def test_button_prompt_metadata_carries_notify(pending_entry):
+    """#132516: the button card send must carry notify=True — a card that lands with
+    disable_notification=True (Telegram "important" mode) is indistinguishable from
+    "no prompt" and burns the whole approval window before failing closed."""
+    adapter = _ButtonAdapter()
+    _runner(adapter)._approval_notify_sync(dict(pending_entry.data))
+
+    assert adapter.card_metadata == [{"thread_id": "t1", "notify": True}]
+
+
+def test_text_fallback_metadata_carries_notify_and_approval_marker(pending_entry):
+    """#132516: the plain-text fallback must carry notify=True (push, don't silently
+    deliver) plus the is_approval_prompt marker WeCom's control lane keys on."""
+    adapter = _PlainAdapter()
+    _runner(adapter)._approval_notify_sync(dict(pending_entry.data))
+
+    assert adapter.send_metadata == [
+        {"thread_id": "t1", "notify": True, "is_approval_prompt": True, "_interim_send": True}]
+    assert adapter.send_exec_approval is None  # really the fallback lane

@@ -416,3 +416,54 @@ def test_desktop_build_scripts_start_the_desktop_update_suite():
     assert "scripts/build/desktop.mjs" in reached, "seed scan broke: the Desktop build runs desktop.mjs"
     unowned = sorted(f for f in reached if not cc.classify([f])["e2e_desktop_update"])
     assert unowned == []
+
+
+# -- strict acceptance: the dispatch input reaches every E2E suite's environment ------------
+
+_STRICT_STEPS = (
+    (("tests", "e2e"), ".github/workflows/tests.yml", "e2e", "Run e2e tests"),
+    (("tests", "e2e-upgrade"), ".github/workflows/tests.yml", "e2e-upgrade", "Run upgrade e2e tests"),
+    (("tests-os", "e2e-windows"), ".github/workflows/tests-os.yml", "e2e-windows", "Run Windows E2E suite"),
+    (("tests-os", "install-update-e2e", "install-update"), ".github/workflows/windows-install-update-e2e.yml",
+     "install-update", "Run Windows install + update E2E"),
+)
+
+
+def _strict_env(run: dict, path: tuple[str, ...], rel: str, job: str, step_name: str) -> str:
+    node = _reached(run, *path)
+    assert node is not None, f"{'/'.join(path)} did not run"
+    step = next(s for s in _yaml(rel)["jobs"][job]["steps"] if str(s.get("name", "")).startswith(step_name))
+    assert "run_tests.sh" in step["run"]
+    return gha.to_string(gha.render(step["env"]["HERMES_E2E_STRICT_ACCEPTANCE"], node["ctx"]))
+
+
+@pytest.mark.parametrize("value", ["upd-txn", "1"])
+def test_strict_acceptance_dispatch_reaches_every_e2e_suite(value):
+    """`gh workflow run ci.yaml -f strict_acceptance=upd-txn` (the batch's acceptance run)."""
+    lanes = cc.classify([])  # a dispatch has no diff: every lane on
+    run = _run_workflow(".github/workflows/ci.yaml", inputs={"release": False, "strict_acceptance": value},
+                        detect=_detect_outputs(lanes))
+    for path, rel, job, step in _STRICT_STEPS:
+        assert _strict_env(run, path, rel, job, step) == value, "/".join(path)
+
+
+def test_pull_requests_never_run_strict():
+    run = _ci_run(cc.classify([]))
+    for path, rel, job, step in _STRICT_STEPS:
+        assert _strict_env(run, path, rel, job, step) == "", "/".join(path)
+
+
+def test_windows_install_update_dispatch_alone_sets_strict():
+    jobs = _run_workflow(".github/workflows/windows-install-update-e2e.yml",
+                         inputs={"strict_acceptance": "upd-txn"})
+    assert _strict_env({"w": {"jobs": jobs}}, ("w", "install-update"),
+                       ".github/workflows/windows-install-update-e2e.yml", "install-update",
+                       "Run Windows install + update E2E") == "upd-txn"
+    assert "workflow_dispatch" in _on(_yaml(".github/workflows/windows-install-update-e2e.yml"))
+
+
+def test_run_tests_forwards_the_strict_switch():
+    """run_tests.sh starts pytest under `env -i`: an unlisted variable never arrives."""
+    text = (_REPO / "scripts/run_tests.sh").read_text(encoding="utf-8-sig")
+    allow = re.search(r"for _test_var in (.*?); do", text, re.S)
+    assert allow and "HERMES_E2E_STRICT_ACCEPTANCE" in allow.group(1).split()

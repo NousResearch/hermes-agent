@@ -22,6 +22,11 @@ on:
         required: false
         type: boolean
         default: false
+      strict_acceptance:
+        description: "Acceptance runs only: known_failure owners whose gaps FAIL this run instead of xfailing ('upd-txn', a comma list, or '1' for every gap). Sets HERMES_E2E_STRICT_ACCEPTANCE for the E2E suites (tests/e2e/core/_pending_fixes.py)."
+        required: false
+        type: string
+        default: ''
   workflow_call:
     inputs:
       release:
@@ -129,6 +134,7 @@ jobs:
     with:
       e2e: ${{ needs.detect.outputs.e2e == 'true' }}
       e2e_upgrade: ${{ needs.detect.outputs.e2e_upgrade == 'true' }}
+      strict_acceptance: ${{ inputs.strict_acceptance || '' }}
 
   # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
   # the OS-marked tests it collects are skipped there by design (see the
@@ -148,6 +154,7 @@ jobs:
       desktop_updater: ${{ needs.detect.outputs.desktop_updater == 'true' }}
       e2e: ${{ needs.detect.outputs.e2e == 'true' }}
       e2e_upgrade: ${{ needs.detect.outputs.e2e_upgrade == 'true' }}
+      strict_acceptance: ${{ inputs.strict_acceptance || '' }}
 
   lint:
     name: Python lints

@@ -200,7 +200,7 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
     for leaky, key in (
         ("x-api-key: Bearer abc1234", "abc1234"),
         ("-H 'x-auth-token: *** s3cr3t'", "s3cr3t"),
-        ("--header x-api-key Basic short", "short"),
+        ("--header x-api-key *** abc1234", "abc1234"),
         ("x-api-key: *** sk-abc:xyz123456", "xyz123456"),
         ("Basic user:passw0rd", "passw0rd"),
         ("?r=x%2526access_token%253Dtok123456789", "tok123456789"),

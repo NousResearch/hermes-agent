@@ -388,13 +388,51 @@ def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
     return None
 
 
+def _launcher_embedded_python(target: Path) -> Path | None:
+    """Interpreter baked into an existing shell launcher, or None when unknown."""
+    try:
+        if target.is_symlink():
+            return None
+        tokens = shlex.split(target.read_text(encoding="utf-8-sig"), comments=True)
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if len(tokens) >= 2 and tokens[0] == "exec":
+        try:
+            return Path(tokens[1])
+        except Exception:
+            return None
+    return None
+
+
+def _launcher_points_outside_store(target: Path, root: Path) -> bool:
+    """True when *target* execs a live interpreter outside this install's store.
+
+    Launching under a foreign HERMES_HOME must never repoint the checkout's
+    shared launchers at that home's Python: a deleted temp home then bricks
+    every home (fixes #123238). Missing interpreters still republish (repair).
+    """
+    embedded = _launcher_embedded_python(target)
+    if embedded is None or not embedded.is_file():
+        return False
+    try:
+        from pm.environments import store_root
+        store = store_root(root)
+    except Exception:
+        return False
+    try:
+        return not embedded.resolve().is_relative_to(Path(store).resolve())
+    except Exception:
+        return False
+
+
 def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
     """Publish exact-install commands; conveniences follow them across Python repins."""
     root = Path(repo_root).resolve()
     local = root / ".hermes" / "bin"
     local.mkdir(parents=True, exist_ok=True)
     written = [str(path) for name in WINDOWS_BIN_LAUNCHERS
-               if (path := stage_launcher(name, root, local)) is not None]
+               if not _launcher_points_outside_store(local / name, root)
+               and (path := stage_launcher(name, root, local)) is not None]
     if Path(out_dir).resolve() == local:
         return written
     if len(written) != len(WINDOWS_BIN_LAUNCHERS):
@@ -403,7 +441,8 @@ def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
         return [str(path) for path in _publish_conveniences(root, Path(out_dir), WINDOWS_BIN_LAUNCHERS)]
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     return [str(path) for name in WINDOWS_BIN_LAUNCHERS
-            if (path := stage_launcher(name, root, Path(out_dir))) is not None]
+            if not _launcher_points_outside_store(Path(out_dir) / name, root)
+            and (path := stage_launcher(name, root, Path(out_dir))) is not None]
 
 
 def expose_cli(project_root: Path | None = None, *, create: bool = True) -> dict:

@@ -1,7 +1,7 @@
 name: hermes-pii
 repo: https://github.com/lukefx/hermes-pii
 sha: dc751aaca22394bbd48ecbb79910fcaf9ee0edd1
-description: "Uses local Presidio and spaCy to detect and redact supported PII in outgoing text fields. If detection fails, original text passes through."
+description: "Uses local Presidio and spaCy to detect and redact supported PII in outgoing text fields. If detection fails, original text passes through. Disclosure — rewrites every outgoing LLM request locally, replacing detected emails, phones, IBANs, cards, IPs and person/place/org names (including in the system prompt, tool outputs and past tool-call arguments) with placeholders; fail-open, so on any detector error the original text is sent; install pulls spaCy, Presidio and the en_core_web_sm wheel from GitHub."
 maintainer: lukefx
 tier: community
 category: general

@@ -60,7 +60,7 @@ function AppUpdatesSettings({ includeUninstall }: AppUpdatesSettingsProps): Reac
           <UpdateStatusCard target="client" version={version} />
           <UpdateChannelRow />
           {/* Client and remote backend updates are independent. Only the client has release notes. */}
-          {remote && <UpdateStatusCard showReleaseNotes={false} target="backend" />}
+          {remote && <UpdateStatusCard showReleaseNotes={false} target="backend" version={version} />}
         </div>
         {version && <VersionDetails version={version} />}
         {includeUninstall && <UninstallSection />}

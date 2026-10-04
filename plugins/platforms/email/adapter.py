@@ -79,9 +79,11 @@ _DROP_HINTS = {
     _NO_AUTH_RESULTS_REASON: " If your mail server does not stamp Authentication-Results, set "
     "platforms.email.require_authenticated_sender: false (or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
     _UNTRUSTED_AUTHSERV_REASON: " Check that platforms.email.authserv_id (EMAIL_AUTHSERV_ID) names your mail server.",
-    _MISSING_AUTHSERV_REASON: " Set EMAIL_AUTHSERV_ID (or platforms.email.authserv_id) to the receiving MTA's exact authserv-id, "
-    "or set platforms.email.require_authenticated_sender: false (or EMAIL_TRUST_FROM_HEADER=true) to accept the risk.",
 }
+# A missing pin is account config, not one sender's mail, so connect() names its fix once per account.
+_MISSING_AUTHSERV_HINT = (" Set EMAIL_AUTHSERV_ID (or platforms.email.authserv_id) to the receiving MTA's exact authserv-id, "
+                          "or set platforms.email.require_authenticated_sender: false (or EMAIL_TRUST_FROM_HEADER=true) "
+                          "to accept the risk.")
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
 _QUOTED = r'"(?:[^"\\]|\\.)*"'
@@ -449,7 +451,6 @@ class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
     # One email carries the whole body, so cron delivery hands over the full payload untruncated.
     splits_long_messages = True
-    _missing_pin_warned = False  # the no-authserv_id drop warning is logged once per process
 
     # Per-account seen-UID snapshot surviving adapter recreation: the reconnect watcher builds a FRESH
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
@@ -608,6 +609,8 @@ class EmailAdapter(BasePlatformAdapter):
             return self._fail("[Email] %s", message, "email_missing_configuration", message, retryable=False)
         if not self._probe_imap(is_reconnect) or not self._probe_smtp():
             return False
+        if not is_reconnect and self._require_authenticated_sender and not self._authserv_id:
+            logger.warning("[Email] %s: %s.%s", self._address, _MISSING_AUTHSERV_REASON, _MISSING_AUTHSERV_HINT)
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())
         print(f"[Email] Connected as {self._address}")
@@ -806,10 +809,7 @@ class EmailAdapter(BasePlatformAdapter):
         if self._require_authenticated_sender and not msg_data.get("sender_authenticated", False):
             auth_reason = msg_data.get("auth_reason", "no verdict")
             hint = _DROP_HINTS.get(auth_reason, "")
-            # A missing pin drops every message, so name the fix once per process rather than once per message.
-            repeat = auth_reason == _MISSING_AUTHSERV_REASON and EmailAdapter._missing_pin_warned
-            if (is_listed or (granted and hint)) and not repeat:
-                EmailAdapter._missing_pin_warned |= auth_reason == _MISSING_AUTHSERV_REASON
+            if is_listed or (granted and hint):
                 logger.warning("[Email] Dropping sender with unauthenticated From: %s (%s).%s", sender_addr, auth_reason, hint)
             else:
                 logger.debug("[Email] Dropping %s sender with unauthenticated From: %s (%s)",

@@ -380,6 +380,8 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
         """A granted sender's mail with no Authentication-Results suggests a server that never stamps it, so the drop
         warns with the opt-out hint; no stamp from the pinned authserv-id warns to check authserv_id; a listed sender's
         failing verdict warns without a hint; forged stranger mail under open access stays at debug."""
+        import asyncio
+        from gateway.config import PlatformConfig
         from plugins.platforms.email.adapter import _MISSING_AUTHSERV_REASON, _UNTRUSTED_AUTHSERV_REASON, EmailAdapter
 
         adapter_log = "plugins.platforms.email.adapter"
@@ -391,16 +393,29 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
                                                    env={"EMAIL_ALLOWED_USERS": self.STRANGER}), [])
         self.assertIn("authserv_id", logs.output[0])
         self.assertNotIn("require_authenticated_sender", logs.output[0])
-        # No pin drops every message, so the fix (pin, or the explicit opt-out) is logged once per process.
-        with patch.object(EmailAdapter, "_missing_pin_warned", False), \
-                self.assertLogs(adapter_log, level="DEBUG") as logs:
-            for _ in range(2):
-                self.assertEqual(self._reached_gateway(authenticated=False, auth_reason=_MISSING_AUTHSERV_REASON,
-                                                       env={"EMAIL_ALLOWED_USERS": self.STRANGER}), [])
-        warnings = [line for line in logs.output if line.startswith("WARNING")]
-        self.assertEqual(len(warnings), 1, logs.output)
-        self.assertIn("EMAIL_AUTHSERV_ID", warnings[0])
-        self.assertIn("EMAIL_TRUST_FROM_HEADER=true", warnings[0])
+        # No pin drops every message of the account, so connect() names the fix (pin, or the explicit opt-out) once
+        # per account at startup: each unpinned mailbox warns, a reconnect retry does not, pinned/opted-out stay quiet.
+        def connect(address, extra=None, is_reconnect=False):
+            with patch.dict(os.environ, {"EMAIL_ADDRESS": address, "EMAIL_PASSWORD": "secret",
+                                         "EMAIL_IMAP_HOST": "imap.test.com", "EMAIL_SMTP_HOST": "smtp.test.com"}):
+                adapter = EmailAdapter(PlatformConfig(enabled=True, extra=extra or {}))
+            imap = MagicMock()
+            imap.uid.return_value = ("OK", [b""])
+            with patch("imaplib.IMAP4_SSL", return_value=imap), patch.object(adapter, "_connect_smtp"):
+                self.assertTrue(asyncio.run(adapter.connect(is_reconnect=is_reconnect)))
+
+        with self.assertLogs(adapter_log, level="WARNING") as logs:
+            for address in ("one@test.com", "two@test.com"):
+                connect(address)
+            connect("one@test.com", is_reconnect=True)
+            connect("pinned@test.com", {"authserv_id": "mx.ourserver.com"})
+            connect("optout@test.com", {"require_authenticated_sender": False})
+        self.assertEqual([line.split(": ")[0] for line in logs.output],
+                         ["WARNING:plugins.platforms.email.adapter:[Email] one@test.com",
+                          "WARNING:plugins.platforms.email.adapter:[Email] two@test.com"], logs.output)
+        self.assertIn(_MISSING_AUTHSERV_REASON, logs.output[1])
+        self.assertIn("EMAIL_AUTHSERV_ID", logs.output[1])
+        self.assertIn("EMAIL_TRUST_FROM_HEADER=true", logs.output[1])
         with self.assertNoLogs(adapter_log, level="WARNING"):
             self.assertEqual(self._reached_gateway(authenticated=False, auth_reason="dmarc=fail",
                                                    env={"EMAIL_ALLOW_ALL_USERS": "true"}), [])

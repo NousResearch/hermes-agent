@@ -526,6 +526,50 @@ def _check_windows_gateway_autostart(should_fix: bool, f: Finding) -> None:
 
 
 @doctor_check()
+def _check_windows_store_writable(should_fix: bool, f: Finding) -> None:
+    """Windows: every entry under the managed tools store must be writable.
+
+    An elevated install leaves entries admin-owned with no rights for the
+    ordinary user, and every later non-elevated update dies with WinError 5
+    (fixes #126860). Probe access only — never take ownership here; repair
+    needs an elevated console and explicit user consent.
+    """
+    if sys.platform != "win32":
+        return
+    from pm.paths import writable_store_root
+
+    try:
+        tools_dir = writable_store_root()
+    except Exception:
+        return
+    if not tools_dir.is_dir():
+        return
+    _section("Windows Tools Store")
+    bad: list[str] = []
+    try:
+        entries = sorted(p for p in tools_dir.iterdir() if not p.name.startswith("."))
+    except OSError as exc:
+        check_warn("Tools store not listable", f"({tools_dir}: {exc})")
+        f.manual_issues.append(f"Take ownership of {tools_dir} from an elevated console, then reinstall non-elevated")
+        return
+    for entry in entries[:200]:
+        try:
+            if not os.access(entry, os.W_OK):
+                bad.append(entry.name)
+        except OSError:
+            bad.append(entry.name)
+    if not bad:
+        check_ok(f"Tools store writable ({tools_dir})")
+        return
+    shown = ", ".join(bad[:8]) + (f" (+{len(bad) - 8} more)" if len(bad) > 8 else "")
+    check_warn("Tools store entries not writable", f"({shown})")
+    f.manual_issues.append(
+        "An elevated install left store entries admin-owned: from an elevated console run "
+        f"takeown /f {tools_dir} /r /d y, then reinstall/update non-elevated"
+    )
+
+
+@doctor_check()
 def _check_web_dashboard_import(should_fix: bool, f: Finding) -> None:
     """Import the dashboard web surface in a subprocess so an import-time crash lands in the report.
 

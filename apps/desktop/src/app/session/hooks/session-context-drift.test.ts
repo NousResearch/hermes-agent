@@ -151,6 +151,59 @@ describe('sessionContextDrift', () => {
     expect(reason).toBe('composer:sess-b->sess-a')
   })
 
+  // A sessionless new chat loads NO chat into the composer: ChatBar scopes its
+  // draft to the per-lifecycle fresh key (`__new__:<uuid>`), which is the
+  // successor of the plain `null` the prong has always ignored. Treating it as
+  // a chat name made every first send on a new chat abort right after
+  // session.create — the session was minted, the route re-homed onto it, and
+  // prompt.submit never ran, so no row was ever persisted and the window sat
+  // on an id the REST transcript answers with 404 "Session not found".
+  it.each([['__new__'], ['__new__:0f0b1b4a-1f3e-4b21-9f31-2c6b0d7a9e55']])(
+    'does not drift when the composer still carries the fresh-draft scope %s (pre-create)',
+    freshScope => {
+      const reason = sessionContextDrift({
+        startRouteToken: routeToken(NEW_CHAT_ROUTE),
+        nowRouteToken: routeToken(NEW_CHAT_ROUTE),
+        startSelectedStoredId: null,
+        nowSelectedStoredId: null,
+        submitTargetStoredId: null,
+        composerScope: freshScope,
+        // resolveComposerSessionKey(null, sessions) — no stored target yet.
+        submitTargetComposerScope: null
+      })
+
+      expect(reason).toBeNull()
+    }
+  )
+
+  it('does not drift when a fresh-draft composer scope meets the chat the submit just created', () => {
+    const reason = sessionContextDrift({
+      startRouteToken: routeToken(sessionRoute(SESS_A)),
+      nowRouteToken: routeToken(sessionRoute(SESS_A)),
+      startSelectedStoredId: SESS_A,
+      nowSelectedStoredId: SESS_A,
+      submitTargetStoredId: SESS_A,
+      composerScope: '__new__:0f0b1b4a-1f3e-4b21-9f31-2c6b0d7a9e55',
+      submitTargetComposerScope: SESS_A
+    })
+
+    expect(reason).toBeNull()
+  })
+
+  it('still drifts (composer prong) for a real chat whose name merely starts like the fresh bucket', () => {
+    const reason = sessionContextDrift({
+      startRouteToken: routeToken(sessionRoute(SESS_A)),
+      nowRouteToken: routeToken(sessionRoute(SESS_A)),
+      startSelectedStoredId: SESS_A,
+      nowSelectedStoredId: SESS_A,
+      submitTargetStoredId: SESS_A,
+      composerScope: SESS_B,
+      submitTargetComposerScope: SESS_A
+    })
+
+    expect(reason).toBe('composer:sess-b->sess-a')
+  })
+
   it('does not drift when the session has rotated via compression (composerScope is the lineage root, submitTargetStoredId is the live tip)', () => {
     const ROOT_ID = 'stored-root'
     const TIP_ID = 'stored-tip-after-compression'

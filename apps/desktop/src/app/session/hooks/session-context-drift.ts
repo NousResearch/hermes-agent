@@ -1,3 +1,5 @@
+import { isFreshDraftScope } from '@/store/composer'
+
 import { isNewChatRoute, routeSessionId } from '../../routes'
 
 /**
@@ -43,6 +45,10 @@ interface SessionContextDriftArgs {
    * live in separate React subtrees and can each be internally consistent yet
    * still disagree with each other at the instant of send — this prong catches
    * that cross-component drift (#59305). Omit for non-composer submits.
+   *
+   * A fresh-draft scope (null, `__new__`, `__new__:<uuid>`) names no chat and
+   * is therefore never drift: a sessionless new chat is exactly the case where
+   * the composer's scope and the submit target legitimately differ.
    */
   composerScope?: string | null
   /**
@@ -86,7 +92,23 @@ export function sessionContextDrift({
   // mode. Compared against submitTargetComposerScope (lineage-pinned), NOT
   // submitTargetStoredId (live tip) — see the field doc on
   // SessionContextDriftArgs for why those two must not be conflated.
-  if (composerScope !== undefined && composerScope !== null && composerScope !== submitTargetComposerScope) {
+  //
+  // A fresh-draft scope names NO chat, so it can never disagree with one. It is
+  // the successor of the plain `null` this prong has always ignored: ChatBar
+  // keys a sessionless draft on the per-lifecycle fresh key (`__new__:<uuid>`,
+  // store/composer) rather than on null, and the first send of a new chat
+  // therefore always arrives with a composer scope that differs from the chat
+  // the create is about to mint. Counting that as drift aborted every such
+  // submit right AFTER session.create: the runtime existed and the route had
+  // re-homed onto its stored id, but prompt.submit never ran, so no row was
+  // persisted and the window polled an id the transcript API answers with 404
+  // "Session not found".
+  if (
+    composerScope !== undefined &&
+    composerScope !== null &&
+    !isFreshDraftScope(composerScope) &&
+    composerScope !== submitTargetComposerScope
+  ) {
     return `composer:${composerScope}->${submitTargetComposerScope}`
   }
 

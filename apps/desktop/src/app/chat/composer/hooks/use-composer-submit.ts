@@ -5,7 +5,7 @@ import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { isSideTaskSlashCommand } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { hasClarifyRequest, skipClarifyRequest } from '@/store/clarify'
-import { clearSessionDraft, type ComposerAttachment } from '@/store/composer'
+import { clearSessionDraft, type ComposerAttachment, isFreshDraftScope } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import { enqueueQueuedPrompt, type QueuedPromptEntry } from '@/store/composer-queue'
 import { hasConnectionRequest, skipConnectionRequest } from '@/store/connection-request'
@@ -97,8 +97,13 @@ export function useComposerSubmit({
 
     // Only this operation's explicit session.create handoff may re-home a
     // pre-session submit. A null → stored render can also be user navigation.
+    // A sessionless draft is scoped to the per-lifecycle fresh key
+    // (`__new__:<uuid>`), not to null, so both spellings of "no chat yet" must
+    // arm the handoff — otherwise a rejected FIRST send re-stashes the text
+    // under a bucket the chat has already left and the next new chat rotates
+    // it away.
     const assignment =
-      submittedScope === null
+      submittedScope === null || isFreshDraftScope(submittedScope)
         ? {
             onComposerScopeAssigned: (scope: string) => {
               restoreScope = scope

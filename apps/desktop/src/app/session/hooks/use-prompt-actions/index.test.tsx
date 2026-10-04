@@ -4578,6 +4578,62 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     expect(calls.some(c => c.method === 'prompt.submit')).toBe(true)
   })
 
+  it('submits the first message of a new chat when the composer carries its fresh-draft scope', async () => {
+    // Production shape of a first send: ChatBar scopes a sessionless draft to
+    // the per-lifecycle fresh key (`__new__:<uuid>`), NOT to null. The create
+    // then re-homes selection/route onto the chat it minted, so the composer's
+    // scope and the resolved target legitimately differ — which must not read
+    // as drift. It did, and the abort landed AFTER session.create: the runtime
+    // existed, the route pointed at its stored id, and prompt.submit never
+    // ran, so no `sessions` row was ever written and every transcript read of
+    // that id came back 404 "Session not found".
+    const FRESH_DRAFT_SCOPE = '__new__:5c2f6f3e-8a55-4a0a-9b2b-7a6d1c0f42d1'
+    const NEW_STORED_ID = 'stored-brand-new'
+    const NEW_RUNTIME_ID = 'rt-brand-new'
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as never
+    })
+
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+
+    // Mirrors createBackendSessionForSend's own publications (it re-homes both
+    // refs onto the created chat before returning the runtime id).
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = NEW_RUNTIME_ID
+      selectedStoredSessionIdRef.current = NEW_STORED_ID
+
+      return NEW_RUNTIME_ID
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    const ok = await handle!.submitText('first question of a brand new chat', {
+      composerScope: FRESH_DRAFT_SCOPE
+    })
+
+    expect(createBackendSessionForSend).toHaveBeenCalled()
+    expect(ok).toBe(true)
+    expect(calls.find(c => c.method === 'prompt.submit')?.params).toMatchObject({ session_id: NEW_RUNTIME_ID })
+  })
+
   it('aborts recovery submit when the user switches sessions during timeout resume', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     let submitAttempts = 0

@@ -485,6 +485,31 @@ describe('useComposerSubmit busy-turn routing', () => {
       expect(onSubmit).toHaveBeenCalledWith('hello', expect.objectContaining({ composerScope: 'stored-session' }))
     )
   })
+
+  it('follows the create handoff when a rejected FIRST send came from a fresh-draft scope', async () => {
+    // A sessionless draft is scoped to the per-lifecycle fresh key, not to
+    // null. The rejection must re-stash under the stored key session.create
+    // announced, or the text is stranded in a bucket the next new chat rotates
+    // away.
+    const { hook, onSubmit, stashAt } = renderSubmitHook({
+      sessionKey: '__new__:9f8d2c41-6b4e-4f52-8a1c-3e0d5b7a2c90',
+      text: 'first question of a brand new chat'
+    })
+
+    onSubmit.mockImplementation((async (_text: string, options?: Record<string, unknown>) => {
+      ;(options?.onComposerScopeAssigned as ((scope: string) => void) | undefined)?.('stored-brand-new')
+
+      return false
+    }) as never)
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() =>
+      expect(stashAt).toHaveBeenCalledWith('stored-brand-new', 'first question of a brand new chat', [])
+    )
+  })
 })
 
 describe('useComposerSubmit with a clarify parked on the session', () => {

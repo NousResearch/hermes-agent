@@ -197,3 +197,197 @@ def test_update_started_from_a_relaunched_gateway_does_not_share_the_claim(tmp_p
     out, _ = holder.communicate(timeout=60)
     assert holder.returncode == 0, out
     assert out.strip() == ("True False" if adopts else "False True"), out
+
+
+# --- R7: restart debt is conserved across custody transfers ------------------------------------
+# A child stops ITSELF at the named line of the real module (settrace), so a kill or a rival lands
+# exactly on the transfer boundary; nothing in the module under test is replaced.
+_AT_LINE = """
+    import inspect, json, os, sys, time
+    from pathlib import Path
+    from hermes_cli import update_pause_record as r
+    def stop_at(fn, text, action, flag=None):
+        lines, start = inspect.getsourcelines(fn)
+        line = start + next(i for i, t in enumerate(lines) if text in t)
+        def trace(frame, event, arg):
+            if event == "line" and frame.f_code is fn.__code__ and frame.f_lineno == line:
+                if action == "kill":
+                    os._exit(71)
+                print("paused", flush=True)
+                while not Path(flag).exists():
+                    time.sleep(0.01)
+            return trace
+        sys.settrace(trace)
+"""
+_RESUMES = """
+    import hermes_cli.update_cmd_windows as w
+    def resume(token):
+        print("resume", sorted(token.get("profiles") or {}), flush=True)
+        token["resume_needed"] = False
+    w._resume_windows_gateways_after_update = resume
+    r.recover(["status"])
+    print("done", flush=True)
+"""
+
+
+def _launches(tmp_path: Path, n: int) -> list[list[str]]:
+    """What each of *n* successive fresh launches resumed."""
+    seen = []
+    for _ in range(n):
+        out, _ = _child(_AT_LINE + _RESUMES, env={"HERMES_HOME": str(tmp_path)}).communicate(timeout=60)
+        seen.append([line for line in out.splitlines() if line.startswith("resume")])
+    return seen
+
+
+def _record_files(tmp_path: Path) -> list[str]:
+    return sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(pause_record.RECORD_STEM)
+                  and p.suffix in (".json", ".claim"))
+
+
+@pytest.mark.live_system_guard_bypass
+def test_a_claim_in_transfer_cannot_be_taken_by_a_second_launch(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(pause_record, "_MUTEX_WAIT_S", 0.5)
+    _orphan(tmp_path, {"default": 4242})
+    src = pause_record.record_path()
+    flag = tmp_path / "go"
+    first = _child(_AT_LINE + """
+    stop_at(r.claim, "src.unlink()", "pause", sys.argv[2])
+    won = r.claim(Path(sys.argv[1]))
+    sys.settrace(None)
+    print(json.dumps(won and str(won[0])), flush=True)
+    """, str(src), str(flag), env={"HERMES_HOME": str(tmp_path)})
+    try:
+        assert first.stdout.readline().strip() == "paused"
+        rivals = [pause_record.claim(p) for p in (src, *pause_record._claims(src))]
+        assert rivals == [None] * len(rivals), "a second launch took a claim whose transfer was in flight"
+    finally:
+        flag.touch()
+    won = json.loads(first.stdout.readline())
+    first.wait(timeout=30)
+    assert _record_files(tmp_path) == [Path(won).name], "the paused set is now carried by two files"
+
+
+@pytest.mark.live_system_guard_bypass
+def test_a_launch_killed_between_claim_and_retire_resumes_the_set_once(tmp_path):
+    _orphan(tmp_path, {"default": 4242})
+    killed = _child(_AT_LINE + """
+    stop_at(r.claim, "src.unlink()", "kill")
+    r.recover(["status"])
+    """, env={"HERMES_HOME": str(tmp_path)})
+    killed.wait(timeout=60)
+    assert killed.returncode == 71 and len(_record_files(tmp_path)) == 2, "premise: killed after publishing the claim"
+    assert _launches(tmp_path, 2) == [["resume ['default']"], []]
+    assert _record_files(tmp_path) == []
+
+
+@pytest.mark.live_system_guard_bypass
+def test_an_update_killed_after_publishing_its_record_never_restarts_a_set_twice(tmp_path):
+    _orphan(tmp_path, {"default": 4242})
+    killed = _child(_AT_LINE + """
+    adopted, claims = r.adopt_orphans()
+    stop_at(r.record_pause, "release_claims(claims)", "kill")
+    r.record_pause({"resume_needed": True, "profiles": {"beta": 99}}, adopted, claims)
+    """, env={"HERMES_HOME": str(tmp_path)})
+    killed.wait(timeout=60)
+    assert killed.returncode == 71 and len(_record_files(tmp_path)) == 2, "premise: killed before retiring the claim"
+    assert _launches(tmp_path, 2) == [["resume ['beta', 'default']"], []]
+    assert _record_files(tmp_path) == []
+
+
+_DRAINING = """
+    import os, signal, sys, time
+    from pathlib import Path
+    flag = Path(sys.argv[1])
+    def stop(*_):
+        print("stopping", flush=True)  # acknowledged; drains until the flag appears
+        while not flag.exists():
+            time.sleep(0.01)
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, stop)
+    print("up", flush=True)
+    while True:
+        time.sleep(0.1)
+"""
+
+
+@pytest.mark.live_system_guard_bypass
+def test_a_gateway_draining_after_the_stop_request_keeps_its_restart_debt(tmp_path):
+    flag = tmp_path / "drained"
+    gateway = _child(_DRAINING, str(flag), env={"HERMES_HOME": str(tmp_path)})
+    assert gateway.stdout.readline().strip() == "up"
+    updater = _child(_AT_LINE + """
+    pid = int(sys.argv[1])
+    token = r.record_pause({"resume_needed": True, "profiles": {"default": pid},
+                            "identities": {str(pid): r.identity(pid)["ct"]}}, None, [])
+    r.mark_stop_requested(token, [pid])
+    os.kill(pid, 15)
+    print("asked", flush=True)
+    time.sleep(120)
+    """, str(gateway.pid), env={"HERMES_HOME": str(tmp_path)})
+    try:
+        assert updater.stdout.readline().strip() == "asked"
+        assert gateway.stdout.readline().strip() == "stopping"
+    finally:
+        updater.send_signal(signal.SIGKILL)  # windows-footgun: ok — module skips on Windows
+        updater.wait(timeout=10)
+    try:
+        assert gateway.poll() is None, "premise: the gateway is still draining"
+        assert _launches(tmp_path, 1) == [[]], "a draining gateway was restarted before it exited"
+        assert len(_record_files(tmp_path)) == 1, "a draining gateway's restart debt was dropped"
+    finally:
+        flag.touch()
+        gateway.wait(timeout=10)
+    assert _launches(tmp_path, 2) == [["resume ['default']"], []]
+
+
+@pytest.mark.live_system_guard_bypass
+def test_a_gateway_never_asked_to_stop_is_not_restarted(tmp_path):
+    gateway = _child(_DRAINING, str(tmp_path / "unused"), env={"HERMES_HOME": str(tmp_path)})
+    assert gateway.stdout.readline().strip() == "up"
+    updater = _child(_AT_LINE + """
+    pid = int(sys.argv[1])
+    r.record_pause({"resume_needed": True, "profiles": {"default": pid},
+                    "identities": {str(pid): r.identity(pid)["ct"]}}, None, [])
+    print("recorded", flush=True)
+    time.sleep(120)
+    """, str(gateway.pid), env={"HERMES_HOME": str(tmp_path)})
+    try:
+        assert updater.stdout.readline().strip() == "recorded"
+        updater.send_signal(signal.SIGKILL)  # windows-footgun: ok — killed before its first stop request
+        updater.wait(timeout=10)
+        assert _launches(tmp_path, 1) == [[]]
+        assert _record_files(tmp_path) == [], "a still-serving gateway's entry stayed owed"
+    finally:
+        gateway.kill()
+        gateway.wait(timeout=10)
+
+
+# --- R13: a checkout sharing the home never takes another checkout's paused set --------------
+def _checkout_copy(root: Path) -> Path:
+    """A second checkout: the real module file under another install root."""
+    (root / "hermes_cli").mkdir(parents=True)
+    (root / "hermes_cli" / "update_pause_record.py").write_bytes(Path(pause_record.__file__).read_bytes())
+    _git(root, "init", "-q")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "b")
+    return root
+
+
+@pytest.mark.live_system_guard_bypass
+def test_another_checkouts_writer_never_imports_or_relabels_this_checkouts_debt(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _orphan(tmp_path, {"alpha": 4242})
+    other = _checkout_copy(tmp_path / "other")
+    writer = _child("""
+        import importlib.util, json, sys
+        spec = importlib.util.spec_from_file_location("other_pause", sys.argv[1])
+        b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+        b.write(b.stamp_tree({"resume_needed": True, "profiles": {"beta": 1}}), owner=b.UNOWNED)
+        print(json.dumps([len(b.orphans()), b.read()]), flush=True)
+    """, str(other / "hermes_cli" / "update_pause_record.py"), env={"HERMES_HOME": str(tmp_path)})
+    out, _ = writer.communicate(timeout=60)
+    seen, theirs = json.loads(out.strip().splitlines()[-1])
+    assert seen == 1 and sorted(theirs["token"]["profiles"]) == ["beta"], f"imported this checkout's set: {theirs}"
+    ours = pause_record.read()
+    assert ours["install_root"] == str(REPO) and sorted(ours["token"]["profiles"]) == ["alpha"], ours

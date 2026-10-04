@@ -1933,12 +1933,13 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 fail_result="Unconfirmed-final preview edit failed for session %s (%s); sending normally.",
                 fail_exc="Unconfirmed-final preview edit failed for session %s: %s; sending normally.")
         elif (_sc is not None and getattr(_sc, "stream_deltas_enabled", True)
-              and getattr(_sc, "streamed_content", True)):
+              and (getattr(_sc, "streamed_content", True) or getattr(_sc, "already_sent", False))):
             # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed but suppression did NOT fire; log
             # the decision inputs ("signal never set" vs "ack-pending race"). Skipped for consumers
-            # never fed the final's deltas (interim-only wiring, #105341) or fed none this turn
-            # (#127395) — they cannot have raced the normal final send, so the warning would be a
-            # guaranteed false positive.
+            # never fed the final's deltas (interim-only wiring, #105341) or that sent nothing this
+            # turn (#127395) — they cannot have raced the normal final send, so the warning would be
+            # a guaranteed false positive. already_sent survives segment breaks, which clear
+            # streamed_content.
             logger.warning(
                 "Normal final-send NOT suppressed despite active stream consumer for session %s: "
                 "streamed=%s previewed=%s content_delivered=%s transformed=%s final_len=%d — "

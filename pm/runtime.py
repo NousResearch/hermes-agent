@@ -191,7 +191,7 @@ def collect_runtime_generations(root: Path) -> list[Path]:
     existed stay, as the application collector keeps its own.
     """
     from pm.filesystem import lock_fd
-    from hermes_cli.runtime_state import leases_held
+    from hermes_cli.runtime_state import leases_held, remove_generation
 
     generations = root / "generations"
     removed: list[Path] = []
@@ -211,12 +211,12 @@ def collect_runtime_generations(root: Path) -> list[Path]:
             if published and (not (generation / ".lease-managed").is_file() or leases_held(generation)):
                 continue
             try:
-                shutil.rmtree(generation)
+                complete = remove_generation(generation)
             except OSError as exc:
-                # A mapped Windows extension can block one generation without blocking others.
                 LOG.warning("could not remove PM runtime generation %s: %s", generation, exc)
             else:
-                removed.append(generation)
+                if complete:
+                    removed.append(generation)
     return removed
 
 

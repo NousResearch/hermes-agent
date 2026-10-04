@@ -181,6 +181,41 @@ def lease_directory(generation: Path) -> Callable[[], None]:
     return release
 
 
+def remove_generation(generation: Path) -> bool:
+    """Best-effort payload cleanup; retain lifetime metadata while any payload remains.
+
+    Call only after the collector's selection/lease checks, under its publication lock.
+    A mapped hard-linked image can refuse unlink in *every* old generation. Continue
+    past that file without chmod (which would also mutate the selected/cache inode).
+    """
+    failed = False
+
+    def onerror(_function, path, exc_info):
+        nonlocal failed
+        exc = exc_info[1]
+        if isinstance(exc, FileNotFoundError):
+            return
+        failed = True
+        LOG.warning("could not remove generation payload %s: %s", path, exc)
+
+    # A swallowing rmtree callback alone can delete these markers even when nested
+    # payload survives. Keep them out of the walk until the payload is fully gone.
+    for child in generation.iterdir():
+        if child.name in (".lease-managed", "pm-runtime.json"):
+            continue
+        try:
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child, onerror=onerror)
+            else:
+                child.unlink()
+        except OSError as exc:
+            onerror(None, child, (type(exc), exc, exc.__traceback__))
+    if failed:
+        return False
+    shutil.rmtree(generation)
+    return True
+
+
 def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> list[Path]:
     """Remove unselected lease-managed generations after their readers exit."""
     from pm.environments import selected_venv
@@ -204,13 +239,12 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
                 continue
             if not leases_held(generation):
                 try:
-                    shutil.rmtree(generation)
+                    complete = remove_generation(generation)
                 except OSError as exc:
-                    # Windows can refuse one hard-linked image while other generations remain
-                    # reclaimable. Keep scanning instead of losing the whole GC pass.
                     LOG.warning("could not remove dependency generation %s: %s", generation, exc)
                 else:
-                    removed.append(generation)
+                    if complete:
+                        removed.append(generation)
     return removed
 
 

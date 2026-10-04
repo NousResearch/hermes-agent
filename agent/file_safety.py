@@ -62,6 +62,31 @@ def _is_under(resolved: str | Path, base: str | Path) -> bool:
     return resolved == base or resolved.startswith(str(base) + os.sep)
 
 
+def _hermes_scope_bases(resolved: str | Path) -> list[Path]:
+    """Resolved bases whose Hermes rules apply to *resolved*.
+
+    ``_hermes_dirs()`` (active home + global root) plus — when *resolved* sits under
+    ``<root>/profiles/<name>`` — that profile's own home, derived from the already
+    resolved path itself (no directory listing, no ``..``/symlink/env indirection).
+    This is what gives a SIBLING profile's ``.env``, ``auth.json``, ``state.db`` and
+    ``skills/.hub`` the same guard the active profile's copy has: only
+    ``_hermes_dirs()`` was consulted before, so every profile except the active one
+    and the root itself was unguarded.
+    """
+    bases = _hermes_dirs()
+    raw = str(resolved)
+    extra: list[Path] = []
+    for base in bases:
+        prefix = str(base)
+        if not (raw == prefix or raw.startswith(prefix + os.sep)):
+            continue
+        rel = raw[len(prefix):].lstrip("/\\").replace("/", os.sep)
+        parts = [p for p in rel.split(os.sep) if p]
+        if len(parts) >= 2 and parts[0] == "profiles":
+            extra.append(base / "profiles" / parts[1])
+    return list(dict.fromkeys([*bases, *extra]))
+
+
 def _resolve_target(path: str) -> Optional[Path]:
     """``Path(expanduser(path)).resolve()``, or None when resolution fails."""
     with suppress(OSError, RuntimeError):
@@ -173,6 +198,24 @@ def get_nt_namespace_error(path: str, *, verb: str = "Access") -> Optional[str]:
     )
 
 
+# Secret material under HERMES_HOME, on both the active profile and the global
+# root: overwriting the root .env leaks credentials across every profile that
+# inherits it, and the root Anthropic PKCE store is still read by default /
+# non-profile sessions when a profile is active. google_oauth.json is an OAuth
+# token store; both Bitwarden caches hold Secrets Manager material.
+#
+# auth.json, auth.lock, config.yaml and webhook_subscriptions.json are
+# deliberately NOT here: #45947 freed those control files on purpose
+# ("true containment belongs in Docker/remote backends and OS permissions,
+# not an expanding hardcoded denylist"). They stay read-denied, not write-denied.
+_HERMES_SECRET_FILE_RELS = (
+    ".env", ".anthropic_oauth.json",
+    os.path.join("auth", "google_oauth.json"),
+    os.path.join("cache", "bws_cache.json"),
+    os.path.join("cache", "bws_cache.enc.json"),
+)
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     # ``~/.ssh/config`` is deliberately NOT hard-denied: no key bytes, and editing
@@ -182,28 +225,45 @@ def build_write_denied_paths(home: str) -> set[str]:
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
     )
-    # Secret material under HERMES_HOME, on both the active profile and the global
-    # root: overwriting the root .env leaks credentials across every profile that
-    # inherits it, and the root Anthropic PKCE store is still read by default /
-    # non-profile sessions when a profile is active. google_oauth.json is an OAuth
-    # token store; both Bitwarden caches hold Secrets Manager material.
-    #
-    # auth.json, auth.lock, config.yaml and webhook_subscriptions.json are
-    # deliberately NOT here: #45947 freed those control files on purpose
-    # ("true containment belongs in Docker/remote backends and OS permissions,
-    # not an expanding hardcoded denylist"). They stay read-denied, not write-denied.
-    hermes_files = (
-        ".env", ".anthropic_oauth.json",
-        os.path.join("auth", "google_oauth.json"),
-        os.path.join("cache", "bws_cache.json"),
-        os.path.join("cache", "bws_cache.enc.json"),
-    )
     paths = [
         *(os.path.join(home, *f) for f in home_files),
-        *(str(base / f) for f in hermes_files for base in (_hermes_home_path(), _hermes_root_path())),
+        *(str(base / f) for f in _HERMES_SECRET_FILE_RELS for base in (_hermes_home_path(), _hermes_root_path())),
         "/etc/sudoers", "/etc/passwd", "/etc/shadow",
     ]
     return {os.path.realpath(p) for p in paths}
+
+
+# Directories under the Hermes root that hold PROJECT-local .env files rather than
+# profile secrets, so they keep their documented "writable, read-denied" behaviour:
+# ``<root>/kanban/**`` (task workspaces) and ``<root>/hooks/**``. A profile's HOME
+# subtree (``<root>/profiles/<name>/home/**``) is TERMINAL_HOME_MODE=profile's HOME,
+# i.e. a real user home where project .env files are expected.
+_PROFILE_ENV_EXCLUDED_DIRS = ("kanban", "hooks")
+
+
+def _is_profile_secret_env(resolved: str) -> bool:
+    """True for a secret-bearing ``.env``-family file under ``<root>/profiles/<name>``.
+
+    ``build_write_denied_paths()`` can only enumerate exact paths, which covers the
+    active profile and the root but no SIBLING profile — leaving every other
+    profile's ``.env`` writable while the active profile's was denied. Evaluated on
+    the already-resolved path, so ``..``, symlinks and env indirection do not change
+    the answer. ``<root>/.env`` and ``<active>/.env`` are exact-denied already and
+    fall through here (``parts[0] != "profiles"``).
+    """
+    root = os.path.realpath(str(_hermes_root_path()))
+    raw = str(resolved)
+    if not (raw == root or raw.startswith(root + os.sep)):
+        return False
+    rel = raw[len(root):].lstrip("/\\").replace("/", os.sep)
+    parts = [p for p in rel.split(os.sep) if p]
+    if not parts or parts[0] in _PROFILE_ENV_EXCLUDED_DIRS:
+        return False
+    if parts[0] != "profiles" or len(parts) < 3:
+        return False
+    if "home" in parts[1:-1]:
+        return False
+    return os.path.basename(raw) in _BLOCKED_PROJECT_ENV_BASENAMES
 
 
 def build_write_denied_prefixes(home: str) -> list[str]:
@@ -288,11 +348,21 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
     ):
         return "credential"
 
-    for base in _hermes_dirs():
+    for base in _hermes_scope_bases(resolved):
+        # build_write_denied_paths() enumerates the active home and the root
+        # exactly; the same secret stores under a SIBLING profile home are only
+        # reachable through the scope bases (L-1 cross-profile write).
+        for rel in _HERMES_SECRET_FILE_RELS:
+            with suppress(Exception):
+                if resolved == os.path.realpath(os.path.join(str(base), rel)):
+                    return "credential"
         for sub in _HERMES_PROTECTED_SUBPATHS:
             with suppress(Exception):
                 if _is_under(resolved, os.path.realpath(os.path.join(str(base), sub))):
                     return "credential"
+
+    if _is_profile_secret_env(resolved):
+        return "credential"
 
     safe_roots = get_safe_write_roots()
     if safe_roots and not any(_is_under(resolved, root) for root in safe_roots):
@@ -383,7 +453,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     if nt_error:
         return nt_error
     resolved = Path(path).expanduser().resolve()
-    hermes_dirs = _hermes_dirs()
+    hermes_dirs = _hermes_scope_bases(resolved)
     reason = None
     if any(_is_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):
         reason = (

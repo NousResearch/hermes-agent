@@ -120,7 +120,11 @@ def _hermes_exempt_homes() -> tuple[str, ...]:
     (#110630). They are the agent's own store, governed by their own guards, exactly like
     ``~/.hermes`` under the default profile. The root is added only when the shape really is a
     named profile (``named_profile_home``), so a coincidental ``profiles/`` dir elsewhere never
-    exempts its parent; the home comes from the ACTIVE scope, never ``HERMES_HOME`` alone."""
+    exempts its parent; the home comes from the ACTIVE scope, never ``HERMES_HOME`` alone.
+
+    Consumers must NOT apply this as a blanket prefix for every entry: the active home is a
+    prefix exemption, a root entry exempts its DIRECT files only (see
+    ``_is_exempt_protected_instruction``)."""
     home = _get_real_hermes_home()
     if not home:
         return ()
@@ -133,6 +137,38 @@ def _hermes_exempt_homes() -> tuple[str, ...]:
         return (home,)
     root = os.path.realpath(str(Path(str(profile_home)).parent.parent))
     return (home, root) if root and root != home else (home,)
+
+
+def _is_other_profile_store(resolved: str, active: str) -> bool:
+    """True when ``resolved`` sits under ``<active>/profiles/<name>`` — a sibling profile's store.
+
+    Only reachable when ``active`` IS the Hermes root (the default profile, where the whole
+    root is the active home): there the root's prefix exemption must not leak sideways into
+    ``<root>/profiles/<other>``. Under a named profile the sibling home is simply outside
+    ``active``, so this is belt-and-braces.
+    """
+    prefix = str(active).rstrip("/\\") + os.sep + "profiles" + os.sep
+    return resolved.startswith(prefix)
+
+
+def _is_exempt_protected_instruction(resolved: str) -> bool:
+    """True when the protected-instruction gate must stay out of ``resolved``.
+
+    The ACTIVE home keeps its prefix exemption (the agent's own store, governed by its own
+    guards). The Hermes ROOT — present only for a named profile — is exempt for its DIRECT
+    files ONLY (#110630: ``<root>/LEDGER.md`` / ``MEMORY.md`` / ``SOUL.md`` / ``AGENTS.md``
+    must not be gated like a project-local ``<repo>/.hermes/config.yaml``). A prefix
+    exemption on the root handed the whole tree to the gate's blind spot: another profile's
+    ``<root>/profiles/<other>/SOUL.md`` — a live prompt-injection persistence vector — and
+    ``<root>/kanban/workspaces/<task>/AGENTS.md`` both stopped prompting (L-2).
+    """
+    homes = _hermes_exempt_homes()
+    if not homes:
+        return False
+    active = homes[0]
+    if resolved == active or resolved.startswith(active + os.sep):
+        return not _is_other_profile_store(resolved, active)
+    return any(resolved == root or os.path.dirname(resolved) == root for root in homes[1:])
 
 
 def _resolved_or_raw(filepath: str, task_id: str) -> str:
@@ -231,11 +267,10 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
     # ~/.hermes itself is governed by its own guards (config.yaml hard-block,
     # mirror guard, write_approval); this gate targets PROJECT-LOCAL files only.
     # Must run before the ``.hermes`` component rule, which would match the home.
-    # ``_hermes_exempt_homes`` also covers the ROOT when the active home is a named
-    # profile, so ~/.hermes/<file> cannot read as project-local ``.hermes`` config.
-    for real_home in _hermes_exempt_homes():
-        if resolved == real_home or resolved.startswith(real_home + os.sep):
-            return None
+    # Scope: the ACTIVE home as a prefix, the ROOT for its DIRECT files only, and
+    # never a sibling profile's store — see ``_is_exempt_protected_instruction``.
+    if _is_exempt_protected_instruction(resolved):
+        return None
 
     for candidate in (normalized, resolved):
         base = os.path.basename(candidate)

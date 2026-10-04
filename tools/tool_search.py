@@ -153,6 +153,10 @@ def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) 
     plugin tool). Bridge names never defer."""
     if name in BRIDGE_TOOL_NAMES:
         return False
+    # Mission Hub / Piblox missions resolution tools must remain eager/direct (#248):
+    # bare numeric mission ID must resolve Mission Hub first via missions_get(id).
+    if name in ("mcp__mission_hub__missions_get", "mcp__piblox_missions__missions_get"):
+        return False
     if defer_tools is not None and name in defer_tools:
         return True
     if name in _core_tool_names():

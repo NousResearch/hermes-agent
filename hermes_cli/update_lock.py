@@ -41,6 +41,9 @@ UPDATE_MARKER_MAX_AGE_SECONDS = 20 * 60
 
 # Clock skew allowed between a recorded and a probed process creation time (C1 rule 3).
 CREATE_TIME_TOLERANCE_SECONDS = 2.0
+# Our own creation time re-probed by the same clock: only the marker's 3-decimal rounding differs,
+# while two processes are at least one scheduler tick (10 ms) apart.
+_OWN_CREATE_TIME_EPSILON = 0.005
 
 # A claim published by create-then-write (filesystems without hard links) is briefly empty; an
 # empty marker this young is a claim in flight, not a dead one (contract A3).
@@ -233,7 +236,10 @@ def _identity_live(pid: int, create_time: float | None, age: float) -> bool:
     actual = None if create_time is None else process_create_time(pid)
     if actual is None:
         return age <= UPDATE_MARKER_MAX_AGE_SECONDS
-    return abs(actual - create_time) <= CREATE_TIME_TOLERANCE_SECONDS
+    # Our own pid is us only at our exact creation time: a fresh pid namespace (container, bwrap)
+    # hands a killed update's pid to the next launch well inside the cross-writer skew window.
+    tolerance = _OWN_CREATE_TIME_EPSILON if pid == os.getpid() else CREATE_TIME_TOLERANCE_SECONDS
+    return abs(actual - create_time) <= tolerance
 
 
 def _identity_line(pid: int | None = None) -> str:

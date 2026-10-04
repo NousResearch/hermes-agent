@@ -177,6 +177,20 @@ def test_marker_naming_our_own_pid_is_adopted(marker, monkeypatch):
     assert not marker.exists()
 
 
+def test_v2_marker_naming_our_pid_at_a_nearby_creation_time_is_a_killed_update(marker):
+    """A fresh pid namespace (bwrap, a container) gives the next launch the killed updater's pid
+    about a second after it started: inside the 2 s cross-writer skew, but not our creation time.
+    Read as ours, the launch adopted a dead claim and silently skipped the tail the kill owed."""
+    _claim_v2(marker, os.getpid(), ct_offset=-1.5)
+
+    assert read_live_update(path=marker) is None, "a dead update's claim reads as a live one"
+    _claim_v2(marker, os.getpid(), ct_offset=-1.5)
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True and lock.acquired is True, "adopted a killed update's claim"
+    assert marker.read_text(encoding="utf-8-sig").splitlines()[2] == f"ct:{process_create_time():.3f}"
+    lock.release()
+
+
 def test_release_leaves_a_marker_a_handoff_partner_now_owns(marker):
     """The desktop writes the marker, then the Tauri updater takes ownership.
 

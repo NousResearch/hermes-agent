@@ -439,6 +439,17 @@ stage_prerequisites() {
         done
         [ -n "$_stdcxx" ] || fail "musl host: the Node.js runtime needs the system libstdc++. Install it (Alpine: apk add libstdc++, Void: xbps-install libstdc++) and re-run."
     fi
+    # glibc Node links libatomic.so.1, absent on minimal Debian/RHEL hosts. PM
+    # installs the distro package with `sudo -n` under its install lock, so
+    # cache sudo credentials now, while the terminal can answer the prompt.
+    local _target
+    _target="$(uv_bootstrap_target 2>/dev/null)" || _target=""
+    if [[ "$_target" == linux-* && "$_target" != *-musl ]] \
+        && [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && has_terminal \
+        && ! { ldconfig -p 2>/dev/null || /sbin/ldconfig -p 2>/dev/null; } | grep -q 'libatomic\.so\.1'; then
+        log "Node.js needs libatomic.so.1; sudo may ask for your password to install it"
+        sudo -v </dev/tty || log_warn "sudo failed; if Node.js fails, install libatomic (Debian/Ubuntu: libatomic1) and re-run"
+    fi
     log_success "prerequisites ok (git, curl)"
 }
 

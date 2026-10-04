@@ -31,6 +31,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
+from agent.interrupt_control import interrupt_skip_wording
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
@@ -1857,7 +1858,7 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
             if not _skip_remaining_sequential(
                 agent, messages, tool_calls[i - 1:], effective_task_id,
                 notice="tool call(s)",
-                content="[Tool execution cancelled — {name} was skipped due to user interrupt]",
+                content=f"[Tool execution cancelled — {{name}} was skipped. {interrupt_skip_wording(agent)}]",
                 hook_error_type="user_interrupt",
                 hook_id=lambda tc: getattr(tc, "id", "") or "",
                 flush_stage="cancelled tool result",
@@ -1890,7 +1891,7 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
             if not _skip_remaining_sequential(
                 agent, messages, tool_calls[i:], effective_task_id,
                 notice="remaining tool call(s)",
-                content="[Tool execution skipped — {name} was not started. User sent a new message]",
+                content=f"[Tool execution skipped — {{name}} was not started. {interrupt_skip_wording(agent)}]",
                 flush_stage="skipped tool result",
             ):
                 return

@@ -10,6 +10,7 @@ timeout) instead of failing the search.
 from __future__ import annotations
 
 import sqlite3
+import time
 
 import pytest
 
@@ -101,3 +102,26 @@ def test_record_retrievals_degrades_on_unwritable_handle(store_and_retriever, mo
     assert store.record_retrievals([1, 2]) == 0
     results = retriever.search("what happened with the deployment rollback")  # search still succeeds
     assert len(results) >= 1
+
+
+def test_retrieval_scopes_its_busy_wait_when_a_foreign_writer_holds_the_lock(store_and_retriever):
+    """A held write lock must degrade the increment fast, not stall search() for the full 10 s
+    connect timeout: prefetch joins its thread with an 8 s budget, so a 10 s busy wait would
+    silently cost the turn its memory context. Exercises the real busy-timeout path (the
+    _write-patching test above never blocks on the lock)."""
+    store, retriever = store_and_retriever
+    foreign = sqlite3.connect(store.db_path, timeout=1.0, isolation_level=None)
+    foreign.execute("BEGIN IMMEDIATE")  # hold the write lock across the retrieval
+    try:
+        start = time.monotonic()
+        results = retriever.search("what happened with the deployment rollback")
+        elapsed = time.monotonic() - start
+        assert len(results) >= 1        # WAL readers never block: the search itself succeeds
+        assert elapsed < 3.0            # ... without waiting out the 10 s busy timeout
+        assert _count(store, DEPLOY_FACT) == 0  # the increment degraded to a no-op
+    finally:
+        foreign.execute("ROLLBACK")
+        foreign.close()
+    assert store._one("PRAGMA busy_timeout")[0] == 10000  # scoped wait restored the connect() default
+    fact_id = store._one("SELECT fact_id FROM facts WHERE content = ?", (DEPLOY_FACT,))["fact_id"]
+    assert store.record_retrievals([fact_id]) == 1  # and the connection still writes normally

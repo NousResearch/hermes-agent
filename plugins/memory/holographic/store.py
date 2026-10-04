@@ -219,17 +219,26 @@ class MemoryStore:
         One UPDATE per retrieval (not per fact): memory_store.db is opened read-write by several
         processes (gateway, dashboard, workers), so per-fact writes would multiply lock contention.
         A read-only handle or a cross-process lock timeout is telemetry loss, never a failed search —
-        the increment degrades to a no-op. Unknown ids simply match no row."""
+        the increment degrades to a no-op. Unknown ids simply match no row.
+
+        The busy wait is scoped to 250 ms (vs the connection's 10 s default, which exists for real
+        writers like add_fact): the increment runs inline on the retrieval path, and prefetch joins
+        its thread with an 8 s budget — waiting the full 10 s would silently cost the turn its
+        memory context, which is worse than losing one counter tick."""
         ids = [int(f) for f in dict.fromkeys(fact_ids or [])]
         if not ids:
             return 0
         with self._lock:
             try:
+                self._conn.execute("PRAGMA busy_timeout = 250")
                 cur = self._write("UPDATE facts SET retrieval_count = retrieval_count + 1 WHERE fact_id IN "
                                   f"({','.join('?' * len(ids))})", ids)
                 return cur.rowcount
             except sqlite3.OperationalError:
                 return 0
+            finally:
+                # restore the connect() default (timeout=10.0); PRAGMA assignments take no bound parameters
+                self._conn.execute("PRAGMA busy_timeout = 10000")
 
     def _extract_entities(self, text: str) -> list[str]:
         """Regex entity candidates (see the pattern table), deduplicated case-insensitively in first-seen order."""

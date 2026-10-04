@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Huawei Cloud Safety'
+  short_description: 'Keep Huawei Cloud agent operations safe and redacted.'
+  default_prompt: 'Use $huaweicloud-safety to review this Huawei Cloud operation.'

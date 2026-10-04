@@ -820,14 +820,16 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     profile's config — ``-p`` swaps HERMES_HOME at process start, so no profile flag here."""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_sync import _read_manifest
-    from tools.skills_tool import _find_all_skills
-    from agent.skill_utils import get_disabled_skill_names
+    from tools.skills_tool import _skill_catalog
+    from agent.skill_utils import TIER_CREATE_DIR, TIER_EXTERNAL, TIER_PROJECT, get_disabled_skill_names
     from agent.skill_commands import skill_command_collision_note
     c = console or _console
     ensure_hub_dirs()
     hub_installed = {e["name"]: e for e in HubLockFile().list_installed()}
     builtin_names = set(_read_manifest())
-    all_skills = _find_all_skills(skip_disabled=True)  # include disabled ones to annotate status
+    # Rows are what skill_view loads: shadowed copies hidden, same-tier duplicates under their exact path.
+    all_skills = [{**s, "name": s["load_name"]} for s in _skill_catalog(skip_disabled=True) if s["load_name"]]
+    root_labels = {TIER_PROJECT: "project", TIER_CREATE_DIR: "create_dir", TIER_EXTERNAL: "external"}
     disabled_names = get_disabled_skill_names()
 
     table = _table(("Name", {"style": "bold cyan"}), "Category", "Source", "Trust", "Status",
@@ -843,6 +845,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
             trust = hub_entry.get("trust_level", "community")
         else:
             source_type = source_display = trust = "builtin" if name in builtin_names else "local"
+            source_display = root_labels.get(skill["tier"], source_display)
         is_enabled = name not in disabled_names
         if source_filter not in ("all", source_type) or (enabled_only and not is_enabled):
             continue

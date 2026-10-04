@@ -2104,6 +2104,8 @@ export const deOverrides = {
       defaultsLabel: 'Voreinstellungen',
       reasoning: 'Denken',
       reasoningOff: 'Aus',
+      speed: 'Geschwindigkeit',
+      speedStandard: 'Standard',
       defaultsFailed: 'Voreinstellungen des Modells konnten nicht gespeichert werden',
       loadFailed: 'Modelle konnten nicht geladen werden',
       restartRequired:
@@ -2864,6 +2866,7 @@ export const deOverrides = {
         no_interactive_session: 'keine interaktive Session',
         version_too_old: 'Version zu alt',
         missing_app: 'App fehlt',
+        unsupported_gpu: 'GPU nicht unterstützt',
         unknown: 'Status unbekannt'
       },
       catalogTitle: 'Plugin-Katalog',
@@ -3308,6 +3311,9 @@ export const deOverrides = {
     replaceValue: 'Aktuellen Wert ersetzen',
     openDocs: 'Dokumentation öffnen',
     clearField: key => `${key} löschen`,
+    addListEntry: 'Weitere hinzufügen',
+    removeListEntry: 'Entfernen',
+    listEntryPlaceholder: 'ID eingeben',
     enableAria: name => `${name} aktivieren`,
     disableAria: name => `${name} deaktivieren`,
     platformEnabled: name => `${name} aktiviert`,
@@ -3389,7 +3395,7 @@ export const deOverrides = {
       },
       TELEGRAM_ALLOWED_USERS: {
         label: 'Erlaubte Telegram-Benutzer-IDs',
-        help: 'Empfohlen. Numerische IDs von @userinfobot, durch Kommas getrennt. Ohne diese können Ihnen beliebige Benutzer Direktnachrichten senden.'
+        help: 'Empfohlen. Numerische IDs von @userinfobot, eine pro Feld. Ohne diese können Ihnen beliebige Benutzer Direktnachrichten senden.'
       },
       TELEGRAM_PROXY: {
         label: 'Proxy-URL',
@@ -3401,7 +3407,7 @@ export const deOverrides = {
       },
       DISCORD_ALLOWED_USERS: {
         label: 'Erlaubte Discord-Benutzer-IDs',
-        help: 'Empfohlen. Discord-Benutzer-IDs, durch Kommas getrennt.'
+        help: 'Empfohlen. Discord-Benutzer-IDs, eine pro Feld.'
       },
       DISCORD_REPLY_TO_MODE: {
         label: 'Antwortstil',
@@ -3451,7 +3457,7 @@ export const deOverrides = {
       },
       SLACK_ALLOWED_USERS: {
         label: 'Erlaubte Slack-Benutzer-IDs',
-        help: 'Empfohlen. Slack-Benutzer-IDs, durch Kommas getrennt.'
+        help: 'Empfohlen. Slack-Benutzer-IDs, eine pro Feld.'
       },
       MATTERMOST_URL: {
         label: 'Server-URL',
@@ -3462,7 +3468,7 @@ export const deOverrides = {
       },
       MATTERMOST_ALLOWED_USERS: {
         label: 'Erlaubte Benutzer-IDs',
-        help: 'Empfohlen. Mattermost-Benutzer-IDs, durch Kommas getrennt.'
+        help: 'Empfohlen. Mattermost-Benutzer-IDs, eine pro Feld.'
       },
       MATRIX_HOMESERVER: {
         label: 'Homeserver-URL',
@@ -3477,7 +3483,7 @@ export const deOverrides = {
       },
       MATRIX_ALLOWED_USERS: {
         label: 'Erlaubte Matrix-Benutzer-IDs',
-        help: 'Empfohlen. Benutzer-IDs im Format @benutzer:server, durch Kommas getrennt.'
+        help: 'Empfohlen. Benutzer-IDs im Format @benutzer:server, eine pro Feld.'
       },
       SIGNAL_HTTP_URL: {
         label: 'Signal-Bridge-URL',
@@ -3490,7 +3496,7 @@ export const deOverrides = {
       },
       SIGNAL_ALLOWED_USERS: {
         label: 'Erlaubte Signal-Benutzer',
-        help: 'Empfohlen. Signal-Kennungen, durch Kommas getrennt.'
+        help: 'Empfohlen. Signal-Kennungen, eine pro Feld.'
       },
       WHATSAPP_ENABLED: {
         label: 'WhatsApp-Bridge aktivieren',
@@ -3501,7 +3507,7 @@ export const deOverrides = {
       },
       WHATSAPP_ALLOWED_USERS: {
         label: 'Erlaubte WhatsApp-Benutzer',
-        help: 'Empfohlen. Telefonnummern oder WhatsApp-IDs, durch Kommas getrennt.'
+        help: 'Empfohlen. Telefonnummern oder WhatsApp-IDs, eine pro Feld.'
       }
     },
     platformIntro: {}
@@ -5064,6 +5070,8 @@ export const deOverrides = {
       options: 'Optionen',
       thinking: 'Denken',
       fast: 'Schnell',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: 'Standardgeschwindigkeit verwenden',
       effort: 'Aufwand',
       minimal: 'Minimal',
       low: 'Niedrig',

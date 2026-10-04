@@ -2584,8 +2584,8 @@ def _relay_aux_call_scope(args: tuple, kwargs: dict):
     })
     try:
         yield
-    except BaseException:
-        _fail_relay_auxiliary_call()
+    except BaseException as exc:
+        _fail_relay_auxiliary_call(exc)
         raise
     finally:
         _RELAY_AUX_CALL_CONTEXT.reset(token)
@@ -2666,15 +2666,19 @@ def _relay_sync_completion(
     from agent import relay_llm
     from agent.auxiliary_hooks import run_with_aux_hooks
     model_name = str(kwargs.get("model") or fallback_model)
-    return run_with_aux_hooks(
-        lambda: relay_llm.execute_current(
-            kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
-            name=provider_name, model_name=model_name, metadata=metadata,
-            defer_logical_completion=True,
-        ),
-        aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
-        provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
-    )
+    try:
+        return run_with_aux_hooks(
+            lambda: relay_llm.execute_current(
+                kwargs, lambda request: _run_protected_sync_provider_call(callback, request),
+                name=provider_name, model_name=model_name, metadata=metadata,
+                defer_logical_completion=True,
+            ),
+            aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+            provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
+        )
+    except Exception as exc:
+        _note_relay_auxiliary_error(exc)
+        raise
 
 
 async def _relay_async_completion(
@@ -2693,14 +2697,18 @@ async def _relay_async_completion(
     from agent import relay_llm
     from agent.auxiliary_hooks import arun_with_aux_hooks
     model_name = str(kwargs.get("model") or fallback_model)
-    return await arun_with_aux_hooks(
-        lambda: relay_llm.execute_current_async(
-            kwargs, callback, name=provider_name, model_name=model_name,
-            metadata=metadata, defer_logical_completion=True,
-        ),
-        aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
-        provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
-    )
+    try:
+        return await arun_with_aux_hooks(
+            lambda: relay_llm.execute_current_async(
+                kwargs, callback, name=provider_name, model_name=model_name,
+                metadata=metadata, defer_logical_completion=True,
+            ),
+            aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+            provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
+        )
+    except Exception as exc:
+        _note_relay_auxiliary_error(exc)
+        raise
 
 
 def _relay_sync_stream(
@@ -6877,17 +6885,26 @@ def _validate_llm_response(
     except (AttributeError, TypeError, IndexError) as exc:
         recovered = _recover_aux_response_message(response)
         if recovered is None:
-            raise RuntimeError(
+            invalid = RuntimeError(
                 f"Auxiliary {task or 'call'}: LLM returned invalid response (type={type(response).__name__}): "
                 f"{str(response)[:120]!r}. Expected object with .choices[0].message — check provider "
                 f"adapter or custom endpoint compatibility."
-            ) from exc
+            )
+            # An HTTP-200 body carrying a provider ``error`` (aggregators relay upstream failures
+            # this way): keep it for the classifier without changing how the ladder routes this.
+            from agent import auxiliary_call_outcome
+            setattr(invalid, auxiliary_call_outcome.PROVIDER_ERROR_ATTR,
+                    auxiliary_call_outcome.embedded_provider_error(response))
+            _note_relay_auxiliary_error(invalid)
+            raise invalid from exc
         response = recovered
     from agent.transports.chat_completions import is_router_timeout_shim
     if is_router_timeout_shim(response):
         # HTTP-200 router failure shim (#68396): invalid like a malformed shape so the
         # auxiliary fallback chain moves to the next candidate instead of titling with it.
-        raise RuntimeError(f"Auxiliary {task or 'call'}: provider returned a timeout shim instead of a completion")
+        shim = RuntimeError(f"Auxiliary {task or 'call'}: provider returned a timeout shim instead of a completion")
+        _note_relay_auxiliary_error(shim)
+        raise shim
     # Retain the provider-reported model for terminal relay route attribution.
     context = _RELAY_AUX_CALL_CONTEXT.get()
     if context is not None:
@@ -6898,8 +6915,9 @@ def _validate_llm_response(
     return response
 
 
-def _complete_relay_auxiliary_call(*, outcome: str = "success") -> None:
-    """Close one auxiliary logical call after acceptance or terminal failure."""
+def _complete_relay_auxiliary_call(*, outcome: str = "success", error_class: Optional[str] = None) -> None:
+    """Close one auxiliary logical call after acceptance or terminal failure. A success
+    reports the last attempt error it recovered from (``none`` when the first attempt held)."""
     context = _RELAY_AUX_CALL_CONTEXT.get()
     if context is None:
         return
@@ -6909,12 +6927,28 @@ def _complete_relay_auxiliary_call(*, outcome: str = "success") -> None:
         model_name=str(context.get("model") or "unknown"),
         provider_name=str(context.get("provider") or "auxiliary"),
         response_model_name=context.get("response_model"),
+        error_class=error_class or context.get("error_class") or "none",
     )
 
 
-def _fail_relay_auxiliary_call() -> None:
-    """Close a terminally failed call without replacing its original error."""
+def _note_relay_auxiliary_error(exc: BaseException) -> None:
+    """Remember one failed attempt's classified reason on the logical call."""
+    context = _RELAY_AUX_CALL_CONTEXT.get()
+    if context is not None and isinstance(exc, Exception):
+        from agent import auxiliary_call_outcome
+        context["error_class"] = auxiliary_call_outcome.error_class(
+            exc, provider=str(context.get("provider") or ""), model=str(context.get("model") or ""))
+
+
+def _fail_relay_auxiliary_call(exc: BaseException) -> None:
+    """Close a call that ended in ``exc`` without replacing it: a Hermes abort is ``cancelled``,
+    anything else ``failed`` with the classifier's reason for the error that ended it."""
     try:
+        from agent import auxiliary_call_outcome
+        if auxiliary_call_outcome.is_cancellation(exc):
+            _complete_relay_auxiliary_call(outcome="cancelled", error_class="none")
+            return
+        _note_relay_auxiliary_error(exc)
         _complete_relay_auxiliary_call(outcome="failed")
     except Exception:
         logger.warning("Relay auxiliary failure finalization failed", exc_info=True)

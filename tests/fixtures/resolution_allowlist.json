@@ -430,6 +430,16 @@
     "kind": "bare_which"
   },
   {
+    "path": "pm/libatomic.py",
+    "symbol": "_command_plan",
+    "kind": "bare_which"
+  },
+  {
+    "path": "pm/libatomic.py",
+    "symbol": "_host_install_command",
+    "kind": "bare_which"
+  },
+  {
     "path": "pm/native_build.py",
     "symbol": "prepare_windows_environment",
     "kind": "bare_which"

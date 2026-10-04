@@ -13,6 +13,7 @@ import tarfile
 
 import pytest
 
+from agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_cli.profiles import export_profile
 from plugins.teams_pipeline.store import DEFAULT_TEAMS_PIPELINE_STORE_FILENAME
 
@@ -35,10 +36,12 @@ _EXTRA_STORES = {
     DEFAULT_TEAMS_PIPELINE_STORE_FILENAME, "mem0.json",
     "browser-profiles/live/Default/Cookies", "browser_profiles/default/Default/Login Data",
     "mcp-tokens/srv.json", "vault/vault.key", "platforms/pairing/approved.json", "slack_tokens.json",
-    "webhook_subscriptions.json",
+    "webhook_subscriptions.json", ".ssh/id_rsa", ".aws/credentials", ".gnupg/x", ".kube/config", ".envrc",
 }
 # Single-file stores whose name has no dot; every other dotless store is a token directory.
 _DOTLESS_FILES = {"npmrc"}
+# Dot-named stores that are directories: the OS credential dirs shared with file_safety.
+_DOT_DIRS = set(HOME_CREDENTIAL_DIRS)
 
 
 def _seed_stores(root):
@@ -50,7 +53,7 @@ def _seed_stores(root):
     (root / "config.yaml").write_text("model: gpt-4\n")
     (root / "platforms" / "keep.json").write_text("{}")
     for rel in stores:
-        is_dir = "." not in rel.rsplit("/", 1)[-1] and rel not in _DOTLESS_FILES
+        is_dir = rel in _DOT_DIRS or ("." not in rel.rsplit("/", 1)[-1] and rel not in _DOTLESS_FILES)
         target = root / rel / "store" if is_dir else root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("fake-credential")
@@ -106,6 +109,12 @@ class TestCredentialExclusion:
         (profile_dir / "config.yaml.bak-my-note").write_text(f"model:\n  api_key: {_LEAKED_KEY}\n")
         (profile_dir / "GOOGLE_CHAT_USER_TOKENS").mkdir(exist_ok=True)
         (profile_dir / "GOOGLE_CHAT_USER_TOKENS" / "upper.json").write_text("fake-credential")
+        nested = [f"skills/s/{r}" for r in (".ssh/id_rsa", ".aws/credentials", ".gnupg/x", ".kube/config", ".envrc",
+                                            ".docker/config.json", ".azure/accessTokens.json",
+                                            ".config/gh/hosts.yml", ".config/gcloud/application_default_credentials.json")]
+        for rel in [*nested, "skills/s/.config/other/settings.json"]:
+            (profile_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+            (profile_dir / rel).write_text("fake-credential")
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
         copies = [
             create_pre_update_backup(hermes_home=profile_dir),
@@ -121,14 +130,20 @@ class TestCredentialExclusion:
         with tarfile.open(export_profile("testprofile", str(tmp_path / "export.tar.gz")), "r:gz") as tf:
             members = {m.name: m for m in tf.getmembers()}
             note = tf.extractfile("testprofile/config.yaml.bak-my-note").read().decode()
+        # The default profile's root allow-list keeps skills/, so its nested copies need the same drop.
+        with tarfile.open(export_profile("default", str(tmp_path / "default.tar.gz")), "r:gz") as tf:
+            default_members = set(tf.getnames())
 
         assert {"testprofile/config.yaml", "testprofile/platforms/keep.json"} <= set(members)
+        assert "default/config.yaml" in default_members
+        assert "default/skills/s/.config/other/settings.json" in default_members
+        assert "testprofile/skills/s/.config/other/settings.json" in members
         assert _LEAKED_KEY not in note
-        rels = {*_EXTRA_STORES, *PROFILE_CREDENTIAL_PATHS, "google_chat_user_tokens/upper.json",
+        rels = {*_EXTRA_STORES, *PROFILE_CREDENTIAL_PATHS, "google_chat_user_tokens/upper.json", *nested,
                 *(c.relative_to(profile_dir).as_posix() for c in copies)}
-        folded = {n.casefold() for n in members}
-        leaked = sorted(r for r in rels if any(
-            n == f"testprofile/{r}".casefold() or n.startswith(f"testprofile/{r}/".casefold()) for n in folded))
+        folded = {n.casefold() for n in (*members, *default_members)}
+        leaked = sorted(f"{p}/{r}" for p in ("testprofile", "default") for r in rels if any(
+            n == f"{p}/{r}".casefold() or n.startswith(f"{p}/{r}/".casefold()) for n in folded))
         assert not leaked, leaked
 
     @pytest.mark.parametrize("declare_owned", [False, True])

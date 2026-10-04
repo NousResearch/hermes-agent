@@ -1059,6 +1059,9 @@ class GatewayAdapterLifecycleMixin:
         from hermes_cli.env_loader import hydrate_profile_secret_sources
         # Hydrate external secret sources off-loop ONCE: sync hydration would stall every heartbeat.
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
+        # A platform that left core for a catalog plugin is installed before discovery below.
+        from gateway.run_startup import recover_left_core_in
+        await asyncio.to_thread(recover_left_core_in, profile_home, hydrate_secrets=False)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
             profile_runtime_cfg = _load_gateway_config()
             from hermes_cli.plugins import discover_plugins, get_plugin_manager
@@ -1181,8 +1184,7 @@ class GatewayAdapterLifecycleMixin:
         return True
 
     def _note_unserved_secondary_platform(self, profile_name: str, platform: Platform) -> None:
-        """A secondary enabled a shared-ingress platform (Relay, WhatsApp) the multiplexer only runs on
-        the default profile. Log the reason + remedy once per (profile, platform) and stamp a
+        """Report unpaired WhatsApp or secondary-only Relay. Log the reason and remedy and stamp a
         ``<profile>:<platform>`` status entry so ``hermes gateway status --profile X`` and the
         dashboard show *why* the channel is dead instead of nothing at all."""
         noted = getattr(self, "_unserved_secondary_platforms", None)
@@ -1192,6 +1194,14 @@ class GatewayAdapterLifecycleMixin:
             return
         noted.add((profile_name, platform))
         pv = platform.value
+        if platform is Platform.WHATSAPP:
+            message = f"WhatsApp is not paired; pair it: hermes -p {profile_name} whatsapp"
+            logger.info("[MULTIPLEX] Profile '%s': %s", profile_name, message)
+            self._update_platform_runtime_status(
+                f"{profile_name}:{pv}", platform_state="disabled",
+                error_code="whatsapp_unpaired", error_message=message,
+            )
+            return
         logger.info(
             "[MULTIPLEX] Profile '%s': %s is enabled but not served — %s is process-level shared ingress "
             "owned by the default profile under multiplex. Enable and configure %s on the default profile "
@@ -1209,6 +1219,8 @@ class GatewayAdapterLifecycleMixin:
         noted = getattr(self, "_unserved_secondary_platforms", None) or ()
         lines = []
         for platform in sorted({p for _n, p in noted}, key=lambda p: p.value):
+            if platform is Platform.WHATSAPP:
+                continue  # unpaired sessions have their own per-profile remedy
             if platform in self.adapters or platform in (getattr(self, "_failed_platforms", None) or {}):
                 continue  # the default owns it: secondaries ARE served through the shared adapter
             profiles = sorted(n for n, p in noted if p is platform)
@@ -1243,15 +1255,18 @@ class GatewayAdapterLifecycleMixin:
                     (getattr(self, "_profile_failed_platforms", None) or {}).get(profile_name) or {}):
                 continue
             # No credential in THIS profile's scope: an adapter would fan inbound across every such profile.
-            if multiplex and not _platform_has_bot_credential(platform, platform_config):
+            with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                has_credential = _platform_has_bot_credential(platform, platform_config)
+            if multiplex and not has_credential:
+                if platform is Platform.WHATSAPP:
+                    self._note_unserved_secondary_platform(profile_name, platform)
                 logger.info(
                     "[MULTIPLEX] Profile '%s': skipping %s - no bot credential "
                     "in this profile's secrets", profile_name, platform.value,
                 )
                 continue
-            # Relay/WhatsApp are shared process-level ingress under multiplex; a secondary would retry-loop.
-            # Say so: four profiles with WHATSAPP_ENABLED=true and nothing in the log is a silent dead channel.
-            if multiplex and platform in (Platform.RELAY, Platform.WHATSAPP):
+            # Relay still uses process-level shared ingress; WhatsApp owns a session per profile.
+            if multiplex and platform is Platform.RELAY:
                 self._note_unserved_secondary_platform(profile_name, platform)
                 continue
             # api_server / webhook: the default's listener already mirrors them at /p/<profile>/; a second

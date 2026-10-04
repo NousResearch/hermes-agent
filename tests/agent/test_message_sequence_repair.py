@@ -9,6 +9,8 @@ providers (violating role alternation), which retriggered the empty-retry
 recovery every turn.
 """
 
+import pytest
+
 from run_agent import AIAgent
 
 
@@ -1690,3 +1692,25 @@ def test_repair_decode_of_durable_sentinel_row_does_not_reappend(tmp_path):
 
     after = [r[0] for r in _active_rows()]
     assert after == ["user", "assistant"], f"flush changed the durable transcript: {before} -> {after}"
+
+
+_UNANSWERED_CALL = {"role": "assistant", "content": "", "_row_id": 21,
+                    "tool_calls": [{"id": "unanswered", "type": "function",
+                                    "function": {"name": "f", "arguments": "{}"}}]}
+_STRAY_RESULT = {"role": "tool", "tool_call_id": "orphan", "content": "out", "_row_id": 21}
+
+
+@pytest.mark.parametrize("ahead", [False, True], ids=["behind_survivor", "ahead_of_first_survivor"])
+@pytest.mark.parametrize("dropped", [_UNANSWERED_CALL, _STRAY_RESULT], ids=["unanswered_call", "stray_result"])
+def test_repair_records_dropped_tool_row_on_survivor(dropped, ahead):
+    """A dropped row is recorded on the survivor before it, or on the first survivor when nothing is kept
+    ahead of it (#129162)."""
+    agent = _bare_agent()
+    prompt = {"role": "user", "content": "prompt", "_row_id": 20}
+    messages = [dict(dropped), prompt] if ahead else [prompt, dict(dropped)]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 1
+    assert messages[0]["_absorbed_row_ids"] == [21]

@@ -1448,8 +1448,6 @@ platform:
   irc:
     quit_message: "جارٍ إيقاف تشغيل Hermes Agent"
     standalone_quit: "تم التسليم"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "الموافقة مرة"
     confirm_always_approve: "الموافقة دائمًا"

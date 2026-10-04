@@ -84,7 +84,12 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, uv_
 
 
 CASES = {
-    "shared JS builder → frontend": (["scripts/build/web.mjs"], _lanes(python=True, frontend=True)),
+    # source_build runs it on every source update, and the Desktop build steps
+    # through the same compilers (tests/ci/test_update_ci_routing.py).
+    "shared JS builder → frontend + both update suites": (
+        ["scripts/build/web.mjs"],
+        _lanes(python=True, frontend=True, e2e_upgrade=True, e2e_desktop_update=True),
+    ),
     "root JS tests → frontend": (["tests-js/product-builders.test.mjs"], _lanes(python=True, frontend=True)),
     "docs-only → nothing heavy": (["README.md", "docs/guide.md"], _lanes()),
     "python source → python": (["run_agent.py"], _lanes(python=True, scan=True)),
@@ -336,7 +341,10 @@ CASES = {
     "PM → e2e_upgrade + docker": (["pm/environments.py"], _lanes(python=True, scan=True, e2e_upgrade=True, docker=True)),
     # The update pipeline lives beyond the update_* family too: the entry
     # point, launch-time recovery, the gateway restart/pause surface.
-    "cmd_update entry → e2e_upgrade": (["hermes_cli/main.py"], _lanes(python=True, scan=True, e2e_upgrade=True)),
+    # main.py is also `hermes desktop --build-only`, the update's Desktop rebuild.
+    "cmd_update entry → both update suites": (
+        ["hermes_cli/main.py"], _lanes(python=True, scan=True, e2e_upgrade=True, e2e_desktop_update=True),
+    ),
     "gateway status stamp → e2e_upgrade": (["gateway/status.py"], _lanes(python=True, scan=True, e2e_upgrade=True)),
     "desktop verify → desktop_updater + both update suites": (
         ["hermes_cli/desktop_update_verify.py"],
@@ -493,7 +501,7 @@ _REPO = Path(__file__).resolve().parents[2]
 
 def _yaml(rel: str) -> dict:
     yaml = pytest.importorskip("hermes_yaml")
-    return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8"))
+    return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8-sig"))
 
 
 def test_every_lane_reaches_the_composite_action():
@@ -574,7 +582,7 @@ def test_real_update_suites_gate_the_merge_when_their_lane_fires(caller, job, ca
 def test_windows_venv_e2e_runs_only_test_files_that_exist():
     """``run_tests.sh`` drops a missing path (or a ``::node`` selector) without
     a word, so a stale entry silently stops running on every wine2e push."""
-    text = (_REPO / ".github/workflows/windows-venv-e2e.yml").read_text(encoding="utf-8")
+    text = (_REPO / ".github/workflows/windows-venv-e2e.yml").read_text(encoding="utf-8-sig")
     paths = re.findall(r"(tests/[\w/.:-]+)", text)
     assert paths
     assert [p for p in paths if "::" in p or not (_REPO / p).is_file()] == []

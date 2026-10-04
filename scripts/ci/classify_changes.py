@@ -219,6 +219,99 @@ _UPDATE_PIPELINE = (
     "gateway/restart.py",
     "scripts/desktop-update/",  # the hand-off scripts run `hermes update`
 )
+# Selectors are owned by the import graph, not remembered. The update
+# transaction's own modules (what `hermes update` and the launch-time completion
+# run between the lock and the receipt) are the entry points;
+# tests/ci/test_update_ci_routing.py reads every repo module they import (AST,
+# module level and lazy) and every build script they run, and fails until each
+# one is routed to the suite below or is a _SHARED_HUBS entry.
+_UPDATE_ENTRY_POINTS = (
+    "hermes_cli/update_",
+    "hermes_cli/_update_",
+    "hermes_cli/source_",
+    "hermes_cli/old_updater",
+    "hermes_cli/_old_updater",
+    "hermes_cli/post_update",
+    "hermes_cli/venv_sync.py",
+    "hermes_cli/_early_recovery.py",
+    "hermes_cli/main_desktop.py",
+    "hermes_cli/desktop_update_verify.py",
+    "hermes_cli/desktop_build_lock.py",
+    "hermes_cli/subcommands/update",
+)
+# The entry points that build or verify the Desktop app inside an update
+# (`hermes desktop --build-only`, the source build/completion that feeds it).
+_DESKTOP_BUILD_ENTRY_POINTS = (
+    "hermes_cli/source_build.py",
+    "hermes_cli/source_completion.py",
+    "hermes_cli/main_desktop.py",
+    "hermes_cli/desktop_update_verify.py",
+    "hermes_cli/desktop_build_lock.py",
+)
+# What the entry points import, outside the update_* family and the pipeline above.
+_UPDATE_DEPENDENCIES = (
+    "hermes_cli/_subprocess_compat.py",  # update git env, process-tree kill, PM git exposure
+    "hermes_cli/desktop_build_lock.py",
+    "hermes_cli/memory_provider_migration.py",
+    "hermes_cli/desktop_console.py",
+    "hermes_cli/bundled_app.py",
+    "hermes_cli/gui_uninstall.py",
+    "hermes_cli/linux_desktop_entry.py",
+    "hermes_cli/github_api.py",  # source_check's release lookup
+    "hermes_cli/build_info.py",
+    "hermes_cli/image_provenance.py",
+    "hermes_cli/backup.py",  # pre-update backup
+    "hermes_cli/backup_restore.py",
+    "hermes_cli/relay_plugin_migrate.py",
+    "hermes_cli/macos_tcc_anchor.py",
+    "hermes_cli/model_catalog.py",
+    "hermes_cli/sqlite_runtime.py",
+    "hermes_cli/sqlite_safe_read.py",
+    "hermes_cli/sizefmt.py",
+    "hermes_cli/tools_config_cua.py",
+    "hermes_cli/_startup_fast.py",
+    "hermes_cli/_parser.py",
+    "hermes_cli/gateway_multiplex_mode.py",
+    "hermes_cli/plugin_catalog.py",
+    "hermes_cli/steward.py",
+    "hermes_cli/observability/shared_metrics_update.py",
+    "hermes_cli/main_install_repair.py",
+    "hermes_logging.py",
+    "hermes_platform/host/__init__.py",
+    "hermes_platform/host/facts.py",
+    "agent/curator.py",
+    "plugins/memory/__init__.py",
+    "tools/checkpoint_maintenance.py",
+    "tools/skills_sync.py",
+    "tools/environments/local_env_policy.py",
+    "pm/progress.py",
+    # The compilers source_build / the Desktop build run (freshness, node-deps,
+    # tui, web, desktop and their shared frontend-common).
+    "scripts/build/",
+)
+# General-purpose modules an entry point imports but that half the product
+# imports too (>= HUB_MIN_IMPORTERS product modules, checked by the test). The
+# unit lanes cover them on every PR and the update suites on every push to main;
+# routing each config.py / utils.py edit through the update suites would make
+# them run on most PRs. Never an update-specific module: own those above.
+HUB_MIN_IMPORTERS = 25
+_SHARED_HUBS = frozenset({
+    "hermes_cli/__init__.py",
+    "hermes_cli/config.py",
+    "hermes_cli/profiles.py",
+    "hermes_cli/version_info.py",
+    "utils.py",
+    "hermes_state.py",
+    "agent/__init__.py",
+    "cron/jobs.py",
+    "tools/environments/local.py",
+    # Desktop lane only (the upgrade lane owns these outright):
+    "hermes_constants.py",
+    "gateway/status.py",
+    "pm/__init__.py",
+    "pm/paths.py",
+    "pm/environments.py",
+})
 _E2E_LANES: dict[str, tuple[str, ...]] = {
     "e2e": (
         *_PY_TEST_HARNESS,
@@ -247,6 +340,8 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "hermes_cli/_install_",
         "hermes_cli/main_install",
         *_UPDATE_PIPELINE,
+        *_UPDATE_ENTRY_POINTS,
+        *_UPDATE_DEPENDENCIES,
     ),
     "e2e_desktop_core": (
         *_DESKTOP_E2E_SHARED,
@@ -285,9 +380,16 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "apps/desktop/electron/app-installer-file",
         "scripts/desktop-update/",
         "scripts/install.sh",
-        "hermes_cli/desktop_update",
-        "hermes_cli/main_desktop.py",
         "hermes_cli/update_",
+        *_DESKTOP_BUILD_ENTRY_POINTS,
+        *_UPDATE_DEPENDENCIES,
+        # Pipeline modules the Desktop build entry points import directly.
+        "hermes_cli/main.py",  # `hermes desktop --build-only`
+        "hermes_cli/venv_sync.py",
+        "hermes_cli/source_stamp.py",
+        # Imported by the Desktop build's scripts (scripts/build/desktop.mjs closure).
+        "apps/desktop/product-identity.cjs",
+        "scripts/msix-shared.mjs",
     ),
 }
 # The upgrade journeys are their own lane; editing one does not start ``e2e``.

@@ -1,0 +1,418 @@
+"""Update-path CI routing: ownership-derived selectors and the full dispatch chain.
+
+Two failure modes this file pins (independent review R15):
+
+* **Selector drift.** A hand list of "update files" misses whatever the update
+  modules import next (``_subprocess_compat``, ``desktop_build_lock``,
+  ``memory_provider_migration``, the ``scripts/build`` compilers). Here the
+  update entry points' real imports are read from the source (Python AST, ESM
+  ``import``/``step()`` literals) and every module they reach must start the
+  suite that runs it, or be one of the classifier's declared shared hubs.
+* **Dead dispatch.** A lane the classifier sets can still never reach its job:
+  ``desktop_updater=true`` with ``python=false`` used to skip ``tests-os``
+  entirely. Here the REAL classifier's output is replayed through the REAL
+  workflow files (composite action -> ``ci.yaml`` detect outputs -> job
+  ``if:``/``with:`` -> the called workflow's job ``if:`` -> the rendered step),
+  so a gate that does not consume a lane fails here, not on a PR.
+"""
+
+from __future__ import annotations
+
+import ast
+import importlib.util
+import itertools
+import json
+import os
+import re
+import subprocess
+import sys
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from tests.ci import _gha_expr as gha
+
+_REPO = Path(__file__).resolve().parents[2]
+_CLASSIFIER = _REPO / "scripts" / "ci" / "classify_changes.py"
+_spec = importlib.util.spec_from_file_location("classify_changes_routing", _CLASSIFIER)
+assert _spec is not None and _spec.loader is not None
+cc = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cc)
+
+
+# -- the real classifier, as CI runs it ---------------------------------------------
+
+
+def _real_classifier(paths: list[str]) -> dict[str, bool]:
+    """``scripts/ci/classify_changes.py`` as a process, stdin -> ``key=value`` lines."""
+    env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_OUTPUT", "GITHUB_EVENT_PATH")}
+    env["EVENT_NAME"] = "pull_request_replay"  # never `pull_request`: no gh calls from a test
+    out = subprocess.run([sys.executable, str(_CLASSIFIER)], input="\n".join(paths) + "\n",
+                         capture_output=True, text=True, env=env, check=True, timeout=60).stdout
+    pairs = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    return {k: v == "true" for k, v in pairs.items()}
+
+
+# -- workflow replay ---------------------------------------------------------------------
+
+
+@lru_cache(maxsize=None)
+def _yaml(rel: str) -> dict:
+    yaml = pytest.importorskip("hermes_yaml")
+    return yaml.safe_load((_REPO / rel).read_text(encoding="utf-8-sig"))
+
+
+def _on(workflow: dict) -> dict:
+    return workflow.get("on", workflow.get(True)) or {}
+
+
+def _detect_outputs(lanes: dict[str, bool]) -> dict[str, Any]:
+    """The classifier's lines -> the composite action's outputs -> ci.yaml ``detect`` outputs."""
+    raw = {k: gha.to_string(v) for k, v in lanes.items()}
+    action = _yaml(".github/actions/detect-changes/action.yml")
+    action_out = {k: gha.render(v["value"], {"steps": {"classify": {"outputs": raw}}})
+                  for k, v in action["outputs"].items()}
+    detect = _yaml(".github/workflows/ci.yaml")["jobs"]["detect"]
+    gate = next(s for s in detect["steps"] if s.get("id") == "gate-lanes")
+    classify = next(s for s in detect["steps"] if s.get("id") == "classify")
+    assert classify["uses"] == "./.github/actions/detect-changes"
+    # gate-lanes copies every classified value unchanged unless RELEASE is true (a PR is not).
+    assert gate["env"]["RELEASE"] == "${{ inputs.release }}"
+    assert "steps.classify.outputs" in gate["env"]["CLASSIFIED"]
+    steps = {"classify": {"outputs": action_out}, "gate-lanes": {"outputs": action_out}}
+    ctx = {"steps": steps, "github": {"event_name": "pull_request"}, "inputs": {}}
+    return {k: gha.render(v, ctx) for k, v in detect["outputs"].items()}
+
+
+def _inputs_for(called: str, given: dict[str, Any]) -> dict[str, Any]:
+    declared = (_on(_yaml(called)).get("workflow_call") or {}).get("inputs") or {}
+    unknown = set(given) - set(declared)
+    assert not unknown, f"{called} is passed input(s) it never declares: {sorted(unknown)}"
+    return {name: given.get(name, spec.get("default")) for name, spec in declared.items()}
+
+
+def _run_workflow(rel: str, *, inputs: dict[str, Any], detect: dict[str, Any] | None = None) -> dict:
+    """Which jobs of ``rel`` run on a pull request, recursing into called workflows.
+
+    Returns ``{job: {"inputs": ..., "jobs": <child result>}}`` for every job that runs.
+    ``detect`` (ci.yaml only) is the replayed ``detect`` job's outputs.
+    """
+    jobs = _yaml(rel)["jobs"]
+    ran: dict[str, dict] = {}
+    done: set[str] = set()
+    pending = list(jobs)
+    while pending:
+        progressed = False
+        for name in list(pending):
+            body = jobs[name]
+            needs = body.get("needs") or []
+            needs = [needs] if isinstance(needs, str) else list(needs)
+            if any(n not in done for n in needs):
+                continue
+            pending.remove(name)
+            done.add(name)
+            progressed = True
+            if name == "detect" and detect is not None:
+                ran[name] = {"outputs": detect}
+                continue
+            all_ran = all(n in ran for n in needs)
+            ctx = {
+                "inputs": inputs,
+                "github": {"event_name": "pull_request", "ref_type": "branch"},
+                "needs": {n: {"outputs": (ran.get(n) or {}).get("outputs", {}),
+                              "result": "success" if n in ran else "skipped"} for n in needs},
+                "__status__": {"always": True, "success": all_ran, "failure": False, "cancelled": False},
+            }
+            cond = body.get("if")
+            uses_status = isinstance(cond, str) and re.search(r"\b(always|success|failure|cancelled)\(", cond)
+            if not uses_status and not all_ran:
+                continue  # implicit success(): a skipped dependency skips this job
+            if not gha.condition(cond, ctx):
+                continue
+            entry: dict[str, Any] = {"ctx": ctx}
+            uses = body.get("uses")
+            if isinstance(uses, str) and uses.startswith("./.github/workflows/"):
+                called = uses[2:]
+                given = {k: gha.render(v, ctx) for k, v in (body.get("with") or {}).items()}
+                entry["inputs"] = _inputs_for(called, given)
+                entry["jobs"] = _run_workflow(called, inputs=entry["inputs"])
+            ran[name] = entry
+        assert progressed, f"{rel}: unresolvable needs among {pending}"
+    return ran
+
+
+def _ci_run(lanes: dict[str, bool]) -> dict:
+    return _run_workflow(".github/workflows/ci.yaml", inputs={}, detect=_detect_outputs(lanes))
+
+
+def _reached(run: dict, *path: str) -> dict | None:
+    node: dict | None = {"jobs": run}
+    for job in path:
+        node = (node or {}).get("jobs", {}).get(job)
+        if node is None:
+            return None
+    return node
+
+
+def _windows_desktop_updater_tests_selected(run: dict) -> bool:
+    """tests-os os-tests runs, and its Windows step keeps the desktop-update hand-off files."""
+    os_tests = _reached(run, "tests-os", "os-tests")
+    if os_tests is None:
+        return False
+    body = _yaml(".github/workflows/tests-os.yml")["jobs"]["os-tests"]
+    windows = next(m for m in body["strategy"]["matrix"]["include"] if m["marker"] == "windows")
+    step = next(s for s in body["steps"] if "list_os_marked_tests.py" in str(s.get("run", "")))
+    ctx = {**os_tests["ctx"], "matrix": windows, "runner": {"os": "Windows", "arch": "X64"}}
+    script = gha.render(step["run"], ctx)
+    gate = re.search(r'if \[ "(\w*)" != "true" \]; then\s+echo "desktop_updater lane off', script)
+    assert gate, "the desktop_updater deselect gate moved: update this replay"
+    return gate.group(1) == "true"
+
+
+# Each real consumer of a lane, as a path of job names from ci.yaml down.
+_CONSUMERS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "e2e_upgrade": (
+        ("tests", "e2e-upgrade-plan"),
+        ("tests", "e2e-upgrade"),
+        ("tests-os", "install-update-e2e", "install-update"),
+    ),
+    "e2e": (("tests", "e2e"), ("tests-os", "e2e-windows")),
+    "e2e_desktop_update": (("e2e-desktop-update", "update"),),
+}
+
+
+def _consumers_reached(run: dict, lane: str) -> dict[str, bool]:
+    if lane == "desktop_updater":
+        return {"tests-os/os-tests[windows] keeps test_desktop_update_windows_*":
+                _windows_desktop_updater_tests_selected(run)}
+    return {"/".join(path): _reached(run, *path) is not None for path in _CONSUMERS[lane]}
+
+
+_GATED = ("python", "desktop_updater", "e2e", "e2e_upgrade", "e2e_desktop_update")
+
+
+def test_replay_evaluator_follows_actions_semantics():
+    ctx = {"needs": {"detect": {"outputs": {"python": "false", "e2e": "true"}}}, "inputs": {"flag": True}}
+    assert gha.condition("needs.detect.outputs.python == 'true' || needs.detect.outputs.e2e == 'true'", ctx)
+    assert not gha.condition("needs.detect.outputs.python == 'true'", ctx)
+    assert not gha.evaluate("'true' == true", ctx)  # a string output is not the boolean
+    assert gha.render('x "${{ inputs.flag }}" y', ctx) == 'x "true" y'
+    assert gha.render("${{ inputs.flag && '1' || '' }}", ctx) == "1"
+    assert gha.render("${{ inputs.missing && '1' || '' }}", ctx) == ""
+    with pytest.raises(gha.Unsupported):
+        gha.condition("hashFiles('x') != ''", ctx)  # unmodelled: fail, never guess
+
+
+@pytest.mark.parametrize("combo", list(itertools.product((False, True), repeat=len(_GATED))),
+                         ids=lambda c: "-".join(n for n, on in zip(_GATED, c) if on) or "none")
+def test_every_set_lane_reaches_its_consumer_whatever_the_other_lanes_say(combo):
+    """The R15 hole was a parent ``if:`` keyed on ``python`` alone: a TypeScript-only
+    change to the hand-off's marker reader set ``desktop_updater`` and nothing ran it."""
+    lanes = {k: False for k in cc.classify(["README.md"])}
+    lanes.update(zip(_GATED, combo))
+    run = _ci_run(lanes)
+    for lane in ("desktop_updater", "e2e", "e2e_upgrade", "e2e_desktop_update"):
+        reached = _consumers_reached(run, lane)
+        if lanes[lane]:
+            assert all(reached.values()), f"{lane}=true but not dispatched: {reached}"
+        elif lane != "desktop_updater":
+            assert not any(reached.values()), f"{lane}=false but ran anyway: {reached}"
+
+
+# One-file changes from the review's direct classifier run (acceptance/classifier.json),
+# and the suites each must dispatch on a pull request.
+_R15_CASES = {
+    "scripts/build/desktop.mjs": ("e2e_upgrade", "e2e_desktop_update"),
+    "scripts/build/web.mjs": ("e2e_upgrade", "e2e_desktop_update"),
+    "hermes_cli/_subprocess_compat.py": ("e2e_upgrade", "e2e_desktop_update"),
+    "hermes_cli/desktop_build_lock.py": ("e2e_upgrade", "e2e_desktop_update"),
+    "hermes_cli/memory_provider_migration.py": ("e2e_upgrade", "e2e_desktop_update"),
+    "hermes_cli/source_build.py": ("e2e_upgrade", "e2e_desktop_update"),
+    "hermes_cli/source_completion.py": ("e2e_upgrade", "e2e_desktop_update"),
+    "apps/desktop/electron/update-marker.ts": ("desktop_updater", "e2e_desktop_update"),
+    "apps/desktop/electron/handoff-result.ts": ("desktop_updater", "e2e_desktop_update"),
+}
+
+
+@pytest.mark.parametrize("path,lanes", list(_R15_CASES.items()))
+def test_update_owner_change_dispatches_its_suites_end_to_end(path, lanes):
+    assert (_REPO / path).is_file(), f"{path} moved: update this table"
+    classified = _real_classifier([path])
+    run = _ci_run(classified)
+    for lane in lanes:
+        assert classified[lane], f"{path}: classifier leaves {lane} off"
+        reached = _consumers_reached(run, lane)
+        assert all(reached.values()), f"{path}: {lane}=true never reaches {reached}"
+
+
+def test_every_detect_output_a_lane_sets_is_consumed_by_some_job():
+    """A lane output nothing reads is a lane that can never run anything."""
+    ci = _yaml(".github/workflows/ci.yaml")
+    text = json.dumps({k: v for k, v in ci["jobs"].items() if k != "detect"})
+    # python_prod's only reader is the deferred Desktop E2E job (`if: false`, see ci.yaml).
+    unread = [k for k in ci["jobs"]["detect"]["outputs"]
+              if k not in ("event_name", "python_prod") and f"needs.detect.outputs.{k}" not in text]
+    assert unread == []
+
+
+# -- ownership: the update entry points' real imports ---------------------------------------
+
+_SKIP_DIRS = {".git", ".venv", "venv", "node_modules", ".worktrees", "tests", "website", "__pycache__"}
+
+
+def _product_python() -> list[Path]:
+    out = []
+    for dirpath, dirnames, filenames in os.walk(_REPO):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
+        out += [Path(dirpath) / f for f in filenames if f.endswith(".py")]
+    return out
+
+
+def _module_file(module: str) -> Path | None:
+    base = _REPO / module.replace(".", "/")
+    for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+@lru_cache(maxsize=None)
+def _imports(path: Path) -> frozenset[str]:
+    """Repo modules ``path`` imports anywhere (module level or lazily in a function)."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+    except (SyntaxError, UnicodeDecodeError):
+        return frozenset()
+    package = path.relative_to(_REPO).with_suffix("").parts[:-1]
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if node.level:
+                parts = list(package[: len(package) - (node.level - 1)])
+                base = ".".join([*parts, base] if base else parts)
+            names.add(base)
+            names.update(f"{base}.{a.name}" for a in node.names)
+    found = set()
+    for name in names:
+        target = _module_file(name)
+        if target is not None and target != path:
+            found.add(target.relative_to(_REPO).as_posix())
+    return frozenset(found)
+
+
+def _entry_modules(prefixes: tuple[str, ...]) -> list[Path]:
+    hits = [p for p in _product_python() if p.relative_to(_REPO).as_posix().startswith(prefixes)]
+    assert hits, f"no module matches {prefixes}: the entry-point list went stale"
+    return sorted(hits)
+
+
+@lru_cache(maxsize=None)
+def _importers() -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for path in _product_python():
+        for target in _imports(path):
+            counts[target] = counts.get(target, 0) + 1
+    return counts
+
+
+def _unowned(entries: tuple[str, ...], lane: str) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for module in _entry_modules(entries):
+        for target in _imports(module):
+            if not cc.classify([target])[lane] and target not in cc._SHARED_HUBS:
+                out.setdefault(target, []).append(module.relative_to(_REPO).as_posix())
+    return out
+
+
+@pytest.mark.parametrize("entries,lane", [
+    ("_UPDATE_ENTRY_POINTS", "e2e_upgrade"),
+    ("_DESKTOP_BUILD_ENTRY_POINTS", "e2e_desktop_update"),
+])
+def test_every_module_an_update_entry_point_imports_starts_its_suite(entries, lane):
+    """Add the module to the classifier's owner list for this lane. Only a shared
+    hub (``_SHARED_HUBS``: imported across the product, covered by the unit lanes
+    and by this suite on every push to main) may stay out."""
+    missing = _unowned(getattr(cc, entries), lane)
+    assert missing == {}, f"{lane}: imported by the update path but not routed to it: {missing}"
+
+
+def test_entry_points_themselves_start_their_suites():
+    for module in _entry_modules(cc._UPDATE_ENTRY_POINTS):
+        assert cc.classify([module.relative_to(_REPO).as_posix()])["e2e_upgrade"], module
+    for module in _entry_modules(cc._DESKTOP_BUILD_ENTRY_POINTS):
+        rel = module.relative_to(_REPO).as_posix()
+        assert cc.classify([rel])["e2e_desktop_update"] and cc.classify([rel])["e2e_upgrade"], rel
+
+
+def test_shared_hubs_are_real_hubs_still_on_the_update_path():
+    """The hub exemption cannot hide an update-specific module: each hub must be
+    imported by many product modules, and still be imported by an entry point."""
+    counts = _importers()
+    thin = {h: counts.get(h, 0) for h in cc._SHARED_HUBS if counts.get(h, 0) < cc.HUB_MIN_IMPORTERS}
+    assert thin == {}, f"not a shared hub (fewer than {cc.HUB_MIN_IMPORTERS} importers): own it instead"
+    reached = set()
+    for entries in (cc._UPDATE_ENTRY_POINTS, cc._DESKTOP_BUILD_ENTRY_POINTS):
+        for module in _entry_modules(entries):
+            reached |= _imports(module)
+    assert set(cc._SHARED_HUBS) - reached == set(), "stale hub exemption: no entry point imports it"
+
+
+# -- ownership: the JavaScript compilers an update runs -------------------------------------
+
+_SCRIPT_LITERAL = re.compile(r"""["']((?:scripts/build|apps/desktop/scripts)/[\w./-]+\.(?:mjs|js|py|ps1))["']""")
+_ESM_IMPORT = re.compile(r"""(?:from|import)\s*\(?\s*['"](\.{1,2}/[^'"]+)['"]""")
+_STEP = re.compile(r"""step\(\s*['"]([\w./-]+\.mjs)['"]""")
+
+
+def _js_closure(seeds: set[str]) -> set[str]:
+    seen: set[str] = set()
+    stack = list(seeds)
+    while stack:
+        rel = stack.pop()
+        if rel in seen:
+            continue
+        path = _REPO / rel
+        assert path.is_file(), f"{rel} is referenced on the update path but does not exist"
+        seen.add(rel)
+        if not rel.endswith((".mjs", ".js")):
+            continue
+        text = path.read_text(encoding="utf-8-sig")
+        for spec in _ESM_IMPORT.findall(text):
+            target = (path.parent / spec).resolve()
+            if target.is_file() and _REPO in target.parents:
+                stack.append(target.relative_to(_REPO).as_posix())
+        stack += _STEP.findall(text)
+    return seen
+
+
+def _python_script_seeds(entries: tuple[str, ...]) -> set[str]:
+    seeds = set()
+    for module in _entry_modules(entries):
+        seeds |= set(_SCRIPT_LITERAL.findall(module.read_text(encoding="utf-8-sig")))
+    return seeds
+
+
+def test_build_scripts_the_update_runs_start_the_upgrade_suite():
+    reached = _js_closure(_python_script_seeds(cc._UPDATE_ENTRY_POINTS))
+    assert "scripts/build/web.mjs" in reached, "seed scan broke: source_build runs web.mjs"
+    unowned = sorted(f for f in reached if not cc.classify([f])["e2e_upgrade"])
+    assert unowned == []
+
+
+def test_desktop_build_scripts_start_the_desktop_update_suite():
+    """`hermes desktop --build-only` (the update's Desktop rebuild) runs
+    apps/desktop's `build` script, which steps through scripts/build/desktop.mjs."""
+    package = json.loads((_REPO / "apps/desktop/package.json").read_text(encoding="utf-8-sig"))
+    build = re.search(r"node\s+(\S+\.mjs)", package["scripts"]["build"])
+    assert build, package["scripts"]["build"]
+    seeds = {("apps/desktop/" + build.group(1)).replace("/./", "/")}
+    seeds |= _python_script_seeds(cc._DESKTOP_BUILD_ENTRY_POINTS)
+    reached = _js_closure(seeds)
+    assert "scripts/build/desktop.mjs" in reached, "seed scan broke: the Desktop build runs desktop.mjs"
+    unowned = sorted(f for f in reached if not cc.classify([f])["e2e_desktop_update"])
+    assert unowned == []

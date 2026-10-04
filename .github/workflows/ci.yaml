@@ -122,7 +122,9 @@ jobs:
   tests:
     name: Python tests
     needs: detect
-    if: needs.detect.outputs.python == 'true'
+    # Its E2E jobs are lanes of their own: a lane the classifier sets must reach
+    # its job whatever `python` says (tests/ci/test_update_ci_routing.py).
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.e2e == 'true' || needs.detect.outputs.e2e_upgrade == 'true'
     uses: ./.github/workflows/tests.yml
     with:
       e2e: ${{ needs.detect.outputs.e2e == 'true' }}
@@ -131,11 +133,13 @@ jobs:
   # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
   # the OS-marked tests it collects are skipped there by design (see the
   # `_OS_MARKS` comment in tests/conftest.py) — this is where they run.
-  # Same `python` lane gate: if no Python changed, neither runs.
+  # Gated on `python` and on each lane it consumes: desktop_updater is set by
+  # TypeScript-only changes too (the Electron marker / result readers), and with
+  # `python` alone those never reached the Windows hand-off tests below.
   tests-os:
     name: OS-specific tests
     needs: detect
-    if: needs.detect.outputs.python == 'true'
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.desktop_updater == 'true' || needs.detect.outputs.e2e == 'true' || needs.detect.outputs.e2e_upgrade == 'true'
     uses: ./.github/workflows/tests-os.yml
     with:
       # The Windows lane spawns the real desktop-update hand-off script

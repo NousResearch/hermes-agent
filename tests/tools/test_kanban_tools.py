@@ -1495,23 +1495,24 @@ class TestArtifactExamplesPreserved:
 
     _REPO = Path(__file__).resolve().parents[2]
 
-    def _descriptions(self):
+    def _artifact_descriptions(self):
         from tools import kanban_tools_schemas as ks
-        return {
-            "kanban_complete": ks.KANBAN_COMPLETE_SCHEMA,
-            "kanban_request_review": ks.KANBAN_REQUEST_REVIEW_SCHEMA,
-        }
+        yield from (
+            (tool, schema["parameters"]["properties"]["artifacts"]["description"])
+            for tool, schema in (
+                ("kanban_complete", ks.KANBAN_COMPLETE_SCHEMA),
+                ("kanban_request_review", ks.KANBAN_REQUEST_REVIEW_SCHEMA),
+            )
+        )
 
     def test_schema_names_the_task_workspace(self):
-        for tool, schema in self._descriptions().items():
-            desc = schema["parameters"]["properties"]["artifacts"]["description"]
+        for tool, desc in self._artifact_descriptions():
             assert "$HERMES_KANBAN_WORKSPACE" in desc, tool
             assert "cache/scratch/q3-revenue.png" not in desc, tool
 
     def test_schema_scopes_the_durable_copy_claim(self):
         """Unqualified "the kernel copies these" is the lie this bug is."""
-        for tool, schema in self._descriptions().items():
-            desc = schema["parameters"]["properties"]["artifacts"]["description"]
+        for tool, desc in self._artifact_descriptions():
             assert "recorded as given and not" in desc, tool
             assert "24 h after its last write" in desc, tool
 
@@ -1524,10 +1525,8 @@ class TestArtifactExamplesPreserved:
         ],
     )
     def test_docs_keep_the_two_locales_in_step(self, rel):
-        path = self._REPO / rel
-        text = path.read_text(encoding="utf-8")
+        text = (self._REPO / rel).read_text(encoding="utf-8")
         assert "$HERMES_KANBAN_WORKSPACE" in text, rel
-        start = text.index("kanban_complete(")
-        block = text[start:start + 400]
-        assert "/tmp/q3-" not in block, rel
-        assert "cache/scratch/q3-" not in block, rel
+        snippet = text[text.index("kanban_complete("):][:400]
+        assert "/tmp/q3-" not in snippet, rel
+        assert "cache/scratch/q3-" not in snippet, rel

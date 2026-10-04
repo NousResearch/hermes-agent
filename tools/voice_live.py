@@ -111,14 +111,38 @@ def voice_chat_mode(voice: Optional[Dict[str, Any]] = None) -> str:
     return GPT_LIVE_MODE if mode in {GPT_LIVE_MODE, "gptlive", "live"} else CHAINED_MODE
 
 
+def _codex_pool_token() -> str:
+    """Live-ready token from the ``openai-codex`` credential pool, or ``""``.
+
+    Codex OAuth access tokens are accepted by ``POST /v1/live/sessions`` even though
+    the subscription is chatgpt.com-backed, so a Codex subscriber can run GPT-Live
+    without a separate platform API key. The pool entry refreshes its token, which a
+    static config key cannot. Live-only on purpose: the audio STT/TTS endpoints have
+    NOT been verified to accept Codex tokens, so this fallback must not leak into
+    ``resolve_openai_audio_api_key``.
+    """
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool("openai-codex")
+        entry = pool.peek() if pool is not None and pool.has_credentials() else None
+        return str(getattr(entry, "runtime_api_key", "") or getattr(entry, "access_token", "")
+                  or "").strip()
+    except Exception as exc:
+        logger.debug("openai-codex pool lookup failed: %s", exc)
+        return ""
+
+
 def _resolve_credentials(live: Dict[str, Any]) -> tuple[str, str]:
     """``(api_key, base_url)`` — ``voice.gpt_live.api_key`` first, else the same OpenAI audio
-    chain the STT/TTS providers use (``VOICE_TOOLS_OPENAI_KEY`` → ``OPENAI_API_KEY`` → pool).
+    chain the STT/TTS providers use (``VOICE_TOOLS_OPENAI_KEY`` → ``OPENAI_API_KEY`` → pool),
+    else the ``openai-codex`` credential pool (subscription-billed Live sessions).
 
     The Nous-managed audio proxy does not carry ``/live/sessions``; this mode is direct-key only.
     """
     from tools.tool_backend_helpers import resolve_openai_audio_api_key
-    api_key = str(live.get("api_key") or "").strip() or resolve_openai_audio_api_key()
+    api_key = (str(live.get("api_key") or "").strip()
+               or resolve_openai_audio_api_key()
+               or _codex_pool_token())
     base_url = str(live.get("base_url") or DEFAULT_LIVE_BASE_URL).strip().rstrip("/")
     return api_key, base_url
 

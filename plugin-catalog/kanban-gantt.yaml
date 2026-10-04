@@ -1,9 +1,7 @@
 name: kanban-gantt
 repo: https://github.com/e-is/hermes-kanban-gantt
 sha: 9cb3c37ad80f363b6907ffd835f209d3209de723
-description: 'Gantt timeline view for the Hermes kanban boards: a full /kanban-gantt desktop page rendering any board as a timeline of real work timestamps
-  (created/started/review/done), with task creation (project, workspace, skills, model override, goal mode), re-parenting by drag & drop or from the
-  drawer, dependency tree connectors, live-activity arcs, filters, bulk actions, and a dockable task detail drawer. Zero API keys, zero model tokens; live updates follow the plugin's /events websocket, which a gateway turns off with KANBAN_GANTT_WS=0 (the page then polls every 60 s and shows a Refresh button).'
+description: "Gantt timeline view for the Hermes kanban boards: a full /kanban-gantt desktop page rendering any board as a timeline of real work timestamps (created/started/review/done), with task creation (project, workspace, skills, model override, goal mode), re-parenting by drag & drop or from the drawer, dependency tree connectors, live-activity arcs, filters, bulk actions, and a dockable task detail drawer. Zero API keys, zero model tokens; live updates follow the plugin's /events websocket, which a gateway turns off with KANBAN_GANTT_WS=0 (the page then polls every 60 s and shows a Refresh button). Disclosure — Desktop page plus dashboard routes that read and write the local kanban boards (create tasks with workspace path, skills, model override and goal mode; re-parent; edit status, assignee and description; bulk archive and delete); live updates over a dashboard-authenticated /events websocket, off with KANBAN_GANTT_WS=0; no third-party network."
 maintainer: e-is
 tier: community
 category: desktop

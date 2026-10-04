@@ -120,10 +120,10 @@ marker_line() { # raw line -> LINE without one trailing CR and surrounding space
   LINE="${LINE%"${LINE##*[![:blank:]]}"}"
 }
 
-M_PID="" M_STARTED="" M_CT="" M_DPID="" M_DCT="" M_RUN="" M_RUNS=""
+M_PID="" M_STARTED="" M_STARTED_DIGITS="" M_CT="" M_DPID="" M_DCT="" M_RUN="" M_RUNS=""
 marker_parse() { # marker text -> M_* fields. M_PID="" = MALFORMED.
   local raw n=0 l1="" l2="" dpid dct
-  M_PID="" M_STARTED="" M_CT="" M_DPID="" M_DCT="" M_RUN="" M_RUNS=""
+  M_PID="" M_STARTED="" M_STARTED_DIGITS="" M_CT="" M_DPID="" M_DCT="" M_RUN="" M_RUNS=""
   while IFS= read -r raw || [ -n "$raw" ]; do
     n=$((n + 1))
     [ "$n" -ne 1 ] || raw="${raw#$'\357\273\277'}"
@@ -149,6 +149,7 @@ EOF_MARKER
   marker_u32 "$l1" || return 0
   M_STARTED="${l2#"${l2%%[!0]*}"}"
   M_STARTED="${M_STARTED:-0}"
+  M_STARTED_DIGITS="$M_STARTED"  # exact value (no leading zeros), before the age clamp
   [ "${#M_STARTED}" -le 18 ] || M_STARTED=999999999999999999  # far future: "young"
   M_PID="$U32"
 }
@@ -273,23 +274,47 @@ marker_ancestor() { # pid -> 0 iff it is one of our ancestors
   return 1
 }
 
-marker_old_desktop_bridge() { # an OLD Desktop's bridge: "<launcher pid>\n<started_at>\n"
-  # written over the marker right after it spawned the launcher that started us
-  # (be3fd671d70 checkout.ts). Proven by lineage, never assumed: the named pid
-  # is our parent and the Desktop's child, or -- once it has exited -- the
-  # marker carries the hand-off's own HERMES_UPDATE_STARTED_AT (the old
-  # Desktop writes the same value to both; a Desktop that already quit leaves
-  # its launcher re-parented, so either proof suffices while it is alive).
-  local x="$M_PID" same_start=1
-  [ "$x" != "$DESKTOP_PID" ] && [ -z "$M_CT" ] && [ -z "$M_DPID" ] || return 1
-  [ -n "${HERMES_UPDATE_STARTED_AT:-}" ] \
-    && [ "$M_STARTED" = "${HERMES_UPDATE_STARTED_AT#"${HERMES_UPDATE_STARTED_AT%%[!0]*}"}" ] && same_start=0
-  if pid_alive "$x"; then
-    [ "$x" = "$(pid_parent "$MY_PID")" ] || return 1
-    [ "$(pid_parent "$x")" = "$DESKTOP_PID" ] || [ "$same_start" -eq 0 ]
+# The launcher-lineage rule -- ONE rule, the same in marker-claim.ps1
+# (Test-MarkerLauncherRule); the shared table is
+# tests/scripts/desktop_update/lineage_rule_cases.py. An OLD Desktop's bridge
+# "<launcher pid>\n<started_at>\n" (v1: no ct, no delegate) names the launcher
+# it spawned (be3fd671d70 checkout.ts) instead of itself. It is adopted iff it
+# does not name the Desktop and
+#   the named pid is alive: it is our parent AND (its parent is the Desktop OR
+#                           line 2 == HERMES_UPDATE_STARTED_AT -- a Desktop
+#                           that already quit leaves its launcher re-parented);
+#   the named pid is gone:  line 2 == HERMES_UPDATE_STARTED_AT (the old Desktop
+#                           hands the launcher the same value it writes).
+# 1/0 facts: v1 names_desktop named_alive named_is_our_parent
+# named_parent_is_desktop env_started_matches -> 0 adopt
+marker_launcher_rule() {
+  [ "$1" = 1 ] && [ "$2" = 0 ] || return 1
+  if [ "$3" = 1 ]; then
+    [ "$4" = 1 ] && { [ "$5" = 1 ] || [ "$6" = 1 ]; }
   else
-    [ "$same_start" -eq 0 ]
+    [ "$6" = 1 ]
   fi
+}
+
+marker_env_started_matches() { # line-2 digits -> 0 iff HERMES_UPDATE_STARTED_AT is plain ASCII
+  # digits (no sign, no spaces) of the same value
+  local env="${HERMES_UPDATE_STARTED_AT:-}" want="${1#"${1%%[!0]*}"}"
+  case "$env" in ''|*[!0-9]*) return 1 ;; esac
+  env="${env#"${env%%[!0]*}"}"
+  [ "${env:-0}" = "${want:-0}" ]
+}
+
+marker_old_desktop_bridge() { # the parsed marker is an OLD Desktop's launcher bridge (rule above)
+  local x="$M_PID" v1=0 names_desktop=0 alive=0 is_parent=0 parent_desktop=0 env_match=0
+  [ -n "$M_CT" ] || [ -n "$M_DPID" ] || v1=1
+  [ "$x" != "$DESKTOP_PID" ] || names_desktop=1
+  marker_env_started_matches "$M_STARTED_DIGITS" && env_match=1
+  if pid_alive "$x"; then
+    alive=1
+    [ "$x" != "$(pid_parent "$MY_PID")" ] || is_parent=1
+    [ "$(pid_parent "$x")" != "$DESKTOP_PID" ] || parent_desktop=1
+  fi
+  marker_launcher_rule "$v1" "$names_desktop" "$alive" "$is_parent" "$parent_desktop" "$env_match"
 }
 
 marker_take() { # how started -> replace or create our claim; 0 ok, 2 unwritable

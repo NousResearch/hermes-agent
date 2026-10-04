@@ -2,11 +2,14 @@
 
 One or two invariant tests per Round 5 finding:
   R3  every marker mutation is decided under the sidecar kernel lock (flock(1) and perl);
-  R4  an OLD packaged Desktop's bridge (its launcher's pid, v1) is adopted by lineage only;
+  R4  an OLD packaged Desktop's bridge (its launcher's pid, v1) is adopted by lineage only, by
+      the one launcher rule bash and PowerShell share (lineage_rule_cases.py);
   R5  with --handoff-run only the Desktop's live bridge carrying that run is adopted;
   R6  the marker outlives a survivor still holding the checkout lock; the Desktop's reclaim
       helper answers `held` for it;
-  plus the pre-publication kill cell, the process-group probe kill and the line-2 refresh.
+  plus the pre-publication kill cell, the process-group probe kill and the line-2 refresh
+  (also through the R6 release wait), and a checkout-lock probe that never makes a concurrent
+  acquire fail (Round 6).
 """
 
 from __future__ import annotations
@@ -22,6 +25,8 @@ import time
 
 import pytest
 
+from tests.scripts.desktop_update.lineage_rule_cases import ENV_CASES, RULE_CASES
+from tests.scripts.desktop_update.lineage_rule_cases import FACTS as LINEAGE_FACTS
 from tests.scripts.desktop_update.test_desktop_update_posix_marker import POSIX, _calls, _ct, _install
 
 pytestmark = pytest.mark.platforms("linux")  # /proc ancestry and creation times
@@ -136,6 +141,44 @@ def test_old_desktop_handoff_never_adopts_an_unrelated_live_claim(tmp_path, proc
 
     assert report.read_text(encoding="utf-8-sig").split()[-1] == "rc=2"
     assert (home / ".hermes-update-in-progress").read_text(encoding="utf-8-sig") == before
+
+
+def test_launcher_lineage_rule_matches_the_shared_table(tmp_path):
+    """One lineage rule for bash and PowerShell (round 5 D11): the same table runs in both."""
+    calls = [f"log() {{ :; }}; MARKER=/dev/null INSTALL_ROOT=/dev/null; . {shlex.quote(str(MARKER_SH))}"]
+    for case in RULE_CASES:
+        args = " ".join("1" if case["facts"][name] else "0" for name in LINEAGE_FACTS)
+        calls.append(f"if marker_launcher_rule {args}; then echo {case['id']}=1; else echo {case['id']}=0; fi")
+    for case in ENV_CASES:
+        calls.append(f"if HERMES_UPDATE_STARTED_AT={shlex.quote(case['env'])} marker_env_started_matches {shlex.quote(case['line2'])}; "
+                     f"then echo env_{case['id']}=1; else echo env_{case['id']}=0; fi")
+    out = subprocess.run(["bash", "-c", "\n".join(calls)], capture_output=True, text=True, encoding="utf-8", timeout=30, check=True).stdout
+    got = dict(line.split("=") for line in out.split())
+    want = {c["id"]: "1" if c["expect"] else "0" for c in RULE_CASES} | {f"env_{c['id']}": "1" if c["expect"] else "0" for c in ENV_CASES}
+    assert got == want
+
+
+@pytest.mark.parametrize("env_matches", [True, False], ids=["env-matches", "env-differs"])
+def test_reparented_live_launcher_is_adopted_only_with_the_handoff_started_at(tmp_path, procs, env_matches):
+    """The table's divergent row on real processes: the launcher X is our live parent, but no
+    longer the Desktop's child (the Desktop quit first); line 2 == HERMES_UPDATE_STARTED_AT."""
+    home, install = _install(tmp_path)
+    desktop = subprocess.Popen(["sleep", "60"]); procs.append(desktop)  # not X's parent
+    started = int(time.time())
+    marker = home / ".hermes-update-in-progress"
+    report = tmp_path / "launched.txt"
+    launcher = (f'printf "%s\\n{started}\\n" $$ > {shlex.quote(str(marker))}; '
+                f'HERMES_UPDATE_STARTED_AT={started if env_matches else started - 7} bash {shlex.quote(str(POSIX))} --daemonized --no-ui '
+                f'--self-test-marker --install-root {shlex.quote(str(install))} --desktop-pid {desktop.pid}; echo "rc=$?" > {shlex.quote(str(report))}')
+    x = subprocess.run(["bash", "-c", launcher], env=_env(tmp_path, home), timeout=60)
+    assert x.returncode == 0
+    rc = report.read_text(encoding="utf-8-sig").strip()
+    body = marker.read_text(encoding="utf-8-sig").splitlines()
+    if env_matches:
+        assert rc == "rc=0", (home / "logs" / "desktop-update-handoff.log").read_text(encoding="utf-8-sig")
+        assert body[1] == str(started) and body[2].startswith("ct:")
+    else:
+        assert rc == "rc=2" and len(body) == 2 and body[1] == str(started)
 
 
 # ── R5: protocol 2 adopts only the Desktop's bridge carrying its run ────────

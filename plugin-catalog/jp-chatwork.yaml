@@ -1,6 +1,6 @@
 name: jp-chatwork
 repo: https://github.com/TakeshiTGAL/hermes-plugin-chatwork
-sha: 80aec72321b3ed7c8dd31765d8e4b8d495335e6c
+sha: 8dbdff609b3c99768420a19a7ca646b6daad3dbe
 description: "Talk to Hermes from Chatwork rooms, built on the Chatwork API: put Hermes in a Chatwork room and ask it with [To:] or a reply, like a colleague; the answer comes back as a Chatwork reply. Polls the Chatwork API (no public URL or webhook), never answers a message twice across restarts, and while CHATWORK_ALLOWED_USERS is unset only the token's own account can use Hermes commands beyond /help, /whoami, /new and /reset or answer approval prompts. Disclosure: talks only to api.chatwork.com with your own API token; polls every 5 s by default while the gateway runs; stores read positions and the ids of its posted messages in <HERMES_HOME>/plugin-data/jp-chatwork/state.json."
 maintainer: TakeshiTGAL
 tier: community

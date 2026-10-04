@@ -72,18 +72,14 @@ def identity(pid: int | None = None) -> dict:
 
 
 def identity_is_live(ident: dict | None) -> bool:
-    """The update marker's incarnation rule (``update_lock``), applied to a recorded identity."""
+    """The update marker's incarnation rule (``update_lock.incarnation_live``) for a recorded identity.
+
+    Unprovable (alive, no readable creation time) counts as live: a record is never taken from, nor
+    a paused process restarted over, a process that may still be the one recorded.
+    """
     from hermes_cli import update_lock
-    try:
-        pid = int((ident or {}).get("pid") or 0)
-    except (TypeError, ValueError):
-        return False
-    recorded = str((ident or {}).get("ct") or "")
-    try:
-        created = float(recorded[3:]) if recorded.startswith("ct:") else None
-    except ValueError:
-        created = None
-    return pid > 0 and update_lock._identity_live(pid, created, 0.0)
+    ident = ident or {}
+    return update_lock.incarnation_live(ident.get("pid") or 0, ident.get("ct") or None) is not False
 
 
 class RecordConflict(OSError):

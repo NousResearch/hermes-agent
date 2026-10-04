@@ -403,3 +403,7 @@ def test_our_own_pid_is_ours_only_at_our_exact_creation_time():
     created = float(me["ct"][3:])
     reused = {"pid": os.getpid(), "ct": f"ct:{created - 0.5:.3f}"}  # inside the cross-writer skew
     assert not pause_record.identity_is_live(reused), "a killed update's record became ours by pid reuse"
+
+
+def test_a_record_naming_our_pid_without_a_creation_time_is_a_previous_incarnation():
+    assert not pause_record.identity_is_live({"pid": os.getpid(), "ct": None})

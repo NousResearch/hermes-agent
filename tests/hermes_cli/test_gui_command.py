@@ -1761,8 +1761,11 @@ def test_windows_build_under_its_own_desktop_skips_instead_of_killing_it(tmp_pat
 
 
 def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, capsys):
-    """Every pack attempt fails → the pre-existing app is exactly as it was,
-    no staging dir remains, exit is non-zero."""
+    """A deterministic pack failure (corrupt Electron zip → ENOENT on rename;
+    nothing transient in the output) → the leg raises after ONE attempt — the
+    retry exists only for the transient network class (#123387), so a failure
+    that cannot be transient must not pay two extra full packs. The pre-existing
+    app is exactly as it was, no staging dir remains, exit is non-zero."""
     root = _make_desktop_tree(tmp_path)
     desktop_dir = root / "apps" / "desktop"
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
@@ -1770,10 +1773,12 @@ def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, ca
     live_exe = _make_packaged_executable(root, monkeypatch)
     live_exe.write_text("good build", encoding="utf-8")
     monkeypatch.setenv("ELECTRON_MIRROR", "https://example.test/electron/")
+    pack_attempts = {"count": 0}
 
     def failing_pack(cmd, **kwargs):
         if cmd[1:3] != ["run", "builder"]:
             return subprocess.CompletedProcess(cmd, 0)
+        pack_attempts["count"] += 1
         # Mimic before-pack.mjs wiping appOutDir inside the OUTPUT dir it was
         # given, then dying (corrupt Electron zip → ENOENT on rename).
         out = _staging_dir_from(cmd) / _packaged_exe_rel().parts[0]
@@ -1792,6 +1797,7 @@ def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, ca
             p.stop()
 
     assert exc.value.code == 1
+    assert pack_attempts["count"] == 1  # deterministic → no retry, no wasted packs
     assert live_exe.read_text(encoding="utf-8") == "good build"
     assert not list(desktop_dir.glob(".staging-*"))
     assert not list((desktop_dir / "release").glob("*.previous"))
@@ -1815,7 +1821,11 @@ def test_gui_transient_pack_failure_retries_then_promotes(tmp_path, monkeypatch,
         if cmd[1:3] == ["run", "builder"]:
             attempts["count"] += 1
             if attempts["count"] < 3:
-                raise subprocess.CalledProcessError(1, cmd)
+                # Mimic #123387: undici surfaces a generic TypeError with no
+                # `.code`, which app-builder-lib's retry list never matches.
+                raise subprocess.CalledProcessError(
+                    1, cmd, output="TypeError: fetch failed\n"
+                                   "    at node:internal/deps/undici/lib/web/fetch/index.js:98:23")
         return succeed(cmd, **kwargs)
 
     patches = _gui_build_patches(root, flaky_pack)

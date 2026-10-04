@@ -183,7 +183,9 @@ def test_a_refused_job_join_still_runs_the_child(tmp_path):
     from hermes_cli.update_custody import _CUSTODY_UNAVAILABLE, _JOIN_JOB
 
     child = "import sys; print('built'); sys.exit(3)"
-    out = subprocess.run([sys.executable, "-I", "-S", "-c", _JOIN_JOB, "0", sys.executable, "-c", child],
+    launcher = tmp_path / "join_job.py"  # a file, not -c: the guard reads argv text as a command line
+    launcher.write_text(_JOIN_JOB, encoding="utf-8")
+    out = subprocess.run([sys.executable, "-I", "-S", str(launcher), "0", sys.executable, "-c", child],
                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     assert out.returncode == 3, out
     assert out.stdout.strip() == "built"

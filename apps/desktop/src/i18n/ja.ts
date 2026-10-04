@@ -1052,7 +1052,11 @@ export const ja = defineLocale({
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
       keepAwakeTitle: 'コンピューターをスリープさせない',
-      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。',
+      keepAwakeDesc:
+        '本体のスリープを防ぎます。「実行中のみ」はターンの実行中だけ有効になるため、夜通しの実行を継続しつつ、ノートPCを一週間つけたままにはしません。画面は暗転できます。',
+      keepAwakeOff: 'オフ',
+      keepAwakeWhileWorking: '実行中のみ',
+      keepAwakeAlways: '常に',
       voiceShortcutHintTitle: '音声録音ショートカット',
       voiceShortcutHintDesc:
         '「設定 → キーボードショートカット」で音声録音ショートカット（「Start / stop voice conversation」）を設定します。voice.record_key は CLI と TUI 専用です。'
@@ -1981,6 +1985,9 @@ export const ja = defineLocale({
     replaceValue: '現在の値を置き換え',
     openDocs: 'ドキュメントを開く',
     clearField: key => `${key} をクリア`,
+    addListEntry: '追加',
+    removeListEntry: '削除',
+    listEntryPlaceholder: 'ID を入力',
     enableAria: name => `${name} を有効にする`,
     disableAria: name => `${name} を無効にする`,
     platformEnabled: name => `${name} を有効にしました`,
@@ -2003,7 +2010,7 @@ export const ja = defineLocale({
       },
       TELEGRAM_ALLOWED_USERS: {
         label: '許可する Telegram ユーザー ID',
-        help: '推奨。@userinfobot の数値 ID をカンマ区切りで。設定しないと誰でもボットに DM できます。'
+        help: '推奨。@userinfobot の数値 ID（1 欄に 1 件）。設定しないと誰でもボットに DM できます。'
       },
       TELEGRAM_PROXY: { label: 'プロキシ URL', help: 'Telegram がブロックされているネットワークでのみ必要です。' },
       DISCORD_BOT_TOKEN: {
@@ -2012,7 +2019,7 @@ export const ja = defineLocale({
       },
       DISCORD_ALLOWED_USERS: {
         label: '許可する Discord ユーザー ID',
-        help: '推奨。カンマ区切りの Discord ユーザー ID。'
+        help: '推奨。Discord ユーザー ID（1 欄に 1 件）。'
       },
       DISCORD_REPLY_TO_MODE: { label: '返信スタイル', help: 'first、all、または off。' },
       DISCORD_ALLOW_ALL_USERS: {
@@ -2048,20 +2055,20 @@ export const ja = defineLocale({
       },
       SLACK_ALLOWED_USERS: {
         label: '許可する Slack ユーザー ID',
-        help: '推奨。カンマ区切りの Slack ユーザー ID。'
+        help: '推奨。Slack ユーザー ID（1 欄に 1 件）。'
       },
       MATTERMOST_URL: { label: 'サーバー URL', placeholder: 'https://mattermost.example.com' },
       MATTERMOST_TOKEN: { label: 'ボットトークン' },
       MATTERMOST_ALLOWED_USERS: {
         label: '許可するユーザー ID',
-        help: '推奨。カンマ区切りの Mattermost ユーザー ID。'
+        help: '推奨。Mattermost ユーザー ID（1 欄に 1 件）。'
       },
       MATRIX_HOMESERVER: { label: 'ホームサーバー URL', placeholder: 'https://matrix.org' },
       MATRIX_ACCESS_TOKEN: { label: 'アクセストークン' },
       MATRIX_USER_ID: { label: 'ボットユーザー ID', placeholder: '@hermes:example.org' },
       MATRIX_ALLOWED_USERS: {
         label: '許可する Matrix ユーザー ID',
-        help: '推奨。@user:server 形式のカンマ区切りユーザー ID。'
+        help: '推奨。@user:server 形式のユーザー ID（1 欄に 1 件）。'
       },
       SIGNAL_HTTP_URL: {
         label: 'Signal ブリッジ URL',
@@ -2071,7 +2078,7 @@ export const ja = defineLocale({
       SIGNAL_ACCOUNT: { label: '電話番号', help: 'signal-cli ブリッジに登録した番号。' },
       SIGNAL_ALLOWED_USERS: {
         label: '許可する Signal ユーザー',
-        help: '推奨。カンマ区切りの Signal 識別子。'
+        help: '推奨。Signal 識別子（1 欄に 1 件）。'
       },
       WHATSAPP_ENABLED: {
         label: 'WhatsApp ブリッジを有効にする',
@@ -2080,7 +2087,7 @@ export const ja = defineLocale({
       WHATSAPP_MODE: { label: 'ブリッジモード' },
       WHATSAPP_ALLOWED_USERS: {
         label: '許可する WhatsApp ユーザー',
-        help: '推奨。カンマ区切りの電話番号または WhatsApp ID。'
+        help: '推奨。電話番号または WhatsApp ID（1 欄に 1 件）。'
       }
     },
     platformIntro: {}
@@ -3364,6 +3371,8 @@ export const ja = defineLocale({
       options: 'オプション',
       thinking: '思考',
       fast: '高速',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: '標準速度を使用',
       effort: '努力度',
       minimal: '最小',
       low: '低',

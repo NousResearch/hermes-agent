@@ -451,11 +451,7 @@ export function setPrimaryGatewayConnection(connection: Pick<HermesConnection, '
 }
 
 function traceAgentRoute(scope: string, via: string): void {
-  traceIdentityChange(
-    'gateway-route',
-    scope,
-    `via=${via} primary=${g.primaryConnectionId ?? '-'}/${g.primaryProfile}`
-  )
+  traceIdentityChange('gateway-route', scope, `via=${via} primary=${g.primaryConnectionId ?? '-'}/${g.primaryProfile}`)
 }
 
 function isPrimaryRegistryRoute(connectionId: null | string, profile: string): boolean {

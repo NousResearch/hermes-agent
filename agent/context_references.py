@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from agent.file_safety import HOME_CREDENTIAL_DIRS
 from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
@@ -90,7 +91,7 @@ _FILE_VALUE_PATTERN = re.compile(
 TRAILING_PUNCTUATION = ",.;!?"
 _OPENERS = {")": "(", "]": "[", "}": "{"}
 _NEEDS_QUOTING = re.compile(r"""[\s()\[\]{}<>"'`]""")
-_SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh")
+_SENSITIVE_HOME_DIRS = HOME_CREDENTIAL_DIRS  # one list with the write denylist and profile export
 _SENSITIVE_HERMES_DIRS = (Path("skills") / ".hub",)
 _SENSITIVE_HOME_FILES = tuple(Path(p) for p in (
     ".ssh/authorized_keys", ".ssh/id_rsa", ".ssh/id_ed25519", ".ssh/config", ".bashrc", ".zshrc",

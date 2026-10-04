@@ -1015,6 +1015,9 @@ def _(rid, params: dict) -> dict:
     base = (parts[0] if parts else "").lower()
     arg = parts[1] if len(parts) > 1 else ""
     sid = params.get("session_id", "")
+    # Desktop sends a typed `/model <name>` here; refuse before the worker or the live mirror switch (#99859).
+    if base == "model" and arg.strip() and (skew := _model_skew_err(rid)) is not None:
+        return skew
     live_output = _live_slash_command_output(sid, session, base, arg)
     if live_output is not None:
         return _ok(rid, {"output": live_output or "(no output)"})

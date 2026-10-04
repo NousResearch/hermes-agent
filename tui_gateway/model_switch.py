@@ -298,6 +298,10 @@ def _apply_model_switch(
     persist_override: bool | None = None, count_switch: bool = True) -> dict:
     """``count_switch=False``: an internal swap (config adoption, MoA one-shot and its restore), not a
     user's /model pick, so it stays out of the shared-metrics switch count."""
+    # #99859: every caller (config.set, the /model mirror, config adoption, /moa) resolves the new model
+    # on this process's modules, so a stale process refuses here rather than at each call site.
+    if (skew := _model_skew_err(None)) is not None:
+        raise RuntimeError(skew["error"]["message"])
     from hermes_cli.model_switch import switch_model
     model_input, explicit_provider, one_turn, persist_global, reasoning_effort = _switch_request(
         raw_input, parsed_flags, persist_override)
@@ -445,6 +449,9 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
         return
     seen = session.get("config_model_seen")
     if target == seen:
+        return
+    # A stale process must not adopt the edit (#99859); leave it unseen so it lands after the restart.
+    if _model_skew_err(None) is not None:
         return
     superseded_pin = None
     if session.get("model_override"):

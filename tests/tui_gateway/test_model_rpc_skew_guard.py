@@ -121,3 +121,40 @@ def test_pick_stashed_before_the_skew_is_dropped_at_turn_start(monkeypatch):
     assert applied == []
     assert "pending_model_switch" not in session
     assert emitted and emitted[0][0] == "error" and "restart" in emitted[0][2]["message"].lower()
+
+
+def test_config_adoption_is_skipped_and_left_unseen(monkeypatch):
+    # `hermes update` moves the checkout and often the configured model too; the turn-start adoption
+    # must not apply it on stale code, and must stay unseen so it lands after the restart.
+    _skewed(monkeypatch)
+    applied = []
+    monkeypatch.setattr(server, "_apply_model_switch", lambda sid, *a, **k: applied.append(sid) or {})
+    monkeypatch.setattr(server, "_config_model_target", lambda: ("config-model-x", "configprov"))
+    session = {"agent": Mock(model="old-model", provider="oldprov")}
+
+    server._sync_agent_model_with_config("s", session)
+
+    assert applied == []
+    assert "config_model_seen" not in session
+
+
+def test_apply_model_switch_itself_refuses(monkeypatch):
+    # Covers every caller that has no envelope of its own: the /model slash mirror, config adoption, /moa.
+    import pytest
+
+    _skewed(monkeypatch)
+    with pytest.raises(RuntimeError, match="(?i)restart"):
+        server._apply_model_switch("s", {"agent": Mock()}, "gpt-5.5 --provider openrouter")
+
+
+def test_stale_slash_exec_model_refuses_before_the_worker(monkeypatch):
+    # Desktop sends a typed `/model <name>` through slash.exec (runExec), not config.set.
+    _skewed(monkeypatch)
+    worker = Mock()
+    monkeypatch.setitem(server._sessions, "desk", {"agent": object(), "slash_worker": worker,
+                                                   "session_key": "k", "running": False})
+
+    resp = _call("slash.exec", {"command": "/model gpt-5.5 --provider openrouter", "session_id": "desk"})
+
+    assert resp.get("error", {}).get("code") == 5098, resp
+    worker.run.assert_not_called()

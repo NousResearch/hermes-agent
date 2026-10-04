@@ -23,6 +23,16 @@ _REASON_NEW_MESSAGE = "user sent a new message"
 _REASON_USER_INTERRUPT = "user interrupt"
 USER_INTERRUPT_REASONS = frozenset({_REASON_HARD_STOP, _REASON_NEW_MESSAGE, _REASON_USER_INTERRUPT})
 
+# User-facing wording for a skipped/cancelled tool call, keyed by the recorded reason. System
+# producers (batch guards, watchdogs, lease loss) must never be rendered as a human stop — the
+# skipped-call notice previously hardcoded "User sent a new message" and blamed the user for a
+# stop they did not issue (#130207).
+_USER_STOP_WORDING = {
+    _REASON_HARD_STOP: "Explicit stop requested",
+    _REASON_NEW_MESSAGE: "User sent a new message",
+    _REASON_USER_INTERRUPT: "User interrupt",
+}
+
 
 def interrupt_issuer(agent) -> Optional[str]:
     """Slug of the system producer behind the pending interrupt, or ``None`` for a human stop."""
@@ -30,6 +40,19 @@ def interrupt_issuer(agent) -> Optional[str]:
     if not reason or reason in USER_INTERRUPT_REASONS:
         return None
     return str(reason).strip().replace(" ", "_")
+
+
+def interrupt_skip_wording(agent) -> str:
+    """Reason a tool call was skipped/cancelled, in words safe for tool output.
+
+    Derived from the RECORDED reason rather than the call site, so a system-initiated
+    abort reads as one instead of asserting a user message that never existed (#130207)."""
+    reason = getattr(agent, "_tool_interrupt_reason", None)
+    if not reason:
+        return "Turn interrupted"
+    if reason in USER_INTERRUPT_REASONS:
+        return _USER_STOP_WORDING.get(reason, str(reason))
+    return f"Turn aborted — {str(reason).replace('_', ' ')}"
 
 
 def interrupted_during_api_call_reason(agent) -> str:
@@ -132,10 +155,13 @@ class InterruptControlMixin:
                 self._turn_liveness_abort_claim = require_generation
 
         # Tool cancellation attribution stays separate from _interrupt_message, which may carry the user's
-        # full next message.
+        # full next message. An explicit ``tool_reason`` wins on BOTH paths: a system producer that has to
+        # stop the turn SOFTLY (batch guards, watchdogs) previously had no way to label itself — passing a
+        # message made it look like "the user sent a new message", so the abort was attributed to the user
+        # and rendered as a user-stop placeholder (#130207).
         tool_interrupt_reason = (
             (tool_reason or _REASON_HARD_STOP) if hard_cancel
-            else (_REASON_NEW_MESSAGE if message else _REASON_USER_INTERRUPT)
+            else (tool_reason or (_REASON_NEW_MESSAGE if message else _REASON_USER_INTERRUPT))
         )
 
         def _publish_interrupt_state() -> None:

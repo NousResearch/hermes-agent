@@ -85,6 +85,37 @@ def test_warn_names_affected_packages(capsys):
     assert "+2 more" not in out
 
 
+def test_warn_matches_the_advisory_to_the_package_severity(capsys):
+    """npm's package severity is the max over advisories while ``via`` is sorted
+    by advisory source id, so the first titled entry can be a lower-severity one
+    (AI review on a real lodash payload: a critical package printed its high
+    advisory). The printed title must carry the package's severity, falling back
+    to the first titled entry when none matches (metavuln case)."""
+    audit = _audit_json_with_vulns(
+        {
+            "lodash": {
+                "severity": "critical",
+                "via": [
+                    {"title": "Command Injection in lodash", "severity": "high"},
+                    {"title": "Prototype Pollution in lodash", "severity": "critical"},
+                ],
+            },
+            "micromatch": {
+                "severity": "high",  # raised by a metavuln; no high titled via exists
+                "via": [
+                    {"title": "ReDoS in micromatch", "severity": "moderate"},
+                    "braces",
+                ],
+            },
+        },
+        critical=1, high=1,
+    )
+    out, _ = _run_audit_one(capsys, ["--workspaces=false"], audit)
+    assert "affected: lodash (critical — Prototype Pollution in lodash)" in out
+    assert "Command Injection" not in out
+    assert "affected: micromatch (high — ReDoS in micromatch)" in out
+
+
 def test_warn_caps_the_affected_package_list(capsys):
     """A heavily affected tree must not flood the doctor output: five named
     packages plus a +N summary line."""

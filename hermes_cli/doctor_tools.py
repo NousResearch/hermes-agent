@@ -433,11 +433,15 @@ def _audit_affected_packages(audit_data: dict, limit: int = 5) -> tuple[list[str
         if not isinstance(v, dict):
             continue
         sev = v.get("severity") or "unknown"
-        advisory = ""
-        for via in v.get("via", []):
-            if isinstance(via, dict) and via.get("title"):
-                advisory = via["title"]
-                break
+        # npm's package severity is the max over advisories (arborist Vuln.addAdvisory),
+        # while via is sorted by advisory source id — the first titled entry is not
+        # necessarily the one carrying that severity. Print the advisory matching the
+        # package's severity, else the first titled one (a metavuln can raise the
+        # package severity without any via advisory of its own).
+        titled = [x for x in (v.get("via") or []) if isinstance(x, dict) and x.get("title")]
+        advisory = next((x["title"] for x in titled if x.get("severity") == sev), "")
+        if not advisory and titled:
+            advisory = titled[0]["title"]
         rows.append((order.get(sev, 99), name, sev, advisory))
     rows.sort()
     lines = [f"{name} ({sev} — {advisory})" if advisory else f"{name} ({sev})"

@@ -4060,7 +4060,6 @@ export const zh = defineLocale({
     releaseNotes: '发行说明',
     onLatest: '已是最新版本。',
     installing: '正在安装更新。',
-    cantReach: '无法连接更新服务器。',
     tapCheck: '点击“立即检查”以查找更新。',
     updateReady: count => `新更新已就绪（包含 ${count} 项变更）。`,
     updateReadyUnknown: '新更新已就绪。',

@@ -4620,7 +4620,6 @@ export const esOverrides = {
     releaseNotes: 'Notas de la versión',
     onLatest: 'Ya tienes la versión más reciente.',
     installing: 'Se está instalando una actualización.',
-    cantReach: 'No pudimos contactar con el servidor de actualizaciones.',
     tapCheck: 'Pulsa "Comprobar ahora" para buscar actualizaciones.',
     updateReady: count =>
       `Hay una actualización lista (${count} ${count === 1 ? 'cambio incluido' : 'cambios incluidos'}).`,

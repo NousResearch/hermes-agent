@@ -4309,7 +4309,6 @@ export const en: Translations = {
     releaseNotes: 'Release notes',
     onLatest: "You're on the latest version.",
     installing: 'An update is currently installing.',
-    cantReach: "We couldn't reach the update server.",
     tapCheck: 'Tap "Check now" to look for updates.',
     updateReady: count => `A new update is ready (${count} change${count === 1 ? '' : 's'} included).`,
     updateReadyUnknown: 'A new update is ready.',

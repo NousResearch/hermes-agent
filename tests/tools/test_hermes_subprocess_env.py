@@ -126,7 +126,8 @@ class TestTierInvariants:
     def test_tier1_covers_dashboard_auth(self):
         # Credentialed CLIs (claude/codex) must not be able to mint dashboard sessions.
         assert {"HERMES_DASHBOARD_BASIC_AUTH_PASSWORD", "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
-                "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET"} <= _ALWAYS_STRIP_KEYS
+                "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", "HERMES_DASHBOARD_DRAIN_SECRET",
+                "HERMES_KANBAN_API_SECRET"} <= _ALWAYS_STRIP_KEYS
 
 
 class TestBrowserPassthroughPattern:

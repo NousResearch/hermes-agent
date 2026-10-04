@@ -1073,6 +1073,19 @@ class CLIModalMixin:
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
 
         with self._approval_lock:
+            # Best-effort native desktop notification that approval is needed
+            # (force=True: the user may have looked away from the terminal).
+            try:
+                from cli import _fire_desktop_notification
+                _cmd_hint = command if len(command) <= 80 else command[:80] + "…"
+                _fire_desktop_notification(
+                    "Hermes",
+                    "需要你的批准：{}".format(_cmd_hint),
+                    force=True,
+                    config_key="notify_on_approval",
+                )
+            except Exception:
+                pass
             timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
             response_queue = queue.Queue()
             self._approval_state = {

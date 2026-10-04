@@ -408,6 +408,7 @@ set_secret_capture_callback = _lazy_shim("tools.skills_tool", "set_secret_captur
 _cleanup_all_browsers = _lazy_shim("tools.browser_tool_lifecycle", "_emergency_cleanup_all_sessions", "_cleanup_all_browsers")
 
 _cleanup_done = False  # _run_cleanup runs exactly once
+_cli_interactive_session = False  # set True in HermesCLI.run(); gates the session-ended desktop notification
 _cleanup_in_progress = False
 _cli_wake_owner = None
 # One-shot finalization runs before process cleanup (plugins see the boundary while the
@@ -499,6 +500,41 @@ def _arm_exit_watchdog_on_shutdown_signal() -> None:
         _arm_exit_watchdog(timeout_s=base * 2, from_signal=True)
 
 
+def _fire_desktop_notification(title, body, *, force=False, config_key=None):
+    """Best-effort cross-platform desktop notification (session-ended, approval, ...).
+
+    Never raises and never blocks the caller for long. Honors an optional config
+    toggle (``config_key`` into the ``notifications`` section of ``CLI_CONFIG``);
+    when omitted the notification always fires. On Windows (and only Windows) a
+    *non-forced* notification is suppressed when the Hermes terminal is already the
+    foreground window, so it is never noise.
+
+    Dispatches via :mod:`hermes_cli.desktop_notify`, which picks the right backend
+    for the OS (WinRT toast / ``osascript`` / ``notify-send`` + D-Bus) and degrades
+    gracefully to a no-op where no backend exists (servers, CI, unsupported OS).
+    """
+    try:
+        if config_key is not None:
+            try:
+                _notify_cfg = CLI_CONFIG.get("notifications", {}) or {}
+                if not _notify_cfg.get(config_key, True):
+                    return
+            except Exception:
+                pass
+        # Windows foreground suppression (other platforms have no reliable foreground probe).
+        if not force and sys.platform == "win32":
+            try:
+                from hermes_cli.windows_focus import is_hermes_foreground
+                if is_hermes_foreground(os.getpid()):
+                    return
+            except Exception:
+                pass
+        from hermes_cli.desktop_notify import show_notification
+        show_notification(title, body, pid=os.getpid())
+    except Exception:
+        pass
+
+
 def _run_cleanup(*, notify_session_finalize: bool = True):
     """Run resource cleanup exactly once."""
     global _cleanup_done, _cleanup_in_progress
@@ -521,6 +557,10 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
             cleanup_session_id = _active_agent_ref.session_id if _active_agent_ref else None
             if _should_emit_cleanup_session_finalize(cleanup_session_id):
                 _notify_session_finalize(session_id=cleanup_session_id, platform="cli", reason="shutdown")
+        if _cli_interactive_session:
+            # Native desktop "session ended" toast (Windows/macOS/Linux). Gated to
+            # interactive sessions so piped one-shot runs don't spam a notification.
+            _fire_desktop_notification("Hermes", "会话已结束", config_key="notify_on_complete")
         try:
             _shutdown_agent_memory_provider(_active_agent_ref)
         except Exception as e:
@@ -1415,6 +1455,8 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         """Run the interactive CLI loop with persistent input at bottom."""
         if not self._claim_active_session("cli"):
             return
+        global _cli_interactive_session
+        _cli_interactive_session = True
 
         self._tui_print_startup()
         self._tui_init_run_state()

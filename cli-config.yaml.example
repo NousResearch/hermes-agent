@@ -2318,4 +2318,18 @@ updates:
 #     override_existing: false             # .env/shell win by default
 #   # This runs ONCE per process at startup, so it cannot replace a credential
 #   # that expires mid-session. For a single provider whose token needs
-#   # re-minting during a session, use `providers.<name>.key_cmd` instead.
+#   # re-minting during a session, use
+
+# =============================================================================
+# Desktop Notifications
+# =============================================================================
+# Show a native OS desktop notification on certain events. Cross-platform:
+# Windows (WinRT toast), macOS (Notification Center), Linux (notify-send / D-Bus).
+# On servers, CI, or machines without a notification backend the calls are
+# silently skipped — they never raise and never block the CLI.
+notifications:
+  # Notify when an interactive CLI session ends. Default: true
+  notify_on_complete: true
+  # Notify when a command needs your approval (you may have looked away from the
+  # terminal). Always fires even if the terminal is focused. Default: true
+  notify_on_approval: true `providers.<name>.key_cmd` instead.

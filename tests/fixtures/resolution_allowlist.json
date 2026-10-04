@@ -565,6 +565,11 @@
     "kind": "bare_which"
   },
   {
+    "path": "tools/process_registry.py",
+    "symbol": "list_systemd_user_scope_units",
+    "kind": "bare_which"
+  },
+  {
     "path": "tools/read_extract.py",
     "symbol": "_pdf_page_texts",
     "kind": "bare_which"

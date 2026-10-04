@@ -111,66 +111,33 @@ def reap_cgroup(cgroup_path: str | None = None) -> int | None:
     return killed
 
 
-def _dead_gateway_pid() -> int | None:
-    """PID of the gateway that just exited, from its own record, or None.
-
-    ExecStopPost has no ``$MAINPID``: ``man systemd.service`` states it is unset if the
-    main process exited by the time the stop commands are called, and this hook only ever
-    runs after that — measured on systemd 255, including a stop that hit the
-    ``TimeoutStopSec`` escalation (``Result=timeout``, ``ExecMainStatus=9``; the hook ran
-    and still saw an empty ``$MAINPID``). The record is the handle that still names the
-    dead gateway — a handle, not proof of *how* it died: a graceful stop unlinks it
-    (``gateway.status.remove_pid_file``), but a concurrent status read with
-    ``cleanup_stale=True`` can unlink a stale record before this hook reads it, and a
-    ``--replace`` unlink no-ops when the record already names the new process.
-    """
-    try:
-        from gateway.status import _pid_from_record, _read_pid_record
-    except Exception:
-        return None
-    with contextlib.suppress(Exception):
-        pid = _pid_from_record(_read_pid_record())
-        if isinstance(pid, int) and pid > 0:
-            return pid
-    return None
-
-
-def _pid_is_alive(pid: int) -> bool:
-    """True when the recorded PID still exists — a live gateway owns its own scopes.
-
-    Fails closed: if liveness cannot be determined, refuse the sweep (a stale unit
-    outliving a restart is the lesser harm than stopping a live gateway's commands).
-    """
-    try:
-        from gateway.status import _pid_exists
-    except Exception:
-        return True
-    with contextlib.suppress(Exception):
-        return bool(_pid_exists(pid))
-    return True
-
-
-def reap_foreground_scopes(pid: int | None = None) -> bool:
-    """Stop the foreground scopes a dead gateway left behind. True if a sweep was issued.
+def reap_foreground_scopes() -> bool:
+    """Stop the foreground scopes of every gateway PID that is no longer alive.
 
     A foreground ``terminal`` command runs in ``hermes-fg-<gateway pid>-*.scope``
     (see #70716), which neither this unit's ``KillMode=`` nor the cgroup reap above
-    reaches: the gateway's own funnel only runs while it is alive to run it, and the next
-    gateway has a new PID. Best effort by construction — it needs a PID that is still
-    readable *and* no longer alive; a live PID is never swept, and a record that a
-    concurrent cleanup already removed means no sweep at all. Enqueuing the stop is not
-    proof that the scope is gone before ``Restart=`` starts the next gateway.
+    reaches: the gateway stops its own scopes from inside the process, so a gateway that
+    was SIGKILLed never runs that funnel, and the next gateway has a new PID.
+
+    The units are *enumerated* rather than derived from the gateway's PID record, because
+    ``$MAINPID`` is unset in ``ExecStopPost`` (``man systemd.service``; measured on
+    systemd 255, including a stop that hit the ``TimeoutStopSec`` escalation) and the
+    record is a weaker signal than it looks: a concurrent status read with
+    ``cleanup_stale=True`` can unlink a stale record before this hook runs, and a
+    ``--replace`` unlink no-ops when the record already names the new process. Each unit's
+    own name carries the PID that issued it, so a live gateway keeps its scopes by
+    construction and a dead one's are stopped without needing any record at all.
+
+    Returns True when at least one unit was stopped. Best effort by construction: an
+    unreachable manager, an unnameable unit, or a liveness answer that cannot be resolved
+    means no stop, and enqueuing a stop is not proof that the scope is gone before
+    ``Restart=`` starts the next gateway.
     """
-    if pid is None:
-        pid = _dead_gateway_pid()
-    if pid is None or _pid_is_alive(pid):
-        return False
     try:
-        from tools.environments.local import stop_foreground_scopes
+        from tools.environments.local import sweep_dead_foreground_scopes
     except Exception:
         return False
-    stop_foreground_scopes(pid, no_block=True)
-    return True
+    return sweep_dead_foreground_scopes(no_block=True) > 0
 
 
 def main() -> int:

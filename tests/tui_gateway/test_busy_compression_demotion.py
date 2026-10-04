@@ -14,6 +14,8 @@ from __future__ import annotations
 import threading
 import types
 
+import pytest
+
 from tui_gateway import server
 
 
@@ -140,34 +142,40 @@ def test_busy_queued_drain_forces_queue_regardless(monkeypatch):
 
 # ── session.steer / session.redirect demotion ─────────────────────────────
 
-def test_session_steer_queues_while_compressing(monkeypatch):
+@pytest.mark.parametrize("running", [False, True])
+def test_session_steer_queues_while_compressing(monkeypatch, running):
     monkeypatch.setattr(server, "_session_compression_in_flight", lambda session: True)
     seen = []
     agent = types.SimpleNamespace(steer=lambda text: seen.append(text) or True)
-    session = _session(agent=agent)
+    session = _session(agent=agent, running=running)
     monkeypatch.setitem(server._sessions, "sid", session)
     try:
         resp = server.handle_request(
-            {"id": "r1", "method": "session.steer", "params": {"session_id": "sid", "text": "follow-up"}})
+            {"id": "r1", "method": "session.steer", "params": {"session_id": "sid", "text": "follow-up", "submission_ref": "compression-input", "input_visibility": "visible"}})
     finally:
         server._sessions.pop("sid", None)
 
     assert resp["result"]["status"] == "queued"
+    assert resp["result"]["submission"]["ref"] == "compression-input"
+    assert resp["result"]["submission"]["disposition"] == "queued"
     assert seen == []
     assert session["queued_prompt"]["text"] == "follow-up"
 
 
-def test_session_redirect_queues_while_compressing(monkeypatch):
+@pytest.mark.parametrize("running", [False, True])
+def test_session_redirect_queues_while_compressing(monkeypatch, running):
     monkeypatch.setattr(server, "_session_compression_in_flight", lambda session: True)
     seen = []
     agent = types.SimpleNamespace(_supports_active_turn_redirect=True, redirect=lambda t: seen.append(t) or True)
-    session = _session(agent=agent)
+    session = _session(agent=agent, running=running)
     monkeypatch.setitem(server._sessions, "sid", session)
     try:
         resp = server.handle_request(
-            {"id": "r1", "method": "session.redirect", "params": {"session_id": "sid", "text": "follow-up"}})
+            {"id": "r1", "method": "session.redirect", "params": {"session_id": "sid", "text": "follow-up", "submission_ref": "compression-input", "input_visibility": "visible"}})
     finally:
         server._sessions.pop("sid", None)
 
     assert resp["result"]["status"] == "queued"
+    assert resp["result"]["submission"]["ref"] == "compression-input"
+    assert resp["result"]["submission"]["disposition"] == "queued"
     assert seen == []

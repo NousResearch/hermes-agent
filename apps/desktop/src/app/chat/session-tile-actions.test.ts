@@ -188,7 +188,12 @@ describe('useSessionTileActions sleep/wake session recovery', () => {
 
     expect(ok).toBe(true)
     expect(calls.map(c => c.method)).toEqual(['session.redirect', 'session.resume', 'session.redirect'])
-    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'actually use Postgres' })
+    expect(calls[2]?.params).toEqual({
+      session_id: RECOVERED_SESSION_ID,
+      text: 'actually use Postgres',
+      submission_ref: expect.any(String),
+      input_visibility: 'visible'
+    })
     expect($sessionTiles.get()[0]?.runtimeId).toBe(RECOVERED_SESSION_ID)
   })
 

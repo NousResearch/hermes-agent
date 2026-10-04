@@ -590,6 +590,18 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
 
 
 def _reset_session_agent(sid: str, session: dict) -> dict:
+    from tui_gateway.input_observation import state, clear_queue
+    with state(session).control:
+        observation = session.get("_turn_observation")
+        with observation.gate if observation is not None else contextlib.nullcontext():
+            if observation is not None:
+                observation.terminal = True
+            with session["history_lock"]:
+                clear_queue(session, "session_reset")
+        return _reset_session_agent_locked(sid, session)
+
+
+def _reset_session_agent_locked(sid: str, session: dict) -> dict:
     updates = dict(
         attached_images=[], queued_prompt=None,
         _queued_prompt_generation=int(session.get("_queued_prompt_generation", 0)) + 1,

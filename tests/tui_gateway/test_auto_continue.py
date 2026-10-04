@@ -392,7 +392,8 @@ def test_fresh_marker_schedules_continuation(emits, schedule_env, marker_home):
     assert text.startswith("[System note: Your previous turn was interrupted")
     assert "fix the flaky test" in text
     assert kwargs["display_kind"] == "auto_continue"
-    assert ("message.start", "sid", None) in [(e, s, p) for e, s, p in emits]
+    # The runner owns message.start (and its execution identity). Scheduling must not emit a duplicate.
+    assert not any(e == "message.start" for e, _s, _p in emits)
 
 
 def test_hosted_room_marker_is_left_to_the_driver(schedule_env, marker_home):

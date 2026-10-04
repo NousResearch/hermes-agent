@@ -124,7 +124,6 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             with _session_profile_runtime_scope(session):
                 def announce():
                     _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…"})
-                    _emit("message.start", sid)
                 render_notification(announce, platform="tui", diagnostic=diagnostic)
                 _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue",
                     **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
@@ -145,13 +144,17 @@ def _ac_inflight_original(session: dict) -> str:
 
 
 def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[str] | None = None,
-                    turn_author: dict | None = None) -> dict | None:
+                    turn_author: dict | None = None, turn_source: dict | None = None,
+                    display_kind: str | None = None, input_batch: dict | None = None) -> dict | None:
     """Queue a message for the next turn. Text-only arrivals share a slot and merge losslessly (like the
     consecutive-user merge in ``repair_message_sequence``); image-bearing and authored ones stay separate
     envelopes so attachment chronology and the sender survive. ``transport`` is pinned so the drained turn
-    streams to its sender. Returns the envelope dict the text landed in (the merged head on a merge)
-    so the caller can attach durable state to it; None when the text was dropped as a duplicate."""
+    streams to its sender."""
+    from tui_gateway.turn_observation import merge_sources
+    from tui_gateway.input_observation import new_input, merge_inputs, record_outcome, state, snapshot
+    input_batch = input_batch or new_input(session, text)
     image_paths = list(image_paths or [])
+    source = dict(turn_source or {"kind": "unknown"})
     # Scrub live-turn self-duplicates first so the text merge below can't glue "{original}\n\n{later}" and re-fire the
     # original after a correction settles.
     # See #84417.
@@ -159,20 +162,36 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any, image_paths: list[
     text_only = not image_paths and isinstance(text, str)
     # A text-only self-copy of the live prompt would restart it on drain; an authored copy is another sender's message.
     if text_only and not turn_author and text.strip() == _ac_inflight_original(session) != "":
+        record_outcome(session, input_batch, "absorbed", reason="duplicate_of_inflight")
         return None
-    queued = {"text": text, "transport": transport, **({"image_paths": image_paths} if image_paths else {}),
+    queued = {"text": text, "transport": transport, "input_batch": input_batch,
+              **({"turn_source": source} if source["kind"] != "unknown" else {}),
+              **({"display_kind": display_kind} if display_kind else {}),
+              **({"image_paths": image_paths} if image_paths else {}),
               **({"turn_author": turn_author} if turn_author else {})}
     existing = session.get("queued_prompt")
     if (existing and text_only and not turn_author and isinstance(existing.get("text"), str)
             and not existing.get("image_paths") and not existing.get("turn_author")
+            and existing.get("display_kind") == display_kind
             and not session.get("queued_prompts")):
         prev = existing["text"]
+        existing["input_batch"] = merge_inputs(
+            existing.get("input_batch") or {"parts": [], "complete": False}, input_batch,
+            len(prev) + (2 if prev and text else 0))
         existing["text"] = f"{prev}\n\n{text}" if prev and text else (prev or text)
+        if turn_source is not None or existing.get("turn_source"):
+            existing["turn_source"] = merge_sources(existing.get("turn_source") or {"kind": "unknown"}, source)
+        state(session).changed()
+        snapshot(session)
+        existing["_input_disposition"] = "merged"
         return existing
-    if existing:
+    elif existing:
         session.setdefault("queued_prompts", []).append(queued)
     else:
         session["queued_prompt"] = queued
+    state(session).changed()
+    snapshot(session)
+    queued["_input_disposition"] = "queued"
     return queued
 
 
@@ -207,7 +226,8 @@ def _drop_queued_duplicates_of_inflight_user(session: dict) -> None:
     if not (original := _ac_inflight_original(session)):
         return
     head = session.get("queued_prompt")
-    cleaned = (_sanitize_queued_entry_vs_inflight_user(e, original)
+    from tui_gateway.input_observation import sanitize_inputs
+    cleaned = (sanitize_inputs(session, e, _sanitize_queued_entry_vs_inflight_user(e, original))
                for e in ([head] if head else []) + list(session.get("queued_prompts") or []))
     _ac_set_queue(session, [c for c in cleaned if c is not None])
 
@@ -219,6 +239,9 @@ def _ac_set_queue(session: dict, entries: list) -> None:
         session["queued_prompts"] = entries[1:]
     else:
         session.pop("queued_prompts", None)
+    from tui_gateway.input_observation import state, snapshot
+    state(session).changed()
+    snapshot(session)
 
 
 def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
@@ -243,20 +266,15 @@ def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
     threading.Thread(target=interrupt, daemon=True, name=f"busy-interrupt-{sid}").start()
 
 
-def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: str, status: str) -> dict | None:
-    """Apply ``agent.<method>(plain_text)`` (steer/redirect); on acceptance record the correction, scrub stale
-    self-duplicates so the live turn's original text is not re-fired after settle, and return the ``status`` reply.
-    None → caller falls through to the queue path."""
-    try:
-        if not getattr(agent, method)(plain_text):
-            return None
-    except Exception:
+def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: str, status: str,
+                       *, sid="", input_batch=None) -> dict | None:
+    response = _apply_correction(rid, session, method, plain_text, status, sid=sid,
+                                 input_batch=input_batch, visible=True, queue_fallback=True)
+    if response.get("error") or response.get("result", {}).get("status") == "rejected":
         return None
-    with session["history_lock"]:
-        _record_inflight_correction(session, plain_text)
-        _drop_queued_duplicates_of_inflight_user(session)
-        session["last_active"] = time.time()
-    return _ok(rid, {"status": status})
+    # Busy submit historically omits the direct correction endpoint's text echo.
+    response["result"].pop("text", None)
+    return response
 
 
 def _session_compression_in_flight(session: dict) -> bool:
@@ -396,12 +414,15 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
 
 
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
-                        turn_author: dict | None = None, display_kind: str | None = None) -> dict | None:
+                        turn_author: dict | None = None, turn_source: dict | None = None,
+                        display_kind: str | None = None, input_batch: dict | None = None) -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
     after" message must NEVER become a live correction."""
-    mode = "queue" if queued else _load_busy_input_mode()
+    from copy import deepcopy
+    reply_batch = deepcopy(input_batch)
+    mode = "queue" if queued or display_kind == "hidden" else _load_busy_input_mode()
     agent = session.get("agent")
     # Compression in flight demotes steer/interrupt to queue: a correction delivered
     # mid-compression aborts the compression instead of waiting for it (#61042). The
@@ -417,13 +438,13 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     plain_text = _coerce_message_text(text).strip() if not image_paths and _is_text_only_busy_payload(text) else ""
     # Text-only corrections steer/redirect in place when supported; media payloads and older agents fall through to
     # the proven interrupt + queue path.
-    if plain_text and agent is not None:
+    if plain_text and agent is not None and display_kind != "hidden":
         supported = {
             "steer": hasattr(agent, "steer"),
             "interrupt": getattr(agent, "_supports_active_turn_redirect", False) is True and hasattr(agent, "redirect")}
         method, status = {"steer": ("steer", "steered"), "interrupt": ("redirect", "redirected")}.get(mode, (None, None))
         if (method and supported[mode]
-                and (resp := _ac_try_correction(rid, session, agent, method, plain_text, status)) is not None):
+                and (resp := _ac_try_correction(rid, session, agent, method, plain_text, status, sid=sid, input_batch=input_batch)) is not None):
             return resp
     # Queue before asking the live turn to stop. Never call a provider/compute-host method under history_lock: an
     # interrupt can wait behind the op it cancels.
@@ -432,12 +453,14 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))
             return None
-        envelope = _enqueue_prompt(session, text, transport, image_paths=image_paths, turn_author=turn_author)
-        # Durable AT ACCEPT (not when the turn runs): a cold resume sees the queued message and a
-        # backend restart cannot lose it. Lives on the envelope, never the shared session slot.
+        envelope = _enqueue_prompt(session, text, transport, image_paths=image_paths, turn_author=turn_author,
+                        turn_source=turn_source, display_kind=display_kind, input_batch=input_batch)
+        disposition = envelope["_input_disposition"] if envelope is not None else "absorbed"
         if envelope is not None:
             _persist_queued_user_row(session, envelope, display_kind)
         session["last_active"] = time.time()
+    from tui_gateway.input_observation import publish_state, reply_submission
+    publish_state(sid, session)
     # Attachments need their own model invocation: queue without cancelling so the user gets both results in order.
     # ``steer`` must NEVER escalate to a hard interrupt: it would kill the live turn AND drop ``AIAgent._pending_steer``
     # (earlier accepted steers); steer fall-throughs stay FIFO-queued.
@@ -447,7 +470,8 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # pending steer buffer — silently destroying the earlier messages of the burst. See #86134.
     if mode == "interrupt" and not image_paths:
         _interrupt_busy_session(sid, session, agent)
-    return _ok(rid, {"status": "queued"})
+    response = _ok(rid, {"status": "queued"})
+    return reply_submission(response, reply_batch, disposition) if reply_batch else response
 
 
 def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
@@ -459,6 +483,9 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         queue_generation = int(session.get("_queued_prompt_generation", 0))
         _ac_set_queue(session, session.get("queued_prompts") or [])
         session["running"] = True
+        _start_inflight_turn(session, queued["text"])
+        session["inflight_turn"].update(input=_display_turn_input(queued["text"], queued.get("display_kind")),
+                                        input_batch=queued.get("input_batch"))
         queued_transport = queued.get("transport")
         # The queuer's transport is pinned so the drained turn reaches the client that sent it — but
         # ATTACHED, not rebound: a mid-turn prompt from a second client used to silence the first for the
@@ -469,6 +496,9 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:
+            if session.get("_turn_cancel_requested"):
+                session["running"] = False
+                return True
             # Generation bump cancelled the claim (Stop, compress re-anchor, …): don't dispatch, but restore the
             # envelope (claimed head first, then whatever advanced into the slot) so a legitimate follow-up isn't dropped.
             # See #84417.
@@ -477,6 +507,12 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             session["running"] = False
             return True
     kwargs: dict = {"queued_prompt_generation": queue_generation}
+    if queued.get("input_batch"):
+        kwargs["input_batch"] = queued["input_batch"]
+    if queued.get("turn_source"):
+        kwargs["turn_source"] = queued["turn_source"]
+    if queued.get("display_kind"):
+        kwargs["display_kind"] = queued["display_kind"]
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
     # Re-place the accept-time rows (if any) at the transcript END before the turn's rows follow
@@ -505,15 +541,27 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs)
         elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
             with session["history_lock"]:
+                from tui_gateway.input_observation import record_outcome, project_inputs
+                record_outcome(session, queued.get("input_batch"), "failed_before_start", reason="compute_dispatch_failed")
+                error_inputs = project_inputs(session, queued.get("input_batch"))
                 session["running"] = False
                 _clear_inflight_turn(session)
-            _emit("error", sid, {"message": str((resp.get("error") or {}).get("message") or "queued prompt failed")})
+            _emit("error", sid, {"message": str((resp.get("error") or {}).get("message") or "queued prompt failed"),
+                                 **error_inputs})
             dispatch_failed = True
     except Exception as exc:
         _notif_log_failure("queued prompt dispatch failed", exc)
+        with session["history_lock"]:
+            from tui_gateway.input_observation import record_outcome, project_inputs
+            record_outcome(session, queued.get("input_batch"), "failed_before_start", reason="dispatch_exception")
+            error_inputs = project_inputs(session, queued.get("input_batch"))
+            _clear_inflight_turn(session)
         _notif_release_turn(session)
+        _emit("error", sid, {"message": "queued prompt dispatch failed", **error_inputs})
         dispatch_failed = True
     if dispatch_failed:
+        from tui_gateway.input_observation import publish_state
+        publish_state(sid, session)
         with session["history_lock"]:
             drain_next = bool(session.get("queued_prompt")) and not session.get("_turn_cancel_requested")
         if drain_next:
@@ -534,6 +582,22 @@ def _inflight_snapshot(session: dict) -> dict | None:
         snapshot["display_kind"] = display_kind
     if isinstance(display_metadata := turn.get("display_metadata"), dict):
         snapshot["display_metadata"] = dict(display_metadata)
+    from copy import deepcopy
+    if "input" in turn:
+        snapshot["input"] = deepcopy(turn["input"])
+        if turn["input"] is None:
+            snapshot["user"] = ""
+    if isinstance(turn.get("turn"), dict):
+        snapshot["turn"] = deepcopy(turn["turn"])
+    from tui_gateway.input_observation import project_inputs
+    if turn.get("input_batch"):
+        snapshot.update(project_inputs(session, turn["input_batch"]))
+    if "input_observations" in turn:
+        snapshot["input_observations"] = [
+            {**deepcopy(item["payload"]), **project_inputs(session, item["input_batch"])}
+            for item in turn["input_observations"]]
+        snapshot["input_observations_complete"] = bool(turn.get("input_observations_complete", True)) and all(
+            item["inputs_complete"] for item in snapshot["input_observations"])
     raw_offsets = turn.get("correction_offsets") or []
     correction_pairs = [(str(c), raw_offsets[i] if i < len(raw_offsets) else None)
                         for i, c in enumerate(turn.get("corrections") or []) if str(c).strip()]
@@ -576,6 +640,9 @@ def _emit_terminal_turn_error(
     payload = {"text": text, "usage": _get_usage(agent) if agent is not None else {}, "status": "error",
                "error": message, "recoverable": True, **({"error_surface": error_surface} if error_surface else {}),
                **({"partial": True} if partial else {}), **({"rendered": rendered} if rendered else {})}
+    from tui_gateway.input_observation import project_inputs
+    with session["history_lock"]:
+        payload.update(project_inputs(session, turn.get("input_batch")))
     if retire_marker:
         _retire_turn_marker(session)
     _emit("message.complete", sid, payload)
@@ -597,8 +664,14 @@ def _queued_prompt_snapshot(session: dict) -> dict | None:
     """The accepted next-turn prompt without its transport handle, for the live-session projection (Desktop may
     reconnect while it is still queued)."""
     queued = session.get("queued_prompt")
-    user = _inflight_text(queued.get("text")) if isinstance(queued, dict) else ""
-    return {"user": user} if user else None
+    if not isinstance(queued, dict):
+        return None
+    projected = _display_turn_input(queued.get("text"), queued.get("display_kind"))
+    user = _inflight_text(queued.get("text"))
+    if projected is None or projected.get("display_kind") == "skill_invocation":
+        user = (projected or {}).get("text", "")
+    from tui_gateway.input_observation import project_inputs
+    return {"user": user, "input": projected, **project_inputs(session, queued.get("input_batch"))}
 
 
 def register(server) -> None:

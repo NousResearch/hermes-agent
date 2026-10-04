@@ -731,9 +731,15 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
     # The chat's own pick, not the profile default: a warm reattach that reported `_resolve_model()` flipped the
     # Desktop picker on every reload while the session was still live, and back once it had been dropped.
     model, provider = _live_session_identity(live)
+    with live.setdefault("history_lock", threading.Lock()):
+        inflight, running = _inflight_snapshot(live), bool(live.get("running"))
+        queued = _queued_prompt_snapshot(live)
+    from tui_gateway.input_observation import cached_snapshot
     return _ok(ctx.rid, _attach_todo_state({
+        "submission_state": cached_snapshot(live),
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
         "message_count": len(messages), "messages": messages,
+        "running": running, "inflight": inflight, "queued": queued,
         "info": {"model": model, "provider": provider, "lazy": True,
                  "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
@@ -900,6 +906,8 @@ def _resume_response(
                "started_at": record["created_at"] if started_at is None else started_at, "status": status}
     if auto_continue is not None:
         payload["auto_continue"] = auto_continue
+    from tui_gateway.input_observation import cached_snapshot
+    payload["submission_state"] = cached_snapshot(record)
     return _ok(ctx.rid, _attach_todo_state(payload, record))
 
 
@@ -2403,70 +2411,6 @@ def _(rid, params: dict) -> dict:
                 _resume_wake_after_interrupt()
             except Exception:
                 logger.debug("session.interrupt wake resume failed", exc_info=True)
-
-
-def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status: str) -> dict:
-    """``agent.<verb>(text)``; on acceptance record it on the live turn (mid-turn resume rebuilds the bubble)
-    and purge queued self-copies so post-turn drain cannot re-fire the old prompt."""
-    try:
-        accepted = getattr(session["agent"], verb)(text)
-    except Exception as exc:
-        return _err(rid, 5000, f"{verb} failed: {exc}")
-    if accepted:
-        with session["history_lock"]:
-            _record_inflight_correction(session, text)
-            # #84417: steer does not cancel the live original, but a server queue self-copy of that original
-            # must still not re-fire after settle (same class as redirect).
-            # #84417: purge server-queue self-duplicates of the live original so post-turn drain cannot
-            # restart the pre-correction prompt.
-            _drop_queued_duplicates_of_inflight_user(session)
-            session["last_active"] = time.time()
-    return _ok(rid, {"status": accepted_status if accepted else "rejected", "text": text})
-
-
-def _correction_method(name: str, verb: str, accepted_status: str, supported, unsupported: str):
-    """steer/redirect RPC: ``params.text`` (4002, checked before the session) into a live session;
-    ``supported(agent)`` gates 4010."""
-    @method(name)
-    def _(rid, params: dict) -> dict:
-        if not (text := (params.get("text") or "").strip()):
-            return _err(rid, 4002, "text is required")
-        session, err = _sess_nowait(params, rid)
-        if err:
-            return err
-        agent = session.get("agent")
-        # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
-        # a misleading 4010 the client swallows into a lost follow-up.
-        if verb == "redirect" and agent is None and session.get("running"):
-            _enqueue_prompt(session, text, current_transport() or _stdio_transport)
-            session["last_active"] = time.time()
-            return _ok(rid, {"status": "queued", "text": text})
-        # Compression in flight: queue instead of steering/redirecting. A correction that
-        # reaches the provider mid-compression aborts the compression (explicit_interrupt)
-        # — the follow-up kills the turn that would answer it (#61042). Queued here, it
-        # drains when compression finishes (the Discord-gateway contract; mirrors the
-        # interrupt→queue demotion in gateway/run_busy.py for the channel busy path).
-        if _session_compression_in_flight(session):
-            _enqueue_prompt(session, text, current_transport() or _stdio_transport)
-            session["last_active"] = time.time()
-            return _ok(rid, {"status": "queued", "text": text})
-        if not supported(agent):
-            return _err(rid, 4010, unsupported)
-        # An idle agent accepts steer() but only the next turn drains it, spliced after an old tool
-        # row (#64578). 'rejected' makes the client queue it as a normal next prompt.
-        if verb == "steer" and not session.get("running"):
-            return _ok(rid, {"status": "rejected", "text": text})
-        return _apply_correction(rid, session, verb, text, accepted_status)
-
-
-# Inject text into the next tool result without interrupting (AIAgent.steer(): no new user turn, no role
-# alternation violation).
-_correction_method("session.steer", "steer", "queued", lambda agent: hasattr(agent, "steer"),
-                   "agent does not support steer")
-# Redirect the active model turn while preserving valid work/context.
-_correction_method("session.redirect", "redirect", "redirected",
-                   lambda agent: getattr(agent, "_supports_active_turn_redirect", False) is True
-                   and hasattr(agent, "redirect"), "agent does not support active-turn redirect")
 
 
 # ── delegation / spawn trees ─────────────────────────────────────────

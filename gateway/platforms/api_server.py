@@ -3195,11 +3195,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if title is not None:
                 clean_title = db.sanitize_title(str(title))
                 if clean_title:
-                    conflict = conn.execute(
-                        "SELECT id FROM sessions WHERE title = ? AND id != ?", (clean_title, session_id)).fetchone()
-                    if conflict:
+                    try:
+                        db._resolve_title_conflict(conn, session_id, clean_title)
+                    except ValueError as exc:  # the DB's uniqueness rule; undo the INSERT
                         conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-                        return None, f"title:Title already in use by session {conflict['id']}"
+                        return None, f"title:{exc}"
                 conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (clean_title, session_id))
             session_row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
             return (dict(session_row) if session_row else {

@@ -138,7 +138,8 @@ def _connection(board: Optional[str]) -> Iterator[sqlite3.Connection]:
     # ``_board_counts``. This is a network-facing polling surface, so it stays
     # on the cached path.
     slug = _resolve_board_slug(board)
-    with kbc.connect_closing(board=slug) as conn:
+    # Lifecycle hooks name their board from the scoped current board, not from the connection.
+    with kanban_db.scoped_current_board(slug), kbc.connect_closing(board=slug) as conn:
         yield conn
 
 

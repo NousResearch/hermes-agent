@@ -710,3 +710,20 @@ def test_log_tail_never_starts_mid_line(client: TestClient) -> None:
             f"/api/plugins/kanban/v1/tasks/{task_id}/log", params={"tail_bytes": tail_bytes}
         ).json()
         assert "0123456789" not in body["excerpt"], tail_bytes
+
+
+def test_actions_fire_lifecycle_hooks_for_the_requested_board(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kanban_db.create_board("ops")
+    fired: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        kanban_db, "_fire_kanban_lifecycle_hook",
+        lambda event, task_id, **fields: fired.append((event, fields.get("board"))),
+    )
+    base = "/api/plugins/kanban/v1/tasks"
+    done = client.post(f"{base}?board=ops", json={"title": "to complete"}).json()["task"]["id"]
+    stuck = client.post(f"{base}?board=ops", json={"title": "to block"}).json()["task"]["id"]
+    assert client.post(f"{base}/{done}/complete?board=ops", json={"summary": "ok"}).status_code == 200
+    assert client.post(f"{base}/{stuck}/block?board=ops", json={"reason": "wait"}).status_code == 200
+    assert fired and {board for _event, board in fired} == {"ops"}

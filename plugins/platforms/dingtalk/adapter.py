@@ -691,8 +691,10 @@ class DingTalkAdapter(BasePlatformAdapter):
     async def _resolve_rich_text_item(self, item: dict, robot_code: str, token: Optional[str]) -> bool:
         """Discard raw codes; report failed attachments separately from their URLs."""
         candidates = [item.pop(key, None) for key in self._RICH_TEXT_CODE_CANDIDATES]
+        if item.get("downloadUrl"):
+            return False
         if not token:
-            return any(candidates) and not item.get("downloadUrl")
+            return any(candidates)
         for code in candidates:
             if not code:
                 continue

@@ -108,11 +108,14 @@ async def test_unresolved_media_is_delivered_without_raw_codes(monkeypatch, capl
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["empty", "text", "resolved", "mixed"])
-async def test_failure_notice_preserves_other_inbound_content(kind):
+@pytest.mark.parametrize("token", [None, "token"])
+async def test_failure_notice_preserves_other_inbound_content(kind, token):
     from plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
     adapter = DingTalkAdapter(PlatformConfig(enabled=True))
-    adapter._get_access_token = AsyncMock(return_value=None)
+    adapter._get_access_token = AsyncMock(return_value=token)
+    adapter._resolve_single_code = AsyncMock(side_effect=lambda code, *args:
+        "https://fixture.invalid/replaced.png" if code == "secret" else None)
     items = [] if kind == "empty" else [{"text": "original"}]
     if kind in {"resolved", "mixed"}:
         items.append({"type": "picture", "downloadCode": "secret",

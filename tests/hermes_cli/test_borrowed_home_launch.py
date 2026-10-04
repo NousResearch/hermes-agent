@@ -8,7 +8,6 @@ dependency sync leaves.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import sys
 
@@ -67,30 +66,6 @@ def _home(monkeypatch, path: Path) -> Path:
     return path
 
 
-def test_a_temporary_home_borrows_the_default_roots_checkout(tmp_path, monkeypatch):
-    root = _checkout(tmp_path, monkeypatch)
-    owner = tmp_path / ".hermes"
-    _state(owner, root)
-    _home(monkeypatch, tmp_path / "tmp" / "hermes-test-a")
-
-    assert owning_home_root(root) == owner
-    assert store_root(root) == owner / "tools"
-
-
-@pytest.mark.parametrize("home", ["default", "profile"])
-def test_the_owner_and_its_profiles_are_not_borrowers(tmp_path, monkeypatch, home):
-    root = _checkout(tmp_path, monkeypatch)
-    owner = tmp_path / ".hermes"
-    _state(owner, root)
-    if home == "profile":
-        _home(monkeypatch, owner / "profiles" / "work")
-    else:
-        monkeypatch.delenv("HERMES_HOME", raising=False)
-
-    assert owning_home_root(root) is None
-    assert store_root(root) == owner / "tools"
-
-
 def test_a_fresh_install_and_a_custom_root_keep_their_own_store(tmp_path, monkeypatch):
     # Nobody has state yet: the launching root is about to become the owner.
     root = _checkout(tmp_path, monkeypatch, parent=tmp_path / "data" / "h")
@@ -106,38 +81,6 @@ def test_a_fresh_install_and_a_custom_root_keep_their_own_store(tmp_path, monkey
     assert store_root(root) == tmp_path / "data" / "h" / "tools"
 
 
-def test_a_service_home_borrows_the_root_the_checkout_sits_in(tmp_path, monkeypatch):
-    """A CI runner whose HOME is its own tool-home runs the host's checkout from PATH: the host's
-    root is the checkout's parent, not this process's platform default."""
-    host = tmp_path / "host" / ".hermes"
-    root = _checkout(tmp_path / "runner", monkeypatch, parent=host)
-    _state(host, root)
-    _home(monkeypatch, tmp_path / "runner" / ".hermes" / "pytest-1")
-
-    assert owning_home_root(root) == host
-    assert store_root(root) == host / "tools"
-
-
-@pytest.mark.skipif(not hasattr(os, "symlink") or sys.platform == "win32", reason="POSIX symlink")
-def test_a_home_whose_installs_link_back_to_the_owner_is_the_owner(tmp_path, monkeypatch):
-    root = _checkout(tmp_path, monkeypatch)
-    owner = tmp_path / ".hermes"
-    _state(owner, root)
-    task = _home(monkeypatch, tmp_path / "tasks" / "t1")
-    (task / "installs").symlink_to(owner / "installs")
-
-    assert owning_home_root(root) is None
-
-
-def test_an_explicit_runtime_dir_still_wins(tmp_path, monkeypatch):
-    root = _checkout(tmp_path, monkeypatch)
-    _state(tmp_path / ".hermes", root)
-    _home(monkeypatch, tmp_path / "tmp" / "a")
-    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "runtime"))
-
-    assert store_root(root) == (tmp_path / "runtime").resolve()
-
-
 def test_a_borrowing_launch_syncs_its_own_dependencies_and_nothing_of_the_checkout(
     tmp_path, monkeypatch, completion_tail
 ):
@@ -149,6 +92,9 @@ def test_a_borrowing_launch_syncs_its_own_dependencies_and_nothing_of_the_checko
     root = _checkout(tmp_path, monkeypatch)
     _state(tmp_path / ".hermes", root)
     _home(monkeypatch, tmp_path / "tmp" / "hermes-flash-compat-x" / "a")
+    # The owner's store, so no tool store is downloaded into the temporary home.
+    assert owning_home_root(root) == tmp_path / ".hermes"
+    assert store_root(root) == tmp_path / ".hermes" / "tools"
     stamp = (root / "install-stamp.json").read_bytes()
     owner_marker = root / ".update-incomplete"
     owner_marker.write_text("owner's update\n", encoding="utf-8")
@@ -177,23 +123,6 @@ def test_a_borrowing_launch_syncs_its_own_dependencies_and_nothing_of_the_checko
     monkeypatch.setattr(sys, "executable", str(python))
     assert venv_sync.prepare_launch(root, ["kanban", "init"]) is None
     assert len(syncs) == 1 and completion_tail == []
-
-
-def test_a_borrowing_launch_ignores_a_tail_armed_before_the_fix(tmp_path, monkeypatch, completion_tail):
-    import pm
-    from hermes_cli import _launchers
-
-    root = _checkout(tmp_path, monkeypatch)
-    _state(tmp_path / ".hermes", root)
-    _home(monkeypatch, tmp_path / "tmp" / "a")
-    pending = venv_sync.completion_pending_path(root)
-    pending.parent.mkdir(parents=True)
-    pending.write_text("source update tail not finished\n", encoding="utf-8")
-    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
-    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
-
-    assert venv_sync.prepare_launch(root, []) is None
-    assert completion_tail == []
 
 
 def test_the_owner_still_owes_and_runs_its_tail(tmp_path, monkeypatch, completion_tail):

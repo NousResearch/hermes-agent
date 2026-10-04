@@ -458,6 +458,14 @@ fn pid_is_alive_false_for_unusable_pid() {
     assert!(!pid_is_alive(2147483647));
 }
 
+#[cfg(unix)]
+#[test]
+fn pid_is_alive_never_interprets_unsigned_pids_as_groups() {
+    assert!(pid_is_alive(std::process::id()));
+    assert!(!pid_is_alive(u32::MAX)); // narrowing to pid_t would probe all processes
+    assert!(!pid_is_alive(u32::MAX - std::process::id() + 1));
+}
+
 #[test]
 fn pid_is_alive_false_for_pid_zero() {
     // pid 0 means the caller's process GROUP to kill(2), so kill(0, 0)

@@ -806,9 +806,12 @@ fn pid_is_alive(pid: u32) -> bool {
 
 #[cfg(not(windows))]
 fn pid_is_alive(pid: u32) -> bool {
-    // pid 0 is the caller's process GROUP, not a process: kill(0, 0) always
-    // succeeds, so a marker corrupted to "0" would read as alive forever.
-    if pid == 0 {
+    // Unsigned marker PIDs must remain positive pid_t values: zero/negative
+    // kill operands probe process groups (and -1 probes all processes).
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid <= 0 {
         return false;
     }
     // signal 0 delivers nothing; it only probes existence/permission.
@@ -853,7 +856,7 @@ fn pid_is_alive(pid: u32) -> bool {
             }
         }
     }
-    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    let rc = unsafe { libc::kill(pid, 0) };
     if rc == 0 {
         return true;
     }

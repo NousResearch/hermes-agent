@@ -95,6 +95,38 @@ def test_a_borrowers_own_dependency_state_never_makes_it_the_owner(tmp_path, mon
     assert store_root(root) == custom / "tools"
 
 
+def test_a_borrower_holding_the_checkout_never_becomes_its_owner(tmp_path, monkeypatch):
+    """`install.sh --dir <dir>` puts the default root's checkout in <dir>. Launching it with
+    HERMES_HOME=<dir> borrows, and still borrows after that root's own sync leaves state."""
+    import os
+
+    import pm
+    from hermes_cli import _launchers
+
+    default = tmp_path / ".hermes"
+    holder = tmp_path / "data" / "dir"
+    root = _checkout(tmp_path, monkeypatch, parent=holder)
+    entry = default / "tools" / "python-owner"
+    python = entry / ("python.exe" if os.name == "nt" else "bin/python3")
+    python.parent.mkdir(parents=True)
+    python.touch()
+    (default / "tools" / "facts.json").write_text(json.dumps(
+        {"schema": 1, "packages": {"python": {"version": "fixture", "entry": entry.name}}}), encoding="utf-8")
+    _state(default, root)
+    _home(monkeypatch, default)
+    local = root / ".hermes" / "bin"
+    published = {path: Path(path).read_bytes() for path in _launchers.ensure_install_launchers(root, local)}
+    assert published
+
+    _home(monkeypatch, holder)
+    _state(holder, root)  # the borrowing launch's own sync
+    assert owning_home_root(root) == default
+    assert store_root(root) == default / "tools"
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kwargs: True)
+    assert venv_sync.prepare_launch(root, []) == python
+    assert {path: Path(path).read_bytes() for path in published} == published
+
+
 def test_a_borrowing_launch_syncs_its_own_dependencies_and_nothing_of_the_checkout(
     tmp_path, monkeypatch, completion_tail
 ):

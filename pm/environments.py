@@ -50,23 +50,45 @@ def owning_home_root(project_root: Path) -> Path | None:
     such root has state for this checkout -- a fresh install, or a custom root that owns its own
     tree -- so those keep today's behaviour (#123238).
 
-    The root the checkout sits in outranks the platform default: a borrowing launch's own sync
-    leaves ``facts.json`` under the borrower too, and that must never make it the owner.
+    A borrowing launch's own sync leaves ``facts.json`` under the borrower too, so state alone
+    cannot name the owner. The checkout's ``hermes`` launcher can: only the owner publishes it,
+    and it execs the owner's store Python. With no live launcher to ask, the root the checkout
+    sits in outranks the platform default.
     """
     from hermes_constants import _get_platform_default_hermes_home
 
     root = Path(project_root).resolve()
     key = install_key(root)
-    owner = next((candidate for candidate in (root.parent, _get_platform_default_hermes_home())
-                  if (candidate / "installs" / key / "facts.json").is_file()), None)
-    if owner is None:
+    candidates = [candidate for candidate in dict.fromkeys((root.parent, _get_platform_default_hermes_home()))
+                  if (candidate / "installs" / key / "facts.json").is_file()]
+    if not candidates:
         return None
+    owner = _launcher_bound_root(root, candidates) or candidates[0]
     try:
         if (owner / "installs" / key).resolve() == install_state_dir(root).resolve():
             return None
     except OSError:
         pass
     return owner
+
+
+def _launcher_bound_root(project_root: Path, candidates: list[Path]) -> Path | None:
+    """The candidate whose ``tools/`` holds the live interpreter the checkout's launcher execs."""
+    from hermes_cli._launchers import _launcher_python
+
+    local = project_root / ".hermes" / "bin"
+    for name in (("hermes.exe", "hermes.cmd") if os.name == "nt" else ("hermes",)):
+        python = _launcher_python(local / name)
+        if python is None or not python.is_file():
+            continue
+        for candidate in candidates:
+            try:
+                store = (candidate / "tools").resolve()
+                if any(parent.resolve() == store for parent in python.parents):
+                    return candidate
+            except (OSError, RuntimeError, ValueError):
+                continue
+    return None
 
 
 def install_state_permission_message(project_root: Path, exc: PermissionError) -> str | None:

@@ -409,6 +409,34 @@ def test_local_models_quickstart_activates_into_the_named_profile(client, homes,
 # --- the read/side-effect routes scoped in the same sweep ---------------------------
 
 
+@pytest.mark.parametrize("launch_scope", [False, True, None])
+def test_curator_status_reports_effective_profile_scope(client, homes, launch_scope):
+    """Mounted HTTP route uses real config reads, including default and cache changes."""
+    for key, scope in (("launch", launch_scope), ("worker_beta", True)):
+        path = homes[key] / "config.yaml"
+        config = yaml.safe_load(path.read_text(encoding="utf-8"))
+        config["curator"] = {} if scope is None else {"prune_builtins": scope}
+        path.write_text(yaml.safe_dump(config), encoding="utf-8")
+
+    for profile, expected in (("default", bool(launch_scope)), ("worker_beta", True),
+                              ("default", bool(launch_scope))):
+        resp = client.get("/api/curator", params={"profile": profile})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["prune_builtins"] is expected
+
+    # Changing the selected profile's config must invalidate its cached response.
+    path = homes["worker_beta"] / "config.yaml"
+    config = yaml.safe_load(path.read_text(encoding="utf-8"))
+    config["curator"]["prune_builtins"] = False
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    resp = client.get("/api/curator", params={"profile": "worker_beta"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["prune_builtins"] is False
+    resp = client.get("/api/curator", params={"profile": "default"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["prune_builtins"] is bool(launch_scope)
+
+
 def test_curator_pause_writes_the_named_profiles_state(client, homes):
     resp = client.put("/api/curator/paused?profile=worker_beta", json={"paused": True})
 

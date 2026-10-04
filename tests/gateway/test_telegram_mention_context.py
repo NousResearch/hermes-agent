@@ -187,6 +187,7 @@ def _command_entities(text):
     ("/btw did @hermes_bot already answer Alice?\nKeep it short", "btw", "did @hermes_bot already answer Alice?\nKeep it short"),
     ("/steer@hermes_bot ask @ops_bot what @hermes_bot missed", "steer", "ask @ops_bot what @hermes_bot missed"),
     ("/kanban@hermes_bot list", "kanban", "list"),
+    ("/reasoning@hermes_bot: high --global", "reasoning", "high --global"),
     ("/model gpt-5 @hermes_bot", "model", "gpt-5"),
     ("/new@hermes_bot", "new", ""),
     ("/help\n", "help", ""),

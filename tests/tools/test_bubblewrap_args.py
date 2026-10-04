@@ -762,3 +762,79 @@ class TestHideBelowRestoredRoots:
         hidden = sensitive_paths(paths["home"], str(hermes_home), (str(other),))
         argv = build(paths=paths, hermes_home=str(hermes_home), hidden_paths=hidden, scratch_dir=str(scratch))
         assert argv.count(str(other)) == 1
+
+
+def _listen(path):
+    """A listening unix socket at *path*; bound by a relative name, since a test path is too long for one."""
+    import socket
+
+    sock = socket.socket(socket.AF_UNIX)
+    here = os.getcwd()
+    os.chdir(os.path.dirname(path))
+    try:
+        sock.bind(os.path.basename(path))
+    finally:
+        os.chdir(here)
+    sock.listen(1)
+    return sock
+
+
+class TestScratchMask:
+    """Other Hermes components keep sockets and DM payloads in the scratch
+    dir; they are masked inside the bind the sandbox gets."""
+
+    @pytest.fixture
+    def scratch(self, tmp_path):
+        scratch = tmp_path / "hermes" / "cache" / "scratch"
+        (scratch / "agent-browser-s1").mkdir(parents=True)
+        (scratch / "hermes-dm-1000").mkdir()
+        (scratch / "hermes-results").mkdir()
+        (scratch / "hermes-dm-legacy.txt").write_text("x")
+        (scratch / "hermes-relay-dm-1.txt").write_text("x")
+        (scratch / "agent-browser-s1" / "info.txt").write_text("x")
+        (scratch / "own.txt").write_text("x")
+        return scratch
+
+    def _argv(self, paths, scratch, **kwargs):
+        return build(paths=paths, hermes_home=str(scratch.parent.parent), scratch_dir=str(scratch), **kwargs)
+
+    def test_mask_covers_sockets_and_dm_entries_after_the_scratch_bind(self, paths, scratch):
+        socks = [_listen(str(scratch / "top.sock")), _listen(str(scratch / "agent-browser-s1" / "ctl.sock"))]
+        try:
+            argv = self._argv(paths, scratch)
+        finally:
+            for sock in socks:
+                sock.close()
+        empty = empty_file_path(paths["state_dir"])
+        ro = triples(argv, "--ro-bind")
+        for rel in ("top.sock", "agent-browser-s1/ctl.sock", "hermes-dm-legacy.txt", "hermes-relay-dm-1.txt"):
+            assert (empty, str(scratch / rel)) in ro, rel
+        assert str(scratch / "hermes-dm-1000") in singles(argv, "--tmpfs")
+        i_scratch = next(i for i, a in enumerate(argv) if a == "--bind-try" and argv[i + 1] == str(scratch))
+        assert all(argv.index(str(scratch / rel)) > i_scratch for rel in ("top.sock", "hermes-dm-1000"))
+        for rel in ("own.txt", "hermes-results", "agent-browser-s1/info.txt", "agent-browser-s1"):
+            assert argv.count(str(scratch / rel)) == 0, rel
+
+    def test_mask_skips_a_symlink_and_a_socket_two_levels_down(self, paths, scratch):
+        (scratch / "a" / "b").mkdir(parents=True)
+        socks = [_listen(str(scratch / "a" / "b" / "deep.sock")), _listen(str(scratch / "real.sock"))]
+        (scratch / "link.sock").symlink_to("real.sock")
+        (scratch / "hermes-dm-link").symlink_to("own.txt")
+        try:
+            argv = self._argv(paths, scratch)
+        finally:
+            for sock in socks:
+                sock.close()
+        assert str(scratch / "link.sock") not in argv
+        assert str(scratch / "hermes-dm-link") not in argv
+        assert str(scratch / "a" / "b" / "deep.sock") not in argv
+        assert str(scratch / "real.sock") in argv
+
+    def test_mask_is_empty_without_a_scratch_dir_or_when_it_cannot_be_listed(self, paths, tmp_path):
+        missing = tmp_path / "hermes" / "cache" / "scratch"
+        argv = build(paths=paths, hermes_home=str(tmp_path / "hermes"), scratch_dir=str(missing))
+        assert argv.count(str(missing)) == 2  # the bind-try alone: source and destination
+        from tools.environments.bubblewrap import scratch_mask
+
+        assert scratch_mask(None, "/nonexistent") == []
+        assert scratch_mask(str(missing), "/nonexistent") == []

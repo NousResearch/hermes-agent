@@ -532,6 +532,80 @@ def test_run_checks_suppresses_pip_row_for_catalog_installed_plugin(
     assert catalog_row.name == "mnemosyne"
 
 
+def test_run_checks_suppresses_pip_row_when_dir_and_entry_point_names_differ(
+    tmp_path, monkeypatch
+):
+    """The catalog join key lives in two namespaces: the install directory
+    name and the declared catalog identity the entry point is named after.
+    When a plugin's directory was renamed relative to its catalog name the
+    pip row must stay suppressed — otherwise the exact two-row contradiction
+    this fix removes survives behind a rename (#132494)."""
+    plugins = tmp_path / "plugins"
+    (plugins / "mnemosyne-plugin").mkdir(parents=True)
+    (plugins / ".install-metadata.json").write_text(
+        json.dumps({"mnemosyne-plugin": {"catalog": {"name": "mnemosyne",
+                                                     "repo": "https://r",
+                                                     "sha": "d" * 40}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugin_catalog.get_live_catalog_entry", lambda name: None)
+    monkeypatch.setattr(
+        "hermes_cli.plugin_catalog.find_removed", lambda name, catalog_dir=None: None)
+
+    results = run_checks(
+        plugins,
+        fetch=_no,
+        ls_remote=_no,
+        include_pip=True,
+        pip_installed_version=lambda d: "0.7.3",
+        pip_pypi_latest=lambda d: "0.7.4",
+        pip_entry_points=[_EP("mnemosyne", "m:register", "mnemosyne-hermes")],
+    )
+    pip_row = next(r for r in results if r.klass == "pip")
+    assert pip_row.name == "mnemosyne"
+    assert pip_row.update_available is False, (
+        "dir 'mnemosyne-plugin' != entry point 'mnemosyne': the join set "
+        "must carry the declared catalog name or the contradiction survives"
+    )
+    assert "catalog pin" in pip_row.reason
+
+
+def test_cmd_check_updates_renders_reason_annotation_for_up_to_date_rows(
+    tmp_path, monkeypatch, capsys
+):
+    """The renderer pins why an up-to-date row is not actionable: a dim
+    second line appears only under rows that carry a reason — the catalog
+    informational pip row and a provenance-pinned git row both annotate,
+    a plain up-to-date row does not grow a line."""
+    from hermes_cli.plugins_cmd_update import cmd_check_updates
+
+    rows = [
+        CheckResult(
+            name="mnemosyne", klass="pip", current="0.7.3", latest="0.7.4",
+            update_available=False,
+            reason="informational only: managed by the catalog pin",
+        ),
+        CheckResult(
+            name="legacy-plugin", klass="git", current="a1b2c3d4e5f6",
+            latest=None, update_available=False, reason="pinned @ a1b2c3d4e5f6",
+        ),
+        CheckResult(
+            name="plain", klass="pip", current="1.0", latest="1.0",
+            update_available=False,
+        ),
+    ]
+    monkeypatch.setattr("hermes_cli.plugins_cmd._plugins_dir", lambda: tmp_path)
+    monkeypatch.setattr("hermes_cli.plugins_updates.run_checks", lambda *a, **k: rows)
+
+    cmd_check_updates(None)
+
+    out = capsys.readouterr().out
+    assert out.count("up to date") == 3
+    assert "informational only" in out
+    assert "pinned @ a1b2c3d4e5f6" in out
+
+
 @pytest.mark.parametrize("url", ["http://feed.example/f.yml", "file:///etc/passwd", "ftp://x/f.yml", ""])
 def test_default_fetch_refuses_non_https_feeds_before_any_request(monkeypatch, url):
     """Rows saved before the https rule (or hand-edited) still reach the real fetcher from the

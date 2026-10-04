@@ -426,7 +426,11 @@ def _catalog_plugin_names(prov) -> frozenset:
             catalog_value.get("name") if isinstance(catalog_value, dict) else None
         ) or row.get("catalog_name")
         if catalog_name:
+            # two namespaces can name one install: the directory and the
+            # declared catalog identity (entry points are named after the
+            # latter) — a rename between them must not un-suppress the row
             names.add(p.name)
+            names.add(str(catalog_name))
     return frozenset(names)
 
 

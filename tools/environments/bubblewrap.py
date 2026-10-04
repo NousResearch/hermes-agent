@@ -714,6 +714,7 @@ def build_bwrap_args(
     scratch_private: str | None = None,
     staged_roots: Sequence[str] = (),
     staged_files: Sequence[str] = (),
+    sandbox_overlays: Sequence[str] = (),
 ) -> list[str]:
     """Build the bwrap argv prefix; the caller appends the shell argv after the trailing ``--``.
 
@@ -730,7 +731,9 @@ def build_bwrap_args(
     that path, bound at its own path; without the first two nothing is
     bound. *staged_roots* are the staged data directories under
     HERMES_HOME, bound back read-only, and *staged_files* the single
-    files under it that this environment was handed, bound the same way. The listing of the top of
+    files under it that this environment was handed, bound the same way.
+    *sandbox_overlays* are the paths at which a sandbox dir that no hidden
+    path covers would show; each gets a tmpfs below the state dir bind. The listing of the top of
     HOME is the one input read from the host at each call, so a directory
     made on the host later shows in the next spawn.
     """
@@ -842,6 +845,11 @@ def build_bwrap_args(
             late.append(("--tmpfs", path))
         elif os.path.exists(path):
             late.append(("--ro-bind", empty_file_path(state_dir), path))
+    # A sandbox dir outside every hidden path shows through the read-only
+    # root, and with it the state dirs of the other environments: their
+    # shell snapshots and the scripts of their execute_code calls. A
+    # tmpfs goes over it, and the state dir of this environment on top.
+    late += [("--tmpfs", path) for path in sandbox_overlays]
     late.append(("--bind", state_dir, state_dir))
 
     if home_root is None:
@@ -1226,6 +1234,8 @@ class BubblewrapEnvironment(LocalEnvironment):
         self._check_absent_denied_paths()
         self._check_writable_dot_links()
         sandbox_root = os.path.realpath(get_sandbox_dir())
+        # Set by _check_sandbox_root when no hidden path covers the sandbox dir.
+        self._sandbox_overlays: tuple[str, ...] = ()
         self._check_sandbox_root(sandbox_root)
         # BaseEnvironment.__init__ derives the snapshot and cwd file paths
         # from get_temp_dir() and LocalEnvironment.__init__ runs the login
@@ -1557,6 +1567,29 @@ class BubblewrapEnvironment(LocalEnvironment):
         writable_profile = resolve_profile(self._config.profile).writable_cwd
         if any(_is_within(sandbox_root, hidden) for hidden in self._hidden_paths):
             return
+        # No hidden path covers the sandbox dir, so it would show through
+        # the read-only root with the state dirs of every other
+        # environment in it. It gets an overlay of its own. That overlay
+        # would also cover whatever else lies inside the sandbox dir.
+        inside = [
+            path for path in (self._initial_cwd, os.path.realpath(self._home), os.path.realpath(self._hermes_home),
+                              *(bind.dest for bind in self._config.binds))
+            if _is_within(path, sandbox_root)
+        ]
+        if inside:
+            raise ValueError(
+                f"terminal.sandbox_dir {sandbox_root} contains {', '.join(inside)}. The bubblewrap "
+                "backend hides the sandbox dir from commands, since it holds the state of every "
+                "sandbox, and that would hide those paths too. Set terminal.sandbox_dir to a "
+                "directory of its own, or leave it at the default HERMES_HOME/sandboxes."
+            )
+        overlays = [sandbox_root]
+        for bind in self._config.binds:
+            src = os.path.realpath(bind.src)
+            if src != bind.dest and _is_within(sandbox_root, src):
+                # The same directory, seen through an operator bind.
+                overlays.append(os.path.normpath(os.path.join(bind.dest, os.path.relpath(sandbox_root, src))))
+        self._sandbox_overlays = tuple(dict.fromkeys(overlays))
         writable: list[str] = [self._initial_cwd] if writable_profile else []
         writable += [
             os.path.realpath(os.path.expanduser(bind.src))
@@ -1658,6 +1691,7 @@ class BubblewrapEnvironment(LocalEnvironment):
             scratch_private=self._scratch_private,
             staged_roots=self._staged_roots,
             staged_files=tuple(self._spillover_files),
+            sandbox_overlays=self._sandbox_overlays,
         )
 
     def _reset_masked_cwd(self) -> str | None:

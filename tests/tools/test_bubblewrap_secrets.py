@@ -1076,6 +1076,41 @@ class TestScratchDirIntegration:
         assert list((hermes_home / "cache" / "scratch").iterdir()) == []
 
 
+@needs_bwrap
+class TestOtherEnvironmentStateIntegration:
+    """A sandbox dir outside HERMES_HOME shows through the read-only root. The
+    state dirs in it hold the shell snapshot of each environment and the
+    scripts of its execute_code calls: no other environment may read them."""
+
+    def test_state_of_another_environment_is_not_visible(self, host_dir, work_dir, monkeypatch):
+        root = host_dir / "sandboxes"
+        mirror_src = host_dir
+        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(root))
+        # The same directory once more, through an operator bind at another path.
+        config = BubblewrapConfig(binds=(BindMount(str(mirror_src), "/mnt/mirror", True),))
+        first = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        second = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=config)
+        try:
+            theirs = Path(first.get_temp_dir())
+            assert theirs.parent == root
+            _write(theirs / "note.txt")
+            assert first.execute(f"cat {theirs}/note.txt")["output"].strip() == MARKER
+            out = second.execute(
+                f"ls -A {root} /mnt/mirror/sandboxes 2>&1; "
+                f"cat {theirs}/note.txt {root}/*/* /mnt/mirror/sandboxes/*/* 2>&1"
+            )["output"]
+            assert MARKER not in out
+            mine = Path(second.get_temp_dir())
+            assert theirs.name not in out.replace(f"{theirs}/note.txt: No such file", "")
+            assert second.execute(f"ls -A {root}")["output"].split() == [mine.name]
+            # Its own state dir still works: the shell state survives.
+            assert second.execute("export KEPT=1")["returncode"] == 0
+            assert second.execute("echo $KEPT")["output"].strip() == "1"
+        finally:
+            first.cleanup()
+            second.cleanup()
+
+
 def _listen(path: Path):
     """A listening unix socket at *path*, bound by a relative name (test paths are too long for one)."""
     import socket

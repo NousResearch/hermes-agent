@@ -288,14 +288,25 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
     """Append a synthetic assistant turn when an interrupted tail is a tool result: a transcript
     ending on a raw ``tool`` message makes the next user message land as ``tool → user``, an
     alternation violation strict providers (Gemini, Claude) answer by hallucinating a
-    continuation. Mutates in place; True if a closing turn was appended."""
+    continuation. Mutates in place; True if a closing turn was appended.
+
+    The synthetic row is hidden from the user: ``api_content`` sidecar carries the LLM-visible
+    text (substituted at API-build time by ``substitute_api_content``), while ``content=""`` +
+    ``display_kind="hidden"`` keep it out of rendered transcripts. Matches the
+    ``_INTERRUPTED_PLACEHOLDER`` shape in ``turn_api_call.py``."""
     last = messages[-1] if messages else None
     if not isinstance(last, dict) or last.get("role") != "tool":
         return False
     text = final_response if isinstance(final_response, str) else ""
     from agent.message_metadata import append_message
+    from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
 
-    append_message(messages, {"role": "assistant", "content": text.strip() or "Operation interrupted."})
+    append_message(messages, {
+        "role": "assistant",
+        "content": "",
+        "display_kind": "hidden",
+        "api_content": text.strip() or _INTERRUPTED_PLACEHOLDER,
+    })
     return True
 
 

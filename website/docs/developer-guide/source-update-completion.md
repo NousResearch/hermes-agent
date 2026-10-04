@@ -193,12 +193,18 @@ or user state is touched by this implementation's test runs.
 
 Each cell kills a real `hermes update` (or the Desktop hand-off script) at one point
 of the update, then asserts what the user is owed: the next `hermes` launch is
-runnable, the checkout is at the pre-update commit or the target, and nothing the
-dead update left (a git lock, `.hermes-update-in-progress`) blocks the next update.
+runnable, right after that launch the checkout is exactly the pre-update commit or
+the target (HEAD plus every tracked byte: `git status` clean and `git diff --quiet
+HEAD`; each target edits modules every launch imports), and nothing the dead update
+left (a git lock, `.hermes-update-in-progress`) blocks the next update.
 A cell whose fix is an open PR wraps only its final assertions in
-`known_failure` (`tests/e2e/core/_pending_fixes.py`): it XFAILs on exactly that gap's
-message, fails on anything else, and passes once the fix lands, whichever merges
-first. Kill points are observed states (a git child in the process tree, HEAD read
+`known_failure` (`tests/e2e/core/_pending_fixes.py`), after every other assertion of
+the cell: it XFAILs on exactly that gap's message, fails on anything else, and passes
+once the fix lands, whichever merges first. An acceptance run of an integrated batch
+refuses that allowance: `HERMES_E2E_STRICT_ACCEPTANCE=<owner>` (the `strict_acceptance`
+dispatch input of `ci.yaml` and `windows-install-update-e2e.yml`, e.g.
+`gh workflow run windows-install-update-e2e.yml --ref <branch> -f strict_acceptance=upd-txn`)
+turns every gap whose reason starts with `<owner>:` into a failure (`1`: every gap). Kill points are observed states (a git child in the process tree, HEAD read
 from the ref files, the hand-off's update child plus its marker), never sleeps.
 
 | Cell | Kill point | Test | Fixing lane |
@@ -215,4 +221,8 @@ branch to run them on demand. Both real-update suites are required on a pull
 request whenever the change classifier's `e2e_upgrade` lane fires (any file on
 the update path: `scripts/ci/classify_changes.py`), and the Desktop update suite
 whenever `e2e_desktop_update` fires; they are skipped, and count as passing,
-otherwise. Related: [macOS bundle updates](macos-bundle-updates.md).
+otherwise. The update path is derived, not remembered:
+`tests/ci/test_update_ci_routing.py` reads every module the update entry points
+import (and every build script they run) and fails until each is routed or is a
+declared shared hub, and it replays the real classifier's output through the real
+workflow files so a set lane always reaches its job. Related: [macOS bundle updates](macos-bundle-updates.md).

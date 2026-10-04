@@ -113,6 +113,14 @@ export const en: Translations = {
     multiplexStandaloneBanner:
       "Your gateway serves only one profile. Not served: {profiles}. Why: {reason}. Fix: hermes gateway migrate --multiplex",
     dismiss: "Dismiss",
+    sharedMetricsTitle: "Help improve Hermes?",
+    sharedMetricsBody:
+      "Shared metrics are bounded counters, never prompts, files, paths or error text. Collection stays on this machine; sending to Nous is a separate choice.",
+    sharedMetricsShare: "Send to Nous",
+    sharedMetricsLocal: "Local only",
+    sharedMetricsOff: "No thanks",
+    sharedMetricsDetails: "Details",
+    sharedMetricsSaveFailed: "Couldn't save your choice",
   },
 
   status: {
@@ -193,6 +201,8 @@ export const en: Translations = {
     deleteSelectedConfirmMessage:
       "This permanently removes {count} selected sessions and all their messages. This cannot be undone.",
     selectedSessionsDeleted: "{count} sessions deleted",
+    selectedSessionsSkippedActive:
+      "{deleted} deleted; {count} kept because a turn is running",
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
     newChat: "New chat",

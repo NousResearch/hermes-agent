@@ -20,6 +20,8 @@ def test_tooling_only_plugin_leaves_core_workspace_unchanged(tmp_path, tooling):
     declaration = read_python_declaration(plugin)
     assert not declaration.is_member
     assert declaration.pyproject is None
+    assert declaration.requires_python is None
+    assert declaration.python_error("3.11.0") is None
     assert project in declaration.files
     core = tmp_path / "core"
     core.mkdir()
@@ -118,6 +120,29 @@ def test_tooling_does_not_hide_invalid_manifest_dependencies(tmp_path, manifest)
     (tmp_path / "pyproject.toml").write_text("[tool.ruff]\n", encoding="utf-8")
     (tmp_path / "plugin.yaml").write_text(manifest, encoding="utf-8")
     with pytest.raises(ValueError, match="invalid .*dependencies"):
+        read_python_declaration(tmp_path)
+
+
+@pytest.mark.parametrize("requirement, accepted, rejected", [
+    (">=3.13", "3.13.0", "3.11.0"),
+    (">=3.11,<3.14", "3.12.0", "3.14.0"),
+])
+def test_packaging_python_bounds_survive_tooling_classification(tmp_path, requirement, accepted, rejected):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname="fixture-plugin"\nversion="1"\n'
+        f'requires-python="{requirement}"\n[tool.ruff]\n', encoding="utf-8",
+    )
+    declaration = read_python_declaration(tmp_path)
+    assert declaration.requires_python == requirement
+    assert declaration.python_error(accepted) is None
+    assert declaration.python_error(rejected) is not None
+
+
+def test_invalid_packaging_python_bounds_still_fail_closed(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nrequires-python=314\n[tool.ruff]\n', encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="invalid project.requires-python"):
         read_python_declaration(tmp_path)
 
 

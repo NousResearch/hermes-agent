@@ -23,7 +23,15 @@
           "sha256": "de61bfbacbcf6e3648ddc8dbd6ca8bb2245438ccf5f94d54129997528f5a752d",
           "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-aarch64-unknown-linux-musl-2.0.0.zip"
         },
+        "linux-arm64-musl": {
+          "sha256": "de61bfbacbcf6e3648ddc8dbd6ca8bb2245438ccf5f94d54129997528f5a752d",
+          "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-aarch64-unknown-linux-musl-2.0.0.zip"
+        },
         "linux-x64": {
+          "sha256": "ea6eb18f1270388f12d15a35f919ccb3488d32a777433baefe883d561f46fc73",
+          "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-x86_64-unknown-linux-musl-2.0.0.zip"
+        },
+        "linux-x64-musl": {
           "sha256": "ea6eb18f1270388f12d15a35f919ccb3488d32a777433baefe883d561f46fc73",
           "url": "https://github.com/bitwarden/sdk-sm/releases/download/bws-v2.0.0/bws-x86_64-unknown-linux-musl-2.0.0.zip"
         },
@@ -120,24 +128,24 @@
           "url": "https://ffmpeg.martin-riedl.de/download/macos/amd64/1787081194_9.0.1/ffmpeg.zip"
         },
         "linux-arm64": {
-          "sha256": "2de63f615df3a46ac26921ac0314f501c3536aaf9fd5197ffe03dd17cd01a404",
-          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-10-15-31/ffmpeg-n9.0.1-27-g9b0578816c-linuxarm64-gpl-9.0.tar.xz"
+          "sha256": "e2dd447c8a47849c5812d87e54a47b20ae0f3603d38989440f4a5fe1af8755b1",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-31-13-27/ffmpeg-n9.0.1-11-ge47273f4d9-linuxarm64-gpl-9.0.tar.xz"
         },
         "linux-arm64-bionic": {
           "sha256": "1ec37f4f092521cb785e0ccfa2d82cc4a79ec8d2a4864f5eefc50a314f2d5dec",
           "url": "https://packages.termux.dev/apt/termux-main/pool/main/f/ffmpeg/ffmpeg_8.1.2-5_aarch64.deb"
         },
         "linux-x64": {
-          "sha256": "70b162b63517038ff18c8a50f4ea11f919a071f945c5881e87b0b2cd7173f8c7",
-          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-10-15-31/ffmpeg-n9.0.1-27-g9b0578816c-linux64-gpl-9.0.tar.xz"
+          "sha256": "182c1b509720e939bb47bfb47dc29cc0c298640401128e3dce8627d10707eb5a",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-31-13-27/ffmpeg-n9.0.1-11-ge47273f4d9-linux64-gpl-9.0.tar.xz"
         },
         "win32-arm64": {
-          "sha256": "0f241c74c576f68dbd375f7557c2d08740783d7b8c6f892031c3830df18f672f",
-          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-10-15-31/ffmpeg-n9.0.1-27-g9b0578816c-winarm64-gpl-9.0.zip"
+          "sha256": "7e6142ae4d04b35123eba48d91bb2c559ef43b49a6b3857f7324bbcf7266d18b",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-31-13-27/ffmpeg-n9.0.1-11-ge47273f4d9-winarm64-gpl-9.0.zip"
         },
         "win32-x64": {
-          "sha256": "84ad164ea98ef4201010c03ee6041d4a920599c5e6f2efb3c119718cfbd2ffc9",
-          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-09-10-15-31/ffmpeg-n9.0.1-27-g9b0578816c-win64-gpl-9.0.zip"
+          "sha256": "ec9db2cda1f5894ab95446076ad8bf49379db4b53c02e778ad3b49adf91fec83",
+          "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-31-13-27/ffmpeg-n9.0.1-11-ge47273f4d9-win64-gpl-9.0.zip"
         }
       },
       "version": "9.0.1"
@@ -156,7 +164,15 @@
           "sha256": "73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5",
           "url": "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_linux_arm64.tar.gz"
         },
+        "linux-arm64-musl": {
+          "sha256": "73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5",
+          "url": "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_linux_arm64.tar.gz"
+        },
         "linux-x64": {
+          "sha256": "a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112",
+          "url": "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_linux_amd64.tar.gz"
+        },
+        "linux-x64-musl": {
           "sha256": "a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112",
           "url": "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_linux_amd64.tar.gz"
         },
@@ -174,12 +190,12 @@
     "git": {
       "artifacts": {
         "win32-arm64": {
-          "sha256": "4015f05a68bd2bcf3cc6c426e8d44b65d670fbb879225bb7b7c347cfc3a2758a",
-          "url": "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/Git-2.53.0.3-arm64.tar.bz2"
+          "sha256": "0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e",
+          "url": "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-arm64.7z.exe"
         },
         "win32-x64": {
-          "sha256": "1661f02e85a7901ad7920e2a358ee3772ed9066b00d8590bf2d9046ef10aa8b2",
-          "url": "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/Git-2.53.0.3-64-bit.tar.bz2"
+          "sha256": "b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a",
+          "url": "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-64-bit.7z.exe"
         }
       },
       "version": "2.53.0+3"
@@ -240,7 +256,43 @@
             "url": "https://raw.githubusercontent.com/paradigmxyz/iron-proxy/be5f255d0d9d10d8573bd65f480dd48a07772bf1/public-key.asc"
           }
         ],
+        "linux-arm64-musl": [
+          {
+            "sha256": "1316cb4f20fcfba5042b06d07cd523ffa617de9de2999cd5f1f44474777c48ad",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/iron-proxy_0.39.0_linux_arm64.tar.gz"
+          },
+          {
+            "sha256": "8fb3193b53ca296e2f93ff0fd69d289340cffe9a36c0de22e47ea5cfea899b37",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt"
+          },
+          {
+            "sha256": "1ff70f0bd8699b2f1c2c3545e6aa9034d24267fc01d1b9aaa93d73e893cb610b",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt.asc"
+          },
+          {
+            "sha256": "ce685e36e7e7d184ffa82b35bd5cbe83db010ac38bc504a0e225333453992c56",
+            "url": "https://raw.githubusercontent.com/paradigmxyz/iron-proxy/be5f255d0d9d10d8573bd65f480dd48a07772bf1/public-key.asc"
+          }
+        ],
         "linux-x64": [
+          {
+            "sha256": "0ab2e031074a01410caecaa2769c0b38f69cbdf4b6333bce498fe73919f6f9f6",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/iron-proxy_0.39.0_linux_amd64.tar.gz"
+          },
+          {
+            "sha256": "8fb3193b53ca296e2f93ff0fd69d289340cffe9a36c0de22e47ea5cfea899b37",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt"
+          },
+          {
+            "sha256": "1ff70f0bd8699b2f1c2c3545e6aa9034d24267fc01d1b9aaa93d73e893cb610b",
+            "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/checksums.txt.asc"
+          },
+          {
+            "sha256": "ce685e36e7e7d184ffa82b35bd5cbe83db010ac38bc504a0e225333453992c56",
+            "url": "https://raw.githubusercontent.com/paradigmxyz/iron-proxy/be5f255d0d9d10d8573bd65f480dd48a07772bf1/public-key.asc"
+          }
+        ],
+        "linux-x64-musl": [
           {
             "sha256": "0ab2e031074a01410caecaa2769c0b38f69cbdf4b6333bce498fe73919f6f9f6",
             "url": "https://github.com/paradigmxyz/iron-proxy/releases/download/v0.39.0/iron-proxy_0.39.0_linux_amd64.tar.gz"
@@ -264,99 +316,157 @@
     "llamacpp-cpu": {
       "artifacts": {
         "darwin-arm64": {
-          "sha256": "e353a453cadb25960bea9b24692b72bd0a6b7b50b3bab5860bd5df8a434e7c5b",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-macos-arm64.tar.gz"
+          "sha256": "1ad3f9eff80edb9dbef4259ad564d1720612ef7eea48fa4afed0e54f5f3d5711",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-macos-arm64.tar.gz"
         },
         "darwin-x64": {
-          "sha256": "007ad98aec86111c87f5a602342d9da30f410dfb2e21c35b26c338cb915196e0",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-macos-x64.tar.gz"
+          "sha256": "305f0e3a17d2c01eb205cd0a62128357f1ec3b55329cb084d94e5ec0115d7a3b",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-macos-x64.tar.gz"
         },
-        "linux-arm64": {
-          "sha256": "69bddd2aa441982bb7cf79ff65faa41a82b0629ad79741b32521ce00cba5165f",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-ubuntu-arm64.tar.gz"
-        },
-        "linux-x64": {
-          "sha256": "d55a64e814e0a379082f79b9a974499fe14bcc6f4b491ffae23e4a2993d1b85f",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-ubuntu-x64.tar.gz"
-        },
+        "linux-arm64": [
+          {
+            "sha256": "4aeda6fe68831547e49b7fa87607383ca5352b3d72ca5f70d52ed265f58c131f",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-arm64.tar.gz"
+          },
+          {
+            "sha256": "3f777eac64c87e2db843675b229efd16efe2ac1ae977318d687b39b812747863",
+            "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_arm64.deb"
+          }
+        ],
+        "linux-x64": [
+          {
+            "sha256": "c150306eb16b5ab696f76a8bdf810c35fd98a24e82158742e6fa28f420ff8410",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-x64.tar.gz"
+          },
+          {
+            "sha256": "cc2ca1193d2c11d7383bdb03dd333cc621d128237b82dafeb8d7f2bd8302f3dd",
+            "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_amd64.deb"
+          }
+        ],
         "win32-arm64": {
-          "sha256": "901a5c6c680f17e17c3dae1baf134b695144e300ac1e2c3f65607401406f5c75",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-win-cpu-arm64.zip"
+          "sha256": "1727d241f3bf6d27360e984e851cf013928fd655bf89f8628e70da027f377b7d",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-win-cpu-arm64.zip"
         },
         "win32-x64": {
-          "sha256": "a9d95d26cf00664f2902f73cb0fd9b167a3a1f252294bb2f8b236305f57d6363",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-win-cpu-x64.zip"
+          "sha256": "14cf1303ca9ac3abd94816850532f9f9a69ac66fbaca3776fc6f9061c2fac1d1",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-win-cpu-x64.zip"
         }
       },
-      "version": "10362"
+      "version": "11146"
     },
     "llamacpp-cuda": {
       "artifacts": {
-        "win32-arm64": [
+        "linux-arm64": [
           {
-            "sha256": "e96c44911a48f8813760b9076c7c7799db4374debb28d26a5464919bc0f27e8f",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-win-cuda-13.4-arm64.zip"
+            "sha256": "4e00496ab6cdee9c00afb11de3cb9d10f9da7e17147d8ed14ca3af05209b400f",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-cuda-13.4-arm64.tar.gz"
           },
           {
-            "sha256": "5a40dc7c5fa3d0a80ceeba4f16f9e8d25d87bcf1399c9233588953c43436c33c",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/cudart-llama-bin-win-cuda-13.4-arm64.zip"
+            "sha256": "7f46057efcba6338c58ed9f91c06f268c290f3a228fdbdd4bea229dd60b0e094",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/cudart-llama-b11146-bin-ubuntu-cuda-13.4-arm64.tar.gz"
+          },
+          {
+            "sha256": "3f777eac64c87e2db843675b229efd16efe2ac1ae977318d687b39b812747863",
+            "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_arm64.deb"
+          }
+        ],
+        "linux-x64": [
+          {
+            "sha256": "1603d9c00a4b6eac8298c5c7868cdb080a3ac31948ab1e457441d71ce274dd7e",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-cuda-13.4-x64.tar.gz"
+          },
+          {
+            "sha256": "7c2af505f8b26ecd3707ab7723fa985fee1df233b7c1d60e5e17724b536d15bb",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/cudart-llama-b11146-bin-ubuntu-cuda-13.4-x64.tar.gz"
+          },
+          {
+            "sha256": "cc2ca1193d2c11d7383bdb03dd333cc621d128237b82dafeb8d7f2bd8302f3dd",
+            "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_amd64.deb"
+          }
+        ],
+        "win32-arm64": [
+          {
+            "sha256": "a4060b5031a0e862e225d4a7c4aa403852ebedf598906ef8258a86cb77de8351",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-win-cuda-13.4-arm64.zip"
+          },
+          {
+            "sha256": "642dcde8805b3e3165ca710a5443b3b4044b27d96bd3ee3132473988c9bcb774",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/cudart-llama-bin-win-cuda-13.4-arm64.zip"
           }
         ],
         "win32-x64": [
           {
-            "sha256": "65d74d6164ed5c8245762f6a7d646269e1c0cd6f8972e74771a43f6d2b3ce2ea",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-win-cuda-13.3-x64.zip"
+            "sha256": "b1866c0ce76bc7bfb0c24b33e9a37e9669f1be18539b12c74ce361f81c41f047",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-win-cuda-13.4-x64.zip"
           },
           {
-            "sha256": "1462a050eb4c684921ba51dcc4cc488a036674c3e73e9945ee705b854808d03e",
-            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/cudart-llama-bin-win-cuda-13.3-x64.zip"
+            "sha256": "738f8c251ac22b70c3ae6f83a10cf222725df0395246a2cf58f32bdb85fbe668",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/cudart-llama-bin-win-cuda-13.4-x64.zip"
           }
         ]
       },
-      "version": "10362"
+      "version": "11146"
     },
     "llamacpp-hip": {
       "artifacts": {
-        "linux-x64": {
-          "sha256": "8df777b54d88405fb5d8bb8207b80ae0d2051cb03f5a7dd69f4b1f67f94f3f2b",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-ubuntu-rocm-7.14-x64.tar.gz"
-        },
+        "linux-x64": [
+          {
+            "sha256": "50e79dc559a11af3ea59391d416e9a704a715ac6be94352dbba710782c5dd7d1",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-rocm-10.0-x64.tar.gz"
+          },
+          {
+            "sha256": "cc2ca1193d2c11d7383bdb03dd333cc621d128237b82dafeb8d7f2bd8302f3dd",
+            "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_amd64.deb"
+          }
+        ],
         "win32-x64": {
-          "sha256": "fcd1899e9577aa8805e761eb8feb8fde028644975b8c7270edd66c60bcceceb4",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-win-rocm-7.14-x64.zip"
+          "sha256": "5dee283ec0fd5f38f29df0929769a07266ac6047f74381c153eb54b441e4ef99",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-win-rocm-10.0-x64.zip"
         }
       },
-      "version": "10362"
+      "version": "11146"
     },
     "llamacpp-metal": {
       "artifacts": {
         "darwin-arm64": {
-          "sha256": "e353a453cadb25960bea9b24692b72bd0a6b7b50b3bab5860bd5df8a434e7c5b",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-macos-arm64.tar.gz"
+          "sha256": "1ad3f9eff80edb9dbef4259ad564d1720612ef7eea48fa4afed0e54f5f3d5711",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-macos-arm64.tar.gz"
         },
         "darwin-x64": {
-          "sha256": "007ad98aec86111c87f5a602342d9da30f410dfb2e21c35b26c338cb915196e0",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-macos-x64.tar.gz"
+          "sha256": "305f0e3a17d2c01eb205cd0a62128357f1ec3b55329cb084d94e5ec0115d7a3b",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-macos-x64.tar.gz"
         }
       },
-      "version": "10362"
+      "version": "11146"
     },
     "llamacpp-vulkan": {
       "artifacts": {
-        "linux-arm64": {
-          "sha256": "aaa5cd203ad591ffc637535239ebd5e341fa4d272f70a976825d8823d9325b0e",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-ubuntu-vulkan-arm64.tar.gz"
-        },
-        "linux-x64": {
-          "sha256": "cd9dc4885a32bae4c7640454e15aeba1324fff8bb6ea003555b5b112aa16d3bc",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-ubuntu-vulkan-x64.tar.gz"
-        },
+        "linux-arm64": [
+          {
+            "sha256": "5dcebe3ecbcb43a1ed85e3284453f9edf54dcca833e1cb1f54b4022b753c1da5",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-vulkan-arm64.tar.gz"
+          },
+          {
+            "sha256": "3f777eac64c87e2db843675b229efd16efe2ac1ae977318d687b39b812747863",
+            "url": "https://ports.ubuntu.com/ubuntu-ports/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_arm64.deb"
+          }
+        ],
+        "linux-x64": [
+          {
+            "sha256": "d3ce40fce7403cc93bcf5718fc46c6efb61ed9709f8e5d9f10c86bf0e30e8fb3",
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-ubuntu-vulkan-x64.tar.gz"
+          },
+          {
+            "sha256": "cc2ca1193d2c11d7383bdb03dd333cc621d128237b82dafeb8d7f2bd8302f3dd",
+            "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gcc-14/libgomp1_14-20240412-0ubuntu1_amd64.deb"
+          }
+        ],
         "win32-x64": {
-          "sha256": "5da6d2c0cac199b917f0a7677c22b619750a9dd12432586d5d61457350e65a50",
-          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10362/llama-b10362-bin-win-vulkan-x64.zip"
+          "sha256": "55a378aa095b466979d85075234f66d7655c7a7483222af0c006c0e55b4d7bd6",
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11146/llama-b11146-bin-win-vulkan-x64.zip"
         }
       },
-      "version": "10362"
+      "version": "11146"
     },
     "node": {
       "artifacts": {
@@ -376,9 +486,17 @@
           "sha256": "eaf3ed8a6e4b72ebaa8c2cb3bad778c577cdf9ea87ca91761213d8a3940fc090",
           "url": "https://packages.termux.dev/apt/termux-main/pool/main/n/nodejs/nodejs_26.4.0-1_aarch64.deb"
         },
+        "linux-arm64-musl": {
+          "sha256": "9cc46e7b106abf606dd9b824abfd8f32043f53ca46a41d4ed2e61ebe7c58ef7e",
+          "url": "https://unofficial-builds.nodejs.org/download/release/v26.7.0/node-v26.7.0-linux-arm64-musl.tar.xz"
+        },
         "linux-x64": {
           "sha256": "982aa24dd8be4c889c6a8ab337ddff3b0896645b20f4239356e80552c16277ee",
           "url": "https://nodejs.org/dist/v26.7.0/node-v26.7.0-linux-x64.tar.xz"
+        },
+        "linux-x64-musl": {
+          "sha256": "b6acfd9133393956ef4dd977678a4a0863314d7cf2f925457069f9541dce8d40",
+          "url": "https://unofficial-builds.nodejs.org/download/release/v26.7.0/node-v26.7.0-linux-x64-musl.tar.xz"
         },
         "win32-arm64": {
           "sha256": "be8775204cfceca5a73c30f91bf0de5e85274c01b776dc13f16b91aa251ebb01",
@@ -418,9 +536,17 @@
           "sha256": "3166e56c2b6c03fff41191fbb9d736302978e7c484702814d9f6dc99dd6006bd",
           "url": "https://packages.termux.dev/apt/termux-main/pool/main/p/python/python_3.14.6-1_aarch64.deb"
         },
+        "linux-arm64-musl": {
+          "sha256": "6fcb8708ec4cf604bd970068ce45e4b3228bb207fbce043ccb78e750243bb274",
+          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.14.7+20260901-aarch64-unknown-linux-musl-install_only.tar.gz"
+        },
         "linux-x64": {
           "sha256": "0ab3305457051cd3e7c031857e005f1bda17c218a1990567dacaaac6dd1d14f0",
           "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.14.7+20260901-x86_64-unknown-linux-gnu-install_only.tar.gz"
+        },
+        "linux-x64-musl": {
+          "sha256": "75fe4a23502144a343c5c1f27df592ebca085b669fe665394e1812e37bcae258",
+          "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.14.7+20260901-x86_64-unknown-linux-musl-install_only.tar.gz"
         },
         "win32-arm64": {
           "sha256": "5efa2548bf1248ca07ed6f8afb0cb52b83d4869d533ea5be919a989c8ee1b17c",
@@ -451,7 +577,15 @@
           "sha256": "800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915",
           "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-unknown-linux-musl.tar.gz"
         },
+        "linux-arm64-musl": {
+          "sha256": "800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915",
+          "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-unknown-linux-musl.tar.gz"
+        },
         "linux-x64": {
+          "sha256": "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c",
+          "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz"
+        },
+        "linux-x64-musl": {
           "sha256": "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c",
           "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz"
         },
@@ -530,6 +664,24 @@
             "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.pem"
           }
         ],
+        "linux-arm64-musl": [
+          {
+            "sha256": "9c86e81537dc7b7fe6655ea472728b5f7a0dbe93ebb68b95ca7601fb1aba0508",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/tirith-aarch64-unknown-linux-musl.tar.gz"
+          },
+          {
+            "sha256": "bcbb3eeda0f9971db5d60d2eb512970c14601432092f596d7059e0141e272585",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt"
+          },
+          {
+            "sha256": "8d069fa95606f59919a897ff0914b06600f3cede4a8e83a0c4b339d9188c42b0",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.sig"
+          },
+          {
+            "sha256": "1f39241c7a334e465f78794533675e94e424ed38e9aa1534b5d7c893bd4fb71c",
+            "url": "https://github.com/sheeki03/tirith/releases/download/v0.4.2/checksums.txt.pem"
+          }
+        ],
         "linux-x64": [
           {
             "sha256": "efa6bf414a83dba385d4f13137e8677f850ced9102fe74ebb14c72f31df0dc77",
@@ -569,9 +721,17 @@
           "sha256": "6bacc745de035ac87cb6948f495f8d82a0fe0c6e6ff2ca65e6ecf487973b09cd",
           "url": "https://packages.termux.dev/apt/termux-main/pool/main/u/uv/uv_0.12.15_aarch64.deb"
         },
+        "linux-arm64-musl": {
+          "sha256": "fa513fca1eb2913334c944fe9adbdd410274a1cbe8dd05d03699a9eb85311d4e",
+          "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-aarch64-unknown-linux-musl.tar.gz"
+        },
         "linux-x64": {
           "sha256": "600cf9a742aca00d292673b16b5acffaa7b8c269a364ad0c2e79498dcb1fe101",
           "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-unknown-linux-gnu.tar.gz"
+        },
+        "linux-x64-musl": {
+          "sha256": "0643b9fb8c9fb27458e709ce6ff939695013c41975ff7b02d3f3b138d8d4bdb3",
+          "url": "https://github.com/astral-sh/uv/releases/download/0.12.3/uv-x86_64-unknown-linux-musl.tar.gz"
         },
         "win32-arm64": {
           "sha256": "4343217d668727b8a8eb5cad92389a1d2eeead93c89940d1b955ba1bb15462eb",

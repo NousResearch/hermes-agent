@@ -18,10 +18,12 @@ import { notifyError } from '@/store/notifications'
 export type AgentPluginServerState =
   | 'connected'
   | 'app_not_running'
+  | 'hermes_not_connected'
   | 'endpoint_unavailable'
   | 'no_interactive_session'
   | 'version_too_old'
   | 'missing_app'
+  | 'unsupported_gpu'
   | 'unknown'
 
 export interface AgentPluginServer {

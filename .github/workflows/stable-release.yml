@@ -17,6 +17,13 @@ on:
 permissions:
   contents: read
 
+# Every reusable workflow called below inherits secrets (`secrets: inherit`)
+# because their release-signing jobs need protected-environment secrets. A
+# called workflow only sees them when the caller inherits AND the called job
+# declares the environment: the job-level `environment:` alone attaches the
+# deployment and exposes `vars`, but leaves `secrets.*` empty
+# (actions/runner#1490). ci.yaml is deliberately excluded — it runs
+# PR-controlled code and must stay secret-free.
 concurrency:
   group: stable-release
   cancel-in-progress: false
@@ -41,7 +48,7 @@ jobs:
       skip-bundles: ${{ steps.admit.outputs.skip-bundles }}
       skip-tests: ${{ steps.admit.outputs.skip-tests }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -69,13 +76,14 @@ jobs:
 
   docker:
     name: Docker build and tests
-    needs: [admit, ci]
+    needs: admit
     # The image publish-docker pushes is built here, so a claim that skipped
-    # tests still runs this job with its tests off.
+    # tests still runs this job with its tests off. It builds alongside the
+    # gates; only the acceptance join waits for CI.
     if: >-
       !cancelled() && needs.admit.result == 'success'
-      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     uses: ./.github/workflows/docker.yml
+    secrets: inherit
     with:
       release-phase: test
       skip-tests: ${{ needs.admit.outputs.skip-tests == 'true' }}
@@ -83,39 +91,47 @@ jobs:
       version: ${{ needs.admit.outputs.version }}
 
   nix:
-    needs: [admit, ci, docker]
+    needs: admit
+    # The claim's policy removes it, not a gate it happens to need.
+    if: needs.admit.outputs.skip-tests != 'true'
     uses: ./.github/workflows/nix.yml
     with:
       release: true
       version: ${{ needs.admit.outputs.version }}
 
   pm-bundle:
-    needs: [admit, ci, docker]
-    # Needing ci already removes it under skip-tests.
-    if: needs.admit.outputs.skip-bundles != 'true'
+    needs: admit
+    # Bundle acceptance is a test of bundles, so either claim flag removes it.
+    if: >-
+      needs.admit.outputs.skip-bundles != 'true'
+      && needs.admit.outputs.skip-tests != 'true'
     uses: ./.github/workflows/pm-bundle.yml
     with:
       release: true
       ref: ${{ github.sha }}
 
   termux-checks:
-    needs: [ci, docker]
+    needs: admit
+    if: needs.admit.outputs.skip-tests != 'true'
     permissions:
       contents: read
       actions: read
     uses: ./.github/workflows/termux-verify.yml
+    secrets: inherit
     with:
       release: true
 
   windows-live:
-    needs: [ci, docker]
+    needs: admit
+    if: needs.admit.outputs.skip-tests != 'true'
     uses: ./.github/workflows/windows-venv-e2e.yml
     with:
       release: true
 
   install-e2e:
     name: Install and update E2E
-    needs: [ci, docker]
+    needs: admit
+    if: needs.admit.outputs.skip-tests != 'true'
     permissions:
       contents: read
       actions: read
@@ -128,17 +144,17 @@ jobs:
 
   candidates-darwin-arm64:
     name: Build signed release candidates (darwin-arm64)
-    needs: [admit, ci, docker]
+    needs: admit
+    # Starts with the gates; the acceptance join is what requires CI.
     if: >-
       !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
-      && needs.docker.result == 'success'
-      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -149,17 +165,17 @@ jobs:
 
   candidates-darwin-x64:
     name: Build signed release candidates (darwin-x64)
-    needs: [admit, ci, docker]
+    needs: admit
+    # Starts with the gates; the acceptance join is what requires CI.
     if: >-
       !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
-      && needs.docker.result == 'success'
-      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -170,17 +186,17 @@ jobs:
 
   candidates-win32-arm64:
     name: Build signed release candidates (win32-arm64)
-    needs: [admit, ci, docker]
+    needs: admit
+    # Starts with the gates; the acceptance join is what requires CI.
     if: >-
       !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
-      && needs.docker.result == 'success'
-      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -191,17 +207,17 @@ jobs:
 
   candidates-win32-x64:
     name: Build signed release candidates (win32-x64)
-    needs: [admit, ci, docker]
+    needs: admit
+    # Starts with the gates; the acceptance join is what requires CI.
     if: >-
       !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
-      && needs.docker.result == 'success'
-      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -212,11 +228,10 @@ jobs:
 
   candidates-win32-bundle:
     name: Build signed release candidates (win32-bundle)
-    needs: [admit, ci, docker, candidates-win32-arm64, candidates-win32-x64]
+    needs: [admit, candidates-win32-arm64, candidates-win32-x64]
+    # Starts with the gates; the acceptance join is what requires CI.
     if: >-
       !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
-      && needs.docker.result == 'success'
-      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
       && needs.candidates-win32-arm64.result == 'success'
       && needs.candidates-win32-x64.result == 'success'
     permissions:
@@ -225,6 +240,7 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -235,17 +251,17 @@ jobs:
 
   candidates-termux:
     name: Build signed release candidates (termux)
-    needs: [admit, ci, docker]
+    needs: admit
+    # Starts with the gates; the acceptance join is what requires CI.
     if: >-
       !cancelled() && needs.admit.result == 'success' && needs.admit.outputs.skip-bundles != 'true'
-      && needs.docker.result == 'success'
-      && (needs.ci.result == 'success' || needs.admit.outputs.skip-tests == 'true')
     permissions:
       contents: write
       actions: read
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -264,7 +280,7 @@ jobs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -298,7 +314,7 @@ jobs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -332,7 +348,7 @@ jobs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -382,7 +398,7 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -447,7 +463,7 @@ jobs:
     if: needs.admit.outputs.skip-tests != 'true'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ needs.admit.outputs.commit }}
       - name: Stamp and verify the Cargo and Tauri release identity
@@ -486,7 +502,7 @@ jobs:
             bootstrap-version]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
       - uses: ./.github/actions/setup-pm
@@ -504,6 +520,7 @@ jobs:
     # stable/latest aliases move in the ordered publication pass.
     needs: [admit, docker]
     uses: ./.github/workflows/docker.yml
+    secrets: inherit
     with:
       release-phase: publish
       tag: ${{ needs.admit.outputs.tag }}
@@ -519,6 +536,7 @@ jobs:
       packages: write
       id-token: write
     uses: ./.github/workflows/desktop-bundled-release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.admit.outputs.tag }}
       claim-tag: ${{ needs.admit.outputs.claim-tag }}
@@ -532,7 +550,7 @@ jobs:
     needs: [admit, acceptance, publish-docker, publish-bundles]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
       - uses: ./.github/actions/setup-pm
@@ -555,7 +573,7 @@ jobs:
       contents: write
       actions: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0

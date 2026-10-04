@@ -62,7 +62,8 @@ def _wire_pm(monkeypatch, *, current=False, error=None):
     calls = []
     monkeypatch.setattr(pm, "venv_is_current", lambda *, project_root: current)
 
-    def sync(*, explicit, project_root):
+    def sync(*, explicit, project_root, evict_incompatible_plugins):
+        assert evict_incompatible_plugins, "an update sync must disable misfit plugins, not fail"
         calls.append((project_root, explicit))
         if error:
             raise pm.InstallError("venv", error)

@@ -487,10 +487,12 @@ def hermes_managed_node_tree_present(home: Path | None = None) -> bool:
 
 
 def find_node_executable(command: str) -> str | None:
-    """Read PM's selected Node/npm/npx, then a user-owned PATH toolchain.
+    """Read PM's selected Node/npm/npx; ``None`` when PM has not installed it.
 
-    Explicit executable paths remain caller-owned. Discovery never installs,
-    probes, repairs, or activates the retired ``HERMES_HOME/node`` layout.
+    Never falls back to the user's PATH copy (callers ``pm.ensure`` on ``None``):
+    mixing toolchains breaks native-addon ABIs and npm caches. Explicit
+    executable paths remain caller-owned. Discovery never installs, probes,
+    repairs, or activates the retired ``HERMES_HOME/node`` layout.
     """
     command = str(command)
     if any(sep in command for sep in ("/", "\\")):
@@ -505,14 +507,15 @@ def find_node_executable(command: str) -> str | None:
         from pm import installed_package
 
         installed = installed_package(package_name)
-        if installed is not None and installed.binary is not None:
-            if base != "npx":
-                return str(installed.binary)
-            for name in _candidate_node_command_names("npx"):
-                candidate = installed.binary.parent / name
-                if candidate.is_file():
-                    return str(candidate)
+        if installed is None or installed.binary is None:
             return None
+        if base != "npx":
+            return str(installed.binary)
+        for name in _candidate_node_command_names("npx"):
+            candidate = installed.binary.parent / name
+            if candidate.is_file():
+                return str(candidate)
+        return None
     if sys.platform != "win32":
         return shutil.which(command)
     directories = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
@@ -1307,9 +1310,37 @@ def project_venv_dir(project_root) -> Path | None:
     running = Path(sys.prefix)
     if (Path(__file__).resolve().parent == root.resolve()
             and sys.prefix != sys.base_prefix
-            and venv_python_path(running).is_file()):
+            and venv_python_path(running).is_file()
+            and _venv_installs_checkout(running, root)):
         return running
     return None
+
+
+def _venv_installs_checkout(venv: Path, root: Path) -> bool:
+    """Is *venv*'s own ``hermes-agent`` installed from *root*?
+
+    Where this module was loaded from does not answer that: ``PYTHONPATH=<checkout>
+    <other install>/bin/python`` runs one checkout's code on another install's interpreter,
+    and adopting that venv made a dev checkout's update rewrite the Desktop install's venv
+    into an editable install of the dev tree. Every install of a checkout into a venv
+    (installers, ``uv sync``) records the source tree in ``direct_url.json``.
+    """
+    import json
+    from importlib.metadata import distributions
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+
+    from pm.environments import site_packages
+
+    for dist in distributions(name="hermes-agent", path=[str(site_packages(venv))]):
+        try:
+            raw = dist.read_text("direct_url.json")  # windows-footgun: ok — importlib.metadata API, reads utf-8, no encoding=
+            url = json.loads(raw or "{}").get("url", "")
+        except ValueError:
+            continue
+        if url.startswith("file:") and Path(url2pathname(urlparse(url).path)).resolve() == root.resolve():
+            return True
+    return False
 
 
 def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:

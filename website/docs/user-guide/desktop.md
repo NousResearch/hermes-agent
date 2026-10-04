@@ -106,6 +106,7 @@ The **microphone** is dictation; hover it and the other voice toggles fan out ab
 - **The composer picker is sticky UI state and never touches your default.** It's remembered locally (per device) and **follows** across new chats and restarts instead of snapping back to the default — pick a model once and the next `Cmd/Ctrl+N` opens on it. With a live chat, switching models scopes the change to that **current chat**; either way the selection rides along when the session is created/switched and is **never** written to the profile default — with one exception: on a fresh profile that has no `model.default`/`model.provider` configured yet, the first pick is persisted so the app has a real default instead of falling through to a stray API-key env var on restart. Persistence follows the same rule as `/model` (`model.persist_switch_by_default`); use **Settings → Model** to change the default deliberately. (Switching [profiles](#sessions--profiles) reseeds to that profile's own default.)
 - **Set the default in Settings → Model.** That "main" model is your **per-profile global default** — it's what new chats, crons, subagents, and auxiliary tasks start from, and it's the only place that writes it. Each [profile](#sessions--profiles) keeps its own default.
 - **Per-model effort/fast presets.** Each model remembers its own reasoning effort and fast-mode choice in the desktop app, re-applied to the session whenever you pick that model. These presets are a desktop convenience and don't change crons or subagents.
+- **Favorite models.** Click the star on the left of a model row (or shift-click the row, the same gesture that pins a chat in the sidebar; Shift+Enter from the search box) to lift it into a **Favorites** section at the top of the picker. Starring never selects the model or closes the menu, so the same gesture undoes it. The section only appears once something is starred. Favorites show in the composer, in session tiles, and anywhere else a model is picked, because they are one stored preference. They persist per device, keep the order you starred them, and ignore the **Edit models** shortlist (a star IS an explicit "always show me this one"); a favorite for a provider that is not connected is kept and reappears when it reconnects. Searching is unaffected — a query lists every match in its provider's place.
 - **Mid-chat switches reset the prompt cache.** Switching the model inside a live chat means the next message re-reads the whole conversation at full input price (provider prompt caches are keyed to the model). Fine occasionally; on a long chat, a fresh chat on the new model is often cheaper than bouncing back and forth.
 
 ### File browser
@@ -124,7 +125,7 @@ The **Artifacts** view collects what your sessions generate — **images, files,
 
 The app is built for working on several things at once:
 
-- **Tabs** — **Cmd/Ctrl+T** opens a new session tab; **Ctrl+Tab** / **Ctrl+Shift+Tab** cycle sessions, and **Ctrl+1…9** jump to a recent session by position. **Cmd/Ctrl+W** closes the focused tab and **Cmd/Ctrl+Shift+T** reopens the last closed one.
+- **Tabs** — **Cmd/Ctrl+T** opens a new session tab; **Ctrl+Tab** / **Ctrl+Shift+Tab** cycle sessions, and **Ctrl+1…9** jump to a recent session by position. **Cmd/Ctrl+W** closes the focused tab — except over an interactive terminal, where it keeps its shell meaning (word erase) — and **Cmd/Ctrl+Shift+T** reopens the last closed one.
 - **Multiple windows** — **Cmd/Ctrl+Shift+N** opens a new window, and any session can be popped out via its context menu (**New window**) or from the command palette. A popped-out window renders that single chat without the global sidebar — handy for parking a long-running session on another monitor. Live agent output streams into every window showing the session.
 - **Panes** — **Cmd/Ctrl+B** toggles the left sidebar, **Cmd/Ctrl+J** the right one, and **Cmd/Ctrl+\\** swaps which side the sidebars sit on.
 
@@ -167,8 +168,8 @@ While delegated workers are live, a **Subagents** frame appears above the compos
 
 For sessions running inside a Git repository, the app has a built-in source-control surface:
 
-- **Review pane** — **Cmd/Ctrl+G** toggles the working-tree review pane: branch and ahead/behind status, changed files (list or tree view), and diffs scoped to **Uncommitted**, **Branch**, or **Last turn** (just what the agent changed in its most recent turn). Stage/unstage files, revert changes, write a commit message (or **Generate commit message**), then **Commit** or **Commit & Push** — and **Create PR** via the GitHub CLI (`gh`), or hand the whole thing to the agent with **Ask Hermes to open PR**. You can also create and switch branches from here.
-- **Worktrees** — **Cmd/Ctrl+Shift+B** (or **New worktree** on a project in the sidebar) creates a Git worktree on a new branch so an agent can work on a parallel copy of the repo without touching your checkout. Worktrees show up as their own lanes under the project; removing one offers to delete the worktree directory (the branch stays) or just hide the lane and leave it on disk, with a force option when it has uncommitted changes.
+- **Review pane** — **Cmd/Ctrl+G** toggles the working-tree review pane: branch and ahead/behind status, changed files (list or tree view), and diffs scoped to **Uncommitted**, **Branch**, or **Last turn** (just what the agent changed in its most recent turn). Stage/unstage files, revert changes, write a commit message (or **Generate commit message**), then **Commit** or **Commit & Push** — and **Create PR** via the GitHub CLI (`gh`), or hand the whole thing to the agent with **Ask Hermes to open PR**. You can also create and switch branches from here. The **Last turn** scope shows everything changed since the most recent turn in this repo began (including any commits the agent made mid-turn); it is empty until a turn has run here. The **Branch** and **Last turn** scopes are read-only — stage, revert, and commit only apply to uncommitted changes.
+- **Worktrees** — **Cmd/Ctrl+Shift+B** (or **New worktree** on a project in the sidebar) creates a Git worktree on a new branch so an agent can work on a parallel copy of the repo without touching your checkout. Worktrees show up as their own lanes under the project; removing one offers to delete the worktree directory (the branch stays) or just hide the lane and leave it on disk, with a force option when it has uncommitted changes. A chat also **follows the agent**: when you ask it to make a worktree and work in it, the chat moves to that lane at the end of the turn and the sidebar re-scopes with it. Only a workspace you deliberately switched the chat to (the folder picker, or a project switch) stays put.
 
 ### Memory Graph
 
@@ -195,7 +196,7 @@ Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md)
 
 #### Linux / Wayland
 
-Electron 20+ already runs as a native Wayland client on a Wayland session. Drag, click-through, and resize work on that path.
+On a local Wayland session (`XDG_SESSION_TYPE=wayland`, or `WAYLAND_DISPLAY` set) Hermes launches with `--ozone-platform=wayland` so Electron does not fall back to XWayland. The platform has to be on the process command line before application JavaScript loads. An explicit `--ozone-platform`, `desktop.ozone_platform_hint: x11`, or an ozone platform in `desktop.electron_flags` still wins. Drag, click-through, and resize work on the native Wayland path.
 
 On **Hyprland** (including Omarchy) the HUD is floated and pinned through the compositor's IPC after it maps — otherwise Hyprland tiles it like any other window, `always-on-top` is ignored, and compositor drag does nothing. No extra window rule is required.
 
@@ -252,7 +253,7 @@ Manage providers, models, tools, and credentials from a real UI instead of editi
 - **Auxiliary-model warning** — if you switch the main model to a new provider while auxiliary tasks (titling, summarization, and similar helpers) are still pinned to another provider, the app warns you so you don't unknowingly split work across two providers.
 - **Per-task reasoning effort** — each row under **Settings → Model → Auxiliary models** has a reasoning selector next to its provider/model pick: a level, **Off**, or **inherit · main model effort** (the default, which removes the task's override). It is saved as `auxiliary.<task>.reasoning_effort` in `config.yaml`, the same key `hermes model` writes, and shows in the row's summary when set. Use it to run frequent helpers such as compression or titling at low or no reasoning while the main agent stays at high.
 - **VS Code Marketplace themes** — beyond the built-in theme presets, the appearance settings include a live VS Code Marketplace search: pick any color theme and the app downloads, converts, and installs it as a desktop theme. The same importer is available from the command palette (*Install theme*), and imported themes can be removed again from the appearance settings.
-- **Keep computer awake** — **Settings → Advanced → Keep computer awake** stops the machine from sleeping so long or overnight agent runs keep going (the display can still dim). This is a per-computer setting.
+- **Keep computer awake** — **Settings → Advanced → Keep computer awake** stops the machine from sleeping so long or overnight agent runs keep going (the display can still dim). **While working** holds the machine awake only while a turn is in flight and lets it sleep normally once the run finishes or fails; **Always** holds it whenever Hermes is open. This is a per-computer setting.
 
 First-run onboarding has been redesigned on a unified overlay design system, and you can pick **Choose provider later** to skip provider setup and get into the app first.
 
@@ -271,7 +272,7 @@ When you have two or more [profiles](./profiles.md), the config-backed settings 
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
 
-- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes.
+- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes. The public Skills Hub's **Install in Hermes** buttons open `hermes://skill/install?identifier=...` links that install through the same pipeline after you confirm (see [skill links](./features/skills.md#install-from-the-website)).
 - **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
 - **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron). With **All profiles** on, the list aggregates every profile's jobs; a job's run history and actions (pause, resume, edit, delete) always go to the profile that owns the job, whichever profile is active.
 - **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
@@ -337,7 +338,7 @@ chats decide who replies: [Bot Mode: A Roster of Agents](./bot-mode.md).
 ### Keyboard & navigation
 
 - **Command palette** — press **Cmd+K** or **Cmd+P** (Ctrl+K / Ctrl+P on Windows/Linux) to jump to actions and navigate the app from the keyboard: open any page or settings section, jump to a session by title or id, switch model/theme/color mode, spawn a terminal, restart the gateway, update Hermes, and more.
-- **Rebindable shortcuts** — **Settings → Keyboard Shortcuts** (or **Cmd/Ctrl+/**) opens the shortcuts panel where you can remap almost every binding — profile switching, session navigation, view toggles, and any shortcuts contributed by desktop plugins. Duplicate assignments are flagged as conflicts. A few defaults worth knowing: **Cmd/Ctrl+N** new session, **Cmd/Ctrl+.** Command Center, **Cmd/Ctrl+,** Settings, **Cmd/Ctrl+Shift+F** search sessions, **Cmd/Ctrl+1–9** switch profiles, **Shift+X** toggle light/dark.
+- **Rebindable shortcuts** — **Settings → Keyboard Shortcuts** (or **Cmd/Ctrl+/**) opens the shortcuts panel where you can remap almost every binding — profile switching, session navigation, view toggles, and any shortcuts contributed by desktop plugins. Duplicate assignments are flagged as conflicts. A few defaults worth knowing: **Cmd/Ctrl+N** new session, **Cmd/Ctrl+.** Command Center, **Cmd/Ctrl+,** Settings, **Cmd/Ctrl+Shift+F** search sessions, **Cmd/Ctrl+1–9** switch to the Nth tab of the pane under the pointer (or the focused pane) and switch profiles when no pane has a tab strip, **Shift+X** toggle light/dark.
 - **Custom zoom shortcuts** — zoom the interface in half-step increments for finer control over text size.
 - **UI language switcher** — change the app's interface language in-app: English, Simplified Chinese (zh-Hans), Traditional Chinese (zh-Hant), Japanese, Arabic (RTL), and Russian.
 
@@ -387,8 +388,10 @@ These controls are hidden for Nix, bundled/Light packages, and other externally 
 
 For self-managed installations, you can do the same from the terminal — `hermes uninstall --gui` for the GUI alone, or `hermes uninstall` / `hermes uninstall --full` for the agent too.
 
+Preview GUI cleanup with `hermes uninstall --gui --dry-run`. It lists the removal targets and returns without prompting or removing anything, including when `--yes` is also supplied.
+
 :::note
-Running `hermes uninstall --gui` from a **source checkout** (a `hermes desktop` dev build) also removes the workspace `node_modules` and `apps/desktop/{dist,release}` build output, since those are GUI build artifacts. They're recoverable with `hermes desktop` (or `npm install` + a rebuild) — but if you're actively hacking on the desktop app, expect to reinstall dependencies afterward.
+Running `hermes uninstall --gui` from a **source checkout** (a `hermes desktop` dev build) removes `apps/desktop/{dist,release,node_modules}` and the desktop build stamp. The workspace-root `node_modules` stays installed because it is shared with the TUI, dashboard and other workspaces. Rebuild the GUI with `hermes desktop` if you need it again.
 :::
 
 ## CLI reference: `hermes desktop`
@@ -413,7 +416,7 @@ When you start Hermes from the application grid or menu (the launcher sets `DESK
 | `--source`           | Launch via `electron .` against `apps/desktop/dist` instead of the packaged app           |
 | `--cwd PATH`         | Initial project directory for desktop chat sessions (sets `HERMES_DESKTOP_CWD`)           |
 | `--hermes-root PATH` | Override the Hermes source root the app uses (sets `HERMES_DESKTOP_HERMES_ROOT`)          |
-| `--ignore-existing`  | Force the app to ignore any `hermes` CLI already on `PATH` during backend resolution      |
+| `--ignore-existing`  | Skip the installed Hermes runtime so no local backend starts; offer connect or install    |
 | `--fake-boot`        | Enable deterministic boot delays for validating the startup UI                            |
 
 ## How it works
@@ -511,6 +514,19 @@ The remote gateway host is configured per [profile](./profiles.md), so each prof
 :::
 
 ### Troubleshooting
+
+### Window context unavailable on Windows ARM64
+
+Check that the installed `get-windows` package includes a working
+`win32-arm64` native binding. Without one, `read_window_below` and HUD window
+context cannot enumerate other apps' windows. The error and HUD log preserve
+the underlying failure reason alongside this troubleshooting guidance.
+
+If the binding is unavailable, use the x64 desktop build under Windows
+emulation, or a custom build with a matching native binding. Changing the agent
+backend or granting macOS screen permissions cannot fix a missing Windows
+binding; enumeration runs on the computer hosting the desktop app. This
+diagnostic does not add native ARM64 window enumeration support.
 
 - **Sign-in fails with 401 / "Invalid credentials"** — the username or password doesn't match the backend's `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`. The backend returns the same generic error for an unknown user and a wrong password (no enumeration oracle), so double-check both. Confirm the gate is on with `curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'` — it should report `true` and include `"basic"`.
 - **No "Sign in" button — it asks for a session token instead** — the backend's username/password provider isn't active. `/api/status` won't list `"basic"` in `auth_providers`. Make sure both the username and a password (or password hash) are set in `~/.hermes/.env` and that the dashboard process actually loaded them.
@@ -667,6 +683,17 @@ damaged application files, repair through the
 # Reset a stuck macOS microphone prompt
 tccutil reset Microphone com.nousresearch.hermes
 ```
+
+### Windows: the SSH client is missing or broken
+
+On Windows the app runs SSH through the built-in OpenSSH client (`%SystemRoot%\System32\OpenSSH\ssh.exe`). If that client is not installed, it falls back to Git for Windows' bundled `usr\bin\ssh.exe` and then to whatever `ssh` is on `PATH`. If the built-in client is installed but broken (for example, every `ssh.exe` exits with code 255 after a Windows update), boot stops on an error naming the client instead of retrying. To use a different client, set it in `config.yaml` and restart the app:
+
+```yaml
+desktop:
+  ssh_path: 'C:\Program Files\Git\usr\bin\ssh.exe'
+```
+
+Use single quotes or no quotes so the backslashes stay literal. The key goes two spaces under `desktop:`, like the launch keys above. It has no effect on macOS or Linux.
 
 ### "The host key has CHANGED since you last connected" (SSH remote)
 

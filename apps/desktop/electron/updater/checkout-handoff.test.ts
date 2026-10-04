@@ -63,9 +63,15 @@ it.each([true, false])(
   async (remote: boolean): Promise<void> => {
     const { root, deps } = handoffFixture(remote)
     const spawned: string[][] = []
+    const spawnOptions: Parameters<typeof updaterProcess.spawnUpdaterProcess>[2][] = []
     vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
-      (_command: string, args: string[]): updaterProcess.UpdaterChild => {
+      (
+        _command: string,
+        args: string[],
+        options: Parameters<typeof updaterProcess.spawnUpdaterProcess>[2]
+      ): updaterProcess.UpdaterChild => {
         spawned.push(args)
+        spawnOptions.push(options)
 
         return { unref: (): void => {} }
       }
@@ -75,6 +81,9 @@ it.each([true, false])(
       expect(await createCheckoutStrategy(deps).apply()).toMatchObject({ ok: true, handedOff: true })
       expect(spawned).toHaveLength(1)
       const args: string[] = spawned[0]!
+      // The Windows cmd wrapper must inherit its hidden console; the POSIX
+      // script needs to outlive Electron as a detached child (#116161).
+      expect(spawnOptions[0]?.detached).toBe(!IS_WINDOWS)
       expect(args).toContain(IS_WINDOWS ? '-Branch' : '--branch')
 
       if (remote) {
@@ -87,6 +96,35 @@ it.each([true, false])(
     }
   }
 )
+
+// #103222: the Windows wrapper must own the hidden console the script shares.
+// Spawned detached it has none, so `start /b` gives PowerShell a visible
+// console whose QuickEdit selection stalls the hand-off before relaunch.
+it('the Windows hand-off wrapper is spawned non-detached so the script shares its hidden console', async (): Promise<void> => {
+  const { root, deps } = handoffFixture(false)
+  fs.writeFileSync(path.join(root, 'scripts', 'desktop-update', 'windows.ps1'), '')
+  const resolveHandoff: typeof updaterProcess.resolveUpdateScriptHandoff = updaterProcess.resolveUpdateScriptHandoff
+  vi.spyOn(updaterProcess, 'resolveUpdateScriptHandoff').mockImplementation(
+    (updateRoot: string): updaterProcess.UpdateScriptHandoff | null => resolveHandoff(updateRoot, { isWindows: true })
+  )
+  const spawned: { command: string; args: string[]; detached: unknown }[] = []
+  vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
+    (command: string, args: string[], options: { detached?: boolean }): updaterProcess.UpdaterChild => {
+      spawned.push({ command, args, detached: options.detached })
+
+      return { unref: (): void => {} }
+    }
+  )
+
+  try {
+    expect(await createCheckoutStrategy({ ...deps, isWindows: true }).apply()).toMatchObject({ ok: true })
+    expect(spawned).toHaveLength(1)
+    expect(spawned[0]).toMatchObject({ command: 'cmd.exe', detached: false })
+    expect(spawned[0]!.args.slice(0, 6)).toEqual(['/d', '/s', '/c', 'start', '', '/b'])
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
 
 // A hand-off that never became viable (#66753) must not quit into nothing:
 // the app stays, the backend restarts, and the user reads plain copy with

@@ -1,6 +1,9 @@
 """Config check reports stale saved capabilities without changing profile state."""
 
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 import hermes_cli.config as config_mod
 import hermes_cli.plugins as plugins_mod
@@ -98,3 +101,116 @@ def test_config_check_profiles_option_reports_named_profile(tmp_path, monkeypatc
     output = capsys.readouterr().out
     assert "Profile 'research'" in output
     assert "not a valid IANA zone name" in output
+
+
+def _check_profiles_readonly(home, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    import hermes_constants
+    root = hermes_constants.get_default_hermes_root()
+    before = {p: p.read_bytes() for p in root.rglob("config.yaml")}
+    _cmd_config_check(SimpleNamespace(profiles=True))
+    output = capsys.readouterr().out
+    assert {p: p.read_bytes() for p in root.rglob("config.yaml")} == before
+    return output
+
+
+@pytest.mark.parametrize("body,kind", [
+    ("- a\n- b\n", "list"), ("[]\n", "list"),
+    ("hello\n", "str"), ("''\n", "str"),
+    ("42\n", "int"), ("0\n", "int"), ("false\n", "bool"),
+])
+def test_profiles_report_non_mapping_roots(tmp_path, monkeypatch, capsys, body, kind):
+    home = _write_home(tmp_path / "root", "")
+    profile = home / "profiles" / "invalid"
+    profile.mkdir(parents=True)
+    path = profile / "config.yaml"
+    path.write_text(body, encoding="utf-8")
+    output = _check_profiles_readonly(home, monkeypatch, capsys)
+    assert "Profile 'invalid'" in output
+    assert f"top-level value must be a mapping, got {kind}" in output
+    assert "cannot parse config.yaml" not in output
+    assert "has no attribute" not in output
+
+
+@pytest.mark.parametrize("body", ["", "null\n", "{}\n"])
+def test_profiles_accept_empty_mapping_state(tmp_path, monkeypatch, capsys, body):
+    home = _write_home(tmp_path / "root", "")
+    profile = home / "profiles" / "empty"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text(body, encoding="utf-8")
+    output = _check_profiles_readonly(home, monkeypatch, capsys)
+    assert "top-level value must be a mapping" not in output
+    assert "cannot parse config.yaml" not in output
+
+
+def test_profiles_preserve_timezone_and_parse_hints(tmp_path, monkeypatch, capsys):
+    home = _write_home(tmp_path / "root", "timezone: Not/A/Zone\n")
+    for name, body in (("research", "timezone: Not/A/Zone\n"), ("broken", "timezone: [\n")):
+        profile = home / "profiles" / name
+        profile.mkdir(parents=True)
+        (profile / "config.yaml").write_text(body, encoding="utf-8")
+    output = _check_profiles_readonly(home, monkeypatch, capsys)
+    hint = "Hint: Use an IANA zone name such as America/New_York or Asia/Tokyo"
+    assert output.count(hint) == 2
+    assert output.count("schedules silently fall back to server-local time") == 2
+    assert "Profile 'broken'" in output
+    assert "cannot parse config.yaml" in output
+    assert "Hint: Fix the YAML syntax" in output
+
+
+def test_profiles_skip_current_home_and_check_siblings(tmp_path, monkeypatch, capsys):
+    root = _write_home(tmp_path / "root", "")
+    profiles = root / "profiles"
+    profiles.mkdir()
+    current = _write_home(profiles / "research", "timezone: Not/A/Zone\n")
+    _write_home(profiles / "sibling", "timezone: Not/A/Zone\n")
+    # Match --profile's actual HERMES_HOME selection; do not stub root discovery.
+    output = _check_profiles_readonly(current, monkeypatch, capsys)
+    assert "Saved configuration:" in output
+    assert "Profile 'research'" not in output
+    assert "Profile 'sibling'" in output
+    assert output.count("not a valid IANA zone name") == 2
+
+
+@pytest.mark.parametrize("stamp,expected", [
+    ("_config_version: 1\n", 1), ("", 0),
+    ("_config_version: invalid\n", 0), ("_config_version: false\n", 0),
+])
+def test_profiles_report_stale_versions(tmp_path, monkeypatch, capsys, stamp, expected):
+    home = _write_home(tmp_path / "root", "")
+    profile = home / "profiles" / "legacy"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text(stamp, encoding="utf-8")
+    output = _check_profiles_readonly(home, monkeypatch, capsys)
+    assert "Profile 'legacy'" in output
+    assert f"Config version: {expected} → {DEFAULT_CONFIG['_config_version']} (update available)" in output
+
+
+def test_profiles_current_and_future_versions_are_silent(tmp_path, monkeypatch, capsys):
+    home = _write_home(tmp_path / "root", "")
+    for name, version in (("current", DEFAULT_CONFIG['_config_version']), ("future", 999)):
+        profile = home / "profiles" / name
+        profile.mkdir(parents=True)
+        (profile / "config.yaml").write_text(f"_config_version: {version}\n", encoding="utf-8")
+    output = _check_profiles_readonly(home, monkeypatch, capsys)
+    assert "Profile 'current'" not in output
+    assert "Profile 'future'" not in output
+
+
+def test_profiles_scan_is_opt_in(tmp_path, monkeypatch, capsys):
+    home = _write_home(tmp_path / "root", "")
+    profile = home / "profiles" / "invalid"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("- a\n", encoding="utf-8")
+    output = _check(home, monkeypatch, capsys)
+    assert "Profile 'invalid'" not in output
+    assert "top-level value must be a mapping" not in output
+
+
+def test_profiles_do_not_weaken_current_home_root_validation(tmp_path, monkeypatch):
+    home = tmp_path / "root"
+    home.mkdir()
+    (home / "config.yaml").write_text("- a\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with pytest.raises(config_mod.InvalidUserConfigError, match="top-level value must be a mapping, got list"):
+        _cmd_config_check(SimpleNamespace(profiles=True))

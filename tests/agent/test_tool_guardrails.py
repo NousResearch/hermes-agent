@@ -3,6 +3,7 @@
 import json
 
 from agent.tool_guardrails import (
+    LoopCapConfig,
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
     ToolCallSignature,
@@ -270,6 +271,118 @@ def test_web_search_cap_blocks_after_limit_regardless_of_hard_stop():
     assert decision.should_halt is True
 
 
+# ── Varying-the-command spin (the axis every repetition detector misses) ───
+# The exact-failure, idempotent, streak, and cycle detectors all key on REPETITION, so a model
+# that emits a fresh trivial command every call resets all of them and runs to the iteration
+# budget. These pin the cap on CONSECUTIVE CALLS that told the model nothing new.
+
+def _shell(out="", exit_code=0):
+    return json.dumps({"output": out, "exit_code": exit_code, "error": None})
+
+
+def _spin(controller, commands, result_for):
+    """Drive before_call/after_call over commands; return the first blocking decision."""
+    for cmd in commands:
+        args = {"command": cmd, "timeout": 1}
+        decision = controller.before_call("terminal", args)
+        if decision.action == "block":
+            return decision
+        controller.after_call("terminal", args, result_for(cmd), failed=False)
+    return None
+
+
+def test_fresh_trivial_command_each_call_is_blocked_despite_never_repeating():
+    # `true`, `echo ok`, `echo done` … every call is byte-different, so the identical-call streak
+    # never forms and the batch-cycle detector never matches. The recorded incident ran 89 of these.
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    commands = [f"echo {word}" for word in ("a", "b", "c")] * 8
+    decision = _spin(controller, commands, lambda cmd: _shell(cmd.split()[1]))
+
+    assert decision is not None
+    assert decision.code == "loop_self_answering_cap"
+    assert decision.should_halt is True
+
+
+def test_productive_shell_calls_in_a_row_are_never_counted_as_spinning():
+    # Distinct commands that each return real output: the workhorse pattern of any real turn.
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    decision = _spin(
+        controller,
+        [f"wc -l file{i}.txt" for i in range(40)],
+        lambda cmd: _shell("line one\nline two\nline three"),
+    )
+    assert decision is None
+    assert controller.self_answering_streak == 0
+
+
+def test_informative_call_resets_the_streak_so_interleaved_work_survives():
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    for lap in range(10):
+        for cmd in ("echo a", "echo b", "echo c"):
+            args = {"command": cmd, "timeout": 1}
+            assert controller.before_call("terminal", args).action == "allow"
+            controller.after_call("terminal", args, _shell(cmd.split()[1]), failed=False)
+        # one real read resets the run
+        args = {"command": "cat log.txt", "timeout": 1}
+        assert controller.before_call("terminal", args).action == "allow"
+        controller.after_call("terminal", args, _shell("a real line of output"), failed=False)
+    assert controller.self_answering_streak == 0
+
+
+def test_self_answering_cap_does_not_count_failures_pollers_or_mutations():
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig(hard_stop_enabled=True))
+    for i in range(30):
+        # a failing command still carries new information (the error)
+        args = {"command": f"pytest tests/test_{i}.py -q", "timeout": 60}
+        assert controller.before_call("terminal", args).action == "allow"
+        controller.after_call("terminal", args, _shell("1 failed", exit_code=1), failed=True)
+        # an unchanged poll is legitimate waiting
+        controller.before_call("process_manage", {"session_id": "proc_x", "action": "poll"})
+        controller.after_call("process_manage", {"session_id": "proc_x", "action": "poll"}, "", failed=False)
+        # a landed mutation is progress by definition
+        m_args = {"path": f"/tmp/f{i}.txt", "content": "x"}
+        assert controller.before_call("write_file", m_args).action == "allow"
+        controller.after_call("write_file", m_args, json.dumps({"bytes_written": 1}), failed=False)
+    assert controller.self_answering_streak == 0
+
+
+def test_self_answering_cap_can_be_disabled_and_defaults_to_the_documented_value():
+    cap = ToolCallGuardrailConfig().loop_caps.max_self_answering_calls
+    assert cap > 0
+    off = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(loop_caps=LoopCapConfig(max_self_answering_calls=0))
+    )
+    assert _spin(off, ["echo a", "echo b", "echo c"] * 20, lambda c: _shell(c.split()[1])) is None
+
+
+def test_background_handoff_and_transport_args_are_not_self_answering():
+    # Handing a command to a background process is a real state change whose output hasn't arrived
+    # yet, so its (necessarily empty so far) stdout must not count as spinning.
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig())
+    args = {"command": "pytest -q", "timeout": 1}
+    controller.after_call(
+        "terminal", args,
+        json.dumps({"output": "", "exit_code": None, "error": None,
+                    "status": "yielded_to_background", "session_id": "proc_1", "notify_on_complete": True}),
+        failed=False,
+    )
+    assert controller.self_answering_streak == 0
+    # Only the command/code text is compared against the output, never the transport args, so
+    # `grep -c` printing "3" against a timeout of 3 is a real result, not an echo.
+    controller.after_call("terminal", {"command": "grep -c foo bar.txt", "timeout": 3}, _shell("3"), failed=False)
+    assert controller.self_answering_streak == 0
+    controller.after_call("terminal", {"command": "cat chapter.md", "timeout": 3}, _shell("第01章 雪线失联"), failed=False)
+    assert controller.self_answering_streak == 0
+
+
+def test_constant_echoed_back_counts_as_self_answering_but_real_output_does_not():
+    # The payload is new information unless it is literally a substring of the call's own args:
+    # `echo ok` returns "ok" (already in the command), a real read returns text that isn't.
+    controller = ToolCallGuardrailController(ToolCallGuardrailConfig())
+    controller.after_call("terminal", {"command": "echo ok"}, _shell("ok"), failed=False)
+    assert controller.self_answering_streak == 1
+    controller.after_call("terminal", {"command": "cat log.txt"}, _shell("running\npid 123"), failed=False)
+    assert controller.self_answering_streak == 0
 
 
 

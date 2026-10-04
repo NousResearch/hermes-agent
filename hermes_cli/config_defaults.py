@@ -573,6 +573,12 @@ DEFAULT_CONFIG = {
         "loop_caps": {
             "max_web_searches": 50,   # web_search calls per turn
             "max_subagents": 50,      # subagents spawned per turn
+            # Consecutive terminal/execute_code calls whose output told the model nothing it
+            # didn't already have (empty stdout, or an echo of its own command). The repetition
+            # detectors above all reset when the command changes, so a model that varies a trivial
+            # command every call escapes them; this cap counts calls instead. Any call returning
+            # real output, landing a mutation, failing, or polling resets the run.
+            "max_self_answering_calls": 12,
         },
     },
 

@@ -2076,6 +2076,13 @@ tool_loop_guardrails:
   loop_caps:
     max_web_searches: 50       # max web_search calls per turn (0 = unlimited)
     max_subagents: 50          # max subagents spawned per turn (0 = unlimited)
+    max_self_answering_calls: 12  # max CONSECUTIVE terminal/execute_code calls whose output told
+                                  # the model nothing new — empty stdout or an echo of its own
+                                  # command (0 = unlimited). The repetition thresholds above all
+                                  # reset when the arguments change, so a model that varies a
+                                  # trivial command every call escapes them; this counts calls.
+                                  # Any call returning real output, landing a write, failing, or
+                                  # polling a background process resets the run.
 ```
 
 `hard_stop_enabled` explicitly enables hard stops on every platform. When it remains `false`, `non_interactive_hard_stop_enabled` still enables them for unattended gateway/cron-style platforms while preserving warning-only behavior for CLI, TUI, Desktop, ACP, subagents, and `api_server` runs (supervised task loops with a live parent or client). Set `non_interactive_hard_stop_enabled: false` to opt an unattended deployment out. See also [Docker / unattended deployments](docker.md).

@@ -647,6 +647,24 @@ class TestDuplicateNamesAgreeAcrossSurfaces:
         prompt = pb.build_skills_system_prompt()
         assert "- pr-review: Description for pr-review." in prompt and "rename one" not in prompt
 
+    def test_same_root_link_still_loses_to_the_shallower_real_path(self, tmp_path):
+        """Inside one root, a deeper link to a skill keeps losing to the real, shallower copy (the same-root
+        rank rule), whatever order the scan lists them in."""
+        from agent.skill_utils import resolve_skill_catalog
+        root = tmp_path / "ext"
+        _make_skill(root, "one")
+        (root / "cat").mkdir()
+        try:
+            os.symlink(root / "one", root / "cat" / "one", target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks unavailable")
+        entries = [{"name": "one", "tier": 3, "root": root, "path": root / rel / "SKILL.md"}
+                   for rel in ("cat/one", "one")]
+
+        status = {e["relative_path"]: (e["status"], e["load_name"]) for e in resolve_skill_catalog(entries)}
+
+        assert status == {"cat/one": ("shadowed", None), "one": ("unique", "one")}
+
 
 class TestBuildSkillInvocationMessage:
 

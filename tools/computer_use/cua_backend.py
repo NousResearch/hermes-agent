@@ -402,17 +402,20 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         return self._session.call_tool(name, payload, timeout=timeout)
 
     def _action(self, name: str, args: Dict[str, Any], *, inject_session: bool = True) -> ActionResult:
-        # Attach the snapshot's `element_token` to an `element_index` call so a superseded snapshot yields an explicit
+        # Replace the wrapper-only `element_index` with the snapshot's `element_token` before calling cua-driver.
         # 'stale' error. Two ways to establish support, the live input schema first: cua-driver 0.21+ stopped
         # publishing per-tool `capabilities[]` while still accepting `element_token` in its schema, and it REFUSES a
         # bare `element_index` (`snapshot_id_required`) — gating on the capability alone broke EVERY element click and
         # left only pixel clicks working. The capability check stays so older drivers that shipped the vocabulary keep
-        # working; drivers advertising neither (`additionalProperties: false`) must never see the property.
+        # working; drivers advertising neither (`additionalProperties: false`) must never see the property. Modern
+        # cua-driver schemas do not accept `element_index` at all, so retaining both fields causes an
+        # `unknown argument element_index` refusal before the token can be used.
         idx = args.get("element_index")
         token = self._snapshot_tokens.get(idx) if isinstance(idx, int) else None
         if token and (self._session.supports_input_property(name, "element_token")
                       or self._session.supports_capability("accessibility.element_tokens", tool=name)):
             args["element_token"] = token
+            args.pop("element_index", None)
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)
         try:

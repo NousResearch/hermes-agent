@@ -496,7 +496,7 @@ def static_model_provider_conflict(model_name: str, provider: Optional[str], *, 
     providers, names in the provider's own family (a newer ``gpt-*`` the curated list lacks) and
     names no vendor lists (hidden or preview slugs) stay permissive. A conflict is a name outside
     the provider's family that another native vendor's catalog lists — or any foreign-family name
-    on the OAuth catalogs with a strict family gate (``_STATIC_FAMILY_PREFIXES``) (#96817)."""
+    on a statically-labelled OAuth catalog with a strict family gate (#96817)."""
     from hermes_cli import models as _m
 
     requested = (model_name or "").strip()
@@ -508,7 +508,7 @@ def static_model_provider_conflict(model_name: str, provider: Optional[str], *, 
         return None
     if _family_head(requested) in {_family_head(m) for m in catalog}:
         return None
-    strict = normalized in _STATIC_FAMILY_PREFIXES
+    strict = normalized in _STATIC_LABELS
     if not strict and next(_m._static_catalog_matches(requested, normalized), None) is None:
         return None
     suggestions = get_close_matches(requested, catalog, n=limit, cutoff=0.4) or catalog[:limit]

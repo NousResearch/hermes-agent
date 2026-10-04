@@ -253,18 +253,18 @@ def _real_profile_cdp() -> tuple:
                                             real_profile_copy_dir, snapshot_real_profile)
 
     with _bt._real_profile_cdp_lock:
+        browser = detect_default_chromium()
+        unsupported = _real_profile_unsupported_reason(browser)
+        if unsupported:
+            return None, unsupported
+        copy_dir = real_profile_copy_dir(browser)
         cached = _bt._real_profile_cdp_cache.get(_bt._REAL_PROFILE_CACHE_KEY)
-        if cached and _cdp_http_ready(cached):
+        if cached and _cdp_http_ready(cached) and _cdp_on_data_dir(cached, copy_dir):
             # Re-claim the shared daemon's socket dir so the orphan reaper's idle clock sees
             # this process still using it (a cache hit never runs a daemon command).
             _session._prepare_session_socket_dir(_bt._REAL_PROFILE_SESSION)
             return cached, None
         _bt._real_profile_cdp_cache.pop(_bt._REAL_PROFILE_CACHE_KEY, None)
-
-        browser = detect_default_chromium()
-        unsupported = _real_profile_unsupported_reason(browser)
-        if unsupported:
-            return None, unsupported
 
         # Reuse BEFORE writing anything. CRITICAL: the snapshot overlay (truncates/rewrites
         # Cookies / Login Data) must NOT run while a live copy-browser (maybe from a previous

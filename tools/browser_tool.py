@@ -263,11 +263,21 @@ from tools import browser_tool_cloud as _cloud
 from tools import browser_tool_lightpanda_fallback as _lp
 
 
-# Each served profile needs its own attach session and endpoint; the gateway process can serve
-# multiple Hermes homes concurrently. Hash the home key because it may contain path separators.
-_REAL_PROFILE_SCOPE = hashlib.sha256(hermes_home_key().encode()).hexdigest()[:16]
-_REAL_PROFILE_SESSION = f"hermes-real-profile-{_REAL_PROFILE_SCOPE}"
-_REAL_PROFILE_CACHE_KEY = f"cdp:{hermes_home_key()}"
+def _real_profile_scope() -> str:
+    # Resolve at call time: served profiles select their home through a ContextVar.
+    # Hash the key because a session name cannot contain path separators.
+    return hashlib.sha256(hermes_home_key().encode()).hexdigest()[:16]
+
+
+def __getattr__(name):
+    # Preserve the attribute seam used by callers and existing test patches,
+    # without freezing a multiplexed gateway's identity at module import.
+    if name == "_REAL_PROFILE_SESSION":
+        return f"hermes-real-profile-{_real_profile_scope()}"
+    if name == "_REAL_PROFILE_CACHE_KEY":
+        return f"cdp:{hermes_home_key()}"
+    raise AttributeError(name)
+
 _real_profile_cdp_lock = threading.Lock()
 _real_profile_cdp_cache: dict = {}
 _real_profile_chrome_procs: list = []  # Popen handles of directly-launched real browsers

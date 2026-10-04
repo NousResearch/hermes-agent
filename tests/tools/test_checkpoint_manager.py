@@ -1446,6 +1446,16 @@ class TestNoRefColdAdd:
         assert len(calls) == 1
         assert calls[0]["timeout"] == cm._GIT_TIMEOUT * 2
 
+    def test_cold_budget_derives_from_snapshot_guard(self):
+        """The cold default is derived from the snapshot guard, not pinned:
+        at the ``_MAX_FILES`` ceiling the budget covers the measured
+        worst-case cold-staging rate (~20 ms per file), so the guard and
+        the budget cannot silently drift apart (review on #127857)."""
+        import tools.checkpoint_manager as cm
+
+        assert cm._COLD_ADD_TIMEOUT >= cm._MAX_FILES * 20 // 1000
+        assert cm._COLD_ADD_TIMEOUT > cm._GIT_TIMEOUT * 2
+
     def test_cold_budget_defaults_decouple_from_hot_path(self):
         """The default cold budget is dedicated and strictly beyond the old
         hot-derived shapes, so folding it back into `_GIT_TIMEOUT` fails."""

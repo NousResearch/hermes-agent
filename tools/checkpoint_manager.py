@@ -159,6 +159,9 @@ DEFAULT_EXCLUDES = [
 # Git subprocess timeout (seconds).
 _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 
+# Max files to snapshot — skip huge directories to avoid slowdowns.
+_MAX_FILES = 50_000
+
 # Budget for the no-ref cold-start staging add (issue #127732).  The very
 # first checkpoint of a project has no ref, so ``git add -A`` must index
 # the entire tree from zero — work that can dwarf any incremental stage.
@@ -166,12 +169,17 @@ _GIT_TIMEOUT: int = max(10, min(60, env_int("HERMES_CHECKPOINT_TIMEOUT", 30)))
 # a big tree completes instead of being killed by the warm-path cap (which
 # would leave the first checkpoint unreachable forever).  Distinct env and
 # constant on purpose: the hot staging path must not inherit this lift.
+#
+# The default is derived from the snapshot guard above so the two cannot
+# drift: at the ``_MAX_FILES`` ceiling the budget covers the measured
+# worst-case cold-staging rate (~20 ms per file, review on #127857;
+# 50_000 * 20ms = 1000 s).  An explicit env value always wins.
 _COLD_ADD_TIMEOUT: int = max(
-    60, env_int("HERMES_CHECKPOINT_COLD_ADD_TIMEOUT", 600),
+    60, env_int(
+        "HERMES_CHECKPOINT_COLD_ADD_TIMEOUT",
+        _MAX_FILES * 20 // 1000,
+    ),
 )
-
-# Max files to snapshot — skip huge directories to avoid slowdowns.
-_MAX_FILES = 50_000
 
 # Valid git commit hash pattern: 4–40 hex chars (short or full SHA-1/SHA-256).
 _COMMIT_HASH_RE = re.compile(r'^[0-9a-fA-F]{4,64}$')

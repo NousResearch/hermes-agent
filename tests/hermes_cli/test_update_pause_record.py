@@ -465,3 +465,39 @@ def test_our_own_pid_is_ours_only_at_our_exact_creation_time():
 
 def test_a_record_naming_our_pid_without_a_creation_time_is_a_previous_incarnation():
     assert not pause_record.identity_is_live({"pid": os.getpid(), "ct": None})
+
+
+# --- R9: the retired list never fails open ------------------------------------------------------
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads a mode-000 file")
+def test_an_unreadable_retired_list_claims_nothing_and_forgets_nothing(tmp_path, monkeypatch):
+    """Mode 000 on the real list stands in for a Windows read refusal (a sharing violation, an AV
+    scanner): which obligations are complete is then unknown, never "none"."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    src = pause_record.record_path()
+    retired = src.with_suffix(".retired")
+    done = "a" * 32  # completed earlier; Windows kept its record file
+    pause_record.write({"pause_id": done, "resume_needed": True, "profiles": {"default": 4242}},
+                       owner=pause_record.UNOWNED)
+    pause_record._atomic_write(retired, {"schema": 1, "ids": [done]})
+    assert pause_record.orphans() == []
+    other = src.with_name(f"{src.name}.999.deadbeef.claim")  # an obligation completing meanwhile
+    pause_record._atomic_write(other, {"install_root": str(REPO), "claimer": pause_record.UNOWNED,
+                                       "token": {"pause_id": "b" * 32}})
+
+    def owed() -> list[str]:
+        try:
+            return [body["token"]["pause_id"] for _src, body in pause_record.orphans()]
+        except OSError:  # unknown: recovery reports it and claims nothing
+            return []
+
+    retired.chmod(0)
+    try:
+        assert done not in owed(), "a completed obligation is owed again while its list is unreadable"
+        assert pause_record.claim(src) is None, "a completed obligation was claimed again"
+        with pytest.raises(OSError), pause_record._mutex():
+            pause_record._retire(src, [(other, json.loads(other.read_text(encoding="utf-8-sig")))])
+        assert other.exists(), "a retirement that could not be recorded deleted its carrier"
+    finally:
+        retired.chmod(0o644)
+    assert json.loads(retired.read_text(encoding="utf-8-sig"))["ids"] == [done], "the history was rewritten"
+    assert done not in owed()

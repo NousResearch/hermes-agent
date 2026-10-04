@@ -27,6 +27,8 @@ whose id another file carries as a copy, never as a second obligation, and the n
 retires it. Completing an obligation first adds its ids to ``<record stem>.retired`` (atomic), then
 unlinks its files: an unlink Windows refuses (a reader holding the file without
 FILE_SHARE_DELETE) leaves a copy that is redundant by id, never an obligation that executes again.
+The list is read only under the mutex, and only its absence means "nothing retired": a list that
+cannot be read means unknown, so nothing is claimed and the list is never rewritten from that read.
 """
 
 from __future__ import annotations
@@ -92,8 +94,12 @@ class RecordBusy(OSError):
     """Another process held the record mutex past the bounded wait."""
 
 
+class RetiredUnknown(OSError):
+    """The retired-id list exists but cannot be read: which obligations are complete is unknown."""
+
+
 @contextmanager
-def _mutex():
+def _mutex(wait_s: float = _MUTEX_WAIT_S):
     """Exclusive kernel lock on the record directory's sidecar (A7). Re-entrant in-process."""
     global _mutex_depth
     if _mutex_depth:
@@ -108,7 +114,7 @@ def _mutex():
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
     try:
-        deadline = time.monotonic() + _MUTEX_WAIT_S
+        deadline = time.monotonic() + wait_s
         while not update_lock._try_lock(fd):
             if time.monotonic() > deadline:
                 raise RecordBusy(f"{path} is held by another process")
@@ -323,21 +329,30 @@ def _retired_path(path: Path) -> Path:
 
 
 def _retired(path: Path) -> set[str]:
+    """The completed obligation ids (call under the mutex). Only an absent list is empty: one that
+    exists but cannot be read raises :class:`RetiredUnknown`, so a completed obligation is never
+    claimed again and the list is never rewritten from a read that failed."""
+    target = _retired_path(path)
     try:
-        ids = json.loads(_retired_path(path).read_text(encoding="utf-8-sig")).get("ids")
-    except (OSError, ValueError, AttributeError):
+        ids = json.loads(target.read_text(encoding="utf-8-sig")).get("ids")
+    except FileNotFoundError:
         return set()
-    return {str(i) for i in ids} if isinstance(ids, list) else set()
+    except (OSError, ValueError, AttributeError) as exc:
+        raise RetiredUnknown(f"cannot read the retired paused-gateway list {target}: {exc}") from exc
+    if not isinstance(ids, list):
+        raise RetiredUnknown(f"the retired paused-gateway list {target} is malformed")
+    return {str(i) for i in ids}
 
 
 def _retire(path: Path, carriers: list[tuple[Path, dict]]) -> None:
     """Complete the obligations *carriers* hold (call under the mutex): their ids (and every id
-    they absorbed) go on the durable retired list FIRST; a failed write raises and deletes
+    they absorbed) go on the durable retired list FIRST; a failed read or write raises and deletes
     nothing. Then the files go; one that cannot be deleted is a redundant copy from here on."""
     ids = {str(i) for _src, body in carriers
            for i in [body["token"].get("pause_id"), *(body["token"].get("absorbed") or [])] if i}
-    if not ids <= _retired(path):
-        _atomic_write(_retired_path(path), {"schema": 1, "ids": sorted(_retired(path) | ids)})
+    retired = _retired(path)
+    if not ids <= retired:
+        _atomic_write(_retired_path(path), {"schema": 1, "ids": sorted(retired | ids)})
     for src, _body in carriers:
         with suppress(OSError):
             src.unlink()
@@ -392,9 +407,13 @@ def _survey(path: Path) -> tuple[list[tuple[Path, dict]], set[Path], set[Path]]:
 
 def orphans(path: Path | None = None) -> list[tuple[Path, dict]]:
     """``(file, body)`` for every obligation of this checkout whose holder is dead — one file per
-    obligation id; empty while another update is live (it adopts them itself)."""
+    obligation id; empty while another update is live (it adopts them itself). Surveyed under the
+    mutex (a mutator replaces the retired list meanwhile); raises when the list cannot be read."""
     path = path or record_path()
-    found, held, redundant = _survey(path)
+    if not path.exists() and not _claims(path):
+        return []
+    with _mutex():
+        found, held, redundant = _survey(path)
     found = [(src, body) for src, body in found if src not in held and src not in redundant]
     if not found or _live_update_elsewhere():
         return []

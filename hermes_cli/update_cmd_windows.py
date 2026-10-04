@@ -942,7 +942,8 @@ def _pause_windows_gateways_for_update() -> dict | None:
         import gateway.status  # noqa: F401 — fail before the first stop, not half-way through it
         from hermes_cli.gateway import _capture_gateway_argv
     from hermes_cli import update_pause_record as pause_record
-    adopted, claims = pause_record.adopt_orphans()
+    with _abort_on_error("Could not read the gateways an earlier update paused"):
+        adopted, claims = pause_record.adopt_orphans()
     profile_processes, service_gateways, service_gateway_pids, running_pids = _discover_windows_gateways()
     if not running_pids:
         return _cold_start_pause_token(adopted, claims)

@@ -134,8 +134,8 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
 
         assert len(events) == 2
         first, second = events
-        expected_text = {"mention": "😀 2", "approval": "ok", "prefixed_command": "/status",
-                         "prefixed_addressed_command": "/model@hermes_bot gpt-5",
+        expected_text = {"command": "/new", "mention": "😀 2", "approval": "ok", "prefixed_command": "/status",
+                         "prefixed_addressed_command": "/model gpt-5",
                          "prefixed_command_argument": "/btw did @hermes_bot answer Alice?\nKeep it short  ",
                          "repeated_prefix_command": "/btw did @hermes_bot answer? ",
                          "ordinary_text_prefix": "explain /model gpt-5", "punctuated_prefix": "! /model gpt-5",
@@ -181,10 +181,11 @@ def _command_entities(text):
     (" \t/personality@hermes_bot\tconcise", "personality", "concise"),
     ("/btw did @hermes_bot already answer Alice?\nKeep it short", "btw", "did @hermes_bot already answer Alice?\nKeep it short"),
     ("/steer@hermes_bot ask @ops_bot what @hermes_bot missed", "steer", "ask @ops_bot what @hermes_bot missed"),
+    ("/kanban@hermes_bot list", "kanban", "list"),
     ("/new@hermes_bot", "new", ""),
     ("/help\n", "help", ""),
 ])
-def test_command_text_reaches_real_event_parser_unchanged(chat, text, command, args):
+def test_command_arguments_reach_real_event_parser_intact(chat, text, command, args):
     async def run():
         adapter = _make_adapter(
             require_mention=False, observe_unmentioned_group_messages=chat == "observed_group",
@@ -203,7 +204,8 @@ def test_command_text_reaches_real_event_parser_unchanged(chat, text, command, a
         assert event.is_command()
         assert event.get_command() == command
         assert event.get_command_args() == args
-        assert event.text == text
+        # Handlers that re-read the text (/kanban) see the command as a DM carries it.
+        assert event.text.split(maxsplit=1)[0] == f"/{command}"
         assert event.source.user_id == "111"
 
     asyncio.run(run())
@@ -237,6 +239,6 @@ def test_trigger_paths_preserve_commands_without_widening_admission(carrier, oth
         assert len(events) == 1
         assert events[0].get_command() == "queue"
         assert events[0].get_command_args() == "summarise what @hermes_bot missed"
-        assert events[0].text == text
+        assert events[0].text == "/queue\nsummarise what @hermes_bot missed"
 
     asyncio.run(run())

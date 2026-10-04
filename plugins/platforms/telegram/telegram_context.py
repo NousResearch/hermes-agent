@@ -30,20 +30,27 @@ def mentions_other_participants(adapter: "TelegramAdapter", message: "Message") 
     return False
 
 
+def _without_own_command_suffix(own: str, text: str) -> str:
+    """``/cmd@own args`` → ``/cmd args``, as the command reads in a DM: handlers that re-read the text
+    (``/kanban``) never see the menu's suffix. The arguments keep every byte."""
+    if not own:
+        return text
+    return re.sub(rf"(?i)^(\s*/[^\s@]+)@{re.escape(own)}\b[,:\-]*(?=\s|$)", r"\1", text, count=1)
+
+
 def group_trigger_text(adapter: "TelegramAdapter", message: "Message", text: Optional[str]) -> Optional[str]:
     """Strip our own handle only when we are the sole addressee. With other participants named,
     ``@research_bot , @ops_bot are you both listening?`` must not reach us as ``, @ops_bot …``."""
-    # MessageEvent parses command suffixes and arguments; their mentions must stay intact.
+    own = adapter._current_bot_username()
+    # MessageEvent parses command arguments; their separator and mentions must stay intact.
     if (text or "").lstrip().startswith("/"):
-        return text
+        return _without_own_command_suffix(own, text)
     if adapter._is_group_chat(message) and mentions_other_participants(adapter, message):
         return text
-    # A supported mention-prefixed command loses only its leading address(es),
-    # not its suffix or argument bytes.
-    own = adapter._current_bot_username()
+    # A supported mention-prefixed command loses only its leading address(es), not its argument bytes.
     prefix = re.match(rf"(?i)^\s*(?:@{re.escape(own)}\b[,:\-]*\s*)+(?=/)", text or "") if own else None
     if prefix:
-        return text[prefix.end():]
+        return _without_own_command_suffix(own, text[prefix.end():])
     return adapter._clean_bot_trigger_text(text)
 
 

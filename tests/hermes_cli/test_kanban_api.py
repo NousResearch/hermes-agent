@@ -181,7 +181,8 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
     log_path.write_text(
         "working in /srv/private/worktree\nAuthorization: Bearer secret-value-1234567890\n"
         "retrying with Bearer bare-opaque-token-42\n"
-        "GET https://example.test?access_token=query-token-42\n",
+        "GET https://example.test?access_token=query-token-42\n"
+        "cat /secret.txt from /workspace\n",
         encoding="utf-8",
     )
     log_response = client.get(f"/api/plugins/kanban/v1/tasks/{parent_id}/log")
@@ -207,6 +208,7 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
 
     assert client.post(f"/api/plugins/kanban/v1/tasks/{child_id}/unblock").status_code == 200
     assert client.post(f"/api/plugins/kanban/v1/tasks/{child_id}/archive").status_code == 200
+    assert "/secret.txt" not in log_body["excerpt"] and "/workspace" not in log_body["excerpt"]
 
 
 def test_operator_routes_keep_their_paths_beside_v1() -> None:
@@ -694,3 +696,17 @@ def test_transcript_is_off_by_default(client: TestClient) -> None:
     assert client.get(f"/api/plugins/kanban/v1/tasks/{task_id}/transcript").status_code == 404
     caps = client.get("/api/plugins/kanban/v1/capabilities").json()
     assert "transcript" not in caps["observability"]
+
+
+def test_log_tail_never_starts_mid_line(client: TestClient) -> None:
+    """A tail window opening inside a line hands the redactor a credential without the
+    ``Bearer`` prefix it keys on."""
+    task_id = _create(client, idempotency_key="log-tail")["task"]["id"]
+    log_path = kanban_db.worker_log_path(task_id, board="default")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("Authorization: Bearer opaque-credential-0123456789", encoding="utf-8")
+    for tail_bytes in (10, 30, 40):
+        body = client.get(
+            f"/api/plugins/kanban/v1/tasks/{task_id}/log", params={"tail_bytes": tail_bytes}
+        ).json()
+        assert "0123456789" not in body["excerpt"], tail_bytes

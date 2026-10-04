@@ -35,7 +35,7 @@ _TRANSCRIPT_TEXT_CAP = 20_000
 _TRANSCRIPT_TOOL_CAP = 4_000
 _MAX_LOG_TAIL = 32_768
 _ABSOLUTE_PATH_RE = re.compile(
-    r"(?<![\w:])(?:[A-Za-z]:[\\/](?:[^\s\\/]+[\\/])*[^\s\\/]*|/(?:[^/\s]+/)+[^/\s]*)"
+    r"(?<![\w:])(?:[A-Za-z]:[\\/](?:[^\s\\/]+[\\/])*[^\s\\/]*|/[^/\s]+(?:/[^/\s]*)*)"
 )
 # Match an ``Authorization: Bearer/Basic <token>`` header anywhere in a line,
 # not just at its start — the token can appear mid-line inside a dumped curl
@@ -626,7 +626,7 @@ def task_log(
     slug = _resolve_board_slug(board)
     with _connection(slug) as conn:
         _require_task(conn, task_id)
-    content = kanban_db.read_worker_log(task_id, tail_bytes=tail_bytes, board=slug)
+    content = kanban_db.read_worker_log(task_id, tail_bytes=tail_bytes, board=slug, whole_lines=True)
     size = 0
     log_path = kanban_db.worker_log_path(task_id, board=slug)
     try:

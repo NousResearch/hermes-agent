@@ -4467,7 +4467,10 @@ def worker_log_path(task_id: str, *, board: Optional[str] = None) -> Path:
 def read_worker_log(
     task_id: str, *, tail_bytes: Optional[int] = None, board: Optional[str] = None,
 ) -> Optional[str]:
-    """Worker log text (last ``tail_bytes`` when set); None when the file is missing."""
+    whole_lines: bool = False,
+    """Worker log text (last ``tail_bytes`` when set); None when the file is missing.
+    ``whole_lines``: never start mid-line, even when that leaves nothing — for readers that
+    redact, since a cut line can lose the context (``Bearer ``) a secret is recognised by."""
     path = worker_log_path(task_id, board=board)
     if not path.exists():
         return None
@@ -4481,7 +4484,7 @@ def read_worker_log(
                 # Skip the partial first line unless the window has no newline
                 # at all (readline() would eat everything).
                 probe = f.tell()
-                if not f.readline().endswith(b"\n") and f.tell() >= size:
+                if not f.readline().endswith(b"\n") and f.tell() >= size and not whole_lines:
                     f.seek(probe)
             return f.read().decode("utf-8", errors="replace")
     except OSError:

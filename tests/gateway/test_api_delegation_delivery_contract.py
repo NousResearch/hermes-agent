@@ -140,3 +140,28 @@ async def test_caller_history_folds_each_delivery_exactly_once(tmp_path):
         assert contents.count("RESULT-A") == 1 and contents.count("RESULT-B") == 1
     finally:
         db.close()
+
+
+@pytest.mark.asyncio
+async def test_caller_history_fold_and_reservation_deliver_single_copy(tmp_path):
+    from gateway.platforms.api_server_runs import _fold_caller_history_deliveries
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("s1", source="api_server")
+        adapter = SimpleNamespace(_ensure_session_db=lambda: db)
+        await persist_delegation_delivery(adapter, text="RESULT-R", session_id="s1",
+                                          evt={"type": "async_delegation", "delegation_id": "r"})
+        lease = db.reserve_caller_history_deliveries("s1", "webui", ttl_seconds=60)
+        caller = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "ok"}]
+        run = _launch(list(caller))
+        await _fold_caller_history_deliveries(_fold_adapter(db), run)
+        assert run.conversation_history == caller  # reserved for the wake turn, not folded
+        assert db.commit_caller_history_deliveries(lease[0]["reservation_token"], "webui") == 1
+        await persist_delegation_delivery(adapter, text="RESULT-F", session_id="s1",
+                                          evt={"type": "async_delegation", "delegation_id": "f"})
+        run = _launch(list(caller))
+        await _fold_caller_history_deliveries(_fold_adapter(db), run)
+        assert sum("RESULT-F" in m["content"] for m in run.conversation_history) == 1
+        assert db.reserve_caller_history_deliveries("s1", "webui", ttl_seconds=60) == []
+    finally:
+        db.close()

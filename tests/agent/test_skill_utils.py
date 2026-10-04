@@ -185,6 +185,41 @@ def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     assert is_excluded_skill_path(package / "SKILL.md") is True
 
 
+def test_iter_skill_index_files_skips_git_checkouts_and_duplicate_symlinks(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / ".git").mkdir()
+    (checkout / "SKILL.md").write_text("---\nname: unreviewed\n---\n", encoding="utf-8")
+    approved = tmp_path / "approved"
+    approved.mkdir()
+    (approved / "SKILL.md").write_text("---\nname: approved\n---\n", encoding="utf-8")
+    (tmp_path / "alias").symlink_to(approved, target_is_directory=True)
+
+    assert list(iter_skill_index_files(tmp_path, "SKILL.md")) == [tmp_path / "alias" / "SKILL.md"]
+
+
+def test_iter_skill_index_files_preserves_same_leaf_across_roots(tmp_path):
+    first = tmp_path / "first" / "same"
+    second = tmp_path / "second" / "same"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    (first / "SKILL.md").write_text("first", encoding="utf-8")
+    (second / "SKILL.md").write_text("second", encoding="utf-8")
+
+    assert list(iter_skill_index_files(tmp_path, "SKILL.md")) == [
+        first / "SKILL.md",
+        second / "SKILL.md",
+    ]
+
+
+def test_iter_skill_index_files_keeps_root_skill_in_git_checkout(tmp_path):
+    (tmp_path / ".git").mkdir()
+    skill = tmp_path / "SKILL.md"
+    skill.write_text("---\nname: checkout-root\n---\n", encoding="utf-8")
+
+    assert list(iter_skill_index_files(tmp_path, "SKILL.md")) == [skill]
+
+
 def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     """A category named scripts/templates/assets/references is still valid."""
     scripts_skill = tmp_path / "scripts" / "bash-helper"

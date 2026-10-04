@@ -456,6 +456,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
+| `before_turn_end` | Directive/control | Before candidate persistence/delivery; first valid block requests same-loop rework, at most once per turn. Python only, fail-open on error/timeout. Registration defers text streaming. | `final_response`, `session_id`, `task_id`, `turn_id`, `platform`, `user_message`, `messages`, `source_identity`, `already_blocked`, `can_continue` | Full candidate, original user text, turn transcript (including tool arguments/results), and gateway source routing identifiers. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
 | `pre_api_request` | Observer | Per provider attempt, immediately before the request; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | High sensitivity: legacy `user_message`, `conversation_history`, and `request_messages` are intentionally raw; prefer sanitized `request`. |
 | `post_api_request` | Observer | After normalized provider success; return ignored. | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | Sanitized `response` is available, but raw normalized `assistant_message` may contain model/user content; `usage` is accounting data. |
@@ -816,6 +817,41 @@ def register(ctx):
 ```
 
 ---
+
+### `before_turn_end`
+
+Python general-plugin hook, shared by CLI and gateway agents. Register with
+`ctx.register_hook("before_turn_end", callback)`. Shell hooks are not supported.
+It receives keyword fields `final_response`, `session_id`, `task_id`, `turn_id`,
+`platform`, `user_message`, `messages`, `source_identity`, `already_blocked`, and
+`can_continue`. `messages` is the current in-memory turn transcript. Gateway turns
+also provide `source_identity` with `platform`, `channel_id`, raw inbound
+`request_id`, source timestamp, and the internal-event flag; non-gateway callers
+may provide `None`. Treat both fields as sensitive and retain only bounded,
+purpose-specific evidence.
+
+Return `None` to deliver, or `{"action": "block", "message": "Exact mismatch and repair request"}`
+to continue the same conversation loop before final-answer persistence/delivery.
+The first valid block wins. At most one block is honored per turn, and only while
+iteration budget remains. The rejected answer and synthetic repair request are
+available to the next model iteration but excluded from persisted/returned history.
+Existing stop/lifecycle gates still run; this hook cannot bypass approval controls.
+Interrupts and controlled tool halts are not gated. Final budget/error summaries
+are observable with `can_continue=False`, never a fresh continuation budget.
+Exceptions and native hook timeouts fail open.
+
+Registration defers assistant text streaming, TTS text callbacks, interim text,
+and text-bearing stream observer events until normal final delivery. Tool progress
+and approval channels remain independent. This applies while the hook is registered,
+even if a plugin internally returns `None`; unload the plugin and restart the
+session to restore incremental text streaming. For gated candidates,
+`transform_llm_output` runs before this hook and may run once per candidate rather
+than once per turn; `post_llm_call` remains the final-turn observer. Do not use an
+output transform for irreversible side effects.
+
+Generic hook limits do not replace a plugin's persistent chain-level retry limits,
+reason deduplication, evidence deadlines, or escalation policy; policy consumers
+belong in the native user-plugin directory, not in core.
 
 ### `pre_verify`
 

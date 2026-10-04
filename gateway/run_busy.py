@@ -1055,7 +1055,7 @@ class GatewayBusySessionMixin:
                 reply_to_author_name=event.reply_to_author_name,
                 reply_to_is_own_message=event.reply_to_is_own_message, auto_skill=event.auto_skill,
                 channel_prompt=event.channel_prompt, channel_context=event.channel_context,
-                internal=event.internal, timestamp=event.timestamp,
+                internal=event.internal, metadata=dict(event.metadata or {}), timestamp=event.timestamp,
             ), adapter)
         depth = self._queue_depth(quick_key, adapter=adapter)
         return t("gateway.queue.queued") + (t("gateway.queue.queued_depth", depth=depth) if depth > 1 else "")
@@ -1077,7 +1077,7 @@ class GatewayBusySessionMixin:
                 self._enqueue_fifo(quick_key, MessageEvent(
                     text=steer_text, message_type=MessageType.TEXT, source=event.source,
                     message_id=event.message_id, channel_prompt=event.channel_prompt,
-                    channel_context=event.channel_context,
+                    channel_context=event.channel_context, metadata=dict(event.metadata or {}),
                 ), adapter)
             return reply
 

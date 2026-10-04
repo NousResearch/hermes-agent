@@ -1694,6 +1694,15 @@ class TurnRunner:
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
+            platform = getattr(ctx.source, "platform", "")
+            agent._current_source_identity = {
+                "platform": getattr(platform, "value", platform) or "",
+                "channel_id": str(getattr(ctx.source, "chat_id", "") or ""),
+                "request_id": str(ctx.inbound_message_id or ""),
+                "timestamp": ctx.persist_user_timestamp,
+                "internal": bool(ctx.inbound_internal),
+                "source_state": ctx.inbound_source_state,
+            }
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
             if _accepts_keyword(agent.run_conversation, "turn_author"):

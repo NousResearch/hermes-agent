@@ -84,6 +84,7 @@ class GatewayGoalCommandsMixin:
                     source=event.source,
                     message_id=event.message_id if kickoff else None,
                     channel_prompt=event.channel_prompt if kickoff else None,
+                    metadata=dict(event.metadata or {}) if kickoff else {},
                 )
                 self._enqueue_fifo(quick_key, turn, adapter)
         except Exception as exc:

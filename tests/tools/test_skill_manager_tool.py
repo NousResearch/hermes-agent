@@ -369,8 +369,65 @@ word word
         assert "escapes" in result["error"].lower()
         assert outside_file.read_text() == "old text here"
 
+    def test_patch_empty_file_path_rejected_instead_of_defaulting_to_skill_md(self, tmp_path):
+        """file_path='' is a caller mistake and must fail, not silently patch SKILL.md (#132818)."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            skill_md_before = (tmp_path / "my-skill" / "SKILL.md").read_text()
 
-class TestSkillMutationLock:
+            ref_dir = tmp_path / "my-skill" / "references"
+            ref_dir.mkdir(parents=True, exist_ok=True)
+            ref_file = ref_dir / "api.md"
+            ref_file.write_text("ANCHOR = 1.")
+
+            result = _patch_skill("my-skill", "Do the thing.", "Do the new thing.", file_path="")
+
+        assert result["success"] is False
+        assert "file_path" in result["error"].lower()
+        # SKILL.md must be byte-identical — the patch must not land there
+        assert (tmp_path / "my-skill" / "SKILL.md").read_text() == skill_md_before
+        # The supporting file must be byte-identical
+        assert ref_file.read_text() == "ANCHOR = 1."
+
+    def test_patch_whitespace_only_file_path_still_rejected(self, tmp_path):
+        """file_path='   ' was already rejected; guard must keep that behaviour (#132818)."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill("my-skill", "Do the thing.", "Do the new thing.", file_path="   ")
+
+        assert result["success"] is False
+
+    def test_patch_default_target_is_skill_md_when_file_path_omitted(self, tmp_path):
+        """Omitting file_path (None) keeps the documented default: patch SKILL.md (#132818)."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill("my-skill", "Do the thing.", "Do the new thing.")
+
+        assert result["success"] is True
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "Do the new thing." in content
+
+    def test_patch_valid_supporting_file_path_writes_reference_file(self, tmp_path):
+        """A valid non-empty file_path writes the supporting file, not SKILL.md (#132818)."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            skill_md_before = (tmp_path / "my-skill" / "SKILL.md").read_text()
+
+            ref_dir = tmp_path / "my-skill" / "references"
+            ref_dir.mkdir(parents=True, exist_ok=True)
+            ref_file = ref_dir / "guide.md"
+            ref_file.write_text("old content here")
+
+            result = _patch_skill("my-skill", "old content", "new content",
+                                  file_path="references/guide.md")
+
+        assert result["success"] is True
+        assert "new content" in ref_file.read_text()
+        # SKILL.md must be untouched
+        assert (tmp_path / "my-skill" / "SKILL.md").read_text() == skill_md_before
+
+
+
     def test_concurrent_patches_keep_both_updates(self, tmp_path):
         """Two writers patching the same SKILL.md serialize on the per-skill lock (#111578):
         the second cannot read stale content while the first is between read and write."""

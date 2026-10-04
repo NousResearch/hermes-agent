@@ -89,6 +89,27 @@ def _validated_runtime_venv(env: dict) -> Path | None:
         return None
 
 
+def _is_dependency_site_packages(path: Path, installs: Path) -> bool:
+    """Prove ownership under the PM install store, never by basename alone.
+
+    Resolve links so a store alias pointing to user libraries is not claimed.
+    Keep the original spelling in the snapshot for exact child-path matching.
+    """
+    if path.name not in ("site-packages", "dist-packages"):
+        return False
+    try:
+        root = os.path.normcase(str(installs.resolve()))
+        candidate = os.path.normcase(str(path.resolve()))
+        return candidate != root and os.path.commonpath([root, candidate]) == root
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _capture_startup_site_packages(pythonpath: str, installs: Path) -> tuple[Path, ...]:
+    return tuple(Path(entry) for entry in pythonpath.split(os.pathsep)
+                 if entry and _is_dependency_site_packages(Path(entry), installs))
+
+
 def _get_hermes_site_packages(env: dict) -> list[Path]:
     """Exact site-packages dirs owned by the Hermes runtime (cached):
     ``site.getsitepackages()`` with a ``sys.prefix`` fallback, plus a validated
@@ -109,7 +130,8 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
         local._hermes_site_packages = list(result)
     result = list(local._hermes_site_packages)
     for startup_path in local._startup_pythonpath_site_packages:
-        if not any(_same_path(startup_path, existing) for existing in result):
+        if (_is_dependency_site_packages(startup_path, local._startup_dependency_installs_root)
+                and not any(_same_path(startup_path, existing) for existing in result)):
             result.append(startup_path)
 
     runtime_venv = _validated_runtime_venv(env)

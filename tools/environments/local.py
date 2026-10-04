@@ -753,12 +753,14 @@ _hermes_repo_root_aliases: tuple[Path, ...] = _build_hermes_repo_root_aliases(
 _in_venv: bool = (getattr(sys, "base_prefix", sys.prefix) != sys.prefix
                   or hasattr(sys, "real_prefix"))  # real_prefix: virtualenv<20
 _hermes_site_packages: list[Path] | None = None  # lazily cached by local_pythonpath
-# Preserve the generation selected when this backend started.  The committed
-# selection can advance while the process remains alive, but its PYTHONPATH is
-# still the backend's own dependency environment and must be stripped from children.
-_startup_pythonpath_site_packages: tuple[Path, ...] = tuple(
-    Path(entry) for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep)
-    if entry and Path(entry).name in ("site-packages", "dist-packages")
+# Preserve PM-owned dependency paths from this process's startup home even if
+# the selected generation advances. User PYTHONPATH entries are not provenance.
+from pm.environments import installs_root as _dependency_installs_root
+from tools.environments.local_pythonpath import _capture_startup_site_packages
+
+_startup_dependency_installs_root = _dependency_installs_root()
+_startup_pythonpath_site_packages = _capture_startup_site_packages(
+    os.environ.get("PYTHONPATH", ""), _startup_dependency_installs_root
 )
 
 

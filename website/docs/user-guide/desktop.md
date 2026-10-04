@@ -198,6 +198,13 @@ Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md)
 
 On a local Wayland session (`XDG_SESSION_TYPE=wayland`, or `WAYLAND_DISPLAY` set) Hermes launches with `--ozone-platform=wayland` so Electron does not fall back to XWayland. The platform has to be on the process command line before application JavaScript loads. An explicit `--ozone-platform`, `desktop.ozone_platform_hint: x11`, or an ozone platform in `desktop.electron_flags` still wins. Drag, click-through, and resize work on the native Wayland path.
 
+One exception: with the NVIDIA proprietary kernel module loaded (detected via `/proc/driver/nvidia/version`), Hermes stays on XWayland (`--ozone-platform=x11`) even on a Wayland session — the bundled Chromium's GPU process dies on the Wayland ozone backend with that driver (#126013), while X11 launches fine. The hint stays on its `auto` default the whole time, so the only visible symptom is usually the dock icon reverting to the generic cog, because the window app id that resolves it is a native-Wayland thing. To force native Wayland despite the default:
+
+```yaml
+desktop:
+  ozone_platform_hint: wayland
+```
+
 On **Hyprland** (including Omarchy) the HUD is floated and pinned through the compositor's IPC after it maps — otherwise Hyprland tiles it like any other window, `always-on-top` is ignored, and compositor drag does nothing. No extra window rule is required.
 
 A few compositors (notably COSMIC) ignore `always-on-top` for native Wayland windows. To restore pinning there, run the app under XWayland:

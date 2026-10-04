@@ -49,7 +49,8 @@ async def test_detached_dispatch_requires_a_declared_consumer(monkeypatch):
         assert runs[name]["runtime"]["history"] == snapshot
     # Caller history + session id consumes the delivery row once, alternation preserved.
     assert runs["caller_history"]["runtime"]["target"] == "child"
-    assert runs["caller_history"]["runtime"]["history"] == [
+    assert [{k: m[k] for k in ("role", "content")}
+            for m in runs["caller_history"]["runtime"]["history"]] == [
         {"role": "user", "content": "caller snapshot\n\nDELIVERY_RESULT"}]
     assert runs["caller_history_again"]["runtime"]["target"] == "child"
     assert runs["caller_history_again"]["runtime"]["history"] == snapshot

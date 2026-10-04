@@ -34,8 +34,11 @@ Layout of the argv (later mounts overlay earlier ones):
    hidden as a whole, and so is the default HOME/.hermes when HERMES_HOME
    points elsewhere, so a profile's sandbox cannot read the default
    home's credentials
-8. the Hermes scratch dir (TMPDIR), writable with the cwd, and the staged
-   data roots of the cache registry, read-only, on top of that overlay
+8. the Hermes scratch dir (TMPDIR), writable with the cwd, with the
+   sockets and the direct-message payloads of other Hermes components
+   masked inside it, and the staged data roots of the cache registry,
+   read-only, on top of that overlay; then once more the overlay of each
+   hidden path that lies under one of those roots
 9. under terminal.home_mode=profile, HERMES_HOME/home read-write on top of
    the overlay (it is the subprocess HOME then)
 10. the per-environment state dir read-write at the same path; between
@@ -87,6 +90,7 @@ import os
 import resource  # windows-footgun: ok — bubblewrap is a Linux-only backend
 import shutil
 import signal
+import stat
 import subprocess
 import time
 import uuid
@@ -258,6 +262,64 @@ def load_bubblewrap_config(environ: Mapping[str, str] | None = None) -> Bubblewr
         home_allow=_parse_string_list(ENV_HOME_ALLOW, env.get(ENV_HOME_ALLOW, "")),
         hide=_parse_string_list(ENV_HIDE, env.get(ENV_HIDE, "")),
     )
+
+
+# Entries of the scratch dir that hold direct-message payloads of the
+# messaging gateway, by the start of their name.
+SCRATCH_PRIVATE_PREFIXES: tuple[str, ...] = ("hermes-dm-", "hermes-relay-dm-")
+
+
+def scratch_mask(scratch_dir: str | None, empty_file: str) -> list[tuple[str, ...]]:
+    """Mount directives that hide what other Hermes components keep in the scratch dir.
+
+    The scratch dir is TMPDIR of every Hermes process, so beside a
+    command's own temporary files it holds the control sockets of the
+    browser tool and the code kernel, and the direct-message payloads of
+    the gateway. A bind does not stop connect() on a socket, read-only or
+    not. So, on top of the bind, each unix socket at the top level and
+    one level down gets the empty file bound over it (connect then fails
+    with ECONNREFUSED), and each entry whose name starts with one of
+    SCRATCH_PRIVATE_PREFIXES gets a tmpfs or the empty file. Sockets are
+    masked one by one, so a command's own files beside a stale socket
+    stay visible.
+
+    The listing is read at each spawn: what exists then is masked. A
+    socket made while a command runs is not masked for that command. A
+    symlink is skipped, since a mount on it would follow it. A directory
+    that cannot be listed gives no mask; the spawn goes on.
+    """
+    if not scratch_dir:
+        return []
+
+    def entries(directory: str) -> list[os.DirEntry]:
+        try:
+            with os.scandir(directory) as found:
+                return sorted(found, key=lambda entry: entry.name)
+        except OSError:
+            return []
+
+    def is_socket(entry: os.DirEntry) -> bool:
+        try:
+            return stat.S_ISSOCK(entry.stat(follow_symlinks=False).st_mode)
+        except OSError:
+            return False
+
+    masks: list[tuple[str, ...]] = []
+    for entry in entries(scratch_dir):
+        if entry.is_symlink():
+            continue
+        is_dir = entry.is_dir(follow_symlinks=False)
+        if entry.name.startswith(SCRATCH_PRIVATE_PREFIXES):
+            masks.append(("--tmpfs", entry.path) if is_dir else ("--ro-bind", empty_file, entry.path))
+        elif is_socket(entry):
+            masks.append(("--ro-bind", empty_file, entry.path))
+        elif is_dir:
+            masks += [
+                ("--ro-bind", empty_file, child.path)
+                for child in entries(entry.path)
+                if not child.is_symlink() and is_socket(child)
+            ]
+    return masks
 
 
 def staged_data_roots() -> tuple[str, ...]:
@@ -696,6 +758,7 @@ def build_bwrap_args(
     # a write then fails where the command can see it.
     if scratch_dir:
         late.append(("--bind-try" if profile.writable_cwd else "--ro-bind-try", scratch_dir, scratch_dir))
+        late += scratch_mask(scratch_dir, empty_file_path(state_dir))
     # Attachments, cached documents and the other staged data live under
     # HERMES_HOME, and Hermes hands the model their host paths. Read-only:
     # a command opens them, it does not produce them. The -try form lets a

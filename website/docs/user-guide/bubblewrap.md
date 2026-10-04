@@ -331,13 +331,13 @@ detached process could not outlive it.
   with a non-dot name (`~/dotfiles`) is visible as a whole.
 - The scratch directory is shared. Hermes points `TMPDIR` of all its own
   processes at `HERMES_HOME/cache/scratch`, and the sandbox gets that
-  whole directory. Besides a command's own temporary files it holds the
-  direct-message payload files of the messaging gateway
-  (`hermes-dm-<uid>/`), the control sockets of the browser tool
-  (`agent-browser-<session>/`) and of the code kernel, and stored tool
-  results (`hermes-results/`). A command can read those files, change
-  them, and connect to those sockets. Treat a command in this sandbox as
-  able to do what those components can do.
+  whole directory. The backend masks what other Hermes components keep
+  there: every unix socket at its top level and one level down (the
+  control sockets of the browser tool and of the code kernel), and the
+  direct-message payloads of the messaging gateway (`hermes-dm-*`). Two
+  things stay reachable: any other file there, such as the stored tool
+  results in `hermes-results/`, and a socket that is created while a
+  command is already running, for that command.
 - The `PATH` rule reads the `PATH` of the Hermes process. A toolchain that
   only your shell startup files put on `PATH`, in a dot directory the
   shipped list does not name, needs a `bubblewrap_home_allow` entry.

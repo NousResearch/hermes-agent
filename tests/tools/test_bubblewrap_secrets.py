@@ -1208,3 +1208,68 @@ class TestHideBelowRestoredRootsIntegration:
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         self._check(hermes_home, work_dir)
+
+
+CONNECT = (
+    "python3 -c 'import socket,sys\n"
+    "s=socket.socket(socket.AF_UNIX)\n"
+    "try:\n s.connect(sys.argv[1]); print(\"CONNECTED\")\n"
+    "except OSError as e:\n print(\"blocked\")' "
+)
+
+
+def _listen(path: Path):
+    """A listening unix socket at *path*, bound by a relative name (test paths are too long for one)."""
+    import socket
+
+    sock = socket.socket(socket.AF_UNIX)
+    here = os.getcwd()
+    os.chdir(path.parent)
+    try:
+        sock.bind(path.name)
+    finally:
+        os.chdir(here)
+    sock.listen(1)
+    return sock
+
+
+@needs_bwrap
+class TestScratchMaskIntegration:
+    """The scratch dir is shared with every Hermes process. Its sockets and
+    the DM payload entries are masked inside the sandbox."""
+
+    @pytest.mark.parametrize("profile", ["network", "restricted"])
+    def test_scratch_mask_blocks_sockets_and_dm_payloads_and_leaves_the_rest(self, work_dir, hermes_home, profile):
+        scratch = hermes_home / "cache" / "scratch"
+        _write(scratch / "agent-browser-s1" / "info.txt", VISIBLE)
+        _write(scratch / "hermes-dm-1000" / "msg.txt")
+        _write(scratch / "hermes-dm-legacy.txt")
+        _write(scratch / "hermes-results" / "r.txt", VISIBLE)
+        socks = [_listen(scratch / "top.sock"), _listen(scratch / "agent-browser-s1" / "ctl.sock")]
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=BubblewrapConfig(profile=profile))
+        try:
+            for directory, name in ((scratch, "top.sock"), (scratch / "agent-browser-s1", "ctl.sock")):
+                out = env.execute(f"cd {directory} && {CONNECT} {name}")["output"]
+                assert "blocked" in out and "CONNECTED" not in out, (name, out)
+            out = env.execute(f"cat {scratch}/hermes-dm-1000/msg.txt {scratch}/hermes-dm-legacy.txt 2>&1")["output"]
+            assert MARKER not in out
+            assert env.execute(f"cat {scratch}/hermes-results/r.txt")["output"].strip() == VISIBLE
+            assert env.execute(f"cat {scratch}/agent-browser-s1/info.txt")["output"].strip() == VISIBLE
+            written = env.execute(f"printf ok > {scratch}/own")["returncode"] == 0
+            assert written is (profile != "restricted")
+        finally:
+            env.cleanup()
+            for sock in socks:
+                sock.close()
+        assert (scratch / "hermes-dm-1000" / "msg.txt").read_text().startswith(MARKER)
+
+    def test_scratch_socket_is_reachable_without_the_mask(self, work_dir, hermes_home):
+        # The control for the test above: outside the sandbox the same connect passes.
+        scratch = hermes_home / "cache" / "scratch"
+        scratch.mkdir(parents=True, exist_ok=True)
+        sock = _listen(scratch / "top.sock")
+        try:
+            out = subprocess.run(f"cd {scratch} && {CONNECT} top.sock", shell=True, capture_output=True, text=True).stdout
+        finally:
+            sock.close()
+        assert "CONNECTED" in out

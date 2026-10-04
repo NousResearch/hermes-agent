@@ -52,11 +52,16 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 if coerced is not value:
                     args[key] = coerced
                     continue
-                if value.strip().startswith("["):
-                    logger.warning("coerce_tool_args: %s.%s looks like a JSON array string "
-                                   "but could not be parsed — model may have emitted a "
-                                   "JSON-encoded string instead of a native array. "
-                                   "Falling back to single-element list.", tool_name, key)
+                trimmed = value.strip()
+                if trimmed.startswith(("[", "{")) and not _parses_as_json(trimmed):
+                    # A container-shaped string that fails to parse is a malformed
+                    # emission, not a scalar: wrapping it in [value] would hand the
+                    # tool a valid one-element list and smuggle the bad payload past
+                    # its own guards. Keep the original string so the tool rejects it.
+                    logger.warning("coerce_tool_args: %s.%s looks like a JSON container "
+                                   "string but could not be parsed — keeping the original "
+                                   "string for the tool to reject.", tool_name, key)
+                    continue
                 args[key] = [value]
                 logger.info("coerce_tool_args: wrapped bare string in list for %s.%s", tool_name, key)
                 continue
@@ -163,6 +168,15 @@ def _schema_allows_null(schema: dict | None) -> bool:
     return any(isinstance(variants := schema.get(union_key), list)
                and any(isinstance(v, dict) and v.get("type") == "null" for v in variants)
                for union_key in ("anyOf", "oneOf"))
+
+
+def _parses_as_json(value: str) -> bool:
+    """True when *value* is well-formed JSON (any kind); False on parse failure."""
+    try:
+        json.loads(value)
+        return True
+    except (ValueError, TypeError):
+        return False
 
 
 def _coerce_json(value: str, expected_python_type: type):

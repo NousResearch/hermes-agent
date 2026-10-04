@@ -22,6 +22,42 @@ def _gw():
     return gateway
 
 
+def _committed_venv_ready() -> bool:
+    """True when this checkout has a committed dependency environment.
+
+    A launchd plist baked from a tree without one (e.g. a PM-venv workspace
+    copy) boots to 'no dependency environment is committed' and respawn-loops
+    while the CLI still prints success (fixes #125375).
+    """
+    try:
+        from pm.environments import committed_venv, venv_python
+    except ImportError:
+        return True  # fail open: installers without pm keep today's behavior
+    try:
+        environment = committed_venv(_gw().PROJECT_ROOT)
+    except Exception:
+        return True
+    if environment is None:
+        return False
+    try:
+        return venv_python(environment).is_file()
+    except Exception:
+        return False
+
+
+def _refuse_uncommitted_venv_service_write() -> bool:
+    """Refuse to (over)write the launchd service when it could never boot."""
+    if _committed_venv_ready():
+        return False
+    print(
+        "✗ Refusing to write the launchd service: no dependency environment is "
+        "committed for this install; the service would respawn-loop. "
+        "Run `hermes pm repair` (or start from the checkout that owns the "
+        "committed environment) and retry."
+    )
+    return True
+
+
 def get_launchd_label() -> str:
     """Return the launchd service label, scoped per profile."""
     suffix = _gw()._profile_suffix()
@@ -629,6 +665,8 @@ def launchd_install(force: bool = False, *, start_now: bool = True):
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     new_plist = _gw().generate_launchd_plist()
     if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
+        return
+    if _refuse_uncommitted_venv_service_write():
         return
     print(f"Installing launchd service to: {plist_path}")
     _gw()._prepare_service_launcher()

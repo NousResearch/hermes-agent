@@ -1387,7 +1387,11 @@ class TestStagedRoots:
             assert env.expose_spillover_file(str(good)) is True
             assert env.expose_spillover_file(str(good)) is True
             mounts = _mounts(env._wrap_popen_args(["bash"]))
-            assert mounts.count(("--ro-bind-try", str(good), str(good))) == 1
+            bound = [m for m in mounts if m[0] == "--ro-bind-try" and m[2] == str(good)]
+            # One bind, from a copy the environment keeps beside its state dir.
+            assert len(bound) == 1
+            copy = Path(bound[0][1])
+            assert copy.parent.parent == Path(env.get_temp_dir()).parent and copy.read_text() == "x"
         finally:
             env.cleanup()
 
@@ -1407,6 +1411,8 @@ class TestStagedRoots:
             bound = self._ro_binds(env)
             assert {str(file) for file in files[2:]} <= bound
             assert bound.isdisjoint({str(file) for file in files[:2]})
+            copies = Path(bubblewrap.archive_copies_path(env.get_temp_dir()))
+            assert sorted(entry.name for entry in copies.iterdir()) == [file.name for file in files[2:]]
             assert hiding.expose_spillover_file(str(files[0])) is False
         finally:
             env.cleanup()

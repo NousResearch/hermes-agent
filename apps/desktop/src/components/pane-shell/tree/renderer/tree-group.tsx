@@ -532,17 +532,13 @@ export function TreeGroup({
 
   const safeBackgroundTint = isZoneBackgroundTint(node.backgroundTint) ? node.backgroundTint : undefined
 
-  const tintedSurface = (base: string) =>
-    safeBackgroundTint ? `color-mix(in srgb, var(--ui-${safeBackgroundTint}) 10%, var(${base}))` : undefined
-
   const zoneStyle =
     wcOverlap || (topEdge && verticalCollapse) || safeBackgroundTint
       ? ({
           ...(safeBackgroundTint
             ? {
-                '--ui-chat-surface-background': tintedSurface('--ui-zone-chat-surface-background'),
-                '--ui-editor-surface-background': tintedSurface('--ui-zone-editor-surface-background'),
-                '--ui-sidebar-surface-background': tintedSurface('--ui-zone-sidebar-surface-background')
+                '--ui-zone-background-tint': `var(--ui-${safeBackgroundTint})`,
+                backgroundColor: 'var(--ui-zone-tinted-background)'
               }
             : {}),
           ...(wcOverlap
@@ -558,6 +554,7 @@ export function TreeGroup({
       className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-(--ui-editor-surface-background)"
       data-tree-group={node.id}
       data-window-top={topEdge || undefined}
+      data-zone-background-tint={safeBackgroundTint}
       // Advertises the visible tab strip so panes can drop their own
       // self-naming labels (see [data-pane-self-label] in styles.css).
       data-zone-header={headerVisible || undefined}

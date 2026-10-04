@@ -666,6 +666,34 @@
     --ui-terminal-surface-background: var(--ui-bg-chrome);
   }
 
+  /* Opaque field surfaces share one mixed color. Under glass only the zone
+     container paints the wash; nested chat/editor/sidebar fields stay clear. */
+  [data-zone-background-tint] {
+    --ui-chat-surface-background: color-mix(
+      in srgb,
+      var(--ui-zone-background-tint) 10%,
+      var(--ui-zone-chat-surface-background)
+    );
+    --ui-editor-surface-background: color-mix(
+      in srgb,
+      var(--ui-zone-background-tint) 10%,
+      var(--ui-zone-editor-surface-background)
+    );
+    --ui-sidebar-surface-background: color-mix(
+      in srgb,
+      var(--ui-zone-background-tint) 10%,
+      var(--ui-zone-sidebar-surface-background)
+    );
+    --ui-zone-tinted-background: var(--ui-editor-surface-background);
+  }
+
+  :root[data-hermes-glass] [data-zone-background-tint] {
+    --ui-chat-surface-background: transparent;
+    --ui-editor-surface-background: transparent;
+    --ui-sidebar-surface-background: transparent;
+    --ui-zone-tinted-background: color-mix(in srgb, var(--ui-zone-background-tint) 10%, transparent);
+  }
+
   :root[data-hermes-glass] body {
     background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
   }

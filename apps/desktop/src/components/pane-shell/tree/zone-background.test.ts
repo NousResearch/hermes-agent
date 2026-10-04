@@ -38,7 +38,13 @@ describe('zone background tint model', () => {
 
     expect(migrated.children[0]).toHaveProperty('backgroundTint', 'green')
     expect(migrated.children[1]).not.toHaveProperty('backgroundTint')
-    expect(ZONE_BACKGROUND_TINTS).toEqual(['red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple'])
+
+    for (const tint of ZONE_BACKGROUND_TINTS) {
+      expect(migratePersistedTree(group(['workspace'], { backgroundTint: tint }))).toHaveProperty(
+        'backgroundTint',
+        tint
+      )
+    }
   })
 })
 

@@ -379,15 +379,12 @@ describe('TreeGroup', () => {
 
     const zone = globalThis.document.querySelector<HTMLElement>('[data-tree-group="terminal-zone"]')
 
-    expect(zone?.style.getPropertyValue('--ui-chat-surface-background')).toBe(
-      'color-mix(in srgb, var(--ui-cyan) 10%, var(--ui-zone-chat-surface-background))'
-    )
-    expect(zone?.style.getPropertyValue('--ui-editor-surface-background')).toBe(
-      'color-mix(in srgb, var(--ui-cyan) 10%, var(--ui-zone-editor-surface-background))'
-    )
-    expect(zone?.style.getPropertyValue('--ui-sidebar-surface-background')).toBe(
-      'color-mix(in srgb, var(--ui-cyan) 10%, var(--ui-zone-sidebar-surface-background))'
-    )
+    expect(zone?.dataset.zoneBackgroundTint).toBe('cyan')
+    expect(zone?.style.getPropertyValue('--ui-zone-background-tint')).toBe('var(--ui-cyan)')
+    // Field tokens belong to CSS so glass can keep nested surfaces transparent.
+    expect(zone?.style.getPropertyValue('--ui-chat-surface-background')).toBe('')
+    expect(zone?.style.getPropertyValue('--ui-editor-surface-background')).toBe('')
+    expect(zone?.style.getPropertyValue('--ui-sidebar-surface-background')).toBe('')
   })
 
   it('offers background tint controls from the existing zone context menu', async () => {

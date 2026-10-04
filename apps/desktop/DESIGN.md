@@ -138,6 +138,10 @@ ordinary minimize/close behavior is retained rather than hiding an unreachable a
 
 ## Window glass
 
+Zone background tints use one container wash under glass. Keep nested field
+surface tokens transparent so tint strength is independent of content depth.
+Opaque masking and raised surfaces retain their existing fill contracts.
+
 Glass defaults to **29% Tint, Sidebar only** in both light and dark appearances.
 Fade defaults to zero so the content column and text stay opaque. Native frost
 keeps its platform/appearance defaults. Explicitly saved settings take precedence;

@@ -37,8 +37,7 @@ def _read_controls(messages, pause, fd):
 
 def main():
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    # Route through the shared guard: a raw inject here can double-inject when
-    # another code path already ran the guarded install (see #126808).
+    # Keep agent.ssl_verify's installation state in sync with platform trust.
     from agent.ssl_verify import install_truststore
 
     install_truststore()

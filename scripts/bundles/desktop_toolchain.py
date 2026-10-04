@@ -187,9 +187,12 @@ def native_cache_path(cache: Path, env: Mapping[str, str]) -> Path:
 
 if __name__ == "__main__":
     import runpy
-    import truststore
 
-    # Like pm/launch.py: initialize platform trust before PM creates HTTPS clients.
-    truststore.inject_into_ssl()
+    # The isolated interpreter does not include the source root on sys.path.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from agent.ssl_verify import install_truststore
+
+    # Initialize platform trust and shared state before the preparation worker.
+    install_truststore()
     sys.argv = sys.argv[1:]
     runpy.run_path(sys.argv[0], run_name="__main__")

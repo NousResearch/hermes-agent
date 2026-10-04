@@ -7,8 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 def main() -> int:
     # PM's import closure constructs HTTPS clients; install platform trust
     # before importing it, but never mutate SSL merely by importing launch.
-    # Route through the shared guard: a raw inject here can double-inject when
-    # another code path already ran the guarded install (see #126808).
+    # Keep agent.ssl_verify's installation state in sync with platform trust.
     from agent.ssl_verify import install_truststore
 
     install_truststore()

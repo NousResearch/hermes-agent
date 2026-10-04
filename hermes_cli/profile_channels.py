@@ -5,7 +5,8 @@ gateways fight over one bot (standalone) or blocks ``hermes gateway migrate --mu
 duplicate-credential finding per platform.
 
 The inventory is OWNERSHIP-based and evaluated in the SOURCE profile's plugin scope: every adapter
-(built-in ``Platform`` member or plugin registered under the source's ``HERMES_HOME``) owns the env
+(built-in ``Platform`` member, a platform that left core — its ``LEFT_CORE`` row, plugin installed or
+not — or a plugin registered under the source's ``HERMES_HOME``) owns the env
 keys it declares outright (``required_env``, allowlist / allow-all / home-channel names, the gateway
 env-override table ``gateway.config_env._ENV_STEPS`` / ``_ENV_ENABLE_CREDENTIALS``) plus every key
 under its canonical ``<PLATFORM>_`` prefix and its historical alias prefixes. Gateway-wide channel
@@ -87,9 +88,18 @@ def _registry_entries() -> list:
     return []
 
 
+def _left_core_platforms() -> list:
+    """Rows of platforms that left core for a catalog plugin (``hermes_cli.left_core_migration``).
+    Their channel ownership comes from the row, so it holds while the plugin is absent."""
+    from hermes_cli.left_core_migration import LEFT_CORE
+    return [feature for feature in LEFT_CORE if feature.platform]
+
+
 def _shared_with_tools(source_dir: Optional[Path] = None) -> Dict[str, Tuple[str, ...]]:
-    """``_SHARED_WITH_TOOLS`` plus every plugin platform's ``shared_env_prefixes`` in ``source_dir``'s scope."""
+    """``_SHARED_WITH_TOOLS``, left-core platforms' prefixes, and every plugin platform's
+    ``shared_env_prefixes`` in ``source_dir``'s scope."""
     shared = dict(_SHARED_WITH_TOOLS)
+    shared.update({f.platform: f.channel_env_prefixes for f in _left_core_platforms() if f.channel_env_prefixes})
     with _plugin_scope(source_dir):
         for entry in _registry_entries():
             prefixes = tuple(getattr(entry, "shared_env_prefixes", ()) or ())
@@ -99,10 +109,11 @@ def _shared_with_tools(source_dir: Optional[Path] = None) -> Dict[str, Tuple[str
 
 
 def platform_ids(source_dir: Optional[Path] = None) -> List[str]:
-    """Every messaging platform id: built-in ``Platform`` members plus the plugin adapters registered
-    in ``source_dir``'s scope (ambient scope when ``None``)."""
+    """Every messaging platform id: built-in ``Platform`` members, platforms that left core, plus the
+    plugin adapters registered in ``source_dir``'s scope (ambient scope when ``None``)."""
     from gateway.config import Platform
     ids = {m.value for m in Platform.__members__.values() if m.value != "local"}
+    ids.update(feature.platform for feature in _left_core_platforms())
     with _plugin_scope(source_dir):
         ids.update(entry.name for entry in _registry_entries())
     return sorted(ids)
@@ -150,6 +161,8 @@ def declared_channel_env_keys(source_dir: Optional[Path] = None) -> Dict[str, st
     fields, the gateway env-override table) plus gateway-wide channel policy. Prefix matching covers
     the rest."""
     keys: Dict[str, str] = dict.fromkeys(_GATEWAY_POLICY_KEYS, GATEWAY_POLICY_ID)
+    for feature in _left_core_platforms():
+        keys.update(dict.fromkeys(feature.enable_env, feature.platform))
     with _plugin_scope(source_dir):
         for entry in _registry_entries():
             for name in (*entry.required_env, entry.allowed_users_env, entry.allow_all_env, entry.cron_deliver_env_var):
@@ -196,6 +209,8 @@ def credential_env_keys() -> Dict[str, str]:
     flags, URLs and hosts are excluded: two profiles pointing at one Mattermost server collide only
     when they also share the token."""
     keys: Dict[str, str] = {}
+    for feature in _left_core_platforms():
+        keys.update(dict.fromkeys(feature.enable_env, feature.platform))
     for entry in _registry_entries():
         keys.update(dict.fromkeys(entry.required_env, entry.name))
     with contextlib.suppress(Exception):
@@ -253,6 +268,8 @@ def _shared_adapters_active(source_dir: Optional[Path], shared: Dict[str, Tuple[
         from gateway import config_env
         for platform, names in config_env._ENV_ENABLE_CREDENTIALS.items():
             creds_by_platform[platform.value] = set(names)
+    for feature in _left_core_platforms():
+        creds_by_platform.setdefault(feature.platform, set(feature.enable_env))
     with _plugin_scope(source_dir):
         for entry in _registry_entries():
             creds_by_platform.setdefault(entry.name, set(entry.required_env))

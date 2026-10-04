@@ -112,6 +112,12 @@ class LeftCoreFeature:
     off_platforms: tuple[str, ...] = ()
     # Gateway platform the plugin ships: a running gateway serves it only after a restart.
     platform: str = ""
+    # Channel ownership core declared for that platform, kept while the plugin is absent (migration
+    # pending, declined, failed) so a channel-less profile clone still strips the source's identity
+    # (hermes_cli/profile_channels.py): the env whose presence enabled the adapter, and the env
+    # prefixes it shared with the feature's tools (stripped only when the source runs the adapter).
+    enable_env: tuple[str, ...] = ()
+    channel_env_prefixes: tuple[str, ...] = ()
 
 
 LEFT_CORE: tuple[LeftCoreFeature, ...] = (
@@ -120,6 +126,7 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         unchanged="HASS_TOKEN/HASS_URL, platforms.homeassistant and the ha_* tool names are unchanged",
         secret_env=("HASS_TOKEN",), private_env=("HASS_URL",),
         toolsets=("homeassistant",), off_platforms=("acp", "webhook"), platform="homeassistant",
+        enable_env=("HASS_TOKEN",), channel_env_prefixes=("HASS_",),
     ),
 )
 

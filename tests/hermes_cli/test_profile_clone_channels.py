@@ -225,6 +225,27 @@ def test_ownership_inventory_strips_policy_relay_and_aliases_but_keeps_tool_cred
     assert keys == {"OPENAI_API_KEY", "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_PHONE_NUMBER"}
 
 
+@pytest.mark.parametrize(("config", "stripped"), [
+    ({"gateway": {"homeassistant": {"enabled": True, "token": "ha-short-token"}}}, True),
+    ({}, True),  # HASS_TOKEN in .env alone enabled core's adapter
+    ({"platforms": {"homeassistant": {"enabled": False}}}, False),  # tool-only: HASS_* is a tool key
+])
+def test_left_core_platform_keeps_channel_ownership_while_its_plugin_is_absent(home, config, stripped):
+    """Home Assistant left core; with its plugin not installed yet (migration pending, declined,
+    failed) a channel-less clone still leaves the source's HA identity behind, like core did."""
+    (home / ".env").write_text("OPENAI_API_KEY=sk\nHASS_TOKEN=ha-token\nHASS_URL=http://ha.local\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({"model": {"default": "gpt-5", "provider": "openai"}, **config}), encoding="utf-8")
+    assert not (home / "plugins" / "homeassistant").exists()
+
+    profile_dir = create_profile(f"ha{len(config)}{int(stripped)}", clone_config=True, no_alias=True)
+
+    keys = {line.split("=", 1)[0] for line in (profile_dir / ".env").read_text(encoding="utf-8").splitlines()
+            if "=" in line and not line.startswith("#")}
+    assert keys == ({"OPENAI_API_KEY"} if stripped else {"OPENAI_API_KEY", "HASS_TOKEN", "HASS_URL"})
+    assert "ha-short-token" not in (profile_dir / "config.yaml").read_text(encoding="utf-8")
+
+
 _SHARED_PLUGIN_MANIFEST = "name: sharedplat\nkind: platform\nversion: 1.0.0\nrequires_env:\n  - name: SHP_TOKEN\n    password: true\n"
 _SHARED_PLUGIN_INIT = (
     "from gateway.platform_registry import PlatformEntry\n"

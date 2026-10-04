@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 import cli
+from hermes_cli.cli_single_query import _goal_loop_exit_code
 from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE, KANBAN_TERMINAL_PROVIDER_EXIT_CODE
 
 
@@ -20,6 +21,16 @@ from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE, KANBAN_TERMINAL_PR
 def _no_inherited_kanban_env(monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
+
+
+def test_goal_judge_transport_outage_signals_tempfail():
+    assert _goal_loop_exit_code(
+        {"outcome": "transient_infrastructure_failure"}, 0
+    ) == KANBAN_RATE_LIMIT_EXIT_CODE
+
+
+def test_non_transport_goal_outcome_preserves_exit_code():
+    assert _goal_loop_exit_code({"outcome": "completed_by_worker"}, 7) == 7
 
 
 def _run_non_quiet(monkeypatch, turn_result):

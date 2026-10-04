@@ -129,6 +129,37 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
     assert turns == []  # no extra turns
 
 
+def test_loop_treats_judge_transport_failure_as_transient(monkeypatch):
+    """A judge outage must not consume worker turns or become a human-input block."""
+    monkeypatch.setattr(
+        goals,
+        "judge_goal",
+        lambda *args, **kwargs: (
+            "continue", "judge error: RateLimitError", False, None, True
+        ),
+    )
+    turns = []
+    blocks = []
+
+    res = goals.run_kanban_goal_loop(
+        task_id="t_rate_limited",
+        goal_text="review the exact artifact",
+        run_turn=lambda prompt: turns.append(prompt) or "should not run",
+        task_status_fn=lambda: "running",
+        block_fn=blocks.append,
+        max_turns=10,
+        first_response="worker response awaiting judgment",
+    )
+
+    assert res == {
+        "outcome": "transient_infrastructure_failure",
+        "turns_used": 1,
+        "reason": "judge transport unavailable: judge error: RateLimitError",
+    }
+    assert turns == []
+    assert blocks == []
+
+
 
 
 

@@ -120,14 +120,15 @@ describe('syncWorkspaceRoute', () => {
     expect(fronted()).toBe(true)
   })
 
-  it('fronts on a contributed page route', () => {
+  it('leaves the workspace alone on a contributed route — that lands as a route tile, not a page', () => {
     const dispose = contributeRoute()
 
     try {
       syncWorkspaceRoute(CONTRIBUTED_ROUTE)
 
       expect(appViewForPath(CONTRIBUTED_ROUTE)).toBe('extension')
-      expect(fronted()).toBe(true)
+      expect($workspaceIsPage.get()).toBe(false)
+      expect(revealTreePane).not.toHaveBeenCalled()
     } finally {
       dispose()
     }
@@ -174,7 +175,7 @@ describe('navigateToWorkspacePage', () => {
  * like the sidebar does.
  */
 describe('host.navigate', () => {
-  it('fronts the workspace pane even when already on the contributed page', () => {
+  it('fronts the centered route tile even when already on the contributed page', () => {
     const dispose = contributeRoute()
 
     try {
@@ -185,10 +186,20 @@ describe('host.navigate', () => {
       host.navigate(CONTRIBUTED_ROUTE)
 
       expect(window.location.hash).toBe(`#${CONTRIBUTED_ROUTE}`)
-      expect(fronted()).toBe(true)
+      expect(revealTreePane).toHaveBeenCalledWith(`route-tile:${CONTRIBUTED_ROUTE}`)
+      expect($workspaceIsPage.get()).toBe(false)
+      expect(noteActiveTreeGroup).not.toHaveBeenCalled()
     } finally {
       dispose()
     }
+  })
+
+  it('preserves normal workspace-page navigation', () => {
+    host.navigate(CAPABILITIES_ROUTE)
+
+    expect(window.location.hash).toBe(`#${CAPABILITIES_ROUTE}`)
+    expect($workspaceIsPage.get()).toBe(true)
+    expect(fronted()).toBe(true)
   })
 
   it('does not front the pane for a chat route', () => {

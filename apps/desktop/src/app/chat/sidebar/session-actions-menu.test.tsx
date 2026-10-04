@@ -2,9 +2,14 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $selectedStoredSessionId } from '@/store/session'
+
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
 afterEach(cleanup)
+
+const canOpenSessionWindow = vi.hoisted(() => vi.fn(() => false))
+const mainSessionOwnerRoute = vi.hoisted(() => vi.fn(() => undefined))
 
 // Exercises the real SessionActionsMenu end-to-end (no DropdownMenu mock) so
 // a broken asChild composition on the kebab trigger fails here — the menu
@@ -55,6 +60,8 @@ vi.mock('@/i18n', () => ({
           export: 'Export',
           hideTabBar: 'Hide tab bar',
           markRead: 'Mark as read',
+          newWindow: 'Open in new window',
+          openInNewTab: 'Open in new tab',
           pin: 'Pin',
           rename: 'Rename',
           renameDesc: 'Leave empty to clear.',
@@ -103,11 +110,12 @@ vi.mock('@/store/session-states', () => ({
   $sessionStates: atom<Record<string, unknown>>({}),
   $sessionTiles: atom<unknown[]>([]),
   closeAllOpenSessionTiles: vi.fn(),
+  mainSessionOwnerRoute: (...args: unknown[]) => mainSessionOwnerRoute(...args),
   openSessionTile: vi.fn()
 }))
 vi.mock('@/store/windows', () => ({
   canOpenSessionInTerminal: () => false,
-  canOpenSessionWindow: () => false,
+  canOpenSessionWindow: () => canOpenSessionWindow(),
   isBrowserWindow: () => false,
   isSecondaryWindow: () => false,
   openSessionInNewWindow: vi.fn(),
@@ -125,6 +133,13 @@ function renderMenu() {
 }
 
 describe('SessionActionsMenu', () => {
+  afterEach(() => {
+    canOpenSessionWindow.mockReturnValue(false)
+    mainSessionOwnerRoute.mockReset()
+    mainSessionOwnerRoute.mockReturnValue(undefined)
+    $selectedStoredSessionId.set(null)
+  })
+
   it('opens the dropdown on click', async () => {
     renderMenu()
 
@@ -372,5 +387,54 @@ describe('SessionActionsMenu', () => {
     // unreachable even programmatically, not just hidden from pointer users.
     expect(screen.queryByRole('dialog')).toBeNull()
     unmount()
+  })
+
+  it('routes sidebar menu tab and window actions through the captured row opener', async () => {
+    const onOpen = vi.fn()
+    canOpenSessionWindow.mockReturnValue(true)
+    render(
+      <SessionActionsMenu onOpen={onOpen} sessionId="shared-id" title="Shared session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Open in new tab' }))
+    expect(onOpen).toHaveBeenCalledWith('tab')
+
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Open in new window' }))
+    expect(onOpen).toHaveBeenCalledWith('window')
+  })
+
+  it('offers a new tab when the selected same-id main belongs to another exact owner', async () => {
+    $selectedStoredSessionId.set('shared-id')
+    mainSessionOwnerRoute.mockReturnValue({ connectionId: 'source-a', profile: 'default' })
+    render(
+      <SessionActionsMenu
+        onOpen={vi.fn()}
+        ownerRoute={{ connectionId: 'source-b', profile: 'default' }}
+        sessionId="shared-id"
+        title="Shared session"
+      >
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    expect(await screen.findByRole('menuitem', { name: 'Open in new tab' })).toBeTruthy()
   })
 })

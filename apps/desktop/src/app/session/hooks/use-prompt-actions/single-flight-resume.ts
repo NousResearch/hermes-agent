@@ -1,5 +1,8 @@
+import type { SessionOwnerScope } from '@/store/session-request-router'
+
 /**
- * Single-flight guard for `session.resume`, keyed by STORED session id.
+ * Single-flight guard for `session.resume`, keyed by STORED session id and,
+ * when known, its exact owner.
  *
  * After sleep/wake or a reconnect, many independent surfaces discover the same
  * dead runtime at once — submit recovery, slash/rewind recovery, tile resumes,
@@ -8,15 +11,43 @@
  * the losers become orphans for the reaper (#91276 storm).
  *
  * Module-level so EVERY call site in the window shares one in-flight promise
- * per stored id, no matter which hook instance it lives in. All participating
- * callers resolve to a `session.resume`-shaped response (an object carrying
- * `session_id`); joiners receive whatever the winning call returns.
+ * per stored-id/owner pair, no matter which hook instance it lives in. All
+ * participating callers resolve to a `session.resume`-shaped response (an
+ * object carrying `session_id`); joiners receive the winning call's result.
  */
 
-const _inFlightResumeByStoredSessionId = new Map<string, Promise<unknown>>()
+const normProfile = (profile: null | string | undefined): string => (profile ?? '').trim() || 'default'
 
-export function singleFlightSessionResume<T>(storedSessionId: string, run: () => Promise<T>): Promise<T> {
-  const existing = _inFlightResumeByStoredSessionId.get(storedSessionId)
+/** A stored id is not globally unique once two connections expose the same
+ * profile. The route's mode is informational; an omitted target is its own
+ * profile, matching the owner-route contract. */
+export function sessionResumeFlightKey(storedSessionId: string, owner?: SessionOwnerScope): string {
+  const id = storedSessionId.trim()
+
+  if (!owner) {
+    return JSON.stringify([id, 'ambient'])
+  }
+
+  if (typeof owner === 'string') {
+    const profile = normProfile(owner)
+
+    return JSON.stringify([id, 'profile', profile, profile])
+  }
+
+  const profile = normProfile(owner.profile)
+
+  return JSON.stringify([id, 'owner', owner.connectionId.trim(), profile, normProfile(owner.targetProfile || profile)])
+}
+
+const _inFlightResumeByScope = new Map<string, Promise<unknown>>()
+
+export function singleFlightSessionResume<T>(
+  storedSessionId: string,
+  run: () => Promise<T>,
+  owner?: SessionOwnerScope
+): Promise<T> {
+  const flightKey = sessionResumeFlightKey(storedSessionId, owner)
+  const existing = _inFlightResumeByScope.get(flightKey)
 
   if (existing) {
     return existing as Promise<T>
@@ -28,12 +59,12 @@ export function singleFlightSessionResume<T>(storedSessionId: string, run: () =>
   const flight = Promise.resolve()
     .then(run)
     .finally(() => {
-      if (_inFlightResumeByStoredSessionId.get(storedSessionId) === flight) {
-        _inFlightResumeByStoredSessionId.delete(storedSessionId)
+      if (_inFlightResumeByScope.get(flightKey) === flight) {
+        _inFlightResumeByScope.delete(flightKey)
       }
     })
 
-  _inFlightResumeByStoredSessionId.set(storedSessionId, flight)
+  _inFlightResumeByScope.set(flightKey, flight)
 
   return flight
 }
@@ -77,6 +108,6 @@ export function takeRecoveredRuntime(storedSessionId: string, deadRuntimeId?: nu
 
 /** Test seam: reset all module-level single-flight/recovery state. */
 export function clearSingleFlightSessionResumeState(): void {
-  _inFlightResumeByStoredSessionId.clear()
+  _inFlightResumeByScope.clear()
   _recoveredRuntimeByStoredSessionId.clear()
 }

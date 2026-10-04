@@ -9,10 +9,12 @@
  *   Windows: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File windows.ps1
  *              -MarkerOp <op> -InstallRoot <root> [-DesktopPid P] [-HandoffRun R]
  *
- * One stdout line: `absent | reclaimed | held | busy | live <pid> | withdrawn |
- * taken <pid> | foreign`. Anything else, a nonzero exit, a timeout or
- * malformed output is `error` (retry without clearance). Only a missing or
- * pre-protocol-2 script is `unsupported` (an older checkout).
+ * One stdout line: reclaim `absent | reclaimed | held | busy | live <pid>`,
+ * withdraw `absent | busy | withdrawn | taken <pid> | foreign`. Anything else
+ * (another op's word included), a nonzero exit, a timeout, malformed output
+ * or a script that exists but cannot be read is `error` (retry without
+ * clearance). Only a missing or pre-protocol-2 script is `unsupported` (an
+ * older checkout).
  */
 
 import { type ChildProcess, spawn } from 'node:child_process'
@@ -65,8 +67,13 @@ export function handoffScriptPath(updateRoot: string, isWindows: boolean): strin
   return existsSync(posix) ? posix : null
 }
 
-/** Hand-off protocol a script speaks: 2+ from its protocol line, else 1 (legacy). */
-export function readHandoffProtocol(scriptPath: string | null | undefined): number {
+/**
+ * Hand-off protocol a script speaks: 2+ from its protocol line, else 1
+ * (legacy, a missing script included). Null when the script exists but cannot
+ * be read right now (a sharing violation, permissions): that is not an older
+ * checkout (review R8 M5).
+ */
+export function readHandoffProtocol(scriptPath: string | null | undefined): number | null {
   if (!scriptPath) {
     return 1
   }
@@ -76,8 +83,8 @@ export function readHandoffProtocol(scriptPath: string | null | undefined): numb
     const version = match ? Number(match[1]) : 1
 
     return Number.isSafeInteger(version) && version >= 2 ? version : 1
-  } catch {
-    return 1
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === 'ENOENT' ? 1 : null
   }
 }
 
@@ -135,6 +142,12 @@ const defaultSpawn: HelperSpawn = (command, args, { env, timeout, windowsHide })
   })
 
 const BARE_VERDICTS = new Set(['absent', 'reclaimed', 'held', 'busy', 'withdrawn', 'foreign'])
+
+/** The words each op can answer (marker.sh marker_op, marker-claim.ps1 Invoke-MarkerOp). */
+const OP_VERDICTS: Record<MarkerHelperOp, ReadonlySet<string>> = {
+  reclaim: new Set(['absent', 'reclaimed', 'held', 'busy', 'live']),
+  withdraw: new Set(['absent', 'busy', 'withdrawn', 'taken', 'foreign'])
+}
 
 /** Parse the helper's one verdict line; anything else is an operational error. */
 export function parseMarkerHelperVerdict(stdout: string): MarkerHelperVerdict {
@@ -208,8 +221,13 @@ export function markerHelperCommand(
 /** Run one marker op through the checkout's script under its sidecar lock. */
 export async function runMarkerHelper(op: MarkerHelperOp, options: MarkerHelperOptions): Promise<MarkerHelperVerdict> {
   const scriptPath = handoffScriptPath(options.updateRoot, options.isWindows)
+  const protocol = readHandoffProtocol(scriptPath)
 
-  if (!scriptPath || readHandoffProtocol(scriptPath) < 2) {
+  if (protocol === null) {
+    return { kind: 'error' }
+  }
+
+  if (!scriptPath || protocol < 2) {
     return { kind: 'unsupported' }
   }
 
@@ -222,7 +240,9 @@ export async function runMarkerHelper(op: MarkerHelperOp, options: MarkerHelperO
       windowsHide: true
     })
 
-    return result.code === 0 ? parseMarkerHelperVerdict(result.stdout) : { kind: 'error' }
+    const verdict: MarkerHelperVerdict = result.code === 0 ? parseMarkerHelperVerdict(result.stdout) : { kind: 'error' }
+
+    return OP_VERDICTS[op].has(verdict.kind) || verdict.kind === 'error' ? verdict : { kind: 'error' }
   } catch {
     return { kind: 'error' }
   }

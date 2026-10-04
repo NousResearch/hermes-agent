@@ -46,7 +46,11 @@ describe.skipIf(process.platform === 'win32')('gate over a dead marker (R6)', ()
     root: string,
     home: string,
     now?: () => number,
-    extra: { onHeld?: (state: HeldState) => void; log?: (line: string) => void } = {}
+    extra: {
+      onHeld?: (state: HeldState) => void
+      log?: (line: string) => void
+      onOverride?: (holdId: string) => void
+    } = {}
   ) {
     return liveMarkerProbe({
       hermesHome: home,
@@ -93,18 +97,72 @@ describe.skipIf(process.platform === 'win32')('gate over a dead marker (R6)', ()
     fs.writeFileSync(path.join(home, 'helper-verdict'), 'held')
     const states: HeldState[] = []
     const logs: string[] = []
-    const primary = gate(root, home, undefined, { onHeld: s => states.push(s), log: l => logs.push(l) })
+    const overrides: string[] = []
+
+    const primary = gate(root, home, undefined, {
+      onHeld: s => states.push(s),
+      log: l => logs.push(l),
+      onOverride: id => overrides.push(id)
+    })
 
     assert.equal(await primary(), true)
     allowStartOverHold(states[0].holdId)
     assert.equal(await primary(), false, 'the confirmed hold no longer blocks this wait')
     assert.equal(await primary(), false)
+    assert.deepEqual(
+      overrides,
+      [states[0].holdId, states[0].holdId],
+      'the waiter learns it ended by override, not finish'
+    )
     assert.equal(await gate(root, home)(), false, 'nor a pool backend wait in the same process')
     assert.equal(logs.filter(l => l.includes('chose Start anyway')).length, 1, 'the override is logged once per wait')
     assert.equal(fs.readFileSync(markerPath(home), 'utf8'), body, 'the marker stays in place')
 
     fs.writeFileSync(markerPath(home), `${await deadPid()}\n${minutesAgo(1)}\nct:2.000\n`)
     assert.equal(await primary(), true, 'a different marker body is a different hold: blocked again')
+  })
+
+  test('a held body never opens on `unsupported`: a script missing mid-update blocks and is re-asked (R8 M5)', async () => {
+    const { root, home } = fakeHelperCheckout()
+    fs.writeFileSync(markerPath(home), `${await deadPid()}\n${minutesAgo(1)}\nct:1.000\n`)
+    fs.writeFileSync(path.join(home, 'helper-verdict'), 'held')
+    const script = path.join(root, 'scripts', 'desktop-update', 'posix.sh')
+    const text = fs.readFileSync(script, 'utf8')
+    const states: HeldState[] = []
+    const probe = gate(root, home, undefined, { onHeld: s => states.push(s) })
+
+    assert.equal(await probe(), true)
+    fs.rmSync(script) // git unlinks a changed script before writing the new one
+    requestHoldRecheck()
+    assert.equal(await probe(), true, 'the body that was held stays blocked')
+    assert.deepEqual([states.at(-1)!.verdict, states.at(-1)!.blocking], ['error', true])
+    fs.writeFileSync(script, text)
+    requestHoldRecheck()
+    assert.equal(await probe(), true)
+    assert.equal(states.at(-1)!.verdict, 'held', 're-asked once the script is back')
+    fs.writeFileSync(path.join(home, 'helper-verdict'), 'reclaimed')
+    requestHoldRecheck()
+    assert.equal(await probe(), false, 'only the script reclaiming opens it')
+  })
+
+  test('two empty dead markers are two holds: Start anyway over one does not pass the next (R8 m7)', async () => {
+    const { root, home } = fakeHelperCheckout()
+    fs.writeFileSync(path.join(home, 'helper-verdict'), 'held')
+
+    const emptyMarker = (agoS: number) => {
+      fs.rmSync(markerPath(home), { force: true })
+      fs.writeFileSync(markerPath(home), '')
+      const at = Date.now() / 1000 - agoS
+      fs.utimesSync(markerPath(home), at, at)
+    }
+
+    const states: HeldState[] = []
+    emptyMarker(600)
+    assert.equal(await gate(root, home, undefined, { onHeld: s => states.push(s) })(), true)
+    allowStartOverHold(states[0].holdId)
+    assert.equal(await gate(root, home)(), false, 'the confirmed empty marker passes')
+    emptyMarker(300) // a later update's empty claim, also past the grace
+    assert.equal(await gate(root, home)(), true, 'a different marker file is a different hold')
   })
 
   test('a failing protocol-2 helper keeps the gate parked and is retried after recovery', async () => {

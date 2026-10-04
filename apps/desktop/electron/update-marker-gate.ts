@@ -11,7 +11,10 @@
  * - `held` / `busy` / `live <pid>` => an update still owns the checkout: keep waiting;
  * - `reclaimed` / `absent` => nothing runs: proceed;
  * - `unsupported` (older checkout, no helper) => proceed without deleting
- *   (dead = not running, as before minus the deletion).
+ *   (dead = not running, as before minus the deletion) — unless this process
+ *   already saw the same body block: then the script is only missing or
+ *   unreadable for a moment (git rewriting it mid-update), so the answer counts
+ *   as `error` and is re-asked (review R8 M5).
  *
  * The helper is asked once per distinct dead marker body per wait; a `held` /
  * `busy` / `error` / `live` answer is re-asked every `reprobeMs` (5 s), or on
@@ -31,8 +34,9 @@
  */
 
 import { createHash } from 'node:crypto'
+import fs from 'node:fs'
 
-import { type CreateTimeProbe, inspectUpdateMarker } from './update-marker'
+import { type CreateTimeProbe, inspectUpdateMarker, markerPath } from './update-marker'
 import type { MarkerHelperVerdict } from './updater/marker-helper'
 
 export const HELD_REPROBE_MS = 5_000
@@ -65,6 +69,8 @@ export interface LiveMarkerProbeOptions {
   onLiveMarker?: (marker: { startedAt: number | null }) => void
   /** Every answer that comes from a running helper verdict (boot progress, the blocked screen). */
   onHeld?: (state: HeldState) => void
+  /** The gate let this wait through over a blocking hold because the user chose Start anyway. */
+  onOverride?: (holdId: string) => void
   log?: (line: string) => void
   now?: () => number
   reprobeMs?: number
@@ -96,9 +102,20 @@ const startAnywayHolds = new Set<string>()
 // Bumped by an explicit Retry: every probe re-asks the helper on its next poll.
 let recheckGeneration = 0
 
-/** The stable id of a marker body (what `HeldState.holdId` carries). */
-export function markerHoldId(raw: Buffer): string {
-  return createHash('sha256').update(raw).digest('hex').slice(0, 16)
+/**
+ * The stable id of one marker file's body (what `HeldState.holdId` carries).
+ * The file's inode and mtime are mixed in so two byte-identical bodies — every
+ * empty marker, say — written by different updates are different holds
+ * (review R8 m7).
+ */
+export function markerHoldId(raw: Buffer, file?: { ino: number; mtimeMs: number } | null): string {
+  const hash = createHash('sha256').update(raw)
+
+  if (file) {
+    hash.update(`\0${file.ino}:${file.mtimeMs}`)
+  }
+
+  return hash.digest('hex').slice(0, 16)
 }
 
 /**
@@ -128,6 +145,7 @@ export function liveMarkerProbe({
   createTime,
   onLiveMarker,
   onHeld,
+  onOverride,
   log,
   now = Date.now,
   reprobeMs = HELD_REPROBE_MS
@@ -150,7 +168,15 @@ export function liveMarkerProbe({
       return false
     }
 
-    const holdId = markerHoldId(inspection.raw)
+    let file: fs.Stats | null = null
+
+    try {
+      file = fs.statSync(markerPath(hermesHome))
+    } catch {
+      // Gone since the read: the body alone names it until the next poll.
+    }
+
+    const holdId = markerHoldId(inspection.raw, file)
     const previous = asked.get(holdId)
     let entry = previous
 
@@ -161,7 +187,16 @@ export function liveMarkerProbe({
 
     if (due) {
       const generation = recheckGeneration
-      const verdict = await reclaim()
+      let verdict = await reclaim()
+
+      // A body that blocked never clears on `unsupported`: the checkout's
+      // script went missing or unreadable after answering for it (R8 M5).
+      if (
+        verdict.kind === 'unsupported' &&
+        (STILL_RUNNING.has(previous?.verdict.kind ?? '') || firstHeldAt.has(holdId))
+      ) {
+        verdict = { kind: 'error' }
+      }
 
       if (!previous || STILL_RUNNING.has(previous.verdict.kind) !== STILL_RUNNING.has(verdict.kind)) {
         log?.(
@@ -197,6 +232,8 @@ export function liveMarkerProbe({
             'chose Start anyway. The marker is left in place.'
         )
       }
+
+      onOverride?.(holdId)
 
       return false
     }

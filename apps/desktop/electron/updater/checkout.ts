@@ -144,7 +144,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
     scriptPath: string,
     updateStartedAt: number
   ): Promise<{ plan: HandoffPlan } | { refusal: UpdaterApplyResultWire }> {
-    const protocol = readHandoffProtocol(scriptPath)
+    const protocol = readHandoffProtocol(scriptPath) ?? 1
 
     if (protocol < 2) {
       deps.rememberLog('[updates] hand-off script predates protocol 2; legacy acknowledgment (live owner + started_at)')

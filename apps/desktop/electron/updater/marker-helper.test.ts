@@ -68,9 +68,8 @@ test.each([
 
 describe.skipIf(process.platform === 'win32')('runMarkerHelper against a real script process', () => {
   test.each([
-    ['reclaimed', { kind: 'reclaimed' }],
-    ['held', { kind: 'held' }],
-    ['live 31337', { kind: 'live', pid: 31337 }],
+    ['foreign', { kind: 'foreign' }],
+    ['busy', { kind: 'busy' }],
     ['taken 99', { kind: 'taken', pid: 99 }],
     ['withdrawn', { kind: 'withdrawn' }]
   ])('prints %j', async (verdict, expected) => {
@@ -117,6 +116,39 @@ describe.skipIf(process.platform === 'win32')('runMarkerHelper against a real sc
       kind: 'error'
     })
   })
+
+  test('a verdict only the other op can give is an error, never clearance (R8 m7)', async () => {
+    const { root, home } = fakeHelperCheckout()
+    const opts = { updateRoot: root, hermesHome: home, desktopPid: 4242, runId: 'desk-4242-abc-0001', isWindows: false }
+
+    for (const [op, verdict, expected] of [
+      ['reclaim', 'live 31337', 'live'],
+      ['reclaim', 'held', 'held'],
+      ['reclaim', 'reclaimed', 'reclaimed'],
+      ['reclaim', 'foreign', 'error'],
+      ['reclaim', 'withdrawn', 'error'],
+      ['reclaim', 'taken 99', 'error'],
+      ['withdraw', 'held', 'error'],
+      ['withdraw', 'reclaimed', 'error'],
+      ['withdraw', 'live 31337', 'error']
+    ] as const) {
+      fs.writeFileSync(path.join(home, 'helper-verdict'), verdict)
+      assert.equal((await runMarkerHelper(op, opts)).kind, expected, `${op} => ${verdict}`)
+    }
+  })
+
+  test.skipIf(process.getuid?.() === 0)(
+    'a script that exists but cannot be read is an error, never an older checkout (R8 M5)',
+    async () => {
+      const { root, home } = fakeHelperCheckout()
+      fs.writeFileSync(path.join(home, 'helper-verdict'), 'reclaimed')
+      fs.chmodSync(path.join(root, 'scripts', 'desktop-update', 'posix.sh'), 0o000)
+
+      assert.deepEqual(await runMarkerHelper('reclaim', { updateRoot: root, hermesHome: home, isWindows: false }), {
+        kind: 'error'
+      })
+    }
+  )
 
   test('a helper past its timeout is killed and reports error', async () => {
     const { root, home } = fakeHelperCheckout()

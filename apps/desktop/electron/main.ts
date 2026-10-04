@@ -634,7 +634,7 @@ import { readSourceUpdate, type SourceUpdate } from './updater/checkout-source'
 import { ExternalStrategy } from './updater/external'
 import { readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './updater/feed-config'
 import { createChannelMacStrategy, createMacStrategy } from './updater/mac-client'
-import { handoffScriptPath, readHandoffProtocol, runMarkerHelper } from './updater/marker-helper'
+import { runMarkerHelper } from './updater/marker-helper'
 import { UpdateOperation } from './updater/operation'
 import {
   type ConsumedRelaunch,
@@ -3010,7 +3010,8 @@ const UPDATE_HANDOFF_DWELL_MS = 2500
 // `finally` clears updateInFlight immediately after the hand-off is accepted.
 function updateGateDeps(
   onLiveMarker?: (marker: { startedAt: number | null }) => void,
-  onHeld?: (state: HeldState) => void
+  onHeld?: (state: HeldState) => void,
+  onOverride?: (holdId: string) => void
 ) {
   // One creation-time probe per pid for this wait: on Windows each probe is a
   // powershell spawn and the gate polls every second.
@@ -3028,16 +3029,12 @@ function updateGateDeps(
       createTime,
       onLiveMarker,
       onHeld,
+      onOverride,
       log: rememberLog,
-      reclaim: async () => {
-        const updateRoot = resolveUpdateRoot()
-
-        if (readHandoffProtocol(handoffScriptPath(updateRoot, IS_WINDOWS)) < 2) {
-          return { kind: 'unsupported' }
-        }
-
-        return runMarkerHelper('reclaim', { updateRoot, hermesHome: HERMES_HOME, isWindows: IS_WINDOWS })
-      }
+      // A missing or pre-protocol-2 script answers `unsupported`; one that
+      // exists but cannot be read answers `error` (R8 M5).
+      reclaim: () =>
+        runMarkerHelper('reclaim', { updateRoot: resolveUpdateRoot(), hermesHome: HERMES_HOME, isWindows: IS_WINDOWS })
     }),
     isUpdateInFlight: () => updateInFlight,
     isHandoffActive: () => isQuittingForHandoff
@@ -3175,11 +3172,20 @@ async function waitForUpdateToFinish() {
   // when it has blocked this wait (the blocked screen's grace, R8 D3).
   let held: HeldState | null = null
   let blockedSince: number | null = null
+  // The wait ended because the user chose Start anyway, not because the
+  // update finished (R8 m7): no bundle-swap relaunch mid-hold.
+  let overridden = false
 
   const gateDeps = updateGateDeps(
-    marker => (parkedRunStartedAt = marker.startedAt),
+    marker => {
+      parkedRunStartedAt = marker.startedAt
+      overridden = false
+    },
     state => {
       held = state
+    },
+    () => {
+      overridden = true
     }
   )
 
@@ -3322,6 +3328,8 @@ async function waitForUpdateToFinish() {
 
   if (outcome === 'timeout') {
     rememberLog('[updates] update still in progress after wait timeout; starting backend anyway')
+  } else if (overridden) {
+    rememberLog('[updates] proceeding with backend start over a held update (user chose Start anyway); no relaunch')
   } else if (relaunchIntoSwappedBundle()) {
     await advanceBootProgress('backend.update-restart', 'Restarting Hermes to load the updated app…', 14)
     // Park while the scheduled exit lands so this stale build never starts a

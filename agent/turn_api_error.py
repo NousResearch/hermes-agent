@@ -13,7 +13,7 @@ import json
 import logging
 import ssl
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from agent.turn_failure_copy import interrupted_retry
 

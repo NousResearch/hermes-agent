@@ -31,8 +31,7 @@ logger = logging.getLogger("agent.conversation_loop")
 # the Codex incomplete continuation, so the text branch below never double-continues it.
 _CONTINUABLE_MODES = {"chat_completions", "bedrock_converse", "anthropic_messages", "codex_responses"}
 _THINK_TAG_RE = re.compile(r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>', re.IGNORECASE)
-_TRUNCATED_FINAL = site_copy("truncated")
-_FIRST_TRUNCATED_FINAL = _TRUNCATED_FINAL
+
 # #106260: a stream that died on a context-overflow error after partial delivery must not seed a
 # continuation — the transcript already cannot fit, and appending the partial stub grows every
 # later request into the same overflow. End the turn via the recovery contract instead.
@@ -430,7 +429,7 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
             f"{agent.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
             force=True, diagnostic=True,
         )
-        _final_response = _TRUNCATED_FINAL
+        _final_response = site_copy("truncated")
     agent._cleanup_task_resources(st.effective_task_id)
     # Prior tool batches can leave a tool-result tail; this path never reaches finalize_turn.
     close_interrupted_tool_sequence(st.messages, _final_response)
@@ -523,12 +522,12 @@ def recover_from_truncation(
     if len(messages) > 1:
         agent._vprint(f"{agent.log_prefix}   ⏪ Rolling back to last complete assistant turn", diagnostic=True)
         return st.end_turn(
-            _TRUNCATED_FINAL, result_messages=agent._get_messages_up_to_last_assistant(messages)
+            site_copy("truncated"), result_messages=agent._get_messages_up_to_last_assistant(messages)
         )
     # First message was truncated - mark as failed
     agent._flush_status_buffer()
     agent._vprint(f"{agent.log_prefix}❌ First response truncated - cannot recover", force=True, diagnostic=True)
-    return st.end_turn(_FIRST_TRUNCATED_FINAL, cleanup=False, failed=True)
+    return st.end_turn(site_copy("truncated"), cleanup=False, failed=True)
 
 
 _CODEX_REPLAY_KEYS = (

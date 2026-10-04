@@ -71,6 +71,8 @@ export function resolveActivePreviewTab(tabs: readonly PreviewTab[] = previewTab
 
 /** The active preview among the tabs `owner` (a stored id; null = a session
  *  with none yet; omitted = the focused session) may see. */
-export function activePreviewTabFor(owner?: PreviewOwner): null | PreviewTab {
-  return resolveActivePreviewTab(previewTabsFor(owner))
+export function activePreviewTabFor(owner?: PreviewOwner, tabId?: string): null | PreviewTab {
+  const tabs = previewTabsFor(owner)
+
+  return tabId === undefined ? resolveActivePreviewTab(tabs) : tabs.find(tab => tab.id === tabId) ?? null
 }

@@ -2,6 +2,7 @@ import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { BrowserWorkspaceApi, BrowserWorkspaceOpen } from '../electron/browser-workspace-types'
 import type { ScreenshotApi } from '../electron/command-screenshot-types'
 import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { MachineProfile } from '../electron/machine-profile'
@@ -101,7 +102,8 @@ declare global {
       // Pop the in-app Browser (webview + address bar) into its own OS window.
       // `tabId` is the `$previewTabs` id; closing the window fires
       // `onBrowserPopoutClosed` so the caller can dock the tab again.
-      openBrowserWindow: (tabId: string) => Promise<{ ok: boolean; error?: string }>
+      openBrowserWindow: (tabId: string, workspace?: BrowserWorkspaceOpen) => Promise<{ ok: boolean; error?: string }>
+      browserWorkspace?: BrowserWorkspaceApi
       // Cross-window renderer relay (pop-out Browser ↔ chat windows). Electron
       // main relays opaque payloads to the other Hermes renderer windows;
       // renderer code keeps the destination exact and rejects anything not

@@ -40,8 +40,8 @@ export function registerPreviewNav(tabId: string, handle: PreviewNavHandle): () 
  *  session's stored id; omitted = the focused session) may see, for callers
  *  with no focus to key off — the agent's drive_preview, which runs while
  *  focus is in the composer. */
-export function activePreviewNav(owner?: PreviewOwner): PreviewNavHandle | null {
-  const tab = activePreviewTabFor(owner)
+export function activePreviewNav(owner?: PreviewOwner, tabId?: string): PreviewNavHandle | null {
+  const tab = activePreviewTabFor(owner, tabId)
 
   return (tab && handles.get(tab.id)) || null
 }

@@ -5248,8 +5248,12 @@ export const esOverrides = {
     openPreview: 'Abrir vista previa',
     openInBrowser: 'Abrir en el navegador',
     openInExternal: 'Abrir externamente',
+    newBrowserTab: 'Nueva pestaña del navegador',
     popIn: 'Acoplar',
     popOut: 'Desacoplar',
+    popOutFailed: 'No se pudo desacoplar el navegador',
+    popOutOwnerUnavailable:
+      'No se puede identificar el chat del navegador. Abre su chat o grupo e inténtalo de nuevo, o sigue usando esta pestaña acoplada.',
     linkHint: '⌘/Ctrl-clic para acceder al panel de vista previa',
     sourceLineTitle: 'Haz clic para seleccionar · Mayús-clic para ampliar · arrastra al compositor',
     source: 'FUENTE',

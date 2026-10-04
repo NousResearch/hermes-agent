@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
@@ -51,6 +51,56 @@ vi.mock('./group-chat-parts', () => ({
   GroupMentionInput: () => null
 }))
 afterEach(cleanup)
+
+it('pins group comments to the durable room and hosting route across an ambient connection switch', async () => {
+  Element.prototype.scrollIntoView = vi.fn()
+  const { host } = await import('@hermes/plugin-sdk')
+  const connection = vi.spyOn(host.state.connectionId!, 'get').mockReturnValue('room-host-B')
+  const { $groupChats } = await import('./group-chat')
+  const { GroupChatWorkspace } = await import('./group-chat-view')
+  const { capturePreviewAnnotateDestination } = await import('@/lib/preview-annotate/handoff')
+  const listeners = new Set<(packet: unknown) => void>()
+  const send = vi.fn()
+  Object.assign(window, { hermesDesktop: { windowRelay: {
+    send,
+    onMessage: (listener: (packet: unknown) => void) => {
+      listeners.add(listener)
+
+      return () => listeners.delete(listener)
+    }
+  } } })
+
+  try {
+    $groupChats.set({ Bound: { roomId: 'original-room', epoch: 1, log: [], sessions: {}, watermarks: {} } })
+    const view = render(<GroupChatWorkspace group="Bound" members={[]} />)
+    const destination = capturePreviewAnnotateDestination()!
+    expect(destination.conversation).toMatchObject({ kind: 'group', connectionId: 'room-host-B', profile: 'default' })
+
+    const deliver = (owner = destination) => act(() => {
+      for (const listener of listeners) {
+        listener({ type: 'preview-annotate-handoff', requestId: crypto.randomUUID(), destination: owner, prompt: 'Bound comment', images: [], count: 1 })
+      }
+    })
+
+    connection.mockReturnValue('ambient-A')
+    view.rerender(<GroupChatWorkspace group="Bound" members={[]} />)
+    deliver({ ...destination, conversation: { ...destination.conversation!, connectionId: 'ambient-A' } })
+    expect(send).not.toHaveBeenCalled()
+    deliver()
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ ok: true }))
+    send.mockClear()
+    act(() => $groupChats.set({ Bound: { roomId: 'replacement-room', epoch: 2, log: [], sessions: {}, watermarks: {} } }))
+    deliver()
+    expect(send).not.toHaveBeenCalled()
+    act(() => $groupChats.set({}))
+    deliver()
+    expect(send).not.toHaveBeenCalled()
+  } finally {
+    cleanup()
+    connection.mockRestore()
+    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+  }
+})
 
 it('renders member replies through the shell message renderer, resolving media only for members on this gateway', async () => {
   Element.prototype.scrollIntoView = vi.fn()

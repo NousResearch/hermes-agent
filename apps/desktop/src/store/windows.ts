@@ -1,3 +1,5 @@
+import type { BrowserWorkspaceOpen } from '../../electron/browser-workspace-types'
+
 import { notifyError } from './notifications'
 
 // Window flag set by the Electron main process when it opens a standalone
@@ -97,6 +99,14 @@ export function isBrowserWindow(): boolean {
   browserWindowCache = result
 
   return result
+}
+
+export function windowBrowserWorkspaceId(): null | string {
+  try {
+    return new URLSearchParams(window.location.search).get('browserWindow') || null
+  } catch {
+    return null
+  }
 }
 
 export function windowBrowserTabId(): null | string {
@@ -262,12 +272,18 @@ export async function openNewWindow(route?: { connectionId: null | string; profi
 
 /** Pop the in-app Browser into its own OS window. Returns whether the
  *  window opened so the caller can dock the tab again on failure. */
-export async function openBrowserInNewWindow(tabId: string): Promise<boolean> {
+export async function openBrowserInNewWindow(tabId: string, workspace?: BrowserWorkspaceOpen): Promise<boolean> {
   if (!tabId || !canOpenBrowserWindow()) {
     return false
   }
 
-  return runWindowOpen(() => window.hermesDesktop.openBrowserWindow(tabId), 'Could not pop out browser')
+  return runWindowOpen(
+    () =>
+      workspace
+        ? window.hermesDesktop.openBrowserWindow(tabId, workspace)
+        : window.hermesDesktop.openBrowserWindow(tabId),
+    'Could not pop out browser'
+  )
 }
 
 // Resume a session in the user's own terminal emulator, running the TUI there.

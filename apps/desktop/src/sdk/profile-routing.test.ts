@@ -235,7 +235,7 @@ describe('connection-aware plugin host APIs', () => {
     expect(refreshProfiles).toHaveBeenCalled()
     // A leftover Bot Mode tile would restore on relaunch and dial the deleted
     // profile's backend, re-creating its HERMES_HOME (#94235).
-    expect(dropTilesForProfile).toHaveBeenCalledWith('worker', undefined)
+    expect(dropTilesForProfile).toHaveBeenCalledWith('worker', { connectionId: 'local', profile: 'worker' })
   })
 
   it('pins an ambient SSH profile delete to the active connection and target profile', async () => {

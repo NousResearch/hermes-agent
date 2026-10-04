@@ -1,9 +1,13 @@
 import { useStore } from '@nanostores/react'
-import { useEffect } from 'react'
+import { useCallback, useEffect } from 'react'
 
 import { $restartPreviewServer } from '@/app/contrib/panes'
-import { $previewReloadRequest, $previewTabs, adoptPersistedBrowserTab } from '@/store/preview'
-import { isBrowserWindow } from '@/store/windows'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { $browserWorkspaces, commandBrowserWorkspace } from '@/store/browser-workspaces'
+import { selectRightRailTab } from '@/store/layout'
+import { $poppedBrowserTabIds, $previewReloadRequest, $previewTabs, adoptPersistedBrowserTab } from '@/store/preview'
+import { noteExplicitPreviewOpen } from '@/store/preview-explicit'
+import { isBrowserWindow, windowBrowserWorkspaceId } from '@/store/windows'
 
 import { PreviewPane } from './preview-pane'
 
@@ -28,13 +32,48 @@ export function PreviewTilePane({ onClose, tabId }: PreviewTilePaneProps) {
   const previewReloadRequest = useStore($previewReloadRequest)
   const previewTabs = useStore($previewTabs)
   const restartPreviewServer = useStore($restartPreviewServer)
+  const visible = usePaneVisible()
+
+  const onGuestInteraction = useCallback(() => {
+    const tab = $previewTabs.get().find(tab => tab.id === tabId)
+
+    if (!visible || !tab) {
+      return
+    }
+
+    const workspaceId = windowBrowserWorkspaceId()
+
+    if (workspaceId) {
+      const workspace = $browserWorkspaces.get()[workspaceId]
+
+      if (
+        !workspace || workspace.closed || workspace.activeTabId !== tabId ||
+        !workspace.tabs.some(tab => tab.id === tabId)
+      ) {
+        return
+      }
+
+      // Re-select even the same tab: the opener may now be looking at a docked
+      // sibling. Only this explicit gesture advances detached selection intent.
+      void commandBrowserWorkspace({ kind: 'select', tabId })
+
+      return
+    }
+
+    if ($poppedBrowserTabIds.get().has(tabId)) {
+      return
+    }
+
+    noteExplicitPreviewOpen(tab.id)
+    selectRightRailTab(tab.id)
+  }, [tabId, visible])
 
   // A popped-out Browser is a fresh renderer: no session ever pushes a scope
   // there, so its scoped view may start empty. Pull this window's tab in from
   // shared storage; the docked mirror never runs this (it is not a browser
   // window), so a closed tab stays closed there.
   useEffect(() => {
-    if (isBrowserWindow() && tabId && !previewTabs.some(tab => tab.id === tabId)) {
+    if (isBrowserWindow() && !windowBrowserWorkspaceId() && tabId && !previewTabs.some(tab => tab.id === tabId)) {
       adoptPersistedBrowserTab(tabId)
     }
   }, [previewTabs, tabId])
@@ -51,6 +90,7 @@ export function PreviewTilePane({ onClose, tabId }: PreviewTilePaneProps) {
     <PreviewPane
       embedded
       onClose={onClose}
+      onGuestInteraction={onGuestInteraction}
       onRestartServer={target.kind === 'url' ? (restartPreviewServer ?? undefined) : undefined}
       reloadRequest={previewReloadRequest}
       tabId={tabId}

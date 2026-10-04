@@ -43,7 +43,7 @@ import {
   type PreviewTarget,
   setPreviewTabPinned
 } from '@/store/preview'
-import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
+import { clearExplicitPreviewOpen, explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 import { canOpenBrowserWindow } from '@/store/windows'
 
 import { paneMirror } from './pane-mirror'
@@ -209,6 +209,8 @@ function PreviewTabLead({ tabId }: { tabId: string }) {
   return <FileTypeIcon className="opacity-70" path={target.path || target.url} size="0.6875rem" />
 }
 
+import { installBrowserWorkspaceSync, selectedDetachedBrowser } from '@/store/browser-workspaces'
+
 const previewPaneId = (tabId: string) => `${PREVIEW_TILE_PREFIX}:${tabId}`
 
 /** The pane a NEW preview tile should stack into: another preview tile already
@@ -232,6 +234,7 @@ function existingPreviewAnchor(tabId: string): string | undefined {
  *  and the tree's active pane agreeing, and front a tile when its tab is
  *  selected. Call once from the root. */
 export function watchPreviewTiles(): void {
+  installBrowserWorkspaceSync()
   watchPreviewTileMirror()
 
   window.hermesDesktop?.onBrowserPopoutClosed?.(tabId => {
@@ -311,6 +314,29 @@ export function watchPreviewTiles(): void {
 
   $layoutTree.listen(follow)
   $activeTreeGroup.listen(follow)
+
+  // Returning to the same docked zone is still a new look. Its group id may
+  // not change, so the idempotent zone tracker alone cannot release a prior
+  // detached selection. Layout/page emissions never enter this event path.
+  const interact = (event: Event) => {
+    if (!selectedDetachedBrowser()) {
+      return
+    }
+
+    const element = event.target instanceof Element ? event.target : null
+    const groupId = element?.closest<HTMLElement>('[data-tree-group]')?.dataset.treeGroup
+    const tree = $layoutTree.get()
+    const clickedTab = element?.closest<HTMLElement>('[data-tree-tab]')?.dataset.treeTab
+    const active = clickedTab ?? (groupId && tree ? findGroup(tree, groupId)?.active : undefined)
+
+    if (active?.startsWith(`${PREVIEW_TILE_PREFIX}:`)) {
+      clearExplicitPreviewOpen()
+      selectRightRailTab(active.slice(PREVIEW_TILE_PREFIX.length + 1) as RightRailTabId)
+    }
+  }
+
+  window.addEventListener('pointerdown', interact, true)
+  window.addEventListener('focusin', interact, true)
 }
 
 /** Hidden sessions' live pages kept mounted at once. WHY a cap: every kept

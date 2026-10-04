@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $browserWorkspaces, receiveBrowserWorkspace, selectedPopoutTarget, validPopoutTarget } from '@/store/browser-workspaces'
 import { $rightRailActiveTabId } from '@/store/layout'
 import { closeRightRail, openPreview } from '@/store/preview'
+
+import { BrowserWorkspaces } from '../../../../electron/browser-workspaces'
 
 import { actOnActivePreview } from './preview-act'
 import { dragFrom } from './preview-drive'
@@ -43,6 +46,8 @@ beforeEach(() => {
 afterEach(() => {
   for (const cleanup of cleanups.splice(0)) {cleanup()}
   vi.restoreAllMocks()
+  window.history.replaceState({}, '', '/')
+  $browserWorkspaces.set({})
   vi.useRealTimers()
 })
 
@@ -51,6 +56,106 @@ async function finish<T>(pending: Promise<T>): Promise<T> {
 
   return pending
 }
+
+// Main's real workspace authority and renderer selection guard, with only the
+// native Electron guest boundary replaced. Fresh captures share guest identity.
+function detachedPane() {
+  const conversation = { kind: 'session' as const, id: 'stored-drag', connectionId: 'local', profile: 'default' }
+  const runtime = new BrowserWorkspaces((_recipients, state) => receiveBrowserWorkspace(state))
+
+  const state = runtime.open(1, {
+    scope: 'default',
+    tab: { id: 'url:seed', sessionId: conversation.id, pinned: false,
+      target: { kind: 'url', label: 'Seed', source: 'https://seed.test', url: 'https://seed.test' } },
+    destination: { kind: 'composer', windowId: 'main', surfaceId: 'fixture', target: 'main', conversation }
+  }, conversation)
+
+  window.history.replaceState({}, '', `/?win=browser&browserWindow=${state.id}`)
+  runtime.attach(state.id, 2)
+  const selected = runtime.command(2, state.id, { kind: 'new' })!
+  receiveBrowserWorkspace(selected)
+  // The opener still points at the seed: authoritative detached selection wins.
+  $rightRailActiveTabId.set('url:seed')
+  const target = selectedPopoutTarget(conversation)!
+  expect(target.tabId).not.toBe('url:seed')
+  expect(validPopoutTarget(target)).toBe(true)
+  const events: PreviewInputEvent[] = []
+
+  const guest: PreviewGuest = {
+    isConnected: true, getWebContentsId: () => 42, getZoomFactor: () => 1,
+    focus: vi.fn(), sendInputEvent: vi.fn(event => { events.push(event) }),
+    executeJavaScript: vi.fn(async () => JSON.stringify({ success: true, point: { x: 100, y: 80 }, hit: { trusted: true } }))
+  }
+
+  const seed = { ...guest, focus: vi.fn(), sendInputEvent: vi.fn(), executeJavaScript: vi.fn() }
+
+  for (const [id, current] of [['url:seed', seed], [target.tabId, guest]] as const) {
+    cleanups.push(registerPreviewInput(id, () => capturePreviewGuest(() => current)))
+    cleanups.push(registerPreviewScriptRunner(id, code => current.executeJavaScript(code)))
+  }
+
+  const owner = { profile: 'default', sessionId: conversation.id, runtimeId: null }
+  const pinned = { tabId: target.tabId, valid: () => validPopoutTarget(target) }
+
+  return { runtime, state, target, guest, seed, events, owner, pinned, conversation }
+}
+
+it('drags the authoritative non-seed detached tab through fresh guest captures without touching the seed', async () => {
+  const f = detachedPane()
+  const result = await finish(actOnActivePreview(action, undefined, f.owner, f.pinned))
+  expect(result).toMatchObject({ success: true, acted: 'drag input delivered' })
+  expect(f.events.filter(event => event.type === 'mouseDown')).toHaveLength(1)
+  expect(f.events.filter(event => event.type === 'mouseUp')).toHaveLength(1)
+  expect(f.guest.executeJavaScript).toHaveBeenCalledTimes(2)
+  expect(f.seed.executeJavaScript).not.toHaveBeenCalled()
+  expect(f.seed.sendInputEvent).not.toHaveBeenCalled()
+  expect(f.seed.focus).not.toHaveBeenCalled()
+})
+
+it.each(['select', 'dock', 'retire-session', 'abort'] as const)('stops a held detached drag on %s, awaits original release and never retargets', async change => {
+  const f = detachedPane()
+  const abort = new AbortController()
+  let released!: () => void
+  let lastHeld: PreviewInputEvent | undefined
+  vi.mocked(f.guest.sendInputEvent).mockImplementation(event => {
+    f.events.push(event)
+
+    if (event.type === 'mouseMove' && event.modifiers?.includes('leftbuttondown')) {
+      lastHeld = event
+
+      if (change === 'select') {f.runtime.command(2, f.state.id, { kind: 'select', tabId: 'url:seed' })}
+
+      if (change === 'dock') {f.runtime.command(2, f.state.id, { kind: 'dock', tabId: f.target.tabId })}
+
+      if (change === 'retire-session') {f.runtime.retireSession(1, f.conversation.id)}
+
+      if (change === 'abort') {abort.abort('interrupted')}
+    }
+
+    if (event.type === 'mouseUp') {return new Promise<void>(resolve => {released = resolve})}
+  })
+  let settled = false
+
+  const pending = actOnActivePreview(action, abort.signal, f.owner, f.pinned).then(result => {
+    settled = true
+
+    return result
+  })
+
+  await vi.advanceTimersByTimeAsync(1000)
+  expect(lastHeld).toBeDefined()
+  expect(f.events.filter(event => event.type === 'mouseMove' && event.modifiers?.length)).toHaveLength(1)
+  expect(f.events.filter(event => event.type === 'mouseUp')).toEqual([{ ...lastHeld, type: 'mouseUp', modifiers: undefined, button: 'left', clickCount: 1 }])
+  expect(settled).toBe(false)
+  expect(f.guest.executeJavaScript).toHaveBeenCalledTimes(1)
+  expect(f.seed.sendInputEvent).not.toHaveBeenCalled()
+  expect(f.seed.executeJavaScript).not.toHaveBeenCalled()
+  released()
+  expect(await pending).toMatchObject({ success: false })
+  await vi.advanceTimersByTimeAsync(21_000)
+  expect(f.events.filter(event => event.type === 'mouseDown')).toHaveLength(1)
+  expect(f.seed.sendInputEvent).not.toHaveBeenCalled()
+})
 
 describe('native preview drag boundary and ownership', () => {
   it.each([

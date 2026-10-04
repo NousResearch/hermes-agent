@@ -82,8 +82,8 @@ export function registerPreviewInput(tabId: string, handle: InputSource): () => 
 /** The ACTIVE preview tab's input channel among those `owner` (omitted = the
  *  focused session) may see. Null = nothing real to drive, and the caller
  *  falls back to synthesizing events inside the page. */
-export function activePreviewInput(owner?: PreviewOwner): PreviewInputHandle | null {
-  const tab = activePreviewTabFor(owner)
+export function activePreviewInput(owner?: PreviewOwner, tabId?: string): PreviewInputHandle | null {
+  const tab = activePreviewTabFor(owner, tabId)
 
   const source = tab && handles.get(tab.id)
 

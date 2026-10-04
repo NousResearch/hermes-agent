@@ -11,6 +11,16 @@ test('buildBrowserWindowUrl puts win=browser before the hash (dev server)', () =
   assert.ok(url.indexOf('?win=browser') < url.indexOf('#'))
 })
 
+test('buildBrowserWindowUrl keeps workspace identity independent of a removed seed', () => {
+  const url = buildBrowserWindowUrl('url:seed', { devServer: 'http://localhost:5173', windowId: 'workspace-a' })
+  const parsed = new URL(url)
+  assert.equal(parsed.searchParams.get('browserWindow'), 'workspace-a')
+  assert.equal(parsed.searchParams.get('tab'), 'url:seed')
+  const reloaded = buildBrowserWindowUrl(null, { rendererIndexPath: '/opt/app/index.html', windowId: 'workspace-a' })
+  assert.equal(new URL(reloaded).searchParams.get('browserWindow'), 'workspace-a')
+  assert.equal(new URL(reloaded).searchParams.has('tab'), false)
+})
+
 test('buildBrowserWindowUrl encodes the tab id', () => {
   const url = buildBrowserWindowUrl('url:browser a/b', { devServer: 'http://localhost:5173' })
 

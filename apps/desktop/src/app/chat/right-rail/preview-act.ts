@@ -798,7 +798,8 @@ async function driveScroll(
 export async function actOnActivePreview(
   action: Omit<PreviewActAction, 'kind'> & { kind: string },
   signal?: AbortSignal,
-  owner?: PreviewOwner
+  owner?: PreviewOwner,
+  target?: { tabId: string; valid: () => boolean }
 ): Promise<PreviewActResult> {
   const error = previewDragError(action)
 
@@ -806,10 +807,17 @@ export async function actOnActivePreview(
     return { error: error ?? 'Preview interaction cancelled.', success: false }
   }
 
+  const assertTarget = () => {
+    if (target && !target.valid()) {
+      throw new Error('The requested browser tab closed, moved, or is no longer selected.')
+    }
+  }
+
+  assertTarget()
   const nav = NAV_ACTIONS.find(verb => verb === action.kind)
 
   if (nav) {
-    const handle = activePreviewNav(owner)
+    const handle = activePreviewNav(owner, target?.tabId)
 
     if (!handle) {
       return { error: NOTHING_OPEN, success: false }
@@ -822,7 +830,19 @@ export async function actOnActivePreview(
     return { acted: nav, note: 'Page is loading — call elements to see what is on it.', success: true }
   }
 
-  const run = activePreviewScriptRunner(owner)
+  const registeredRun = activePreviewScriptRunner(owner, target?.tabId)
+
+  const run =
+    registeredRun &&
+    (async (code: string) => {
+      assertTarget()
+
+      if (target && activePreviewScriptRunner(owner, target.tabId) !== registeredRun) {
+        throw new Error('Browser guest was replaced.')
+      }
+
+      return registeredRun(code)
+    })
 
   if (!run) {
     return { error: NOTHING_OPEN, success: false }
@@ -854,10 +874,54 @@ export async function actOnActivePreview(
   let release: (() => void) | undefined
 
   try {
-    const input = activePreviewInput(owner)
+    const capturedInput = activePreviewInput(owner, target?.tabId)
+
+    const checkInput = () => {
+      assertTarget()
+
+      if (capturedInput) {
+        capturedInput.assertCurrent?.()
+      }
+
+      if (target && capturedInput) {
+        const current = activePreviewInput(owner, target.tabId)
+
+        // Production sources create a fresh handle per capture. Compare the
+        // guest identity, not that ephemeral wrapper; never adopt the new one.
+        if (!current || (current.identity ?? current) !== (capturedInput.identity ?? capturedInput)) {
+          throw new Error('Browser guest was replaced.')
+        }
+      }
+    }
+
+    const input: PreviewInputHandle | null = capturedInput && {
+      ...capturedInput,
+      identity: capturedInput.identity ?? capturedInput,
+      assertCurrent: checkInput,
+      focus: () => {
+        checkInput()
+        capturedInput.focus()
+      },
+      send: event => {
+        checkInput()
+
+        return capturedInput.send(event)
+      },
+      run: capturedInput.run && (async code => {
+        checkInput()
+        const result = await capturedInput.run!(code)
+        checkInput()
+
+        return result
+      }),
+      // A retired target stops new input, but release must still reach only
+      // the originally captured surviving guest and await its native result.
+      release: event => (capturedInput.release ?? capturedInput.send)(event)
+    }
+
     const interaction = DRIVEN.includes(typed.kind) || typed.kind === 'drag' || typed.kind === 'scroll'
 
-    if (typed.kind === 'drag' && (!input?.run || !input.identity)) {
+    if (typed.kind === 'drag' && (!capturedInput?.run || !capturedInput.identity)) {
       return { error: 'Native drag requires a captured preview guest input channel.', success: false }
     }
 

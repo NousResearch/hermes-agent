@@ -55,7 +55,28 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   openSessionInTerminal: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openInTerminal', sessionId, opts),
   openWindow: (options?: DesktopProfileRoute) => ipcRenderer.invoke('hermes:window:openInstance', options),
-  openBrowserWindow: tabId => ipcRenderer.invoke('hermes:window:openBrowser', tabId),
+  openBrowserWindow: (tabId, workspace) => ipcRenderer.invoke('hermes:window:openBrowser', tabId, workspace),
+  browserWorkspace: {
+    updateOwnership: update => ipcRenderer.send('hermes:browser-workspace:ownership', update),
+    retireProfile: change => ipcRenderer.invoke('hermes:browser-workspace:retire-profile', change),
+    retireSession: id => ipcRenderer.send('hermes:browser-workspace:retire-session', id),
+    acknowledge: (id, revision) => ipcRenderer.send('hermes:browser-workspace:acknowledge', id, revision),
+    snapshots: () => ipcRenderer.invoke('hermes:browser-workspace:snapshots'),
+    command: (id, command) => ipcRenderer.invoke('hermes:browser-workspace:command', id, command),
+    onChanged: callback => {
+      const listener = (_event, state) => callback(state)
+      ipcRenderer.on('hermes:browser-workspace:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:browser-workspace:changed', listener)
+    },
+    setShortcuts: bindings => ipcRenderer.send('hermes:browser-workspace:shortcuts', bindings),
+    onShortcut: callback => {
+      const listener = (_event, action) => callback(action)
+      ipcRenderer.on('hermes:browser-workspace:shortcut', listener)
+
+      return () => ipcRenderer.removeListener('hermes:browser-workspace:shortcut', listener)
+    }
+  },
   windowRelay: {
     send: payload => ipcRenderer.send('hermes:window:relay', payload),
     onMessage: callback => {

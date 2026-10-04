@@ -174,3 +174,31 @@ def test_output_modalities_are_forwarded_for_picker_filters(monkeypatch):
     inv._apply_capabilities(rows)
 
     assert rows[0]["output_modalities"] == {"vision": ["image", "text"]}
+
+
+def test_output_modalities_fall_back_to_openrouter_namespace(monkeypatch):
+    """Aggregator rows carry vendor-prefixed ids their own namespace lacks; the read
+    falls back to openrouter like ``_apply_featured``, instead of filing the model
+    under the picker's Unknown bucket."""
+    _patch_catalog(monkeypatch, {})
+
+    calls = []
+
+    class Info:
+        output_modalities = ("text",)
+
+    def fake_get_model_info(provider, model, config=None):
+        calls.append((provider, model))
+        if provider == "nous" and model == "openai/gpt-5.6":
+            return None  # warm cache: models.dev doesn't namespace this id under nous
+        if provider == "openrouter" and model == "openai/gpt-5.6":
+            return Info()
+        return None
+
+    monkeypatch.setattr("agent.models_dev.get_model_info", fake_get_model_info)
+    rows = [{"slug": "nous", "models": ["openai/gpt-5.6"]}]
+    inv._apply_capabilities(rows)
+
+    assert rows[0]["output_modalities"] == {"openai/gpt-5.6": ["text"]}
+    assert ("nous", "openai/gpt-5.6") in calls
+    assert ("openrouter", "openai/gpt-5.6") in calls

@@ -524,3 +524,128 @@ describe('the catalog renders per-model pricing', () => {
     expect(screen.queryByText('free')).toBeNull()
   })
 })
+
+// models.dev publishes exactly five output modalities; the filter buttons and
+// the groupModels narrowing must speak that vocabulary (never dead buttons)
+// and read the backend's per-model output_modalities through the ONE call
+// site that renders the catalog.
+describe('the capability filter (#129106)', () => {
+  const CATALOG = {
+    providers: [
+      {
+        models: [
+          'nous/hermes-5', // text
+          'openai/gpt-image-5', // image
+          'openai/whisper-large', // audio output (transcription model)
+          'z-ai/glm-6' // no metadata → Unknown
+        ],
+        name: 'Nous Portal',
+        output_modalities: {
+          'nous/hermes-5': ['text'],
+          'openai/gpt-image-5': ['image'],
+          'openai/whisper-large': ['audio'],
+          'z-ai/glm-6': []
+        },
+        slug: 'nous'
+      }
+    ]
+  }
+
+  it('offers only the modalities models.dev actually publishes (plus Unknown)', async () => {
+    getGlobalModelOptions.mockResolvedValue(CATALOG)
+    renderMenu()
+
+    await screen.findByText('Hermes 5')
+
+    for (const label of ['Text', 'Image', 'Audio', 'Video', 'Unknown']) {
+      expect(screen.getByRole('button', { name: label })).not.toBeNull()
+    }
+    // The reviewer's dead buttons: models.dev has no such output modality,
+    // so these can never match a row.
+
+    for (const label of ['Speech', 'Transcription', 'Embeddings']) {
+      expect(screen.queryByRole('button', { name: label })).toBeNull()
+    }
+  })
+
+  it('narrows the catalog to rows whose metadata carries the chosen output modality', async () => {
+    getGlobalModelOptions.mockResolvedValue(CATALOG)
+    renderMenu()
+    await screen.findByText('Hermes 5')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Image' }))
+    await vi.waitFor(() => {
+      expect(screen.getByText('GPT-image-5')).not.toBeNull()
+      expect(screen.queryByText('Hermes 5')).toBeNull()
+      expect(screen.queryByText('Whisper Large')).toBeNull()
+    })
+  })
+
+  it('routes transcription-class models to Audio, their real output modality', async () => {
+    getGlobalModelOptions.mockResolvedValue(CATALOG)
+    renderMenu()
+    await screen.findByText('Hermes 5')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Audio' }))
+    await vi.waitFor(() => {
+      expect(screen.getByText('Whisper Large')).not.toBeNull()
+      expect(screen.queryByText('Hermes 5')).toBeNull()
+    })
+  })
+
+  it('keeps metadata-less models selectable under Unknown', async () => {
+    getGlobalModelOptions.mockResolvedValue(CATALOG)
+    renderMenu()
+    await screen.findByText('Hermes 5')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unknown' }))
+    await vi.waitFor(() => {
+      expect(screen.getByText('GLM 6')).not.toBeNull()
+      expect(screen.queryByText('Hermes 5')).toBeNull()
+    })
+  })
+
+  it('treats a collapsed -fast family as its base model for matching', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          models: ['nous/hermes-5', 'nous/hermes-5-fast'],
+          name: 'Nous Portal',
+          output_modalities: { 'nous/hermes-5': ['text'] },
+          slug: 'nous'
+        }
+      ]
+    })
+    renderMenu()
+    await screen.findByText('Hermes 5')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Text' }))
+    await vi.waitFor(() => {
+      // The family row (fronting both ids) survives the text filter…
+      expect(screen.getByText('Hermes 5')).not.toBeNull()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Image' }))
+    await vi.waitFor(() => {
+      // …and a modality it doesn't have removes it.
+      expect(screen.queryByText('Hermes 5')).toBeNull()
+    })
+  })
+
+  it('clicking the active filter again clears it and restores every row', async () => {
+    getGlobalModelOptions.mockResolvedValue(CATALOG)
+    renderMenu()
+    await screen.findByText('Hermes 5')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Image' }))
+    await vi.waitFor(() => {
+      expect(screen.queryByText('Hermes 5')).toBeNull()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Image' }))
+    await vi.waitFor(() => {
+      expect(screen.getByText('Hermes 5')).not.toBeNull()
+      expect(screen.getByText('Whisper Large')).not.toBeNull()
+    })
+  })
+})

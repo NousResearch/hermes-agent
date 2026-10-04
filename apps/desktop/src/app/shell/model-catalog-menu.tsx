@@ -1087,14 +1087,14 @@ function groupModels(
   return groups
 }
 
+// models.dev publishes exactly five output modalities (audio, image, pdf,
+// text, video across the live catalog — no speech/transcription/embeddings
+// entry exists); anything else would be a button that can never match a row.
 const CAPABILITY_FILTERS = [
   { id: 'text', label: 'Text' },
   { id: 'image', label: 'Image' },
   { id: 'audio', label: 'Audio' },
-  { id: 'speech', label: 'Speech' },
-  { id: 'transcription', label: 'Transcription' },
   { id: 'video', label: 'Video' },
-  { id: 'embeddings', label: 'Embeddings' },
   { id: 'unknown', label: 'Unknown' }
 ] as const
 
@@ -1108,7 +1108,14 @@ function familyMatchesCapability(
   }
 
   const modalities = provider.output_modalities?.[family.id] ?? provider.output_modalities?.[family.fastId ?? ''] ?? []
-  return filter === 'unknown' ? modalities.length === 0 : modalities.includes(filter)
+
+  if (filter === 'unknown') {
+    return modalities.length === 0
+  }
+
+  // A family row fronts its `-fast` sibling too: the variant shares the base
+  // model's modalities, so either id's metadata matches the family.
+  return modalities.includes(filter) || (family.fastId ? (provider.output_modalities?.[family.fastId] ?? []).includes(filter) : false)
 }
 
 // Small hooks kept at the bottom so the component reads top-down.

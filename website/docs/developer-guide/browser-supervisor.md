@@ -97,6 +97,48 @@ Configurable via `config.yaml` under `browser.dialog_policy`:
 
 Policy is per-task; no per-dialog overrides.
 
+## Trusted plugin CDP transport
+
+Trusted Python extensions can capture an already-active task connection without
+reading or modifying supervisor transport internals:
+
+```python
+from tools.browser_supervisor import SUPERVISOR_REGISTRY, CapturedCDPInvalid
+
+capture = SUPERVISOR_REGISTRY.capture(task_id, timeout=5)
+reply = capture.call(
+    "Runtime.evaluate", {"expression": "document.title", "returnByValue": True},
+    session_id=capture.page_session_id, timeout=5,
+)
+```
+
+- `identity` contains opaque supervisor/connection/default-attachment tokens;
+  `valid` and `check_valid()` detect replacement, reconnect, stop or refocus.
+- `call`/`acall` require an explicit `session_id` (`None` means browser-level).
+  Capture and synchronous calls run outside the supervisor event-loop thread;
+  async calls can run on another loop or the supervisor loop.
+- Ordinary calls use only the captured wire and revalidate before dispatch and
+  before returning. Invalidation never selects or reconnects to another page.
+  A post-send error is **not** proof the command had no effect; inspect the
+  external outcome before retrying a write.
+- `cleanup_call`/`acleanup_call` deliberately permit disposal on the old wire
+  after invalidation. These are trusted-code escape hatches, not a permission
+  boundary: do not expose them as unrestricted model-driven commands. The
+  extension must retain exact session/object identities and restrict cleanup to
+  resources it owns. A closed wire refuses; there is no replacement fallback.
+- Timed-out/cancelled `Target.attachToTarget` acquisitions retain a reply owner.
+  A late unclaimed session is detached exactly once on that same connection.
+  The caller's finite deadline does not retire the response owner: it waits for
+  the response or old reader closure. A detach attempt can still fail when the
+  transport closes; this API does not promise universal remote cleanup.
+
+This API is transport for trusted extensions, not a new model tool, secret-entry
+API, consent bypass or target-creation ownership proof. The existing default page
+can have been attached before a plugin runs; CDP visibility does not authorize
+an arbitrary target. Plugins must separately enforce task/profile/origin,
+control identity, consent and any creation-ownership policy. No local-only
+`browser_tab_lifecycle` API is shipped by this change.
+
 ## Agent surface
 
 ### `browser_dialog` tool

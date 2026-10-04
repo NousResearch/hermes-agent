@@ -17,6 +17,7 @@ import json
 import logging
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
@@ -25,6 +26,7 @@ from tools.browser_supervisor_dialogs import (
     DialogSupervisionMixin, PendingDialog,
 )
 from tools.browser_supervisor_frames import FrameInfo, FrameTrackingMixin
+from tools.browser_supervisor_capture import CapturedCDP, CapturedCDPIdentity, CapturedCDPInvalid, _timeout
 
 # ``websockets`` costs ~22 ms at import and is only needed once a supervisor connects.
 if TYPE_CHECKING:
@@ -125,6 +127,10 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         self._pending_calls: Dict[int, asyncio.Future] = {}
         self._ws: Optional[ClientConnection] = None
         self._page_session_id: Optional[str] = None
+        self._capture_id = uuid.uuid4().hex
+        self._connection_id = uuid.uuid4().hex
+        self._attachment_id = uuid.uuid4().hex
+        self._pending_wires: Dict[int, Any] = {}
         # Dialog auto-dismiss watchdog handles (per dialog id) + id generator.
         self._dialog_watchdogs: Dict[str, asyncio.TimerHandle] = {}
         self._dialog_seq = 0
@@ -303,7 +309,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                         await self._cdp("Target.detachFromTarget", {"sessionId": sid}, timeout=timeout)
                         continue
                 with self._state_lock:
-                    self._page_session_id = sid
+                    self._set_page_session(sid)
                 return {"ok": True, "url": url}
             return _fail(f"no open page on {origin or 'any site'}" + (" with the expected form" if accept and candidates else ""))
 
@@ -348,6 +354,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     async def _close_ws(self) -> None:
         """Detach and close the current WebSocket, swallowing close errors."""
         ws, self._ws = self._ws, None
+        self._connection_id = uuid.uuid4().hex
         if ws is not None:
             with contextlib.suppress(Exception):
                 await ws.close()
@@ -377,6 +384,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         while not self._stop_requested:
             try:
                 self._ws = await asyncio.wait_for(websockets.connect(self.cdp_url, **connect_kwargs), timeout=10.0)
+                self._connection_id = uuid.uuid4().hex
             except Exception as e:
                 if self._fail_start(e):
                     return
@@ -395,7 +403,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                 # Reset the per-connection page session id; ``_pending_dialogs`` / ``_frames``
                 # are deliberately kept — they reconcile as fresh events arrive (worst case a
                 # stale dialog entry is rejected with "no dialog is showing", logged only).
-                self._page_session_id = None
+                self._set_page_session(None)
                 await self._attach_initial_page()
                 self._set_active(True)
                 last_success_at = time.time()
@@ -436,9 +444,77 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
         if page_target is None:
             page_target = (await self._cdp("Target.createTarget", {"url": "about:blank"}))["result"]
         attach = await self._cdp("Target.attachToTarget", {"targetId": page_target["targetId"], "flatten": True})
-        self._page_session_id = sid = attach["result"]["sessionId"]
+        sid = attach["result"]["sessionId"]
+        self._set_page_session(sid)
         await self._enable_page_domains(sid, timeout=10.0)
         await self._install_dialog_bridge(sid)
+
+    def _set_page_session(self, session_id: Optional[str]) -> None:
+        self._page_session_id = session_id
+        self._attachment_id = uuid.uuid4().hex
+
+    async def _captured_request(self, capture, method, params, session_id, timeout, cleanup, handoff=None, dispatch=None):
+        """Loop-only dispatch integrated with the supervisor's existing reader."""
+        async def request():
+            if cleanup:
+                if capture._wire_closed():
+                    raise CapturedCDPInvalid("Captured CDP wire closed")
+            else:
+                capture.check_valid()
+            call_id, self._next_call_id = self._next_call_id, self._next_call_id + 1
+            payload = {"id": call_id, "method": method}
+            if params is not None:
+                payload["params"] = params
+            if session_id is not None:
+                payload["sessionId"] = session_id
+            fut = asyncio.get_running_loop().create_future()
+            self._pending_calls[call_id] = fut
+            self._pending_wires[call_id] = capture._wire
+            send_task = None
+            try:
+                raw = json.dumps(payload)
+                if handoff:
+                    async def send():
+                        if dispatch:
+                            dispatch.begin()
+                        handoff.begin()
+                        await capture._wire.send(raw)
+                    send_task = asyncio.create_task(send())
+                    await asyncio.wait((send_task, fut), return_when=asyncio.FIRST_COMPLETED)
+                    if send_task.done():
+                        try:
+                            send_task.result()
+                        except CapturedCDPInvalid:
+                            raise
+                        except Exception as error:
+                            handoff.fail(error)
+                else:
+                    if dispatch:
+                        dispatch.begin()
+                    await capture._wire.send(raw)
+                result = await fut
+                if handoff:
+                    handoff.publish(result)
+                elif not cleanup:
+                    capture.check_valid()
+                return result
+            finally:
+                if send_task is not None:
+                    if not send_task.done():
+                        send_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await send_task
+                if fut.done() and not fut.cancelled():
+                    fut.exception()
+                self._pending_calls.pop(call_id, None)
+                self._pending_wires.pop(call_id, None)
+        if handoff:
+            try:
+                return await request()
+            except BaseException as error:
+                handoff.fail(error)
+                return None
+        return await asyncio.wait_for(request(), timeout)
 
     async def _cdp(self, method: str, params: Optional[Dict[str, Any]] = None, *,
                    session_id: Optional[str] = None, timeout: float = 10.0) -> Dict[str, Any]:
@@ -459,8 +535,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     async def _read_loop(self) -> None:
         """Continuously dispatch incoming CDP frames (responses → futures, events → handlers)."""
         assert self._ws is not None
+        wire = self._ws
         try:
-            async for raw in self._ws:
+            async for raw in wire:
                 if self._stop_requested:
                     break
                 try:
@@ -469,6 +546,9 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                     logger.debug("CDP supervisor: non-JSON frame dropped")
                     continue
                 if "id" in msg:
+                    if msg["id"] in self._pending_wires and self._pending_wires[msg["id"]] is not wire:
+                        continue
+                    self._pending_wires.pop(msg["id"], None)
                     fut = self._pending_calls.pop(msg["id"], None)
                     if fut is None or fut.done():
                         continue
@@ -476,12 +556,23 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
                         fut.set_exception(RuntimeError(f"CDP error on id={msg['id']}: {msg['error']}"))
                     else:
                         fut.set_result(msg)
-                elif handler := self._EVENT_HANDLERS.get(msg.get("method")):
-                    result = handler(self, msg.get("params", {}), msg.get("sessionId"))
+                elif wire is self._ws and (handler := self._EVENT_HANDLERS.get(msg.get("method"))):
+                    params = msg.get("params", {})
+                    detached = params.get("sessionId") if msg.get("method") == "Target.detachedFromTarget" else None
+                    if detached is not None and detached == self._page_session_id:
+                        self._set_page_session(None)
+                    result = handler(self, params, msg.get("sessionId"))
                     if result is not None:
                         await result
         except Exception as e:
             logger.debug("CDP read loop exited: %s", e)
+        finally:
+            for call_id, pending_wire in list(self._pending_wires.items()):
+                if pending_wire is wire:
+                    self._pending_wires.pop(call_id, None)
+                    fut = self._pending_calls.pop(call_id, None)
+                    if fut is not None and not fut.done():
+                        fut.set_exception(CapturedCDPInvalid("Captured CDP reader stopped"))
 
     # CDP event → handler(self, params, session_id). Async handlers return an
     # awaitable that ``_read_loop`` awaits; sync handlers return None.
@@ -504,6 +595,28 @@ class _SupervisorRegistry:
     def _pop(self, task_id: str) -> Optional[CDPSupervisor]:
         with self._lock:
             return self._by_task.pop(task_id, None)
+
+    def capture(self, task_id: str, *, timeout: float = 10.0) -> CapturedCDP:
+        """Capture an already-active task connection/default page; never start or focus."""
+        timeout = _timeout(timeout)
+        supervisor = self.get(task_id)
+        if supervisor is None or supervisor._loop is None or not supervisor._loop.is_running():
+            raise CapturedCDPInvalid("No active CDP supervisor for task")
+        try:
+            caller_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            caller_loop = None
+        if caller_loop is supervisor._loop:
+            raise RuntimeError("Capture from a thread outside the supervisor loop")
+
+        async def capture():
+            handle = CapturedCDP(supervisor, self)
+            handle.check_valid()
+            if not handle.page_session_id:
+                raise CapturedCDPInvalid("No attached default page")
+            return handle
+
+        return _schedule(capture(), supervisor._loop, timeout=timeout)
 
     def get_or_start(self, task_id: str, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
                      dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S, start_timeout: float = 15.0) -> CDPSupervisor:
@@ -549,4 +662,5 @@ class _SupervisorRegistry:
 SUPERVISOR_REGISTRY = _SupervisorRegistry()
 
 
-__all__ = ["CDPSupervisor", "SUPERVISOR_REGISTRY", "SupervisorSnapshot", "_SupervisorRegistry"]
+__all__ = ["CDPSupervisor", "SUPERVISOR_REGISTRY", "SupervisorSnapshot", "_SupervisorRegistry",
+           "CapturedCDP", "CapturedCDPIdentity", "CapturedCDPInvalid"]

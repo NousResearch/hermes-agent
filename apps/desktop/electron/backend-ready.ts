@@ -22,12 +22,14 @@ export const READY_IN_MERGED_OUTPUT_RE = /(?<!\w)HERMES_(?:BACKEND|DASHBOARD)_RE
 // piling up orphaned processes (issue #50209). A roomier default absorbs the
 // cold-start cost; a warm start still announces in well under a second.
 //
-// The announce deadline shares the single desktop boot budget with the
+// The announce deadline tracks the other desktop boot waits — the
 // post-announce health wait (DEFAULT_BACKEND_READY_TIMEOUT_MS) and the
-// renderer's BACKEND_BOOT_WAIT_TIMEOUT_MS, which already sit in lockstep at
-// 180s (#63454). A shorter announce deadline re-splits the budget the renderer
-// thinks it has: cold starts needing >90s to bind were killed here while both
-// 180s waits were still willing to keep going (#126110).
+// renderer's BACKEND_BOOT_WAIT_TIMEOUT_MS, both 180s (#63454) — by value, not
+// as one shared clock: the waits run sequentially in main.ts and each counts
+// its own full budget, so the worst case is their sum. What the alignment
+// buys is leg agreement, not a longer boot: an independent shorter announce
+// deadline killed cold starts needing >90s to bind while both 180s waits
+// were still willing to keep going (#126110).
 const DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS = DEFAULT_BACKEND_READY_TIMEOUT_MS
 // Never trust a deadline tighter than the warm-start path needs; floor at 45s
 // (the historical default) so a malformed override can't reintroduce the loop.

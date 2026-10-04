@@ -19,7 +19,7 @@ Each cell kills at one point of the update and then asserts what the user is owe
   (a marker naming a dead process that refuses every later update is the permanent
   marker the hand-off contract forbids).
 
-Cells (one machine; each publishes a fresh commit to update to; ``mid_git`` runs last):
+Cells (one machine; each publishes a fresh commit to update to; the ``mid_git`` cells run last):
 
 * ``mid_fetch``: killed while the update's ``git fetch`` child runs (nothing local moved yet);
 * ``mid_git``: killed while the update's local git write (the fast-forward ``merge``, or a
@@ -30,6 +30,10 @@ Cells (one machine; each publishes a fresh commit to update to; ``mid_git`` runs
   has written the cell's new file and ``hermes_cli/main.py`` and unlinked
   ``hermes_constants.py``: the torn tree, stale ``index.lock`` and missing startup module
   a mid-merge kill leaves;
+* ``mid_git_bootstrap``: the same hold on ``hermes_bootstrap.py``, the first changed path in
+  index order and the module every launcher imports to reach the repair: the kill leaves it
+  unlinked, so the next launch must repair from the recovery code the update published outside
+  the tree before git wrote;
 * ``tree_moved``: killed right after the checkout moved to the target, before the
   update finished (dependency sync, launcher refresh, completion stamp);
 * ``desktop_handoff``: the Desktop hand-off script's whole tree killed while its
@@ -147,8 +151,9 @@ class _GitHold:
     the installer's Git); the command is the driver's own interpreter by absolute path.
     """
 
-    def __init__(self, machine) -> None:
+    def __init__(self, machine, path: str = HELD_PATH) -> None:
         self.machine = machine
+        self.path = path
         self.flags = machine.root / "git-hold"
         self.attributes = machine.install_dir / ".git" / "info" / "attributes"
         self._saved_attributes: str | None = None
@@ -169,7 +174,7 @@ class _GitHold:
         if self.attributes.is_file():
             self._saved_attributes = self.attributes.read_text(encoding="utf-8-sig")
         self.attributes.parent.mkdir(parents=True, exist_ok=True)
-        self.attributes.write_text((self._saved_attributes or "") + f"/{HELD_PATH} filter={HOLD_FILTER}\n",
+        self.attributes.write_text((self._saved_attributes or "") + f"/{self.path} filter={HOLD_FILTER}\n",
                                    encoding="utf-8")
 
     def disarm(self) -> None:
@@ -202,7 +207,7 @@ class _GitHold:
                              f".git/index.lock held appeared in {HOLD_SETTLE_SECONDS:.0f}s "
                              f"(index.lock={lock.is_file()}, git children: {gits or 'none'})"))
             return None
-        return f"git {seen[0]} (pid {seen[1]}) held writing {HELD_PATH}, .git/index.lock held"
+        return f"git {seen[0]} (pid {seen[1]}) held writing {self.path}, .git/index.lock held"
 
 
 HOLD_SETTLE_SECONDS = 30.0
@@ -287,7 +292,8 @@ def _kill_when(machine, proc, label: str, point, target: str) -> str:
     raise AssertionError(fail_with(machine, f"{label}: kill point not reached within {UPDATE_TIMEOUT:.0f}s"))
 
 
-def _crash(machine, srv, label: str, start, point, hold: _GitHold | None = None) -> dict:
+def _crash(machine, srv, label: str, start, point, hold: _GitHold | None = None,
+           runtime_files: tuple[str, ...] = RUNTIME_FILES) -> dict:
     """Publish a new commit, start the update, kill it at ``point``, then the next
     launch and the follow-up update. Returns everything the cell asserts on.
 
@@ -301,7 +307,7 @@ def _crash(machine, srv, label: str, start, point, hold: _GitHold | None = None)
         leftover.unlink()
         machine.timings.append((f"(harness removed a prior cell's {leftover.name} before {label})", 0.0))
     pre = _head(machine)
-    target = machine.mint(pre, label, RUNTIME_FILES)
+    target = machine.mint(pre, label, runtime_files)
     machine.publish(target)
     with machine.gateway_phase():
         if hold is not None:
@@ -314,13 +320,15 @@ def _crash(machine, srv, label: str, start, point, hold: _GitHold | None = None)
                 hold.disarm()
         index_lock_after_kill = leftover.is_file()
         tree_after_kill = _tree(machine, label)
+        held_missing_after_kill = hold is not None and not (machine.install_dir / hold.path).exists()
         turn = one_shot_turn(machine, srv, f"{label}-next-launch")
         tree_after_launch = _tree(machine, label)
         marker_after_launch = (machine.hermes_home / MARKER).is_file()
         follow_up = machine.hermes("update", "--yes", label=f"{label}-follow-up-update", timeout=UPDATE_TIMEOUT)
     tree_final = _tree(machine, label)
     return {"label": label, "pre": pre, "target": target, "seen": seen, "tree_after_kill": tree_after_kill,
-            "index_lock_after_kill": index_lock_after_kill, "turn": turn, "tree_after_launch": tree_after_launch, "marker_after_launch": marker_after_launch,
+            "index_lock_after_kill": index_lock_after_kill, "held_missing_after_kill": held_missing_after_kill,
+            "turn": turn, "tree_after_launch": tree_after_launch, "marker_after_launch": marker_after_launch,
             "follow_up": follow_up, "tree_final": tree_final,
             "marker_final": (machine.hermes_home / MARKER).is_file()}
 
@@ -609,6 +617,10 @@ def journey(tmp_path_factory):
                 hold = _GitHold(machine)
                 j.step("mid_git", lambda: _crash(machine, srv, "mid-git",
                                                  _cli_update(machine, "mid-git-update"), hold.point, hold))
+                boot_hold = _GitHold(machine, "hermes_bootstrap.py")
+                j.step("mid_git_bootstrap", lambda: _crash(
+                    machine, srv, "mid-git-bootstrap", _cli_update(machine, "mid-git-bootstrap-update"),
+                    boot_hold.point, boot_hold, runtime_files=("hermes_bootstrap.py", *RUNTIME_FILES)))
             yield j
         finally:
             machine.teardown()
@@ -672,6 +684,17 @@ def test_update_killed_mid_git_leaves_a_runnable_install(journey: Journey) -> No
         journey.machine, f"mid_git: the kill did not land inside git's checkout (killed at {r['seen']}, "
                          f"no .git/index.lock after it): this cell proves nothing about a merge-time kill")
     _assert_recovered(journey, "mid_git")
+
+
+# The repair's own entry: hermes_bootstrap.py unlinked by the killed merge. Red before #132361
+# round 8 (D1): every launch died importing it, the marker kept, the tree never restored.
+def test_update_killed_writing_the_launch_repairs_own_code_leaves_a_runnable_install(journey: Journey) -> None:
+    r = journey["mid_git_bootstrap"]
+    assert r["index_lock_after_kill"] and r["held_missing_after_kill"], fail_with(
+        journey.machine, f"mid_git_bootstrap: the kill did not leave git's checkout holding with "
+                         f"hermes_bootstrap.py unlinked (killed at {r['seen']}, index.lock="
+                         f"{r['index_lock_after_kill']}, unlinked={r['held_missing_after_kill']})")
+    _assert_recovered(journey, "mid_git_bootstrap")
 
 
 def test_update_killed_after_the_tree_moved_leaves_a_runnable_install(journey: Journey) -> None:

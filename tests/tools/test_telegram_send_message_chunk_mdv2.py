@@ -96,25 +96,29 @@ def test_chunked_code_fence_indicator_separated(monkeypatch: pytest.MonkeyPatch)
     When truncate_message() splits inside a fenced code block it closes the
     fence and appends the (N/M) indicator.  The indicator must NOT remain on the
     same line as the closing ``` — it must be separated to its own line so
-    Telegram treats the fence as a clean close.
+    Telegram treats the fence as a clean close.  The escaped indicator is two
+    units longer than the raw one, so every chunk must still fit Telegram's 4096
+    limit -- worst case: 100+ chunks, each hard-split inside the fence.
     """
+    from gateway.platforms.base import utf16_len
     from tools.send_message_tool import _send_telegram
 
     _no_proxy(monkeypatch)
     bot = _make_bot()
     _install_telegram_mock(monkeypatch, MagicMock(return_value=bot))
 
-    # A long fenced code block that will be split across chunks.
-    code_line = "x = data.get('key', default_value)"
-    message = "```python\n" + "\n".join(code_line for _ in range(200)) + "\n```"
+    # A fenced block with no newline or space to split at: every chunk is cut at the
+    # full budget and closed with a fence, and the indicators run to three digits.
+    message = "```\n" + "a" * 420_000 + "\n```"
     result = asyncio.run(_send_telegram("tok", "123", message))
     assert result["success"] is True
 
     calls = bot.send_message.await_args_list
-    assert len(calls) >= 2, f"Expected chunking, got {len(calls)} calls"
+    assert len(calls) >= 100, f"Expected 100+ chunks, got {len(calls)} calls"
 
     for idx, call in enumerate(calls):
         text = call.kwargs.get("text", "")
+        assert utf16_len(text) <= 4096, f"Chunk {idx} is {utf16_len(text)} UTF-16 units"
         # No line should be "``` (N/M)" or "``` \\(N/M\\)" — the indicator
         # must never sit on the same line as a closing code fence.
         for line in text.split("\n"):

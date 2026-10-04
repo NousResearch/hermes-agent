@@ -203,6 +203,13 @@ def todo_tool(todos: Optional[List[Dict[str, Any]]] = None, merge: bool = False,
                 return tool_error("todos must be a list of objects, got unparseable string")
         if not isinstance(todos, list):
             return tool_error(f"todos must be a list, got {type(todos).__name__}")
+        # Reject the whole model write before a merge can mutate existing rows.
+        # Trusted snapshot restoration keeps its separate normalization path.
+        if any(not isinstance(item, dict) for item in todos):
+            return tool_error(
+                "todos must be a list of objects. Send task objects, not strings "
+                "or other values. No tasks were changed."
+            )
         items = store.write(todos, merge)
     summary = {"total": len(items)}
     for status in ("pending", "in_progress", "completed", "cancelled"):

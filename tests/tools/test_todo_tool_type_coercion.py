@@ -50,12 +50,12 @@ class TestNonDictListItems:
 
 
     def test_non_dict_items_via_todo_tool(self):
-        """End-to-end: non-dict list items produce valid output, not a crash."""
+        """Model writes reject invalid rows; trusted store normalization stays separate."""
         store = TodoStore()
+        before = store.snapshot()
         result = json.loads(todo_tool(todos=["bad", "also bad"], store=store))
-        assert "error" not in result
-        assert result["summary"]["total"] == 2
-        assert result["summary"]["pending"] == 2
+        assert "error" in result
+        assert store.snapshot() == before
 
 
 class TestWellFormedInputUnchanged:

@@ -345,6 +345,68 @@ def _fetch_messages(
     return _listing("messages", [_message_summary(msg) for msg in messages])
 
 
+# Guild message search bounds, mirroring the server-side schema so the API rejects fewer calls:
+# limit 1-25, offset <= 9975, content query <= 1024 chars.
+_SEARCH_MAX_LIMIT = 25
+_SEARCH_MAX_OFFSET = 9975
+_SEARCH_MAX_CONTENT_LENGTH = 1024
+
+# `has` filter values accepted by the search API; each also has a negating "-" form.
+_SEARCH_HAS_VALUES = (
+    "link", "embed", "file", "image", "video", "sound", "sticker", "poll", "snapshot")
+
+
+def _search_messages(
+    token: str, guild_id: str, query: Optional[str] = None, channel_id: Optional[str] = None,
+    author_id: Optional[str] = None, has: Optional[str] = None, limit: int = 25,
+    offset: int = 0, **_kwargs: Any) -> str:
+    """Guild-wide message search (GET /guilds/{id}/messages/search).
+
+    Bot-accessible and rate-limited at 10/1s for bots, but the guild must have the search
+    feature enabled and the index may still be warming, which answers 202 rather than 200.
+    Results come back as a list of single-element hit groups; they are flattened here.
+    """
+    params: Dict[str, str] = {
+        "limit": str(max(1, min(int(limit or 25), _SEARCH_MAX_LIMIT))),
+        "offset": str(max(0, min(int(offset or 0), _SEARCH_MAX_OFFSET))),
+    }
+    if query:
+        params["content"] = str(query)[:_SEARCH_MAX_CONTENT_LENGTH]
+    for key, value in (("channel_id", channel_id), ("author_id", author_id), ("has", has)):
+        if value:
+            params[key] = str(value)
+    if not any(k in params for k in ("content", "author_id", "has", "channel_id")):
+        return tool_error(
+            "search_messages needs at least one filter: query, author_id, has, or channel_id.")
+
+    result = _discord_request("GET", f"/guilds/{guild_id}/messages/search", token, params=params)
+
+    # 202 while the guild's search index builds: same JSON shape minus `messages`.
+    if isinstance(result, dict) and "messages" not in result:
+        return json.dumps({
+            "index_not_ready": True,
+            "message": result.get("message", "Search index is still building for this guild."),
+            "documents_indexed": result.get("documents_indexed"),
+            "retry_after_seconds": result.get("retry_after"),
+        })
+
+    groups = (result or {}).get("messages") or []
+    hits: List[Dict[str, Any]] = []
+    for group in groups:
+        for msg in (group or []):
+            if isinstance(msg, dict) and msg.get("id"):
+                summary = _message_summary(msg)
+                summary["channel_id"] = msg.get("channel_id")
+                hits.append(summary)
+    return json.dumps({
+        "messages": hits,
+        "count": len(hits),
+        "total_results": (result or {}).get("total_results"),
+        "offset": int(params["offset"]),
+        "indexing_in_progress": bool((result or {}).get("doing_deep_historical_index")),
+    })
+
+
 def _list_pins(token: str, channel_id: str, **_kwargs: Any) -> str:
     """Pinned messages (content truncated for overview)."""
     messages = _discord_request("GET", f"/channels/{channel_id}/pins", token)
@@ -400,6 +462,9 @@ _ACTION_MANIFEST = [
     ("member_info", _member_info, "(guild_id, user_id)", "lookup a specific member"),
     ("search_members", _search_members, "(guild_id, query)", "find members by name prefix"),
     ("fetch_messages", _fetch_messages, "(channel_id)", "recent messages; optional before/after snowflakes"),
+    ("search_messages", _search_messages, "(guild_id)",
+     "search messages across a server by text/author/attachment type; far cheaper than paging "
+     "fetch_messages. Needs at least one of query/author_id/has/channel_id"),
     ("list_pins", _list_pins, "(channel_id)", "pinned messages in a channel"),
     ("pin_message", _pin_message, "(channel_id, message_id)", "pin a message"),
     ("unpin_message", _unpin_message, "(channel_id, message_id)", "unpin a message"),
@@ -415,7 +480,8 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
 
 # Two tools share one action table: ``discord`` (core, the participation trio every bot
 # user wants) and ``discord_admin`` (everything else).
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_CORE_ACTION_NAMES = frozenset(
+    {"fetch_messages", "search_messages", "search_members", "create_thread"})
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
 _ADMIN_ACTIONS = {k: v for k, v in _ACTIONS.items() if k not in _CORE_ACTION_NAMES}
 
@@ -478,8 +544,39 @@ _SCHEMA_PROPERTIES: Dict[str, Any] = {
     "user_id": {"type": "string", "description": "Discord user ID."},
     "role_id": {"type": "string", "description": "Discord role ID."},
     "message_id": {"type": "string", "description": "Discord message ID."},
-    "query": {"type": "string", "description": "Member name prefix to search for (search_members)."},
+    "query": {
+        "type": "string",
+        "description": "Search text. Member name prefix for search_members; message content for search_messages.",
+    },
     "name": {"type": "string", "description": "New thread name (create_thread)."},
+    "author_id": {
+        "type": "string",
+        "description": "Restrict search_messages to messages from this user ID.",
+    },
+    "has": {
+        "type": "string",
+        "enum": list(_SEARCH_HAS_VALUES) + [f"-{v}" for v in _SEARCH_HAS_VALUES],
+        "description": (
+            "Restrict search_messages to messages containing this kind of content; "
+            "the '-' forms exclude it (e.g. 'image', '-link')."
+        ),
+    },
+    "offset": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": _SEARCH_MAX_OFFSET,
+        "description": "Result offset for paging search_messages (default 0).",
+    },
+    "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "description": (
+            "Max results (default 50). Applies to fetch_messages, search_members, "
+            "search_messages (search_messages caps at 25)."
+        ),
+    },
+
     "limit": {
         "type": "integer",
         "minimum": 1,
@@ -514,7 +611,7 @@ def _build_schema(
     manifest_block = "\n".join(
         f"  {name}{sig}  — {desc}" for name, _fn, sig, desc in _ACTION_MANIFEST if name in actions)
     content_note = ""
-    affected_actions = {"fetch_messages", "list_pins"} & set(actions)
+    affected_actions = {"fetch_messages", "list_pins", "search_messages"} & set(actions)
     if affected_actions and caps.get("detected") and caps.get("has_message_content") is False:
         content_note = _CONTENT_NOTE.format(names=" and ".join(sorted(affected_actions)))
     lead, guidance = _TOOL_DESCRIPTIONS.get(tool_name, _TOOL_DESCRIPTIONS["discord"])
@@ -558,6 +655,11 @@ _ACTION_403_HINT = {
         f"{_ROLE_HIERARCHY} Roles can only be assigned below the bot's own position in the role hierarchy."),
     "remove_role": _ROLE_HIERARCHY,
     "fetch_messages": _VIEW_HISTORY,
+    "search_messages": (
+        "Guild message search was refused. Either the bot lacks VIEW_CHANNEL/READ_MESSAGE_HISTORY "
+        "in the guild, or Discord has disabled search for bots on this deployment. "
+        "Fall back to fetch_messages with before/after paging."),
+    "list_pins": _VIEW_HISTORY,
     "list_pins": _VIEW_HISTORY,
     "channel_info": "Bot cannot view this channel (missing VIEW_CHANNEL).",
     "search_members": (
@@ -581,7 +683,8 @@ def check_discord_tool_requirements() -> bool:
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
+    "author_id": "", "has": "", "offset": 0}
 
 
 def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: str, **params: Any) -> str:

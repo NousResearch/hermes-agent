@@ -24,12 +24,14 @@ from urllib.parse import quote, unquote
 import httpx
 
 from gateway.config import Platform, PlatformConfig
+from agent.i18n import t
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, cache_image_from_bytes_async,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_url, utf16_len,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import redact_phone
+from gateway.platforms.helpers import cancel_task
 from gateway.platforms.media_cache import mime_for_ext
 from tools.audio_container import CONTAINER_TO_EXT, sniff_container
 from gateway.platforms.signal_format import markdown_to_signal
@@ -166,8 +168,8 @@ def check_signal_requirements() -> bool:
 def validate_signal_config(config: PlatformConfig) -> bool:
     """Check if Signal has enough config to connect."""
     extra = getattr(config, "extra", {}) or {}
-    http_url = (extra.get("http_url", "") or os.getenv("SIGNAL_HTTP_URL", "")).strip()
-    account = (extra.get("account", "") or os.getenv("SIGNAL_ACCOUNT", "")).strip()
+    http_url = (extra.get("http_url", "") or _sig_secret("SIGNAL_HTTP_URL", "")).strip()
+    account = (extra.get("account", "") or _sig_secret("SIGNAL_ACCOUNT", "")).strip()
     return bool(http_url and account)
 
 
@@ -192,7 +194,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.group_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_GROUP_ALLOWED_USERS", "")))
         _rm_cfg = extra.get("require_mention")
         self.require_mention = (bool(_rm_cfg) if _rm_cfg is not None
-                                else os.getenv("SIGNAL_REQUIRE_MENTION", "false").lower() in TRUTHY_STRINGS)
+                                else (_sig_secret("SIGNAL_REQUIRE_MENTION", "false") or "false").lower() in TRUTHY_STRINGS)
         self.dm_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_ALLOWED_USERS", "*")))
         self.client: Optional[httpx.AsyncClient] = None
         self._sse_task: Optional[asyncio.Task] = None
@@ -265,18 +267,11 @@ class SignalAdapter(BasePlatformAdapter):
             await self.client.aclose()
             self.client = None
 
-    @staticmethod
-    async def _cancel_task(task: Optional[asyncio.Task]) -> None:
-        if task:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-
     async def disconnect(self) -> None:
         """Stop SSE listener and clean up."""
         self._running = False
         for task in (self._sse_task, self._health_monitor_task):
-            await self._cancel_task(task)
+            await cancel_task(task)
         for task in self._typing_tasks.values():
             task.cancel()
         self._typing_tasks.clear()
@@ -862,8 +857,9 @@ class SignalAdapter(BasePlatformAdapter):
     async def _notify_batch_pacing(self, chat_id: str, next_batch_idx: int, total_batches: int, wait_s: float) -> None:
         """Tell the user about an inter-batch pacing wait over the notice threshold (best-effort)."""
         try:
-            await self.send(chat_id, f"(More images coming — pausing ~{_format_wait(wait_s)} for Signal rate limit, "
-                                     f"batch {next_batch_idx}/{total_batches}.)")
+            await self.emit_warning(chat_id, t(
+                "platform.signal.batch_pacing_notice",
+                wait=_format_wait(wait_s), batch=next_batch_idx, total=total_batches))
         except Exception as e:
             logger.warning("Signal: failed to send pacing notice: %s", e)
 
@@ -914,7 +910,7 @@ class SignalAdapter(BasePlatformAdapter):
 
     async def _stop_typing_indicator(self, chat_id: str) -> None:
         """Stop a typing indicator loop for a chat."""
-        await self._cancel_task(self._typing_tasks.pop(chat_id, None))
+        await cancel_task(self._typing_tasks.pop(chat_id, None))
         # Explicit stop-typing RPC so the recipient drops the indicator now instead of after
         # Signal's ~5s timeout. Best-effort: failures must not prevent the backoff cleanup below.
         with suppress(Exception):
@@ -957,7 +953,7 @@ class SignalAdapter(BasePlatformAdapter):
     def _reactions_enabled(self, event: "MessageEvent" = None) -> bool:
         """SIGNAL_REACTIONS env gate, then the DM allowlist: reactions fire before run.py's auth gate,
         so an unauthorized contact's 👀 would otherwise reveal a listening bot."""
-        if os.getenv("SIGNAL_REACTIONS", "true").lower() in {"false", "0", "no"}:
+        if str(_sig_secret("SIGNAL_REACTIONS", "true")).lower() in {"false", "0", "no"}:
             return False
         sender = getattr(getattr(event, "source", None), "user_id", None) if event is not None else None
         return not (sender and "*" not in self.dm_allow_from and sender not in self.dm_allow_from)
@@ -984,27 +980,3 @@ class SignalAdapter(BasePlatformAdapter):
         result = await self._rpc("getContact", {"account": self.account, "contactAddress": chat_id})
         name = (result.get("name") or result.get("profileName")) if isinstance(result, dict) else None
         return {"name": name or chat_id, "type": "dm", "chat_id": chat_id}
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-TYPING_INTERVAL = 8.0  # seconds between typing indicator refreshes
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DEFAULT_EXT_TO_MIME': ('gateway.platforms.media_cache', 'DEFAULT_EXT_TO_MIME'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

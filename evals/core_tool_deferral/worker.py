@@ -34,11 +34,14 @@ for var in list(os.environ):
 os.environ.pop("FAL_KEY", None)
 os.environ.pop("HERMES_PROFILE", None)
 
+from sandbox import isolate_host  # noqa: E402
+
 tmp_root = tempfile.mkdtemp(prefix=f"ab-{ARM}-{TASK_ID}-")
 hermes_home = os.path.join(tmp_root, ".hermes")
 workspace = os.path.join(tmp_root, "ws")
 os.makedirs(hermes_home)
 os.makedirs(workspace)
+isolate_host(tmp_root, hermes_home)
 with open(os.path.join(hermes_home, "config.yaml"), "w", encoding="utf-8") as f:
     f.write("model:\n  provider: openrouter\n  model: %s\n" % MODEL)
 
@@ -104,17 +107,14 @@ IMG_URL = taskmod.IMG_URL
 
 _clarify_answers = list(TASK.get("clarify_answers") or [])
 
-def clarify_cb(question, choices, multi_select=False):
-    CALLBACK_LOG.append({"name": "clarify", "question": question, "choices": choices})
-    if _clarify_answers:
-        ans = _clarify_answers.pop(0)
-    else:
-        ans = "Use your best judgement."
-    if choices:
-        for c in choices:
-            if ans.lower() in str(c).lower():
-                return str(c)
-    return ans
+def clarify_cb(questions):
+    answers = {}
+    for entry in questions:
+        CALLBACK_LOG.append({"name": "clarify", "question": entry["question"], "choices": entry["choices"]})
+        ans = _clarify_answers.pop(0) if _clarify_answers else "Use your best judgement."
+        match = next((str(c) for c in entry["choices"] or [] if ans.lower() in str(c).lower()), None)
+        answers[entry["qid"]] = match or ans
+    return {"answers": answers, "outcome": "submitted"}
 
 def tour_cb(payload):
     CALLBACK_LOG.append({"name": "tour", "payload": payload})
@@ -165,9 +165,11 @@ def read_window_below_cb(**kw):
     CALLBACK_LOG.append({"name": "read_window_below", "kw": kw})
     return json.dumps({"title": "Invoices — draft", "text": WINDOW_BELOW})
 
-def setup_mcp_cb(name, action, reason):
-    CALLBACK_LOG.append({"name": "setup_mcp", "server": name, "action": action})
-    return json.dumps({"success": True, "server": name, "status": "installed"})
+def connection_cb(payload):
+    # Answer every manage_connections MCP target as installed.
+    CALLBACK_LOG.append({"name": "manage_connections", "targets": payload.get("targets", [])})
+    return json.dumps({"settled_by": "all_resolved", "targets": [
+        {"name": t["name"], "status": "installed"} for t in payload.get("targets", [])]})
 
 # --- import the tree's model_tools + patch registry stubs ------------------
 import model_tools  # noqa: E402  (triggers registrations + plugin discovery)
@@ -226,7 +228,7 @@ agent = AIAgent(
     read_preview_callback=read_preview_cb,
     drive_preview_callback=drive_preview_cb,
     read_window_below_callback=read_window_below_cb,
-    setup_mcp_callback=setup_mcp_cb,
+    connection_callback=connection_cb,
 )
 
 PREAMBLE = ("You are running inside the Hermes desktop app on the user's machine. "

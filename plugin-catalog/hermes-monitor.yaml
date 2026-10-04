@@ -1,0 +1,23 @@
+# Community catalog entry — hermes-monitor
+#
+# Owner-submitted: the plugin's contributors own and maintain the repo below.
+# Exact-SHA pin (40-hex). No self-updating code: the desktop half ships as a
+# static `desktop/plugin.js` and never fetches, downloads, or replaces itself.
+name: hermes-monitor
+repo: https://github.com/mr-3mm3/hermes-monitor
+sha: "40f524b4f2d108ffe0272ce6489640fa2edc6b27"   # tag v0.2.2
+version: "0.2.2"
+description: "Kanban worker health in the Desktop status bar — live activity per running card with stall and loop detection (same tool + same arguments repeated), plus a compact per-provider quota readout. Zero model tokens. Disclosure — opens HERMES_HOME/kanban.db and each profile's state.db read-only for worker activity; for quota chips it loads every provider credential pool Hermes knows (auth.json, environment, HERMES_HOME/.env and each profile's .env) and calls Hermes' own account-usage fetchers for each configured provider (Anthropic, Codex, OpenRouter, DeepSeek at https://api.deepseek.com/user/balance, and any provider plugin exposing fetch_account_usage), sending each pool entry's own token to its own provider; when an Anthropic OAuth token is within two minutes of expiry it calls the core pool's select(), which may refresh the token and rewrite Hermes' auth.json. No other network egress."
+maintainer: mr-3mm3 (Hermes Monitor contributors; independent of Nous Research)
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+platforms: [linux, macos]
+docs_url: https://github.com/mr-3mm3/hermes-monitor
+screenshots:
+  - https://raw.githubusercontent.com/mr-3mm3/hermes-monitor/40f524b4f2d108ffe0272ce6489640fa2edc6b27/docs/footer.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

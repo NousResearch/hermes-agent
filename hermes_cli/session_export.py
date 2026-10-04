@@ -12,6 +12,8 @@ from html import escape as html_escape
 import json
 from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional, Tuple
 
+from hermes_cli.timefmt import coerce_epoch
+
 
 ExportFormat = Literal["jsonl", "markdown"]
 ExportOnly = Literal["user-prompts"]
@@ -91,7 +93,7 @@ def iter_user_prompt_records(sessions: Iterable[Dict[str, Any]]) -> Iterator[Dic
             record: Dict[str, Any] = {
                 "session_id": session_id,
                 "index": index,
-                "created_at": _format_timestamp(message.get("timestamp")),
+                "created_at": _format_timestamp(message.get("timestamp"), session_id),
                 "role": "user",
                 "text": _message_text(message.get("content")),
             }
@@ -123,7 +125,7 @@ def _append_session_messages(lines: List[str], session: Dict[str, Any], *, headi
         return
     for message in visible_messages:
         role = str(message.get("role") or "unknown")
-        timestamp = _format_timestamp(message.get("timestamp"))
+        timestamp = _format_timestamp(message.get("timestamp"), _session_id(session))
         suffix = f" - {timestamp}" if timestamp else ""
         text = _message_text(message.get("content"))
         if role == "tool":
@@ -157,15 +159,15 @@ def _content_part_text(part: Any) -> str:
     return json.dumps(part, ensure_ascii=False, sort_keys=True)
 
 
-def _format_timestamp(value: Any) -> Optional[str]:
+def _format_timestamp(value: Any, session_id: Optional[str] = None) -> Optional[str]:
     if value is None:
         return None
-    if isinstance(value, (int, float)):
-        dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
-    elif isinstance(value, datetime):
+    if isinstance(value, datetime):
         dt = (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+    elif (ts := coerce_epoch(value, session_id=session_id)) is None:
+        return str(value)  # corrupt cell: odd-looking date, not an aborted export
     else:
-        return str(value)
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
@@ -176,7 +178,7 @@ def _session_metadata_lines(session: Dict[str, Any]) -> List[str]:
             lines.append(f"- {label}: `{session[key]}`")
     if title := session.get("title"):
         lines.append(f"- Title: {' '.join(str(title).splitlines()).strip()}")
-    if started := _format_timestamp(session.get("started_at")):
+    if started := _format_timestamp(session.get("started_at"), _session_id(session)):
         lines.append(f"- Started: {started}")
     if (message_count := session.get("message_count")) is not None:
         lines.append(f"- Messages: {message_count}")
@@ -205,6 +207,38 @@ def _fenced_text(text: str, *, language: str = "text") -> str:
 # --- Current-session save helper (shared by CLI /save and gateway /save) ---
 
 SAVE_FORMATS = ("json", "md", "html")
+SAVE_TRANSCRIPT_FORMATS = frozenset({"md", "html"})
+
+
+def export_projection(transcript: bool) -> Dict[str, bool]:
+    """``export_session`` flags for an export. A transcript shows what the user sees, compaction-archived
+    turns included. A JSON snapshot is what an import restores, so it carries every stored row with its
+    ``active``/``compacted`` flags: live rows alone would drop every turn in-place compaction archived, and
+    ``import_sessions`` brings the flagged rows back archived, never as live context."""
+    return {"include_compacted": True} if transcript else {"include_inactive": True}
+
+
+def drop_undone_rows(export: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep live and compaction-archived rows in a ``/save`` JSON snapshot; rows removed by /undo, rewind
+    or edit stay out. ``timings`` is rebuilt from the kept rows so it names no dropped row."""
+    from hermes_state_portability import _export_timings
+    export["messages"] = [m for m in export["messages"] if m["active"] or m["compacted"]]
+    export["timings"] = _export_timings(export["messages"], export.get("id"))
+    return export
+
+
+def load_save_snapshot(db: Any, session_id: str, fmt: str) -> Optional[Dict[str, Any]]:
+    """The stored session a ``/save <fmt>`` writes, or None when it has no row. A JSON snapshot loads every
+    stored row in memory, so it is refused past ``sessions.max_export_messages`` (raises
+    ``SessionExportTooLargeError``), like ``hermes sessions export``."""
+    transcript = fmt in SAVE_TRANSCRIPT_FORMATS
+    if not transcript:
+        db.assert_export_safe(session_id)
+    export = db.export_session(session_id, **export_projection(transcript))
+    if export and not transcript:
+        drop_undone_rows(export)
+    return export
+
 
 SAVE_USAGE = """/save — export the current session to a file
 Usage: /save <format> [filename] [redact]

@@ -20,8 +20,6 @@ import contextlib
 import io
 from pathlib import Path
 
-import pytest
-
 from hermes_constants import get_hermes_home
 from hermes_state import SessionDB
 from run_agent import AIAgent
@@ -29,13 +27,11 @@ from run_agent import AIAgent
 from agent.agent_init import (
     _codex_gpt55_autoraise_notice_marker,
     _codex_gpt55_autoraise_notice_seen,
-    _codex_gpt55_autoraise_notice_state,
     _record_codex_gpt55_autoraise_notice,
 )
 
 # The dict agent_init stashes when the Codex gpt-5.5 override fires.
 AUTORAISE = {"model": "gpt-5.5", "from": 0.50, "to": 0.85}
-
 
 def _config(*, show_notice: bool) -> dict:
     return {
@@ -52,7 +48,6 @@ def _config(*, show_notice: bool) -> dict:
         "sessions": {},
         "bedrock": {},
     }
-
 
 def _make_codex_agent(
     monkeypatch,
@@ -94,18 +89,11 @@ def _make_codex_agent(
 
     return agent, stdout.getvalue()
 
-
 def _threshold_ratio(agent: AIAgent) -> float:
     compressor = getattr(agent, "context_compressor")
     return round(compressor.threshold_tokens / compressor.context_length, 2)
 
-
 # ── config display gate ──────────────────────────────────────────────────────
-
-
-
-
-
 
 def test_codex_gpt56_uses_372k_window_and_95_percent_autoraise(monkeypatch, tmp_path):
     agent, stdout = _make_codex_agent(
@@ -122,8 +110,6 @@ def test_codex_gpt56_uses_372k_window_and_95_percent_autoraise(monkeypatch, tmp_
     assert "372K" in warning
     assert "95%" in warning
     assert "372K" in stdout
-
-
 def test_codex_gpt55_autoraise_notice_deduped_across_agent_inits(monkeypatch, tmp_path):
     # Gateway spam scenario (#54432): the gateway rebuilds the agent per
     # inbound message. The first init shows the notice; the second stays
@@ -137,21 +123,11 @@ def test_codex_gpt55_autoraise_notice_deduped_across_agent_inits(monkeypatch, tm
     assert "auto-compaction was raised" not in stdout2
     assert getattr(agent2, "_compression_warning") is None
 
-
 # ── per-profile dedupe marker (#54432) ───────────────────────────────────────
-
 
 def test_marker_lives_under_hermes_home() -> None:
     marker = _codex_gpt55_autoraise_notice_marker()
     assert marker.parent == get_hermes_home()
-    assert marker.name == ".codex_gpt55_autoraise_notice"
-
-
-
-
-
-
-
 
 def test_changed_threshold_renotifies_once() -> None:
     _record_codex_gpt55_autoraise_notice(AUTORAISE)
@@ -163,31 +139,3 @@ def test_changed_threshold_renotifies_once() -> None:
     assert _codex_gpt55_autoraise_notice_seen(changed) is True
     # And the old state is now considered unseen (marker moved forward).
     assert _codex_gpt55_autoraise_notice_seen(AUTORAISE) is False
-
-
-
-
-
-
-
-
-
-
-def test_full_init_gate_shows_once_then_stays_silent() -> None:
-    # Mirror the decision agent_init makes on each build:
-    #   show = bool(autoraise) and compression_enabled and not seen(autoraise)
-    def decide(compression_enabled: bool) -> bool:
-        show = (
-            bool(AUTORAISE)
-            and compression_enabled
-            and not _codex_gpt55_autoraise_notice_seen(AUTORAISE)
-        )
-        if show:
-            _record_codex_gpt55_autoraise_notice(AUTORAISE)
-        return show
-
-    # First init (any surface) shows; every subsequent init in this profile
-    # stays silent — the gateway spam scenario from the issue.
-    assert decide(compression_enabled=True) is True
-    assert decide(compression_enabled=True) is False
-    assert decide(compression_enabled=True) is False

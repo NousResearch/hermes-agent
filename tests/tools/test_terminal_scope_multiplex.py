@@ -110,7 +110,9 @@ def test_routed_turn_reads_every_terminal_consumer_from_profile(
         assert cfg["cwd"] == str(b_cwd)
         assert cfg["docker_volumes"] == []
         assert cfg["docker_shared_container_key"] == ""
-        assert tt._resolve_container_task_id(None) == "default"
+        # Session-less (cron) work for routed B keys B's own environment, never the launch
+        # profile's shared "default" one (which carries A's env and terminal policy).
+        assert tt._resolve_container_task_id(None) == f"home:{os.path.realpath(home)}"
         assert gbase._parse_docker_volume_mounts() == []
         assert not any(
             "alpha-shared" in c for c in gbase._docker_sandbox_dir_candidates("agent:bee:x")
@@ -141,6 +143,30 @@ def test_profile_omitting_keys_gets_defaults_not_launch_values(tmp_path):
         assert cfg["ssh_host"] == ""
         assert cfg["cwd"] != _LAUNCH_CWD
     assert json.loads(os.environ["TERMINAL_DOCKER_VOLUMES"])  # A unchanged
+
+
+def test_persistent_docker_routed_profile_keeps_one_container(tmp_path):
+    """Persistent Docker is profile-scoped: a routed profile's session-less (cron) work must key the
+    SAME container as its session-bound work, and never another profile's."""
+    import gateway.run as gw
+    import tools.terminal_tool as tt
+    from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
+
+    docker = "terminal:\n  backend: docker\n  container_persistent: true\n"
+    keys = {}
+    for name in ("bee", "wasp"):
+        home = _profile(tmp_path, name, docker)
+        with gw._profile_runtime_scope(home):
+            cron_key = tt._resolve_container_task_id(None)
+            tokens = set_session_vars(session_key=f"agent:{name}:chat", profile=name)
+            try:
+                session_key = tt._resolve_container_task_id(None)
+            finally:
+                clear_session_vars(tokens)
+                reset_session_vars()
+        assert cron_key == session_key == f"profile:{name}"
+        keys[name] = cron_key
+    assert keys["bee"] != keys["wasp"]
 
 
 def test_malformed_profile_config_refuses_execution(tmp_path):
@@ -240,3 +266,39 @@ def test_dotenv_json_strings_stay_json_strings(tmp_path):
     scope = build_profile_terminal_scope(home)
     assert json.loads(scope["TERMINAL_DOCKER_FORWARD_ENV"]) == ["EMAIL_HOME_ADDRESS"]
     assert json.loads(scope["TERMINAL_DOCKER_VOLUMES"]) == ["/tmp/a:/data"]
+
+
+def test_launch_turn_binds_terminal_scope_once_multiplexing_is_active(
+    tmp_path, monkeypatch
+):
+    """#107422: after multiplexing starts, launch turns bind the launch home's
+    own terminal policy (mirrors ``prompt_turn._prepare_turn_input``'s
+    ``elif _served_profile_homes`` branch) so poisoned ambient os.environ is
+    never the authority."""
+    from tools.terminal_scope import (
+        get_terminal_scope,
+        install_profile_terminal_scope,
+        reset_terminal_scope,
+    )
+
+    launch_home = tmp_path / ".hermes"
+    launch_home.mkdir()
+    (launch_home / "config.yaml").write_text(
+        "terminal:\n  backend: local\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    # Poison ambient the way the pre-fix latch did — launch scope must win.
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "bee/img:1")
+
+    token = install_profile_terminal_scope(launch_home)
+    try:
+        assert get_terminal_scope() is not None
+        assert terminal_env("TERMINAL_ENV") == "local"
+        # DEFAULT_CONFIG may backfill docker_image; the poisoned bee image must not win.
+        assert terminal_env("TERMINAL_DOCKER_IMAGE", "") != "bee/img:1"
+        assert os.environ["TERMINAL_ENV"] == "docker"
+        assert os.environ["TERMINAL_DOCKER_IMAGE"] == "bee/img:1"
+    finally:
+        reset_terminal_scope(token)
+    assert get_terminal_scope() is None

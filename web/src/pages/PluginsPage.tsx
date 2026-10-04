@@ -3,6 +3,7 @@ import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router";
 import { api } from "@/lib/api";
+import { setupHasDetails, setupHasInstallableSteps } from "@/lib/memory-provider-setup";
 import type {
   CatalogEntry,
   CatalogRemovedEntry,
@@ -11,7 +12,6 @@ import type {
   MemoryProviderConfig,
   MemoryProviderField,
   MemoryProviderInfo,
-  MemoryProviderSetupInfo,
   MemoryProviderSetupResult,
   PluginsHubResponse,
 } from "@/lib/api";
@@ -28,6 +28,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { PluginSlot } from "@/plugins";
 import { cn } from "@/lib/utils";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -63,23 +64,6 @@ function fieldIsVisible(field: MemoryProviderField, values: Record<string, Memor
     const current = values[key];
     return String(current ?? "") === String(expected);
   });
-}
-
-function setupHasDetails(setup?: MemoryProviderSetupInfo) {
-  if (!setup) return false;
-  return Boolean(
-    setup.external_dependencies?.length ||
-      setup.pip_dependencies?.length ||
-      setup.required_env?.length,
-  );
-}
-
-function setupHasInstallableSteps(setup?: MemoryProviderSetupInfo) {
-  if (!setup) return false;
-  return Boolean(
-    setup.external_dependencies?.some((dep) => dep.install) ||
-      setup.pip_dependencies?.length,
-  );
 }
 
 function SetupCommandBlock({ code, label }: { code: string; label: string }) {
@@ -1123,8 +1107,13 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    await api.disableAgentPlugin(row.name);
-                    showToast(t.pluginsPage.disableRuntime, "success");
+                    const res = await api.disableAgentPlugin(row.name);
+                    showToast(
+                      res.restart_required
+                        ? t.pluginsPage.toggleTakesEffectAfterRestart
+                        : t.pluginsPage.disableRuntime,
+                      "success",
+                    );
                   });
                 }}
               >
@@ -1137,8 +1126,13 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    await api.enableAgentPlugin(row.name);
-                    showToast(t.pluginsPage.enableRuntime, "success");
+                    const res = await api.enableAgentPlugin(row.name);
+                    showToast(
+                      res.restart_required
+                        ? t.pluginsPage.toggleTakesEffectAfterRestart
+                        : t.pluginsPage.enableRuntime,
+                      "success",
+                    );
                   });
                 }}
               >
@@ -1168,7 +1162,19 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    await api.updateAgentPlugin(row.name);
+                    const res = await api.updateAgentPlugin(row.name);
+                    if (res.consent_required) {
+                      // The new pin widens the plugin; the backend changed nothing until confirmed.
+                      const body = [
+                        (t.pluginsPage.updateConsentBody ?? en.pluginsPage.updateConsentBody!)(
+                          row.name,
+                          (res.sha ?? "").slice(0, 8),
+                        ),
+                        ...(res.delta_lines ?? []),
+                      ].join("\n");
+                      if (!window.confirm(body)) return;
+                      await api.updateAgentPlugin(row.name, true);
+                    }
                     showToast(t.pluginsPage.updateGit, "success");
                   });
                 }}

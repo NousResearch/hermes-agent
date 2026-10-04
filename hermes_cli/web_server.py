@@ -23,6 +23,7 @@ import time
 import urllib.parse
 
 from hermes_cli.install_identity import get_install_id as _shared_get_install_id
+from hermes_cli.process_identity import is_desktop_owned_backend
 from hermes_cli.pty_session import run_reaper
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -32,8 +33,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes_cli import __version__
 from hermes_cli.config import load_config
+from hermes_cli.version_info import get_version_info
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -44,15 +45,17 @@ except ImportError:
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
     # them out of every other install path. After install, re-import.
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("tool.dashboard", prompt=False)
-        from fastapi import FastAPI, HTTPException, Request
+        from pm import ensure_import
+        ensure_import("web")
+        from fastapi import (
+            FastAPI, HTTPException, Request,
+        )
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import JSONResponse
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
-            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
+            "Run hermes pm repair, then restart Hermes."
         )
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
@@ -74,6 +77,16 @@ from hermes_cli.web_server_lifecycle import (  # noqa: E402
 )
 
 
+def _gateway_owns_cron(name: str, home) -> bool:
+    """A gateway already ticks this profile's store with live adapters: its OWN process, or the
+    live default multiplexer (a served satellite has no gateway.pid of its own). Winning the
+    tick-lock race here would deliver through the standalone path (#52202, #100489, #107485)."""
+    from hermes_cli.profiles import _check_gateway_running, _served_by_running_multiplexer
+
+    return _check_gateway_running(Path(home)) or (
+        name != "default" and _served_by_running_multiplexer(name))
+
+
 def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60) -> None:
     """Tick the cron scheduler from inside the desktop dashboard backend.
 
@@ -91,34 +104,68 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     ("tasks on the sleeping profile could be idle" — community report, Aug 2026).
     """
     from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
+    from hermes_constants import get_hermes_home, profile_name_for_home
 
     provider = resolve_cron_scheduler()
+    own_home = Path(get_hermes_home())
+    own_name = profile_name_for_home(own_home) or "default"
+    # Ownership is re-checked every tick, not once at startup, so Desktop takes over when the
+    # gateway stops (#126822).
+    profile_gate = lambda name, home: not _gateway_owns_cron(name, home)
 
     start_kwargs: dict = {"interval": interval}
     if isinstance(provider, InProcessCronScheduler):
         try:
             from hermes_cli.profiles import profiles_to_serve
 
-            profile_homes = list(profiles_to_serve(multiplex=True))
-            if len(profile_homes) > 1:
+            # Same served set as the multiplexer: default + every live profile under profiles/.
+            # The ticker re-enumerates this callable every cycle. Passing a
+            # startup snapshot leaves deleted profiles in the scheduler until
+            # restart, which both writes their removed stores and keeps stale
+            # profiles alive in Desktop's background work.
+            profile_homes = lambda: list(profiles_to_serve(multiplex=True))
+            initial_profile_homes = profile_homes()
+            if initial_profile_homes:
+                # Even one profile needs the per-tick gateway gate; otherwise
+                # Desktop races its dedicated gateway for the same cron store.
                 start_kwargs["profile_homes"] = profile_homes
-                # Stand down, per tick, for a profile whose OWN gateway runs:
-                # it ticks with live adapters, and the tick-lock race would
-                # otherwise deliver through the standalone path (#100489).
-                from hermes_cli.profiles import _check_gateway_running
-
-                start_kwargs["profile_gate"] = lambda _name, home: not _check_gateway_running(Path(home))
+                start_kwargs["profile_gate"] = profile_gate
                 from hermes_logging import enable_profile_log_routing
 
-                enable_profile_log_routing(profile_homes)
+                enable_profile_log_routing(initial_profile_homes)
                 _log.info(
                     "Desktop cron scheduler will tick %d profile(s): %s",
-                    len(profile_homes),
-                    [name for name, _home in profile_homes],
+                    len(initial_profile_homes),
+                    [name for name, _home in initial_profile_homes],
                 )
         except Exception:
             # Fail open to the single-store ticker so the active profile keeps firing.
             _log.exception("Desktop cron: profile enumeration failed; ticking active profile only")
+        if "profile_homes" not in start_kwargs:
+            # Fail open to this backend's own store behind the same gate. A gated-out profile is
+            # neither ticked nor heartbeated, so Desktop never marks the gateway's store healthy.
+            start_kwargs["profile_homes"] = lambda: [(own_name, own_home)]
+            start_kwargs["profile_gate"] = profile_gate
+    else:
+        # External providers take no per-tick gate: defer their start until the gateway is gone.
+        def _owned() -> bool:
+            try:
+                return _gateway_owns_cron(own_name, own_home)
+            except Exception:
+                # Start the ticker rather than silently stand down.
+                _log.warning("Desktop cron: gateway-ownership probe failed; starting the ticker", exc_info=True)
+                return False
+
+        if _owned():
+            _log.info(
+                "Desktop cron scheduler waiting: live gateway owns cron on this HERMES_HOME; "
+                "the gateway ticks with live adapters (re-probing every %ds)", interval,
+            )
+            while True:
+                if stop_event.wait(interval):
+                    return
+                if not _owned():
+                    break
 
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
     provider.start(stop_event, **start_kwargs)
@@ -142,13 +189,18 @@ async def _lifespan(app: "FastAPI"):
     # Bring state.db schema current BEFORE the first session-list poll
     # (#79531/#80037): a store left behind by `hermes update` otherwise 500s
     # every poll while the read-probe heal loses to sibling lock contention.
-    # Daemon thread so a locked store never delays the socket (Desktop
-    # ready-probe times out at 10s, GH-73083).
-    threading.Thread(
+    # Off-thread so a locked store never delays the socket (Desktop
+    # ready-probe times out at 10s, GH-73083). NOT a daemon, and joined at
+    # shutdown: its sqlite connection must be closed by the thread that is
+    # stepping it. A daemon copy that outlived the lifespan had its
+    # connection closed from the main thread mid-probe (pytest's leaked-DB
+    # sweep) and segfaulted the interpreter. The worker is time-bounded by
+    # SessionDB's lock patience, so the join cannot hang shutdown.
+    eager_reconcile_thread = threading.Thread(
         target=_eager_reconcile_own_session_db,
-        daemon=True,
         name="statedb-eager-reconcile",
-    ).start()
+    )
+    eager_reconcile_thread.start()
 
     # Import hermes_cli.gateway *before* the yield: on Windows + 3.11 the
     # import holds the GIL, so run_in_executor still froze the loop 15-22s and
@@ -168,6 +220,11 @@ async def _lifespan(app: "FastAPI"):
     from tui_gateway import methods_groups as _hosted_groups
     import tui_gateway.server  # noqa: F401
 
+    try:
+        tui_gateway.server.install_tui_message_injector()
+    except Exception:
+        _log.warning("TUI message injector did not install", exc_info=True)
+
     hosted_room_start_cancel = threading.Event()
 
     def _start_hosted_rooms() -> None:
@@ -186,21 +243,24 @@ async def _lifespan(app: "FastAPI"):
     )
     hosted_room_start_thread.start()
 
-    # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
-    # since the app has no gateway running the scheduler. Server `hermes
-    # dashboard` is unaffected — it relies on its own gateway.
+    # Desktop-spawned backends fire cron jobs themselves, since the app has no
+    # gateway running the scheduler. Server `hermes dashboard` is unaffected —
+    # it relies on its own gateway.
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
-    if os.getenv("HERMES_DESKTOP") == "1":
+    desktop_owned = is_desktop_owned_backend()
+    if desktop_owned:
         # Reap an orphaned gateway from an abnormal previous exit (reparented to
         # launchd, still holding the platform WebSocket) before forking a fresh
         # one that would race the same credential (#77276). Runs
         # unconditionally; protection of a healthy standalone gateway lives
         # INSIDE the reaper (registration probed with cleanup_stale=False).
+        # Startup grace: spare a gateway still claiming gateway.pid/lock (#122533).
         try:
+            from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
             from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
 
-            _reap_unsupervised_gateway_orphans()
+            _reap_unsupervised_gateway_orphans(min_age_s=_REAP_MIN_AGE_SECONDS)
         except Exception:
             _log.exception("Desktop startup: orphan gateway reap failed")
 
@@ -235,9 +295,21 @@ async def _lifespan(app: "FastAPI"):
 
     threading.Thread(target=_boot_local_runtime, daemon=True, name="local-runtime-boot").start()
 
+    # Nous free tier: the ONE place its identity is created. Inventories credentials, mints only
+    # when HERMES_GUEST_ONBOARDING=1, records the answer for setup.status / free_tier.status and
+    # broadcasts `setup.ready`. Off-thread so a slow portal never delays the socket; the desktop's
+    # first setup.status waits on the record (bounded) instead.
+    from hermes_cli.free_tier_bootstrap import start_background_bootstrap
+
+    start_background_bootstrap()
+
     try:
         yield
     finally:
+        try:
+            tui_gateway.server.clear_tui_message_injector()
+        except Exception:
+            _log.debug("TUI message injector clear skipped", exc_info=True)
         hosted_room_start_cancel.set()
         _hosted_groups.stop_hosted_room_service(timeout=5.0)
         hosted_room_start_thread.join(timeout=1.0)
@@ -254,8 +326,9 @@ async def _lifespan(app: "FastAPI"):
             shutdown_local_runtime()
         except Exception:  # noqa: BLE001
             pass
-        if os.getenv("HERMES_DESKTOP") == "1":
+        if desktop_owned:
             _terminate_desktop_managed_gateway()
+        eager_reconcile_thread.join()
 
 
 def _app_state_default(app: "FastAPI", name: str, factory):
@@ -280,7 +353,7 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
     return _app_state_default(app, "pty_active_session_files", dict)
 
 
-app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
+app = FastAPI(title="Hermes Agent", version=get_version_info().base_version, lifespan=_lifespan)
 
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
@@ -836,17 +909,12 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
 
     Concurrent children race each other on the kill-and-start path, so a live
     child is reused; requests within ``GATEWAY_RESTART_COOLDOWN_SECONDS`` for the
-    same profile coalesce onto the last spawn too (#89034). Orphaned gateways
-    are reaped first so the fresh one doesn't stack a duplicate (#77276).
-    Returns ``(proc, reused)``.
+    same profile coalesce onto the last spawn too (#89034). This process stops
+    nothing itself: the child decides whether the restart is even allowed
+    (``_cmd_restart``'s multiplexer guard), so the orphan reap (#77276) runs
+    there, after that guard — reaping here killed the profile's gateway and then
+    the child refused to start a replacement (#125394). Returns ``(proc, reused)``.
     """
-    try:
-        from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
-
-        _reap_unsupervised_gateway_orphans()
-    except Exception:
-        pass  # best-effort — don't block the restart on a reap failure
-
     global _LAST_GATEWAY_RESTART
 
     subcommand = _gateway_mod._gateway_subcommand(profile, "restart")
@@ -919,6 +987,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     status as _status_routes,
     actions as _actions_routes,
     audio as _audio_routes,
+    display as _display_routes,
     sessions as _sessions_routes,
     profiles as _profiles_routes,
     memory_providers as _memory_providers_routes,
@@ -933,7 +1002,9 @@ from hermes_cli.web_routers import (  # noqa: E402
     tools as _tools_routes,
     analytics as _analytics_routes,
     chat_ws as _chat_ws_routes,
+    chat_workspaces as _chat_workspaces_routes,
     dashboard_ui as _dashboard_ui_routes,
+    shared_metrics as _shared_metrics_routes,
 )
 
 app.include_router(_files_routes.router)
@@ -942,6 +1013,7 @@ app.include_router(_local_models_routes.router)
 app.include_router(_status_routes.router)
 app.include_router(_actions_routes.router)
 app.include_router(_audio_routes.router)
+app.include_router(_display_routes.router)
 app.include_router(_actions_routes.status_router)
 app.include_router(_sessions_routes.list_router)
 app.include_router(_profiles_routes.sessions_router)
@@ -963,7 +1035,9 @@ app.include_router(_skills_routes.router)
 app.include_router(_tools_routes.router)
 app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)
+app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
+app.include_router(_shared_metrics_routes.router)
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth
@@ -1171,6 +1245,11 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
         ws_ping_interval=ping_interval,
         ws_ping_timeout=ping_timeout,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
+        # Desktop sends a single SIGTERM and escalates to SIGKILL ~5s later;
+        # uvicorn's default (None) waits on lingering ASGI tasks forever, so a
+        # mid-turn request orphans the backend past that budget (#76244). 3s
+        # leaves room for lifespan shutdown + cron_stop before the kill.
+        timeout_graceful_shutdown=3,
     )
     return config, uvicorn.Server(config)
 
@@ -1183,15 +1262,64 @@ def _best_effort(what: str, fn) -> None:
         _log.debug("%s skipped: %s", what, exc)
 
 
+def _publish_host_rendezvous(host: str, port: int) -> None:
+    """Publish this backend's host record: ``ROLE_SERVE`` for the machine-level owner,
+    ``ROLE_DESKTOP_SERVE`` for a Desktop-owned child."""
+    # Desktop-spawned backends (flag + per-spawn credential; the bare flag is inherited by every
+    # Desktop shell) are loopback, random-port and per-profile. Recording one as the HOST owner
+    # made a later independently supervised `dashboard --host 0.0.0.0 --port N` refuse behind
+    # the private child on every restart (#119824): the attach/refuse ladder reads ROLE_SERVE
+    # only. They still publish under their own role so `hermes plugins install` from a terminal
+    # can reach the backend hosting the open chats on a Desktop-only box (#119644).
+    from gateway import host_rendezvous as hr
+
+    desktop_child = is_desktop_owned_backend()
+    role = hr.ROLE_DESKTOP_SERVE if desktop_child else hr.ROLE_SERVE
+
+    outcome, error = hr.claim_host_lock(role)
+    if outcome is hr.HostLockOutcome.COULD_NOT_OPEN:
+        _log.warning(
+            "Host backend lock could not be opened (%s); this backend is not discoverable. "
+            "This is NOT another backend holding it.", error)
+        return
+    if outcome is hr.HostLockOutcome.HELD_BY_OTHER:
+        owner = hr.read_record(role)
+        if desktop_child:
+            # A second pool child is Desktop's own topology, not a conflict.
+            _log.debug("another Desktop backend holds the %s record (%s)", role,
+                       hr.describe(owner) if owner else "owner unknown")
+            return
+        _log.warning(
+            "Another backend already owns this host (%s); this one bound anyway "
+            "(observe-only). Multiplex-only expects exactly one backend per host.",
+            hr.describe(owner) if owner else "owner unknown",
+        )
+        return
+    app.state.host_role = role
+    hr.publish_record(
+        role,
+        host=host,
+        port=port,
+        profiles=hr.served_profiles(),
+        # The live session token, so an attaching client of the same OS user can
+        # authenticate even when the backend is gated and `GET /` withholds it.
+        token=_SESSION_TOKEN,
+    )
+    # SIGTERM included: it is the normal stop, and it does not run atexit here.
+    hr.cleanup_on_exit(role)
+
+
 def _on_server_started(
     server,
     *,
     host: str,
     port: int,
     headless: bool,
+    isolated: bool,
     open_browser: bool,
     initial_profile: str,
     start_mcp_discovery_after_bind: bool,
+    ssh_lock_path: Optional[Path] = None,
 ) -> None:
     """Post-bind arming on the serving loop right after ``server.startup()``.
 
@@ -1213,7 +1341,7 @@ def _on_server_started(
 
         reap_orphaned_mcp_helpers()
 
-    if os.getenv("HERMES_DESKTOP") == "1":
+    if is_desktop_owned_backend():
         _best_effort("orphan desktop-local serve reap", _reap_desktop_serves)
     # Same sweep for stdio MCP helpers (#61514): positive identity only (spawn
     # ledger + spawner provably dead); anything alive or unprovable is untouched.
@@ -1230,9 +1358,28 @@ def _on_server_started(
         except (TypeError, ValueError):
             grace = DEFAULT_IDLE_GRACE_S
         start_idle_watchdog(server, app.state.ssh_isolated_clients, grace_s=grace)
+    if getattr(app.state, "ssh_isolated_clients", None) is not None or is_desktop_owned_backend():
+        # The host's updater never restarts this backend (SSH-isolated: only the remote Desktop
+        # client holds its token and owner nonce, #91668/#101626; Desktop-owned local serve:
+        # the updater defers to the app's ledger-verified restart and the backend otherwise
+        # outlives the handoff, #99859), so it retires itself (between turns) when the install
+        # moves on. The retirement fence closes admission process-wide before the exit, so a
+        # connected Desktop just sees its next request reconnect-respawn the backend on new code.
+        from hermes_cli.web_server_skew_exit import start_code_skew_watchdog
+
+        start_code_skew_watchdog(server)
+    if getattr(app.state, "ssh_isolated_clients", None) is not None and ssh_lock_path and _SSH_OWNER_NONCE:
+        # A reconnect that cannot prove this pid is its own drops the lock without signalling us
+        # and spawns a new nonce (#132034); retire (between turns) once the lock names that spawn.
+        from hermes_cli.web_server_owner_exit import start_owner_watchdog
+
+        start_owner_watchdog(server, lock_path=ssh_lock_path, nonce=_SSH_OWNER_NONCE)
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port
+    # Published by /api/host/identity: an attaching `hermes dashboard` must never be routed to a
+    # headless backend (a URL with no UI behind it).
+    app.state.serves_spa = not headless
 
     # Positive process identity in the machine spawn ledger (+ Windows
     # kill-on-close job). Registered AFTER the bind so the entry carries the
@@ -1243,18 +1390,31 @@ def _on_server_started(
 
         register_self(
             "serve" if headless else "dashboard",
-            detail={"host": host, "port": actual_port, "profile": initial_profile or ""},
+            detail={"host": host, "port": actual_port, "profile": initial_profile or "", "isolated": isolated},
         )
         attach_self_to_kill_on_close_job()
 
     _best_effort("process-identity registration", _register_identity)
 
+    # Host rendezvous (multiplex-only): the host lock + record that let a SECOND `hermes serve`
+    # for any profile find this process and attach instead of binding a second port. Published
+    # after the bind so the record carries the real port, and beside — not instead of — the
+    # spawn-ledger entry above, which Desktop's attach ladder reads.
+    _best_effort("host rendezvous publish", lambda: _publish_host_rendezvous(host, actual_port))
+
     _write_dashboard_ready_file(actual_port)
-    # Port-discovery sentinel parsed by the Desktop spawn (matches either
-    # token). Written to fd 1: tui_gateway.server redirects sys.stdout to
-    # stderr at import, and the Desktop watches child.stdout (#96282).
-    ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
-    _write_machine_sentinel_line(f"{ready_token} port={actual_port}")
+    # Port-discovery sentinel parsed by the Desktop spawn. Written to fd 1:
+    # tui_gateway.server redirects sys.stdout to stderr at import, and the
+    # Desktop watches child.stdout (#96282). A headless `serve` announces the
+    # neutral token FIRST and the legacy HERMES_DASHBOARD_READY one after it:
+    # a packaged Desktop artifact whose parser predates the neutral token
+    # (#60772) still matches the legacy sentinel, while current parsers match
+    # either. The legacy `dashboard` backend keeps its own single token.
+    if headless:
+        _write_machine_sentinel_line(f"HERMES_BACKEND_READY port={actual_port}")
+        _write_machine_sentinel_line(f"HERMES_DASHBOARD_READY port={actual_port}")
+    else:
+        _write_machine_sentinel_line(f"HERMES_DASHBOARD_READY port={actual_port}")
     if headless:
         # Auth-gated JSON-RPC/WS only — announce the bind, not a URL. flush:
         # a piped stdout otherwise surfaces this minutes after the sentinel.
@@ -1305,6 +1465,21 @@ def _on_server_started(
     _hb_loop.call_later(_hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval)
 
 
+def _windows_serve_loop_factory(config):
+    """Loop factory for serve on Windows: always a selector loop.
+
+    uvicorn 0.41's ``asyncio_loop_factory`` returns ProactorEventLoop on
+    win32, on which uvicorn's socket stack binds-but-never-accepts (READY
+    prints, then WinError 10014 accept failures, exit 1, desktop
+    ECONNREFUSED — #120164, regression of #50641). A factory that already
+    yields selector loops (older uvicorn, explicit ``--loop``) passes through.
+    """
+    factory = config.get_loop_factory()
+    if factory is None or factory is asyncio.ProactorEventLoop:  # type: ignore[attr-defined]
+        return asyncio.SelectorEventLoop
+    return factory
+
+
 def _run_serve(serve, config, host: str, port: int) -> None:
     """Drive ``serve()`` on the loop uvicorn expects.
 
@@ -1322,7 +1497,7 @@ def _run_serve(serve, config, host: str, port: int) -> None:
         try:
             from uvicorn._compat import asyncio_run as runner
 
-            runner_kwargs = {"loop_factory": config.get_loop_factory()}
+            runner_kwargs = {"loop_factory": _windows_serve_loop_factory(config)}
         except Exception:
             runner = asyncio.run
             runner_kwargs = {}
@@ -1356,17 +1531,22 @@ def start_server(
     allow_public: bool = False,
     initial_profile: str = "",
     headless: bool = False,
+    isolated: bool = False,
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
+    ssh_lock_path: Optional[Path] = None,
 ):
     """Start the web UI server.
 
     ``initial_profile`` is appended to the auto-opened URL as ``?profile=<name>``
     (profile alias ``<profile> dashboard``). ``headless`` is the ``serve`` path:
     JSON-RPC/WS backend, no UI build, no SPA mount (``HERMES_SERVE_HEADLESS``).
+    ``isolated`` (``--isolated``) is recorded in the spawn ledger so attach-first
+    discovery never adopts this process.
     ``ssh_session_token``/``ssh_owner_nonce`` are process-local Desktop SSH
-    bootstrap state, never persisted or exported to children.
+    bootstrap state, never persisted or exported to children; ``ssh_lock_path`` is the
+    Desktop's ``backend.lock.json`` for that ownership slot (supersession watchdog).
     ``start_mcp_discovery_after_bind`` (Desktop ``serve``) defers MCP discovery
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
@@ -1394,6 +1574,9 @@ def start_server(
     # host_header_middleware validates Host against this (DNS rebinding,
     # GHSA-ppp5-vxwm-4cf7).
     app.state.bound_host = host
+    # The SPA bootstrap reads this so profile-less deep links (/chat?resume=<id>) inherit the
+    # launcher's preselected profile instead of silently running in the launch scope (#73085).
+    app.state.initial_profile = str(initial_profile or "")
 
     config, server = _build_uvicorn_server(host, port, ssh_isolated=bool(ssh_session_token))
 
@@ -1416,6 +1599,22 @@ def start_server(
         _report_port_in_use(host, port)
         raise SystemExit(PORT_IN_USE_EXIT_CODE)
 
+    # LAST boot step, deliberately. One host process serves every profile and this one can be asked
+    # for any of them via ``?profile=``, so the decision is made here instead of on the first such
+    # request — activation is one-way, and everything the backend had already done by then
+    # (idle-reaper flushes, hosted rooms, cron) stayed on single-profile assumptions. It runs after
+    # the keepalive / auth gate / uvicorn build because activation FREEZES ``os.environ`` as the
+    # launch profile's credentials, and that snapshot is the only source for launch keys with no
+    # ``.env`` to rebuild from (systemd ``Environment=``, ``op run``, Compose): anything injected or
+    # rotated by a later boot step would otherwise be invisible for the process lifetime. No-op on a
+    # single-profile host; `gateway.multiplex_profiles: false` is retired and no longer skips it.
+    try:
+        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
+
+        activate_multi_profile_hosting_eagerly()
+    except Exception:
+        _log.warning("eager multi-profile activation failed", exc_info=True)
+
     async def _serve():
         # startup split from main_loop so the bound (ephemeral) port is readable.
         if not config.loaded:
@@ -1431,422 +1630,18 @@ def start_server(
                 host=host,
                 port=port,
                 headless=headless,
+                isolated=isolated,
                 open_browser=open_browser,
                 initial_profile=initial_profile,
                 start_mcp_discovery_after_bind=start_mcp_discovery_after_bind,
+                ssh_lock_path=ssh_lock_path,
             )
+            if headless:
+                from hermes_cli.observability.shared_metrics_startup import record_process_ready
+                record_process_ready("serve_boot", background=True)
 
             await server.main_loop()
             if server.started:
                 await server.shutdown()
 
     _run_serve(_serve, config, host, port)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-from typing import Literal  # noqa: F401,E402
-import atexit  # noqa: F401,E402
-import base64  # noqa: F401,E402
-import binascii  # noqa: F401,E402
-import concurrent.futures  # noqa: F401,E402
-import contextlib  # noqa: F401,E402
-from contextlib import contextmanager  # noqa: F401,E402
-from dataclasses import dataclass  # noqa: F401,E402
-from datetime import datetime  # noqa: F401,E402
-import functools  # noqa: F401,E402
-import hashlib  # noqa: F401,E402
-import importlib.util  # noqa: F401,E402
-import inspect  # noqa: F401,E402
-import ipaddress  # noqa: F401,E402
-import json  # noqa: F401,E402
-import math  # noqa: F401,E402
-import mimetypes  # noqa: F401,E402
-import queue  # noqa: F401,E402
-import shlex  # noqa: F401,E402
-import shutil  # noqa: F401,E402
-import stat  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-from datetime import timezone  # noqa: F401,E402
-import yaml  # noqa: F401,E402
-import zipfile  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'AudioTranscriptionRequest': ('hermes_cli.web_models', 'AudioTranscriptionRequest'),
-    'AutomationBlueprintInstantiate': ('hermes_cli.web_models', 'AutomationBlueprintInstantiate'),
-    'BackupRequest': ('hermes_cli.web_models', 'BackupRequest'),
-    'BulkDeleteSessions': ('hermes_cli.web_models', 'BulkDeleteSessions'),
-    'CONFIG_SCHEMA': ('hermes_cli.web_server_config', 'CONFIG_SCHEMA'),
-    'ChatImageUpload': ('hermes_cli.web_models', 'ChatImageUpload'),
-    'ConfigUpdate': ('hermes_cli.web_models', 'ConfigUpdate'),
-    'CredentialPoolAdd': ('hermes_cli.web_models', 'CredentialPoolAdd'),
-    'CronJobCreate': ('hermes_cli.web_models', 'CronJobCreate'),
-    'CronJobUpdate': ('hermes_cli.web_models', 'CronJobUpdate'),
-    'CuratorPause': ('hermes_cli.web_models', 'CuratorPause'),
-    'CustomEndpointUpdate': ('hermes_cli.web_models', 'CustomEndpointUpdate'),
-    'DEFAULT_CONFIG': ('hermes_cli.config', 'DEFAULT_CONFIG'),
-    'DebugShareRequest': ('hermes_cli.web_models', 'DebugShareRequest'),
-    'EnvVarDelete': ('hermes_cli.web_models', 'EnvVarDelete'),
-    'EnvVarReveal': ('hermes_cli.web_models', 'EnvVarReveal'),
-    'EnvVarUpdate': ('hermes_cli.web_models', 'EnvVarUpdate'),
-    'FontSetBody': ('hermes_cli.web_models', 'FontSetBody'),
-    'FsWriteText': ('hermes_cli.web_models', 'FsWriteText'),
-    'GitBranchSwitchBody': ('hermes_cli.web_models', 'GitBranchSwitchBody'),
-    'GitCommitBody': ('hermes_cli.web_models', 'GitCommitBody'),
-    'GitFileBody': ('hermes_cli.web_models', 'GitFileBody'),
-    'GitPathBody': ('hermes_cli.web_models', 'GitPathBody'),
-    'GitWorktreeAddBody': ('hermes_cli.web_models', 'GitWorktreeAddBody'),
-    'GitWorktreeRemoveBody': ('hermes_cli.web_models', 'GitWorktreeRemoveBody'),
-    'HookCreate': ('hermes_cli.web_models', 'HookCreate'),
-    'HookDelete': ('hermes_cli.web_models', 'HookDelete'),
-    'ImportRequest': ('hermes_cli.web_models', 'ImportRequest'),
-    'LearningNodeEdit': ('hermes_cli.web_models', 'LearningNodeEdit'),
-    'LearningNodeRef': ('hermes_cli.web_models', 'LearningNodeRef'),
-    'MCPCatalogInstall': ('hermes_cli.web_models', 'MCPCatalogInstall'),
-    'MCPEnabledToggle': ('hermes_cli.web_models', 'MCPEnabledToggle'),
-    'MCPServerCreate': ('hermes_cli.web_models', 'MCPServerCreate'),
-    'MCPServersReplace': ('hermes_cli.web_models', 'MCPServersReplace'),
-    'ManagedDirectoryCreate': ('hermes_cli.web_models', 'ManagedDirectoryCreate'),
-    'ManagedFileDelete': ('hermes_cli.web_models', 'ManagedFileDelete'),
-    'ManagedFileUpload': ('hermes_cli.web_models', 'ManagedFileUpload'),
-    'ManagedFilesPolicy': ('hermes_cli.web_server_files', 'ManagedFilesPolicy'),
-    'MemoryProviderConfigUpdate': ('hermes_cli.web_models', 'MemoryProviderConfigUpdate'),
-    'MemoryProviderSelect': ('hermes_cli.web_models', 'MemoryProviderSelect'),
-    'MemoryProviderSetupRequest': ('hermes_cli.web_models', 'MemoryProviderSetupRequest'),
-    'MemoryReset': ('hermes_cli.web_models', 'MemoryReset'),
-    'MessagingPlatformUpdate': ('hermes_cli.web_models', 'MessagingPlatformUpdate'),
-    'MoaConfigPayload': ('hermes_cli.web_models', 'MoaConfigPayload'),
-    'MoaModelSlot': ('hermes_cli.web_models', 'MoaModelSlot'),
-    'MoaPresetPayload': ('hermes_cli.web_models', 'MoaPresetPayload'),
-    'ModelAssignment': ('hermes_cli.web_models', 'ModelAssignment'),
-    'OAuthSubmitBody': ('hermes_cli.web_models', 'OAuthSubmitBody'),
-    'OPTIONAL_ENV_VARS': ('hermes_cli.config', 'OPTIONAL_ENV_VARS'),
-    'PairingApprove': ('hermes_cli.web_models', 'PairingApprove'),
-    'PairingRevoke': ('hermes_cli.web_models', 'PairingRevoke'),
-    'ProfileActiveUpdate': ('hermes_cli.web_models', 'ProfileActiveUpdate'),
-    'ProfileCreate': ('hermes_cli.web_models', 'ProfileCreate'),
-    'ProfileDescribeAuto': ('hermes_cli.web_models', 'ProfileDescribeAuto'),
-    'ProfileDescriptionUpdate': ('hermes_cli.web_models', 'ProfileDescriptionUpdate'),
-    'ProfileModelUpdate': ('hermes_cli.web_models', 'ProfileModelUpdate'),
-    'ProfileRename': ('hermes_cli.web_models', 'ProfileRename'),
-    'ProfileSoulUpdate': ('hermes_cli.web_models', 'ProfileSoulUpdate'),
-    'ProviderConfigSchema': ('plugins.memory.config_schema', 'ProviderConfigSchema'),
-    'ProviderField': ('plugins.memory.config_schema', 'ProviderField'),
-    'PtyBridge': ('hermes_cli.pty_bridge', 'PtyBridge'),
-    'PtySessionRegistry': ('hermes_cli.pty_session', 'PtySessionRegistry'),
-    'PtyUnavailableError': ('hermes_cli.pty_bridge', 'PtyUnavailableError'),
-    'RawConfigUpdate': ('hermes_cli.web_models', 'RawConfigUpdate'),
-    'RegistryFull': ('hermes_cli.pty_session', 'RegistryFull'),
-    'STORAGE_HONCHO_HOST_BLOCK': ('plugins.memory.config_schema', 'STORAGE_HONCHO_HOST_BLOCK'),
-    'SessionImport': ('hermes_cli.web_models', 'SessionImport'),
-    'SessionPrune': ('hermes_cli.web_models', 'SessionPrune'),
-    'SessionRename': ('hermes_cli.web_models', 'SessionRename'),
-    'SkillContentUpdate': ('hermes_cli.web_models', 'SkillContentUpdate'),
-    'SkillCreate': ('hermes_cli.web_models', 'SkillCreate'),
-    'SkillInstallRequest': ('hermes_cli.web_models', 'SkillInstallRequest'),
-    'SkillToggle': ('hermes_cli.web_models', 'SkillToggle'),
-    'SkillUninstallRequest': ('hermes_cli.web_models', 'SkillUninstallRequest'),
-    'SkillsUpdateRequest': ('hermes_cli.web_models', 'SkillsUpdateRequest'),
-    'TTSLeaseRequest': ('hermes_cli.web_models', 'TTSLeaseRequest'),
-    'TTSSpeakRequest': ('hermes_cli.web_models', 'TTSSpeakRequest'),
-    'TelegramOnboardingApply': ('hermes_cli.web_models', 'TelegramOnboardingApply'),
-    'TelegramOnboardingStart': ('hermes_cli.web_models', 'TelegramOnboardingStart'),
-    'TerminalBackendSelect': ('hermes_cli.web_models', 'TerminalBackendSelect'),
-    'ThemeSetBody': ('hermes_cli.web_models', 'ThemeSetBody'),
-    'ToolsetEnvUpdate': ('hermes_cli.web_models', 'ToolsetEnvUpdate'),
-    'ToolsetModelSelect': ('hermes_cli.web_models', 'ToolsetModelSelect'),
-    'ToolsetPostSetup': ('hermes_cli.web_models', 'ToolsetPostSetup'),
-    'ToolsetProviderSelect': ('hermes_cli.web_models', 'ToolsetProviderSelect'),
-    'ToolsetToggle': ('hermes_cli.web_models', 'ToolsetToggle'),
-    'WebhookCreate': ('hermes_cli.web_models', 'WebhookCreate'),
-    'WebhookEnabledToggle': ('hermes_cli.web_models', 'WebhookEnabledToggle'),
-    'WhatsAppOnboardingApply': ('hermes_cli.web_models', 'WhatsAppOnboardingApply'),
-    'WhatsAppOnboardingStart': ('hermes_cli.web_models', 'WhatsAppOnboardingStart'),
-    'activate_custom_endpoint': ('hermes_cli.web_routers.config_env', 'activate_custom_endpoint'),
-    'add_credential_pool_entry': ('hermes_cli.web_routers.ops', 'add_credential_pool_entry'),
-    'add_mcp_server': ('hermes_cli.web_routers.mcp', 'add_mcp_server'),
-    'apply_telegram_onboarding': ('hermes_cli.web_routers.messaging', 'apply_telegram_onboarding'),
-    'apply_whatsapp_onboarding': ('hermes_cli.web_routers.messaging', 'apply_whatsapp_onboarding'),
-    'approve_pairing': ('hermes_cli.web_routers.ops', 'approve_pairing'),
-    'auth_mcp_server': ('hermes_cli.web_routers.mcp', 'auth_mcp_server'),
-    'build_cron_model_impact': ('hermes_cli.config', 'build_cron_model_impact'),
-    'bulk_delete_sessions_endpoint': ('hermes_cli.web_routers.sessions', 'bulk_delete_sessions_endpoint'),
-    'cancel_oauth_session': ('hermes_cli.web_routers.oauth', 'cancel_oauth_session'),
-    'cancel_telegram_onboarding': ('hermes_cli.web_routers.messaging', 'cancel_telegram_onboarding'),
-    'cancel_whatsapp_onboarding': ('hermes_cli.web_routers.messaging', 'cancel_whatsapp_onboarding'),
-    'cfg_get': ('hermes_cli.config', 'cfg_get'),
-    'check_config_version': ('hermes_cli.config', 'check_config_version'),
-    'check_hermes_update': ('hermes_cli.web_routers.actions', 'check_hermes_update'),
-    'clear_model_endpoint_credentials': ('hermes_cli.config', 'clear_model_endpoint_credentials'),
-    'clear_pending_pairing': ('hermes_cli.web_routers.ops', 'clear_pending_pairing'),
-    'coerce_provider_id': ('hermes_cli.config', 'coerce_provider_id'),
-    'console_ws': ('hermes_cli.web_routers.chat_ws', 'console_ws'),
-    'count_empty_sessions_endpoint': ('hermes_cli.web_routers.sessions', 'count_empty_sessions_endpoint'),
-    'create_cron_job': ('hermes_cli.web_routers.cron', 'create_cron_job'),
-    'create_hook': ('hermes_cli.web_routers.ops', 'create_hook'),
-    'create_managed_directory': ('hermes_cli.web_routers.files', 'create_managed_directory'),
-    'create_profile_endpoint': ('hermes_cli.web_routers.profiles', 'create_profile_endpoint'),
-    'create_skill': ('hermes_cli.web_routers.skills', 'create_skill'),
-    'create_webhook': ('hermes_cli.web_routers.ops', 'create_webhook'),
-    'cron_fire_webhook': ('hermes_cli.web_routers.cron', 'cron_fire_webhook'),
-    'custom_endpoint_key_env': ('hermes_cli.config', 'custom_endpoint_key_env'),
-    'delete_agent_plugin': ('hermes_cli.web_routers.dashboard_ui', 'delete_agent_plugin'),
-    'delete_cron_job': ('hermes_cli.web_routers.cron', 'delete_cron_job'),
-    'delete_custom_endpoint': ('hermes_cli.web_routers.config_env', 'delete_custom_endpoint'),
-    'delete_empty_sessions_endpoint': ('hermes_cli.web_routers.sessions', 'delete_empty_sessions_endpoint'),
-    'delete_hook': ('hermes_cli.web_routers.ops', 'delete_hook'),
-    'delete_learning_node': ('hermes_cli.web_routers.status', 'delete_learning_node'),
-    'delete_managed_file': ('hermes_cli.web_routers.files', 'delete_managed_file'),
-    'delete_profile_endpoint': ('hermes_cli.web_routers.profiles', 'delete_profile_endpoint'),
-    'delete_session_endpoint': ('hermes_cli.web_routers.sessions', 'delete_session_endpoint'),
-    'delete_webhook': ('hermes_cli.web_routers.ops', 'delete_webhook'),
-    'derive_gateway_busy': ('gateway.status', 'derive_gateway_busy'),
-    'derive_gateway_drainable': ('gateway.status', 'derive_gateway_drainable'),
-    'describe_profile_auto_endpoint': ('hermes_cli.web_routers.profiles', 'describe_profile_auto_endpoint'),
-    'detect_install_method': ('hermes_cli.config', 'detect_install_method'),
-    'disconnect_oauth_provider': ('hermes_cli.web_routers.oauth', 'disconnect_oauth_provider'),
-    'download_dashboard_backup': ('hermes_cli.web_routers.ops', 'download_dashboard_backup'),
-    'download_managed_file': ('hermes_cli.web_routers.files', 'download_managed_file'),
-    'enable_webhooks': ('hermes_cli.web_routers.ops', 'enable_webhooks'),
-    'env_var_enabled': ('utils', 'env_var_enabled'),
-    'events_ws': ('hermes_cli.web_routers.chat_ws', 'events_ws'),
-    'export_session_endpoint': ('hermes_cli.web_routers.sessions', 'export_session_endpoint'),
-    'find_provider_entry': ('hermes_cli.config', 'find_provider_entry'),
-    'format_docker_update_message': ('hermes_cli.config', 'format_docker_update_message'),
-    'fs_default_cwd': ('hermes_cli.web_routers.files', 'fs_default_cwd'),
-    'fs_download': ('hermes_cli.web_routers.files', 'fs_download'),
-    'fs_git_root': ('hermes_cli.web_routers.files', 'fs_git_root'),
-    'fs_list': ('hermes_cli.web_routers.files', 'fs_list'),
-    'fs_read_data_url': ('hermes_cli.web_routers.files', 'fs_read_data_url'),
-    'fs_read_text': ('hermes_cli.web_routers.files', 'fs_read_text'),
-    'fs_write_text': ('hermes_cli.web_routers.files', 'fs_write_text'),
-    'gateway_drain': ('hermes_cli.web_routers.actions', 'gateway_drain'),
-    'gateway_ws': ('hermes_cli.web_routers.chat_ws', 'gateway_ws'),
-    'get_action_status': ('hermes_cli.web_routers.actions', 'get_action_status'),
-    'get_active_profile_endpoint': ('hermes_cli.web_routers.profiles', 'get_active_profile_endpoint'),
-    'get_auxiliary_models': ('hermes_cli.web_routers.models', 'get_auxiliary_models'),
-    'get_client_voice_config': ('hermes_cli.web_routers.audio', 'get_client_voice_config'),
-    'get_computer_use_status': ('hermes_cli.web_routers.tools', 'get_computer_use_status'),
-    'get_config': ('hermes_cli.web_routers.config_env', 'get_config'),
-    'get_config_path': ('hermes_cli.config', 'get_config_path'),
-    'get_config_raw': ('hermes_cli.web_routers.analytics', 'get_config_raw'),
-    'get_cron_delivery_targets': ('hermes_cli.web_routers.cron', 'get_cron_delivery_targets'),
-    'get_cron_job': ('hermes_cli.web_routers.cron', 'get_cron_job'),
-    'get_curator_status': ('hermes_cli.web_routers.status', 'get_curator_status'),
-    'get_dashboard_font': ('hermes_cli.web_routers.dashboard_ui', 'get_dashboard_font'),
-    'get_dashboard_plugins': ('hermes_cli.web_routers.dashboard_ui', 'get_dashboard_plugins'),
-    'get_dashboard_themes': ('hermes_cli.web_routers.dashboard_ui', 'get_dashboard_themes'),
-    'get_defaults': ('hermes_cli.web_routers.config_env', 'get_defaults'),
-    'get_egress_status': ('hermes_cli.web_routers.config_env', 'get_egress_status'),
-    'get_elevenlabs_voices': ('hermes_cli.web_routers.audio', 'get_elevenlabs_voices'),
-    'get_env_path': ('hermes_cli.config', 'get_env_path'),
-    'get_env_vars': ('hermes_cli.web_routers.config_env', 'get_env_vars'),
-    'get_health': ('hermes_cli.web_routers.status', 'get_health'),
-    'get_hermes_home': ('hermes_cli.config', 'get_hermes_home'),
-    'get_learning_graph': ('hermes_cli.web_routers.status', 'get_learning_graph'),
-    'get_learning_node': ('hermes_cli.web_routers.status', 'get_learning_node'),
-    'get_logs': ('hermes_cli.web_routers.status', 'get_logs'),
-    'get_media': ('hermes_cli.web_routers.files', 'get_media'),
-    'get_memory_provider_config': ('hermes_cli.web_routers.memory_providers', 'get_memory_provider_config'),
-    'get_memory_status': ('hermes_cli.web_routers.ops', 'get_memory_status'),
-    'get_messaging_platforms': ('hermes_cli.web_routers.messaging', 'get_messaging_platforms'),
-    'get_moa_models': ('hermes_cli.web_routers.models', 'get_moa_models'),
-    'get_model_info': ('hermes_cli.web_routers.models', 'get_model_info'),
-    'get_model_options': ('hermes_cli.web_routers.models', 'get_model_options'),
-    'get_models_analytics': ('hermes_cli.web_routers.analytics', 'get_models_analytics'),
-    'get_plugins_hub': ('hermes_cli.web_routers.dashboard_ui', 'get_plugins_hub'),
-    'get_portal_status': ('hermes_cli.web_routers.status', 'get_portal_status'),
-    'get_process_hermes_home': ('hermes_cli.config', 'get_process_hermes_home'),
-    'get_profile_setup_command': ('hermes_cli.web_routers.profiles', 'get_profile_setup_command'),
-    'get_profile_soul': ('hermes_cli.web_routers.profiles', 'get_profile_soul'),
-    'get_profiles_sessions': ('hermes_cli.web_routers.profiles', 'get_profiles_sessions'),
-    'get_profiles_sessions_sidebar': ('hermes_cli.web_routers.profiles', 'get_profiles_sessions_sidebar'),
-    'get_provider_config_schema': ('plugins.memory.config_schema', 'get_provider_config_schema'),
-    'get_recommended_default_model': ('hermes_cli.web_routers.models', 'get_recommended_default_model'),
-    'get_running_pid': ('gateway.status', 'get_running_pid'),
-    'get_running_pid_cached': ('gateway.status', 'get_running_pid_cached'),
-    'get_runtime_status_running_pid': ('gateway.status', 'get_runtime_status_running_pid'),
-    'get_schema': ('hermes_cli.web_routers.config_env', 'get_schema'),
-    'get_session_detail': ('hermes_cli.web_routers.sessions', 'get_session_detail'),
-    'get_session_latest_descendant': ('hermes_cli.web_routers.sessions', 'get_session_latest_descendant'),
-    'get_session_messages': ('hermes_cli.web_routers.sessions', 'get_session_messages'),
-    'get_session_stats': ('hermes_cli.web_routers.sessions', 'get_session_stats'),
-    'get_sessions': ('hermes_cli.web_routers.sessions', 'get_sessions'),
-    'get_skill_content': ('hermes_cli.web_routers.skills', 'get_skill_content'),
-    'get_skills': ('hermes_cli.web_routers.skills', 'get_skills'),
-    'get_ssh_ownership': ('hermes_cli.web_routers.status', 'get_ssh_ownership'),
-    'get_status': ('hermes_cli.web_routers.status', 'get_status'),
-    'get_system_stats': ('hermes_cli.web_routers.status', 'get_system_stats'),
-    'get_telegram_onboarding_status': ('hermes_cli.web_routers.messaging', 'get_telegram_onboarding_status'),
-    'get_terminal_backends': ('hermes_cli.web_routers.tools', 'get_terminal_backends'),
-    'get_toolset_config': ('hermes_cli.web_routers.tools', 'get_toolset_config'),
-    'get_toolset_models': ('hermes_cli.web_routers.tools', 'get_toolset_models'),
-    'get_toolsets': ('hermes_cli.web_routers.tools', 'get_toolsets'),
-    'get_update_receipt': ('hermes_cli.web_routers.actions', 'get_update_receipt'),
-    'get_usage_analytics': ('hermes_cli.web_routers.analytics', 'get_usage_analytics'),
-    'get_whatsapp_onboarding_status': ('hermes_cli.web_routers.messaging', 'get_whatsapp_onboarding_status'),
-    'git_base_branches_route': ('hermes_cli.web_routers.git', 'git_base_branches_route'),
-    'git_branch_switch_route': ('hermes_cli.web_routers.git', 'git_branch_switch_route'),
-    'git_branches_route': ('hermes_cli.web_routers.git', 'git_branches_route'),
-    'git_commit_context_route': ('hermes_cli.web_routers.git', 'git_commit_context_route'),
-    'git_commit_route': ('hermes_cli.web_routers.git', 'git_commit_route'),
-    'git_create_pr_route': ('hermes_cli.web_routers.git', 'git_create_pr_route'),
-    'git_file_diff_route': ('hermes_cli.web_routers.git', 'git_file_diff_route'),
-    'git_push_route': ('hermes_cli.web_routers.git', 'git_push_route'),
-    'git_rev_parse_route': ('hermes_cli.web_routers.git', 'git_rev_parse_route'),
-    'git_revert_route': ('hermes_cli.web_routers.git', 'git_revert_route'),
-    'git_review_diff_route': ('hermes_cli.web_routers.git', 'git_review_diff_route'),
-    'git_review_list_route': ('hermes_cli.web_routers.git', 'git_review_list_route'),
-    'git_ship_info_route': ('hermes_cli.web_routers.git', 'git_ship_info_route'),
-    'git_stage_route': ('hermes_cli.web_routers.git', 'git_stage_route'),
-    'git_status_route': ('hermes_cli.web_routers.git', 'git_status_route'),
-    'git_unstage_route': ('hermes_cli.web_routers.git', 'git_unstage_route'),
-    'git_worktree_add_route': ('hermes_cli.web_routers.git', 'git_worktree_add_route'),
-    'git_worktree_remove_route': ('hermes_cli.web_routers.git', 'git_worktree_remove_route'),
-    'git_worktrees_route': ('hermes_cli.web_routers.git', 'git_worktrees_route'),
-    'grant_computer_use_permissions': ('hermes_cli.web_routers.tools', 'grant_computer_use_permissions'),
-    'import_sessions_endpoint': ('hermes_cli.web_routers.sessions', 'import_sessions_endpoint'),
-    'install_mcp_catalog_entry': ('hermes_cli.web_routers.mcp', 'install_mcp_catalog_entry'),
-    'install_skill_hub': ('hermes_cli.web_routers.skills', 'install_skill_hub'),
-    'instantiate_blueprint': ('hermes_cli.web_routers.cron', 'instantiate_blueprint'),
-    'is_nix_install_method': ('hermes_cli.config', 'is_nix_install_method'),
-    'list_checkpoints': ('hermes_cli.web_routers.ops', 'list_checkpoints'),
-    'list_credential_pool': ('hermes_cli.web_routers.ops', 'list_credential_pool'),
-    'list_cron_blueprints': ('hermes_cli.web_routers.cron', 'list_cron_blueprints'),
-    'list_cron_job_runs': ('hermes_cli.web_routers.cron', 'list_cron_job_runs'),
-    'list_cron_jobs': ('hermes_cli.web_routers.cron', 'list_cron_jobs'),
-    'list_custom_endpoints': ('hermes_cli.web_routers.config_env', 'list_custom_endpoints'),
-    'list_hooks': ('hermes_cli.web_routers.ops', 'list_hooks'),
-    'list_managed_files': ('hermes_cli.web_routers.files', 'list_managed_files'),
-    'list_mcp_catalog': ('hermes_cli.web_routers.mcp', 'list_mcp_catalog'),
-    'list_mcp_servers': ('hermes_cli.web_routers.mcp', 'list_mcp_servers'),
-    'list_oauth_providers': ('hermes_cli.web_routers.oauth', 'list_oauth_providers'),
-    'list_pairing': ('hermes_cli.web_routers.ops', 'list_pairing'),
-    'list_profiles_endpoint': ('hermes_cli.web_routers.profiles', 'list_profiles_endpoint'),
-    'list_skills_hub_sources': ('hermes_cli.web_routers.skills', 'list_skills_hub_sources'),
-    'list_webhooks': ('hermes_cli.web_routers.ops', 'list_webhooks'),
-    'load_env': ('hermes_cli.config', 'load_env'),
-    'mcp_oauth_callback': ('hermes_cli.web_routers.mcp', 'mcp_oauth_callback'),
-    'mcp_oauth_flow_status': ('hermes_cli.web_routers.mcp', 'mcp_oauth_flow_status'),
-    'normalize_updated_at': ('gateway.status', 'normalize_updated_at'),
-    'open_profile_terminal_endpoint': ('hermes_cli.web_routers.profiles', 'open_profile_terminal_endpoint'),
-    'parse_active_agents': ('gateway.status', 'parse_active_agents'),
-    'pause_cron_job': ('hermes_cli.web_routers.cron', 'pause_cron_job'),
-    'poll_oauth_session': ('hermes_cli.web_routers.oauth', 'poll_oauth_session'),
-    'post_agent_plugin_disable': ('hermes_cli.web_routers.dashboard_ui', 'post_agent_plugin_disable'),
-    'post_agent_plugin_enable': ('hermes_cli.web_routers.dashboard_ui', 'post_agent_plugin_enable'),
-    'post_agent_plugin_install': ('hermes_cli.web_routers.dashboard_ui', 'post_agent_plugin_install'),
-    'post_agent_plugin_update': ('hermes_cli.web_routers.dashboard_ui', 'post_agent_plugin_update'),
-    'post_plugin_visibility': ('hermes_cli.web_routers.dashboard_ui', 'post_plugin_visibility'),
-    'preview_skill_hub': ('hermes_cli.web_routers.skills', 'preview_skill_hub'),
-    'prune_checkpoints': ('hermes_cli.web_routers.ops', 'prune_checkpoints'),
-    'prune_sessions_endpoint': ('hermes_cli.web_routers.sessions', 'prune_sessions_endpoint'),
-    'pty_ws': ('hermes_cli.web_routers.chat_ws', 'pty_ws'),
-    'pub_ws': ('hermes_cli.web_routers.chat_ws', 'pub_ws'),
-    'put_plugin_providers': ('hermes_cli.web_routers.dashboard_ui', 'put_plugin_providers'),
-    'read_managed_file': ('hermes_cli.web_routers.files', 'read_managed_file'),
-    'read_raw_config': ('hermes_cli.config', 'read_raw_config'),
-    'read_runtime_status': ('gateway.status', 'read_runtime_status'),
-    'recommended_update_command_for_method': ('hermes_cli.config', 'recommended_update_command_for_method'),
-    'redact_key': ('hermes_cli.config', 'redact_key'),
-    'remove_credential_pool_entry': ('hermes_cli.web_routers.ops', 'remove_credential_pool_entry'),
-    'remove_env_value': ('hermes_cli.config', 'remove_env_value'),
-    'remove_env_var': ('hermes_cli.web_routers.config_env', 'remove_env_var'),
-    'remove_mcp_server': ('hermes_cli.web_routers.mcp', 'remove_mcp_server'),
-    'rename_profile_endpoint': ('hermes_cli.web_routers.profiles', 'rename_profile_endpoint'),
-    'rename_session_endpoint': ('hermes_cli.web_routers.sessions', 'rename_session_endpoint'),
-    'replace_mcp_servers': ('hermes_cli.web_routers.mcp', 'replace_mcp_servers'),
-    'rescan_dashboard_plugins': ('hermes_cli.web_routers.dashboard_ui', 'rescan_dashboard_plugins'),
-    'reset_memory': ('hermes_cli.web_routers.ops', 'reset_memory'),
-    'resolve_cron_model_drift_defaults': ('hermes_cli.config', 'resolve_cron_model_drift_defaults'),
-    'resolve_gateway_liveness': ('gateway.status', 'resolve_gateway_liveness'),
-    'restart_gateway': ('hermes_cli.web_routers.actions', 'restart_gateway'),
-    'resume_cron_job': ('hermes_cli.web_routers.cron', 'resume_cron_job'),
-    'reveal_env_var': ('hermes_cli.web_routers.config_env', 'reveal_env_var'),
-    'revoke_pairing': ('hermes_cli.web_routers.ops', 'revoke_pairing'),
-    'run_backup': ('hermes_cli.web_routers.ops', 'run_backup'),
-    'run_config_migrate': ('hermes_cli.web_routers.status', 'run_config_migrate'),
-    'run_curator': ('hermes_cli.web_routers.status', 'run_curator'),
-    'run_debug_share_endpoint': ('hermes_cli.web_routers.status', 'run_debug_share_endpoint'),
-    'run_doctor': ('hermes_cli.doctor', 'run_doctor'),
-    'run_dump': ('hermes_cli.dump', 'run_dump'),
-    'run_import': ('hermes_cli.web_routers.ops', 'run_import'),
-    'run_import_upload': ('hermes_cli.web_routers.ops', 'run_import_upload'),
-    'run_prompt_size': ('hermes_cli.web_routers.status', 'run_prompt_size'),
-    'run_security_audit': ('hermes_cli.web_routers.ops', 'run_security_audit'),
-    'run_toolset_post_setup': ('hermes_cli.web_routers.tools', 'run_toolset_post_setup'),
-    'save_config': ('hermes_cli.config', 'save_config'),
-    'save_env_value': ('hermes_cli.config', 'save_env_value'),
-    'save_toolset_env': ('hermes_cli.web_routers.tools', 'save_toolset_env'),
-    'scan_skill_hub': ('hermes_cli.web_routers.skills', 'scan_skill_hub'),
-    'search_sessions': ('hermes_cli.web_routers.sessions', 'search_sessions'),
-    'search_skills_hub': ('hermes_cli.web_routers.skills', 'search_skills_hub'),
-    'select_terminal_backend': ('hermes_cli.web_routers.tools', 'select_terminal_backend'),
-    'select_toolset_model': ('hermes_cli.web_routers.tools', 'select_toolset_model'),
-    'select_toolset_provider': ('hermes_cli.web_routers.tools', 'select_toolset_provider'),
-    'serve_plugin_asset': ('hermes_cli.web_routers.dashboard_ui', 'serve_plugin_asset'),
-    'set_active_profile_endpoint': ('hermes_cli.web_routers.profiles', 'set_active_profile_endpoint'),
-    'set_curator_paused': ('hermes_cli.web_routers.status', 'set_curator_paused'),
-    'set_dashboard_font': ('hermes_cli.web_routers.dashboard_ui', 'set_dashboard_font'),
-    'set_dashboard_theme': ('hermes_cli.web_routers.dashboard_ui', 'set_dashboard_theme'),
-    'set_env_var': ('hermes_cli.web_routers.config_env', 'set_env_var'),
-    'set_mcp_server_enabled': ('hermes_cli.web_routers.mcp', 'set_mcp_server_enabled'),
-    'set_memory_provider': ('hermes_cli.web_routers.ops', 'set_memory_provider'),
-    'set_moa_models': ('hermes_cli.web_routers.models', 'set_moa_models'),
-    'set_model_assignment': ('hermes_cli.web_routers.models', 'set_model_assignment'),
-    'set_webhook_enabled': ('hermes_cli.web_routers.ops', 'set_webhook_enabled'),
-    'setup_memory_provider': ('hermes_cli.web_routers.memory_providers', 'setup_memory_provider'),
-    'speak_stream_ws': ('hermes_cli.web_routers.audio', 'speak_stream_ws'),
-    'speak_text': ('hermes_cli.web_routers.audio', 'speak_text'),
-    'start_gateway': ('hermes_cli.web_routers.ops', 'start_gateway'),
-    'start_oauth_login': ('hermes_cli.web_routers.oauth', 'start_oauth_login'),
-    'start_telegram_onboarding': ('hermes_cli.web_routers.messaging', 'start_telegram_onboarding'),
-    'start_whatsapp_onboarding': ('hermes_cli.web_routers.messaging', 'start_whatsapp_onboarding'),
-    'stop_gateway': ('hermes_cli.web_routers.ops', 'stop_gateway'),
-    'stream_managed_file': ('hermes_cli.web_routers.files', 'stream_managed_file'),
-    'submit_oauth_code': ('hermes_cli.web_routers.oauth', 'submit_oauth_code'),
-    'test_mcp_server': ('hermes_cli.web_routers.mcp', 'test_mcp_server'),
-    'test_messaging_platform': ('hermes_cli.web_routers.messaging', 'test_messaging_platform'),
-    'toggle_skill': ('hermes_cli.web_routers.skills', 'toggle_skill'),
-    'toggle_toolset': ('hermes_cli.web_routers.tools', 'toggle_toolset'),
-    'transcribe_audio_upload': ('hermes_cli.web_routers.audio', 'transcribe_audio_upload'),
-    'trigger_cron_job': ('hermes_cli.web_routers.cron', 'trigger_cron_job'),
-    'tts_lease': ('hermes_cli.web_routers.audio', 'tts_lease'),
-    'uninstall_skill_hub': ('hermes_cli.web_routers.skills', 'uninstall_skill_hub'),
-    'update_config': ('hermes_cli.web_routers.config_env', 'update_config'),
-    'update_config_raw': ('hermes_cli.web_routers.analytics', 'update_config_raw'),
-    'update_cron_job': ('hermes_cli.web_routers.cron', 'update_cron_job'),
-    'update_hermes': ('hermes_cli.web_routers.actions', 'update_hermes'),
-    'update_learning_node': ('hermes_cli.web_routers.status', 'update_learning_node'),
-    'update_memory_provider_config': ('hermes_cli.web_routers.memory_providers', 'update_memory_provider_config'),
-    'update_messaging_platform': ('hermes_cli.web_routers.messaging', 'update_messaging_platform'),
-    'update_profile_description_endpoint': ('hermes_cli.web_routers.profiles', 'update_profile_description_endpoint'),
-    'update_profile_model_endpoint': ('hermes_cli.web_routers.profiles', 'update_profile_model_endpoint'),
-    'update_profile_soul': ('hermes_cli.web_routers.profiles', 'update_profile_soul'),
-    'update_skill_content': ('hermes_cli.web_routers.skills', 'update_skill_content'),
-    'update_skills_hub': ('hermes_cli.web_routers.skills', 'update_skills_hub'),
-    'upload_chat_image': ('hermes_cli.web_routers.files', 'upload_chat_image'),
-    'upload_managed_file': ('hermes_cli.web_routers.files', 'upload_managed_file'),
-    'upload_managed_file_stream': ('hermes_cli.web_routers.files', 'upload_managed_file_stream'),
-    'upsert_custom_endpoint': ('hermes_cli.web_routers.config_env', 'upsert_custom_endpoint'),
-    'validate_custom_endpoint': ('hermes_cli.web_routers.config_env', 'validate_custom_endpoint'),
-    'validate_provider_credential': ('hermes_cli.web_routers.config_env', 'validate_provider_credential'),
-    'windows_detach_flags': ('hermes_cli._subprocess_compat', 'windows_detach_flags'),
-    'windows_hide_flags': ('hermes_cli._subprocess_compat', 'windows_hide_flags'),
-    'write_platform_config_field': ('hermes_cli.config', 'write_platform_config_field'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

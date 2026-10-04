@@ -401,9 +401,14 @@ def exhausted_copy(reason: str, *, label: str, attempts: int, summary: str, rese
 
 
 def interrupted_waiting_for_model(elapsed: float) -> str:
-    key = "turn_failure.interrupted_waiting"
-    value = t(key, elapsed=f"{elapsed:.1f}")
-    return value if value != key else f"Operation interrupted: waiting for model response ({elapsed:.1f}s elapsed)."
+    """Stable cancellation metadata consumed by gateway, ACP and TUI, not UI prose.
+
+    Keep the legacy wire prefix independent of language and catalog overlays until
+    every consumer supports a structured cancellation marker.
+    """
+    from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+    return f"{INTERRUPT_WAITING_FOR_MODEL_PREFIX}{elapsed:.1f}s elapsed)."
 
 
 def interrupted_retry(kind: str, detail: str) -> str:

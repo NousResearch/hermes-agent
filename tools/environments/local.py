@@ -938,12 +938,24 @@ def _kill_known_pids(proc, descendants) -> None:
 
 
 def _kill_process_windows(proc) -> None:
-    """Identity-checked terminate (start time guards against PID reuse), else kill."""
+    """Identity-checked terminate (start time guards against PID reuse), else kill.
+    Descendants are snapshotted BEFORE the first signal and swept afterwards, mirroring
+    the POSIX group kill: a refused taskkill (unreadable start time, identity mismatch)
+    degrades to a bare TerminateProcess on the wrapper alone, and taskkill /T itself can
+    miss tree members whose parent chain already broke — either way Git Bash children
+    survive as orphans with their parent gone (#132958)."""
+    try:  # psutil children snapshot; empty on any failure (must never break the kill)
+        import psutil
+        descendants = psutil.Process(proc.pid).children(recursive=True)
+    except Exception:
+        descendants = []
     try:
         from gateway.status import get_process_start_time, terminate_pid
         terminate_pid(proc.pid, force=True, expected_start_time=get_process_start_time(proc.pid))
     except Exception:
-        proc.kill()
+        with contextlib.suppress(Exception):
+            proc.kill()
+    _kill_known_pids(proc, descendants)
     with contextlib.suppress(subprocess.TimeoutExpired, OSError):
         proc.wait(timeout=2.0)
 

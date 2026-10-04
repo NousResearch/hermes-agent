@@ -55,13 +55,13 @@ test.each([
   ['foreign', { kind: 'foreign' }],
   ['live 4242', { kind: 'live', pid: 4242 }],
   ['taken 77\n', { kind: 'taken', pid: 77 }],
-  ['live', { kind: 'unsupported' }],
-  ['taken x', { kind: 'unsupported' }],
-  ['taken 0', { kind: 'unsupported' }],
-  ['held 5', { kind: 'unsupported' }],
-  ['reclaimed\nheld', { kind: 'unsupported' }],
-  ['usage: posix.sh [--branch B]', { kind: 'unsupported' }],
-  ['', { kind: 'unsupported' }]
+  ['live', { kind: 'error' }],
+  ['taken x', { kind: 'error' }],
+  ['taken 0', { kind: 'error' }],
+  ['held 5', { kind: 'error' }],
+  ['reclaimed\nheld', { kind: 'error' }],
+  ['usage: posix.sh [--branch B]', { kind: 'error' }],
+  ['', { kind: 'error' }]
 ])('verdict line %j', (stdout, expected) => {
   assert.deepEqual(parseMarkerHelperVerdict(stdout), expected)
 })
@@ -104,21 +104,21 @@ describe.skipIf(process.platform === 'win32')('runMarkerHelper against a real sc
   })
 
   test.each([
-    ['usage exit 64 (old checkout rejects --marker-op)', '64', 'reclaimed'],
+    ['protocol-2 helper exits 64', '64', 'reclaimed'],
     ['nonzero exit even with a verdict', '1', 'reclaimed'],
     ['garbage output', '0', 'sure, done'],
     ['two lines', '0', 'reclaimed\nheld']
-  ])('%s => unsupported', async (_label, exit, verdict) => {
+  ])('%s => error', async (_label, exit, verdict) => {
     const { root, home } = fakeHelperCheckout()
     fs.writeFileSync(path.join(home, 'helper-verdict'), verdict)
     fs.writeFileSync(path.join(home, 'helper-exit'), exit)
 
     assert.deepEqual(await runMarkerHelper('reclaim', { updateRoot: root, hermesHome: home, isWindows: false }), {
-      kind: 'unsupported'
+      kind: 'error'
     })
   })
 
-  test('a helper past its timeout is killed and unsupported', async () => {
+  test('a helper past its timeout is killed and reports error', async () => {
     const { root, home } = fakeHelperCheckout()
     fs.writeFileSync(path.join(home, 'helper-verdict'), 'reclaimed')
     fs.writeFileSync(path.join(home, 'helper-sleep'), '5')
@@ -126,7 +126,7 @@ describe.skipIf(process.platform === 'win32')('runMarkerHelper against a real sc
 
     assert.deepEqual(
       await runMarkerHelper('reclaim', { updateRoot: root, hermesHome: home, isWindows: false, timeoutMs: 300 }),
-      { kind: 'unsupported' }
+      { kind: 'error' }
     )
     assert.ok(Date.now() - started < 4000, 'bounded by the timeout')
   })

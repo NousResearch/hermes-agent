@@ -10,8 +10,9 @@
  *              -MarkerOp <op> -InstallRoot <root> [-DesktopPid P] [-HandoffRun R]
  *
  * One stdout line: `absent | reclaimed | held | busy | live <pid> | withdrawn |
- * taken <pid> | foreign`. Anything else, a nonzero exit, a timeout or a
- * missing script is `unsupported` (an older checkout).
+ * taken <pid> | foreign`. Anything else, a nonzero exit, a timeout or
+ * malformed output is `error` (retry without clearance). Only a missing or
+ * pre-protocol-2 script is `unsupported` (an older checkout).
  */
 
 import { type ChildProcess, spawn } from 'node:child_process'
@@ -23,7 +24,7 @@ import { resolveUpdateScriptHandoff } from '../updater-process'
 export type MarkerHelperOp = 'reclaim' | 'withdraw'
 
 export type MarkerHelperVerdict =
-  | { kind: 'absent' | 'reclaimed' | 'held' | 'busy' | 'withdrawn' | 'foreign' | 'unsupported' }
+  | { kind: 'absent' | 'reclaimed' | 'held' | 'busy' | 'withdrawn' | 'foreign' | 'unsupported' | 'error' }
   | { kind: 'live' | 'taken'; pid: number }
 
 export const MARKER_HELPER_TIMEOUT_MS = 20_000
@@ -135,22 +136,22 @@ const defaultSpawn: HelperSpawn = (command, args, { env, timeout, windowsHide })
 
 const BARE_VERDICTS = new Set(['absent', 'reclaimed', 'held', 'busy', 'withdrawn', 'foreign'])
 
-/** Parse the helper's one verdict line; anything else is `unsupported`. */
+/** Parse the helper's one verdict line; anything else is an operational error. */
 export function parseMarkerHelperVerdict(stdout: string): MarkerHelperVerdict {
   const lines = stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
 
   if (lines.length !== 1) {
-    return { kind: 'unsupported' }
+    return { kind: 'error' }
   }
 
   const [word, arg, ...extra] = lines[0].split(/\s+/)
 
   if (extra.length) {
-    return { kind: 'unsupported' }
+    return { kind: 'error' }
   }
 
   if (arg === undefined) {
-    return BARE_VERDICTS.has(word) ? ({ kind: word } as MarkerHelperVerdict) : { kind: 'unsupported' }
+    return BARE_VERDICTS.has(word) ? ({ kind: word } as MarkerHelperVerdict) : { kind: 'error' }
   }
 
   const pid = /^\d+$/.test(arg) ? Number(arg) : NaN
@@ -159,7 +160,7 @@ export function parseMarkerHelperVerdict(stdout: string): MarkerHelperVerdict {
     return { kind: word, pid }
   }
 
-  return { kind: 'unsupported' }
+  return { kind: 'error' }
 }
 
 /** The exact command line for one helper op (exported for tests). */
@@ -208,7 +209,7 @@ export function markerHelperCommand(
 export async function runMarkerHelper(op: MarkerHelperOp, options: MarkerHelperOptions): Promise<MarkerHelperVerdict> {
   const scriptPath = handoffScriptPath(options.updateRoot, options.isWindows)
 
-  if (!scriptPath) {
+  if (!scriptPath || readHandoffProtocol(scriptPath) < 2) {
     return { kind: 'unsupported' }
   }
 
@@ -221,8 +222,8 @@ export async function runMarkerHelper(op: MarkerHelperOp, options: MarkerHelperO
       windowsHide: true
     })
 
-    return result.code === 0 ? parseMarkerHelperVerdict(result.stdout) : { kind: 'unsupported' }
+    return result.code === 0 ? parseMarkerHelperVerdict(result.stdout) : { kind: 'error' }
   } catch {
-    return { kind: 'unsupported' }
+    return { kind: 'error' }
   }
 }

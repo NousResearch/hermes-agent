@@ -17,7 +17,7 @@
  * `busy` / `live` answer is re-asked every `reprobeMs` (5 s) because only the
  * script can see the lock being released.
  *
- * `held` / `busy` have a ceiling (review R6 m7): no owner identity is alive,
+ * Only verified `held` has a ceiling (review R6 m7): no owner identity is alive,
  * only some process still holding the checkout lock, and that can be a
  * leaked long-lived one. The scripts stop waiting on it after RELEASE_WAIT_S
  * (7200 s); the gate stops blocking after the same span, counted from the
@@ -27,6 +27,7 @@
  * running", logs it once and reports it through `onHeld` so the caller can
  * tell the user; the marker is left exactly as it is. A helper `live <pid>`
  * names a live identity and is waited out like any live marker (C1 rule 3).
+ * `busy`/`error` are indeterminate, retried without granting clearance.
  */
 
 import { type CreateTimeProbe, inspectUpdateMarker } from './update-marker'
@@ -39,7 +40,7 @@ export const HELD_CEILING_MS = 7_200_000
 
 /** Why a dead marker still keeps the gate closed, as the script helper put it. */
 export interface HeldState {
-  verdict: 'held' | 'busy' | 'live'
+  verdict: 'held' | 'busy' | 'live' | 'error'
   /** Line 1 of the marker: the update process that started it (exited), when it parses. */
   ownerPid: number | null
   /** The live process the helper named (`live <pid>`), else null. */
@@ -67,7 +68,7 @@ export interface LiveMarkerProbeOptions {
   heldCeilingMs?: number
 }
 
-const STILL_RUNNING = new Set(['held', 'busy', 'live'])
+const STILL_RUNNING = new Set(['held', 'busy', 'live', 'error'])
 
 // First sighting of each held body, process-wide: a later gate wait (a pool
 // backend, a reconnect) continues the same ceiling instead of restarting it.
@@ -137,7 +138,8 @@ export function liveMarkerProbe({
 
     const startedAt = inspection.marker?.startedAt ?? null
     const since = heldSince(key, startedAt, now())
-    const remainingMs = verdict.kind === 'live' ? null : Math.max(0, since + heldCeilingMs - now())
+    // `busy`/`error` did not establish ownership: stale bytes cannot grant clearance.
+    const remainingMs = verdict.kind === 'held' ? Math.max(0, since + heldCeilingMs - now()) : null
 
     const state: HeldState = {
       verdict: verdict.kind as HeldState['verdict'],
@@ -177,6 +179,10 @@ function duration(ms: number): string {
 
 /** Boot-progress text while a dead marker's checkout is still held. */
 export function heldWaitMessage(state: HeldState): string {
+  if (state.verdict === 'busy' || state.verdict === 'error') {
+    return 'Hermes could not verify update ownership yet — startup is paused while it retries. Details are in logs/update.log.'
+  }
+
   if (state.livePid !== null) {
     return `An update is still finishing (process ${state.livePid}) — Hermes will start automatically when it completes…`
   }

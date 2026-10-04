@@ -75,10 +75,39 @@ describe.skipIf(process.platform === 'win32')('gate over a dead marker (R6)', ()
     assert.equal(await gate(root, home, () => clock)(), false, 'a later gate wait does not restart the ceiling')
   })
 
+  test('a failing protocol-2 helper keeps the gate parked and is retried after recovery', async () => {
+    const { root, home } = fakeHelperCheckout()
+    const body = `${await deadPid()}\n${minutesAgo(1)}\nct:1.000\n`
+    fs.writeFileSync(markerPath(home), body)
+    fs.writeFileSync(path.join(home, 'helper-verdict'), 'held')
+    fs.writeFileSync(path.join(home, 'helper-exit'), '1')
+    let clock = Date.now()
+    const probe = gate(root, home, () => clock)
+    assert.equal(await probe(), true, 'an operational failure is not legacy capability absence')
+    fs.writeFileSync(path.join(home, 'helper-exit'), '0')
+    clock += 5_000
+    assert.equal(await probe(), true)
+    assert.equal(helperCalls(home).length, 2, 'same waiter retries the failed helper')
+    fs.writeFileSync(path.join(home, 'helper-verdict'), 'reclaimed')
+    clock += 5_000
+    assert.equal(await probe(), false)
+  })
+
+  test('sidecar contention over an old marker is indeterminate, not an expired held checkout', async () => {
+    const { root, home } = fakeHelperCheckout()
+    fs.writeFileSync(markerPath(home), `${await deadPid()}\n${minutesAgo(180)}\nct:1.000\n`)
+    fs.writeFileSync(path.join(home, 'helper-verdict'), 'busy')
+    const states: HeldState[] = []
+    assert.equal(await gate(root, home, undefined, { onHeld: s => states.push(s) })(), true)
+    assert.equal(states[0].remainingMs, null)
+    assert.equal(states[0].expired, false)
+    assert.match(heldWaitMessage(states[0]), /verify.*ownership/)
+  })
+
   test('a malformed held marker counts its ceiling from the first sighting, across gate waits', async () => {
     const { root, home } = fakeHelperCheckout()
     fs.writeFileSync(markerPath(home), `garbage-${process.pid}-${Date.now()}\n`)
-    fs.writeFileSync(path.join(home, 'helper-verdict'), 'busy')
+    fs.writeFileSync(path.join(home, 'helper-verdict'), 'held')
     let clock = Date.now()
 
     assert.equal(await gate(root, home, () => clock)(), true)
@@ -136,7 +165,7 @@ describe.skipIf(process.platform === 'win32')('gate over a dead marker (R6)', ()
   })
 
   test('`unsupported` (old checkout) opens the gate WITHOUT deleting; asked once per distinct body', async () => {
-    const { root, home } = fakeHelperCheckout()
+    const { root, home } = fakeHelperCheckout('')
     const body = `${await deadPid()}\n${minutesAgo(1)}\n`
     fs.writeFileSync(markerPath(home), body)
     fs.writeFileSync(path.join(home, 'helper-verdict'), 'usage: unknown option --marker-op')
@@ -145,13 +174,13 @@ describe.skipIf(process.platform === 'win32')('gate over a dead marker (R6)', ()
 
     assert.equal(await hasLiveMarker(), false)
     assert.equal(await hasLiveMarker(), false)
-    assert.equal(helperCalls(home).length, 1)
+    assert.equal(helperCalls(home).length, 0, 'legacy helper is never invoked')
     assert.equal(fs.readFileSync(markerPath(home), 'utf8'), body, 'dead = not running, and left in place')
 
     const next = `${await deadPid()}\n${minutesAgo(1)}\n`
     fs.writeFileSync(markerPath(home), next)
     assert.equal(await hasLiveMarker(), false)
-    assert.equal(helperCalls(home).length, 2, 'a different dead body is asked about again')
+    assert.equal(helperCalls(home).length, 0, 'legacy capability absence remains unsupported')
   })
 
   test('a live owner never reaches the helper; an absent marker neither', async () => {

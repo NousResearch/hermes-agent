@@ -48,6 +48,7 @@ from hermes_state_guard import (
     _register_test_instance, _set_last_init_error, get_last_init_error,
 )
 from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
+from hermes_state_ids import session_artifact_path
 from hermes_state_sessions import SessionSessionsMixin
 from hermes_state_fts import SessionFtsSetupMixin, load_fts5_cjk_extension
 from hermes_state_portability import SessionPortabilityMixin
@@ -434,7 +435,7 @@ def divert_session_transcript_jsonl(session_id: str, messages) -> "Optional[Path
         return None
     sessions_dir = get_hermes_home() / "sessions"
     sessions_dir.mkdir(parents=True, exist_ok=True)
-    path = sessions_dir / f"{sid}.jsonl"
+    path = session_artifact_path(sessions_dir, sid, suffix=".jsonl")
     with path.open("a", encoding="utf-8") as handle:
         for msg in messages:
             if msg is not None:

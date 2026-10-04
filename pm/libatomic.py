@@ -1,6 +1,8 @@
 """Install the host libatomic package required by official Linux Node.
 
-This module is intentionally called only from PM's staged-install repair hook.
+Two entry points: warm_sudo_before_install() lets an interactive update cache
+a sudo ticket before PM takes its install lock, and try_install_libatomic()
+is the non-interactive repair run from Nodejs.repair_staged_verification().
 Package verification itself remains diagnostic and side-effect free.
 """
 
@@ -103,16 +105,22 @@ def warm_sudo_before_install() -> None:
         return
     if not (sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty()):
         return
-    if current_target() in MUSL_TARGETS or current_target().endswith("-bionic"):
+    target = current_target()
+    if target in MUSL_TARGETS or target.endswith("-bionic"):
         return
     try:
         ctypes.CDLL("libatomic.so.1")
         return
     except OSError:
         pass
-    sudo = shutil.which("sudo")
-    if sudo is None or subprocess.run([sudo, "-n", "true"], stdin=subprocess.DEVNULL,
-                                      capture_output=True, check=False).returncode == 0:
+    # Prompt only when the repair would actually run sudo with the ticket.
+    command = _host_install_command()
+    argv = _command_plan(command)[0] if command else None
+    if not argv:
+        return
+    sudo = argv[0]
+    if subprocess.run([sudo, "-n", "true"], stdin=subprocess.DEVNULL,
+                      capture_output=True, check=False).returncode == 0:
         return
     print("→ Node.js needs libatomic.so.1; sudo may ask for your password to install it", flush=True)
     try:

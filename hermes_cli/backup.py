@@ -270,10 +270,42 @@ def _collect_memory_provider_external_paths() -> List[Path]:
     return list(out.values())
 
 
+def _is_sqlite_sidecar_name(name: str) -> bool:
+    """True for live SQLite WAL/SHM/journal sidecars of ``*.db`` *and* extensionless stores.
+
+    ``cache.db`` uses ``cache.db-wal``; Cognee's ``cognee_db`` uses ``cognee_db-wal``.
+    Shipping either beside a ``sqlite3.backup()`` snapshot tears the restore (#132705).
+    """
+    return name.endswith(_SQLITE_SIDECAR_SUFFIXES) or name.endswith(("-wal", "-shm", "-journal"))
+
+
+def _looks_like_sqlite_db(path: Path) -> bool:
+    """True when *path* should be archived via a WAL-safe SQLite snapshot.
+
+    ``*.db`` always qualifies. Extensionless (and other odd) SQLite files are detected by
+    header so providers like Cognee (``cognee_db``) are not raw-copied while their WAL is
+    excluded (#132705).
+    """
+    if path.suffix.lower() == ".db":
+        return True
+    # Skip common non-database text/config payloads without opening them.
+    if path.suffix.lower() in {
+        ".json", ".yaml", ".yml", ".txt", ".md", ".py", ".log", ".zip", ".png", ".jpg",
+        ".jpeg", ".webp", ".gif", ".mp3", ".mp4", ".wav", ".html", ".css", ".js", ".ts",
+    }:
+        return False
+    try:
+        from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
+        head = read_header_bytes_preopen(path, length=16, force=True)
+        return bool(head and head.startswith(b"SQLite format 3"))
+    except Exception:
+        return False
+
+
 def _iter_external_files(base: Path) -> List[Path]:
     """Regular files under *base* (a file or a directory), skipping symlinks, caches, and pyc."""
     if base.is_file() and not base.is_symlink():
-        return [base]
+        return [] if _is_sqlite_sidecar_name(base.name) else [base]
     if not base.is_dir():
         return []
     files: List[Path] = []
@@ -281,6 +313,7 @@ def _iter_external_files(base: Path) -> List[Path]:
         dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
         files.extend(fp for fp in (Path(dirpath) / f for f in filenames)
                      if not (_is_non_regular_path(fp) or fp.name in _EXCLUDED_NAMES
+                             or _is_sqlite_sidecar_name(fp.name)
                              or fp.name.endswith(_EXCLUDED_SUFFIXES)))
     return files
 
@@ -640,12 +673,20 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
             zf, files_to_add, out_path, on_progress=_progress, track_bytes=True,
             on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
             on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"))
-        # External memory-provider state never includes ``.db`` files in practice, so no
-        # SQLite snapshot is needed; _write_zip_file still drops a failed partial member.
+        # External provider trees can hold SQLite stores (e.g. Cognee ``cache.db``). Raw-copying
+        # the main file while excluding live WAL sidecars drops committed WAL records (#132705);
+        # snapshot via sqlite3.backup() the same way HERMES_HOME ``*.db`` files are handled.
         for abs_path, arcname in external_to_add:
             try:
-                _write_zip_file(zf, abs_path, arcname)
-                total_bytes += abs_path.stat().st_size
+                if _looks_like_sqlite_db(abs_path):
+                    size = _zip_sqlite_snapshot(zf, abs_path, Path(arcname), out_path)
+                    if size is None:
+                        errors.append(f"{arcname}: SQLite safe copy failed")
+                        continue
+                    total_bytes += size
+                else:
+                    _write_zip_file(zf, abs_path, arcname)
+                    total_bytes += abs_path.stat().st_size
             except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"{arcname}: {exc}")
     elapsed = time.monotonic() - t0

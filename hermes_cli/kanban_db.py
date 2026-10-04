@@ -1021,6 +1021,10 @@ CREATE TABLE IF NOT EXISTS task_runs (
     -- status: running | done | blocked | crashed | timed_out | failed | released
     claim_lock          TEXT,
     claim_expires       INTEGER,
+    -- PID namespace that owned this run's claim. Retained after tasks clears
+    -- its live claim state so terminal-worker cleanup has the same authority
+    -- fence as every running-claim mutation.
+    claim_pidns         TEXT,
     worker_pid          INTEGER,
     -- Spawn-time start fingerprint of worker_pid (see tasks.worker_started_at). Retained with
     -- worker_pid after the run ends so a worker that outlives its terminal transition can
@@ -1037,6 +1041,17 @@ CREATE TABLE IF NOT EXISTS task_runs (
     metadata            TEXT,
     error               TEXT
 );
+
+-- Mixed-version safety: pre-claim_pidns clients clear claim_lock but do not
+-- know to clear the provenance column. A stale namespace must never bless a
+-- later old-client claim, so clearing any live lock clears its provenance at
+-- the database boundary older clients cannot skip.
+CREATE TRIGGER IF NOT EXISTS clear_claim_pidns_when_lock_released
+AFTER UPDATE OF claim_lock ON tasks
+WHEN NEW.claim_lock IS NULL AND OLD.claim_lock IS NOT NULL AND NEW.claim_pidns IS NOT NULL
+BEGIN
+    UPDATE tasks SET claim_pidns = NULL WHERE id = NEW.id;
+END;
 
 -- Files attached to a task (PDFs, images, source documents). The blob
 -- lives on disk under ``attachments_root(board)/<task_id>/<stored_name>``;
@@ -2272,13 +2287,13 @@ def _claim_and_open_run(
         """
         INSERT INTO task_runs (
             task_id, profile, step_key, status,
-            claim_lock, claim_expires, max_runtime_seconds,
+            claim_lock, claim_expires, claim_pidns, max_runtime_seconds,
             started_at
-        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
         """,
         (
             task_id, trow["assignee"] if trow else None, trow["current_step_key"] if trow else None,
-            lock, expires, trow["max_runtime_seconds"] if trow else None, now,
+            lock, expires, pidns, trow["max_runtime_seconds"] if trow else None, now,
         ),
     )
     run_id = run_cur.lastrowid
@@ -3954,13 +3969,15 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
     """
     with write_txn(conn):
         row = conn.execute(
-            "SELECT status, claim_lock, worker_pid, worker_started_at FROM tasks WHERE id = ?",
+            "SELECT status, claim_lock, claim_pidns, worker_pid, worker_started_at FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if not row:
             return False
         was_running = row["status"] == "running"
-        prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
+        prev_pid, prev_lock, prev_pidns, prev_started = (
+            row["worker_pid"], row["claim_lock"], row["claim_pidns"], row["worker_started_at"],
+        )
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
             "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, claim_pidns = NULL "
@@ -3975,7 +3992,9 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
     if was_running:
-        termination = _terminate_reclaimed_worker(prev_pid, prev_lock, signal_fn=signal_fn, started_at=prev_started)
+        termination = _terminate_reclaimed_worker(
+            prev_pid, prev_lock, claim_pidns=prev_pidns, signal_fn=signal_fn, started_at=prev_started,
+        )
         with write_txn(conn):
             _append_event(conn, task_id, "archive_worker_termination", termination, run_id=run_id)
     # ``archived`` parents no longer block children; promote them now.

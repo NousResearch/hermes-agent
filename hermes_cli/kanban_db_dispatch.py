@@ -540,7 +540,7 @@ def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[s
     One row's failure (signal, /proc probe) is logged and skips only that row.
     Returns the task ids whose worker was terminated."""
     rows = conn.execute(
-        "SELECT id, task_id, worker_pid, worker_started_at, claim_lock FROM task_runs "
+        "SELECT id, task_id, worker_pid, worker_started_at, claim_lock, claim_pidns FROM task_runs "
         "WHERE ended_at IS NOT NULL AND ended_at <= ? "
         "AND worker_pid IS NOT NULL AND worker_started_at IS NOT NULL",
         (int(time.time()) - TERMINAL_WORKER_REAP_GRACE_SECONDS,),
@@ -560,7 +560,12 @@ def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[s
 
 def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: list[str]) -> None:
     pid, fingerprint = int(row["worker_pid"]), row["worker_started_at"]
-    if pid == os.getpid() or not str(row["claim_lock"] or "").startswith(host_prefix):
+    claim_lock, claim_pidns = row["claim_lock"], row["claim_pidns"]
+    if pid == os.getpid() or not str(claim_lock or "").startswith(host_prefix):
+        return
+    # A closed run owns its PID evidence. Never probe, clear, or signal it
+    # unless its retained namespace proves this process can interpret it.
+    if not _kbp._claim_pid_checkable(claim_lock, claim_pidns, host_prefix=host_prefix):
         return
     if fingerprint == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
         return  # unproven identity: never signalled; its evidence is cleared once the pid is gone
@@ -568,7 +573,7 @@ def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: li
     termination = None
     if alive:
         termination = _terminate_reclaimed_worker(
-            pid, row["claim_lock"], signal_fn=signal_fn, started_at=fingerprint)
+            pid, claim_lock, claim_pidns=claim_pidns, signal_fn=signal_fn, started_at=fingerprint)
         if not termination["terminated"]:
             return  # still alive: try again next tick
     with _kb.write_txn(conn):

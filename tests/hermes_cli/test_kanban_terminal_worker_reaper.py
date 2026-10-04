@@ -22,6 +22,7 @@ import pytest
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_db_pidns as kbp
 
 
 @pytest.fixture
@@ -147,3 +148,34 @@ def test_one_failing_row_does_not_abort_the_sweep(conn):
         for p in (broken, healthy):
             p.kill()
             p.wait()
+
+
+def test_foreign_namespace_terminal_worker_keeps_run_evidence(conn, monkeypatch):
+    """A sibling namespace cannot probe, clear, or signal a closed run's PID."""
+    proc = _sleeper()
+    try:
+        tid, run_id = _completed_card_with_worker(conn, proc)
+        run = conn.execute(
+            "SELECT claim_pidns, worker_pid FROM task_runs WHERE id = ?", (run_id,),
+        ).fetchone()
+        assert run["claim_pidns"] is not None and run["worker_pid"] == proc.pid
+        monkeypatch.setattr(
+            kbp, "_local_pid_namespace", lambda: kbp.LocalPidNamespace("foreign", True),
+        )
+        monkeypatch.setattr(
+            kbd, "_worker_alive", lambda *_args: pytest.fail("foreign PID was probed"),
+        )
+        signals = []
+
+        assert kbd.reap_terminal_workers(
+            conn, signal_fn=lambda pid, sig: signals.append((pid, sig)),
+        ) == []
+        run = conn.execute(
+            "SELECT worker_pid, worker_started_at FROM task_runs WHERE id = ?", (run_id,),
+        ).fetchone()
+        assert run["worker_pid"] == proc.pid and run["worker_started_at"] is not None
+        assert signals == []
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()

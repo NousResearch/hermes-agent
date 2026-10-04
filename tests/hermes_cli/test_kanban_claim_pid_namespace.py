@@ -393,6 +393,55 @@ def test_older_writer_null_pidns_claim_is_never_signalled(
     assert probes == [] and signals == []
 
 
+def test_older_release_clears_pidns_before_an_older_claim(conn, local_pidns, monkeypatch, signals):
+    """The DB trigger fences the old-release -> old-claim mixed-version path.
+
+    A pre-column release only clears ``claim_lock``. Its successor cannot be
+    trusted with the prior claimant's namespace stamp, even when the reader is
+    back in that former namespace.
+    """
+    probes: list[int] = []
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: probes.append(int(pid)) or False)
+    tid = _running_claim(conn, title="old-release", pid=1111)
+    assert _pidns_of(conn, tid) == local_pidns["id"]
+
+    # Pre-claim_pidns release SQL: it cannot name the new column. The trigger
+    # clears the stale stamp at the only boundary this older writer does touch.
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status = 'ready', claim_lock = NULL, claim_expires = NULL, "
+            "worker_pid = NULL, worker_started_at = NULL, current_run_id = NULL WHERE id = ?",
+            (tid,),
+        )
+    assert _pidns_of(conn, tid) is None
+
+    _claim_like_an_older_binary(conn, tid, pid=4242)
+    assert _pidns_of(conn, tid) is None
+    assert kbd.detect_crashed_workers(conn) == []
+    assert probes == [] and signals == []
+
+
+def test_archive_running_claim_uses_snapshot_namespace(conn, local_pidns, monkeypatch, signals):
+    """Archive snapshots provenance before clearing tasks and still cleans up."""
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    local = local_pidns["id"]
+    local_tid = _running_claim(conn, title="archive-local", pid=1111)
+    assert kb.archive_task(conn, local_tid) is True
+    assert signals == [(1111, int(signal.SIGTERM))]
+    local_payload = _payload(conn, local_tid, "archive_worker_termination")
+    assert local_payload["pid_checkable"] is True
+
+    signals.clear()
+    local_pidns["id"] = local
+    foreign_tid = _running_claim(conn, title="archive-foreign", pid=2222)
+    local_pidns["id"] = "4026531836"
+    assert kb.archive_task(conn, foreign_tid) is True
+    assert signals == []
+    foreign_payload = _payload(conn, foreign_tid, "archive_worker_termination")
+    assert foreign_payload["pid_checkable"] is False
+    assert _status(conn, foreign_tid) == "archived"
+
+
 def test_failed_local_namespace_lookup_neither_probes_nor_signals(
     conn, local_pidns, monkeypatch, signals,
 ):

@@ -1864,8 +1864,11 @@ def test_app_server_bridge_commentary_then_final_agent_messages_are_each_already
 
     _agent_message("m1", "Checking the config.", "commentary")
     _agent_message("m2", "Native compaction is active.", "final_answer")
+    # The last agentMessage is the persisted final response; it is held until
+    # turn/completed and never published a second time as an interim.
+    on_event({"method": "turn/completed", "params": {}})
 
-    assert deliveries == [("Checking the config.", True), ("Native compaction is active.", True)]
+    assert deliveries == [("Checking the config.", True)]
     assert agent._current_streamed_assistant_text == ""
 
 

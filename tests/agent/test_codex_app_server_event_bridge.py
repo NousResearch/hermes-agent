@@ -248,6 +248,19 @@ class TestAgentMessageInterimDispatch:
         bridge({"method": "turn/completed", "params": {"turn": {"status": "completed"}}})
         agent._emit_interim_assistant_message.assert_not_called()
 
+    def test_held_message_from_a_turn_without_completion_is_not_replayed_in_the_next_turn(self):
+        # The bridge lives for the whole session. A turn torn down by interrupt or
+        # deadline never sends turn/completed; its held last message must not be
+        # published as an interim when the next turn runs.
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+        bridge(_item_completed({"type": "agentMessage", "id": "t1-final", "text": "Turn one answer."}))
+        bridge({"method": "turn/started", "params": {"turn": {"id": "t2"}}})
+        bridge(_item_started({"type": "commandExecution", "id": "cmd-1", "command": "ls"}))
+        bridge(_item_completed({"type": "agentMessage", "id": "t2-final", "text": "Turn two answer."}))
+        bridge({"method": "turn/completed", "params": {"turn": {"status": "completed"}}})
+        agent._emit_interim_assistant_message.assert_not_called()
+
     def test_bridge_publishes_each_repeated_commentary_item(self):
         agent = _make_stub_agent()
         bridge = make_codex_app_server_event_bridge(agent)

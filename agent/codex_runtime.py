@@ -488,9 +488,12 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         )
         if is_delta or is_item:
             agent_cb("_touch_activity", "_touch_activity raised", args=(f"codex app-server: {method}",))
-        if method == "turn/completed":
+        if method in ("turn/completed", "turn/started"):
             # The last agentMessage is the persisted final response, not a
             # separate interim. Its live deltas already reached the UI.
+            # A turn can end without turn/completed (interrupt, deadline), so a
+            # new turn/started also clears the held item: the bridge outlives a
+            # turn and must not replay turn N's last message in turn N+1.
             pending_message = None
             return
         if pending_message is not None and method == "item/agentMessage/delta" and _delta_text(params):

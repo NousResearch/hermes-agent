@@ -1,0 +1,27 @@
+# Community catalog entry — usage-flame  
+name: usage-flame
+repo: https://github.com/maxshafransky-a11y/hermes-usage-flame
+sha: "88d41b282279ebbbcb452a52613fcf4705686ace"
+description: >-
+  Pinned glowing chip + fire-themed panel with live subscription-quota windows
+  (remaining %, reset countdown, burn-rate pace and run-out forecast with
+  sparkline history) for every provider Hermes reports usage for. 12 color
+  themes and fonts, RU/EN, zero dependencies, works on Windows.
+maintainer: maxshafransky-a11y
+tier: community
+category: desktop
+requires_hermes: ">=0.21"
+platforms: [windows, macos, linux]
+docs_url: https://github.com/maxshafransky-a11y/hermes-usage-flame
+screenshots:
+  - https://raw.githubusercontent.com/maxshafransky-a11y/hermes-usage-flame/88d41b282279ebbbcb452a52613fcf4705686ace/screenshots/01-hero-dark.png
+  - https://raw.githubusercontent.com/maxshafransky-a11y/hermes-usage-flame/88d41b282279ebbbcb452a52613fcf4705686ace/screenshots/02-providers-expanded.png
+  - https://raw.githubusercontent.com/maxshafransky-a11y/hermes-usage-flame/88d41b282279ebbbcb452a52613fcf4705686ace/screenshots/03-themes.png
+  - https://raw.githubusercontent.com/maxshafransky-a11y/hermes-usage-flame/88d41b282279ebbbcb452a52613fcf4705686ace/screenshots/04-forecast.png
+  - https://raw.githubusercontent.com/maxshafransky-a11y/hermes-usage-flame/88d41b282279ebbbcb452a52613fcf4705686ace/screenshots/05-light-theme.png
+  - https://raw.githubusercontent.com/maxshafransky-a11y/hermes-usage-flame/88d41b282279ebbbcb452a52613fcf4705686ace/screenshots/06-chips.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

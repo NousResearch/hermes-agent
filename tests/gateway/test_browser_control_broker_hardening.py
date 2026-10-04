@@ -203,19 +203,51 @@ def test_transport_disconnect_parks_pending_and_reconnect_completes_it():
     assert outcome.get("result") == {"after": "reconnect"}
 
 
-def test_timeout_while_disconnected_flushes_cancel_before_new_dispatch():
-    broker = BrowserControlBroker(command_timeout=0.02)
-    scope = _scope()
-    thread, outcome, frames = _start_pending(broker, scope)
-    command_id = frames[0]["params"]["command_id"]
+def _timeout_while_disconnected(broker, scope):
+    frames = []
 
-    assert broker.disconnect_owner("owner-fixture") == 1
-    thread.join(timeout=1.0)
-    assert isinstance(outcome.get("error"), ControllerTimeout)
+    class DisconnectThenTimeout(threading.Event):
+        def wait(self, timeout=None):
+            # Drive the real timeout branch only AFTER the transport is offline.
+            # No worker must beat a 10ms deadline to establish this ordering.
+            assert broker.disconnect_owner("owner-fixture") == 1
+            return False
+
+    def send(frame):
+        frames.append(frame)
+        if frame["method"] == "browser.controller.command":
+            broker._pending[frame["params"]["command_id"]].event = DisconnectThenTimeout()
+
+    broker.attach(scope, send, owner="owner-fixture")
+    with pytest.raises(ControllerTimeout):
+        broker.dispatch(scope, action="controller.noop", tool_call_id="tool-call-fixture")
     assert broker.pending_count == 0
+    assert [frame["method"] for frame in frames] == ["browser.controller.command"], (
+        "timeout must defer cancellation while the controller is offline"
+    )
+    return frames[0]["params"]["command_id"]
+
+
+def test_timeout_while_disconnected_flushes_cancel_before_new_dispatch():
+    broker = BrowserControlBroker(command_timeout=10.0)
+    scope = _scope()
+    command_id = _timeout_while_disconnected(broker, scope)
 
     replacement_frames = []
-    broker.attach(scope, replacement_frames.append, owner="replacement-owner")
+    command_sent = threading.Event()
+
+    def replacement_send(frame):
+        replacement_frames.append(frame)
+        if frame["method"] == "browser.controller.command":
+            command_sent.set()
+            broker.complete(
+                frame["params"]["command_id"],
+                scope=scope,
+                ok=True,
+                result={"second": True},
+            )
+
+    broker.attach(scope, replacement_send, owner="replacement-owner")
     assert replacement_frames == [
         {
             "method": "browser.controller.cancel",
@@ -224,7 +256,7 @@ def test_timeout_while_disconnected_flushes_cancel_before_new_dispatch():
                 "tool_call_id": "tool-call-fixture",
             },
         }
-    ]
+    ], "reconnect must flush the deferred cancel before any new command"
 
     second = {}
 
@@ -240,16 +272,10 @@ def test_timeout_while_disconnected_flushes_cancel_before_new_dispatch():
 
     second_thread = threading.Thread(target=run_second)
     second_thread.start()
-    while len(replacement_frames) < 2:
-        second_thread.join(timeout=0.01)
+    second_thread.join(timeout=10.0)
+    assert not second_thread.is_alive(), "second dispatch did not finish"
+    assert command_sent.is_set(), "reconnected controller never received the new command"
     assert replacement_frames[1]["method"] == "browser.controller.command"
-    assert broker.complete(
-        replacement_frames[1]["params"]["command_id"],
-        scope=scope,
-        ok=True,
-        result={"second": True},
-    ) is True
-    second_thread.join(timeout=1.0)
     assert second.get("result") == {"second": True}
 
 
@@ -363,19 +389,28 @@ def test_different_controller_identity_hard_replaces_parked_session_controller()
 
 
 def test_failed_deferred_cancel_flush_keeps_controller_offline():
-    broker = BrowserControlBroker(command_timeout=0.01)
+    broker = BrowserControlBroker()
     scope = _scope()
-    thread, outcome, _frames = _start_pending(broker, scope)
-    assert broker.disconnect_owner("owner-fixture") == 1
-    thread.join(timeout=1.0)
-    assert isinstance(outcome.get("error"), ControllerTimeout)
+    command_id = _timeout_while_disconnected(broker, scope)
+    attempted = []
 
-    def fail_send(_frame):
+    def fail_send(frame):
+        attempted.append(frame)
         raise ConnectionError("fixture flush failed")
 
-    with pytest.raises(ConnectionError, match="flush"):
+    error = None
+    try:
         broker.attach(scope, fail_send, owner="replacement-owner")
-    assert broker.select(scope, "controller.noop") is None
+    except ConnectionError as exc:
+        error = exc
+    assert attempted == [{
+        "method": "browser.controller.cancel",
+        "params": {"command_id": command_id, "tool_call_id": "tool-call-fixture"},
+    }], "reconnect must attempt delivery of the deferred cancel"
+    assert isinstance(error, ConnectionError) and "flush" in str(error)
+    assert broker.select(scope, "controller.noop") is None, (
+        "failed deferred-cancel delivery must keep the controller offline"
+    )
 
 
 def test_session_lane_replacement_and_owner_detach_are_scoped():

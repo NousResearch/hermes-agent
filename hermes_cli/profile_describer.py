@@ -83,7 +83,7 @@ def _collect_skills(profile_dir: Path) -> list[str]:
         return []
     names: list[str] = []
     for md in skills_dir.rglob("SKILL.md"):
-        if is_excluded_skill_path(md):
+        if is_excluded_skill_path(md, root=skills_dir):
             continue
         try:
             parts = md.relative_to(skills_dir).parts[:-1]  # drop SKILL.md

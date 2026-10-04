@@ -720,7 +720,7 @@ def _external_skill_names() -> set:
         if not base.exists():
             continue
         for skill_md in base.rglob("SKILL.md"):
-            if not is_excluded_skill_path(skill_md):
+            if not is_excluded_skill_path(skill_md, root=base):
                 names.add(_read_skill_name(skill_md, fallback=skill_md.parent.name))
     return names
 

@@ -113,6 +113,28 @@ class TestExcludedSkillPath:
             is False
         )
 
+    def test_root_relative_path_with_root_keeps_prefix_rule(self, tmp_path):
+        """Callers passing ``path.relative_to(root)`` alongside ``root`` (skills_sync,
+        skills_hub_install) already scoped the path — the prefix rule must apply, not
+        silently fall back to exact names (#132925 review)."""
+        assert (
+            is_excluded_skill_path(Path("_archive/old/SKILL.md"), root=tmp_path)
+            is True
+        )
+        assert (
+            is_excluded_skill_path(Path("computer-use/SKILL.md"), root=tmp_path)
+            is False
+        )
+
+    def test_absolute_path_outside_root_keeps_exact_names(self, tmp_path):
+        """An absolute path under a different tree ignores *root* entirely."""
+        assert (
+            is_excluded_skill_path(
+                tmp_path / "computer-use" / "SKILL.md", root=tmp_path / "elsewhere"
+            )
+            is False
+        )
+
 
 class TestDiscoveryWalkPrunesPrefixDirs:
     def test_underscore_trees_not_discovered(self, tmp_path):

@@ -47,11 +47,13 @@ def is_excluded_skill_path(path, *, root: Optional[Path] = None) -> bool:
     The dot/underscore prefix rule (``_archive``, ``_staging-*``) applies to the
     components below *root*, or to every component of a relative path. A bare
     absolute path keeps exact-name semantics so an ancestor like ``~/.hermes``
-    never disables the tree below it (#132917)."""
+    never disables the tree below it (#132917). A root-relative path paired with
+    *root* (``path.relative_to(root)`` callers) applies the prefix rule too — the
+    caller already scoped it."""
     pure = PurePath(str(path))
     parts = pure.parts
     prefix_scoped = root is not None or not pure.is_absolute()
-    if root is not None:
+    if root is not None and pure.is_absolute():
         try:
             parts = pure.relative_to(PurePath(str(root))).parts
         except ValueError:

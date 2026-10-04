@@ -6,7 +6,7 @@ import re
 import sys
 from datetime import timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -173,30 +173,123 @@ def _unverified_targets(unverified) -> str:
 
 _STATE_BADGES = {"paused": ("[paused]", Colors.YELLOW), "completed": ("[completed]", Colors.BLUE)}
 
+# cron.jobs._normalize_job_record() substitutes this literal for a job record that carries no
+# id. It is truthy, so deduplicating on a falsy check alone would fold two genuinely different
+# id-less jobs from different profiles into a single row.
+_MISSING_JOB_ID = "unknown"
+
+
+def _cron_profile_stores() -> List[tuple[str, Path]]:
+    """``(profile name, HERMES_HOME)`` for every live profile, default first.
+
+    ``list_profile_names()`` is the cheap name-only listing (``default`` + LIVE profile dirs,
+    tombstones skipped) that cron already uses for delivery-target validation.
+    """
+    from hermes_cli.profiles import get_profile_dir, list_profile_names
+
+    stores: List[tuple[str, Path]] = []
+    for name in list_profile_names():
+        try:
+            stores.append((name, get_profile_dir(name)))
+        except (ValueError, OSError):
+            continue
+    return stores
+
+
+def _read_jobs_for_home(home: Path) -> List[Dict[str, Any]]:
+    """Read one profile's jobs without disturbing the active profile's own store.
+
+    The active profile is read through the plain path on purpose: it is already pinned by
+    ``_current_cron_store()``, which honours the documented store re-pointing escape hatch
+    (deliberately re-pointed module constants and an active ``HERMES_HOME``). Wrapping it in
+    ``use_cron_store`` would override that and read a different file than the rest of the CLI.
+
+    Any other profile's store does need the override: ``use_cron_store`` is an
+    execution-context override, so it never retargets a concurrently ticking scheduler's
+    load/save.
+    """
+    from cron.jobs import list_jobs, use_cron_store
+    from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+
+    try:
+        if Path(get_profile_dir(get_active_profile_name())).resolve() == Path(home).resolve():
+            return list_jobs(include_disabled=True)
+    except (ValueError, OSError):
+        pass
+    with use_cron_store(home):
+        return list_jobs(include_disabled=True)
+
+
+def _aggregate_cron_jobs(
+    stores: Iterable[tuple[str, Path]],
+    read_jobs: Optional[Callable[[Path], List[Dict[str, Any]]]] = None,
+) -> List[tuple[str, Dict[str, Any]]]:
+    """``(owning profile, job)`` rows across every profile's store, deduped by job id.
+
+    Each profile owns its own ``cron/jobs.json``, so an install with several profiles has
+    several stores and a single-profile read hides all but one of them. Aggregating here is
+    what makes same-named jobs in different profiles distinguishable instead of ambiguous.
+
+    A job id seen in more than one store is one job copied into a second profile during
+    profile creation (#51721), not two jobs: the default profile's copy wins so the result
+    does not depend on iteration order. Job records with no id — including the
+    ``"unknown"`` sentinel — are never deduplicated.
+    """
+    read = read_jobs or _read_jobs_for_home
+    # Default profile first AND first-writer-wins, so its copy of a shared id is the one kept.
+    # Overwriting instead would hand the row to whichever profile was visited last.
+    default_first = sorted(stores, key=lambda item: item[0] != "default")
+    by_id: Dict[str, tuple[str, Dict[str, Any]]] = {}
+    unkeyed: List[tuple[str, Dict[str, Any]]] = []
+    for name, home in default_first:
+        try:
+            jobs = read(home)
+        except Exception:
+            # One unreadable store must not hide every job the others own.
+            continue
+        for job in jobs or []:
+            if not isinstance(job, dict):
+                continue
+            jid = job.get("id") or job.get("job_id")
+            if not jid or jid == _MISSING_JOB_ID:
+                unkeyed.append((name, job))
+            elif jid not in by_id:
+                by_id[jid] = (name, job)
+    return list(by_id.values()) + unkeyed
+
 
 def cron_list(show_all: bool = False):
-    """List all scheduled jobs."""
-    from cron.jobs import effective_job_state, list_jobs
-    jobs = list_jobs(include_disabled=True)
+    """List every profile's scheduled jobs, each labelled with its owning profile."""
+    from cron.jobs import effective_job_state
+    profiles = _cron_profile_stores()
+    rows = _aggregate_cron_jobs(profiles)
     if not show_all:
-        jobs = [
-            job for job in jobs
+        rows = [
+            (name, job) for name, job in rows
             if job.get("enabled", True) or effective_job_state(job) == "paused"
         ]
 
     from hermes_cli.profiles import get_active_profile_name
-    if not jobs:
-        print(color(f"No scheduled jobs in profile '{get_active_profile_name()}'.\n"
+    active = get_active_profile_name()
+    if not rows:
+        print(color(f"No scheduled jobs in profile '{active}'.\n"
                     "Create one with 'hermes cron create ...' or the /cron command in chat.", Colors.DIM))
         return
 
-    _print_banner(f"Scheduled Jobs (profile: {get_active_profile_name()})")
+    scope = (f"profile: {active}" if len(profiles) < 2
+             else f"all profiles: {', '.join(name for name, _ in profiles)}")
+    _print_banner(f"Scheduled Jobs ({scope})")
 
-    for job in jobs:
+    # Only worth a row once the listing can span stores: on a single-profile install the
+    # banner already names the owner and a repeated line would be noise.
+    label_owner = len(profiles) > 1
+    for owner, job in rows:
         # effective_job_state honours the scheduler flag — never [paused] when enabled=true.
         badge = _STATE_BADGES.get(effective_job_state(job)) or (
             ("[active]", Colors.GREEN) if job.get("enabled", True) else ("[disabled]", Colors.RED))
         print(f"  {color(job.get('id', '?'), Colors.YELLOW)} {color(*badge)}")
+        if label_owner:
+            print(f"    {'Profile:':<11}{owner}")
         for label, value in _job_rows(job):
             print(f"    {label + ':':<11}{value}")
         for line in _job_warnings(job):

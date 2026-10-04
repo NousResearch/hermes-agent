@@ -100,21 +100,9 @@ def test_stage2_can_find_s6_helpers(recorder: tuple[Path, Path]) -> None:
     assert os.environ["PATH"].split(":")[0] in path
 
 
-def test_failed_bootstrap_never_runs_cmd(tmp_path: Path) -> None:
+def test_failed_bootstrap_never_runs_cmd(recorder: tuple[Path, Path]) -> None:
     """A failing stage2 bootstrap must not silently start the CMD anyway."""
-    stage2 = tmp_path / "fake-stage2.sh"
-    wrapper = tmp_path / "fake-wrapper.sh"
-    log = tmp_path / "calls.log"
-    stage2.write_text("#!/bin/sh\nexit 1\n")
-    wrapper.write_text(f"#!/bin/sh\necho wrapper >> {log}\n")
-    stage2.chmod(0o755)
-    wrapper.chmod(0o755)
-    env = os.environ.copy()
-    env["HERMES_ENTRYPOINT_SHIM_STAGE2"] = str(stage2)
-    env["HERMES_ENTRYPOINT_SHIM_WRAPPER"] = str(wrapper)
-    r = subprocess.run(
-        ["sh", str(SHIM)],
-        capture_output=True, text=True, timeout=10, env=env, check=False,
-    )
+    recorder[0].write_text("#!/bin/sh\nexit 1\n")
+    r = _run_shim(recorder, [])
     assert r.returncode != 0
-    assert not log.exists()
+    assert _log(recorder) == ""

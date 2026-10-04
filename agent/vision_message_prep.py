@@ -108,6 +108,20 @@ class VisionMessagePrepMixin:
         if is_data_url:
             vision_source, cleanup_path = self._materialize_data_url_for_vision(vision_source)
 
+        if not vision_source:
+            # Oversized data URLs are skipped by _materialize_data_url_for_vision and come
+            # back empty; sending that to the vision tool would misreport the image as
+            # corrupt, so state the actual size reason instead.
+            cap_mb = VisionMessagePrepMixin._MAX_DATA_URL_BASE64_BYTES // (1024 * 1024)
+            note = (
+                f"[The {role_label} attached an image, but its inline payload is over the "
+                f"{cap_mb} MB cap for text-fallback analysis, so it was not described. "
+                f"The image itself was not rejected as corrupt; if its contents matter, "
+                f"ask for a smaller copy.]"
+            )
+            self._anthropic_image_fallback_cache[cache_key] = note
+            return note
+
         try:
             from tools.vision_tools import vision_analyze_tool
 

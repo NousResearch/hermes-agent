@@ -179,3 +179,57 @@ class TestModelSupportsVision:
              patch("agent.models_dev.get_model_capabilities", return_value=None):
             assert agent._model_supports_vision() is True
 
+
+# ─── oversized inline images (#132605) ───────────────────────────────────────
+
+
+def _oversized_image_msg() -> dict:
+    big = "data:image/png;base64," + "A" * (21 * 1024 * 1024)
+    return {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "what is in this screenshot?"},
+            {"type": "image_url", "image_url": {"url": big}},
+        ],
+    }
+
+
+class TestOversizedDataUrlFallback:
+    """Over-20MB inline images must not reach the vision tool with an empty source
+    (which reports the image as corrupt); the note states the real size reason."""
+
+    def test_oversized_data_url_never_calls_vision_tool(self):
+        agent = _make_agent()
+        with patch.object(agent, "_model_supports_vision", return_value=False), \
+             patch("tools.vision_tools.vision_analyze_tool") as vision_call:
+            out = agent._prepare_messages_for_non_vision_model([_oversized_image_msg()])
+        vision_call.assert_not_called()
+        content = out[0]["content"]
+        assert isinstance(content, str)
+        assert "over the 20 MB cap" in content
+        assert "not rejected as corrupt" in content
+        assert "what is in this screenshot?" in content
+
+    def test_oversized_note_is_cached(self):
+        agent = _make_agent()
+        with patch.object(agent, "_model_supports_vision", return_value=False), \
+             patch("tools.vision_tools.vision_analyze_tool") as vision_call:
+            agent._prepare_messages_for_non_vision_model([_oversized_image_msg()])
+            agent._prepare_messages_for_non_vision_model([_oversized_image_msg()])
+        assert len(agent._anthropic_image_fallback_cache) == 1
+        vision_call.assert_not_called()
+
+    def test_small_data_url_still_calls_vision_tool(self):
+        agent = _make_agent()
+
+        async def fake_tool(image_url: str, user_prompt: str) -> str:
+            import json as _json
+            return _json.dumps({"analysis": "a cat on a keyboard"})
+
+        with patch.object(agent, "_model_supports_vision", return_value=False), \
+             patch("tools.vision_tools.vision_analyze_tool", fake_tool):
+            out = agent._prepare_messages_for_non_vision_model([IMG_PARTS_USER_MSG])
+        content = out[0]["content"]
+        assert "a cat on a keyboard" in content
+        assert "What's in this image?" in content
+

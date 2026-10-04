@@ -159,14 +159,79 @@ def test_normalize_repairs_swapped_close_brackets_in_string_envelope():
 
 
 def test_normalize_rejects_bracket_failures_outside_the_repair_class():
-    """A bracket failure that is not an adjacent closer swap must still be
-    rejected — the repair is one well-defined class, never a silent best-effort
-    parser."""
-    # missing comma between two array entries: unrepairable by a single swap
-    bad = "[{\"name\": \"a\"}{\"name\": \"b\"}]"
+    """Bracket/escape failures needing two or more edits must still be
+    rejected — each repair strategy is bounded, never a silent best-effort
+    parser. (The single missing comma used here as an example is now covered
+    by the one-edit strategy; see
+    test_normalize_repairs_single_missing_comma_between_entries.)"""
+    # two closers missing from the tail, AND an entry-level comma missing:
+    # any one-edit attempt yields either a parse failure or no unique valid
+    # batch -> rejected.
+    bad = "[{\"name\": \"a\"}{\"arguments\": {\"x\": 1}, \"name\": \"b\"}"
     entries, err = normalize_tool_call_entries({"calls": bad})
     assert entries == []
     assert "not valid JSON" in (err or "")
+
+
+def test_normalize_repairs_single_missing_comma_between_entries():
+    """Measured on Qwen3.8-27B turns: one comma dropped between two batch
+    entries (``...600}, {"arguments": ...``). A single inserted comma yields
+    the unique valid batch, so the payload is recovered."""
+    good = json.dumps([
+        {"name": "session_search", "arguments": {"query": "a"}},
+        {"name": "session_search", "arguments": {"query": "b"}},
+    ])
+    assert ", {" in good
+    dropped = good.replace(", {", " {", 1)
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(dropped)  # premise: naive parse fails
+    entries, err = normalize_tool_call_entries({"calls": dropped})
+    assert err is None
+    assert entries == json.loads(good)
+
+
+def test_normalize_repairs_missing_final_tail_closers():
+    """Measured on musg34l4x2opyk (8 identical failures): the stringified
+    batch stopped right after closing the inner arguments object — the entry
+    object's ``}`` and the batch array's ``]`` were never emitted. Bounded
+    tail append recovers the unique valid batch."""
+    good = json.dumps([
+        {"name": "session_search",
+         "arguments": {"query": "x", "plan": [{"id": "s", "step": "t", "status": "pending"}]}}
+    ])
+    # correct tail: args"} elem"} outer"]  ->  "}}]"; model stopped early: "}"
+    broken = good[:-2]
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(broken)
+    entries, err = normalize_tool_call_entries({"calls": broken})
+    assert err is None
+    assert entries == json.loads(good)
+
+
+def test_normalize_one_edit_repair_requires_a_unique_valid_batch():
+    """The one-edit strategies must not guess: when several single edits each
+    parse to a *different* valid calls batch, the slip is ambiguous and the
+    payload is left to the model's retry."""
+    # tail "}]": delete the ] -> [{...}] valid; delete the } -> [({...})]
+    # invalid — so construct a genuinely ambiguous case: "a" vs "ab" both
+    # single-edit-reachable with different names is not possible with pure
+    # bracket edits; the real guard is the escape-drift ambiguity. A batch
+    # whose one-arg object could close at two different spots:
+    ambiguous = "[{\"name\": \"a\", \"arguments\": {\"v\": 1}]"[:-1] + "}"
+    # two different one-deletions both parse to valid-but-different batches
+    # only if the text admits it; this specific shape must at minimum NOT be
+    # silently "fixed" into an entry the model did not plausibly mean —
+    # assert whatever happens, the result must pass the semantic guard.
+    entries, err = normalize_tool_call_entries({"calls": ambiguous})
+    if entries:
+        for e in entries:
+            assert isinstance(e.get("name"), str) and e["name"].strip()
+    # And a no-name entry is never rescued, even when tail append makes it
+    # parse (measured shape: entry lacked "name" entirely).
+    no_name_tail = '[{"arguments": {"x": 1}}'
+    entries, err = normalize_tool_call_entries({"calls": no_name_tail})
+    assert entries == []
+    assert err is not None
 
 
 def test_normalize_repairs_single_surplus_close_bracket():

@@ -241,7 +241,7 @@ def venv_python_version(venv: Path) -> tuple[int, int] | None:
     try:
         for line in (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines():
             key, _, value = line.partition("=")
-            if key.strip() != "version":
+            if key.strip().lower() not in ("version", "version_info"):
                 continue
             major, _, rest = value.strip().partition(".")
             minor, _, _ = rest.partition(".")
@@ -305,6 +305,19 @@ def _require_own_dependencies(project_root: Path) -> None:
         raise RuntimeError("no dependency environment is committed for this install")
 
 
+def environment_matches_running_interpreter(environment: Path) -> bool:
+    """True when *environment* was built for this process's interpreter.
+
+    Activating a venv built for another X.Y strips the running interpreter's own
+    site-packages and loads ABI-incompatible extensions (fixes #122555).
+    ``None`` (unknown version) stays permissive.
+    """
+    import sys
+
+    version = venv_python_version(Path(environment))
+    return version is None or version == (sys.version_info.major, sys.version_info.minor)
+
+
 def activate_dependencies(project_root: Path) -> None:
     """Select the committed tree at process boot, before third-party imports.
 
@@ -345,6 +358,15 @@ def activate_dependencies(project_root: Path) -> None:
             return  # External/Nix interpreter owns its original sys.path.
     if not selected.is_dir():
         raise RuntimeError(f"dependency environment has no site-packages: {selected}")
+    if not environment_matches_running_interpreter(environment):
+        print(
+            f"dependency environment targets Python "
+            f"{'.'.join(map(str, venv_python_version(environment) or ('?', '?')))} "
+            f"but this process runs "
+            f"{sys.version_info.major}.{sys.version_info.minor}; keeping this "
+            f"interpreter's own site-packages", file=sys.stderr,
+        )
+        return
     import site
 
     sys.path[:] = [entry for entry in sys.path

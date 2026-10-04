@@ -128,10 +128,12 @@ class GatewayProfileReconcileMixin:
                         self._run_housekeeping_in_executor(live_gateway_pid_for_home, current[name]),
                         timeout=_OWN_GATEWAY_PROBE_TIMEOUT_SECS)
                 except asyncio.TimeoutError:
-                    # Unprovable this cycle must read as blocked: the multiplexer never races
-                    # a possibly-live own gateway. Next cycle probes again.
-                    logger.debug("Own-gateway probe for profile '%s' stalled; treating as blocked", name)
-                    pid = -1
+                    # Unprovable is not "own gateway running": skip it this cycle without
+                    # warning about (or remembering) a gateway that may not exist.
+                    logger.warning("[MULTIPLEX] Own-gateway probe for profile '%s' timed out; "
+                                   "not serving it this cycle", name)
+                    del current[name]
+                    continue
                 if pid is not None:
                     blocked.add(name)
                     if name not in warned:

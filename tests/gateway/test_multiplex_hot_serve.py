@@ -148,7 +148,10 @@ async def test_stalled_own_gateway_probe_never_wedges_the_loop_or_serves(tmp_pat
         result = await asyncio.wait_for(runner.reconcile_served_profiles(reason="watcher"), timeout=2.0)
         assert result["added"] == []
         assert _served_record(home) == ["default", "alpha"]
-        assert len([r for r in caplog.records if "still runs its own gateway" in r.message]) == 1
+        messages = [r.getMessage() for r in caplog.records]
+        assert [m for m in messages if "probe for profile 'gamma' timed out" in m]
+        assert not [m for m in messages if "still runs its own gateway" in m]
+        assert "gamma" not in (runner._profile_own_gateway_warned or set())
         await asyncio.wait_for(heartbeat, timeout=1.0)
 
         released.set()

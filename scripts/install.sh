@@ -481,8 +481,26 @@ stage_repository() {
             git -C "$INSTALL_DIR" config fetch.writeCommitGraph false \
                 || log_warn "could not disable fetch.writeCommitGraph in $INSTALL_DIR"
         fi
-        run_logged "Fetching origin/$BRANCH" git -C "$INSTALL_DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" \
-            || fail "git fetch failed"
+        # Existing installs need the same bounded recovery as fresh clones. A
+        # proxy/CDN reset may kill one pack transfer while the next connection
+        # succeeds, and restarting the whole installer only repeats completed
+        # prerequisite work. Keep the explicit refspec on every attempt.
+        local fetched=false fetch_label delay attempt
+        for attempt in 1 2 3; do
+            fetch_label="Fetching origin/$BRANCH"
+            [ "$attempt" = 1 ] || fetch_label="$fetch_label (attempt $attempt of 3)"
+            if run_logged "$fetch_label" git -C "$INSTALL_DIR" fetch origin \
+                "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"; then
+                fetched=true
+                break
+            fi
+            if [ "$attempt" != 3 ]; then
+                delay=$((attempt * 5))
+                log_warn "git fetch failed; retrying in $delay seconds"
+                sleep "$delay"
+            fi
+        done
+        [ "$fetched" = true ] || fail "git fetch failed after 3 attempts"
         local stamp
         stamp="$(date -u +%Y%m%d-%H%M%S)"
         # Park local work BEFORE switching branches: checkout refuses a dirty

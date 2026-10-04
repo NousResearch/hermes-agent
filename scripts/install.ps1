@@ -791,8 +791,27 @@ function Stage-Repository {
             }
             Disable-TreelessGraphWrites $InstallDir
         }
-        Invoke-Logged "Fetching origin/$Branch" { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
-        if ($LASTEXITCODE) { Fail "git fetch failed" }
+        # Existing installs need the same bounded recovery as fresh clones. A
+        # proxy/CDN reset may kill one pack transfer while the next connection
+        # succeeds, and restarting the whole installer only repeats completed
+        # prerequisite work. Keep the explicit refspec on every attempt.
+        $fetched = $false
+        foreach ($attempt in 1..3) {
+            $fetchLabel = "Fetching origin/$Branch"
+            if ($attempt -gt 1) { $fetchLabel += " (attempt $attempt of 3)" }
+            if ($attempt -lt 3) {
+                Invoke-Logged -MayFail $fetchLabel { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
+            } else {
+                Invoke-Logged $fetchLabel { git -C $InstallDir fetch origin "+refs/heads/${Branch}:refs/remotes/origin/${Branch}" }
+            }
+            if (-not $LASTEXITCODE) { $fetched = $true; break }
+            if ($attempt -lt 3) {
+                $delay = $attempt * 5
+                Write-Warn "git fetch failed; retrying in $delay seconds"
+                Start-Sleep -Seconds $delay
+            }
+        }
+        if (-not $fetched) { Fail "git fetch failed after 3 attempts" }
         $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss')
         # Park local work BEFORE switching branches: checkout refuses a dirty
         # tree that conflicts, and the reset below would discard it. Work that

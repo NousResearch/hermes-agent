@@ -19,11 +19,23 @@
  * `hermes_cli/web_server.py` — the ids must match exactly.
  */
 
-/** System stacks reused from presets so "System" choices need no webfont. */
+/** System stacks reused from presets so "System" choices need no webfont.
+ *
+ * CJK fallbacks are appended after the Latin faces: every shipped theme ends
+ * its stack in one of these constants, so Chinese/Japanese/Korean glyphs
+ * resolve to a real CJK face (PingFang on macOS, YaHei on Windows, Noto /
+ * WenQuanYi on Linux) instead of falling through to the generic `monospace`
+ * / `sans-serif` box — which renders CJK as thin, broken glyphs. The Latin
+ * faces earlier in the stack still win for ASCII, so mono themes stay mono.
+ */
 const SYSTEM_SANS =
-  'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+  'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, ' +
+  '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", ' +
+  '"Source Han Sans SC", "WenQuanYi Micro Hei", sans-serif';
 const SYSTEM_MONO =
-  'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace';
+  'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, ' +
+  '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", ' +
+  '"Source Han Sans SC", "WenQuanYi Micro Hei", monospace';
 const SYSTEM_SERIF =
   'Georgia, Cambria, "Times New Roman", Times, serif';
 

@@ -390,9 +390,15 @@ export async function answerApproval(
       APPROVAL_RESPOND_REQUEST_TIMEOUT_MS
     )
   } catch (error) {
-    // Without a request_id the backend resolves the session's current FIFO entry, so
-    // a resend after a landed-but-unacknowledged answer could approve a newer command.
-    if (!isRequestTimeoutError(error) || !request.requestId) {
+    if (isRequestTimeoutError(error) && !request.requestId) {
+      // The answer may have landed; a stale legacy prompt must not be resubmitted
+      // against a newer FIFO entry. Retire it, then restore the server's pending state.
+      clearApprovalRequest(request.sessionId, undefined)
+      void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)
+      throw error
+    }
+
+    if (!isRequestTimeoutError(error)) {
       throw error
     }
 

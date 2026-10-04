@@ -100,6 +100,7 @@ def test_update_completion_installs_before_detaching(monkeypatch):
     """run_completion's child has no controlling terminal; the pre-install runs first, in-session."""
     from hermes_cli import update_completion
 
+    monkeypatch.setattr(update_completion.sys, "platform", "linux")
     calls = []
     monkeypatch.setattr(update_completion.subprocess, "run",
                         lambda argv, **kw: calls.append(("run", argv, kw)))

@@ -1293,7 +1293,7 @@ def _provider_ambiguity_hint(agent: Any, api_error: Exception) -> str:
             return ""
         requested = (getattr(agent, "requested_provider", None) or "").strip().lower()
         resolved = (getattr(agent, "provider", None) or "").strip().lower()
-        if requested not in ("", "auto", "none") or not resolved:
+        if requested != "auto" or not resolved:
             return ""
         from hermes_cli.auth import env_key_provider_candidates
         others = [p for p in env_key_provider_candidates() if p != resolved]

@@ -21,7 +21,17 @@ class ManagedFilesPolicy:
     can_change_path: bool
 
 
-def _fs_path(raw_path: str, *, cwd: str | None = None) -> Path:
+def _resolve_fs_candidate(raw: str, *, cwd: str | None = None) -> Path:
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        base = Path(cwd).expanduser() if cwd is not None else Path.cwd()
+        if not base.is_absolute():
+            raise HTTPException(status_code=400, detail="Session working directory is unavailable")
+        candidate = base / candidate
+    return candidate.resolve(strict=False)
+
+
+def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = True) -> Path:
     raw = str(raw_path or "").strip()
     if not raw:
         raise HTTPException(status_code=400, detail="Path is required")
@@ -36,13 +46,22 @@ def _fs_path(raw_path: str, *, cwd: str | None = None) -> Path:
                     raise ValueError
                 uri_path = f"//{parsed.netloc}{uri_path}"
             raw = urllib.request.url2pathname(uri_path)
-        candidate = Path(raw).expanduser()
-        if not candidate.is_absolute():
-            base = Path(cwd).expanduser() if cwd is not None else Path.cwd()
-            if not base.is_absolute():
-                raise HTTPException(status_code=400, detail="Session working directory is unavailable")
-            candidate = base / candidate
-        return candidate.resolve(strict=False)
+        elif os.name == "nt":
+            # MEDIA links can reuse Git Bash paths; native Path would read /c/ as C:\c\.
+            from tools.environments.local import _msys_to_windows_path
+
+            raw = _msys_to_windows_path(raw)
+        candidate = _resolve_fs_candidate(raw, cwd=cwd)
+        # A remote client hop may percent-encode a path on top of HTTP's own
+        # decoding, so a non-ASCII name can arrive as a literal "%E5%8D%8A..."
+        # string that stats as missing (issue #103425). The verbatim path wins
+        # whenever it exists, so filenames that genuinely contain "%XX" keep
+        # resolving as-is; the unquoted form only rescues the lookup.
+        if decode_fallback and "%" in raw and not candidate.exists():
+            decoded = _resolve_fs_candidate(urllib.parse.unquote(raw), cwd=cwd)
+            if decoded.exists():
+                candidate = decoded
+        return candidate
     except (OSError, RuntimeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid path")
 

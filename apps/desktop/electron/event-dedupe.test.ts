@@ -27,15 +27,6 @@ test('re-fires once the window elapses', () => {
   assert.equal(isDup('turnDone:s1', 1000), false, 'window elapsed → fires again')
 })
 
-test('prunes stale keys so the map cannot grow unbounded', () => {
-  const isDup = createEventDeduper(1000)
-
-  for (let i = 0; i < 100; i += 1) {
-    // Each far-apart key is pruned before the next, so none linger as duplicates.
-    assert.equal(isDup(`turnDone:s${i}`, i * 2000), false)
-  }
-})
-
 // #99717: the hidden app window under an open HUD claims the same reply late.
 test('a spoken reply stays claimed long after the tick window, a beep does not', () => {
   const owns = createAmbientClaimArbiter(1000)

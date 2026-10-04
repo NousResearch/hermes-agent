@@ -8,18 +8,15 @@ Writes ``website/static/api/plugin-stars.json``::
 ``extract-plugins.py`` merges these into ``plugins.json`` so the catalog page can rank
 entries by stars.
 
-Rate-limit discipline (the whole point of this file): the docs site deploys many times a
-day and GitHub's per-installation API budget is shared with every other workflow. So this
-script NEVER calls the GitHub API unless the cache is stale:
+Rate-limit discipline follows the skills-index rule: GitHub is only ever consulted from the
+scheduled ``skills-index.yml`` run (twice daily, ``--probe``), which uploads the result as an
+artifact. Docs deploys run with ``--reuse-only`` and NEVER touch the API: they take the
+scheduled artifact when given one, else the live site's copy (one CDN GET), else whatever is
+on disk, else an empty map (the page then ranks alphabetically).
 
-1. Download the live site's current ``plugin-stars.json`` (one CDN GET, not the API).
-2. If its ``fetched_at`` is younger than ``--max-age-hours`` (default 24), write it back to
-   disk unchanged and exit. Zero GitHub calls.
-3. Otherwise probe ``GET /repos/{owner}/{repo}`` once per unique repo. A 403/429 or any
-   network error keeps the previous count for that repo rather than dropping it.
-
-Local ``npm run build`` without network or token degrades to whatever is on disk / an
-empty map; the page then simply ranks alphabetically.
+The probe itself is ONE GraphQL request for every catalog repo (aliased ``repository``
+fields), not one REST call per repo. Any failure (rate limit, network, bad token) keeps the
+previous counts instead of regressing them to zero.
 """
 
 from __future__ import annotations
@@ -31,12 +28,15 @@ import re
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
-import yaml
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# Run as `python website/scripts/fetch-plugin-stars.py`, so sys.path[0] is this directory and the
+# repo-root `hermes_yaml` shim is not importable without this (broke every scheduled probe).
+sys.path.insert(0, str(REPO_ROOT))
+import hermes_yaml as yaml  # noqa: E402
+
 DEFAULT_CATALOG_DIR = REPO_ROOT / "plugin-catalog"
 DEFAULT_OUTPUT = REPO_ROOT / "website" / "static" / "api" / "plugin-stars.json"
 LIVE_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-stars.json"
@@ -94,66 +94,85 @@ def load_previous(output: Path, live_url: str | None) -> dict:
     return max(candidates, key=lambda d: str(d.get("fetched_at") or ""), default={})
 
 
-def is_fresh(previous: dict, max_age: timedelta, now: datetime) -> bool:
-    try:
-        fetched = datetime.fromisoformat(str(previous.get("fetched_at")))
-    except (TypeError, ValueError):
-        return False
-    if fetched.tzinfo is None:
-        fetched = fetched.replace(tzinfo=timezone.utc)
-    return now - fetched < max_age
+_GRAPHQL_URL = "https://api.github.com/graphql"
+# Repository aliases per GraphQL request. One request for the whole catalog exceeded GitHub's
+# per-query resource limit at ~300 repos: partial data + an error, stale counts kept silently.
+_BATCH = 100
 
 
-def probe_stars(slugs: list[str], previous: dict[str, int], token: str | None) -> dict[str, int]:
-    """One ``GET /repos/{slug}`` each; on any failure keep the previous count (never regress to 0)."""
-    headers = {"Accept": "application/vnd.github+json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+def _graphql(query: str, token: str) -> dict:
+    req = urllib.request.Request(
+        _GRAPHQL_URL, data=json.dumps({"query": query}).encode("utf-8"), method="POST",
+        headers={"User-Agent": "hermes-agent-docs", "Authorization": f"Bearer {token}",
+                 "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30.0) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def stars_query(slugs: list[str]) -> str:
+    fields = "\n".join(
+        f'r{i}: repository(owner: {json.dumps(slug.split("/", 1)[0])}, name: {json.dumps(slug.split("/", 1)[1])})'
+        " { stargazerCount }"
+        for i, slug in enumerate(slugs))
+    return "query {\n" + fields + "\n}"
+
+
+def probe_stars(slugs: list[str], previous: dict[str, int], token: str | None) -> tuple[dict[str, int], bool]:
+    """GraphQL probe in ``_BATCH``-sized requests -> ``(stars, probed)``. On failure keep every previous
+    count (never regress to 0) and report ``probed=False`` so the caller does not restamp
+    ``fetched_at`` over counts that are days old (#118113)."""
+    kept = {s: previous[s] for s in slugs if s in previous}
+    if not slugs:
+        return {}, True
+    if not token:
+        _log("no GITHUB_TOKEN; keeping previous counts without probing")
+        return kept, False
     stars: dict[str, int] = {}
-    rate_limited = False
-    for slug in slugs:
-        if rate_limited:
-            if slug in previous:
-                stars[slug] = previous[slug]
-            continue
+    for start in range(0, len(slugs), _BATCH):
+        batch = slugs[start:start + _BATCH]
         try:
-            data = _http_json(f"https://api.github.com/repos/{slug}", headers)
-            stars[slug] = int(data.get("stargazers_count") or 0)
-        except urllib.error.HTTPError as e:
-            if e.code in (403, 429):
-                _log(f"rate limited at {slug} (HTTP {e.code}); keeping previous counts for the rest")
-                rate_limited = True
-            else:
-                _log(f"{slug}: HTTP {e.code}; keeping previous count")
-            if slug in previous:
-                stars[slug] = previous[slug]
+            payload = _graphql(stars_query(batch), token)
         except (urllib.error.URLError, OSError, ValueError) as e:
-            _log(f"{slug}: {e}; keeping previous count")
-            if slug in previous:
+            _log(f"GraphQL probe failed ({e}); keeping previous counts")
+            return kept, False
+        data = payload.get("data") or {}
+        for err in payload.get("errors") or []:
+            _log(f"GraphQL: {err.get('message')}")  # e.g. a renamed/deleted repo; its previous count is kept
+        for i, slug in enumerate(batch):
+            node = data.get(f"r{i}")
+            if isinstance(node, dict) and isinstance(node.get("stargazerCount"), int):
+                stars[slug] = node["stargazerCount"]
+            elif slug in previous:
                 stars[slug] = previous[slug]
-    return stars
+    return stars, True
 
 
 def main(catalog_dir: Path = DEFAULT_CATALOG_DIR, output: Path = DEFAULT_OUTPUT,
-         max_age_hours: float = 24.0, force: bool = False, live_url: str | None = LIVE_URL,
-         token: str | None = None) -> int:
-    now = datetime.now(timezone.utc)
+         probe: bool = False, live_url: str | None = LIVE_URL, token: str | None = None) -> int:
     previous = load_previous(output, live_url)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    if not force and is_fresh(previous, timedelta(hours=max_age_hours), now):
-        output.write_text(json.dumps(previous, separators=(",", ":")), encoding="utf-8")
+    if not probe:
+        output.write_text(json.dumps(previous or {"fetched_at": None, "stars": {}},
+                                     separators=(",", ":")), encoding="utf-8")
         print(f"Reused plugin stars from {previous.get('fetched_at')} "
               f"({len(previous.get('stars', {}))} repos, no GitHub calls)")
         return 0
 
     slugs = catalog_slugs(catalog_dir)
     prev_stars = {k: int(v) for k, v in (previous.get("stars") or {}).items() if isinstance(v, (int, float))}
-    stars = probe_stars(slugs, prev_stars, token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
-    fetched_at = now.isoformat() if stars else str(previous.get("fetched_at") or "")
+    stars, probed = probe_stars(slugs, prev_stars, token or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN"))
+    fetched_at = datetime.now(timezone.utc).isoformat() if probed else previous.get("fetched_at")
     output.write_text(json.dumps({"fetched_at": fetched_at, "stars": stars}, separators=(",", ":")),
                       encoding="utf-8")
-    print(f"Probed {len(slugs)} repos, wrote {len(stars)} star counts to {output}")
+    if not probed:
+        # Visible in the run summary: the ranking page would otherwise claim today's date over stale counts.
+        missing = len(slugs) - len(stars)
+        print(f"::warning::plugin star probe failed; reused {len(stars)} cached counts from {fetched_at}, "
+              f"{missing} of {len(slugs)} catalog repos have no star count")
+        print(f"Probe failed; wrote {len(stars)} cached star counts (as of {fetched_at}) to {output}")
+        return 0
+    print(f"Probed {len(slugs)} repos in {-(-len(slugs) // _BATCH)} GraphQL request(s), wrote {len(stars)} star counts to {output}")
     return 0
 
 
@@ -161,9 +180,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog-dir", type=Path, default=DEFAULT_CATALOG_DIR)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--max-age-hours", type=float, default=24.0)
-    parser.add_argument("--force", action="store_true", help="probe GitHub even if the cache is fresh")
+    parser.add_argument("--probe", action="store_true",
+                        help="call GitHub (batched GraphQL requests); only the scheduled skills-index run does this")
     parser.add_argument("--no-live", action="store_true", help="do not consult the live site's cache")
     args = parser.parse_args()
-    sys.exit(main(catalog_dir=args.catalog_dir, output=args.output, max_age_hours=args.max_age_hours,
-                  force=args.force, live_url=None if args.no_live else LIVE_URL))
+    sys.exit(main(catalog_dir=args.catalog_dir, output=args.output, probe=args.probe,
+                  live_url=None if args.no_live else LIVE_URL))

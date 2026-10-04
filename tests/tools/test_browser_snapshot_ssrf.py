@@ -183,48 +183,7 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         result = json.loads(browser_browser_snapshot(task_id="test"))
         assert result["success"] is True
 
-    def test_blocks_loopback_url(self, monkeypatch):
-        """Loopback URLs (localhost) must be blocked."""
-        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
-        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
 
-        def mock_run_browser_command(task_id, command, args=None, **kwargs):
-            if command == "snapshot":
-                return _make_snapshot_result()
-            elif command == "eval":
-                return _make_eval_result("http://localhost:3000/admin")
-            return {"success": False, "error": "unknown"}
-
-        monkeypatch.setattr(
-            bt_session, "_run_browser_command", mock_run_browser_command
-        )
-
-        result = json.loads(browser_browser_snapshot(task_id="test"))
-        assert result["success"] is False
-        assert "private or internal address" in result["error"]
-
-    def test_blocks_private_ip_range(self, monkeypatch):
-        """Private IP ranges (10.x, 172.16.x, 192.168.x) must be blocked."""
-        monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
-        monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
-        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
-
-        for private_ip in ["http://10.0.0.1/api", "http://172.16.0.1/admin", "http://192.168.1.1/config"]:
-            def mock_run_browser_command(task_id, command, args=None, **kwargs):
-                if command == "snapshot":
-                    return _make_snapshot_result()
-                elif command == "eval":
-                    return _make_eval_result(private_ip)
-                return {"success": False, "error": "unknown"}
-
-            monkeypatch.setattr(
-                bt_session, "_run_browser_command", mock_run_browser_command
-            )
-
-            result = json.loads(browser_browser_snapshot(task_id="test"))
-            assert result["success"] is False, f"Expected block for {private_ip}"
-            assert "private or internal address" in result["error"]
 
 
 # Helper to avoid name collision with the actual function

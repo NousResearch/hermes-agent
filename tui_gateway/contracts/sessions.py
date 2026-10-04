@@ -33,6 +33,8 @@ class InflightTurn(Result):
     assistant: str = ""
     streaming: bool = False
     user: str = ""
+    display_kind: str | None = None
+    display_metadata: dict[str, JsonValue] | None = None
     corrections: list[str] | None = None
     correction_offsets: list[int] | None = None
     error: str | None = None
@@ -117,6 +119,9 @@ class SessionCreateParams(ProfileParams):
     cols: int | None = None
     source: str | None = None
     cwd: str | None = None
+    # #52589: provenance for ``cwd`` — true only for a deliberate workspace pick;
+    # an inherited app-global workspace must yield to a named profile's terminal.cwd.
+    cwd_explicit: bool | None = None
     messages: list[SeedMessage] | None = None
     parent_session_id: str | None = None
     title: str | None = None
@@ -124,10 +129,14 @@ class SessionCreateParams(ProfileParams):
     provider: str | None = None
     reasoning_effort: str | None = None
     fast: bool | None = None  # presence is the contract: omitted inherits, true pins priority, false pins normal
+    service_tier: str | None = None
     close_on_disconnect: bool = False
     hidden: bool = False
     room_plumbing: bool = False
     follow_profile_config: bool = False
+    # #65410: stable caller-chosen key so a retried create (response lost in
+    # transit) returns the SAME session instead of a duplicate child.
+    idempotency_key: str | None = None
 
 
 class SessionCreateResult(Result):
@@ -140,6 +149,31 @@ class SessionCreateResult(Result):
 
 method("session.create", params=SessionCreateParams, result=SessionCreateResult,
        doc="Mint a live session (agent builds after the reply); a DB row appears on the first prompt unless seeded.")
+
+
+class SessionBranchStoredParams(ProfileParams):
+    parent_session_id: str = Field(min_length=1)
+    cols: int | None = None
+    source: str | None = None
+    cwd: str | None = None
+    # #65410: the desktop's whole-session branch rides the same create plumbing and
+    # now always sends the caller's stable key (its retry path reuses it). Optional
+    # so an older client that omits it keeps the historic behaviour.
+    idempotency_key: str | None = None
+
+
+class SessionBranchStoredResult(Result):
+    session_id: str
+    stored_session_id: str
+    message_count: int
+    messages_omitted: bool
+    info: SessionLiveInfo
+
+
+method("session.branch_stored", params=SessionBranchStoredParams, result=SessionBranchStoredResult,
+       doc="Whole-session branch of a stored parent: the owning backend reads and copies the transcript, "
+           "which never crosses the wire (a separate method so an older gateway fails loudly, not with an empty "
+           "branch).")
 
 
 # ── session.resume / activate ─────────────────────────────────────────────────────────────────
@@ -155,6 +189,9 @@ class SessionResumeParams(SessionParams):
     omit_messages: bool = False
     eager_build: bool = False
     close_on_disconnect: bool = False
+    # False: render image parts as "[image]" instead of their data URIs — a remote client reads a
+    # transcript in kilobytes instead of re-transmitting every stored attachment (#116511).
+    inline_images: bool = True
 
 
 class SessionResumeResult(LiveSessionSnapshot):
@@ -197,6 +234,7 @@ class SessionListRow(Result):
     preview: str = ""
     started_at: float = 0
     message_count: int = 0
+    live_message_count: int | None = None
     source: str = ""
 
 
@@ -283,7 +321,7 @@ class SessionSetHiddenParams(Params):
     """``session_id`` is a live runtime id first, else a stored id / key / title."""
 
     session_id: str
-    hidden: bool = True
+    hidden: bool
     profile: str | None = None
 
 
@@ -294,6 +332,24 @@ class SessionSetHiddenResult(Result):
 
 method("session.set_hidden", params=SessionSetHiddenParams, result=SessionSetHiddenResult,
        doc="Set/clear hidden (out of the default list, still resumable by its owner) on a session + lineage.")
+
+
+class SessionArchiveParams(Params):
+    """``session_id`` (or its ``session_key`` alias) is a live runtime id first, else a stored id / key / title."""
+
+    session_id: str | None = None
+    session_key: str | None = None
+    archived: bool = True
+    profile: str | None = None
+
+
+class SessionArchiveResult(Result):
+    archived: bool
+    session_key: str
+
+
+method("session.archive", params=SessionArchiveParams, result=SessionArchiveResult,
+       doc="Set/clear archived (soft-hide, messages kept) on a session + lineage; Desktop PATCH parity.")
 
 
 class SessionWorkspaceMoveParams(ProfileParams):
@@ -341,6 +397,9 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 class SessionBranchParams(SessionParams):
     name: str | None = None
     count: int | None = None  # keep only the first N rows of the source history
+    # #65410: the desktop's mid-chat branch retry reuses the SAME key so a
+    # lost-response retry returns the SAME child instead of a duplicate.
+    idempotency_key: str | None = None
 
 
 class SessionBranchResult(Result):
@@ -357,8 +416,34 @@ method("session.branch", params=SessionBranchParams, result=SessionBranchResult,
        doc="Fork a live session into a new stored child that shares the parent's history so far.")
 
 
+class SessionBranchWholeParams(SessionParams):
+    name: str | None = None
+    # #65410: same retry contract as session.branch.
+    idempotency_key: str | None = None
+
+
+class SessionBranchWholeResult(Result):
+    session_id: str
+    stored_session_id: str
+    title: str
+    parent: str
+    message_count: int
+    messages_omitted: bool
+    info: SessionLiveInfo
+
+
+method("session.branch_whole", params=SessionBranchWholeParams, result=SessionBranchWholeResult,
+       doc="session.branch of the whole history without echoing the copied transcript back.")
+
+
+class UndoIntent(WireEnum):
+    RETRY = "retry"
+    UNDO = "undo"
+
+
 class SessionUndoParams(SessionParams):
-    pass
+    # ``retry``: the client resends the dropped turn (Ink /retry), so metrics count a retry, not an undo.
+    intent: UndoIntent | None = None
 
 
 class SessionUndoResult(Result):
@@ -432,8 +517,20 @@ class ContextCategory(Result):
     tokens: int
 
 
+class ContextFileSource(Result):
+    """One row of ``agent.context_file_sources.list_context_file_sources``."""
+
+    label: str
+    path: str
+    chars: int
+    est_tokens: int
+    loaded: bool
+    status: str
+
+
 class SessionContextBreakdownResult(Result):
-    """``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)."""
+    """``agent.context_breakdown.compute_session_context_breakdown`` (empty categories before the agent builds)
+    plus the per-file context manifest (empty until the agent exists)."""
 
     categories: list[ContextCategory]
     context_max: int
@@ -443,6 +540,7 @@ class SessionContextBreakdownResult(Result):
     context_estimated: bool
     context_source: str
     model: str
+    context_files: list[ContextFileSource] = []
 
 
 method("session.context_breakdown", params=SessionContextBreakdownParams, result=SessionContextBreakdownResult,

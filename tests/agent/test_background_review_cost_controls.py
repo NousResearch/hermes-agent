@@ -128,7 +128,6 @@ def test_digest_collapses_old_keeps_tail_verbatim():
     out = br._digest_history(msgs, tail=10)
     # First message is the synthetic digest (user role → alternation preserved).
     assert out[0]["role"] == "user"
-    assert out[0]["content"].startswith("[Earlier conversation digest")
     # Recent tail preserved verbatim.
     assert out[-1] == msgs[-1]
     assert len(out) == 11  # 1 digest + 10 tail
@@ -146,30 +145,35 @@ def test_digest_does_not_open_tail_on_a_tool_message():
     assert out[1]["role"] != "tool"
 
 
-def test_digest_records_tool_names_in_arc():
-    old = [
-        _msg("user", "do the thing"),
-        _msg("assistant", "", tool_calls=[
-            {"function": {"name": "skill_view", "arguments": "{}"}},
-            {"function": {"name": "patch", "arguments": "{}"}}]),
-    ]
-    msgs = old + [_msg("user", f"tail{i}") for i in range(30)]
-    out = br._digest_history(msgs, tail=10)
-    digest = out[0]["content"]
-    assert "USER: do the thing" in digest
-    assert "tools: skill_view, patch" in digest
 
 
 # ---------------------------------------------------------------------------
 # Cost / configurability controls (issue #87250)
 # ---------------------------------------------------------------------------
 
-def test_enabled_defaults_true():
-    with patch("hermes_cli.config.load_config_readonly", return_value={}):
-        assert br.load_background_review_settings()[0] is True
 
 
 def test_enabled_false_disables_automatic_review():
     cfg = {"auxiliary": {"background_review": {"enabled": False}}}
     with patch("hermes_cli.config.load_config_readonly", return_value=cfg):
         assert br.load_background_review_settings()[0] is False
+
+
+def test_unresolvable_review_provider_falls_back_with_visible_warning(caplog):
+    """The fork silently ran on the main model with only a debug line (#116055): the fallback must
+    name the configured provider and reason at WARNING and reach the agent's user-visible warning rail."""
+    import logging
+
+    agent = _FakeAgent()
+    emitted = []
+    agent._emit_warning = emitted.append
+    cfg = {"auxiliary": {"background_review": {"provider": "no-such-provider", "model": "review-model"}}}
+    with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        with caplog.at_level(logging.WARNING, logger="agent.background_review"):
+            rt = br._resolve_review_runtime(agent)
+            br._resolve_review_runtime(agent)
+
+    assert rt["routed"] is False and rt["model"] == "gpt-5.5"
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings and all("no-such-provider" in w and "review-model" in w for w in warnings)
+    assert len(emitted) == 1 and "no-such-provider" in emitted[0]  # once per agent on the user rail

@@ -9,10 +9,10 @@ Hermes uses two kinds of model slots:
 - **Main model** — what the agent thinks with. Every user message, every tool-call loop, every streamed response goes through this model.
 - **Auxiliary models** — smaller side-jobs the agent offloads. Context compression, vision (image analysis), web-page summarization, approval scoring, MCP tool routing, session-title generation, and skill search. Each has its own slot and can be overridden independently.
 
-This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom. To run models on your own machine instead of a cloud provider, see [Local Models](/user-guide/local-models).
+This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom. To run models on your own machine instead of a cloud provider, see [Local Models](./local-models.md).
 
 :::tip Fastest path: Nous Portal
-[Nous Portal](/user-guide/features/tool-gateway) provides 300+ models under one subscription. On a fresh install, run `hermes setup --portal` to log in and set Nous as your provider in one command. Inspect what's wired up with `hermes portal info`.
+[Nous Portal](./features/tool-gateway.md) provides 300+ models under one subscription. On a fresh install, run `hermes setup --portal` to log in and set Nous as your provider in one command. Inspect what's wired up with `hermes portal info`.
 
 - Portal subscribers also get **10% off token-billed providers**.
 :::
@@ -46,6 +46,12 @@ The picker has two columns:
 Type in the filter box to narrow by provider name, slug, or model ID.
 
 Pick a model, hit **Switch**, and Hermes writes it to `~/.hermes/config.yaml` under the `model` section. **This applies to new sessions only** — any chat tab you already have open keeps running whatever model it started with. To hot-swap the current chat, use the `/model` slash command inside it.
+
+### Subscription speed and extended context
+
+Speed is separate from reasoning effort. On supported subscription models, **Fast** requests Priority; **Ultrafast** requests Astra's Ultrafast tier. Selecting one clears the other. The chosen tier is remembered per model and carried into a new chat. The profile default lives under **Settings → Model → Main model → Speed** (`agent.service_tier`: `normal`, `fast` or `ultrafast`); Ultrafast is listed only for models that offer it. A legacy setting can be cleared with **Use standard speed**. An accepted request does not guarantee that OpenAI served the requested tier.
+
+Hermes creates the **GPT-6.1 Sol-900k** choice from an eligible discovered GPT-6.1 Sol model. The `-900k` suffix is a local context choice, removed from the model ID sent to OpenAI. Hermes limits its budget to the account catalog's maximum, and Codex may report a smaller usable context after its own reserve. Use **Refresh models** if a new model is absent. A failed discovery uses short-lived compatibility hints instead of caching them as a successful account catalog.
 
 ### Mid-session switches and context warnings
 
@@ -192,7 +198,17 @@ providers:
       CF-Access-Client-Secret: "yyyy"
 ```
 
-Header values routinely carry credentials — Hermes never logs them. `extra_headers` applies to OpenAI-compatible routes; the `anthropic_messages` and `bedrock_converse` API modes do not use it.
+Header values routinely carry credentials — Hermes never logs them. `extra_headers` applies to OpenAI-compatible routes and to `anthropic_messages` routes (the main client, `/model` switches, rebuilds and auxiliary clients alike); `bedrock_converse` does not use it. A relay behind a WAF that rejects the SDK's default `User-Agent` (403 "Your request was blocked" or a browser-challenge page) is the typical reason to set one — Hermes reports such a 403 as a firewall/CDN block rather than an API-key rejection.
+
+**`session_affinity_header`** — the NAME of a header that carries Hermes' conversation id on every request to that provider (main turn on `chat_completions`, `anthropic_messages` and `codex_responses`, plus auxiliary calls such as compression and titles). Off unless set — Hermes never sends a session identifier to an endpoint that did not ask for one. Session-aware proxies fronting a stateful backend (LiteLLM's `x-litellm-session-id`, self-hosted Claude/OpenAI gateways) otherwise have nothing to correlate an agent loop on and treat nearly every request as a new conversation, re-sending the whole history upstream on each turn. The value is opaque, stable across the turns of one conversation (including compaction), and different for every conversation:
+
+```yaml
+providers:
+  my-proxy:
+    api: http://127.0.0.1:4000/v1
+    api_key: sk-...
+    session_affinity_header: x-litellm-session-id
+```
 
 **`discover_models`** — set to `false` (default `true`) to skip querying the endpoint's `/models` listing and use only the `models` you configured on the entry. Handy for gateways whose model listing is slow, unreliable, or noisy:
 
@@ -361,7 +377,7 @@ hermes config set model.aliases.grok x-ai/grok-4
 
 Both paths feed the same loader (`hermes_cli/model_switch.py`). Entries declared in `model_aliases:` take precedence over `model.aliases:` entries with the same name.
 
-Then `/model fav` or `/model grok` in chat. User aliases shadow built-in short names (`sonnet`, `kimi`, `opus`, etc.). See [Custom model aliases](/reference/slash-commands#custom-model-aliases) for the full reference.
+Then `/model fav` or `/model grok` in chat. User aliases shadow built-in short names (`sonnet`, `kimi`, `opus`, etc.). See [Custom model aliases](../reference/slash-commands.md#custom-model-aliases) for the full reference.
 
 ### `hermes model` subcommand
 

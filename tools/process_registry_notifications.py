@@ -52,6 +52,23 @@ def group_process_notifications(notifications):
 
 
 
+def is_child_process_notification(evt: dict) -> bool:
+    """Raw child process noise, not a delegation or work-closeout deliverable."""
+    if evt.get("type") in {"async_delegation", "async_delegation_work_closeout"}:
+        return False
+    return str(evt.get("owner_task_id") or evt.get("task_id") or "").startswith("sa-")
+
+
+def should_surface_notification(evt: dict, *, surface_child: bool | None = None) -> bool:
+    """Shared policy; callers must first enter the event's owning profile scope."""
+    if not is_child_process_notification(evt):
+        return True
+    if surface_child is None:
+        from tools.process_registry import ProcessRegistry
+        surface_child = ProcessRegistry._surface_child_process_notifications()
+    return surface_child
+
+
 def _format_age(seconds: float) -> str:
     """Human-friendly elapsed string ('18m', '2h3m', '45s')."""
     try:

@@ -22,7 +22,7 @@ from agent.i18n import t
 from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.session import SessionEntry, SessionSource
+from gateway.session import SessionEntry, SessionSource, SessionStore
 from gateway.run_shutdown import _delivery_target_key, _log_suppressed, _notice_target_key, _send_error, _send_failed
 
 # Log-record parity with the origin module.
@@ -263,6 +263,54 @@ class GatewayNotificationsMixin:
             return None
         return target_session_id
 
+    async def _lookup_completion_owner(self, session_id: str, current_session_id: str = ""):
+        """Nonmutating delegation proof shared by preflight and route resolution.
+
+        A current route is an explicit ownership boundary, not a route to repair.
+        Generic parent pointers also describe compression and branches; only
+        ``_delegate_from`` authorizes walking out of an execution transcript.
+        """
+        from gateway.run import _USER_BOUNDARY_END_REASONS
+        session_db = cast(Any, self)._session_db
+        if session_db is None:
+            return "retry", session_id, None
+        seen = set()
+        for hops in range(_MAX_DELEGATE_PROVENANCE_HOPS + 1):
+            if session_id in seen:
+                return "terminal", session_id, None
+            seen.add(session_id)
+            try:
+                row = await session_db.get_session(session_id)
+            except Exception:
+                logger.debug("Completion ownership lookup failed for %s", session_id, exc_info=True)
+                return "retry", session_id, None
+            if row is None:
+                return "terminal", session_id, None
+            # User closure is a boundary at EVERY hop, including execution rows.
+            # Ordinary delegate completion may still follow provenance to its owner.
+            if row.get("ended_at") and row.get("end_reason") in _USER_BOUNDARY_END_REASONS:
+                return "terminal", session_id, row
+            if session_id == current_session_id:
+                return "deliver", session_id, row
+            config = row.get("model_config")
+            try:
+                if isinstance(config, str):
+                    config = json.loads(config)
+            except (TypeError, ValueError):
+                return "terminal", session_id, None
+            if config is None:
+                config = {}
+            if not isinstance(config, dict):
+                return "terminal", session_id, None
+            if "_delegate_from" not in config:
+                verdict = "terminal" if row.get("source") == "subagent" else "deliver"
+                return verdict, session_id, row
+            parent = config["_delegate_from"]
+            if not isinstance(parent, str) or not parent.strip() or hops == _MAX_DELEGATE_PROVENANCE_HOPS:
+                return "terminal", session_id, None
+            session_id = parent
+        return "terminal", session_id, None
+
     async def _resolve_async_delegation_session(
         self, session_entry: SessionEntry, pinned_session_id: str,
     ) -> Optional[SessionEntry]:
@@ -288,76 +336,12 @@ class GatewayNotificationsMixin:
                 "dropping injection (#55578 fail-closed)."
             )
             return None
-        pinned_row = None
-        # Snapshot the run generation before the row lookup awaits: a /stop or /new landing while
-        # the lookup is pending must not let this completion re-point the route afterwards.
+        # Snapshot before ownership awaits: a concurrent /stop or /new wins.
         run_generation = self._current_session_run_generation(session_entry.session_key)
-        try:
-            pinned_row = await session_db.get_session(pinned_session_id)
-        except Exception:
-            logger.debug("Async-delegation parent lookup failed for %s", pinned_session_id, exc_info=True)
-        if pinned_row is None:
-            logger.warning(
-                "Async-delegation completion has unknown spawning session %s; "
-                "dropping injection (#55578 fail-closed).", pinned_session_id,
-            )
-            return None
-        # Delegate rows are execution transcripts, not gateway route owners. A process completion can
-        # be stamped with the child session id even though the human-facing conversation belongs to
-        # `_delegate_from`. Follow that durable provenance before any route verification or mutation;
-        # otherwise switch_session() can end the real parent and rebind the platform chat to an
-        # internal child (#92611).
-        #
-        # Real nesting is bounded by delegation.max_spawn_depth (default 2), so the hop cap only
-        # guards a corrupt/hand-edited chain: without it a single completion event could fan out
-        # into hundreds of sequential get_session() reads before terminating.
-        delegate_chain: set[str] = set()
-        for _ in range(_MAX_DELEGATE_PROVENANCE_HOPS + 1):
-            if pinned_session_id in delegate_chain:
-                logger.warning(
-                    "Async-delegation completion has cyclic delegate provenance at session %s; "
-                    "dropping injection (#92611).", pinned_session_id,
-                )
-                return None
-            delegate_chain.add(pinned_session_id)
-            model_config = pinned_row.get("model_config")
-            if isinstance(model_config, str):
-                try:
-                    model_config = json.loads(model_config)
-                except (TypeError, ValueError):
-                    logger.warning(
-                        "Async-delegation completion has malformed model_config for session %s; "
-                        "dropping injection (#92611).", pinned_session_id,
-                    )
-                    return None
-            if model_config is not None and not isinstance(model_config, dict):
-                logger.warning(
-                    "Async-delegation completion has non-object model_config for session %s; "
-                    "dropping injection (#92611).", pinned_session_id,
-                )
-                return None
-            if not isinstance(model_config, dict):
-                model_config = {}
-            delegate_parent_id = str(model_config.get("_delegate_from") or "").strip()
-            if not delegate_parent_id:
-                break
-            try:
-                delegate_parent_row = await session_db.get_session(delegate_parent_id)
-            except Exception:
-                delegate_parent_row = None
-            if delegate_parent_row is None:
-                logger.warning(
-                    "Async-delegation completion has missing delegate parent %s for child %s; "
-                    "dropping injection (#92611).", delegate_parent_id, pinned_session_id,
-                )
-                return None
-            pinned_session_id = delegate_parent_id
-            pinned_row = delegate_parent_row
-        else:
-            logger.warning(
-                "Async-delegation completion exceeded %d delegate provenance hops (last session %s); "
-                "dropping injection (#92611).", _MAX_DELEGATE_PROVENANCE_HOPS, pinned_session_id,
-            )
+        verdict, pinned_session_id, pinned_row = await self._lookup_completion_owner(
+            pinned_session_id, session_entry.session_id,
+        )
+        if verdict != "deliver" or pinned_row is None:
             return None
         target_session_id = pinned_session_id
         follows_compression = False
@@ -1232,6 +1216,9 @@ class GatewayNotificationsMixin:
         watch_events = _drain_gateway_watch_events(completion_queue)
         for evt in watch_events:
             async with self._completion_event_scope(evt):
+                from tools.process_registry_notifications import should_surface_notification
+                if not should_surface_notification(evt):
+                    continue
                 if self._load_background_notifications_mode() == "off":
                     continue
                 synth_text = _format_gateway_process_notification(evt)
@@ -1475,7 +1462,7 @@ class GatewayNotificationsMixin:
                 self._completion_deliveries_inflight.add(identity)
             return seen
 
-    async def _classify_completion_target(self, parent_session_id: str) -> str:
+    async def _classify_completion_target(self, parent_session_id: str, session_key: str = "") -> str:
         """Classify an async-completion target before adapter acceptance: ``"deliver"`` (spawning
         session live or compression-rotated with a live continuation; the resolver still retargets),
         ``"terminal"`` (parent gone for good — unknown / user boundary like /new; drop the durable row
@@ -1484,13 +1471,20 @@ class GatewayNotificationsMixin:
         session_db = getattr(self, "_session_db", None)
         if session_db is None:
             return "retry"
-        try:
-            parent = await session_db.get_session(parent_session_id)
-        except Exception:
-            logger.debug("Async-completion pre-flight parent lookup failed for %s", parent_session_id, exc_info=True)
-            return "retry"
-        if parent is None:
-            return "terminal"
+        entry = None
+        if session_key:
+            try:
+                session_store = cast(SessionStore, getattr(self, "session_store"))
+                await asyncio.to_thread(session_store._ensure_loaded)
+                entry = session_store._entries.get(session_key)
+            except Exception:
+                logger.debug("Completion route lookup failed for %s", session_key, exc_info=True)
+                return "retry"
+        verdict, parent_session_id, parent = await self._lookup_completion_owner(
+            parent_session_id, entry.session_id if entry else "",
+        )
+        if verdict != "deliver" or parent is None:
+            return verdict
         if not parent.get("ended_at"):
             return "deliver"
         end_reason = str(parent.get("end_reason") or "")
@@ -1509,6 +1503,10 @@ class GatewayNotificationsMixin:
             return "retry"
         if tip is None or tip.get("ended_at"):
             return "retry"
+        if entry is not None and await self._resolve_compression_lineage_target(
+            session_db, entry, parent_session_id,
+        ) is None:
+            return "terminal"
         return "deliver"
 
     @staticmethod
@@ -1527,7 +1525,7 @@ class GatewayNotificationsMixin:
 
         parent_session_id = str(evt.get("parent_session_id") or "").strip()
         if parent_session_id:
-            verdict = await self._classify_completion_target(parent_session_id)
+            verdict = await self._classify_completion_target(parent_session_id, str(evt.get("session_key") or ""))
             if verdict != "deliver":
                 # Definitively closed targets still need the normal terminal disposition.
                 return verdict == "terminal"
@@ -1590,7 +1588,7 @@ class GatewayNotificationsMixin:
         # can still fail closed inside the message pipeline AFTER the adapter accepted, which would falsely
         # acknowledge the durable row as delivered. Verify the target here, before acceptance, and give
         # drops an honest durable disposition.
-        verdict = await self._classify_completion_target(parent_session_id)
+        verdict = await self._classify_completion_target(parent_session_id, str(evt.get("session_key") or ""))
         if verdict == "terminal":
             if evt_type == "async_delegation":
                 logger.warning(
@@ -1654,6 +1652,9 @@ class GatewayNotificationsMixin:
         self, synth_text: str, evt: dict, *, sibling_claims=(),
     ) -> Optional[bool]:
         from gateway.wake import WakeNotAccepted
+        from tools.process_registry_notifications import should_surface_notification
+        if not should_surface_notification(evt):
+            return None  # Suppressed noise is terminal, not a consumed process result.
         identity = self._completion_delivery_identity(evt)
         claim = self._CompletionClaim()
         accepted = identity_claimed = refused = False
@@ -1796,7 +1797,13 @@ class GatewayNotificationsMixin:
         getattr(self, "_completion_notification_batch_flush_tasks", set()).clear()
 
     async def _enqueue_process_completion_notification(self, synth_text: str, evt: dict) -> Optional[bool]:
-        """Fan in concurrent process completions that share one conversation."""
+        """Fan in policy-admitted process completions with compatible pinned owners."""
+        # Filter each event before it can contaminate (or suppress) a foreground batch.
+        # The shared queue may be drained outside the owning profile's runtime scope.
+        async with self._completion_event_scope(evt):
+            from tools.process_registry_notifications import should_surface_notification
+            if not should_surface_notification(evt):
+                return None
         # Lazy defaults: lifecycle tests build GatewayRunner via object.__new__.
         for attr, default in (
             ("_completion_notification_batches", dict), ("_completion_notification_batch_tasks", dict),
@@ -1808,7 +1815,11 @@ class GatewayNotificationsMixin:
                 setattr(self, attr, default())
         if self._completion_notification_batches_stopping:
             return False
-        key = self._event_route_key(evt, self._COMPLETION_BATCH_KEY_FIELDS)
+        # A route key alone is not ownership: /new can leave old and new pins
+        # in the same queue. Never settle one pin on another pin's acceptance.
+        key = self._event_route_key(
+            evt, (*self._COMPLETION_BATCH_KEY_FIELDS, "parent_session_id", "origin_session_id"),
+        )
         future = asyncio.get_running_loop().create_future()
         self._completion_notification_batches.setdefault(key, []).append((synth_text, evt, future))
         if key not in self._completion_notification_batch_tasks:
@@ -1862,6 +1873,10 @@ class GatewayNotificationsMixin:
         for evt in group:
             synth_text = _format_gateway_process_notification(evt)
             if not synth_text:
+                continue
+            parent = str(evt.get("parent_session_id") or "")
+            if parent and await self._classify_completion_target(parent, str(evt.get("session_key") or "")) == "terminal":
+                await self._deliver_completion_notification(synth_text, evt)
                 continue
             identity = self._completion_delivery_identity(evt)
             if identity is not None and self._completion_identity_seen(identity):
@@ -2061,6 +2076,8 @@ class GatewayNotificationsMixin:
             "type": "completion",
             "session_id": session_id,
             **{k: watcher.get(k, "") for k in _WATCHER_ROUTE_FIELDS},
+            "owner_task_id": getattr(session, "owner_task_id", "") or "",
+            "task_id": getattr(session, "task_id", "") or "",
             "message_id": str(watcher.get("message_id") or "").strip() or None,
             "started_at": getattr(session, "started_at", None),
             "command": _redact_gateway_user_facing_secrets(_command),
@@ -2118,7 +2135,7 @@ class GatewayNotificationsMixin:
         the output tail) / all (running updates + final raw) / result (final raw) / error (final raw
         if exit != 0) / off."""
         from tools.process_registry import process_registry
-        from tools.process_registry_notifications import format_process_notification
+        from tools.process_registry_notifications import format_process_notification, should_surface_notification
         session_id = watcher["session_id"]
         interval = watcher["check_interval"]
         platform_name = watcher.get("platform", "")
@@ -2138,6 +2155,16 @@ class GatewayNotificationsMixin:
             session = process_registry.get(session_id)
             if session is None:
                 break
+            async with self._completion_event_scope(watcher):
+                surface = should_surface_notification({
+                    "owner_task_id": getattr(session, "owner_task_id", ""),
+                    "task_id": getattr(session, "task_id", ""),
+                })
+            if not surface:
+                # Recheck live ownership next tick: handoff retains notification intent.
+                if session.exited:
+                    break
+                continue
             if silent:
                 # Still wait for the process to exit so we can log it, but don't push any messages.
                 if session.exited:

@@ -1474,10 +1474,10 @@ def _render_skills_index(
             if name not in seen:
                 seen.add(name)
                 index_lines.append(f"    - {name}: {desc}" if desc else f"    - {name}")
-    from agent.oneshot_footprint import ONESHOT_SKILLS_LOAD_GUIDANCE, is_single_query_session
-    if is_single_query_session():
+    from agent.oneshot_footprint import oneshot_skills_guidance
+    if oneshot_guidance := oneshot_skills_guidance():
         return (
-            ONESHOT_SKILLS_LOAD_GUIDANCE
+            oneshot_guidance
             + "\n<available_skills>\n" + "\n".join(index_lines) + "\n</available_skills>"
             + hidden_note
         )
@@ -1504,9 +1504,9 @@ def _render_skills_index(
     )
 
 
-def _oneshot_prompt_variant() -> bool:
-    from agent.oneshot_footprint import is_single_query_session
-    return is_single_query_session()
+def _oneshot_prompt_variant() -> str:
+    from agent.oneshot_footprint import oneshot_skills_guidance
+    return oneshot_skills_guidance()
 
 
 def _build_skills_system_prompt_inner(

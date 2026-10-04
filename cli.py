@@ -499,6 +499,29 @@ def _arm_exit_watchdog_on_shutdown_signal() -> None:
         _arm_exit_watchdog(timeout_s=base * 2, from_signal=True)
 
 
+def _linger_for_background_review() -> None:
+    """Let the post-turn memory/skill review land before a one-shot process exits.
+
+    Automatic reviews fork on a daemon thread, so a one-shot CLI (``-q``/``-Q``, a kanban
+    worker) exits the moment the turn is delivered and truncates the fork mid-flight — the
+    memories/skills it was meant to consolidate are silently lost. Bounded by
+    ``auxiliary.background_review.linger_timeout_s``. Interactive sessions never linger:
+    there a live user is waiting and the idle-deferral queue owns the timing.
+    """
+    from agent.oneshot_footprint import is_single_query_session
+
+    if not is_single_query_session():
+        return
+    agent = _active_agent_ref
+    if agent is None:
+        return
+    from agent.background_review import drain_background_review
+
+    if drain_background_review(agent):
+        logger.info("One-shot exit linger: background review completed (session=%s)",
+                    getattr(agent, "session_id", None) or "<unknown>")
+
+
 def _run_cleanup(*, notify_session_finalize: bool = True):
     """Run resource cleanup exactly once."""
     global _cleanup_done, _cleanup_in_progress
@@ -508,6 +531,12 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
     _cleanup_in_progress = True
 
     try:
+        # A one-shot process (kanban worker, -q/-Q) must let the post-turn memory/skill
+        # review land BEFORE any teardown closes the aux clients it decodes through. Cron
+        # opts out upstream (skip_background_review), so this is a no-op there. Runs before
+        # the watchdog is armed: the linger's own budget bounds the wait.
+        with suppress(Exception):
+            _linger_for_background_review()
         _arm_exit_watchdog()
         # Reset terminal input modes FIRST: teardown below can take seconds and a later
         # step raising must not skip the reset. No-op unless the TUI ran.

@@ -445,6 +445,47 @@ and tools not listed here remain denied. Keep the list narrow and prefer tools
 that stage a proposal for human review rather than applying external or
 destructive changes directly. The default is an empty list.
 
+### A standing focus for automatic reviews (`focus`)
+
+`/refine <instructions>` points one review at what you care about. `focus` does
+the same for every automatic review, so a profile can keep asking one question
+of its own work:
+
+```yaml
+auxiliary:
+  background_review:
+    focus: >-
+      If this session ran a recurring workflow, note what it cost (model calls,
+      tool calls, external API requests, wall time) and whether the same accuracy
+      is reachable faster or cheaper. Patch the workflow's skill with any cheaper
+      method that keeps every verification guard.
+```
+
+It is appended after the review instructions (the replayed conversation and its
+prompt cache are untouched). An explicit `/refine` focus replaces it for that
+review. Unset by default.
+
+### One-shot runs (`-q` / `-Q`)
+
+A one-shot process exits as soon as its answer is printed, and the review runs
+on a daemon thread, so without help the review is cut off mid-flight. On exit a
+one-shot run now waits for an in-flight review, bounded by `linger_timeout_s`
+(default 240; `0` restores the old exit-at-once behaviour). With `-Q` the
+review's summary goes to `agent.log`, never to stdout.
+
+By default a one-shot run also hides `skill_manage` and never triggers the
+turn-count memory nudge: most `-q` runs have no later session to learn for. When
+yours do (an orchestrator that resumes the same session once per task wake, a
+worker that keeps its identity across runs), opt in:
+
+```yaml
+auxiliary:
+  background_review:
+    oneshot_learning: true           # keep skill_manage; review memory after a substantive run
+    oneshot_min_tool_calls: 10       # "substantive": tool calls in the run (default: the skill nudge interval)
+    linger_timeout_s: 240
+```
+
 ### Local models: reviews wait for an idle GPU (`defer`)
 
 On a cloud provider the review finishes in seconds and runs alongside

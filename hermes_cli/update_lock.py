@@ -491,14 +491,20 @@ def _is_ancestor_pid(pid: int) -> bool:
 
 @dataclass(frozen=True)
 class UpdateHolder:
-    """A confirmed-live update holding the lock, or the reason a claim was refused."""
+    """A confirmed-live update holding the lock, or the reason a claim was refused.
+
+    ``held``: the marker's identities are dead but the checkout kernel lock is still held (a
+    killed updater's completion/build child or git still runs) — the update is NOT over; the
+    hand-off scripts' ``held`` verdict."""
 
     pid: int
     age_seconds: float
     reason: str | None = None
+    held: bool = False
 
 
 _U32_MAX = 0xFFFFFFFF
+_U64_MAX = 0xFFFFFFFFFFFFFFFF
 _INT_LINE = re.compile(r"[0-9]+", re.ASCII)
 _CT_VALUE = re.compile(r"[0-9]+(?:\.[0-9]+)?", re.ASCII)
 _CT_LINE = re.compile(r"ct:([0-9]+(?:\.[0-9]+)?)", re.ASCII)
@@ -553,22 +559,34 @@ class _Marker:
         return (body + "".join(f"run:{run}\n" for run in self.runs)).encode()
 
 
+def _bounded_int(text: str, limit: int) -> int | None:
+    """ASCII digits whose value fits ``limit`` (u32 pid, u64 started_at — Rust's ``parse``), else
+    None. Leading zeros are fine; the significant digits are counted BEFORE ``int()``, which
+    refuses past 4300 digits — an oversized field is malformed, never an exception."""
+    if not _INT_LINE.fullmatch(text):
+        return None
+    significant = text.lstrip("0") or "0"
+    if len(significant) > len(str(limit)):
+        return None
+    value = int(significant)
+    return value if value <= limit else None
+
+
 def _parse_marker(raw: bytes, *, mtime: float | None = None) -> _Marker:
     """Contract A2 + A7 rule 7, identical in every reader (Rust ``marker.rs``, Electron, the
     hand-off scripts; ``tests/fixtures/update_marker_corpus.json``): BOM, CRLF and surrounding
-    spaces/tabs tolerated; line 1 pid (u32) and line 2 started_at are integers or the marker is
+    spaces/tabs tolerated; line 1 pid (u32) and line 2 started_at (u64) are integers or the marker is
     MALFORMED (dead: ``started_at`` None); a bad line 3 makes it v1; lines 4+ are tagged — the
     first well-formed ``delegate:<pid> ct:<ct>`` and every ``run:<id>`` — anything else ignored."""
     text = raw.decode("utf-8", errors="replace").removeprefix("\ufeff")
     lines = [line.removesuffix("\r").strip(" \t") for line in text.split("\n")]
     lines += [""] * (3 - len(lines))
-    pid = int(lines[0]) if _INT_LINE.fullmatch(lines[0]) else -1
-    if pid > _U32_MAX:
-        pid = -1
-    started_at = int(lines[1]) if pid >= 0 and _INT_LINE.fullmatch(lines[1]) else None
+    pid = _bounded_int(lines[0], _U32_MAX)
+    started_at = _bounded_int(lines[1], _U64_MAX) if pid is not None else None
+    pid = -1 if pid is None else pid
     ct = _CT_LINE.fullmatch(lines[2])
     delegate = next((m for m in map(_DELEGATE_LINE.fullmatch, lines[3:])
-                     if m and int(m.group(1)) <= _U32_MAX), None)
+                     if m and _bounded_int(m.group(1), _U32_MAX) is not None), None)
     runs = tuple(m.group(1) for m in map(_RUN_LINE.fullmatch, lines[3:]) if m)
     in_flight = not raw and mtime is not None and time.time() - mtime < EMPTY_MARKER_GRACE_SECONDS
     return _Marker(
@@ -811,33 +829,50 @@ def _live_partners(marker: _Marker) -> list[int]:
     return partners
 
 
-def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
+def read_live_update(*, path: Path | None = None, install_root: Path | str | None = None) -> UpdateHolder | None:
     """Return the live update holding the marker, or ``None``.
 
-    Absent, unreadable, malformed and dead-owner all mean "no live update". A dead marker is
-    reclaimed — judged again and removed inside the marker mutex, so a claim published after
-    our first read is never the one deleted. Never raises.
+    Absent, unreadable, malformed and dead-owner all mean "no live update" — unless the
+    checkout kernel lock of ``install_root`` (default: this checkout) is held: then a killed
+    updater's tree (its completion, build or git) still runs, the marker is kept, and the
+    answer is a ``held`` holder (R6; ``marker.sh``/``marker.ps1`` answer ``held`` too). Otherwise
+    a dead marker is reclaimed — judged again and removed inside the marker mutex, so a claim
+    published after our first read is never the one deleted. Never raises.
     """
     marker = path or update_marker_path()
-    parsed = _read_marker(marker)
-    if parsed is None:
-        return None
-    live = parsed.live_pid()
-    if live is None:
-        _reclaim_dead(marker)
-        return None
-    return UpdateHolder(pid=live, age_seconds=parsed.age() if parsed.started_at is not None else 0.0)
+    try:
+        parsed = _read_marker(marker)
+        if parsed is None:
+            return None
+        live = parsed.live_pid()
+        if live is not None:
+            return UpdateHolder(pid=live, age_seconds=parsed.age() if parsed.started_at is not None else 0.0)
+        if _reclaim_dead(marker, install_root) == "held":
+            return UpdateHolder(pid=0, age_seconds=max(parsed.age(), 0.0) if parsed.started_at is not None else 0.0,
+                                held=True)
+    except Exception as exc:  # "never raises": an unreadable state is no live update
+        logger.debug("Could not judge update marker %s: %s", marker, exc)
+    return None
 
 
-def _reclaim_dead(path: Path) -> None:
+def _reclaim_dead(path: Path, install_root: Path | str | None = None) -> str:
+    """Remove a dead marker under the mutex: ``reclaimed`` | ``held`` (dead, but the checkout lock
+    is held, so it is kept) | ``live`` (a claim appeared) | ``absent`` | ``busy``."""
     try:
         with marker_mutex(path):
             current = _read_marker(path)
-            if current is not None and current.live_pid() is None:
-                with suppress(FileNotFoundError):
-                    path.unlink()
+            if current is None:
+                return "absent"
+            if current.live_pid() is not None:
+                return "live"
+            if checkout_lock_held(install_root):
+                return "held"
+            with suppress(FileNotFoundError):
+                path.unlink()
+            return "reclaimed"
     except OSError as exc:  # MarkerBusy included: someone else is deciding right now
         logger.debug("Left update marker %s for its current mutator: %s", path, exc)
+        return "busy"
 
 
 def legacy_profile_claims(root: Path | None = None) -> list[UpdateHolder]:
@@ -873,6 +908,8 @@ def describe_holder(holder: UpdateHolder | None) -> str:
     minutes, seconds = divmod(int(max(0 if holder is None else holder.age_seconds, 0)), 60)
     elapsed = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
     who = f", process {holder.pid}" if holder and holder.pid else ""
+    if holder is not None and holder.held:
+        who = "; its owner exited but a process it started still holds the checkout"
     return (
         f"✗ Another Hermes update is already running (started {elapsed} ago{who}).\n"
         "\n"
@@ -983,7 +1020,7 @@ def _acquire_checkout(install_root: Path) -> UpdateHolder | None:
     if fd is None:
         return UpdateHolder(pid=0, age_seconds=0.0, reason=f"{path} is not writable ({writable})")
     try:
-        if not _try_lock(fd):
+        if not _lock_with_contention_wait(fd, path):
             os.close(fd)
             if _held_by_our_windows_ancestor(path):
                 # Windows has no fd inheritance: the update tree's children run in the lock
@@ -1002,6 +1039,25 @@ def _acquire_checkout(install_root: Path) -> UpdateHolder | None:
         return UpdateHolder(pid=0, age_seconds=0.0, reason=f"{path} could not be locked ({exc})")
     _HELD = {"path": str(path), "fd": fd, "owned": True, "depth": 1}
     return None
+
+
+# A "held?" probe (marker.sh/marker.ps1 checkout_lock_held, Python checkout_lock_held) takes the
+# lock for microseconds: an updater that collides with one waits this long before "busy" (D17:
+# 257 of 3283 tight-loop acquires failed spuriously with no real holder).
+CHECKOUT_CONTENTION_WAIT_SECONDS = 3.0
+
+
+def _lock_with_contention_wait(fd: int, path: Path) -> bool:
+    if _try_lock(fd):
+        return True
+    if _held_by_our_windows_ancestor(path):
+        return False  # our own update tree holds it and never frees it for us: answer at once
+    deadline = time.monotonic() + CHECKOUT_CONTENTION_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        time.sleep(0.02)
+        if _try_lock(fd):
+            return True
+    return False
 
 
 def _held_by_our_windows_ancestor(path: Path) -> bool:
@@ -1079,6 +1135,21 @@ def _bind_to_kill_on_close_job(proc: subprocess.Popen) -> None:
     import ctypes
     from ctypes import wintypes
 
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    if not kernel32.AssignProcessToJobObject(update_tree_job(), int(proc._handle)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def update_tree_job() -> int:
+    """Windows: this process's kill-on-close job for the update tree (created once, never
+    closed: the handle closes when this process dies, killing every process still in it)."""
+    if _JOBS:
+        return _JOBS[0]
+    import ctypes
+    from ctypes import wintypes
+
     class _Basic(ctypes.Structure):
         _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
                     ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
@@ -1096,24 +1167,32 @@ def _bind_to_kill_on_close_job(proc: subprocess.Popen) -> None:
     kernel32.CreateJobObjectW.restype = wintypes.HANDLE
     kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
     kernel32.SetInformationJobObject.restype = wintypes.BOOL
-    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
-    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     job = kernel32.CreateJobObjectW(None, None)  # unnamed, non-inheritable: only we hold it
     if not job:
         raise ctypes.WinError(ctypes.get_last_error())
     limits = _Extended()
     # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK
     limits.BasicLimitInformation.LimitFlags = 0x2000 | 0x0800
-    if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)) \
-            or not kernel32.AssignProcessToJobObject(job, int(proc._handle)):
-        raise ctypes.WinError(ctypes.get_last_error())
+    if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+        error = ctypes.get_last_error()
+        kernel32.CloseHandle(job)
+        raise ctypes.WinError(error)
     _JOBS.append(job)  # never closed: the handle closes when this process dies, killing the tree
+    return job
 
 
 def update_in_progress(install_root: Path | str | None = None) -> bool:
     """True while an update owns this install: a LIVE marker or a held checkout lock."""
-    if read_live_update() is not None:
-        return True
+    return read_live_update(install_root=install_root) is not None or checkout_lock_held(install_root)
+
+
+def checkout_lock_held(install_root: Path | str | None = None) -> bool:
+    """True while some process (this one included) holds the checkout kernel lock.
+
+    A probe takes the lock for the microseconds of one try and drops it (closing the fd), the
+    way ``marker.sh::checkout_lock_held`` does; an updater acquiring at that instant waits
+    :data:`CHECKOUT_CONTENTION_WAIT_SECONDS` instead of failing (R6/D17)."""
     path = checkout_lock_path(install_root)
     if _HELD is not None and _HELD["path"] == str(path):
         return True

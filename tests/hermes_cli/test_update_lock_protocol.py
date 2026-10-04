@@ -362,3 +362,106 @@ def test_a_live_legacy_profile_claim_is_honored(tmp_path, monkeypatch):
     lock = UpdateLock(path=root / ".hermes-update-in-progress")
     assert lock.acquire() is True
     lock.release()
+
+
+# --- R6: a dead marker is never reclaimed while the checkout lock is held ---------------------
+
+_LOCK_HOLDER = """
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hermes_cli import update_lock
+# A killed updater's completion child: holds the checkout lock, never wrote the marker.
+assert update_lock._acquire_checkout(Path(sys.argv[2])) is None
+Path(sys.argv[3]).write_text("held", encoding="utf-8")
+time.sleep(120)
+"""
+
+
+def test_dead_marker_is_kept_and_reported_held_while_the_checkout_lock_is_held(tmp_path):
+    from hermes_cli import update_lock
+
+    install = tmp_path / "install"
+    install.mkdir()
+    marker = tmp_path / ".hermes-update-in-progress"
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    marker.write_text(f"{dead.pid}\n{int(time.time())}\nct:1.5\n", encoding="utf-8")
+    holder = _python(tmp_path, _LOCK_HOLDER, install, tmp_path / "ready")
+    try:
+        _wait_for(tmp_path / "ready", holder)
+        verdict = update_lock.read_live_update(path=marker, install_root=install)
+        assert marker.exists(), "a reader deleted the dead marker while the update tree still held the checkout"
+        assert verdict is not None and verdict.held, f"expected the hand-off scripts' 'held', got {verdict!r}"
+    finally:
+        holder.kill()
+        holder.wait()
+    assert update_lock.read_live_update(path=marker, install_root=install) is None
+    assert not marker.exists(), "with the tree gone the dead marker is reclaimed"
+
+
+# --- D17: a "held?" probe never makes a concurrent update fail --------------------------------
+
+_PROBER = """
+import fcntl, os, sys, time
+from pathlib import Path
+path = sys.argv[2]
+end = time.monotonic() + float(sys.argv[3])
+Path(sys.argv[4]).write_text("go", encoding="utf-8")
+n = 0
+while time.monotonic() < end:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        time.sleep(0.0001)  # held for the instant of one `flock -n` probe
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    os.close(fd)
+    n += 1
+    time.sleep(0.001)  # the next probe's process spawn
+print(n)
+"""
+
+
+@posix_only
+def test_held_probe_never_fails_a_concurrent_acquire(tmp_path):
+    from hermes_cli import update_lock
+
+    install = tmp_path / "install"
+    install.mkdir()
+    lock_path = update_lock.checkout_lock_path(install)
+    lock_path.touch()
+    prober = _python(tmp_path, _PROBER, lock_path, 4, tmp_path / "go", stdout=subprocess.PIPE, text=True)
+    _wait_for(tmp_path / "go", prober)
+    attempts = refused = 0
+    try:
+        while prober.poll() is None:
+            attempts += 1
+            if update_lock._acquire_checkout(install) is not None:
+                refused += 1
+            else:
+                update_lock._release_checkout()
+    finally:
+        prober.kill()
+        prober.wait()
+    assert attempts > 50
+    assert refused == 0, f"{refused}/{attempts} acquires failed against a probe with no real holder"
+
+
+# --- oversized numeric marker fields never raise ---------------------------------------------
+
+def test_oversized_marker_numbers_never_raise_and_are_reclaimed(tmp_path):
+    from hermes_cli import update_lock
+
+    install = tmp_path / "install"
+    install.mkdir()
+    marker = tmp_path / ".hermes-update-in-progress"
+    for text in ("1" * 5000 + "\n1\nct:1.5\n", "4242\n" + "9" * 5000 + "\nct:1.5\n",
+                 "4242\n1\nct:1.5\ndelegate:" + "7" * 5000 + " ct:1.5\n"):
+        marker.write_text(text, encoding="utf-8")
+        assert update_lock.read_live_update(path=marker, install_root=install) is None
+        marker.write_text(text, encoding="utf-8")
+        lock = UpdateLock(path=marker, install_root=install)
+        assert lock.acquire() is True, lock.holder
+        lock.release()

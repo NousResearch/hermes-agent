@@ -1,0 +1,22 @@
+name: antigravity-oauth-plus
+repo: https://github.com/taylorwtf/hermes-antigravity-oauth-plus
+sha: 33a82182303684a40b6ce1e0bd310ac8c2c29682
+version: "0.2.0"
+title: Antigravity OAuth Plus
+description: "Google Antigravity for Hermes with live account model discovery, Hermes-native context handling, cached quota in /usage, and an opt-in five-hour/weekly reset dock."
+maintainer: taylorwtf
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/taylorwtf/hermes-antigravity-oauth-plus/blob/33a82182303684a40b6ce1e0bd310ac8c2c29682/README.md
+screenshots:
+  - https://raw.githubusercontent.com/taylorwtf/hermes-antigravity-oauth-plus/33a82182303684a40b6ce1e0bd310ac8c2c29682/docs/usage-widget-redacted.png
+known_issues:
+  - "The provider reuses the official agy CLI credential store through the inherited isolated-HOME symlink/hardlink/copy fallback; see the README security disclosure for maintainer review."
+  - "Native /usage reads cached quota; refresh explicitly. The optional TUI widget requires explicit profile-local setup."
+  - "Unknown model context uses Hermes' native fallback and is not an authoritative Antigravity limit."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

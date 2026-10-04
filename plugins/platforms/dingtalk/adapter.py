@@ -605,35 +605,56 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     async def _resolve_outbound_endpoint(
         self, chat_id: str
-    ) -> tuple[str, dict[str, Any]]:
+    ) -> Optional[tuple[str, dict[str, Any]]]:
         """Determine the robot message endpoint and target payload for a chat.
 
-        Uses the same heuristic as ``get_chat_info`` to distinguish group vs
-        DM conversations.  For DMs without a cached user ID, falls back to
-        the group send endpoint with a logged warning.
+        Group conversations always use ``groupMessages/send`` keyed by the
+        ``openConversationId``; 1:1 conversations use ``oToMessages/batchSend``
+        addressed to the inbound sender's staff id.  A DM whose staff id is not
+        in the per-chat inbound context returns ``None`` so the caller fails
+        closed: ``groupMessages/send`` answers HTTP 400 for Stream Mode robots
+        on 1:1 chats, and ``batchSend`` with an arbitrary member's id would
+        leak group media into their private DMs.
         """
-        chat_info = await self.get_chat_info(chat_id)
-        chat_type = str(chat_info.get("type", "dm")).strip().lower()
+        message = self._message_contexts.get(chat_id)
+        if message is not None:
+            # Authoritative conversation type from the inbound message — the
+            # same signal _on_message and _create_and_stream_card use.
+            if str(getattr(message, "conversation_type", "1")) == "2":
+                return (
+                    "https://api.dingtalk.com/v1.0/robot/groupMessages/send",
+                    {"openConversationId": chat_id},
+                )
+            sender_staff_id = str(getattr(message, "sender_staff_id", "") or "")
+            if sender_staff_id:
+                return (
+                    "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend",
+                    {"userIds": [sender_staff_id]},
+                )
+            logger.warning(
+                "[%s] Inbound context for DM chat_id=%s has no "
+                "sender_staff_id; cannot address outbound media.",
+                self.name, chat_id,
+            )
+            return None
 
-        if chat_type == "group":
+        # No inbound context (e.g. after a restart): fall back to the
+        # get_chat_info heuristic. A group-shaped chat needs no recipient id;
+        # a DM-shaped chat without context cannot be addressed via batchSend,
+        # and the same missing-context rule already governs text replies
+        # (send() requires a session webhook from an inbound message).
+        chat_info = await self.get_chat_info(chat_id)
+        if str(chat_info.get("type", "dm")).strip().lower() == "group":
             return (
                 "https://api.dingtalk.com/v1.0/robot/groupMessages/send",
                 {"openConversationId": chat_id},
             )
-
-        # DM — no persistent user-id cache in this adapter, so fall back
-        # to groupMessages/send with a warning so the message still reaches
-        # the user in most group-chat-like DM scenarios.
         logger.warning(
-            "[%s] Cannot determine DM target for outbound media; "
-            "falling back to group send with chat_id as openConversationId. "
-            "chat_id=%s",
+            "[%s] No inbound message context for chat_id=%s; DM media "
+            "requires the sender_staff_id from a preceding inbound message.",
             self.name, chat_id,
         )
-        return (
-            "https://api.dingtalk.com/v1.0/robot/groupMessages/send",
-            {"openConversationId": chat_id},
-        )
+        return None
 
     async def _send_robot_media_message(
         self,
@@ -647,13 +668,23 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not self._http_client:
             return SendResult(success=False, error="HTTP client not initialized")
 
+        resolved = await self._resolve_outbound_endpoint(chat_id)
+        if resolved is None:
+            return SendResult(
+                success=False,
+                error=(
+                    "Cannot send media to a DM without the inbound "
+                    "sender_staff_id (no stored message for this chat)"
+                ),
+            )
+        endpoint, target = resolved
+
         token = await self._get_access_token()
         if not token:
             return SendResult(
                 success=False, error="Failed to obtain access token"
             )
 
-        endpoint, target = await self._resolve_outbound_endpoint(chat_id)
         robot_code = self._robot_code or self._client_id
         if not robot_code:
             return SendResult(
@@ -681,6 +712,22 @@ class DingTalkAdapter(BasePlatformAdapter):
 
             if resp.status_code < 400:
                 resp_data = resp.json()
+                # batchSend can answer 200 with a processQueryKey while still
+                # rejecting or rate-limiting recipients — surface that as a
+                # failure (staff ids are deliberately not echoed into errors).
+                rejected = [
+                    uid for uid in target.get("userIds", [])
+                    if uid in (resp_data.get("invalidStaffIdList") or [])
+                    or uid in (resp_data.get("flowControlledStaffIdList") or [])
+                ]
+                if rejected:
+                    error_msg = (
+                        f"{kind_label.title()} send rejected the DM recipient "
+                        "(invalid or flow-controlled staff id)"
+                    )
+                    logger.warning("[%s] %s", self.name, error_msg)
+                    return SendResult(success=False, error=error_msg)
+
                 # DingTalk robot send returns a processQueryKey on success
                 process_query_key = resp_data.get("processQueryKey")
                 if not process_query_key:

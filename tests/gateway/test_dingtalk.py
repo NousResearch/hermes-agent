@@ -654,14 +654,49 @@ class TestResolveOutboundEndpoint:
         assert target == {"openConversationId": "group-chat-123"}
 
     @pytest.mark.asyncio
-    async def test_dm_falls_back_to_group(self):
+    async def test_dm_uses_batch_send_with_sender_staff_id(self):
         from plugins.platforms.dingtalk.adapter import DingTalkAdapter
         adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._message_contexts["user-abc"] = SimpleNamespace(
+            conversation_type="1", sender_staff_id="staff-42"
+        )
         endpoint, target = await adapter._resolve_outbound_endpoint(
             "user-abc"
         )
+        assert "oToMessages/batchSend" in endpoint
+        assert target == {"userIds": ["staff-42"]}
+
+    @pytest.mark.asyncio
+    async def test_dm_without_sender_staff_id_fails_closed(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._message_contexts["user-abc"] = SimpleNamespace(
+            conversation_type="1", sender_staff_id=""
+        )
+        resolved = await adapter._resolve_outbound_endpoint("user-abc")
+        assert resolved is None
+
+    @pytest.mark.asyncio
+    async def test_dm_without_inbound_context_fails_closed(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        resolved = await adapter._resolve_outbound_endpoint("user-abc")
+        assert resolved is None
+
+    @pytest.mark.asyncio
+    async def test_group_with_stored_context_never_uses_batch_send(self):
+        """Group media must never route to batchSend (DM-leak safety rule)."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._message_contexts["group-chat-123"] = SimpleNamespace(
+            conversation_type="2", sender_staff_id="staff-42"
+        )
+        endpoint, target = await adapter._resolve_outbound_endpoint(
+            "group-chat-123"
+        )
         assert "groupMessages/send" in endpoint
-        assert target == {"openConversationId": "user-abc"}
+        assert "batchSend" not in endpoint
+        assert target == {"openConversationId": "group-chat-123"}
 
 
 # ===========================================================================
@@ -905,6 +940,115 @@ class TestSendRobotMediaMessage:
         )
         assert result.success is False
         assert "HTTP client not initialized" in result.error
+
+    @pytest.mark.asyncio
+    async def test_dm_without_staff_id_fails_before_network(self):
+        """A context-less DM must fail closed without touching the wire."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._client_id = "test-client-id"
+        adapter._http_client = AsyncMock()
+        adapter._get_access_token = AsyncMock(return_value="token")
+
+        result = await adapter._send_robot_media_message(
+            "user-abc",
+            msg_key="sampleImageMsg",
+            msg_param={"photoURL": "mid-1"},
+            kind_label="image",
+        )
+        assert result.success is False
+        assert "sender_staff_id" in result.error
+        adapter._http_client.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_batch_send_success(self):
+        """DM media posts to oToMessages/batchSend with userIds=[staff id]."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._client_id = "test-client-id"
+        adapter._http_client = AsyncMock()
+        adapter._get_access_token = AsyncMock(return_value="token")
+        adapter._message_contexts["user-abc"] = SimpleNamespace(
+            conversation_type="1", sender_staff_id="staff-42"
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"processQueryKey": "pqk-dm-1"}
+        adapter._http_client.post = AsyncMock(return_value=mock_resp)
+
+        result = await adapter._send_robot_media_message(
+            "user-abc",
+            msg_key="sampleImageMsg",
+            msg_param={"photoURL": "mid-1"},
+            kind_label="image",
+        )
+        assert result.success is True
+        assert result.message_id == "pqk-dm-1"
+        call = adapter._http_client.post.call_args
+        assert "oToMessages/batchSend" in call.args[0]
+        assert call.kwargs["json"]["userIds"] == ["staff-42"]
+
+    @pytest.mark.asyncio
+    async def test_batch_send_invalid_staff_id_fails_closed(self):
+        """200 + processQueryKey but recipient in invalidStaffIdList = failure."""
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._client_id = "test-client-id"
+        adapter._http_client = AsyncMock()
+        adapter._get_access_token = AsyncMock(return_value="token")
+        adapter._message_contexts["user-abc"] = SimpleNamespace(
+            conversation_type="1", sender_staff_id="staff-42"
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "processQueryKey": "pqk-dm-2",
+            "invalidStaffIdList": ["staff-42"],
+            "flowControlledStaffIdList": [],
+        }
+        adapter._http_client.post = AsyncMock(return_value=mock_resp)
+
+        result = await adapter._send_robot_media_message(
+            "user-abc",
+            msg_key="sampleImageMsg",
+            msg_param={"photoURL": "mid-1"},
+            kind_label="image",
+        )
+        assert result.success is False
+        assert "rejected" in result.error
+        # staff ids must not be echoed into user-facing errors
+        assert "staff-42" not in result.error
+
+    @pytest.mark.asyncio
+    async def test_batch_send_flow_controlled_fails_closed(self):
+        from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._client_id = "test-client-id"
+        adapter._http_client = AsyncMock()
+        adapter._get_access_token = AsyncMock(return_value="token")
+        adapter._message_contexts["user-abc"] = SimpleNamespace(
+            conversation_type="1", sender_staff_id="staff-42"
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "processQueryKey": "pqk-dm-3",
+            "invalidStaffIdList": [],
+            "flowControlledStaffIdList": ["staff-42"],
+        }
+        adapter._http_client.post = AsyncMock(return_value=mock_resp)
+
+        result = await adapter._send_robot_media_message(
+            "user-abc",
+            msg_key="sampleImageMsg",
+            msg_param={"photoURL": "mid-1"},
+            kind_label="image",
+        )
+        assert result.success is False
+        assert "rejected" in result.error
 
     @pytest.mark.asyncio
     async def test_token_failure(self):

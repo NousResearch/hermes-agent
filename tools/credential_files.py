@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import os
 import posixpath
+import stat
+import time
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
@@ -17,6 +19,7 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple
 from hermes_cli.config import cfg_get
 from hermes_constants import get_hermes_dir, get_hermes_home
 
+from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
 from agent.skill_utils import EXCLUDED_SKILL_DIRS
 
 try:  # pragma: no cover - exercised via the fail-closed test below
@@ -29,8 +32,8 @@ logger = logging.getLogger(__name__)
 # Session-scoped registry; ContextVar prevents cross-session bleed in the gateway.
 _registered_files_var: ContextVar[Dict[str, str]] = ContextVar("_registered_files")
 
-# Cache for config-based file list (loaded once per process; tests reset it).
-_config_files: List[Dict[str, str]] | None = None
+# Cache for config-based file list, one entry per profile home (tests reset it).
+_config_files: Dict[str, List[Dict[str, str]]] = {}
 # Reused across calls so sanitized skill copies don't accumulate.
 _safe_skills_tempdir: Path | None = None
 
@@ -118,10 +121,14 @@ def register_credential_files(entries: list, container_base: str = "/root/.herme
 
 
 def _load_config_files() -> List[Dict[str, str]]:
-    """Load ``terminal.credential_files`` from config.yaml (cached)."""
-    global _config_files
-    if _config_files is not None:
-        return _config_files
+    """Load ``terminal.credential_files`` from config.yaml (cached per profile home: the
+    multiplexed gateway must never mount the launch profile's credential files into a
+    secondary profile's sandbox)."""
+    from hermes_constants import hermes_home_key
+    home_key = hermes_home_key()
+    cached = _config_files.get(home_key)
+    if cached is not None:
+        return cached
 
     result: List[Dict[str, str]] = []
     try:
@@ -141,8 +148,8 @@ def _load_config_files() -> List[Dict[str, str]]:
     except Exception as e:
         logger.warning("Could not read terminal.credential_files from config: %s", e)
 
-    _config_files = result
-    return _config_files
+    _config_files[home_key] = result
+    return result
 
 
 def get_credential_file_mounts() -> List[Dict[str, str]]:
@@ -229,7 +236,7 @@ def _safe_skills_path(skills_dir: Path) -> str:
 
 def iter_skills_files(container_base: str = "/root/.hermes") -> List[Dict[str, str]]:
     """Per-file entries for all skills files (for backends that upload individually)."""
-    return [_mount(item, f"{container_root}/{item.relative_to(host_dir)}")
+    return [_mount(item, f"{container_root}/{item.relative_to(host_dir).as_posix()}")
             for host_dir, container_root in _skill_dir_roots(container_base)
             for _base, files in _walk_skill_tree(host_dir) for item in files]
 
@@ -237,6 +244,7 @@ def iter_skills_files(container_base: str = "/root/.hermes") -> List[Dict[str, s
 # --- Cache directory mounts (documents, images, audio, videos, screenshots) ---
 
 # (new_subpath, old_name) pairs matching hermes_constants.get_hermes_dir().
+_GENERATED_CACHE = f"cache/{GENERATED_SUBDIR}"
 _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/documents", "document_cache"),
     ("cache/images", "image_cache"),
@@ -246,6 +254,9 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/web", "web_cache"),
     ("cache/delegation", "delegation_cache"),
     ("cache/spillover", "cache/spillover"),  # oversized tool results; host side is canonical
+    # Unswept generated image/video deliverables (#126445) need their own mount/sync
+    # entry or remote backends never see them. No legacy alias exists.
+    (_GENERATED_CACHE, _GENERATED_CACHE),
     # Flat top-level desktop staging dirs (tui_gateway attach RPCs; no legacy alias),
     # mounted so vision/file tools in sandboxes reach uploads and dropped files.
     # Mount it so vision can reach uploads inside sandbox containers (#69575). No legacy alias exists, so
@@ -254,6 +265,13 @@ _CACHE_DIRS: list[tuple[str, str]] = [
     # Mount it so the agent's file tools can read dropped binaries (zip/pdf/...) from inside sandbox
     # containers instead of dangling host paths (#76577).
     ("attachments", "attachments"),
+    # Desktop stages a large plain-text paste as a `.txt` under this Hermes-managed dir
+    # (apps/desktop/electron/composer-paste.ts; `COMPOSER_PASTES_DIRNAME` in
+    # agent/context_references.py) and attaches it as `@file:`. Without a mount/sync
+    # entry, remote execution backends (ssh/daytona/vercel_sandbox) never received the
+    # bytes and `to_agent_visible_cache_path` left the gateway-host path dangling on
+    # the remote host (#110174). No legacy alias, so both tuple slots match.
+    ("composer-pastes", "composer-pastes"),
 ]
 
 
@@ -295,13 +313,31 @@ def _remap_cache_path(path: str, container_base: str, src: str, dst: str, join: 
 
 
 def map_cache_path_to_container(host_path: str, container_base: str = "/root/.hermes") -> Optional[str]:
-    """POSIX container path for a host path under an auto-mounted cache dir, else None."""
-    return _remap_cache_path(host_path, container_base, "host_path", "container_path", lambda root, rel: posixpath.join(root, rel.as_posix()))
+    """POSIX container path for a host path under an auto-mounted cache dir, else None.
+
+    Also matches through symlinks: ``@file:`` expansion hands over RESOLVED paths while the mount roots keep
+    HERMES_HOME's configured spelling, so a symlinked home (``~/.hermes`` -> dotfiles, macOS ``/var`` ->
+    ``/private/var``) left a staged attachment's host path in front of the sandboxed agent (#103147)."""
+    def join(root: str, rel: Path) -> str:
+        return posixpath.join(root, rel.as_posix())
+
+    mapped = _remap_cache_path(host_path, container_base, "host_path", "container_path", join)
+    if mapped is not None:
+        return mapped
+    try:
+        real = Path(host_path).resolve()
+        for mount in get_cache_directory_mounts(container_base=container_base):
+            root = Path(mount["host_path"]).resolve()
+            if real.is_relative_to(root):
+                return join(mount["container_path"], real.relative_to(root))
+    except (OSError, RuntimeError):
+        pass
+    return None
 
 
 def from_agent_visible_cache_path(container_path: str, container_base: str = "/root/.hermes") -> str:
     """Inverse of :func:`to_agent_visible_cache_path`; unchanged unless Docker + cache dir."""
-    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+    if _terminal_backend() != "docker":
         return container_path
     mapped = _remap_cache_path(container_path, container_base, "container_path", "host_path", lambda root, rel: str(Path(root) / rel))
     return mapped if mapped is not None else container_path
@@ -310,6 +346,13 @@ def from_agent_visible_cache_path(container_path: str, container_base: str = "/r
 # Backends whose file-sync lands under the remote home: ``~/.hermes`` is
 # expanded by the remote shell, so it resolves regardless of the actual home.
 _HOME_RELATIVE_BACKENDS = frozenset({"ssh", "daytona", "vercel_sandbox"})
+
+
+def _terminal_backend() -> str:
+    """Active ``TERMINAL_ENV`` through the per-turn terminal scope (a routed multiplex profile's
+    backend, never the launch profile's process env)."""
+    from tools.terminal_scope import terminal_env
+    return (terminal_env("TERMINAL_ENV") or "local").strip().lower()
 
 
 def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.hermes") -> str:
@@ -326,7 +369,7 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
     actual remote home. Previously these backends synced the bytes but still rendered the dangling host path
     (#76577 gap).
     """
-    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+    backend = _terminal_backend()
     if backend in _HOME_RELATIVE_BACKENDS:
         container_base = "~/.hermes"
     elif backend not in ("docker", "modal"):
@@ -344,10 +387,21 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
 
 
 def iter_cache_files(container_base: str = "/root/.hermes") -> List[Dict[str, str]]:
-    """Per-file cache entries (Modal upload/resync); skips symlinks."""
-    return [_mount(item, f"{root}/{item.relative_to(host_dir)}")
-            for host_dir, root in _cache_dir_roots(container_base, create_missing=False)
-            for item in host_dir.rglob("*") if not item.is_symlink() and item.is_file()]
+    """Per-file cache entries (Modal upload/resync); skips symlinks. ``cache/generated`` is
+    never swept, so only its files from the last ``MEDIA_CACHE_MAX_AGE_HOURS`` are synced —
+    otherwise every remote sync would re-walk and upload the whole generation history."""
+    generated_cutoff = time.time() - MEDIA_CACHE_MAX_AGE_HOURS * 3600
+    gen_root = f"{container_base.rstrip('/')}/{_GENERATED_CACHE}"
+    entries: List[Dict[str, str]] = []
+    for host_dir, root in _cache_dir_roots(container_base, create_missing=False):
+        for item in host_dir.rglob("*"):
+            try:
+                st = item.lstat()
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode) and (root != gen_root or st.st_mtime >= generated_cutoff):
+                entries.append(_mount(item, f"{root}/{item.relative_to(host_dir)}"))
+    return entries
 
 
 def clear_credential_files() -> None:

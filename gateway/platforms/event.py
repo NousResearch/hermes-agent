@@ -4,12 +4,21 @@ A leaf module: adapters, helpers and the runner import it, so it must not import
 gateway.platforms.*.
 """
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from gateway.session import SessionSource
+
+# Desktop attachment reference tags prepended by buildContextText before the
+# user's visible text (e.g. "@image:/tmp/foo.png\n\n/moa ask something").
+# Strip these when detecting slash commands so a media-ref prefix does not hide
+# a slash token from MessageEvent.is_command() / get_command().
+# The pattern matches to end-of-line (not just whitespace-bounded) to handle
+# Windows paths that may contain spaces (e.g. "C:\Users\John Doe\image.png").
+_ATTACHMENT_REF_RE = re.compile(r"^(?:@(?:image|file|url):[^\n]+\n?)+", re.IGNORECASE)
 
 
 class MessageType(Enum):
@@ -45,6 +54,18 @@ class MessageEvent:
     source: SessionSource = None
     raw_message: Any = None
     message_id: Optional[str] = None
+    # Delivery-ledger identity for the final send, when it differs from ``message_id``. A queued
+    # (/queue) chain answers the LAST message of the chain, so its final send has to be ledgered
+    # under that message's id. Keyed on the opening event's id instead, two chained turns carrying
+    # the same text collide on one obligation id and the earlier turn's row is overwritten (a
+    # refused first reply then reads as delivered). Reply routing is unaffected: the reply anchor
+    # still comes from this event.
+    ledger_message_id: Optional[str] = None
+    # Reply anchor for the final send when the answer is to a DIFFERENT message than the one that
+    # opened the turn: a successful busy redirect turns the running turn onto the redirecting
+    # message, so its reply must quote that message (#115001). ``_reply_anchor_for_event``
+    # honours this over ``message_id``; None = derive from the event as usual.
+    reply_anchor_override: Optional[str] = None
     # Platform update id (Telegram ``update_id``): ``/restart`` records it so the new gateway
     # advances past it even if PTB's shutdown ACK times out.
     platform_update_id: Optional[int] = None
@@ -74,21 +95,42 @@ class MessageEvent:
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
     # May this event resolve gateway commands / control prompts? Proactive plugin events set False
-    # so untrusted payload text stays conversational. Kept last for positional compat.
+    # so untrusted payload text stays conversational. New fields append after it (positional compat).
     allow_gateway_control: bool = True
+    # Was this message addressed to this bot? False lets a bare silence marker stand (the adapter
+    # knows the message was meant for someone else); None means unknown and keeps the visible
+    # fallback, like True.
+    reply_expected: Optional[bool] = None
 
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
+    # Run-owned final presentation snapshot; never deserialized from ingress metadata.
+    _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+
+    def absorb_reply_expected(self, other: "MessageEvent") -> None:
+        """One turn now answers *other* too: an addressed message wins, then an unknown one."""
+        if self.reply_expected is not True and other.reply_expected is not False:
+            self.reply_expected = other.reply_expected
+
+    def _command_text(self) -> str:
+        """Return the message text with leading Desktop attachment refs stripped.
+
+        Desktop's buildContextText prepends ``@image:<path>``, ``@file:<path>``,
+        or ``@url:<url>`` tags before the user's visible text.  Stripping these
+        lets is_command / get_command / get_command_args work correctly even
+        when the payload is prefixed with one or more media refs.
+        """
+        return _ATTACHMENT_REF_RE.sub("", (self.text or "").lstrip()).lstrip()
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return self.allow_gateway_control and (self.text or "").lstrip().startswith("/")
+        return self.allow_gateway_control and self._command_text().startswith("/")
 
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
         if not self.is_command():
             return None
-        raw = (self.text or "").lstrip().split(maxsplit=1)[0][1:].lower().split("@", 1)[0]
+        raw = self._command_text().split(maxsplit=1)[0][1:].lower().split("@", 1)[0]
         # Reject file paths: valid command names never contain /
         return None if "/" in raw else raw
 
@@ -96,7 +138,7 @@ class MessageEvent:
         """Get the arguments after a command."""
         if not self.is_command():
             return self.text
-        parts = (self.text or "").lstrip().split(maxsplit=1)
+        parts = self._command_text().lstrip().split(maxsplit=1)
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         return args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")

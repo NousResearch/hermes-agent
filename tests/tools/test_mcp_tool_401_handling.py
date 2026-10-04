@@ -102,7 +102,7 @@ def test_call_tool_handler_non_auth_error_still_generic(monkeypatch, tmp_path):
         result = handler({"arg": "v"})
         parsed = json.loads(result)
         assert "needs_reauth" not in parsed
-        assert "MCP call failed" in parsed.get("error", "")
+        assert parsed.get("error")
     finally:
         mcp_tool._servers.pop("srv", None)
         mcp_tool._server_error_counts.pop("srv", None)

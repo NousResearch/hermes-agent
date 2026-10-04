@@ -19,13 +19,17 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
 # VS Code's GitHub App client ID: mints ghu_* tokens exchangeable for Copilot API JWTs (needed for
 # internal-only models / enterprise endpoints). The opencode App ID mints gho_* tokens that 404.
 COPILOT_OAUTH_CLIENT_ID = "Iv1.b507a08c87ecfe98"
-_CLASSIC_PAT_PREFIX = "ghp_"  # rejected by the Copilot API (gho_ / github_pat_ / ghu_ work)
+_CLASSIC_PAT_PREFIX = "ghp_"  # rejected by the Copilot API
+# Token families the Copilot API exchanges. Anything else (a random string in GITHUB_TOKEN) used
+# to pass validation and then fail downstream with an opaque auth error (#12650).
+_SUPPORTED_PREFIXES = ("gho_", "github_pat_", "ghu_")
 COPILOT_ENV_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
 _DEVICE_CODE_POLL_INTERVAL = 5  # seconds
 _DEVICE_CODE_POLL_SAFETY_MARGIN = 3  # seconds
@@ -43,6 +47,10 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
             "  → `copilot login` or `hermes model` to authenticate via OAuth\n"
             "  → A fine-grained PAT (github_pat_*) with Copilot Requests permission\n"
             "  → `gh auth login` with the default device code flow (produces gho_* tokens)")
+    if not token.startswith(_SUPPORTED_PREFIXES):
+        return False, (
+            "Unsupported GitHub token format for the Copilot API. "
+            f"Supported token prefixes: {', '.join(_SUPPORTED_PREFIXES)}.")
     return True, "OK"
 
 
@@ -73,18 +81,22 @@ def resolve_copilot_token() -> tuple[str, str]:
     if token:
         valid, msg = validate_copilot_token(token)
         if not valid:
-            raise ValueError(f"Token from `gh auth token` is a classic PAT (ghp_*). {msg}")
+            raise ValueError(f"Token from `gh auth token` is not usable with Copilot. {msg}")
         return token, "gh auth token"
     return "", ""
 
 
 def _gh_cli_candidates() -> list[str]:
-    """Candidate ``gh`` binary paths, including common Homebrew installs."""
-    candidates: list[str] = [c for c in (shutil.which("gh"),) if c]
-    candidates += [
-        c for c in ("/opt/homebrew/bin/gh", "/usr/local/bin/gh", str(Path.home() / ".local/bin/gh"))
-        if c not in candidates and os.path.isfile(c) and os.access(c, os.X_OK)]
-    return candidates
+    """Every present ``gh`` in probe order: PATH first, then Homebrew and ``~/.local/bin``."""
+    from hermes_platform.resolver import locate_command
+    from hermes_platform.resolver.known_dirs import homebrew_dirs, user_local_bin
+
+    res = locate_command("gh", known_dirs=(*homebrew_dirs(), *user_local_bin()))
+    seen: list[str] = []
+    for cand in res.present:
+        if cand.value not in seen:
+            seen.append(cand.value)
+    return seen
 
 
 # ``gh auth token`` cache (misses too). With no credential store the probe blocks its full 5s on
@@ -256,20 +268,11 @@ def _read_jwt_store(path: Path) -> Optional[dict]:
             logger.debug("Persisted Copilot JWT store exceeds %d bytes; ignoring",
                          _JWT_DISK_MAX_BYTES)
             return None
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = json.loads(path.read_text(encoding="utf-8-sig"))
         return loaded if isinstance(loaded, dict) else None
     except Exception as exc:
         logger.debug("Failed to read persisted Copilot JWT store: %s", exc)
         return None
-
-
-def _write_jwt_store(path: Path, store: dict) -> None:
-    """Atomically write the JWT store (tmp + os.replace), best-effort 0o600."""
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(store), encoding="utf-8")
-    with contextlib.suppress(Exception):
-        os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
 
 
 def _jwt_disk_path() -> Optional[Path]:
@@ -306,7 +309,7 @@ def evict_cached_exchanged_token(raw_token: str) -> None:
     def _evict(path, store):
         if store is not None and fp in store:
             del store[fp]
-            _write_jwt_store(path, store)
+            atomic_json_write(path, store, indent=None, mode=0o600)
 
     _with_jwt_store("evict cached", _evict)
 
@@ -332,7 +335,7 @@ def _save_jwt_to_disk(fp: str, api_token: str, expires_at: float, base_url: Opti
             k: v for k, v in (store or {}).items()
             if isinstance(v, dict) and float(v.get("expires_at", 0) or 0) > now}
         kept[fp] = {"api_token": api_token, "expires_at": expires_at, "base_url": base_url}
-        _write_jwt_store(path, kept)
+        atomic_json_write(path, kept, indent=None, mode=0o600)
 
     _with_jwt_store("persist", _save)
 

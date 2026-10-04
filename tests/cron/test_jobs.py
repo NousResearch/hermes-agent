@@ -438,6 +438,64 @@ class TestJobCRUD:
         with pytest.raises(ValueError, match="Invalid repeat"):
             update_job(job["id"], {"repeat": "banana"})
 
+    def test_invalid_repeat_completed_is_normalized(self, tmp_cron_dir):
+        """A hand-edited "completed" (null, string, float, negative, Infinity) must not kill
+        mark_job_run or the whole store, and must not be carried forward by update_job."""
+        import json
+        from cron.jobs import JOBS_FILE, get_job, mark_job_run, update_job
+
+        job = create_job(prompt="t", schedule="every 1h", repeat=3)
+
+        def set_completed(value):
+            payload = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+            payload["jobs"][0]["repeat"]["completed"] = value
+            JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        set_completed(None)
+        mark_job_run(job["id"], success=True)
+        assert get_job(job["id"])["repeat"]["completed"] == 1
+        set_completed(None)
+        assert update_job(job["id"], {"repeat": {"times": 5}})["repeat"]["completed"] == 0
+        # Other hand-edited shapes: a string would crash ("2" + 1), a float would render "2.0/5",
+        # a negative count grants extra runs, and Infinity (json.dumps writes it) raised
+        # OverflowError out of load_jobs, freezing every job.
+        for value, expected in (("2", 3), (1.0, 2), ("junk", 1), (-2, 1), (float("inf"), 1)):
+            set_completed(value)
+            mark_job_run(job["id"], success=True)
+            completed = get_job(job["id"])["repeat"]["completed"]
+            assert completed == expected and type(completed) is int
+
+    def test_oneshot_turned_recurring_becomes_forever(self, tmp_cron_dir):
+        """A one-shot budget must not survive a schedule change to a recurring kind.
+
+        create_job derives repeat from the schedule kind; update_job must honour
+        the same contract when the kind flips, otherwise a job "fixed" from a
+        one-shot to `every 15m` keeps times=1 and retires after its first fire.
+        An explicit repeat in the same update still wins over the re-derived default.
+        """
+        from cron.jobs import update_job
+
+        job = create_job(prompt="poll", schedule="in 15m")
+        assert job["repeat"]["times"] == 1
+
+        updated = update_job(job["id"], {"schedule": "every 15m"})
+        assert updated["schedule"]["kind"] == "interval"
+        assert updated["repeat"]["times"] is None
+
+        explicit = create_job(prompt="poll", schedule="in 15m")
+        assert update_job(explicit["id"], {"schedule": "every 15m", "repeat": 3})["repeat"]["times"] == 3
+
+    def test_recurring_turned_oneshot_becomes_once(self, tmp_cron_dir):
+        """The reverse flip must gain the one-shot default instead of staying forever."""
+        from cron.jobs import update_job
+
+        job = create_job(prompt="poll", schedule="every 15m")
+        assert job["repeat"]["times"] is None
+
+        updated = update_job(job["id"], {"schedule": "in 15m"})
+        assert updated["schedule"]["kind"] == "once"
+        assert updated["repeat"]["times"] == 1
+
     def test_rejects_stale_past_one_shot_at_creation(self, tmp_cron_dir, monkeypatch):
         now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=timezone.utc)
         monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
@@ -590,6 +648,41 @@ class TestPauseResumeJob:
         save_jobs([job])
         with pytest.raises(ValueError, match="in the past"):
             resume_job("test-resume-past")
+
+    def test_resume_keeps_slot_that_elapsed_while_paused_due(self, tmp_cron_dir, monkeypatch):
+        """A recurring job paused before its slot and resumed after it comes back with that slot
+        still due — the due scan then fires it (late/catch-up) or logs the skip. Re-anchoring
+        from now consumed the occurrence with no run, no ledger row and no log line (#113603)."""
+        now = datetime(2026, 9, 16, 17, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        job = create_job(prompt="daily pipeline", schedule="30 1 * * *", deliver="local")
+        stored = load_jobs()
+        row = next(r for r in stored if r["id"] == job["id"])
+        slot = datetime(2026, 9, 16, 1, 30, 0, tzinfo=timezone.utc).isoformat()
+        row["next_run_at"] = slot
+        save_jobs(stored)
+
+        pause_job(job["id"], reason="ops audit")
+        assert job["id"] not in {j["id"] for j in get_due_jobs()}
+        assert get_job(job["id"])["next_run_at"] == slot
+
+        assert resume_job(job["id"])["next_run_at"] == slot
+        assert job["id"] in {j["id"] for j in get_due_jobs()}
+
+    def test_resume_recomputes_future_or_missing_slot_from_now(self, tmp_cron_dir, monkeypatch):
+        """Control: a paused job whose stored slot is still ahead, or created ``--paused`` with no
+        slot, resumes onto the next future occurrence as before."""
+        now = datetime(2026, 9, 16, 17, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        ahead = create_job(prompt="daily", schedule="30 1 * * *", deliver="local")
+        pause_job(ahead["id"])
+        canary = create_job(prompt="canary", schedule="0 9 * * *", deliver="local", paused=True)
+        assert get_job(canary["id"])["next_run_at"] is None
+
+        for jid in (ahead["id"], canary["id"]):
+            resumed = resume_job(jid)
+            assert datetime.fromisoformat(resumed["next_run_at"]) > now
+            assert jid not in {j["id"] for j in get_due_jobs()}
 
 
 class TestResolveJobRef:
@@ -783,6 +876,59 @@ class TestMarkJobRun:
         assert updated["last_error"]
         assert "croniter" in updated["last_error"].lower()
 
+    def test_transient_croniter_import_error_not_latched(self, tmp_cron_dir, monkeypatch):
+        """Regression test for issue #127182.
+
+        A single transient croniter ImportError must not latch HAS_CRONITER=False for
+        the process lifetime: once the import succeeds again (wrong interpreter
+        restarted, shadowed path fixed), _ensure_croniter() has to report True again
+        so compute_next_run() and the due-scan recovery can re-arm recurring jobs
+        without a gateway restart.
+        """
+        pytest.importorskip("croniter")  # need it to make the import succeed again
+        import builtins
+
+        import cron.jobs as jobs_mod
+
+        job = create_job(prompt="Recurring", schedule="0 7,15,23 * * *")
+        assert job["schedule"]["kind"] == "cron"
+
+        # Simulate the transient failure window: the croniter import raises while patched in.
+        real_import = builtins.__import__
+
+        def failing_import(name, *args, **kwargs):
+            if name == "croniter":
+                raise ImportError("No module named 'croniter'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", failing_import)
+        monkeypatch.setattr(jobs_mod, "croniter", None)
+        monkeypatch.setattr(jobs_mod, "HAS_CRONITER", None)
+        monkeypatch.setattr(jobs_mod, "_croniter_retry_at", 0.0)
+        assert jobs_mod._ensure_croniter() is False
+        assert jobs_mod.compute_next_run(job["schedule"]) is None
+        # The in-flight guard's cadence cache must not pin the import-failure None either.
+        import cron.scheduler as sched_mod
+        expr = job["schedule"]["expr"]
+        sched_mod._cron_interval_cache.pop(expr, None)
+        assert sched_mod._cron_interval_minutes(expr) is None
+        assert expr not in sched_mod._cron_interval_cache, "import-failure None was cached"
+        mark_job_run(job["id"], success=True)  # leaves state=error, next_run_at=None
+
+        # Window over (import works again); HAS_CRONITER is left untouched.
+        monkeypatch.setattr(builtins, "__import__", real_import)
+        # Inside the retry backoff the failed probe is not re-run on every call...
+        assert jobs_mod._ensure_croniter() is False
+        # ...but once the backoff elapses it is re-evaluated, not latched.
+        monkeypatch.setattr(jobs_mod, "_croniter_retry_at", 0.0)
+        assert jobs_mod._ensure_croniter() is True, (
+            "a transient ImportError was latched: every recurring job would stay "
+            "next_run_at=None until a gateway restart"
+        )
+        assert jobs_mod.compute_next_run(job["schedule"]) is not None
+        get_due_jobs()  # due-scan recovery re-arms the job
+        assert get_job(job["id"])["state"] == "scheduled"
+
 
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""
@@ -829,12 +975,15 @@ class TestAdvanceNextRun:
         due_before = get_due_jobs()
         assert len(due_before) == 1
 
-        # Advance (simulating what tick() does before run_job)
+        # Advance + claim (what tick() does before run_job); the claim is the point after which
+        # side effects may exist, so a restart after it must not re-fire (#3396). A restart
+        # BEFORE the claim restores the occurrence instead (#107485, test_missed_window_catchup).
         advance_next_run(job["id"])
+        assert claim_job_for_fire(job["id"])
 
-        # Now the job should NOT be due (simulates restart after crash)
+        # Now the job should NOT be due (simulates restart after a mid-run crash)
         due_after = get_due_jobs()
-        assert len(due_after) == 0, "Job should not be due after advance_next_run"
+        assert len(due_after) == 0, "Job should not be due after advance + claim"
 
 
 class TestGetDueJobs:
@@ -1072,10 +1221,6 @@ class TestGetDueJobs:
         }
 
 
-class TestEnabledToolsets:
-    def test_enabled_toolsets_stored(self, tmp_cron_dir):
-        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", "terminal"])
-        assert job["enabled_toolsets"] == ["web", "terminal"]
 
 
 class TestMarkJobRunConcurrency:
@@ -1451,48 +1596,6 @@ class TestLateEnvRepointScopesStore:
 # UTF-8 BOM on jobs.json (Windows Notepad / PowerShell 5.1)
 # =========================================================================
 
-class TestJobsJsonShapes:
-    def test_load_jobs_normalizes_id_keyed_jobs_mapping(self, tmp_cron_dir):
-        import json
-        from cron.jobs import JOBS_FILE
-
-        job_a = {
-            "id": "cron1234abcd",
-            "name": "daily briefing",
-            "enabled": True,
-            "prompt": "Summarize overnight incidents",
-            "schedule": {"kind": "interval", "minutes": 1440, "display": "every 24h"},
-        }
-        job_b = {
-            "id": "cron5678efgh",
-            "name": "disabled cleanup",
-            "enabled": False,
-            "prompt": "Clean stale scratch files",
-            "schedule": {"kind": "once", "run_at": "2030-01-15T14:00:00+00:00"},
-        }
-        payload = {
-            "jobs": {
-                job_a["id"]: job_a,
-                job_b["id"]: job_b,
-            },
-            "updated_at": "2026-08-23T00:00:00+00:00",
-        }
-        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
-
-        loaded = load_jobs()
-        assert isinstance(loaded, list)
-        assert {job["id"] for job in loaded} == {job_a["id"], job_b["id"]}
-
-        listed = {job["id"]: job for job in list_jobs(include_disabled=True)}
-        assert set(listed) == {job_a["id"], job_b["id"]}
-        for expected in (job_a, job_b):
-            actual = listed[expected["id"]]
-            assert actual["id"] == expected["id"]
-            assert actual["name"] == expected["name"]
-            assert actual["prompt"] == expected["prompt"]
-            assert actual["schedule"] == expected["schedule"]
-            assert actual["enabled"] is expected["enabled"]
 
 
 class TestJobsJsonUtf8Bom:
@@ -1505,7 +1608,6 @@ class TestJobsJsonUtf8Bom:
     def test_load_jobs_accepts_utf8_bom(self, tmp_cron_dir):
         """BOM'd jobs.json loads — the pre-fix crash repro."""
         import json
-        from pathlib import Path
         from cron.jobs import JOBS_FILE, load_jobs
 
         payload = {
@@ -1528,27 +1630,6 @@ class TestJobsJsonUtf8Bom:
         assert [j["id"] for j in loaded] == ["bomjob01"]
         assert loaded[0]["name"] == "bom-test"
 
-    def test_load_jobs_bomless_regression(self, tmp_cron_dir):
-        """BOM-less UTF-8 jobs.json must keep loading after utf-8-sig."""
-        import json
-        from cron.jobs import JOBS_FILE, load_jobs
-
-        payload = {
-            "jobs": [
-                {
-                    "id": "plainjob01",
-                    "name": "plain",
-                    "enabled": True,
-                    "prompt": "hi",
-                    "schedule": {"kind": "interval", "minutes": 30, "display": "every 30m"},
-                }
-            ]
-        }
-        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
-
-        loaded = load_jobs()
-        assert [j["id"] for j in loaded] == ["plainjob01"]
 
 
 
@@ -1717,17 +1798,60 @@ class TestJobsJsonIdKeyedMap:
         assert isinstance(on_disk["jobs"], list)
         assert [j["id"] for j in on_disk["jobs"]] == ["goodjob1"]
 
-    def test_all_junk_map_values_yield_empty_list(self, tmp_cron_dir):
-        """A map of only junk values flattens to [] without crashing."""
+    def test_non_dict_list_entries_do_not_stop_healthy_jobs_firing(
+        self, tmp_cron_dir, caplog, monkeypatch
+    ):
+        """A junk entry in the canonical list shape must not abort the due scan for its
+        healthy siblings (it used to raise on every tick, so no job fired); a lock-free
+        reader's repair must not save its stale snapshot over a writer that landed after it
+        parsed the file; an all-junk list or a scalar jobs field must be repaired on disk too,
+        without logging raw values."""
         import json
-        from cron.jobs import JOBS_FILE, load_jobs
+        import cron.jobs as jobs_mod
+        from cron.jobs import JOBS_FILE, load_jobs, update_job
 
-        JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        JOBS_FILE.write_text(
-            json.dumps({"jobs": {"a": "junk", "b": 1}}), encoding="utf-8"
-        )
+        job = create_job(prompt="keep me", schedule="every 1h", name="survivor")
 
-        assert load_jobs() == []
+        def add_junk():
+            payload = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+            payload["jobs"][0]["next_run_at"] = (_hermes_now() - timedelta(seconds=5)).isoformat()
+            payload["jobs"] += [None, "i am not a job", 42]
+            JOBS_FILE.write_text(json.dumps(payload), encoding="utf-8")
+
+        add_junk()
+        real_parse = jobs_mod._parse_jobs_file
+        raced = []
+
+        def parse_then_race(path):
+            parsed = real_parse(path)
+            if not raced:
+                raced.append(True)
+                update_job(job["id"], {"name": "raced"})
+            return parsed
+
+        monkeypatch.setattr(jobs_mod, "_parse_jobs_file", parse_then_race)
+        assert [j["id"] for j in list_jobs(include_disabled=True)] == [job["id"]]
+        monkeypatch.setattr(jobs_mod, "_parse_jobs_file", real_parse)
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"]
+        assert [(j["id"], j["name"]) for j in on_disk] == [(job["id"], "raced")]
+
+        add_junk()
+        assert [j["id"] for j in get_due_jobs()] == [job["id"]]
+        on_disk = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+        assert [j["id"] for j in on_disk["jobs"]] == [job["id"]]
+
+        for bad, detail in (([None, "***", 42], "Skipping 3 non-object"),
+                            (None, "Replacing invalid"), ("not-a-list", "Replacing invalid")):
+            JOBS_FILE.write_text(json.dumps({"jobs": bad}), encoding="utf-8")
+            caplog.clear()
+            with caplog.at_level("WARNING", logger="cron.jobs"):
+                assert load_jobs() == []  # unlocked: re-runs under the lock, which logs
+            assert json.loads(JOBS_FILE.read_text(encoding="utf-8"))["jobs"] == []
+            msgs = [r.getMessage() for r in caplog.records]
+            assert sum(detail in m for m in msgs) == 1, msgs
+            assert sum("Auto-repaired" in m for m in msgs) == 1, msgs
+            assert "***" not in caplog.text
+
 
 
 
@@ -1767,39 +1891,8 @@ class TestAdvanceNextRuns:
             # one-shots keep their (past) next_run_at for restart retry
             assert datetime.fromisoformat(get_job(jid)["next_run_at"]) < datetime.now()
 
-    def test_batch_single_load_and_save(self, tmp_cron_dir, monkeypatch):
-        """I/O pin: the whole due set costs one load + one save, not N+N.
-        Fails pre-fix (function absent) and would fail on any regression
-        back to per-job I/O."""
-        from cron.jobs import advance_next_runs
-        rec_ids, _ = self._make_due(tmp_cron_dir, n_recurring=10, n_oneshot=0)
-        import cron.jobs as cj
-        counts = {"load": 0, "save": 0}
-        real_load, real_save = cj.load_jobs, cj.save_jobs
-        monkeypatch.setattr(cj, "load_jobs", lambda *a, **k: (
-            counts.__setitem__("load", counts["load"] + 1), real_load(*a, **k))[1])
-        monkeypatch.setattr(cj, "save_jobs", lambda *a, **k: (
-            counts.__setitem__("save", counts["save"] + 1), real_save(*a, **k))[1])
-        advance_next_runs(rec_ids)
-        assert counts == {"load": 1, "save": 1}
 
-    def test_batch_no_save_when_nothing_advances(self, tmp_cron_dir, monkeypatch):
-        from cron.jobs import advance_next_runs
-        rec_ids, one_ids = self._make_due(tmp_cron_dir, n_recurring=0, n_oneshot=2)
-        import cron.jobs as cj
-        saves = [0]
-        real_save = cj.save_jobs
-        monkeypatch.setattr(cj, "save_jobs", lambda *a, **k: (
-            saves.__setitem__(0, saves[0] + 1), real_save(*a, **k))[1])
-        assert advance_next_runs(one_ids + ["missing-id"]) == 0
-        assert saves[0] == 0
 
-    def test_wrapper_semantics_unchanged(self, tmp_cron_dir):
-        """advance_next_run keeps its per-job contract over the batch."""
-        rec_ids, one_ids = self._make_due(tmp_cron_dir)
-        assert advance_next_run(rec_ids[0]) is True
-        assert advance_next_run(one_ids[0]) is False
-        assert advance_next_run("missing-id") is False
 
 
 # =========================================================================

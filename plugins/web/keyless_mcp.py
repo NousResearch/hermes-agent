@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional
@@ -44,6 +45,23 @@ _VENDOR_HINTS = {
 def _is_rate_limitish(message: str) -> bool:
     """Heuristic: does an error message look like free-tier throttling?"""
     return any(marker in (message or "").lower() for marker in _RATE_LIMIT_MARKERS)
+
+
+_AUTH_STATUS_RE = re.compile(
+    r"\b(?:http(?:\s+status)?|status(?:\s+code)?|client\s+error|error(?:\s+code)?)"
+    r"\s*[:=']*\s*(?:401|403)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_search_failover_eligible(message: str) -> bool:
+    """Return whether another anonymous vendor may serve the search.
+
+    Rate limits and structured HTTP 401/403 provider rejections are local to
+    one free search endpoint. Free-text markers are deliberately ignored:
+    vendors may echo the query in an otherwise terminal error.
+    """
+    return _is_rate_limitish(message) or bool(_AUTH_STATUS_RE.search(message or ""))
 
 
 def _fail_msg(vendor: str, kind: str, exc: Any, *, other_backends: bool = True) -> str:
@@ -120,7 +138,12 @@ def use_keyless(name: str, api_key: str) -> bool:
 def _parse_mcp_body(body: str) -> str:
     """First text content item from an MCP tools/call response — plain-JSON bodies
     (Parallel) or SSE ``data: {...}`` lines (Exa). Raises :class:`KeylessMCPError` for
-    JSON-RPC errors and ``isError`` tool results (e.g. Exa's free-tier rate limit)."""
+    JSON-RPC errors and ``isError`` tool results (e.g. Exa's free-tier rate limit).
+
+    SSE frames are split on the SSE line terminators (CRLF, CR, LF) only:
+    ``str.splitlines()`` also breaks on U+0085 / U+2028 / U+2029, which legitimately
+    occur inside CJK page text and would cut a ``data:`` line in two. A parsed envelope with no text is reported as such — it is
+    the vendor's answer, not an unrecognized shape."""
 
     def _from_payload(payload: str) -> Optional[str]:
         payload = payload.strip()
@@ -134,19 +157,32 @@ def _parse_mcp_body(body: str) -> str:
         texts = [c.get("text", "") for c in result.get("content") or [] if isinstance(c, dict)]
         if result.get("isError"):
             raise KeylessMCPError(" ".join(t for t in texts if t) or "MCP tool call failed")
-        return next((str(t) for t in texts if t), None)
+        return next((str(t) for t in texts if t), "")
 
     stripped = body.strip()
     candidates = [stripped] if stripped.startswith("{") else []
-    candidates += [line[len("data: "):] for line in body.splitlines() if line.startswith("data: ")]
+    candidates += [line[len("data: "):] for line in re.split(r"\r\n|\r|\n", body) if line.startswith("data: ")]
+    envelope_seen = False
     for candidate in candidates:
         try:
             text = _from_payload(candidate)
         except json.JSONDecodeError:
             continue
-        if text is not None:
+        if text:
             return text
-    raise KeylessMCPError("Unrecognized MCP response shape")
+        envelope_seen = envelope_seen or text == ""
+    raise KeylessMCPError("MCP response contained no text content" if envelope_seen else "Unrecognized MCP response shape")
+
+
+def _response_text(response: Any) -> str:
+    """Body decoded with the declared charset, else UTF-8. JSON-RPC and SSE bodies are UTF-8 by
+    spec, but ``text/event-stream`` carries no charset and ``requests`` then decodes ``.text`` as
+    ISO-8859-1 — mojibake for every non-ASCII result and, for CJK, stray U+0085 line breaks that
+    made the envelope unparseable."""
+    from requests.utils import get_encoding_from_headers
+    content_type = response.headers.get("Content-Type", "")
+    declared = get_encoding_from_headers({"content-type": content_type}) if "charset=" in content_type.lower() else None
+    return response.content.decode(declared or "utf-8", errors="replace")
 
 
 def mcp_call(url: str, tool: str, arguments: Dict[str, Any], timeout: int = _TIMEOUT_SECONDS) -> str:
@@ -160,8 +196,8 @@ def mcp_call(url: str, tool: str, arguments: Dict[str, Any], timeout: int = _TIM
     except requests.RequestException as exc:
         raise KeylessMCPError(f"request failed: {exc}") from exc
     if response.status_code >= 400:
-        raise KeylessMCPError(f"HTTP {response.status_code}: {response.text[:300]}")
-    return _parse_mcp_body(response.text)
+        raise KeylessMCPError(f"HTTP {response.status_code}: {_response_text(response)[:300]}")
+    return _parse_mcp_body(_response_text(response))
 
 
 # --- Parallel (search.parallel.ai) — JSON text payloads -----------------------
@@ -272,7 +308,7 @@ def _keenable_request(method: str, path: str, **kwargs: Any) -> Dict[str, Any]:
         headers["Content-Type"] = "application/json"
     response = getattr(requests, method)(f"{KEENABLE_API_URL}{path}", headers=headers, timeout=_TIMEOUT_SECONDS, **kwargs)
     if response.status_code >= 400:
-        raise KeylessMCPError((response.text or "").strip() or f"HTTP {response.status_code}")
+        raise KeylessMCPError(_response_text(response).strip() or f"HTTP {response.status_code}")
     return response.json()
 
 
@@ -350,31 +386,32 @@ def _walk_ring(name: str, kind: str, call, throttled) -> tuple:
         if not throttled(result):
             return order, vendor, result, False
         if i + 1 < len(order):
-            logger.info("keyless %s %s throttled; failing over to %s", vendor, kind, order[i + 1])
+            logger.info("keyless %s %s unavailable; failing over to %s", vendor, kind, order[i + 1])
     return order, vendor, result, True
 
 
 def search_with_failover(name: str, query: str, limit: int = 5) -> Dict[str, Any]:
-    """Rate-limit-shaped errors advance to the next vendor, other errors stop the walk
-    (a malformed query fails everywhere). ``data.served_by`` is set when the serving
-    vendor differs from *name*."""
+    """Rate limits and anonymous-endpoint auth/policy rejections advance to the next
+    vendor, other errors stop the walk (a malformed query fails everywhere).
+    ``data.served_by`` is set when the serving vendor differs from *name*."""
 
     def _throttled(result: Dict[str, Any]) -> bool:
-        return not result.get("success") and _is_rate_limitish(result.get("error", ""))
+        return not result.get("success") and _is_search_failover_eligible(result.get("error", ""))
 
     order, vendor, result, exhausted = _walk_ring(name, "search", lambda v: _KEYLESS_SEARCHERS[v](query, limit), _throttled)
     if not order:
         return search_fail(_ALL_PAID_MSG)
     if exhausted:
-        result["error"] = f"{result.get('error', '')} (all keyless vendors throttled: {', '.join(order)})"
+        result["error"] = f"{result.get('error', '')} (all keyless vendors unavailable: {', '.join(order)})"
     elif result.get("success") and vendor != name:
         result.setdefault("data", {})["served_by"] = vendor
     return result
 
 
 def extract_with_failover(name: str, urls: List[str]) -> List[Dict[str, Any]]:
-    """Fails over only when EVERY url in a batch is rate-limit-shaped (partial failures
-    are page problems, returned as-is)."""
+    """Advances to the next ring vendor only when EVERY url in a batch comes
+    back with a rate-limit-shaped error — partial failures and HTTP 403s can
+    be page problems, not provider throttling, and return as-is."""
 
     def _all_throttled(results: List[Dict[str, Any]]) -> bool:
         return bool(results) and all(r.get("error", "") and _is_rate_limitish(r.get("error", "")) for r in results)

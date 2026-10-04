@@ -1,0 +1,193 @@
+{
+  "PROGRAM_ID": "HERMES-PRIOR-WORK-FIRST-EXECUTION-MEMORY-V1",
+  "GOAL": "Extend Hermes with durable prior-work-first execution memory across SOUL, repository rules, protocol, guard, and focused verification without broad rediscovery.",
+  "CAPABILITY_ID": "HERMES-PRIOR-WORK-FIRST-EXECUTION-MEMORY-V1",
+  "PREFLIGHT_STATUS": "verified",
+  "ACCEPTED_HEAD": "3a336b8ab1757f75cb796f73d35b5200c45353c5",
+  "ACCEPTED_TREE": "54ff3dbefda912a65226541c38ee7d5c2d50d89e",
+  "FIRST_UNPROVEN_BOUNDARY": "LIVE_ACTIVATION",
+  "KNOWN_FILES": [
+    {
+      "path": "agent/prior_work_first.py",
+      "digest": "c2c984d2dd1c58072baf81fb87fd66ec3fa5515a66366add7dd7b5342901d669"
+    },
+    {
+      "path": "scripts/prior_work_first.py",
+      "digest": "bd8107c97df59dec66dfb39a770f2d684330b1f19d45bc69f56ed2e38c8a3749"
+    },
+    {
+      "path": "docs/prior-work-first-execution-memory.md",
+      "digest": "b74b6938d0050f8ce5e99366c1a9ec378d6ce47c611e76e8fd805fe71a72193c"
+    },
+    {
+      "path": "skills/autonomous-ai-agents/hermes-agent/SKILL.md",
+      "digest": "3213ea1bfcd5955a593fb9ebcc3191fe16855f82cbb248545bc5528ae7ec4498"
+    },
+    {
+      "path": "skills/autonomous-ai-agents/hermes-agent/references/prior-work-first.md",
+      "digest": "05a4aaa4a4c84e0275adb08010704b59e2550c3d3de4d813a97f29afd4e1962e"
+    }
+  ],
+  "KNOWN_SYMBOLS": [
+    {
+      "path": "agent/prior_work_first.py",
+      "symbol": "normalize_packet",
+      "digest": "ad7c9a32150dd9b644f71bfe257c2e74a77dd18bfcac8e7016383b3a62dd89ab"
+    },
+    {
+      "path": "agent/prior_work_first.py",
+      "symbol": "discover_prior_work",
+      "digest": "40fd688c4ce4ea17ccea8fc2db45d2702cae4d10e199946f17d774ea70b940fb"
+    },
+    {
+      "path": "agent/prior_work_first.py",
+      "symbol": "evaluate_preflight",
+      "digest": "755128d5fcca24f48d548f736c826d030741ae640a66b8acb0f993fdaab08932"
+    },
+    {
+      "path": "agent/prior_work_first.py",
+      "symbol": "reconstruct_resume_context",
+      "digest": "6af94af6b002fb49ff5bdd7301af485ab094f8f8f66f392078e27bb4550b0f16"
+    }
+  ],
+  "KNOWN_TESTS": [
+    {
+      "path": "tests/agent/test_prior_work_first.py",
+      "digest": "6f8c3e9a7f8c8a141bd5b7d87307f868817f5a0abab827a90dfdc1037f11cc48"
+    }
+  ],
+  "KNOWN_DEPENDENCIES": [
+    {
+      "name": "pytest",
+      "path": "pyproject.toml",
+      "digest": "8fdd016886353ed18ad293c840a0422f0f750b64b30d1e19ad21649441b3f80b"
+    }
+  ],
+  "KNOWN_HANDOFFS": [
+    {
+      "path": ".task-state/prior-work-first/hermes-prior-work-first-execution-memory-v1/handoffs/2026-08-30-resume-closeout.md",
+      "digest": "1f4bde811f572b750f0cc6cbc67b3fc59aea024b386109e73930cbaa3a51c679"
+    }
+  ],
+  "KNOWN_RECEIPTS": [
+    {
+      "path": ".task-state/prior-work-first/hermes-prior-work-first-execution-memory-v1/receipts/2026-08-30-focused-tests.json",
+      "digest": "e77e7915524d549098d6c900d8bb9f1bb779c4b330dda96243f9e36228000016"
+    }
+  ],
+  "KNOWN_WORKTREES": [
+    {
+      "path": "C:/Users/Vu Tuan/AppData/Local/hermes/worktrees/prior-work-first-execution-memory-v1",
+      "branch": "feat/prior-work-first-execution-memory-v1",
+      "head": "3a336b8ab1757f75cb796f73d35b5200c45353c5"
+    }
+  ],
+  "KNOWN_BRANCHES": [
+    {
+      "branch": "feat/prior-work-first-execution-memory-v1",
+      "head": "3a336b8ab1757f75cb796f73d35b5200c45353c5",
+      "upstream": "fork/feat/prior-work-first-execution-memory-v1"
+    }
+  ],
+  "KNOWN_DRAFT_BUILDS": [],
+  "KNOWN_BASELINE_EXCEPTIONS": [
+    "Focused pytest verification uses --basetemp .pytest-tmp in this Windows worktree because the default AppData/Local/Temp root is access denied."
+  ],
+  "RELEVANT_CONTRACT_SLICES": [
+    {
+      "path": "AGENTS.md",
+      "digest": "55538dbed906f51c70a5adfaf6a1b39ad5895fe5e732b03c7728bffc085d2e3a"
+    },
+    {
+      "path": "SOUL.md",
+      "digest": "fff14e7c38e191bcd4cfd8b08eb36cc02984e6c0a667b77af3edf6a4b03cd2fc"
+    }
+  ],
+  "RELEVANT_SDD_SLICES": [
+    {
+      "path": "docs/prior-work-first-execution-memory.md",
+      "digest": "b74b6938d0050f8ce5e99366c1a9ec378d6ce47c611e76e8fd805fe71a72193c"
+    }
+  ],
+  "PROVEN_INVARIANTS": [
+    "Accepted prior work with INVALIDATOR_COUNT=0 resumes from FIRST_UNPROVEN_BOUNDARY and forbids broad rediscovery, broad preflight re-execution, and replanning.",
+    "Discovery locates active packets, handoffs, receipts, drafts, RAG artifacts, worktrees, and branches with repo-relative task artifact paths.",
+    "Old chat and RAG do not outrank current source, tests, contract, or fresh machine evidence.",
+    "Unrelated HEAD movement alone does not invalidate an accepted baseline.",
+    "Only one canonical primary writer is allowed; parallel scouts remain read-only.",
+    "A fresh agent can reconstruct resume context from repository artifacts with no chat history."
+  ],
+  "INVALIDATE_IF": [
+    {
+      "kind": "contract_change",
+      "path": "AGENTS.md",
+      "expected_digest": "55538dbed906f51c70a5adfaf6a1b39ad5895fe5e732b03c7728bffc085d2e3a"
+    },
+    {
+      "kind": "contract_change",
+      "path": "SOUL.md",
+      "expected_digest": "fff14e7c38e191bcd4cfd8b08eb36cc02984e6c0a667b77af3edf6a4b03cd2fc"
+    },
+    {
+      "kind": "sdd_change",
+      "path": "docs/prior-work-first-execution-memory.md",
+      "expected_digest": "b74b6938d0050f8ce5e99366c1a9ec378d6ce47c611e76e8fd805fe71a72193c"
+    },
+    {
+      "kind": "symbol_change",
+      "path": "agent/prior_work_first.py",
+      "symbol": "normalize_packet",
+      "expected_digest": "ad7c9a32150dd9b644f71bfe257c2e74a77dd18bfcac8e7016383b3a62dd89ab"
+    },
+    {
+      "kind": "symbol_change",
+      "path": "agent/prior_work_first.py",
+      "symbol": "discover_prior_work",
+      "expected_digest": "40fd688c4ce4ea17ccea8fc2db45d2702cae4d10e199946f17d774ea70b940fb"
+    },
+    {
+      "kind": "symbol_change",
+      "path": "agent/prior_work_first.py",
+      "symbol": "evaluate_preflight",
+      "expected_digest": "755128d5fcca24f48d548f736c826d030741ae640a66b8acb0f993fdaab08932"
+    },
+    {
+      "kind": "symbol_change",
+      "path": "agent/prior_work_first.py",
+      "symbol": "reconstruct_resume_context",
+      "expected_digest": "6af94af6b002fb49ff5bdd7301af485ab094f8f8f66f392078e27bb4550b0f16"
+    },
+    {
+      "kind": "file_change",
+      "path": "scripts/prior_work_first.py",
+      "expected_digest": "bd8107c97df59dec66dfb39a770f2d684330b1f19d45bc69f56ed2e38c8a3749"
+    },
+    {
+      "kind": "file_change",
+      "path": "skills/autonomous-ai-agents/hermes-agent/SKILL.md",
+      "expected_digest": "3213ea1bfcd5955a593fb9ebcc3191fe16855f82cbb248545bc5528ae7ec4498"
+    },
+    {
+      "kind": "file_change",
+      "path": "skills/autonomous-ai-agents/hermes-agent/references/prior-work-first.md",
+      "expected_digest": "05a4aaa4a4c84e0275adb08010704b59e2550c3d3de4d813a97f29afd4e1962e"
+    },
+    {
+      "kind": "test_semantics_change",
+      "path": "tests/agent/test_prior_work_first.py",
+      "expected_digest": "6f8c3e9a7f8c8a141bd5b7d87307f868817f5a0abab827a90dfdc1037f11cc48"
+    },
+    {
+      "kind": "dependency_change",
+      "path": "pyproject.toml",
+      "expected_digest": "8fdd016886353ed18ad293c840a0422f0f750b64b30d1e19ad21649441b3f80b"
+    },
+    {
+      "kind": "contradictory_machine_evidence",
+      "subject": "tests/agent/test_prior_work_first.py"
+    }
+  ],
+  "LAST_MACHINE_VERIFIED_AT": "2026-08-30T11:44:39.9882021+07:00",
+  "PRIMARY_WRITER": "codex-primary-writer",
+  "PARALLEL_SCOUTS": []
+}

@@ -28,6 +28,41 @@ Two invariants shape almost every design decision and are the lens for reviewing
   every API call, so the bar for a new *core* tool is high. New capability should arrive as a
   CLI command + skill, a service-gated tool, or a plugin — not as core surface.
 
+## Prior-Work-First Execution Memory
+
+Repository-authorized implementation tasks must follow the durable
+`PRIOR-WORK-FIRST` law in [SOUL.md](./SOUL.md) and the detailed protocol in
+[`docs/prior-work-first-execution-memory.md`](./docs/prior-work-first-execution-memory.md).
+
+The repo-level minimum:
+
+- Start with `GOAL -> CAPABILITY_ID -> PRIOR_WORK_LOCATE -> ACCEPTED_BASELINE
+  -> FIRST_UNPROVEN_BOUNDARY -> INVALIDATOR_CHECK`, then load only the exact
+  relevant Contract / SDD / source / test slices before implementing.
+- Prior-work locate is targeted, not exhaustive. Locate accepted packets,
+  handoffs, receipts, worktrees, branches, draft builds, focused RAG artifacts,
+  and current source/tests before creating a new plan, worktree, or replacement
+  implementation.
+- RAG and old conversation are locator-only context. Contract is semantic
+  authority; impacted SDD slices are architectural authority; current
+  source/tests are implementation truth; fresh machine evidence is PASS/FAIL
+  authority.
+- Reuse accepted boundaries when no explicit invalidator fired. If
+  `INVALIDATOR_COUNT=0`, broad rediscovery, broad preflight re-execution, and
+  replanning are forbidden; resume from `FIRST_UNPROVEN_BOUNDARY` and refresh
+  only volatile state.
+- Explicit invalidators must be narrow: relevant Contract change, relevant
+  symbol change, dependency change, accepted baseline invalidation, test
+  semantics change, contradictory fresh machine evidence, or architecture owner
+  change. Unrelated HEAD movement is not itself invalidation.
+- Preserve the one-writer invariant: one canonical primary writer per
+  capability, parallel scouts read-only only.
+- Use `python scripts/prior_work_first.py locate|check|resume|compact-packet`
+  as the checkable guard. The active packet lives at
+  `.task-state/prior-work-first/<capability-slug>/active.packet.json` and must
+  stay compact: no transcripts, only accepted state, exact slices, invalidators,
+  and fresh verification metadata.
+
 ## Contribution Rubric — What We Want / What We Don't
 
 The project's intent layer. It serves humans aiming a contribution AND the automated triage

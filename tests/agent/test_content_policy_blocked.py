@@ -120,3 +120,31 @@ class TestContentPolicyPatternsAreNarrow:
         assert result.retryable is False
         assert result.should_fallback is True
         assert result.should_rotate_credential is False
+
+    def test_openrouter_guardrail_403_metadata_only_patterns_still_blocked(self):
+        """#132504 variant: the guardrail verdict can ride only in
+        ``error.metadata.patterns`` while the ``message`` keeps none of the
+        fixed envelope wording (OpenRouter tightens/shortens the message).
+        The classification must key on the pattern tokens too — otherwise the
+        403 falls to the auth/upstream buckets and the fallback chain replays
+        the identical per-prompt refusal on every other provider.
+        """
+        from agent.error_classifier import classify_api_error, FailoverReason
+
+        class _Err(Exception):
+            def __init__(self, msg, status_code):
+                super().__init__(msg)
+                self.status_code = status_code
+
+        e = _Err(
+            'Error code: 403 - {"error":{"message":"Request blocked.",'
+            '"metadata":{"patterns":["role_tag_injection"],'
+            '"role_delimiter_injection":null,"provider":null}}}',
+            status_code=403,
+        )
+        result = classify_api_error(e, provider="openrouter", model="anthropic/claude-opus")
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.reason != FailoverReason.auth
+        assert result.reason != FailoverReason.upstream_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True

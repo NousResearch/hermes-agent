@@ -367,6 +367,11 @@ _CONTENT_POLICY_BLOCKED_PATTERNS = (
     # deterministic per-request verdict, not a WAF/CDN page: the fallback chain
     # would replay the identical 403 on every other provider (#132504).
     "prompt injection patterns detected",
+    # Same verdict can ride only in ``error.metadata.patterns`` when the
+    # message shortens to a bare "Request blocked." (#132504) — without the
+    # tokens the 403 hits the WAF markers above and is misrouted
+    # upstream_blocked, replaying the refusal across the fallback chain.
+    "role_tag_injection", "role_delimiter_injection",
 )
 
 # Auth patterns (non-status-code signals).

@@ -2930,6 +2930,11 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # kanban_comment reads HERMES_PROFILE for its default author; `-p` alone
     # doesn't set the env var.
     env["HERMES_PROFILE"] = profile_arg
+    # Privacy-safe identity for live worker indicators.  The worker lifecycle observer
+    # consumes these values; prompts, task bodies and workspace paths never enter the lease.
+    env["HERMES_BACKGROUND_WORK_TITLE"] = str(task.title or "Kanban worker")
+    if task.model_override:
+        env["HERMES_BACKGROUND_WORK_MODEL"] = str(task.model_override)
     # This is the grant boundary: the dispatcher assigned this new worker's task.
     from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
     env.pop(DELEGATED_CHILD_ENV_MARKER, None)

@@ -65,6 +65,13 @@ MagicMock adapters in older tests auto-create truthy attributes.
 without spending an attempt. Long form: `website/docs/developer-guide/gateway-internals.md`
 § Background process notifications.
 
+Background AI workers publish process-identity leases under each owning profile's
+`cache/background-work/` via the existing session/subagent lifecycle hooks
+(`hermes_cli/background_activity.py`). Discord polls those cheap local leases at 500 ms: identity
+transitions update presence and the single pinned `#usage` dashboard immediately, while
+elapsed-only edits are throttled. Lease readers delete dead-PID identities, so crashes and gateway
+restarts cannot strand a busy presence; titles are sanitized before they ever reach disk.
+
 ## `/login` (off-turn, paired DM only)
 
 `GatewayLoginCommandsMixin` refuses outside a real paired DM (ntfy, raft and a2a report `dm` for

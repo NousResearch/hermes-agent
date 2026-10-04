@@ -144,6 +144,10 @@ recycled PID gets killed on reclaim.
   `kanban_path_is_fenced(path)` denies mutations only on the dispatcher-pinned `HERMES_KANBAN_DB`
   or under that root, so a child working against a scratch `HERMES_HOME` keeps a writable board.
 
+- Dispatched workers export only a sanitized card-title/model identity to the background-work
+  lifecycle lease; task bodies, prompts and workspace paths never enter status surfaces. The lease
+  is owned by the worker PID and readers remove it when that exact process dies.
+
 ## Tests
 
 `tests/cron/`, `tests/hermes_cli/test_kanban*.py`, `tests/tools/test_kanban*.py`. Schedule parsing

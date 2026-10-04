@@ -149,6 +149,12 @@ boundaries, optimistic rollback and stale-response ordering, and both sides of a
 local/remote adapter with its profile routing intact. Match how the suite is
 actually run rather than inventing a command; when in doubt, read the scripts.
 
+## macOS background-work status item
+
+Electron owns a macOS-only menu-bar item (`electron/background-work-tray.ts`). It scans the same
+profile-safe per-worker leases as Discord every 500 ms, aggregates all profile homes, shows compact
+elapsed/profile/model rows, and destroys the native `Tray` during normal quit. Lease PID checks make
+restart/crash cleanup fail idle rather than leaving stale busy UI; the renderer is not involved.
 ## The taste test before you hand off
 
 - Does every piece of state live with its authority, at the narrowest scope?

@@ -196,6 +196,24 @@ function Harness({
   )
 }
 
+describe('message navigation headings', () => {
+  it('labels the user message with a level-two heading', async () => {
+    render(<Harness />)
+
+    expect(
+      await screen.findByRole('heading', { level: 2, name: en.assistant.thread.userMessageHeading })
+    ).toBeTruthy()
+  })
+
+  it('labels the Hermes message with a level-two heading', async () => {
+    render(<Harness />)
+
+    expect(
+      await screen.findByRole('heading', { level: 2, name: en.assistant.thread.assistantMessageHeading })
+    ).toBeTruthy()
+  })
+})
+
 describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
   it('shows the Branch in new chat button when a handler is provided (open chat)', async () => {
     render(<Harness onBranchInNewChat={() => undefined} />)

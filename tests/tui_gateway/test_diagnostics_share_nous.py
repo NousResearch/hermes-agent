@@ -196,6 +196,8 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
     for prose in ("see: documentation", "time: 12:30:45", "configured via env", "undefined"):
         kept = real_redact(f"x-api-key: *** {prose}")
         assert kept.endswith(f" {prose}") and real_redact(kept) == kept
+    # An RFC 6750 challenge is auth-params, not a token.
+    assert real_redact('Bearer realm="api"') == 'Bearer realm="api"'
     # Short, colon-bearing and double-encoded keys are keys, not prose.
     for leaky, key in (
         ("x-api-key: Bearer abc1234", "abc1234"),

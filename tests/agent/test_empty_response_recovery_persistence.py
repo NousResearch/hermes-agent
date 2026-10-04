@@ -267,3 +267,42 @@ def test_stop_during_empty_response_recovery_keeps_the_executed_tool_call_live(r
     _assert_saved_tool_pairs_stay_live(result, real_loop.db, real_loop.sid)
     # The Stop owner strips the nudge scaffold itself and closes with its own reason.
     assert result["messages"][-1]["content"] == result["final_response"]
+
+
+def _call(name, args, call_id):
+    return SimpleNamespace(id=call_id, type="function", function=SimpleNamespace(name=name, arguments=json.dumps(args)))
+
+
+def test_housekeeping_fallback_names_its_final_a_reused_response(real_loop):
+    """The empty follow-up after a housekeeping tool ends the turn on the answer the model sent
+    BEFORE that tool. The result says so, so a client settles the answer it already shows
+    instead of painting it a second time in the same bubble."""
+    real_loop.agent.valid_tool_names.add("todo_list")
+    real_loop.agent.tools.append({"type": "function", "function": {"name": "todo_list", "parameters": {}}})
+    result = real_loop.run(
+        [
+            _response("Here is the answer.", finish_reason="tool_calls",
+                      tool_calls=[_call("todo_list", {"todos": []}, "call_todo")]),
+            _response(),
+        ],
+        "answer, then tidy",
+    )
+
+    assert result["turn_exit_reason"] == "fallback_prior_turn_content"
+    assert result["final_response"] == "Here is the answer."
+    assert result["response_reused"] is True
+
+
+def test_same_words_in_a_second_response_are_not_a_reused_response(real_loop):
+    """Two real responses with the same words: the final is new output, never a reuse."""
+    result = real_loop.run(
+        [
+            _response("Done.", finish_reason="tool_calls",
+                      tool_calls=[_call("read_file", {"path": "missing.txt"}, "call_read")]),
+            _response("Done."),
+        ],
+        "say it twice",
+    )
+
+    assert result["final_response"] == "Done."
+    assert result["response_reused"] is False

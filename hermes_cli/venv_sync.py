@@ -401,13 +401,16 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         # noise (the record's age tracks the wait), leaving the marker armed.
         pass
     elif not owed_to_cli and (not current or pending.is_file()):
-        lock = UpdateLock()
+        # The marker alone first (a process the live update spawned runs under its claim and
+        # inherits no checkout lock); install_root still names the checkout whose held lock
+        # keeps a dead update's marker (R6: refused as held, never reclaimed).
+        lock = UpdateLock(install_root=root, checkout_first=False)
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
         try:
             # Under the launching update's own claim (its pid is our ancestor) a process it
             # spawned owes no tail: that obligation is the updater's.
-            if not lock.acquired and read_live_update() is not None:
+            if not lock.acquired and read_live_update(install_root=root) is not None:
                 if current:
                     return None
                 # A process the update spawns before its dependencies are current (a restarted
@@ -464,7 +467,7 @@ def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path 
     from hermes_cli.update_lock import UpdateLock
 
     if not current:
-        lock = UpdateLock()
+        lock = UpdateLock(install_root=root, checkout_first=False)  # R6, as in prepare_launch
         if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
         try:

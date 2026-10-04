@@ -983,9 +983,15 @@ def _inherited_lock_fd(path: Path) -> int | None:
 
 
 def _lock_holder(fd_or_path) -> UpdateHolder:
+    """Who holds the checkout lock, from its holder record. A recorded updater that is gone (its
+    incarnation is dead) while the lock stays held means a process it started holds it: that is
+    the ``held`` holder, never the dead pid (the marker reader's wording, R6)."""
     raw = _read_bytes(fd_or_path) or b""
     parsed = _parse_marker(raw)
-    return UpdateHolder(pid=max(parsed.pid, 0), age_seconds=parsed.age() if parsed.started_at else 0.0)
+    age = parsed.age() if parsed.started_at else 0.0
+    if parsed.pid > 0 and incarnation_live(parsed.pid, parsed.create_time) is False:
+        return UpdateHolder(pid=0, age_seconds=age, held=True)
+    return UpdateHolder(pid=max(parsed.pid, 0), age_seconds=age)
 
 
 def _open_lock_file(path: Path) -> tuple[int | None, object]:
@@ -1260,18 +1266,28 @@ class UpdateLock:
     pid, ancestor, or an outer claim of this same process) succeeds with ``acquired`` False.
     ``acquire`` returns False (and sets ``holder``) when another live update owns either lock
     or the lock cannot be created at all — never "proceed unlocked".
+
+    ``install_root`` names the checkout whose kernel lock guards the claim (default: this
+    checkout). With ``checkout_first`` (the default, when ``install_root`` is given) ``acquire``
+    takes that lock before the marker. ``checkout_first=False`` claims the marker alone — a
+    launch that may run under a live update's claim (venv_sync) and takes the checkout lock later,
+    only for its own mutation. Either way a dead marker over a checkout lock held by another
+    process tree is refused as ``held`` and kept, never reclaimed (R6).
     """
 
-    def __init__(self, *, path: Path | None = None, install_root: Path | str | None = None) -> None:
+    def __init__(self, *, path: Path | None = None, install_root: Path | str | None = None,
+                 checkout_first: bool = True) -> None:
         self.path = path or update_marker_path()
         self.install_root = None if install_root is None else Path(install_root)
+        self.checkout_first = checkout_first
         self.acquired = False
         self.holder: UpdateHolder | None = None
         self._claimed = False
         self._checkout = False
 
     def acquire(self) -> bool:
-        if self.install_root is not None and not self.acquire_checkout(self.install_root):
+        if self.install_root is not None and self.checkout_first \
+                and not self.acquire_checkout(self.install_root):
             return False
         try:
             ok = self._claim_marker()
@@ -1324,6 +1340,14 @@ class UpdateLock:
                         continue  # vanished between publish and read: retry
                     if _live_partners(existing):
                         return self._adopt_or_refuse(existing)
+                    if self._checkout_held_elsewhere():
+                        # R6: the marker's owner is dead but a process it started (completion,
+                        # build, git) still holds the checkout. The update is not over: keep
+                        # its marker and refuse as ``held``.
+                        self.holder = UpdateHolder(
+                            pid=0, held=True,
+                            age_seconds=max(existing.age(), 0.0) if existing.started_at is not None else 0.0)
+                        return False
                     # Dead or malformed, judged under the mutex: reclaim and claim in one hold.
                     with suppress(FileNotFoundError):
                         self.path.unlink()
@@ -1336,8 +1360,20 @@ class UpdateLock:
         except OSError as exc:
             self.holder = UpdateHolder(pid=0, age_seconds=0.0, reason=f"{self.path} is not writable ({exc})")
             return False
-        self.holder = read_live_update(path=self.path) or UpdateHolder(pid=0, age_seconds=0.0)
+        self.holder = read_live_update(path=self.path, install_root=self.install_root) \
+            or UpdateHolder(pid=0, age_seconds=0.0)
         return False
+
+    def _checkout_held_elsewhere(self) -> bool:
+        """The checkout lock is held, and not by this process's own update tree (our hold, or
+        a lock fd inherited from the update that spawned us — that tree may reclaim)."""
+        if self._checkout:
+            return False
+        path = checkout_lock_path(self.install_root)
+        if _HELD is not None and _HELD["path"] == str(path):
+            return False
+        # Only when held: a free lock is not taken by the inherited-fd lookup below.
+        return checkout_lock_held(self.install_root) and _inherited_lock_fd(path) is None
 
     @staticmethod
     def _is_partner(pid: int) -> bool:

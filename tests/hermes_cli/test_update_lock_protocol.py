@@ -400,6 +400,83 @@ def test_dead_marker_is_kept_and_reported_held_while_the_checkout_lock_is_held(t
     assert not marker.exists(), "with the tree gone the dead marker is reclaimed"
 
 
+def _dead_marker(marker: Path) -> None:
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    marker.write_text(f"{dead.pid}\n{int(time.time())}\nct:1.5\n", encoding="utf-8")
+
+
+def test_a_claimer_never_reclaims_a_dead_marker_while_the_checkout_lock_is_held(tmp_path):
+    """M1 (round 7): the launch path claims the marker before it takes the checkout lock
+    (venv_sync). Its claim step deleted the dead marker over a held lock, then dropped its own
+    claim when the checkout refused: the marker was gone while the killed update's tree ran."""
+    from hermes_cli import update_lock
+
+    install = tmp_path / "install"
+    install.mkdir()
+    marker = tmp_path / ".hermes-update-in-progress"
+    _dead_marker(marker)
+    dead_bytes = marker.read_bytes()
+    holder = _python(tmp_path, _LOCK_HOLDER, install, tmp_path / "ready")
+    try:
+        _wait_for(tmp_path / "ready", holder)
+        claim = UpdateLock(path=marker, install_root=install)
+        assert claim._claim_marker() is False, "claimed over a dead marker while the checkout lock is held"
+        assert marker.read_bytes() == dead_bytes, "the claim step replaced the held update's marker"
+        assert claim.holder is not None and claim.holder.held
+        launch = UpdateLock(path=marker, install_root=install, checkout_first=False)  # venv_sync
+        assert launch.acquire() is False
+        launch.release()
+        assert launch.holder is not None and launch.holder.held and launch.holder.pid == 0
+        assert marker.read_bytes() == dead_bytes
+    finally:
+        holder.kill()
+        holder.wait()
+    with UpdateLock(path=marker, install_root=install, checkout_first=False) as launch:
+        assert launch.acquired, "with the tree gone the dead marker is reclaimed and claimed"
+    assert not marker.exists()
+    assert update_lock.checkout_lock_held(install) is False
+
+
+_ORPHANING_HOLDER = """
+import subprocess, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hermes_cli import update_lock
+root = Path(sys.argv[2])
+assert update_lock._acquire_checkout(root) is None   # the record names this (soon dead) updater
+release = Path(sys.argv[3]).with_name("release")
+wait = "import sys, time, pathlib\\nwhile not pathlib.Path(sys.argv[1]).exists(): time.sleep(0.05)"
+child = subprocess.Popen([sys.executable, "-c", wait, str(release)],
+                         pass_fds=update_lock.checkout_lock_fds(root))
+Path(sys.argv[3]).write_text(str(child.pid), encoding="utf-8")
+"""
+
+
+@posix_only
+def test_a_refusal_over_a_dead_updaters_lock_uses_the_held_wording(tmp_path):
+    """m6: `hermes update`, launch repair and source completion refuse through the lock's
+    holder record. Its updater is dead and a child it started holds the lock: say so, never
+    name the dead process."""
+    from hermes_cli import update_lock
+
+    install = tmp_path / "install"
+    install.mkdir()
+    updater = _python(tmp_path, _ORPHANING_HOLDER, install, tmp_path / "child")
+    updater.wait(timeout=30)
+    dead_pid = updater.pid
+    _wait_for(tmp_path / "child")
+    try:
+        lock = UpdateLock(path=tmp_path / ".hermes-update-in-progress", install_root=install)
+        assert lock.acquire() is False
+        assert lock.holder is not None and lock.holder.held and lock.holder.pid == 0
+        text = update_lock.describe_holder(lock.holder)
+        assert f"process {dead_pid}" not in text
+        assert "still holds the checkout" in text
+    finally:
+        (tmp_path / "release").touch()  # the orphaned child is not ours to signal
+
+
 # --- D17: a "held?" probe never makes a concurrent update fail --------------------------------
 
 _PROBER = """

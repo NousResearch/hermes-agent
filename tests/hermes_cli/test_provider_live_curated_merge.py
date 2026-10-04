@@ -203,12 +203,19 @@ class TestLiveTerminalPickerProviders:
         assert set(result) == set(live)
 
     def test_tencent_tokenplan_live_catalog_is_terminal(self):
-        """The third tier-dependent plan named in #119481 gets the same treatment."""
+        """The third tier-dependent plan named in #119481 gets the same treatment — through the
+        REAL registered profile (plugins/model-providers/tencent/), not a mocked
+        get_provider_profile: production used to have no profile for this name, which made
+        the terminal arm dead code for tencent (review on #126898)."""
+        from providers import get_provider_profile
+
         assert "tencent-tokenplan" in _LIVE_TERMINAL_PICKER_PROVIDERS
+        profile = get_provider_profile("tencent-tokenplan")
+        assert profile is not None and profile.auth_type == "api_key"
         live = ["hunyuan-turbo", "hunyuan-pro"]
 
         with (
-            patch("providers.get_provider_profile", return_value=self._make_profile(live)),
+            patch.object(profile, "fetch_models", return_value=live),
             patch(
                 "hermes_cli.auth.resolve_api_key_provider_credentials",
                 return_value={"api_key": "k", "base_url": ""},

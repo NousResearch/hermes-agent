@@ -1,0 +1,5 @@
+name: tencent-provider
+kind: model-provider
+version: 1.0.0
+description: Tencent Cloud LKEAP (Token Plan)
+author: Nous Research

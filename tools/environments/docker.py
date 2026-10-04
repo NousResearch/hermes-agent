@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import logging
+import ntpath
 import os
 import re
 import secrets
@@ -317,11 +318,16 @@ def _runtime_reuse_fingerprint(
     run_args: list[str], run_env_values: dict[str, str],
 ) -> str:
     """Keyed label value for immutable run posture, including private paths and env values."""
-    canonical_run_args = [
-        (f"<volatile-tempdir-mount>:{arg.split(':', 1)[1]}"
-         if _is_volatile_mount_spec(arg) else arg)
-        for arg in run_args
-    ]
+    canonical_run_args = []
+    for arg in run_args:
+        parsed = _split_volume_spec(arg)
+        if parsed is not None and _is_volatile_mount_spec(arg):
+            source, _target = parsed
+            canonical_run_args.append(
+                f"<volatile-tempdir-mount>:{arg[len(source) + 1:]}"
+            )
+        else:
+            canonical_run_args.append(arg)
     payload = json.dumps(
         [canonical_run_args, run_env_values],
         ensure_ascii=True,
@@ -334,17 +340,32 @@ def _runtime_reuse_fingerprint(
 
 
 def _is_volatile_mount_spec(spec: str) -> bool:
-    """Whether a bind source is a per-process safe-copy under the system tempdir."""
+    """Whether a bind source is a per-process symlink-safe skills copy."""
     if spec in ("-v", "--mount") or ":" not in spec:
         return False
     parsed = _split_volume_spec(spec)
-    source = parsed[0] if parsed is not None else spec.split(":", 1)[0]
-    if _is_windows_drive_path(source):
+    if parsed is None:
         return False
+    source = parsed[0]
     try:
-        temp_root = os.path.realpath(tempfile.gettempdir())
-        source_abs = os.path.realpath(os.path.abspath(os.path.expanduser(source)))
-        return source_abs == temp_root or source_abs.startswith(temp_root + os.sep)
+        temp_root = tempfile.gettempdir()
+        path_module = (
+            ntpath
+            if os.name == "nt"
+            or _is_windows_drive_path(source)
+            or _is_windows_drive_path(temp_root)
+            else os.path
+        )
+        temp_root_abs = path_module.normcase(
+            path_module.realpath(path_module.abspath(path_module.expanduser(temp_root)))
+        )
+        source_abs = path_module.normcase(
+            path_module.realpath(path_module.abspath(path_module.expanduser(source)))
+        )
+        return (
+            path_module.dirname(source_abs) == temp_root_abs
+            and path_module.basename(source_abs).startswith("hermes-skills-safe-")
+        )
     except OSError:
         return False
 

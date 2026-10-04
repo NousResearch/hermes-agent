@@ -594,6 +594,40 @@ def test_runtime_reuse_fingerprint_ignores_volatile_temp_mounts(tmp_path, monkey
     )
 
 
+def test_runtime_reuse_fingerprint_ignores_windows_volatile_skills_mounts(monkeypatch):
+    """A native Windows temp path keeps its drive colon when the volatile source is removed."""
+    monkeypatch.setattr(docker_env.tempfile, "gettempdir", lambda: r"C:\Temp")
+
+    process_a = docker_env._runtime_reuse_fingerprint(
+        ["-v", r"C:\Temp\hermes-skills-safe-a1b2c3:/root/.hermes/skills:ro"],
+        {},
+    )
+    process_b = docker_env._runtime_reuse_fingerprint(
+        ["-v", r"c:\temp\hermes-skills-safe-d4e5f6:/root/.hermes/skills:ro"],
+        {},
+    )
+
+    assert process_a == process_b
+
+
+def test_runtime_reuse_fingerprint_tracks_ordinary_temp_mounts(tmp_path, monkeypatch):
+    """Only generated skills copies are disposable; a user's temp bind is posture."""
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setattr(docker_env.tempfile, "gettempdir", lambda: str(temp_root))
+
+    process_a = docker_env._runtime_reuse_fingerprint(
+        ["-v", f"{temp_root}/workspace-a:/workspace"],
+        {},
+    )
+    process_b = docker_env._runtime_reuse_fingerprint(
+        ["-v", f"{temp_root}/workspace-b:/workspace"],
+        {},
+    )
+
+    assert process_a != process_b
+
+
 def test_run_command_sanitizes_unsafe_task_id(monkeypatch):
     """A task_id containing characters Docker rejects in label values must be
     sanitized before reaching ``docker run --label``; otherwise the daemon
@@ -1059,7 +1093,7 @@ def test_runtime_label_changes_with_automatic_cwd_mount(monkeypatch, tmp_path):
     monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
     _mock_subprocess_run(monkeypatch)
 
-    isolated = _make_dummy_env(task_id="cwd-posture", host_cwd=str(tmp_path))
+    isolated = _make_dummy_env(task_id="cwd-posture")
     host_bound = _make_dummy_env(
         task_id="cwd-posture", host_cwd=str(tmp_path), auto_mount_cwd=True
     )

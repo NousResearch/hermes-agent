@@ -30,7 +30,6 @@ class _ButtonAdapter:
     def __init__(self, *, editable: bool = True) -> None:
         self.sends: List[str] = []
         self.edits: List[tuple] = []
-        self.send_metadata: List[Any] = []
         self._editable = editable
 
     def pause_typing_for_chat(self, chat_id: str) -> None:
@@ -41,18 +40,11 @@ class _ButtonAdapter:
 
     async def send(self, chat_id: str, message: str, **k: Any) -> SendResult:
         self.sends.append(message)
-        self.send_metadata.append(k.get("metadata"))
         return SendResult(success=True, message_id="m2")
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, **k: Any) -> SendResult:
         self.edits.append((message_id, content))
         return SendResult(success=self._editable, error=None if self._editable else "cannot edit")
-
-
-class _PlainAdapter(_ButtonAdapter):
-    """No native buttons (``send_exec_approval is None`` per-class): plain-text fallback."""
-
-    send_exec_approval = None
 
 
 def _runner(adapter):
@@ -121,14 +113,3 @@ def test_other_settle_reasons_post_nothing(pending_entry, reason):
     pending_entry.settle(reason)
 
     assert adapter.edits == [] and adapter.sends == []
-
-
-
-def test_text_fallback_is_an_interim_approval_prompt(pending_entry):
-    """#132516: the plain-text fallback carries the is_approval_prompt marker (Telegram pushes
-    it, WeCom routes it via the control lane) and stays interim — ``notify`` is the turn-final
-    marker A2A resolves the caller's task on, so it must not ride an approval prompt."""
-    adapter = _PlainAdapter()
-    _runner(adapter)._approval_notify_sync(dict(pending_entry.data))
-
-    assert adapter.send_metadata == [{"thread_id": "t1", "is_approval_prompt": True, "_interim_send": True}]

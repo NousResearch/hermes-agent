@@ -887,8 +887,9 @@ class PluginContext:
         """Register an auxiliary LLM task with its own ``auxiliary.<key>`` config block (picker entry,
         ``AUXILIARY_<KEY>_*`` env bridge, defaults merged into loaded configs). ``defaults`` may
         override provider/model/base_url/api_key/timeout/extra_body (unknown keys kept verbatim).
-        ``inherit_from`` optionally names a built-in or already-registered auxiliary task whose
-        effective configuration is used as the base for this task.
+        ``inherit_from`` optionally names a built-in or plugin auxiliary task whose
+        effective configuration is used as the base. Resolution is deferred until reads,
+        so another plugin can register the base later in discovery.
         Raises ``ValueError`` for an empty/invalid key, a built-in key, or another plugin's key."""
         me = self.manifest.name
         if not key or not isinstance(key, str):
@@ -900,8 +901,7 @@ class PluginContext:
         builtin_keys = {k for k, _name, _desc in _BUILTIN_AUX_TASKS}
         if inherit_from is not None and (not isinstance(inherit_from, str) or not inherit_from):
             raise ValueError(f"Plugin '{me}' auxiliary task {key!r} has invalid inherit_from {inherit_from!r}")
-        if inherit_from and inherit_from not in builtin_keys and inherit_from not in self._manager._aux_tasks:
-            raise ValueError(f"Plugin '{me}' auxiliary task {key!r} cannot inherit unknown task {inherit_from!r}")
+
         if key in builtin_keys:
             raise ValueError(f"Plugin '{me}' cannot register auxiliary task {key!r} — that key is reserved "
                              f"for a built-in task. Pick a plugin-namespaced key (e.g. '{me}_{key}').")
@@ -2305,10 +2305,50 @@ def get_plugin_commands() -> Dict[str, dict]:
     return _ensure_plugins_discovered()._plugin_commands
 
 
+def _auxiliary_inheritance_chain(key, entries):
+    """Return a bounded root-to-leaf chain, or None for an unavailable base."""
+    from hermes_cli.main_provider_setup import _AUX_TASKS
+    builtins = {task for task, _, _ in _AUX_TASKS}
+    chain, seen = [], set()
+    current = key
+    while current:
+        if current in seen or len(chain) >= 128:
+            logger.warning("Auxiliary task %s inheritance cycle/depth limit at %s", key, current)
+            return None
+        seen.add(current)
+        chain.append(current)
+        entry = entries.get(current)
+        if entry is None:
+            if current not in builtins:
+                logger.warning("Auxiliary task %s cannot inherit missing base %s", key, current)
+                return None
+            break
+        current = entry.get("inherit_from")
+    return list(reversed(chain))
+
+
+def resolve_plugin_auxiliary_task_config(key, auxiliary_config):
+    """Merge live inheritance, declared defaults and per-task user overrides."""
+    entries = _ensure_plugins_discovered()._aux_tasks
+    chain = _auxiliary_inheritance_chain(key, entries)
+    if chain is None:
+        return {}
+    result = {}
+    for task in chain:
+        defaults = entries.get(task, {}).get("defaults", {})
+        user = auxiliary_config.get(task, {})
+        if isinstance(defaults, dict):
+            result.update(defaults)
+        if isinstance(user, dict):
+            result.update(user)
+    return result
+
+
 def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:
     """Plugin auxiliary-task registration dicts sorted by ``key`` (after idempotent discovery)."""
     manager = _ensure_plugins_discovered()
-    return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
+    return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)
+            if _auxiliary_inheritance_chain(k, manager._aux_tasks) is not None]
 
 
 def get_plugin_toolsets() -> List[tuple]:

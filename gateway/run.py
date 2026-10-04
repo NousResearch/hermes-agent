@@ -2059,14 +2059,18 @@ def _bridge_terminal_config_to_env(_terminal_cfg: dict) -> None:
 def _bridge_auxiliary_config_to_env(_auxiliary_cfg: dict) -> None:
     """Bridge auxiliary model/endpoint overrides (vision, approval, plugins); compression reads yaml."""
     _aux_bridged_keys = {"vision", "approval"}
+    _effective_plugin_config = {}
     try:
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks, resolve_plugin_auxiliary_task_config
         for _entry in get_plugin_auxiliary_tasks():
             _aux_bridged_keys.add(_entry["key"])
+            _effective_plugin_config[_entry["key"]] = resolve_plugin_auxiliary_task_config(
+                _entry["key"], _auxiliary_cfg,
+            )
     except Exception:
         pass  # plugin discovery failure must not break startup; built-in bridging stays intact
     for _task_key in _aux_bridged_keys:
-        _task_cfg = _auxiliary_cfg.get(_task_key, {})
+        _task_cfg = _effective_plugin_config.get(_task_key, _auxiliary_cfg.get(_task_key, {}))
         if not isinstance(_task_cfg, dict):
             continue
         _upper = _task_key.upper()

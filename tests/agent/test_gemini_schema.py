@@ -238,3 +238,33 @@ class TestAdapterWireShape:
         v1 = decl("https://generativelanguage.googleapis.com/v1")
         assert "parametersJsonSchema" not in v1
         assert v1["parameters"]["properties"]["g"]["anyOf"]  # legacy translator still applied
+
+
+class TestSchemaDepthBudget:
+    """Untrusted MCP/plugin schemas must not exhaust the Python stack (#132005): past the
+    depth budget the deeper fragment is replaced by a permissive object schema."""
+
+    @staticmethod
+    def _deep(depth: int) -> dict:
+        node: dict = {"type": "string"}
+        for _ in range(depth):
+            node = {"type": "object", "properties": {"x": node}}
+        return node
+
+    def test_deeply_nested_schema_is_trimmed_not_crashed(self):
+        cleaned = sanitize_gemini_schema(self._deep(1000))
+        assert cleaned["type"] == "object"
+        assert "x" in cleaned["properties"]  # shallow levels survive
+        placeholder = {"type": "object", "properties": {}}
+        node = cleaned
+        for _ in range(120):
+            if node == placeholder:
+                break
+            node = node["properties"]["x"]
+        else:
+            raise AssertionError("permissive placeholder never appeared within 120 levels")
+
+    def test_shallow_schema_unaffected_by_budget(self):
+        cleaned = sanitize_gemini_schema(
+            {"type": "object", "properties": {"foo": {"type": "string"}}})
+        assert cleaned["properties"] == {"foo": {"type": "string"}}

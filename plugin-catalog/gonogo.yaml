@@ -4,9 +4,7 @@
 name: gonogo
 repo: https://github.com/keppy/hermes-plugin-gonogo
 sha: 3f9945d3235d204d74420544fbd11a08121cd6d2
-description: Turn a pilot-scale eval score into a deployment decision — Wilson intervals, a
-  confidence threshold that routes uncertain cases to a human, and an honest INSUFFICIENT
-  EVIDENCE verdict when the sample cannot support the claim.
+description: "Turn a pilot-scale eval score into a deployment decision — Wilson intervals, a confidence threshold that routes uncertain cases to a human, and an honest INSUFFICIENT EVIDENCE verdict when the sample cannot support the claim. Disclosure — gonogo_report writes report JSON/HTML to the path the model supplies."
 maintainer: keppy
 tier: community
 category: tools

@@ -118,3 +118,36 @@ def test_consumer_that_streamed_nothing_skips_duplicate_warning(caplog):
         asyncio.run(GatewayTurnMixin()._run_agent_mark_streamed_delivery(response, turn_ctx))
     assert "already_sent" not in response
     assert not any("possible duplicate send" in r.message for r in caplog.records)
+
+
+def test_consumer_that_streamed_before_a_segment_break_still_warns(caplog):
+    """A segment break clears the per-segment fields, but the preamble already reached the
+    chat, so a normal final send can still duplicate it — keep the diagnostic."""
+    from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+    adapter = _make_edit_adapter()
+    sc = GatewayStreamConsumer(
+        adapter, "oc_chat", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1, cursor=""),
+    )
+    final = "Let me check that. Here is the answer you asked for."
+
+    async def _turn():
+        task = asyncio.create_task(sc.run())
+        sc.on_delta("Let me check that.")
+        await asyncio.sleep(0.05)
+        sc.on_segment_break()
+        sc.finish(final)
+        await asyncio.wait_for(task, 2)
+
+    asyncio.run(_turn())
+    assert adapter.sent == ["Let me check that."]
+
+    turn_ctx = SimpleNamespace(
+        stream_consumer_holder=[sc],
+        source=SimpleNamespace(platform="feishu"),
+        session_key="sess-127404",
+    )
+    response = {"final_response": final}
+    with caplog.at_level("WARNING", logger="gateway.run_turn"):
+        asyncio.run(_InterimOnlyHarness()._run_agent_mark_streamed_delivery(response, turn_ctx))
+    assert any("possible duplicate send" in r.message for r in caplog.records)

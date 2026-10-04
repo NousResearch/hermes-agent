@@ -41,6 +41,8 @@ _ABSOLUTE_PATH_RE = re.compile(
     r"(?:[A-Za-z]:[\\/]+|\\{2,})(?:[^\\/\r\n<>:\"|?*]+[\\/]+)*[^\s\\/]*"
     r"|/[^/\s]+(?:/[^/\s]*)*)"
 )
+# The id shape ``hermes_state_ids.new_session_id`` mints; a worker prints its own on exit.
+_SESSION_ID_RE = re.compile(r"\b\d{8}_\d{6}_[0-9a-f]{6,}\b")
 # Match an ``Authorization: Bearer/Basic <token>`` header anywhere in a line,
 # not just at its start — the token can appear mid-line inside a dumped curl
 # command (``curl -H 'Authorization: Bearer ...'``) or a shell trace. A bare
@@ -277,6 +279,7 @@ def _idempotency_key(
 def _sanitize_log(content: str) -> str:
     redacted = redact_sensitive_text(content, force=True, redact_url_credentials=True)
     redacted = _AUTH_HEADER_RE.sub(r"\1[REDACTED]", redacted)
+    redacted = _SESSION_ID_RE.sub("[SESSION]", redacted)
     return _ABSOLUTE_PATH_RE.sub("[PATH]", redacted)
 
 

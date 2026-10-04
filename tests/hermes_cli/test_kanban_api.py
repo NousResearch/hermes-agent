@@ -198,7 +198,8 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
         "retrying with Bearer bare-opaque-token-42\n"
         "GET https://example.test?access_token=query-token-42\n"
         "cat /secret.txt from /workspace\n"
-        "copy \\\\fileserver\\private\\report.txt C:\\Users\\John Doe\\private\\ledger.txt\n",
+        "copy \\\\fileserver\\private\\report.txt C:\\Users\\John Doe\\private\\ledger.txt\n"
+        "  hermes --resume 20261004_101112_abc123\n",
         encoding="utf-8",
     )
     log_response = client.get(f"/api/plugins/kanban/v1/tasks/{parent_id}/log")
@@ -210,7 +211,7 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
     assert "bare-opaque-token-42" not in log_body["excerpt"]
     assert "query-token-42" not in log_body["excerpt"]
     assert "/secret.txt" not in log_body["excerpt"] and "/workspace" not in log_body["excerpt"]
-    for leaked in ("fileserver", "report.txt", "Doe", "ledger.txt"):
+    for leaked in ("fileserver", "report.txt", "Doe", "ledger.txt", "20261004_101112_abc123"):
         assert leaked not in log_body["excerpt"], leaked
 
     unlinked = client.delete(f"/api/plugins/kanban/v1/tasks/{parent_id}/links/{child_id}")

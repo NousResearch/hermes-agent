@@ -58,7 +58,7 @@ function AppUpdatesSettings({ includeUninstall }: AppUpdatesSettingsProps): Reac
         <div className="grid gap-3" id={settingElementId(SETTING_IDS.about.updates)}>
           <UpdateStatusCard target="client" version={version} />
           {/* Client and remote backend updates are independent. Only the client has release notes. */}
-          {remote && <UpdateStatusCard showReleaseNotes={false} target="backend" />}
+          {remote && <UpdateStatusCard showReleaseNotes={false} target="backend" version={version} />}
         </div>
         {version && <VersionDetails version={version} />}
         {includeUninstall && <UninstallSection />}

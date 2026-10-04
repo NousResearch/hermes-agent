@@ -697,26 +697,29 @@ class Git(BinaryPackage):
                 "nothing under -y; usual causes: disk full, path-length limit, "
                 "antivirus lock)",
             )
-        # The extractor restores the archive's POSIX `etc/mtab -> /proc/mounts`
-        # link as a WSL reparse point (IO_REPARSE_TAG_LX_SYMLINK): CPython
-        # reports a regular file (is_symlink() is False) that open() rejects
-        # with EINVAL, so tree_digest() dies on the published entry and the
-        # install never stamps. MinGit does not ship the file and MSYS2
-        # emulates mount tables in msys-2.0.dll — dead weight. Replace it
-        # with an empty regular file; probe with lstat, since exists() and
-        # open() both follow the reparse point and raise.
-        mtab = staged / "etc" / "mtab"
-        try:
-            mtab.lstat()
-        except OSError:
-            pass
-        else:
+        # The extractor restores the archive's POSIX device links and etc/mtab
+        # as WSL reparse points (IO_REPARSE_TAG_LX_SYMLINK): CPython reports
+        # regular files (is_symlink() is False) that open() rejects with
+        # EINVAL, so tree_digest() dies on the published entry and the install
+        # never stamps. MinGit does not ship them and MSYS2 emulates /dev and
+        # mount tables in msys-2.0.dll — dead weight. Replace each with an
+        # empty regular file; probe with lstat, since exists() and open()
+        # both follow the reparse point and raise. Same set the old
+        # install.ps1 invariant skipped (dev/fd, dev/stdin, dev/stdout,
+        # dev/stderr, etc/mtab) — tree_digest sorts by relpath, so an
+        # unprivileged host hits dev/fd before etc/mtab.
+        for rel in ("dev/fd", "dev/stdin", "dev/stdout", "dev/stderr", "etc/mtab"):
+            staged_link = staged.joinpath(*rel.split("/"))
             try:
-                mtab.unlink()
-                mtab.write_text("", encoding="utf-8")
+                staged_link.lstat()
+            except OSError:
+                continue
+            try:
+                staged_link.unlink()
+                staged_link.write_text("", encoding="utf-8")
             except OSError as e:
                 raise InstallError(
-                    self.name, f"could not replace the staged etc/mtab link: {e}"
+                    self.name, f"could not replace the staged {rel} link: {e}"
                 ) from e
 
     def env(self, entry: Path, target: str) -> dict:

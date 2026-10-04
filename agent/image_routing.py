@@ -7,6 +7,12 @@ non-vision models). :func:`decide_image_input_mode` picks once per turn from
 explicit ``auxiliary.vision`` backend forces ``text`` even for vision-capable
 main models (``native`` is the absolute override); else ``supports_vision``
 (config override or catalog) decides. ``vision_analyze`` stays a tool regardless.
+
+Reporting tools that must tell a *confirmed* text-only model apart from an
+*unknown* one (and either from an explicit policy choice or the aux-backend
+route) use :func:`resolve_image_input_decision`, which returns an
+:class:`ImageInputDecision` with ``mode`` / ``supports_vision`` / ``reason``
+intact; the string wrapper collapses False and unknown to the same ``text``.
 """
 
 from __future__ import annotations
@@ -17,6 +23,7 @@ import mimetypes
 import os
 import re
 from contextlib import suppress
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -368,6 +375,72 @@ def _lookup_supports_vision(
     return None
 
 
+# Machine-readable reason codes for :class:`ImageInputDecision`. Consumers
+# (e.g. vision precondition reporters) branch on these instead of parsing the
+# wrapper's collapsed string, so "confirmed text-only" and "could not tell"
+# are never reported as the same fact.
+REASON_EXPLICIT_NATIVE = "explicit_native_policy"
+REASON_EXPLICIT_TEXT = "explicit_text_policy"
+REASON_AUTO_VISION_CONFIRMED = "auto_vision_confirmed"
+REASON_AUTO_TEXT_ONLY_CONFIRMED = "auto_text_only_confirmed"
+REASON_AUTO_VISION_UNKNOWN = "auto_vision_unknown_fail_closed"
+REASON_AUTO_AUX_BACKEND = "auto_aux_vision_backend_configured"
+
+
+@dataclass(frozen=True)
+class ImageInputDecision:
+    """Structured, immutable outcome of the per-turn image input decision.
+
+    ``mode`` is the routing verdict (``"native"`` | ``"text"``) — exactly what
+    :func:`decide_image_input_mode` returns. ``supports_vision`` carries the
+    resolved capability verdict — True (vision confirmed), False (text-only
+    confirmed) or None (unknown) — and stays None for the explicit-policy
+    outcomes, which never consult capability. ``reason`` stamps which of the
+    six outcomes fired, keeping False and None distinguishable although the
+    string wrapper routes both to ``text``.
+    """
+
+    mode: str
+    supports_vision: Optional[bool]
+    reason: str
+
+
+def resolve_image_input_decision(
+    provider: str,
+    model: str,
+    cfg: Optional[Dict[str, Any]],
+    *,
+    requested_provider: str = "",
+) -> ImageInputDecision:
+    """Structured form of :func:`decide_image_input_mode` for reporting tools.
+
+    Same decision, minus the collapse: the wrapper maps both a confirmed
+    text-only model and an unknown one to ``"text"``, while this keeps the
+    ``supports_vision`` verdict (True / False / None) intact and stamps
+    ``reason`` with which outcome fired. Explicit ``agent.image_input_mode``
+    values, and an explicitly configured ``auxiliary.vision`` backend, are
+    config choices — ``supports_vision`` stays None and no capability lookup
+    runs at all. No new probes or network behavior: the
+    verdict comes from the same :func:`_lookup_supports_vision` chain, with
+    ``requested_provider`` forwarded unchanged.
+    """
+    mode_cfg = _coerce_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("image_input_mode"))
+    if mode_cfg != "auto":
+        reason = REASON_EXPLICIT_NATIVE if mode_cfg == "native" else REASON_EXPLICIT_TEXT
+        return ImageInputDecision(mode=mode_cfg, supports_vision=None, reason=reason)
+    if _explicit_aux_vision_override(cfg):
+        # Config choice, not a capability verdict: no lookup runs, so supports_vision stays None.
+        return ImageInputDecision(mode="text", supports_vision=None, reason=REASON_AUTO_AUX_BACKEND)
+    # Keep the three-argument call contract for callers/tests that replace the lookup hook.
+    extra = {"requested_provider": requested_provider} if requested_provider else {}
+    supports_vision = _lookup_supports_vision(provider, model, cfg, **extra)
+    if supports_vision is True:
+        return ImageInputDecision(mode="native", supports_vision=True, reason=REASON_AUTO_VISION_CONFIRMED)
+    if supports_vision is False:
+        return ImageInputDecision(mode="text", supports_vision=False, reason=REASON_AUTO_TEXT_ONLY_CONFIRMED)
+    return ImageInputDecision(mode="text", supports_vision=None, reason=REASON_AUTO_VISION_UNKNOWN)
+
+
 def decide_image_input_mode(
     provider: str,
     model: str,
@@ -376,15 +449,13 @@ def decide_image_input_mode(
     requested_provider: str = "",
 ) -> str:
     """Return ``"native"`` or ``"text"`` for the given turn (``cfg`` None behaves as
-    auto; ``requested_provider`` is the identity before runtime canonicalization)."""
-    mode_cfg = _coerce_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("image_input_mode"))
-    if mode_cfg != "auto":
-        return mode_cfg
-    if _explicit_aux_vision_override(cfg):  # auto: an explicit auxiliary.vision backend wins
-        return "text"
-    # Keep the three-argument call contract for callers/tests that replace the lookup hook.
-    extra = {"requested_provider": requested_provider} if requested_provider else {}
-    return "native" if _lookup_supports_vision(provider, model, cfg, **extra) is True else "text"
+    auto; ``requested_provider`` is the identity before runtime canonicalization).
+
+    Unchanged behavior — this is now the string projection of
+    :func:`resolve_image_input_decision`. Reporting tools that need to know WHY
+    (confirmed text-only vs unknown vs explicit policy vs aux backend) call that
+    instead of parsing this collapse."""
+    return resolve_image_input_decision(provider, model, cfg, requested_provider=requested_provider).mode
 
 
 # Image size handling is REACTIVE: attach at full size and let
@@ -559,4 +630,15 @@ def build_native_content_parts(
     return [{"type": "text", "text": combined_text}, *image_parts], skipped
 
 
-__all__ = ["decide_image_input_mode", "build_native_content_parts", "extract_image_refs"]
+__all__ = [
+    "ImageInputDecision",
+    "REASON_AUTO_TEXT_ONLY_CONFIRMED",
+    "REASON_AUTO_VISION_CONFIRMED",
+    "REASON_AUTO_VISION_UNKNOWN",
+    "REASON_EXPLICIT_NATIVE",
+    "REASON_EXPLICIT_TEXT",
+    "build_native_content_parts",
+    "decide_image_input_mode",
+    "extract_image_refs",
+    "resolve_image_input_decision",
+]

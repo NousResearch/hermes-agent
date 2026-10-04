@@ -235,8 +235,12 @@ _WEB_BACKEND_ROLES = frozenset({"dashboard", "serve"})
 
 
 def _web_backend_role(argv: Sequence[str]) -> str | None:
-    """The container's command when it is a web backend (which never supervises gateways)."""
-    args = _strip_container_argv_prefix(argv)
+    """The container's command when it is a web backend (which never supervises gateways).
+
+    Global flags such as ``-p coder`` are skipped; the wrapper accepts them before the subcommand."""
+    from hermes_cli._parser import command_argv
+
+    args = command_argv(_strip_container_argv_prefix(argv))
     return args[0] if args and args[0] in _WEB_BACKEND_ROLES else None
 
 

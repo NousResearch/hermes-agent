@@ -303,6 +303,16 @@ def test_main_skips_reconcile_in_web_backend_container_s6v3(
     assert not (scandir / "gateway-default").exists()
 
 
+@pytest.mark.parametrize("prefix", [(), ("-p", "coder"), ("--profile=coder",)])
+def test_web_backend_role_skips_global_flags(prefix: tuple[str, ...]) -> None:
+    """`docker run <img> -p coder serve` is a supported shape; the profile flag must not hide the role."""
+    from hermes_cli import container_boot
+
+    argv = ("/opt/hermes/docker/main-wrapper.sh", *prefix, "serve", "--port", "9119")
+
+    assert container_boot._web_backend_role(argv) == "serve"
+
+
 # ---------------------------------------------------------------------------
 # Multiplex-only: the root slot inherits every named slot's autostart intent
 # ---------------------------------------------------------------------------

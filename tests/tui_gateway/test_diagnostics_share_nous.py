@@ -193,6 +193,19 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
     # Prose after an already-masked value is not a key: kept, and a fixed point.
     benign = real_redact("x-api-key: *** see docs")
     assert benign.endswith(" see docs") and real_redact(benign) == benign
+    for prose in ("see: documentation", "time: 12:30:45", "configured via env", "undefined"):
+        kept = real_redact(f"x-api-key: *** {prose}")
+        assert kept.endswith(f" {prose}") and real_redact(kept) == kept
+    # Short, colon-bearing and double-encoded keys are keys, not prose.
+    for leaky, key in (
+        ("x-api-key: Bearer abc1234", "abc1234"),
+        ("-H 'x-auth-token: *** s3cr3t'", "s3cr3t"),
+        ("--header x-api-key Basic short", "short"),
+        ("x-api-key: *** sk-abc:xyz123456", "xyz123456"),
+        ("Basic user:passw0rd", "passw0rd"),
+        ("?r=x%2526access_token%253Dtok123456789", "tok123456789"),
+    ):
+        assert key not in real_redact(leaky)
 
 
 def test_share_nous_linkless_success_is_a_failure(monkeypatch):

@@ -53,7 +53,7 @@ def _is_new_session(entry) -> bool:
     Kept in-sync with the production check so this test fails loudly if the
     upstream logic regresses.
     """
-    first_agent_turn_pending = entry.metadata.pop("first_agent_turn_pending", False)
+    first_agent_turn_pending = entry.metadata.get("first_agent_turn_pending", False)
     return (
         entry.created_at == entry.updated_at
         or getattr(entry, "was_auto_reset", False)
@@ -100,7 +100,7 @@ class TestVanillaBehaviorUnaffected:
         store = _make_store(tmp_path)
         source = _make_source()
         entry = store.get_or_create_session(source)
-        _is_new_session(entry)  # first agent turn consumes the pending marker
+        entry.metadata.pop("first_agent_turn_pending", None)  # completed user turn
 
         # A later message has an advanced activity clock and no pending marker.
         entry.updated_at = entry.created_at.replace(microsecond=entry.created_at.microsecond + 1)
@@ -119,7 +119,7 @@ class TestVanillaBehaviorUnaffected:
 
         assert result == (False, True)
         runner.hooks.emit.assert_awaited_once()
-        assert "first_agent_turn_pending" not in entry.metadata
+        assert entry.metadata["first_agent_turn_pending"] is True
 
     def test_read_only_command_before_first_message_still_flags_first_turn(self, tmp_path):
         store = _make_store(tmp_path)
@@ -130,6 +130,7 @@ class TestVanillaBehaviorUnaffected:
         entry.updated_at = entry.created_at.replace(microsecond=entry.created_at.microsecond + 1)
 
         assert _is_new_session(entry) is True
+        entry.metadata.pop("first_agent_turn_pending", None)  # completed user turn
         assert _is_new_session(entry) is False
 
 

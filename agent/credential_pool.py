@@ -2296,16 +2296,19 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         billing-attributed benches clear here; rate-limit windows, auth failures and
         unverified-billing benches keep their cooldowns."""
         with self._lock:
-            cleared = 0
+            cleared_ids = []
             for entry in self._entries:
                 if entry.last_status != STATUS_EXHAUSTED or entry.failure_reason != FAILURE_REASON_BILLING:
                     continue
-                updates = {**_MARK_OK}
-                self._adopt(entry, persist=False, **updates)
-                cleared += 1
-            if cleared:
-                self._persist()
-            return cleared
+                self._adopt(
+                    entry, persist=False, **_MARK_OK, status_cleared_at=time.time(),
+                    extra={k: v for k, v in entry.extra.items() if k != "failure_reason"},
+                )
+                cleared_ids.append(entry.id)
+            if cleared_ids:
+                # Declare the reset so the disk-recency merge cannot restore the bench.
+                self._persist(status_cleared_ids=cleared_ids)
+            return len(cleared_ids)
 
     # ---- rotation ----------------------------------------------------------
 

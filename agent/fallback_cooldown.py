@@ -52,8 +52,8 @@ def _probe_primary_billing_recovery(agent) -> bool:
     if last_probe is not None and now - last_probe < _BILLING_RECOVERY_PROBE_MIN_INTERVAL_S:
         return False
     # Cheap pre-check before any network I/O: only probe when the primary actually sits in
-    # billing-backed cooldown — an armed session cooldown or a pool bench attributed to
-    # billing. Rate-limit windows and auth benches are none of this probe's business.
+    # billing-backed cooldown — a pool bench attributed to billing, not merely an
+    # armed session cooldown. Rate-limit windows and auth benches are not ours to clear.
     from agent.credential_pool import FAILURE_REASON_BILLING, load_pool
 
     def _pool_has_billing_bench(p) -> bool:
@@ -74,9 +74,11 @@ def _probe_primary_billing_recovery(agent) -> bool:
         try:
             disk_pool = load_pool("nous")
             has_billing_bench = bool(disk_pool) and _pool_has_billing_bench(disk_pool)
+            if has_billing_bench:
+                pool = disk_pool
         except Exception:
             has_billing_bench = False
-    if getattr(agent, "_rate_limited_until", 0) <= now and not has_billing_bench:
+    if not has_billing_bench:
         return False
     agent._billing_recovery_probe_at = now
     try:
@@ -102,7 +104,7 @@ def _probe_primary_billing_recovery(agent) -> bool:
             cleared = True
     except Exception:
         logger.debug("Billing-recovery pool unbench failed", exc_info=True)
-    if getattr(agent, "_rate_limited_until", 0) > now:
+    if cleared and getattr(agent, "_rate_limited_until", 0) > now:
         agent._rate_limited_until = now
         cleared = True
     if cleared:

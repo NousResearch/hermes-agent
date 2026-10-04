@@ -4960,6 +4960,20 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             if str(entry).strip().isdigit()
         }
 
+    def _component_live_auth(self, interaction) -> Optional[bool]:
+        """The gateway's live allowlist verdict for a component click, or None when no check is wired.
+        Views hold the connect-time ``_allowed_user_ids``; a revoke run in another process
+        (``hermes pairing revoke`` from the CLI or dashboard, a hand edit of .env) never reaches it,
+        while the gateway check re-reads the allowlist on every call (Matrix approval reactions use
+        the same check, #130920)."""
+        if getattr(self, "_authorization_check", None) is None:
+            return None
+        user_id = str(getattr(getattr(interaction, "user", None), "id", "") or "")
+        channel_id = getattr(interaction, "channel_id", None)
+        chat_type = "dm" if getattr(interaction, "guild", None) is None else "group"
+        return self._is_sender_authorized(
+            user_id, chat_type, str(channel_id) if channel_id is not None else None)
+
     def resolved_allowlist_user_ids(self) -> set:
         """Numeric IDs from connect-time username resolution.
         The env mirror of ``_allowed_user_ids`` doesn't survive the per-turn .env hot-reload, so the
@@ -5552,6 +5566,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         try:
             channel = await self._resolve_channel(_prompt_target_id(chat_id, metadata))
             send_kwargs, view = build(channel)
+            if view is not None:
+                view.live_auth = self._component_live_auth
             msg = await channel.send(**send_kwargs)
             if view is not None:
                 view._message = msg
@@ -6242,10 +6258,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
 def _component_check_auth(
     interaction, allowed_user_ids: Optional[set], allowed_role_ids: Optional[set],
+    live_auth: Optional[Callable[[Any], Optional[bool]]] = None,
 ) -> bool:
     """Shared user-or-role OR authorization for component button clicks.
     Allow on: DISCORD/GATEWAY_ALLOW_ALL_USERS, user in DISCORD/GATEWAY_ALLOWED_USERS, a role in the
     role allowlist, or pairing-store approval. Role allowlist with no ``roles`` (DM) rejects (fail closed).
+    ``allowed_user_ids`` is the adapter's connect-time snapshot: a user found only there is confirmed
+    with ``live_auth`` (the gateway's per-call check), and an explicit False falls through to the role
+    and pairing grants.
     """
     user = getattr(interaction, "user", None)
     if user is None or getattr(user, "id", None) is None:
@@ -6274,7 +6294,9 @@ def _component_check_auth(
     except AttributeError:
         uid = ""
     if has_users:
-        if "*" in user_set or (uid and uid in user_set):
+        if "*" in user_set:
+            return True
+        if uid and uid in user_set and (live_auth is None or live_auth(interaction) is not False):
             return True
     if has_roles:
         roles_attr = getattr(user, "roles", None)
@@ -6330,11 +6352,14 @@ def _define_discord_view_classes() -> None:
             super().__init__(timeout=timeout)
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
+            # The adapter's live allowlist check, bound in ``_send_prompt``.
+            self.live_auth = None
             self.resolved = False
             self._message = None
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
-            return _component_check_auth(interaction, self.allowed_user_ids, self.allowed_role_ids)
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids, live_auth=self.live_auth)
 
         async def _gate(self, interaction: discord.Interaction, *, resolved_msg: Optional[str], unauth_msg: str) -> bool:
             """Reject (ephemerally) an already-resolved or unauthorized click; True when it may proceed."""

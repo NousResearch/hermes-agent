@@ -453,9 +453,10 @@ terminal:
 #   bubblewrap_max_procs: 256      # Processes one command may run (RLIMIT_NPROC, counted per sandbox), 0 disables.
 #   bubblewrap_home_allow: []      # More dot entries of HOME to show read-only: [".zz-tool", ".config/nvim"]
 #   bubblewrap_hide: []            # More paths to hide: ["~/Documents/keys"]
-#   Each sandbox gets a scratch directory of its own at $HERMES_HOME/cache/scratch (TMPDIR), and
-#   $HERMES_HOME/cache/spillover is not visible in it. The backend refuses to start when a dot
-#   symlink of HOME (~/.bashrc -> ~/dotfiles/bashrc) leads into the cwd or a read-write bind.
+#   Each sandbox gets a scratch directory of its own inside $HERMES_HOME/cache/scratch (TMPDIR points
+#   at it; the rest of that directory is not visible), and of $HERMES_HOME/cache/spillover only the
+#   files handed to it. The backend refuses to start when a dot symlink of HOME
+#   (~/.bashrc -> ~/dotfiles/bashrc) leads into the cwd or a read-write bind.
 
 # -----------------------------------------------------------------------------
 # OPTION 3: SSH remote execution

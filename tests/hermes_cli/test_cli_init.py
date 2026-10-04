@@ -160,6 +160,64 @@ class TestBusyInputMode:
         assert isinstance(items[0], _cli_mod._VoiceInputMessage)
         assert str(items[0]) == "corrected prompt"
 
+    def test_unwrap_queued_input_marks_hidden_injections_invisible(self):
+        from hermes_cli.plugins import InjectedMessage
+
+        cli = _make_cli()
+        item = InjectedMessage(content="hidden event", visible=False)
+
+        content, visible, preview = cli._unwrap_queued_input(item)
+
+        assert content == "hidden event"
+        assert visible is False
+        assert preview == "hidden event"
+
+    def test_hidden_injected_idle_input_reaches_chat_without_preview(self):
+        from hermes_cli.plugins import InjectedMessage
+
+        cli = _make_cli()
+        cli._app = MagicMock()
+        hidden = InjectedMessage(content="SECRET_HIDDEN_EVENT", visible=False)
+
+        with patch.object(cli, "_print_user_message_preview") as preview, \
+             patch.object(cli, "chat", return_value="ok") as chat, \
+             patch.object(cli, "_tui_after_turn"):
+            cli._tui_process_one_input(hidden)
+
+        preview.assert_not_called()
+        chat.assert_called_once_with("SECRET_HIDDEN_EVENT", images=None, voice_input=False)
+
+    def test_combine_queued_inputs_does_not_leak_hidden_preview_text(self):
+        from hermes_cli.plugins import InjectedMessage
+
+        cli = _make_cli()
+        hidden = InjectedMessage(content="SECRET_HIDDEN_EVENT", visible=False)
+
+        combined, combined_visible, combined_preview = cli._combine_queued_inputs(
+            ["visible user message", hidden]
+        )
+
+        assert combined_visible is True
+        assert combined_preview == "visible user message"
+        assert "SECRET_HIDDEN_EVENT" not in combined_preview
+        assert combined.content == "visible user message\nSECRET_HIDDEN_EVENT"
+        assert combined.visible is True
+        assert combined.preview == "visible user message"
+
+    def test_combine_queued_inputs_with_only_hidden_messages_stays_silent(self):
+        from hermes_cli.plugins import InjectedMessage
+
+        cli = _make_cli()
+        hidden = InjectedMessage(content="SECRET_HIDDEN_EVENT", visible=False)
+
+        combined, combined_visible, combined_preview = cli._combine_queued_inputs([hidden])
+
+        assert combined_visible is False
+        assert combined_preview == ""
+        assert combined.content == "SECRET_HIDDEN_EVENT"
+        assert combined.visible is False
+        assert combined.preview == ""
+
     def test_queue_out_of_range_indices_leave_queue_untouched(self):
         cli = _make_cli()
         cli.process_command("/queue only item")

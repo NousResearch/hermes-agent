@@ -11,15 +11,20 @@ logger = logging.getLogger("hermes_cli.plugins")
 
 def inject_plugin_message(
     ctx: Any, content: str, role: str, *, session_key: Optional[str],
-    origin: Optional[Mapping[str, Any]],
+    origin: Optional[Mapping[str, Any]], visible: bool = True,
 ) -> bool:
     manager = ctx._manager
     msg = content if role == "user" else f"[{role}] {content}"
     cli = manager._cli_ref
     # An origin names a messaging chat; the local REPL is never that chat.
     if cli is not None and origin is None:
+        if visible:
+            payload = msg
+        else:
+            from hermes_cli.plugins import InjectedMessage
+            payload = InjectedMessage(content=msg, visible=False)
         queue_ = cli._interrupt_queue if getattr(cli, "_agent_running", False) else cli._pending_input
-        queue_.put(msg)
+        queue_.put(payload)
         return True
     if session_key and origin is not None:
         logger.warning("inject_message: pass session_key or origin, not both")

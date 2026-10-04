@@ -241,8 +241,8 @@ def write(token: dict, *, owner: dict | None = None, path: Path | None = None) -
 def mark_stop_requested(token: dict, pids, markers: dict | None = None) -> None:
     """Persist, BEFORE the first stop request, the stops this update intends and where each mapped
     gateway's request (its planned-stop marker) will be written. Intent is not a request: a live
-    process counts as asked only once :func:`mark_stop_sent` recorded it, or while the request this
-    update wrote is still on disk (:func:`_asked`)."""
+    process counts as asked only once the producer or consumer checkpoints it, or while the
+    valid request this update wrote is still on disk (:func:`_asked`)."""
     token["stop_requested"] = sorted({*map(str, token.get("stop_requested") or []), *(str(int(p)) for p in pids)})
     token["stop_sent"] = sorted(map(str, token.get("stop_sent") or []))
     token["stopper_pid"] = os.getpid()
@@ -253,12 +253,31 @@ def mark_stop_requested(token: dict, pids, markers: dict | None = None) -> None:
 def mark_stop_sent(token: dict, pid) -> None:
     """Persist that *pid*'s stop request was issued (its planned-stop marker is on disk): from here a
     live *pid* is draining and keeps its restart debt until it exits. Best effort: the marker itself
-    is the evidence until this lands, and the token carries it to the next record write."""
+    is evidence until this lands; its consumer checkpoints before unlinking it."""
     token["stop_sent"] = sorted({*map(str, token.get("stop_sent") or []), str(int(pid))})
     try:
         write(token, owner=identity())
     except OSError as exc:
         print(f"  ⚠ Could not record the stop request for gateway {pid}: {exc}")
+
+
+def mark_stop_consumed(path: Path, marker: dict) -> None:
+    """Checkpoint a validated gateway consume BEFORE its marker disappears.
+
+    Called under the pause mutex by the consumer. Preserve the holder's identity;
+    this is evidence of a stop, not a transfer of the updater's custody.
+    """
+    from gateway.status import _same_hermes_home
+    pid = str(marker["target_pid"])
+    for src, body in _files(record_path()):
+        token = body["token"]
+        recorded_path = (token.get("stop_markers") or {}).get(pid)
+        if (str(token.get("stopper_pid")) != str(marker.get("stopper_pid"))
+                or pid not in (token.get("stop_requested") or [])
+                or not recorded_path or not _same_hermes_home(recorded_path, path)):
+            continue
+        token["stop_sent"] = sorted({*map(str, token.get("stop_sent") or []), pid})
+        _atomic_write(src, body)  # Failure leaves the request intact for recovery.
 
 
 def discharge(token: dict, path: Path | None = None) -> None:
@@ -404,7 +423,9 @@ def adopt_orphans() -> tuple[dict | None, list[Path]]:
         if won is None:
             continue
         claims.append(won[0])
-        adopted = merge_into(adopted, drop_never_stopped(dict(won[1]["token"])))
+        with _mutex():
+            body = read(won[0]) or won[1]
+            adopted = merge_into(adopted, drop_never_stopped(dict(body["token"])))
     return adopted, claims
 
 
@@ -468,9 +489,16 @@ def _request_on_disk(token: dict, pid: str) -> bool:
     path = (token.get("stop_markers") or {}).get(str(pid))
     if not path:
         return False
+    from gateway.status import _marker_is_stale, _PLANNED_STOP_MARKER_TTL_S, get_process_start_time
     try:
         marker = json.loads(Path(path).read_text(encoding="utf-8-sig"))
-        return int(marker["target_pid"]) == int(pid) and int(marker["stopper_pid"]) == int(token["stopper_pid"])
+        if (int(marker["target_pid"]) != int(pid)
+                or int(marker["stopper_pid"]) != int(token["stopper_pid"])
+                or _marker_is_stale(marker.get("written_at") or "", _PLANNED_STOP_MARKER_TTL_S)):
+            return False
+        expected, actual = marker.get("target_start_time"), get_process_start_time(int(pid))
+        # Match the consumer's optional birth fingerprint, including unavailable clocks.
+        return None in (expected, actual) or expected == actual
     except (OSError, ValueError, TypeError, KeyError):
         return False
 
@@ -526,6 +554,13 @@ def merge_into(token: dict | None, adopted: dict) -> dict:
             requested = sent = list(adopted.get("identities") or {})
         token["stop_requested"] = sorted({*map(str, token.get("stop_requested") or []), *map(str, requested)})
         token["stop_sent"] = sorted({*map(str, token.get("stop_sent") or []), *map(str, sent or [])})
+    cold = token.setdefault("cold_start_profiles", {})
+    for name, generation in (adopted.get("cold_start_profiles") or {}).items():
+        cold.setdefault(name, generation)
+    if adopted.get("cold_start_if_installed"):
+        token["cold_start_if_installed"] = True
+        if "attested_generation" in adopted:
+            token.setdefault("attested_generation", adopted["attested_generation"])
     services = token.setdefault("services", [])
     services.extend(s for s in adopted.get("services") or [] if s not in services)
     if services:
@@ -541,8 +576,11 @@ def _has_work(token: dict) -> bool:
 
 
 def _resume_claimed(claim_path: Path, body: dict) -> None:
-    token = drop_never_stopped(dict(body["token"]))
-    draining = split_draining(token)
+    with _mutex():
+        # A live consumer may have checkpointed after claim() returned its snapshot.
+        body = read(claim_path) or body
+        token = drop_never_stopped(dict(body["token"]))
+        draining = split_draining(token)
     token.update(resume_needed=True, recovery=True)
     try:
         if _has_work(token):

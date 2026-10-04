@@ -405,7 +405,8 @@ def test_a_request_on_disk_is_owed_even_before_it_is_recorded_sent(tmp_path):
     token = r.record_pause({"resume_needed": True, "profiles": {"default": pid},
                             "identities": {str(pid): r.identity(pid)["ct"]}}, None, [])
     r.mark_stop_requested(token, [pid], markers={pid: marker})
-    marker.write_text(json.dumps({"target_pid": pid, "stopper_pid": os.getpid()}), encoding="utf-8")
+    from hermes_cli.update_cmd_windows import _write_update_planned_stop_marker
+    assert _write_update_planned_stop_marker(marker.parent, pid)
     print("requested", flush=True)
     time.sleep(120)
     """, str(gateway.pid), str(marker), env={"HERMES_HOME": str(tmp_path)})

@@ -1814,7 +1814,7 @@ def _pid_marker_names_self(target_pid: int, target_start_time: Any) -> bool:
     return None in (target_start_time, our_start_time) or target_start_time == our_start_time
 
 
-def _consume_pid_marker_for_self(path: Path, *, ttl_s: int) -> bool:
+def _consume_pid_marker_for_self(path: Path, *, ttl_s: int, on_consume=None) -> bool:
     parsed = _read_live_pid_marker(path, ttl_s)
     if parsed is None:
         return False
@@ -1833,6 +1833,8 @@ def _consume_pid_marker_for_self(path: Path, *, ttl_s: int) -> bool:
         if replacer_home is not None and not _same_hermes_home(replacer_home, our_home):
             return False
     matches = _pid_marker_names_self(target_pid, target_start_time)
+    if matches and on_consume is not None:
+        on_consume(path, record)
     _unlink_quietly(path)
     return matches
 
@@ -2071,9 +2073,14 @@ def write_planned_stop_marker(target_pid: int) -> bool:
 
 def consume_planned_stop_marker_for_self() -> bool:
     """Return True when the current process is being intentionally stopped."""
-    return _consume_pid_marker_for_self(
-        _get_planned_stop_marker_path(), ttl_s=_PLANNED_STOP_MARKER_TTL_S
-    )
+    from hermes_cli import update_pause_record
+    # Recovery must see either the request or its checkpoint, never the gap
+    # between validating/consuming the marker and scheduling asynchronous stop.
+    with update_pause_record._mutex():
+        return _consume_pid_marker_for_self(
+            _get_planned_stop_marker_path(), ttl_s=_PLANNED_STOP_MARKER_TTL_S,
+            on_consume=update_pause_record.mark_stop_consumed,
+        )
 
 
 def planned_stop_marker_targets_self() -> bool:

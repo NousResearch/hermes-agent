@@ -3104,7 +3104,7 @@ def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = N
     else:
         # Pool absent/empty: legacy resolver so a dead pool entry can't wedge aux tasks when a standalone credential exists.
         entry = None
-        token = explicit_api_key or resolve_anthropic_token()
+        token = explicit_api_key or resolve_anthropic_token(model=target_model)
     if not token:
         return None, None
     # Honor config.yaml model.base_url only when provider is anthropic AND the URL is

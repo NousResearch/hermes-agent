@@ -84,7 +84,7 @@ class HomeIOGuard:
             roots = tuple(_normcase(os.fspath(r)) for r in self.roots())
             # Resolving the root itself (get_default_hermes_root's relative_to
             # probe) reads no state; only its contents are guarded.
-            if metadata and absolute in roots:
+            if metadata and (absolute in roots or absolute == _normcase(os.fspath(Path(__file__).resolve().parent.parent.parent / "manifest.json"))):
                 return
             # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``. A developer shell puts
             # PM's tool store (~/.hermes/tools/...) on PATH; probing an executable there is

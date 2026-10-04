@@ -929,11 +929,23 @@ def _pool_codex_credential() -> Tuple[str, str]:
     try:
         for entry in _codex_pool_dicts(read_credential_pool("openai-codex")):
             token = entry.get("access_token")
-            # Same normaliser as ``_codex_pool_rate_limit_status``: a millisecond epoch compared
-            # raw reads as far-future here and as elapsed there, hiding a usable entry (#103349).
+            if not _nonempty_str(token):
+                continue
+            if entry.get("last_status") == "dead":
+                continue
             reset_at = _parse_absolute_timestamp(entry.get("last_error_reset_at"))
             in_cooldown = reset_at is not None and reset_at > time.time()
-            if _nonempty_str(token) and not in_cooldown:
+            if not in_cooldown and entry.get("last_status") == "exhausted":
+                if reset_at is None:
+                    status_at = _parse_absolute_timestamp(entry.get("last_status_at"))
+                    if status_at is not None:
+                        err_code = entry.get("last_error_code")
+                        cooldown = 300 if err_code == 401 else 3600
+                        if status_at + cooldown > time.time():
+                            in_cooldown = True
+                    else:
+                        in_cooldown = True
+            if not in_cooldown:
                 return token.strip(), _stripped(entry.get("base_url"))
     except Exception:
         logger.debug("Codex pool fallback lookup failed", exc_info=True)

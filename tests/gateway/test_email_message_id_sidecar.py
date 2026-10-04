@@ -10,10 +10,19 @@ from gateway.session import SessionSource
 
 
 def _runner():
-    from gateway.run import GatewayRunner
+    from gateway.run_agent_cache import GatewayAgentCacheMixin
+    from gateway.run_turn import GatewayTurnMixin
 
-    runner = object.__new__(GatewayRunner)
-    runner._pending_turn_sidecar_notes = {}
+    class _Runner(GatewayTurnMixin, GatewayAgentCacheMixin):
+        def _session_state(self, session_key):
+            from gateway.session_state import SessionState
+            return self._states.setdefault(session_key, SessionState())
+
+        def _peek_session_state(self, session_key):
+            return self._states.get(session_key)
+
+    runner = object.__new__(_Runner)
+    runner._states = {}
     runner.session_store = MagicMock()
     return runner
 

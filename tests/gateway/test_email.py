@@ -262,6 +262,7 @@ class TestDispatchMessage(unittest.TestCase):
             "body": "Please clean my home",
             "attachments": [],
             "date": "Thu, 24 Sep 2026 18:41:23 -0700",
+            "sender_authenticated": True,
         }
 
         asyncio.run(adapter._dispatch_message(msg_data))
@@ -321,6 +322,7 @@ class TestDispatchMessage(unittest.TestCase):
             "uid": b"10", "sender_addr": "user@test.com", "sender_name": "User",
             "subject": "First request", "message_id": "<root-a@test.com>", "in_reply_to": "",
             "references": "", "body": "First message", "attachments": [], "date": "",
+            "sender_authenticated": True,
         }
         asyncio.run(adapter._dispatch_message(dict(base)))
         asyncio.run(adapter._dispatch_message({
@@ -357,6 +359,7 @@ class TestDispatchMessage(unittest.TestCase):
             "uid": b"20", "sender_addr": "user@test.com", "sender_name": "User",
             "subject": "Cleaning", "message_id": "<root@test.com>", "in_reply_to": "",
             "references": "", "body": "First message", "attachments": [], "date": "",
+            "sender_authenticated": True,
         }
         asyncio.run(adapter._dispatch_message(dict(base)))
         first_thread = captured_events[-1].source.thread_id
@@ -411,6 +414,7 @@ class TestDispatchMessage(unittest.TestCase):
             "subject": "Cleaning", "in_reply_to": "", "references": "",
             "body": "Message", "attachments": [], "date": "",
             "provider_thread_id": "1876543210123456789",
+            "sender_authenticated": True,
         }
         asyncio.run(adapter._dispatch_message({**base, "message_id": "<first@test.com>"}))
         first_thread = captured_events[-1].source.thread_id
@@ -835,6 +839,68 @@ class TestFetchNewMessages(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["sender_addr"], "user@test.com")
         self.assertIn(b"3", adapter._seen_uids)
+
+    def test_gmail_fetch_and_dispatch_isolate_provider_threads(self):
+        """Gmail thread IDs survive fetch and produce stable, isolated session keys."""
+        import asyncio
+        from gateway.session import build_session_key
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.gmail.com",
+            "EMAIL_SMTP_HOST": "smtp.gmail.com",
+        }):
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        adapter._is_sender_authorized = lambda *a, **k: True
+        adapter._require_authenticated_sender = False
+
+        messages = {}
+        thread_ids = {b"1": b"111", b"2": b"222", b"3": b"111"}
+        for uid in thread_ids:
+            message = MIMEText(f"Body {uid.decode()}", "plain", "utf-8")
+            message["From"] = "Same Sender <user@test.com>"
+            message["Subject"] = f"Thread {thread_ids[uid].decode()}"
+            message["Message-ID"] = f"<msg-{uid.decode()}@test.com>"
+            messages[uid] = message.as_bytes()
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1 2 3"])
+            if command == "fetch":
+                uid, spec = args
+                if "BODY.PEEK[HEADER.FIELDS" in spec:
+                    return ("OK", [(uid, messages[uid])])
+                self.assertEqual(spec, "(X-GM-THRID RFC822)")
+                metadata = b"1 (X-GM-THRID " + thread_ids[uid] + b" RFC822 {123}"
+                return ("OK", [(metadata, messages[uid])])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            fetched = adapter._fetch_new_messages(lambda _candidate: True)
+
+        self.assertEqual(
+            [message["provider_thread_id"] for message in fetched],
+            ["111", "222", "111"],
+        )
+        events = []
+
+        async def capture(event):
+            events.append(event)
+
+        adapter.handle_message = capture
+        for message in fetched:
+            asyncio.run(adapter._dispatch_message(message))
+
+        keys = [build_session_key(event.source) for event in events]
+        self.assertNotEqual(keys[0], keys[1])
+        self.assertEqual(keys[0], keys[2])
+        self.assertEqual(events[0].metadata["email_sender"], "user@test.com")
 
 
 class TestPollLoop(unittest.TestCase):

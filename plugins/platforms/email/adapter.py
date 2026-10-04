@@ -82,7 +82,7 @@ _DROP_HINTS = {
     _UNTRUSTED_AUTHSERV_REASON: " Check that platforms.email.authserv_id (EMAIL_AUTHSERV_ID) names your mail server.",
 }
 _MESSAGE_ID_RE = re.compile(r"<[^<>\s]+>")
-_GMAIL_THREAD_ID_RE = re.compile(rb"(?:^|\s)X-GM-THRID\s+(\d+)(?:\s|$)", re.IGNORECASE)
+_GMAIL_THREAD_ID_RE = re.compile(rb"(?:^|[\s(])X-GM-THRID\s+(\d+)(?=\s|$)", re.IGNORECASE)
 # One token of a clause: a property we read (``header.from=x``; the value may be or contain a quoted-string), or
 # any other whitespace-delimited token consumed whole, so text inside quotes or other values is never read as a prop.
 _QUOTED = r'"(?:[^"\\]|\\.)*"'

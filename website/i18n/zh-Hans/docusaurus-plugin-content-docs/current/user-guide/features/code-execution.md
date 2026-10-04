@@ -132,10 +132,10 @@ print(json.dumps(report, indent=2))
 
 | 模式 | 工作目录 | Python 解释器 |
 |------|----------|---------------|
-| **`project`**（默认） | 会话的工作目录（与 `terminal()` 相同） | 活跃的 `VIRTUAL_ENV` / `CONDA_PREFIX` python，回退至 Hermes 自身的 python |
+| **`project`**（默认） | 会话的工作目录（与 `terminal()` 相同） | 后端的 `VIRTUAL_ENV` / `CONDA_PREFIX` Python；否则查找操作员选定的 Git 工作区内、当前目录下的 `.venv` / `venv`，最终回退至 Hermes 自身的 Python |
 | `strict` | 与用户项目隔离的临时暂存目录 | `sys.executable`（Hermes 自身的 python） |
 
-**何时保持 `project` 模式：** 当你希望 `import pandas`、`from my_project import foo` 或 `open(".env")` 等相对路径与 `terminal()` 中的行为一致时。这几乎是你始终想要的模式。
+**何时保持 `project` 模式：** 当你希望相对路径和导入使用会话目录及符合条件的项目解释器时。终端激活状态和 `PATH` 不会与 `execute_code` 同步；请检查导入是否成功，不要假定两个工具使用相同的环境。
 
 **何时切换至 `strict` 模式：** 当你需要最大可复现性时——希望无论用户激活哪个 venv，每次会话都使用相同的解释器，并且希望脚本与项目目录隔离（避免通过相对路径意外读取项目文件）。
 
@@ -145,7 +145,9 @@ code_execution:
   mode: project   # or "strict"
 ```
 
-`project` 模式的回退行为：若 `VIRTUAL_ENV` / `CONDA_PREFIX` 未设置、已损坏或指向低于 3.8 的 Python，解析器会干净地回退至 `sys.executable`——agent 始终有可用的解释器。
+对于本地执行，`project` 模式先检查后端环境中的 `VIRTUAL_ENV`，再检查 `CONDA_PREFIX`。若已有可执行文件未通过 Python 3.8+ 探测，立即回退至 `sys.executable`；若可执行文件不存在，则继续查找。
+
+若两个激活变量均未提供可执行文件，解析器会依次检查会话工作目录下的 `.venv` 和 `venv`，但**仅限于该目录属于操作员选定的 Git 工作区时**。它不会搜索父目录，也不会自动信任嵌套克隆或通向该工作区之外的目录联接。自动发现的解释器缺失、不符合工作区条件、损坏或版本过低时，会继续尝试下一候选项，最终回退至 Hermes 自身的 Python。当前目录不属于操作员选定的工作区，不会禁用后端已显式激活的环境。这些发现规则不改变远程后端或 `strict` 模式。
 
 两种模式的安全关键不变量完全相同：
 

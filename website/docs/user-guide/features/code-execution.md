@@ -132,10 +132,10 @@ print(json.dumps(report, indent=2))
 
 | Mode | Working directory | Python interpreter |
 |------|-------------------|--------------------|
-| **`project`** (default) | The session's working directory (same as `terminal()`) | Active `VIRTUAL_ENV` / `CONDA_PREFIX` python, falling back to Hermes's own python |
+| **`project`** (default) | The session's working directory (same as `terminal()`) | Backend `VIRTUAL_ENV` / `CONDA_PREFIX` Python; otherwise a cwd-local `.venv` / `venv` in an operator-selected Git workspace, falling back to Hermes's own Python |
 | `strict` | A temp staging directory isolated from the user's project | `sys.executable` (Hermes's own python) |
 
-**When to leave it on `project`:** you want `import pandas`, `from my_project import foo`, or relative paths like `open(".env")` to work the same way they do in `terminal()`. This is almost always what you want.
+**When to leave it on `project`:** you want relative paths and imports to use the session directory and an eligible project interpreter. Terminal activation and `PATH` are not synchronized with `execute_code`; check imports rather than assuming both tools use the same environment.
 
 **When to flip to `strict`:** you need maximum reproducibility — you want the same interpreter every session regardless of which venv the user activated, and you want scripts quarantined from the project tree (no risk of accidentally reading project files through a relative path).
 
@@ -145,7 +145,9 @@ code_execution:
   mode: project   # or "strict"
 ```
 
-Fallback behavior in `project` mode: if `VIRTUAL_ENV` / `CONDA_PREFIX` is unset, broken, or points at a Python older than 3.8, the resolver falls back cleanly to `sys.executable` — it never leaves the agent without a working interpreter.
+For local execution, `project` mode first checks `VIRTUAL_ENV`, then `CONDA_PREFIX` in the backend environment. An existing executable that fails its Python 3.8+ probe falls back directly to `sys.executable`; a missing executable allows discovery to continue.
+
+If neither activation variable supplies an executable, the resolver checks `.venv`, then `venv`, directly inside the session working directory, **only when that directory belongs to an operator-selected Git workspace**. It does not search parent directories or adopt nested clones or directory junctions outside that workspace. An absent, ineligible, broken, or too-old discovered interpreter falls back to the next candidate, then Hermes's own Python. A cwd outside an operator-selected workspace does not disable an explicitly activated backend environment. These discovery rules do not change remote backends or `strict` mode.
 
 Security-critical invariants are identical across both modes:
 

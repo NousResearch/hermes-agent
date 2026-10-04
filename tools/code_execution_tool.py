@@ -842,8 +842,10 @@ DEFAULT_EXECUTION_MODE = "project"
 
 
 def _get_execution_mode() -> str:
-    """``code_execution.mode`` (invalid → default with a warning). ``project``: session cwd + active
-    venv python; ``strict``: isolated temp dir + ``sys.executable``. Scrubbing/whitelist apply to both."""
+    """Resolve mode (invalid → default with a warning). Project uses the session cwd and
+    backend activation, then an operator-trusted cwd-local venv, then Hermes Python.
+    Strict uses an isolated temp dir and Hermes Python. Both scrub env and restrict tools.
+    """
     cfg_value = str(_load_config().get("mode", DEFAULT_EXECUTION_MODE)).strip().lower()
     if cfg_value in EXECUTION_MODES:
         return cfg_value

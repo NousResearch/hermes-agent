@@ -7,6 +7,7 @@ description: "Honcho AI-native memory provider — cross-session user modeling w
 maintainer: plastic-labs
 tier: community
 category: memory
+featured: true
 docs_url: https://github.com/plastic-labs/honcho/tree/main/hermes-plugin-honcho#readme
 capabilities:
   provides_tools: []

@@ -1951,10 +1951,13 @@ def _select_context_engine(_agent_cfg):
 
 
 def _compressor_max_tokens(agent):
-    """The output cap the wire sends for ``agent``'s CURRENT route: ``agent.max_tokens``, else the
-    provider profile's cap (chat-completions wire only), else the native-Gemini adapter default
-    (generateContent still sends maxOutputTokens=65,535). The threshold is pct×(window − max_tokens),
-    so reserving less than the wire sends lets the provider 400 before compaction fires."""
+    """The output cap that the provider carves out of the window for ``agent``'s CURRENT route:
+    ``agent.max_tokens``, else the provider profile's cap (chat-completions wire only), else the
+    native-Gemini adapter default (generateContent still sends maxOutputTokens=65,535). The threshold
+    is pct×(window − max_tokens), so reserving less than that cap lets the provider 400 before
+    compaction fires. The Anthropic adapter's fallback ceiling is not such a cap: Claude 4.5+ accepts
+    input + max_tokens over the window and stops at the window (``model_context_window_exceeded``),
+    so reserving it would only fire compaction early (61K instead of 100K on a 200K window at the default 50%)."""
     if getattr(agent, "max_tokens", None) is not None:
         return agent.max_tokens
     if getattr(agent, "api_mode", "") not in ("anthropic_messages", "bedrock_converse", "codex_responses"):

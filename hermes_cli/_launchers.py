@@ -455,7 +455,16 @@ def _launcher_python(target: Path) -> Path | None:
             line = next((entry for entry in lines if entry.startswith("exec ")), None)
             if line is None:
                 return None
-            line = line.removeprefix("exec ")
+            # The writer quotes with shlex.join, which splices an apostrophe in as
+            # '"'"', so read the first token the way sh does. Only the first: the
+            # rest of the line opens a multi-line -c argument.
+            lexer = shlex.shlex(line.removeprefix("exec "), posix=True)
+            lexer.whitespace_split = True
+            try:
+                token = lexer.get_token()
+            except ValueError:
+                return None
+            return Path(token) if token else None
     try:
         return _first_token(line)
     except (ValueError, OSError):

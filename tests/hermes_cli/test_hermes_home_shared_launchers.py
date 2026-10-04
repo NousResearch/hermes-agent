@@ -76,7 +76,8 @@ def _publish(repo: Path) -> dict[str, bytes]:
 # Every lane: the guard reads native .exe and .cmd launchers on Windows, POSIX wrappers elsewhere.
 @pytest.mark.platforms("any")
 def test_temp_home_prepare_launch_relaunches_without_rebinding(tmp_path, monkeypatch):
-    default_home, _ = _make_home(tmp_path, "default")
+    # An apostrophe in the owner's path: the guard must read back what the writer quoted.
+    default_home, _ = _make_home(tmp_path, "owner's home")
     temp_home, temp_python = _make_home(tmp_path, "temp")
     repo = _make_repo(tmp_path)
 

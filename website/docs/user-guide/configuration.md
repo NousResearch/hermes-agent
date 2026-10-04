@@ -705,7 +705,7 @@ terminal:
   docker_implicit_mounts: false
 ```
 
-Skills, skill credential files and cached attachments are then not visible inside the sandbox. The setting is applied when the container is created. An existing container keeps the mounts it was created with, so remove it after changing the value (or set `docker_persist_across_processes: false` so each process starts a fresh one).
+Skills, skill credential files and cached attachments are then not visible inside the sandbox. The setting is applied when the container is created. Changing it starts a fresh container, except when `docker_shared_container_key` is set: a shared container keeps the mounts of whoever created it, so remove it after changing the value.
 
 ### Snap-packaged Docker (AppArmor)
 

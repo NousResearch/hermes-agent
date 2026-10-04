@@ -308,7 +308,8 @@ jobs:
   # Gate: runs after everything. ``if: always()`` ensures it reports a
   # status even when some deps were skipped.
   #
-  #   Non-release (PR/push): failure fails, skipped counts as success.
+  #   Non-release (PR/push): failure fails. Update/E2E consumers selected
+  #   by detect.outputs must succeed; only unselected consumers may skip.
   #   Release (inputs.release): strict — every required job must be
   #   `success`. A skipped required lane fails the gate; only the PR-only
   #   jobs (history-check, lockfile-diff, supply-chain) and

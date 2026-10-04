@@ -98,16 +98,10 @@ def _requires_hermes_spec_valid(spec: str) -> bool:
 
 
 def _requires_hermes_version_space_valid(spec: str) -> bool:
-    """Reject CalVer floors that cannot occur in Hermes's semver base version."""
-    from hermes_cli.plugins_manifest import _VERSION_COMPARATOR_RE, _version_tuple
+    """Reject malformed specs and release-tag dates, not future semver floors."""
+    from hermes_cli.plugins_manifest import requires_hermes_uses_calver
 
-    for clause in spec.split(","):
-        match = _VERSION_COMPARATOR_RE.match(clause.strip())
-        target = match.group(2) if match else clause.strip()
-        parsed = _version_tuple(target)
-        if parsed is not None and parsed[0] >= 1000:
-            return False
-    return True
+    return _requires_hermes_spec_valid(spec) and not requires_hermes_uses_calver(spec)
 
 
 def _check_manifest_fields(report: ValidationReport, manifest: dict) -> None:
@@ -132,7 +126,7 @@ def _check_requires_hermes(report: ValidationReport, manifest: dict) -> None:
     if not _requires_hermes_spec_valid(spec):
         report.add("requires_hermes", False, f"requires_hermes spec {spec!r} does not parse")
     elif not _requires_hermes_version_space_valid(spec):
-        report.add("requires_hermes", False, f"requires_hermes spec {spec!r} uses a CalVer floor; Hermes plugin requirements must use the semver base-version space")
+        report.add("requires_hermes", False, f"requires_hermes spec {spec!r} uses CalVer; Hermes plugin requirements must use the semver base-version space")
     else:
         report.add("requires_hermes", True, f"spec {spec!r} parses")
 

@@ -28,6 +28,7 @@ import argparse
 import json
 import re
 import sys
+from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -90,7 +91,7 @@ README_REPO_HOSTS = ("github.com", "gitlab.com")
 REQUIRED_KEYS = ("name", "repo", "sha", "description", "maintainer")
 
 # One comparator clause of a requires_hermes spec, e.g. ">=0.19" or "!=1.2.3".
-_COMPARATOR_RE = re.compile(r"^(>=|<=|==|!=|>|<)\s*\d+(\.\d+)*\Z")
+_COMPARATOR_RE = re.compile(r"^(>=|<=|==|!=|>|<)\s*(\d+(?:\.\d+)*)\Z")
 
 
 def _is_allowed_image_url(url: str) -> bool:
@@ -126,11 +127,23 @@ def _check_page_fields(data: dict, errors: list[str]) -> None:
 
 
 def _requires_hermes_version_space_valid(spec: str) -> bool:
-    """Catalog requirements use Hermes's semver base-version space, not CalVer."""
+    """Reject malformed clauses and YYYY.M.D calendar dates, not future semver.
+
+    Detection mirrors plugins_manifest.requires_hermes_uses_calver without
+    importing Hermes (this script must remain standalone).
+    """
+    if not spec.strip():
+        return True
     for clause in spec.split(","):
         match = _COMPARATOR_RE.match(clause.strip())
-        target = re.sub(r"^(>=|<=|==|!=|>|<)\s*", "", clause)
-        if int(target.lstrip("v").split(".", 1)[0]) >= 1000:
+        if match is None:
+            return False
+        calendar = re.fullmatch(r"([1-9][0-9]{3})\.([0-9]{1,2})\.([0-9]{1,2})", match.group(2))
+        if calendar:
+            try:
+                date(*(int(part) for part in calendar.groups()))
+            except ValueError:
+                continue
             return False
     return True
 

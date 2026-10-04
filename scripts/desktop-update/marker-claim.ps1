@@ -96,7 +96,7 @@ function Get-MarkerLineage([int]$Desktop, $Info) {
             V1 = ($null -eq $Info.Ct -and $Info.DelegatePid -le 0); NamesDesktop = ($named -eq $Desktop)
             NamedAlive = $namedAlive; NamedIsOurParent = ($x -gt 0 -and $named -eq $x)
             NamedParentIsDesktop = ($namedAlive -and $named -eq $x -and $xParent -eq $Desktop)
-            EnvStartedMatches = (Test-MarkerEnvStartedAt "$($Info.StartedAt)")
+            EnvStartedMatches = (Test-MarkerEnvStartedAt $Info.StartedAtText)
         }
         $launcher = Test-MarkerLauncherRule $facts
     }
@@ -201,7 +201,7 @@ function Add-MarkerDelegate([int[]]$Candidates) {
             $probe = Get-LiveProcessCt $candidate
             if (-not $probe.Alive -or $null -eq $probe.Ct) { continue }
             $line = "delegate:$candidate ct:$(Format-Ct $probe.Ct)"
-            if (-not (Set-MarkerBodyLocked (Format-MarkerBody $info.Pid $info.StartedAt $info.CtText $line $info.Runs))) { return 'lost' }
+            if (-not (Set-MarkerBodyLocked (Format-MarkerBody $info.Pid $info.StartedAtText $info.CtText $line $info.Runs))) { return 'lost' }
             Write-HandoffLog "update marker now names updater pid $candidate as its delegate"
             return 'published'
         }

@@ -10,7 +10,7 @@
 #     <pid>\n<started_at>\nct:<creation time>\n[delegate:<pid> ct:<ct>\n][run:<id>\n]
 #
 # Each line drops one leading BOM (line 1), one trailing CR and surrounding
-# spaces/tabs. Line 1 (a u32 pid) and line 2 (an integer) are required, else
+# spaces/tabs. Line 1 (a u32 pid) and line 2 (digits that fit u64) are required, else
 # the marker is MALFORMED. A line 3 that is not `ct:<n>` makes it v1. Lines 4+
 # are tagged: the first well-formed `delegate:<pid> ct:<n>` and the first
 # well-formed `run:<id>` count; anything else is ignored.
@@ -149,7 +149,17 @@ EOF_MARKER
   marker_u32 "$l1" || return 0
   M_STARTED="${l2#"${l2%%[!0]*}"}"
   M_STARTED="${M_STARTED:-0}"
-  M_STARTED_DIGITS="$M_STARTED"  # exact value (no leading zeros), before the age clamp
+  M_STARTED_DIGITS="$M_STARTED"  # exact value (no leading zeros) for rewrites; M_STARTED is clamped
+  # line 2 fits u64 (any digit count), compared as two 10-digit halves -- never in
+  # shell arithmetic, which is signed 64-bit
+  if [ "${#M_STARTED}" -gt 20 ]; then
+    M_STARTED="" M_STARTED_DIGITS=""; return 0
+  elif [ "${#M_STARTED}" -eq 20 ]; then
+    local hi=$(( 10#${M_STARTED:0:10} )) lo=$(( 10#${M_STARTED:10} ))
+    if [ "$hi" -gt 1844674407 ] || { [ "$hi" -eq 1844674407 ] && [ "$lo" -gt 3709551615 ]; }; then
+      M_STARTED="" M_STARTED_DIGITS=""; return 0
+    fi
+  fi
   [ "${#M_STARTED}" -le 18 ] || M_STARTED=999999999999999999  # far future: "young"
   M_PID="$U32"
 }
@@ -408,7 +418,7 @@ marker_add_delegate_locked() { # pid ct -> name the update child as line 4 under
     log "update marker is no longer ours; no delegate written"; return 0
   fi
   if [ -n "$M_DPID" ] && [ "$M_DPID" != "$1" ] && [ "$J_DELEGATE_STATE" -eq 2 ]; then return 0; fi
-  marker_replace "$(marker_canonical "$M_PID" "$M_STARTED" "$M_CT" "$1" "$2")"$'\n' \
+  marker_replace "$(marker_canonical "$M_PID" "$M_STARTED_DIGITS" "$M_CT" "$1" "$2")"$'\n' \
     && log "update marker names update pid $1 (ct $2) as its delegate"
 }
 
@@ -435,7 +445,7 @@ marker_release_locked() { # A7 rule 5 / corpus "release"
   [ -n "$M_PID" ] || return 0
   if [ "$M_PID" = "$MY_PID" ] && [ "$J_OWNER_STATE" -eq 0 ]; then
     if [ -n "$M_DPID" ] && [ "$M_DPID" != "$MY_PID" ] && [ "$J_DELEGATE_STATE" -eq 2 ]; then
-      marker_replace "$(marker_canonical "$M_DPID" "$M_STARTED" "$M_DCT")"$'\n'
+      marker_replace "$(marker_canonical "$M_DPID" "$M_STARTED_DIGITS" "$M_DCT")"$'\n'
       log "handed the update marker to its live delegate pid $M_DPID (hermes update)"
     else
       rm -f "$MARKER" 2>/dev/null
@@ -444,7 +454,7 @@ marker_release_locked() { # A7 rule 5 / corpus "release"
   fi
   if [ "$M_DPID" = "$MY_PID" ] && [ "$J_DELEGATE_STATE" -eq 0 ]; then
     if [ "$J_OWNER_STATE" -ne 1 ]; then
-      marker_replace "$(marker_canonical "$M_PID" "$M_STARTED" "$M_CT")"$'\n'
+      marker_replace "$(marker_canonical "$M_PID" "$M_STARTED_DIGITS" "$M_CT")"$'\n'
     else
       rm -f "$MARKER" 2>/dev/null
     fi

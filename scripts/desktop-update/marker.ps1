@@ -116,11 +116,22 @@ function Get-MarkerLineValue([string]$Line) {
 }
 
 function ConvertTo-MarkerPid([string]$Text) {
-    # ASCII digits that fit u32, else $null (a malformed pid).
-    if ($Text -cnotmatch '\A[0-9]{1,10}\z') { return $null }
+    # ASCII digits (any count, leading zeros allowed) that fit u32, else $null (a malformed pid).
+    if ($Text -cnotmatch '\A[0-9]+\z') { return $null }
+    $Text = $Text.TrimStart('0')
+    if ($Text.Length -eq 0) { return [int64]0 }
+    if ($Text.Length -gt 10) { return $null }
     $value = [uint64]$Text
     if ($value -gt 4294967295) { return $null }
     return [int64]$value
+}
+
+function ConvertTo-MarkerCt([string]$Text) {
+    # A creation time past double's range is +Infinity -- it never matches a live process.
+    # (Windows PowerShell's .NET Framework throws OverflowException there; .NET Core does not.)
+    $value = 0.0
+    if ([double]::TryParse($Text, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$value)) { return $value }
+    return [double]::PositiveInfinity
 }
 
 function ConvertFrom-MarkerText([string]$Text) {
@@ -130,15 +141,20 @@ function ConvertFrom-MarkerText([string]$Text) {
     $lines = @($Text -split "`n" | ForEach-Object { Get-MarkerLineValue $_ })
     if ($lines.Count -lt 2) { return $null }
     $ownerPid = ConvertTo-MarkerPid $lines[0]
-    if ($null -eq $ownerPid -or $lines[1] -cnotmatch '\A[0-9]{1,18}\z') { return $null }
-    $invariant = [Globalization.CultureInfo]::InvariantCulture
+    if ($null -eq $ownerPid -or $lines[1] -cnotmatch '\A[0-9]+\z') { return $null }
+    # Line 2 fits u64 (any digit count), else malformed. StartedAt (arithmetic) clamps
+    # past int64 to "far future"; StartedAtText keeps the exact digits for rewrites.
+    $startedText = $lines[1].TrimStart('0')
+    if ($startedText.Length -eq 0) { $startedText = '0' }
+    if ($startedText.Length -gt 20 -or ($startedText.Length -eq 20 -and [decimal]$startedText -gt [decimal]'18446744073709551615')) { return $null }
+    $started = if ($startedText.Length -le 18) { [int64]$startedText } else { [int64]::MaxValue }
     $info = @{
-        Pid = $ownerPid; StartedAt = [int64]$lines[1]; Ct = $null; CtText = $null
+        Pid = $ownerPid; StartedAt = $started; StartedAtText = $startedText; Ct = $null; CtText = $null
         DelegatePid = 0; DelegateCt = $null; DelegateCtText = $null; Run = $null; Runs = @()
     }
     if ($lines.Count -ge 3 -and $lines[2] -cmatch '\Act:([0-9]+(\.[0-9]+)?)\z') {
         $info.CtText = $Matches[1]
-        $info.Ct = [double]::Parse($Matches[1], $invariant)
+        $info.Ct = ConvertTo-MarkerCt $Matches[1]
     }
     $runs = New-Object System.Collections.Generic.List[string]
     for ($i = 3; $i -lt $lines.Count; $i++) {
@@ -148,7 +164,7 @@ function ConvertFrom-MarkerText([string]$Text) {
             if ($null -ne $delegatePid -and $delegatePid -gt 0) {
                 $info.DelegatePid = $delegatePid
                 $info.DelegateCtText = $Matches[2]
-                $info.DelegateCt = [double]::Parse($Matches[2], $invariant)
+                $info.DelegateCt = ConvertTo-MarkerCt $Matches[2]
             }
         } elseif ($line -cmatch '\Arun:([A-Za-z0-9._-]{1,128})\z') {
             if ($null -eq $info.Run) { $info.Run = $Matches[1] }
@@ -159,7 +175,7 @@ function ConvertFrom-MarkerText([string]$Text) {
     return $info
 }
 
-function Format-MarkerBody([int64]$OwnerPid, [int64]$StartedAt, $CtText, $DelegateLine, $Runs) {
+function Format-MarkerBody([int64]$OwnerPid, [string]$StartedAt, $CtText, $DelegateLine, $Runs) {
     # Canonical, LF framing on purpose: the Rust/TS/Python readers split on "\n".
     $body = "$OwnerPid`n$StartedAt`n"
     if ($CtText) { $body += "ct:$CtText`n" }
@@ -222,13 +238,13 @@ function Get-MarkerReleaseAction($Info, $Ctx) {
     if ($Info.Pid -eq $Ctx.OwnPid -and $ownerState -eq 'ours') {
         if ($Info.DelegatePid -gt 0 -and $Info.DelegatePid -ne $Ctx.OwnPid -and $delegateState -eq 'live') {
             # A7 rule 5: hand over to the live delegate, keeping started_at and runs.
-            return @{ Action = 'rewrite'; Text = (Format-MarkerBody $Info.DelegatePid $Info.StartedAt $Info.DelegateCtText $null $Info.Runs) }
+            return @{ Action = 'rewrite'; Text = (Format-MarkerBody $Info.DelegatePid $Info.StartedAtText $Info.DelegateCtText $null $Info.Runs) }
         }
         return @{ Action = 'delete'; Text = $null }
     }
     if ($Info.DelegatePid -gt 0 -and $Info.DelegatePid -eq $Ctx.OwnPid -and $delegateState -eq 'ours') {
         if ($ownerState -ne 'dead') {
-            return @{ Action = 'rewrite'; Text = (Format-MarkerBody $Info.Pid $Info.StartedAt $Info.CtText $null $Info.Runs) }
+            return @{ Action = 'rewrite'; Text = (Format-MarkerBody $Info.Pid $Info.StartedAtText $Info.CtText $null $Info.Runs) }
         }
         return @{ Action = 'delete'; Text = $null }
     }

@@ -290,22 +290,31 @@ function Tip({ label, children, delayDuration = TIP_DELAY_MS, ...props }: TipPro
 // Measure an element's full text in its own rendered font, in pixels. Canvas
 // text measurement is unaffected by the element's clipping (unlike
 // scrollWidth, which rounds to the constrained box). Measurers are cached per
-// resolved font string.
-const textMeasureCache = new Map<string, (text: string) => number>()
+// resolved font string. Returns null where no 2D context exists (jsdom without
+// the canvas package); callers fall back to the scrollWidth comparison.
+const textMeasureCache = new Map<string, ((text: string) => number) | null>()
 
-function textPixelWidth(element: HTMLElement): number {
+function textPixelWidth(element: HTMLElement): number | null {
   const { font } = window.getComputedStyle(element)
-  let measure = textMeasureCache.get(font)
 
-  if (!measure) {
-    const context = document.createElement('canvas').getContext('2d')!
+  if (!textMeasureCache.has(font)) {
+    const context = document.createElement('canvas').getContext('2d')
 
-    context.font = font
-    measure = (text: string): number => context.measureText(text).width
-    textMeasureCache.set(font, measure)
+    textMeasureCache.set(
+      font,
+      context
+        ? (text => {
+            context.font = font
+
+            return context.measureText(text).width
+          })
+        : null
+    )
   }
 
-  return measure((element.textContent ?? '').replace(/\s+$/, ''))
+  const measure = textMeasureCache.get(font)
+
+  return measure ? measure((element.textContent ?? '').replace(/\s+$/, '')) : null
 }
 
 /** Hover-open delay for `OverflowTip`. Longer than `TIP_DELAY_MS`: the trigger
@@ -368,7 +377,12 @@ function OverflowTip({ label, children, delayDuration = OVERFLOW_TIP_DELAY_MS, .
           // ellipsis, scrollWidth can under-report a real clip by ~1px (it
           // lands within rounding slack), so compare the full text's pixel
           // width with the box width. 1px slack still rejects sub-pixel noise.
-          if (textPixelWidth(el) - el.clientWidth > 1) {
+          // Where no 2D context exists (unit tests without the canvas
+          // package), the scrollWidth comparison is what there is.
+          const textWidth = textPixelWidth(el)
+          const overflow = textWidth === null ? el.scrollWidth - el.clientWidth : textWidth - el.clientWidth
+
+          if (overflow > 1) {
             timer.current = window.setTimeout(() => setOpen(true), delayDuration)
           }
         }}

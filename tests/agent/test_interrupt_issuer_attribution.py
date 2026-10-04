@@ -10,7 +10,7 @@ import logging
 import threading
 
 from agent.interrupt_compat import request_hard_interrupt
-from agent.interrupt_control import interrupt_issuer
+from agent.interrupt_control import interrupt_issuer, interrupt_skip_wording
 from tools.interrupt import set_interrupt
 
 
@@ -94,5 +94,55 @@ def test_gateway_lifecycle_producers_name_a_system_issuer():
         asyncio.run(_abandon_agent_task(
             [sse_agent], SimpleNamespace(done=lambda: True), "SSE client disconnected", await_cancel=False))
         assert interrupt_issuer(sse_agent) == "sse_client_disconnected"
+    finally:
+        set_interrupt(False)
+
+
+def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
+    """A system producer that must stop the turn SOFTLY labels itself via ``tool_reason``. The
+    message-carrying soft path used to hardcode ``user sent a new message``, so a batch-guard abort
+    was booked as a human stop and rendered as the user-stop placeholder (#130207)."""
+    agent = _bare_agent()
+    try:
+        agent.interrupt("terminal batch tool did not complete", tool_reason="terminal batch aborted")
+        assert agent._interrupt_requested is True
+        assert interrupt_issuer(agent) == "terminal_batch_aborted"
+    finally:
+        set_interrupt(False)
+
+
+def test_soft_interrupt_message_without_tool_reason_stays_a_user_stop():
+    """Regression guard for the heuristic itself: a steer/new-message soft interrupt carries no
+    system reason and must keep reading as a human stop."""
+    agent = _bare_agent()
+    try:
+        agent.interrupt("what about the other file?")
+        assert interrupt_issuer(agent) is None
+        agent.clear_interrupt()
+        agent.interrupt()
+        assert interrupt_issuer(agent) is None
+    finally:
+        set_interrupt(False)
+
+
+def test_skip_wording_never_blames_the_user_for_a_system_stop():
+    """The skipped-call notice is rendered from the RECORDED reason. A system abort must describe
+    itself; only the genuinely user-initiated reasons may say the user did it (#130207)."""
+    agent = _bare_agent()
+    try:
+        # System abort: the batch guard with its own reason.
+        agent.interrupt("terminal batch tool did not complete", tool_reason="terminal batch aborted")
+        wording = interrupt_skip_wording(agent)
+        assert "user" not in wording.lower(), wording
+        assert "terminal batch aborted" in wording
+
+        # Genuine user stop keeps the user-facing wording.
+        agent.clear_interrupt()
+        agent.interrupt("next message")
+        assert interrupt_skip_wording(agent) == "User sent a new message"
+
+        # Reason-less turn where nothing was recorded at all.
+        agent.clear_interrupt()
+        assert interrupt_skip_wording(agent) == "Turn interrupted"
     finally:
         set_interrupt(False)

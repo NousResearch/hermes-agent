@@ -11,7 +11,7 @@ def test_container_sets_hosted_write_policy_env(built_image: str) -> None:
     script = (
         'test "$HERMES_HOME" = "/opt/data" && '
         'test "$HERMES_WRITE_SAFE_ROOT" = "/opt/data:/tmp/hermes-files" && '
-        'test "$TMPDIR" = "/tmp/hermes-files" && '
+        'test -z "${TMPDIR:-}" && '
         # Opt-in extras install into PM generations under $HERMES_HOME, never
         # the sealed /opt/hermes tree, so the image must not refuse them.
         'test -z "${HERMES_DISABLE_LAZY_INSTALLS:-}" && '

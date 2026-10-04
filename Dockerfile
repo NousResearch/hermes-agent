@@ -449,7 +449,6 @@ ENV HERMES_HOME=/opt/data
 # Keep durable state on the mounted data volume while allowing file tools to
 # write conventional throwaway artifacts without exposing runtime lock paths.
 ENV HERMES_WRITE_SAFE_ROOT=/opt/data:/tmp/hermes-files
-ENV TMPDIR=/tmp/hermes-files
 # Opt-in backend SDKs install on first use into PM dependency generations under
 # /opt/data/installs (the sealed /opt/hermes/.venv is never written); stage2
 # re-resolves them against each new image. security.allow_lazy_installs: false

@@ -455,6 +455,9 @@ class EmailAdapter(BasePlatformAdapter):
     # adapter per retry; without this connect(is_reconnect=True) would re-mark the mailbox seen and skip
     # mail that arrived during the outage. Keyed by address (multiplex runs several accounts); same-process only.
     _seen_uids_snapshot: Dict[str, set] = {}
+    # Accounts already warned about a missing authserv_id pin. Per address, not per first connect: an account whose
+    # first connect fails is brought up by the reconnect watcher (is_reconnect=True) and must still warn once.
+    _missing_pin_warned: set = set()
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
@@ -607,7 +610,8 @@ class EmailAdapter(BasePlatformAdapter):
             return self._fail("[Email] %s", message, "email_missing_configuration", message, retryable=False)
         if not self._probe_imap(is_reconnect) or not self._probe_smtp():
             return False
-        if not is_reconnect and self._require_authenticated_sender and not self._authserv_id:
+        if self._require_authenticated_sender and not self._authserv_id and self._address not in EmailAdapter._missing_pin_warned:
+            EmailAdapter._missing_pin_warned.add(self._address)
             logger.warning("[Email] %s: %s.%s", self._address, _MISSING_AUTHSERV_REASON, _MISSING_AUTHSERV_HINT)
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())

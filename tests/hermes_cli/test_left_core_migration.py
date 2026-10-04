@@ -56,6 +56,25 @@ def test_homeassistant_not_in_use(tmp_path, env, config):
     assert lcm.homeassistant_in_use(_home(tmp_path, env=env, config=config)) is False
 
 
+_JSON_ON = '{"platforms": {"homeassistant": {"enabled": true, "token": "t"}}}'
+
+
+@pytest.mark.parametrize(("gateway_json", "config", "in_use"), [
+    (_JSON_ON, "", True),
+    ("", "gateway:\n  homeassistant:\n    enabled: true\n    token: t\n", True),
+    ("", "gateway:\n  platforms:\n    homeassistant:\n      enabled: true\n      token: t\n"
+         "platforms:\n  homeassistant:\n    extra:\n      url: http://ha.local\n", True),
+    (_JSON_ON, "platforms:\n  homeassistant:\n    enabled: false\n", False),
+])
+def test_in_use_reads_the_platform_config_the_gateway_loader_merged(tmp_path, gateway_json, config, in_use):
+    """legacy gateway.json, gateway.<platform> shorthand and nested+top-level blocks enabled core's
+    adapter; the last explicit ``enabled`` (here config.yaml over gateway.json) still wins."""
+    home = _home(tmp_path, config=config)
+    if gateway_json:
+        (home / "gateway.json").write_text(gateway_json, encoding="utf-8")
+    assert lcm.homeassistant_in_use(home) is in_use
+
+
 def test_process_env_token_counts_only_for_the_active_home(tmp_path, monkeypatch):
     home = _home(tmp_path)
     monkeypatch.setenv("HASS_TOKEN", "from-systemd")

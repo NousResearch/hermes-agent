@@ -39,15 +39,27 @@ def _read_config(home: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _platform_block(config: dict, name: str) -> dict:
-    """``platforms.<name>`` (either nesting, like gateway/config_loader.py)."""
-    gateway = config.get("gateway")
-    gateway = gateway if isinstance(gateway, dict) else {}
-    for section in (config.get("platforms"), gateway.get("platforms")):
-        block = section.get(name) if isinstance(section, dict) else None
-        if isinstance(block, dict):
-            return block
-    return {}
+def platform_configured_on(home: Path, name: str) -> bool:
+    """Platform *name* is on in *home*'s config files as the gateway loader reads them: legacy
+    ``gateway.json`` base layer, then config.yaml's ``gateway.platforms`` / ``platforms`` /
+    ``gateway.<name>`` blocks merged in the loader's order (managed overlay and ``${VAR}`` applied),
+    so the last explicit ``enabled`` wins. A stored token with no ``enabled`` anywhere counts too.
+    Env credentials are the caller's to check. Read-only; works before the platform's plugin loads."""
+    from gateway import config_loader
+    from gateway.config import PlatformConfig
+    gw_data = config_loader.load_legacy_gateway_json(home)
+    gw_data = gw_data if isinstance(gw_data, dict) else {}
+    try:
+        yaml_cfg = config_loader.read_yaml_layers(home)
+    except Exception:  # malformed config.yaml: the gateway falls back to gateway.json alone too
+        yaml_cfg = {}
+    yaml_cfg = yaml_cfg if isinstance(yaml_cfg, dict) else {}
+    block = config_loader.merge_platform_sections(
+        yaml_cfg, yaml_cfg.get("gateway"), gw_data, also=frozenset({name})).get(name)
+    if not isinstance(block, dict):
+        return False
+    platform = PlatformConfig.from_dict(block)
+    return platform.enabled or ("enabled" not in block and bool(str(platform.token or "").strip()))
 
 
 def _toolset_listed(config: dict, names: frozenset[str]) -> bool:
@@ -60,8 +72,8 @@ def _toolset_listed(config: dict, names: frozenset[str]) -> bool:
 
 def homeassistant_in_use(home: Path, *, process_env: bool = False) -> bool:
     """What made core run Home Assistant for *home*: ``HASS_TOKEN`` in its ``.env`` (it enabled both
-    the gateway platform and the tools), ``platforms.homeassistant`` enabled or holding a token in
-    config.yaml, or the ``homeassistant`` / ``hermes-homeassistant`` toolset selected for a
+    the gateway platform and the tools), the platform on in its gateway config
+    (:func:`platform_configured_on`), or the ``homeassistant`` / ``hermes-homeassistant`` toolset selected for a
     platform. *process_env* (the active home at startup only) also counts a ``HASS_TOKEN`` the
     process received from its environment (systemd unit, Docker, shell export)."""
     from agent.secret_scope import load_env_file
@@ -74,11 +86,9 @@ def homeassistant_in_use(home: Path, *, process_env: bool = False) -> bool:
                 return True
         except Exception:
             pass
-    config = _read_config(home)
-    block = _platform_block(config, "homeassistant")
-    if block.get("enabled") is True or (block.get("enabled") is not False and str(block.get("token") or "").strip()):
+    if platform_configured_on(home, "homeassistant"):
         return True
-    return _toolset_listed(config, frozenset({"homeassistant", "hermes-homeassistant"}))
+    return _toolset_listed(_read_config(home), frozenset({"homeassistant", "hermes-homeassistant"}))
 
 
 @dataclass(frozen=True)

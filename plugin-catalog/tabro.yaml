@@ -1,0 +1,20 @@
+name: tabro
+repo: https://github.com/ohmyskyhigh/tabro
+sha: 5c51e8c9160939ec35b2d3fbda295cdc69873701
+subdir: integrations/hermes
+description: >-
+  Local Chrome profiles and session-owned tab-group workspaces through 22 MCP
+  tools, with authenticated HTTP(S)/SOCKS5 proxies. Includes the Windows Broker,
+  adapter, Native Host and extension; setup prepares the shared runtime.
+maintainer: ohmyskyhigh
+tier: community
+category: web
+version: "0.4.0"
+platforms: [windows]
+docs_url: https://github.com/ohmyskyhigh/tabro/blob/5c51e8c9160939ec35b2d3fbda295cdc69873701/integrations/hermes/README.md
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -335,7 +335,9 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         "site": any(f.startswith(_SITE) for f in files),
         "scan": any(_is_scan(f) for f in files),
         "deps": deps,
-        "uv_lock": any(f in ("pyproject.toml", "uv.lock") for f in files),
+        # pm/ ships its own lock graph installed --frozen by stage_runtime,
+        # so a drifted pm pair must arm this lane the same as the root pair.
+        "uv_lock": any(f in ("pyproject.toml", "uv.lock", "pm/pyproject.toml", "pm/uv.lock") for f in files),
         "npm_lock": npm_lock,
         "bootstrap": any(
             f.startswith(_BOOTSTRAP_PATHS) or f in _BOOTSTRAP_FILES for f in files

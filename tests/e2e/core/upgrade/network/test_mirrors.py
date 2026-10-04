@@ -9,7 +9,7 @@ is the only other egress and refuses (and logs) every public index. The mirror h
 pre-fetched at fixture time and verified against the pins: the PM runtime's locked wheels
 (``pm/uv.lock``) and the npm tarball PM provisions.
 
-Classes: an update that ships a PM runtime change restages it with ``uv sync --locked`` against
+Classes: an update that ships a PM runtime change restages it with ``uv sync --frozen`` from
 the committed lock while pip's mirror is bridged into uv (#124418, #123943, #122112), and PM's
 npm-hosted tool downloads (#123132: the configured npm registry serves the pinned tarball).
 """
@@ -21,7 +21,6 @@ import shutil
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.network import _netedge as N
@@ -70,6 +69,8 @@ def test_pip_mirror_update_restages_pm_runtime_through_the_mirror(inst):
         edge.close()
         pip_conf.unlink()
     public = _public_index_hits(edge)
+    # #124418/#125657: the stage is --frozen, so the bridged mirror can no
+    # longer veto the shipped pm/uv.lock — the update must now succeed.
     assert r.rc == 0 and inst.head() == new, "update with a pip mirror configured failed\n" + r.report(inst)
     after = inst.state()
     assert after["pm_runtime"] != before["pm_runtime"], "the PM runtime was not restaged for its new inputs\n" + r.report(inst)

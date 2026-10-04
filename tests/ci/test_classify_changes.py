@@ -97,6 +97,17 @@ CASES = {
         _lanes(python=True, scan=True, deps=True, uv_lock=True, desktop_updater=True, docker=True, nix=True, e2e_upgrade=True),
     ),
     "uv.lock → python": (["uv.lock"], _lanes(python=True, uv_lock=True, docker=True, nix=True, e2e_upgrade=True)),
+    # pm/ is a second uv project the runtime stages --frozen; a drifted pm
+    # pair must arm the lock-check lane just like the root pair (#125657),
+    # and its pm/ prefix already feeds the docker and e2e_upgrade lanes.
+    "pm dep manifest → uv_lock": (
+        ["pm/pyproject.toml"],
+        _lanes(python=True, uv_lock=True, docker=True, e2e_upgrade=True),
+    ),
+    "pm lock → uv_lock": (
+        ["pm/uv.lock"],
+        _lanes(python=True, uv_lock=True, docker=True, e2e_upgrade=True),
+    ),
     "ts package → frontend": (["apps/desktop/src/app.tsx"], _lanes(frontend=True)),
     "ui-tui → frontend": (["ui-tui/src/entry.ts"], _lanes(frontend=True)),
     # Lockfile bump shifts every TS package's tree, but not the Python suite.

@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+import type { Details } from 'electron'
 import { test } from 'vitest'
 
 import {
@@ -428,44 +429,41 @@ test('linux boot-abort ladder engages --no-sandbox on the second consecutive abo
   assert.equal(reprobeFailed.reason, 'reprobe-failed')
 })
 
-test('linux GPU SIGTERM signature triggers the one-shot relaunch; other exits do not (#121954)', () => {
+test('linux GPU relaunch matches real Electron Details and remains one-shot (#121954)', () => {
+  // Type-check the fixture against the installed Electron child-process-gone contract.
+  const details = { type: 'GPU', reason: 'killed', exitCode: 143 } satisfies Details
+
+  assert.equal(shouldRelaunchForGpuSandboxCrash({ platform: 'linux', details }), true)
+  assert.equal(shouldRelaunchForGpuSandboxCrash({ platform: 'linux', details, alreadyNoSandbox: true }), false)
+  assert.equal(shouldRelaunchForGpuSandboxCrash({ platform: 'linux', details, relaunchAttempted: true }), false)
+  assert.equal(shouldRelaunchForGpuSandboxCrash({ platform: 'darwin', details }), false)
+  assert.equal(shouldRelaunchForGpuSandboxCrash({ platform: 'win32', details }), false)
+})
+
+test('linux GPU relaunch rejects unrelated Electron deaths and incomplete payloads (#121954)', () => {
+  const unrelatedDeaths = [
+    { type: 'GPU', reason: 'crashed', exitCode: 139 },
+    { type: 'GPU', reason: 'killed', exitCode: 139 },
+    { type: 'GPU', reason: 'crashed', exitCode: GPU_CHILD_SANDBOX_SIGTERM_EXIT },
+    { type: 'GPU', reason: 'oom', exitCode: GPU_CHILD_SANDBOX_SIGTERM_EXIT },
+    { type: 'GPU', reason: 'clean-exit', exitCode: GPU_CHILD_SANDBOX_SIGTERM_EXIT },
+    { type: 'Utility', reason: 'killed', exitCode: GPU_CHILD_SANDBOX_SIGTERM_EXIT }
+  ] satisfies Details[]
+
+  for (const details of unrelatedDeaths) {
+    assert.equal(shouldRelaunchForGpuSandboxCrash({ platform: 'linux', details }), false, JSON.stringify(details))
+  }
+
   assert.equal(
     shouldRelaunchForGpuSandboxCrash({
       platform: 'linux',
-      details: { type: 'GPU', exitCode: GPU_CHILD_SANDBOX_SIGTERM_EXIT, signalName: 'SIGTERM' },
-      alreadyNoSandbox: false,
-      relaunchAttempted: false
-    }),
-    true
-  )
-  // Non-sandbox GPU deaths (driver faults die 139/SIGSEGV) keep the sandbox.
-  assert.equal(
-    shouldRelaunchForGpuSandboxCrash({
-      platform: 'linux',
-      details: { type: 'GPU', exitCode: 139, signalName: 'SIGSEGV' },
-      alreadyNoSandbox: false,
-      relaunchAttempted: false
+      details: { type: 'GPU', exitCode: GPU_CHILD_SANDBOX_SIGTERM_EXIT }
     }),
     false
   )
-  // Exit 143 without the SIGTERM signal name does not fire.
   assert.equal(
-    shouldRelaunchForGpuSandboxCrash({
-      platform: 'linux',
-      details: { type: 'GPU', exitCode: GPU_CHILD_SANDBOX_SIGTERM_EXIT },
-      alreadyNoSandbox: false,
-      relaunchAttempted: false
-    }),
+    shouldRelaunchForGpuSandboxCrash({ platform: 'linux', details: { type: 'GPU', reason: 'killed' } }),
     false
   )
-  // macOS has no recovery path.
-  assert.equal(
-    shouldRelaunchForGpuSandboxCrash({
-      platform: 'darwin',
-      details: { type: 'GPU', exitCode: GPU_CHILD_SANDBOX_SIGTERM_EXIT, signalName: 'SIGTERM' },
-      alreadyNoSandbox: false,
-      relaunchAttempted: false
-    }),
-    false
-  )
+  assert.equal(shouldRelaunchForGpuSandboxCrash({ platform: 'linux', details: null }), false)
 })

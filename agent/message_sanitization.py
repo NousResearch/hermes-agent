@@ -400,6 +400,8 @@ _IMAGE_REJECTION_PHRASES = (
     # request until exhaustion, and the gateway leaves every subsequent message queued behind the stuck turn
     # — the P1 in issue #21160.
     "no endpoints found that support image input",
+    # Chinese-language OpenAI-compatible gateways spell the same capability rejection in Chinese.
+    "不支持图片", "不支持图像",
 )
 
 # Provider error bodies meaning "this particular image payload is bad" — the model CAN see, it

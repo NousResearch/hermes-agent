@@ -6,6 +6,10 @@ verify that stripping preserves the role-alternation invariants providers
 require, and that the phrase detector fires on the expected error bodies.
 """
 
+import json
+
+import pytest
+
 from agent.message_sanitization import (
     _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _strip_images_from_messages,
     strip_images_for_rejecting_model,
@@ -313,6 +317,15 @@ class TestRejectionNeverReachesPersistedHistory:
     The strip now happens on the send path only.
     """
 
+    @pytest.fixture(autouse=True)
+    def _isolate_vision_caps(self, tmp_path, monkeypatch):
+        # The capability-verdict self-heal writes $HERMES_HOME/vision_caps_cache.json: keep
+        # every test in this class off the real home and reset the module-level cache.
+        from agent import image_routing as ir
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(ir, "_VISION_CAPS_MEM", {})
+        monkeypatch.setattr(ir, "_VISION_CAPS_LOADED", False)
+
     class _Err(Exception):
         status_code = 400
         body = "This model does not support images."
@@ -346,6 +359,41 @@ class TestRejectionNeverReachesPersistedHistory:
             agent, self._Err(), messages=messages, api_messages=api_messages,
             api_kwargs={}, active_system_prompt="sys",
         )
+
+    def test_capability_rejection_persists_the_verdict(self, tmp_path):
+        from agent import image_routing as ir
+
+        agent = self._agent()
+        retry, _ = self._recover(agent, self._history(), self._history())
+
+        assert retry is True
+        saved = json.loads((tmp_path / "vision_caps_cache.json").read_text(encoding="utf-8"))
+        assert saved["text-only-provider|text-model"]["supports_vision"] is False
+        assert saved["text-only-provider|text-model"]["source"] == "native-400"
+        # The persisted verdict now drives routing for this (provider, model).
+        assert ir._cached_vision_verdict("text-only-provider", "text-model") is False
+
+    def test_corrupt_image_rejection_persists_nothing(self, tmp_path):
+        from agent.turn_recovery import recover_before_classification
+
+        class _Bad(Exception):
+            status_code = 400
+            body = "Invalid request: prepare image failed ... failed to decode image"
+
+        agent = self._agent()
+        retry, _ = recover_before_classification(
+            agent, _Bad(), messages=self._history(), api_messages=self._history(),
+            api_kwargs={}, active_system_prompt="sys",
+        )
+
+        assert retry is True
+        assert not (tmp_path / "vision_caps_cache.json").exists()
+
+    def test_chinese_capability_rejection_trips(self):
+        assert _looks_like_image_content_rejection("该模型不支持图片输入")
+        assert _looks_like_image_content_rejection("当前模型不支持图像")
+        # Corrupt-bytes wording must never read as a capability rejection.
+        assert not _looks_like_image_content_rejection("failed to decode image")
 
     def test_canonical_history_keeps_its_images(self):
         import copy

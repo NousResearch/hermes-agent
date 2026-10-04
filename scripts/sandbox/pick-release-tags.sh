@@ -73,7 +73,12 @@ mapfile -t tags < <(
   git -C "$REPO" tag --list 'v*' \
     | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?(\+canary\.20[0-9]{6}T[0-9]{6}Z)?$' \
     | while IFS= read -r tag; do
-        commit="$(git -C "$REPO" rev-list -1 "$tag^{commit}")"
+        # An unresolvable tag (partial clone / missing object) must skip itself,
+        # not kill this subshell: under errexit a failing command substitution in
+        # an assignment would drop every later tag silently.
+        if ! commit="$(git -C "$REPO" rev-list -1 "$tag^{commit}")"; then
+          continue
+        fi
         head="$(git -C "$REPO" rev-parse HEAD)"
         [ "$commit" != "$head" ] && printf '%s\n' "$tag"
       done | sort -V

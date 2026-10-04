@@ -5,9 +5,9 @@
 # static `desktop/plugin.js` and never fetches, downloads, or replaces itself.
 name: hermes-monitor
 repo: https://github.com/mr-3mm3/hermes-monitor
-sha: "0d3c67c8c6a74c4045d10d11571b81669aadf311"   # tag v0.3.2
-version: "0.3.2"
-description: "Kanban worker health in the Desktop status bar — live activity per running card with stall and loop detection (same tool + same arguments repeated), plus a compact per-provider quota readout. Zero model tokens. Disclosure — opens HERMES_HOME/kanban.db and each profile's state.db read-only for worker activity; for quota chips it loads every provider credential pool Hermes knows (auth.json, environment, HERMES_HOME/.env and each profile's .env) and calls Hermes' own account-usage fetchers for each configured provider (Anthropic, Codex, OpenRouter, DeepSeek at https://api.deepseek.com/user/balance, and any provider plugin exposing fetch_account_usage), sending each pool entry's own token to its own provider; when an Anthropic OAuth token is within two minutes of expiry it calls the core pool's select(), which may refresh the token and rewrite Hermes' auth.json. No other network egress."
+sha: "091eac02cf517667cc314bef89dc495b3710c78e"   # tag v0.3.3
+version: "0.3.3"
+description: "Kanban worker health in the Desktop status bar — live activity per running card with stall and loop detection (same tool + same arguments repeated), plus a compact per-provider quota readout. Zero model tokens. Disclosure — opens HERMES_HOME/kanban.db and each profile's state.db read-only for worker activity; for quota chips it loads every provider credential pool Hermes knows (auth.json, environment, HERMES_HOME/.env and each profile's .env) read-only and calls Hermes' own account-usage fetchers for each configured provider (Anthropic, Codex, OpenRouter, DeepSeek at https://api.deepseek.com/user/balance, and any provider plugin exposing fetch_account_usage), sending each pool entry's own token to its own provider. Non-active profiles are immutable read-only snapshots — never refreshed and never persisted cross-profile; only the backend's own active profile may refresh its own Anthropic OAuth token (within two minutes of expiry) via the core pool's select(). No other network egress."
 maintainer: Hermes Monitor contributors (independent of Nous Research)
 tier: community
 category: desktop
@@ -15,7 +15,7 @@ requires_hermes: ">=0.21"
 platforms: [linux, macos]
 docs_url: https://github.com/mr-3mm3/hermes-monitor
 screenshots:
-  - https://raw.githubusercontent.com/mr-3mm3/hermes-monitor/0d3c67c8c6a74c4045d10d11571b81669aadf311/docs/footer.png
+  - https://raw.githubusercontent.com/mr-3mm3/hermes-monitor/091eac02cf517667cc314bef89dc495b3710c78e/docs/footer.png
 capabilities:
   provides_tools: []
   provides_hooks: []

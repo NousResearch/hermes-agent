@@ -634,6 +634,8 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "default_workdir": None,
         # Project scope: new tasks inherit it (deterministic worktree + branch).
         "project_id": None,
+        # Board-scoped completion policy. Empty is fail-closed/default behavior.
+        "pr_acceptance": {},
         "created_at": None,
         "archived": False,
     }
@@ -656,6 +658,7 @@ def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    pr_acceptance: Optional[dict] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
@@ -675,6 +678,12 @@ def write_board_metadata(
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None
+    if pr_acceptance is not None:
+        if not isinstance(pr_acceptance, dict):
+            raise ValueError("pr_acceptance must be a mapping")
+        meta["pr_acceptance"] = pr_acceptance
+    elif "pr_acceptance" in meta:
+        meta.pop("pr_acceptance", None)
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)

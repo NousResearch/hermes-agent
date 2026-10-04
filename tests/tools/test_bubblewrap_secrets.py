@@ -1177,3 +1177,34 @@ class TestCoveredDefaultDenyDirIntegration:
         finally:
             env.cleanup()
         assert (local / "share" / "app" / "new").read_text() == "ok"
+
+
+@needs_bwrap
+class TestHideBelowRestoredRootsIntegration:
+    """A hide entry under the scratch dir or a staged data root stays hidden
+    although its root is bound back on top of the HERMES_HOME overlay."""
+
+    @staticmethod
+    def _check(hermes_home, cwd):
+        secret = _write(hermes_home / "cache" / "documents" / "secret.txt")
+        keep = hermes_home / "cache" / "scratch" / "keep"
+        _write(keep / "inner")
+        _write(hermes_home / "cache" / "documents" / "open.txt", VISIBLE)
+        config = BubblewrapConfig(hide=(str(secret), str(keep)))
+        env = BubblewrapEnvironment(cwd=str(cwd), timeout=30, config=config)
+        try:
+            assert MARKER not in env.execute(f"cat {secret} 2>&1")["output"]
+            assert env.execute(f"ls -A {keep}")["output"].strip() == ""
+            assert env.execute(f"cat {hermes_home}/cache/documents/open.txt")["output"].strip() == VISIBLE
+            assert env.execute(f"printf ok > {hermes_home}/cache/scratch/probe")["returncode"] == 0
+        finally:
+            env.cleanup()
+
+    def test_hide_entry_below_a_restored_root_stays_hidden(self, work_dir, hermes_home):
+        self._check(hermes_home, work_dir)
+
+    def test_hide_entry_below_a_restored_root_stays_hidden_with_hermes_home_under_home(self, sandbox_root, work_dir, fake_home, monkeypatch):
+        hermes_home = fake_home / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        self._check(hermes_home, work_dir)

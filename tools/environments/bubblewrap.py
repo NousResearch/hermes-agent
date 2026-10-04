@@ -335,8 +335,15 @@ def sensitive_paths(home: str, hermes_home: str, extra: Sequence[str] = ()) -> t
         if real not in resolved:
             resolved.append(real)
     # An entry under another one is covered by it (the file safety policy
-    # names files inside HERMES_HOME, which is hidden as a whole).
-    return tuple(p for p in resolved if not any(p != other and _is_within(p, other) for other in resolved))
+    # names files inside HERMES_HOME, which is hidden as a whole). An
+    # operator entry is kept even then: a root under HERMES_HOME that is
+    # bound back on top of the overlay would show it again, and the
+    # builder hides it once more on top of that bind.
+    kept = {os.path.realpath(path) for path in extra}
+    return tuple(
+        p for p in resolved
+        if p in kept or not any(p != other and _is_within(p, other) for other in resolved)
+    )
 
 
 def empty_file_path(state_dir: str) -> str:
@@ -680,7 +687,7 @@ def build_bwrap_args(
     # home_mode=profile the subprocess HOME is HERMES_HOME/home
     # (hermes_constants.get_subprocess_home). Both are bound read-write on
     # top of the overlays, so the rest of HERMES_HOME stays hidden.
-    late: list[tuple[str, str, str]] = []
+    late: list[tuple[str, ...]] = []
     # The scratch dir is TMPDIR for every command, and the system prompt
     # tells the model to put temporary files there. It lies under the
     # hidden HERMES_HOME: left hidden, a write lands in that spawn's own
@@ -694,6 +701,16 @@ def build_bwrap_args(
     # a command opens them, it does not produce them. The -try form lets a
     # root that is gone from the host drop out instead of failing the spawn.
     late += [("--ro-bind-try", root, root) for root in staged_roots]
+    # A hidden path under one of the roots just bound back is shown again
+    # by that bind, so it gets its overlay once more, on top of it.
+    restored = [root for root in (scratch_dir, *staged_roots) if root]
+    for path in hidden_paths:
+        if os.path.islink(path) or not any(path != root and _is_within(path, root) for root in restored):
+            continue
+        if os.path.isdir(path):
+            late.append(("--tmpfs", path))
+        elif os.path.exists(path):
+            late.append(("--ro-bind", empty_file_path(state_dir), path))
     if config.home_mode in PROFILE_HOME_MODES:
         profile_home = os.path.join(os.path.abspath(os.path.expanduser(hermes_home)), "home")
         if os.path.isdir(profile_home):
@@ -777,13 +794,13 @@ def build_bwrap_args(
             writable_roots=[dest for _src, dest in covering],
             listing=listing,
             binds=[mount for mount in mounts if in_home(mount[2])],
-            late_args=[token for mount in late if in_home(mount[2]) for token in mount],
+            late_args=[token for mount in late if in_home(mount[-1]) for token in mount],
         )
         # The overlays for hidden paths outside HOME (a HERMES_HOME kept
         # elsewhere, a credential directory that is a symlink out of HOME).
         argv += sensitive_overlay_args(hidden_out, state_dir)
         for mount in late:
-            if not in_home(mount[2]):
+            if not in_home(mount[-1]):
                 argv += mount
 
     argv += ["--chdir", tracked_cwd, "--"]

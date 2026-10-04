@@ -5,8 +5,8 @@
  * Truth lives on the backend: `/origin-tasks` resolves the conversation's
  * lineage in the owning profile and re-reads each linked board itself, deriving
  * `activity` from the board's own rows. This module only (1) asks through the
- * query layer — batched, and only for conversations plugin REST actually
- * reaches — and (2) reduces the answer to a view. Every gap stays visible as a
+ * query layer — one answer per conversation, and only for conversations
+ * plugin REST actually reaches — and (2) reduces the answer to a view. Every gap stays visible as a
  * gap: a request failure, a conversation this profile doesn't know, a ref the
  * board could not confirm and a truncated answer are all distinct from "no tasks".
  */
@@ -73,6 +73,8 @@ export function summarizeOrigin(refs: readonly OriginRef[]): OriginSummary {
 export type OriginView =
   | { kind: 'loading' }
   | { kind: 'out-of-scope' }
+  /** `truncated` is set whenever the backend could not return this conversation's complete set (ref
+   *  cap, lineage cap or seed cap) — even with no refs at all. `total` counts this conversation only. */
   | { kind: 'ready'; refs: OriginRef[]; truncated: null | { shown: number; total: number } }
   | { kind: 'unavailable'; reason: 'request' | 'unknown-session' }
 

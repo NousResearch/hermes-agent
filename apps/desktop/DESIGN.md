@@ -141,7 +141,9 @@ REST reaches that owner right now): `sessionRow.*` (a small badge in the row) an
   their own state; "can't tell" is never painted as idle or healthy.
 - **Empty and unavailable differ.** No linked work paints nothing. A failed lookup, a
   conversation the answering profile doesn't know, a ref the source can't confirm, and a
-  truncated answer are said out loud in the strip. Rows whose owner plugin REST doesn't reach
+  truncated answer are said out loud in the strip, and a row never goes quiet on a partial answer
+  (even one with no refs). Each conversation is asked for on its own, so one conversation's cap and
+  counts never reach another. Rows whose owner plugin REST doesn't reach
   (another profile or connection) are never queried and paint nothing.
 - The strip starts collapsed. Its actions ("open task", "worker log") are the user's; a
   background event never navigates, opens a drawer, or moves focus.

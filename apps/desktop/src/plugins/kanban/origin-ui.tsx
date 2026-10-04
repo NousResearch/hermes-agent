@@ -53,21 +53,30 @@ export function OriginRowBadge({ context }: { context: SessionRouteContext }) {
   }
 
   const { live, state } = summarizeOrigin(view.refs)
+  const partial = view.truncated
 
-  if (!state || isTerminalState(state)) {
+  // An incomplete answer is never read as idle: with nothing live in what WAS returned, the row says
+  // the evidence is partial instead of going quiet.
+  const shown: null | OriginState = partial && (!state || isTerminalState(state)) ? 'unavailable' : state
+
+  if (!shown || isTerminalState(shown)) {
     return null
   }
 
-  const label = k.origin.state[state]
-  const tip = live > 1 ? `${label} · ${k.origin.summary(live)}` : label
-  const meta = STATE_META[state]
+  const label = k.origin.state[shown]
+
+  const tip = [live > 1 ? `${label} · ${k.origin.summary(live)}` : label, partial && truncationText(k, partial)]
+    .filter(Boolean)
+    .join(' · ')
+
+  const meta = STATE_META[shown]
 
   return (
     <Tip label={tip}>
       <span
         aria-label={tip}
         className={cn('inline-flex shrink-0 items-center gap-0.5 text-[0.625rem] tabular-nums', meta.tone)}
-        data-kanban-origin={state}
+        data-kanban-origin={shown}
         role="status"
       >
         <Codicon name={meta.icon} size="0.7rem" />
@@ -81,6 +90,14 @@ export function OriginRowBadge({ context }: { context: SessionRouteContext }) {
 const $expanded = atom<Record<string, boolean>>({})
 
 type ReadyView = Extract<OriginView, { kind: 'ready' }>
+
+/** Words for an incomplete answer. A known larger total is stated; when only a bound was hit (the
+ *  lineage or seed cap) no honest count exists, so the list is said to be unavailable instead. */
+function truncationText(k: ReturnType<typeof useKanban>, truncated: NonNullable<ReadyView['truncated']>): string {
+  return truncated.total > truncated.shown
+    ? k.origin.truncated(truncated.shown, truncated.total)
+    : k.origin.unknownHere
+}
 
 function OriginList({ view }: { view: ReadyView }) {
   const k = useKanban()
@@ -135,9 +152,7 @@ function OriginList({ view }: { view: ReadyView }) {
         )
       })}
       {view.truncated && (
-        <li className="text-[0.625rem] text-(--ui-text-quaternary)">
-          {k.origin.truncated(view.truncated.shown, view.truncated.total)}
-        </li>
+        <li className="text-[0.625rem] text-(--ui-text-quaternary)">{truncationText(k, view.truncated)}</li>
       )}
     </ul>
   )
@@ -167,7 +182,17 @@ export function OriginStrip({ context }: { context: SessionRouteContext }) {
   }
 
   if (view.refs.length === 0) {
-    return null
+    // Nothing linked paints nothing — unless the answer was incomplete, which must be said out loud.
+    return view.truncated ? (
+      <p
+        className="flex items-center gap-1.5 text-[0.6875rem] text-(--ui-text-tertiary)"
+        data-kanban-origin-truncated=""
+        role="status"
+      >
+        <Codicon name="warning" size="0.7rem" />
+        {truncationText(k, view.truncated)}
+      </p>
+    ) : null
   }
 
   const open = expanded[key] === true

@@ -417,75 +417,32 @@ export const fetchLog = (id: string) => call<WorkerLog>(withBoard(`/tasks/${id}/
 
 export const fetchBoards = () => call<BoardsResponse>('/boards')
 
-/** Ids per `/origin-tasks` request — the backend's own seed bound, so a chunk is never truncated. */
-export const ORIGIN_CHUNK = 64
-
 const ORIGIN_REFRESH_MS = 30_000
-const ORIGIN_BATCH_MS = 25
 
-interface OriginWaiter {
-  ids: readonly string[]
-  reject: (reason: unknown) => void
-  resolve: (value: OriginTasksResponse) => void
-}
+// In-flight lookups by (connection, profile, exact conversation seed set). One backend answer
+// belongs to ONE conversation: its ref cap, `total_refs` and truncation flags are that
+// conversation's own. Distinct conversations are never merged into a shared request, so a crowded
+// one cannot crowd out, or put its counts on, a sparse one.
+const originInflight = new Map<string, Promise<OriginTasksResponse>>()
 
-const originPending = new Map<string, OriginWaiter[]>()
-
-const chunked = <T>(items: readonly T[], size: number): T[][] =>
-  Array.from({ length: Math.ceil(items.length / size) }, (_, i) => items.slice(i * size, (i + 1) * size))
-
-async function flushOrigin(waiters: OriginWaiter[]): Promise<OriginTasksResponse[]> {
-  const ids = [...new Set(waiters.flatMap(waiter => waiter.ids))]
-
-  return Promise.all(
-    chunked(ids, ORIGIN_CHUNK).map(chunk =>
-      call<OriginTasksResponse>(`/origin-tasks?session_ids=${encodeURIComponent(chunk.join(','))}`)
-    )
-  )
-}
-
-/** Folds every conversation asking within one short window (a sidebar of rows mounting together) into
- *  the fewest `/origin-tasks` requests, per (connection, profile) route. Each caller gets the merged
- *  answer; it filters to its own ids, so a shared truncation flag stays honest for all of them. */
+/** The conversation's own `/origin-tasks` answer. Identical seed sets on the same owner route (the
+ *  sidebar row and the composer of one conversation) share one in-flight request. */
 export function fetchOriginTasks(scope: string, profile: string, ids: readonly string[]): Promise<OriginTasksResponse> {
-  const route = `${scope}\0${profile}`
+  const seeds = [...new Set(ids)].sort()
+  const key = `${scope}\0${profile}\0${seeds.join('\0')}`
+  const pending = originInflight.get(key)
 
-  return new Promise((resolve, reject) => {
-    const waiters = originPending.get(route)
+  if (pending) {
+    return pending
+  }
 
-    if (waiters) {
-      waiters.push({ ids, reject, resolve })
+  const request = call<OriginTasksResponse>(`/origin-tasks?session_ids=${encodeURIComponent(seeds.join(','))}`).finally(
+    () => originInflight.delete(key)
+  )
 
-      return
-    }
+  originInflight.set(key, request)
 
-    originPending.set(route, [{ ids, reject, resolve }])
-
-    setTimeout(() => {
-      const batch = originPending.get(route) ?? []
-      originPending.delete(route)
-
-      flushOrigin(batch).then(
-        responses => {
-          const merged: OriginTasksResponse = {
-            now: Math.max(0, ...responses.map(r => r.now)),
-            profile: responses[0]?.profile ?? profile,
-            refs: responses.flatMap(r => r.refs),
-            truncated: {
-              lineage: responses.some(r => r.truncated.lineage),
-              refs: responses.some(r => r.truncated.refs),
-              sessions: responses.some(r => r.truncated.sessions),
-              total_refs: responses.reduce((sum, r) => sum + r.truncated.total_refs, 0)
-            },
-            unknown_sessions: responses.flatMap(r => r.unknown_sessions)
-          }
-
-          batch.forEach(waiter => waiter.resolve(merged))
-        },
-        error => batch.forEach(waiter => waiter.reject(error))
-      )
-    }, ORIGIN_BATCH_MS)
-  })
+  return request
 }
 
 export const fetchProfiles = () => call<{ profiles: KanbanProfile[] }>('/profiles')

@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // eslint-disable-next-line no-restricted-imports
 import { registerPluginLocales } from '@/i18n/plugin-i18n'
 
-import { bindApi, fetchOriginTasks, ORIGIN_CHUNK } from './api'
+import { bindApi, fetchOriginTasks } from './api'
 import { en, KANBAN_LOCALES } from './i18n'
 import {
   deriveOriginView,
@@ -149,24 +149,50 @@ afterEach(() => {
   rest.mockClear()
 })
 
-describe('batched, route-scoped lookup', () => {
-  it('folds conversations asking together into the fewest requests and chunks at the backend bound', async () => {
-    const many = Array.from({ length: ORIGIN_CHUNK * 2 + 1 }, (_, n) => `s${n}`)
-
-    const results = await Promise.all([
-      fetchOriginTasks('local', 'default', many.slice(0, 3)),
-      fetchOriginTasks('local', 'default', many.slice(3)),
-      fetchOriginTasks('local', 'other', ['p-1'])
+describe('per-conversation, route-scoped lookup', () => {
+  it('shares one request for an identical seed set and never merges different conversations', async () => {
+    await Promise.all([
+      fetchOriginTasks('local', 'default', ['a-1', 'a-2']),
+      // The row and the composer of one conversation: same ids, any order.
+      fetchOriginTasks('local', 'default', ['a-2', 'a-1']),
+      fetchOriginTasks('local', 'default', ['b-1']),
+      fetchOriginTasks('local', 'other', ['a-1', 'a-2'])
     ])
 
-    const asked = originCalls().map(askedIds)
+    // One request per (route, conversation): a's two callers share, b and the other route are their own.
+    expect(originCalls().map(askedIds).map(group => group.join('+')).sort()).toEqual(['a-1+a-2', 'a-1+a-2', 'b-1'])
+  })
 
-    // 3 chunks for the default route (129 ids), 1 for the other profile's own route.
-    expect(asked.map(chunk => chunk.length).sort((a, b) => a - b)).toEqual([1, 1, ORIGIN_CHUNK, ORIGIN_CHUNK])
-    expect(asked.flat().filter(id => id === 'p-1')).toHaveLength(1)
-    expect(asked.flat().filter(id => id !== 'p-1').sort()).toEqual([...many].sort())
-    // Every caller is answered (each filters the merged answer to its own ids).
-    expect(results).toHaveLength(3)
+  it('keeps a crowded conversation’s cap and count off a sparse one', async () => {
+    const crowded = Array.from({ length: 200 }, (_, n) => ref(`t_c${n}`, 'queued', { origin_session_id: 'crowded-1' }))
+
+    reply = path => {
+      if (!path.startsWith('/origin-tasks')) {
+        return answer()
+      }
+
+      return askedIds(path).includes('crowded-1')
+        ? answer({ refs: crowded, truncated: { lineage: false, refs: true, sessions: false, total_refs: 350 } })
+        : answer({ refs: [ref('t_s1', 'waiting', { origin_session_id: 'sparse-1' })] })
+    }
+
+    const crowdedView = renderHook(
+      () => useOriginView(context({ lineageIds: ['crowded-1'], sessionId: 'crowded-1' })),
+      { wrapper }
+    )
+
+    const sparseView = renderHook(() => useOriginView(context({ lineageIds: ['sparse-1'], sessionId: 'sparse-1' })), {
+      wrapper
+    })
+
+    await waitFor(() => expect(crowdedView.result.current.kind).toBe('ready'))
+    await waitFor(() => expect(sparseView.result.current.kind).toBe('ready'))
+
+    // The crowded conversation is capped and says so with ITS OWN total…
+    expect(crowdedView.result.current).toMatchObject({ truncated: { shown: 200, total: 350 } })
+    // …and the sparse one keeps every link, with no inherited truncation or count.
+    expect(sparseView.result.current).toMatchObject({ refs: [{ task_id: 't_s1' }], truncated: null })
+    expect(originCalls().map(askedIds)).toEqual(expect.arrayContaining([['crowded-1'], ['sparse-1']]))
   })
 
   it('answers each route with its own response, whatever order they resolve in', async () => {
@@ -275,5 +301,34 @@ describe('conversation surfaces', () => {
     render(<OriginStrip context={context()} />, { wrapper })
 
     await waitFor(() => expect(screen.getByText(en.origin.unreadable)).toBeTruthy())
+  })
+
+  it.each([
+    [
+      'a bound was hit and no count exists',
+      { lineage: true, refs: false, sessions: false, total_refs: 0 },
+      en.origin.unknownHere
+    ],
+    [
+      'a known larger total exists',
+      { lineage: false, refs: true, sessions: false, total_refs: 7 },
+      en.origin.truncated(0, 7)
+    ]
+  ])('says an incomplete answer is incomplete even with no ref returned (%s)', async (_case, truncated, words) => {
+    reply = path => (path.startsWith('/origin-tasks') ? answer({ truncated }) : answer())
+
+    const { container } = render(
+      <>
+        <OriginStrip context={context()} />
+        <OriginRowBadge context={context()} />
+      </>,
+      { wrapper }
+    )
+
+    // The strip does not vanish into "nothing linked"…
+    await waitFor(() => expect(container.querySelector('[data-kanban-origin-truncated]')?.textContent).toBe(words))
+    // …and the row does not go quiet: it carries the partial-evidence mark, never an idle look.
+    expect(container.querySelector('[data-kanban-origin]')?.getAttribute('data-kanban-origin')).toBe('unavailable')
+    expect(container.querySelector('[data-kanban-origin]')?.getAttribute('aria-label')).toContain(words)
   })
 })

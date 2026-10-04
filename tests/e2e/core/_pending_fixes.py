@@ -49,7 +49,8 @@ def known_failure(pattern: str, reason: str,
         if not re.search(pattern, str(exc)):
             raise
         if strict_acceptance(reason):
-            exc.add_note(f"{STRICT_ACCEPTANCE_ENV}=1: the known gap is not excused here ({reason})")
+            exc.add_note(f"{STRICT_ACCEPTANCE_ENV}={os.environ.get(STRICT_ACCEPTANCE_ENV, '').strip()}: "
+                         f"the known gap is not excused in this acceptance run ({reason})")
             raise
         pytest.xfail(f"{reason} [observed: {str(exc).splitlines()[0][:240]}]")
 

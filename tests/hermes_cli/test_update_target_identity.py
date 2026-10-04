@@ -324,7 +324,11 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
             local += '?' + parsed.query
         return real_open(local, *args, **kwargs)
 
-    def guarded_run(command, *args, **kwargs):
+    from hermes_cli import update_custody
+
+    real_custody_run, seam = update_custody.run, threading.local()
+
+    def guard(command, args, kwargs, call):
         nonlocal fetched, failed
         command = list(map(str, command))
         assert Path(command[0]).name.lower() in {'git', 'git.exe'}, command
@@ -337,10 +341,27 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
         if fetched and not failed and '--abbrev-ref' in command and kwargs.get('check'):
             failed = True
             raise subprocess.CalledProcessError(128, command, '', 'fixture: Git file I/O failed')
-        result = real_run(command, *args, **kwargs)
+        result = call(command, *args, **kwargs)
         if 'fetch' in command:
             fetched = True
         return result
+
+    def guarded_run(command, *args, **kwargs):
+        if getattr(seam, 'custody', False):  # already guarded at the custody seam below
+            return real_run(command, *args, **kwargs)
+        return guard(command, args, kwargs, real_run)
+
+    def custody_call(command, *args, **kwargs):
+        seam.custody = True
+        try:
+            return real_custody_run(command, *args, **kwargs)
+        finally:
+            seam.custody = False
+
+    def guarded_custody_run(command, *args, **kwargs):
+        # The updater's git goes through update_custody.run: on Windows inside an update that is a
+        # suspended Popen bound to the update's job, not subprocess.run, so faults go in here too.
+        return guard(command, args, kwargs, custody_call)
 
     if transport in {'gitless', 'no-git'}:
         (t.clone / '.git').rename(tmp_path / 'git-state')
@@ -349,6 +370,7 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
     before = (t.clone / 'content.txt').read_bytes()
     monkeypatch.setattr(urllib.request, 'urlopen', local_open)
     monkeypatch.setattr(subprocess, 'run', guarded_run)
+    monkeypatch.setattr(update_custody, 'run', guarded_custody_run)
     try:
         if transport == 'dirty':
             with pytest.raises(SystemExit) as error:

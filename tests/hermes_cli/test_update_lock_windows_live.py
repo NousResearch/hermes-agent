@@ -89,8 +89,12 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from hermes_cli.update_lock import UpdateLock
 from hermes_cli.source_build import run_source_script
+from hermes_cli.update_custody import run_git
 root = Path(sys.argv[2])
 assert UpdateLock(path=Path(sys.argv[3]), install_root=root).acquire()
+# A git child first, as in every install/update: the job then already holds a process when the
+# build's launcher joins it (a venv redirector's child was refused here: ERROR_ACCESS_DENIED).
+run_git(["git"], ["--version"], capture_output=True, check=True)
 env = {**os.environ, "PATH": sys.argv[4] + os.pathsep + os.environ["PATH"]}
 run_source_script(root, "build.mjs", env=env, label="probe build")
 """
@@ -172,3 +176,15 @@ def test_killed_owner_takes_its_node_build_down(tmp_path):
     (bin_dir / "node.bat").write_text(f'@"{sys.executable}" "{install / "build.py"}"\r\n', encoding="utf-8")
     _tree_dies_with_its_owner(tmp_path, install,
                               [_BUILD_OWNER, str(REPO_ROOT), str(install), str(tmp_path / "m"), str(bin_dir)])
+
+
+def test_a_refused_job_join_still_runs_the_child(tmp_path):
+    """Custody degrades, never fails: a launcher whose join is refused runs its command anyway."""
+    from hermes_cli.update_custody import _CUSTODY_UNAVAILABLE, _JOIN_JOB
+
+    child = "import sys; print('built'); sys.exit(3)"
+    out = subprocess.run([sys.executable, "-I", "-S", "-c", _JOIN_JOB, "0", sys.executable, "-c", child],
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+    assert out.returncode == 3, out
+    assert out.stdout.strip() == "built"
+    assert _CUSTODY_UNAVAILABLE in out.stderr

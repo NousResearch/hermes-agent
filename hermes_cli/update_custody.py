@@ -77,8 +77,10 @@ def git_argv(git_cmd: Sequence[str], args: Sequence[str]) -> list[str]:
 
 
 def _held() -> dict | None:
-    from hermes_cli import update_lock
-
+    try:
+        from hermes_cli import update_lock
+    except Exception:  # noqa: BLE001 - a torn tree's launch repair: no updater runs from it
+        return None
     return update_lock._HELD
 
 
@@ -196,18 +198,41 @@ def run_git(git_cmd: Sequence[str], args: Sequence[str], **kwargs) -> subprocess
 
 # A stdlib launcher for children whose Popen the updater never sees (``run_contained``): it
 # joins the job named by an inherited handle, drops that handle (only the owner's handle may
-# keep the job open) and runs the real command with the same stdio.
+# keep the job open) and runs the real command with the same stdio. A refused join never fails
+# the build: the command runs outside the job (the pre-custody behavior) and says so on stderr.
+_CUSTODY_UNAVAILABLE = "hermes: update custody unavailable"
 _JOIN_JOB = (
     "import ctypes, subprocess, sys\n"
     "k = ctypes.WinDLL('kernel32', use_last_error=True)\n"
     "k.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]\n"
     "k.GetCurrentProcess.restype = ctypes.c_void_p\n"
+    "k.CloseHandle.argtypes = [ctypes.c_void_p]\n"
     "h = ctypes.c_void_p(int(sys.argv[1]))\n"
     "if not k.AssignProcessToJobObject(h, k.GetCurrentProcess()):\n"
-    "    sys.exit('could not join the update job: %d' % ctypes.get_last_error())\n"
+    f"    sys.stderr.write('{_CUSTODY_UNAVAILABLE} (could not join the update job: %d); '\n"
+    "                     'this child runs outside it\\n' % ctypes.get_last_error())\n"
+    "    sys.stderr.flush()\n"
     "k.CloseHandle(h)\n"
     "sys.exit(subprocess.call(sys.argv[2:], stdin=subprocess.DEVNULL))\n"
 )
+
+
+def _join_launcher_python() -> str:
+    """The interpreter for the job-joining launcher: the real one, never a venv redirector.
+
+    A venv's ``Scripts\\python.exe`` is a redirector: it starts the base interpreter as its own
+    child, inside a job of its own. That child cannot join the update's job once the job holds a
+    process from another job hierarchy (the updater's git children): ``AssignProcessToJobObject``
+    fails with ERROR_ACCESS_DENIED (5). And the redirector, never joined, keeps its inherited copy
+    of the job handle open, so the job would not close when the owner dies. The launcher is
+    stdlib-only (``-I -S``), so the base interpreter runs it as is.
+    """
+    import os
+
+    base = getattr(sys, "_base_executable", None)
+    if base and os.path.isfile(base):
+        return base
+    return sys.executable
 
 
 @contextlib.contextmanager
@@ -227,7 +252,7 @@ def contained_command(argv: Sequence[str], *, inherit_lock: bool = True):
     try:
         info = subprocess.STARTUPINFO()
         info.lpAttributeList = {"handle_list": [handle]}
-        yield [sys.executable, "-I", "-S", "-c", _JOIN_JOB, str(handle), *argv], {"startupinfo": info}
+        yield [_join_launcher_python(), "-I", "-S", "-c", _JOIN_JOB, str(handle), *argv], {"startupinfo": info}
     finally:
         import ctypes
 

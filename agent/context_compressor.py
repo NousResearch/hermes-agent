@@ -2230,6 +2230,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._verify_compaction_cleared_threshold = False
         # Lets the boundary wrapper tell a completed rewrite from a no-op without inferring from length.
         self._last_compression_made_progress = False
+        # True when this run's only progress was the stale-replay sidecar prune: the transcript
+        # changed (worth committing, worth lifting the no-op backoff) but the local estimate did
+        # not (ciphertext prices at zero, #100611), so it is not effectiveness evidence.
+        self._last_progress_was_sidecar_prune = False
         # Transient summary errors must not block a fresh session.
         self._summary_failure_cooldown_until = 0.0
         # True while the local cooldown failed to persist: an empty durable row then means unknown, not cleared.
@@ -2434,10 +2438,19 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 self._ineffective_compression_count,
             )
 
-    def record_completed_compaction(self, *, used_fallback: bool = False, feasibility_skip: bool = False) -> None:
-        """Record one completed boundary; ``feasibility_skip`` is streak-neutral but still arms the real-usage verdict."""
+    def record_completed_compaction(
+        self, *, used_fallback: bool = False, feasibility_skip: bool = False, sidecar_prune: bool = False,
+    ) -> None:
+        """Record one completed boundary; ``feasibility_skip`` is streak-neutral but still arms the
+        real-usage verdict; ``sidecar_prune`` is verdict-neutral too — a stale-replay prune shrinks
+        the provider bill but not the local estimate (ciphertext prices at zero, #100611)."""
         # A completed boundary proves compressibility: lift any structural no-op backoff.
         self._structural_no_op_backoff_until = 0.0
+        if sidecar_prune:
+            # Arming the real-usage verdict here would strike the breaker on the next count
+            # >= threshold (the prune cannot lower the estimate), and two rescues disarm
+            # auto-compaction entirely — the strike latch is left to real rewrites only.
+            return
         self._verify_compaction_cleared_threshold = True
         if feasibility_skip:
             # A pre-LLM feasibility skip is not a summary-quality verdict: it must neither extend nor reset the streak.
@@ -5091,6 +5104,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._last_compress_refused_would_grow = False
         self._last_summary_overload_degraded = False
         self._last_compression_made_progress = False
+        self._last_progress_was_sidecar_prune = False
         # Do NOT reset the *_failure flags: the cooldown early-return doesn't re-assert them, so a
         # reset would fall through to the destructive static fallback (#29559). Success clears them.
         telemetry = self._begin_compression_telemetry(current_tokens=current_tokens)
@@ -5125,12 +5139,21 @@ Write only the summary body. Do not include any preamble or prefix."""
         if pruned:
             telemetry["pruned_stale_replay_messages"] = pruned
             self._last_compression_made_progress = True
+            # The prune shrinks the provider bill but not the local estimate (only real usage
+            # prices ciphertext, #100611), so it must NOT arm the real-usage verdict: the next
+            # count >= threshold would strike the breaker, and two rescues disarm auto-compaction
+            # on exactly the short-session shape the prune exists to keep alive.
+            self._last_progress_was_sidecar_prune = True
             if not self.quiet_mode:
                 logger.info(
                     "Compression: structural no-op (%s) pruned stale reasoning replay from %d assistant "
                     "message(s) instead of arming the no-op backoff",
                     reason, pruned,
                 )
+            # Invariant (#57491): no assembled message leaves compress() with a persistence
+            # marker — this is a new exit with changed content, so it gets the same final scrub
+            # the success path applies (a leaked marker makes the rotation flush skip the row).
+            _strip_persistence_markers(candidate)
             return candidate
         self._structural_no_op_result(telemetry, failure_class, reason)
         return messages

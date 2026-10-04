@@ -266,3 +266,58 @@ def test_prune_rescue_keeps_input_untouched():
         compressor.compress(messages, current_tokens=300_000)
 
     assert messages == snapshot
+
+
+def test_rescue_prune_does_not_strike_the_breaker():
+    """The rescue prune shrinks the provider bill, not the local estimate (ciphertext
+    prices at zero, #100611): arming the real-usage verdict on it would strike the
+    breaker on the very next count >= threshold, and two rescues disarm
+    auto-compaction on exactly the short sessions the prune keeps alive (AI review
+    probe: strikes 1, 2, tripped by turn 1 on the unfixed head)."""
+    compressor = _compressor()
+    messages = _sidecar_messages()
+
+    with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=2):
+        compressor.compress(messages, current_tokens=300_000)
+
+    assert compressor._last_progress_was_sidecar_prune is True
+    # The committed boundary records it: backoff lifted, verdict NOT armed.
+    compressor.record_completed_compaction(sidecar_prune=True)
+    assert compressor._structural_no_op_backoff_until == 0.0
+    assert compressor._verify_compaction_cleared_threshold is False
+
+    # Real usage still >= threshold (the prune cannot lower the estimate): no strike.
+    compressor.update_from_response({"prompt_tokens": compressor.threshold_tokens + 5_000})
+    assert compressor._ineffective_compression_count == 0
+    assert compressor._tripped() is False
+
+    # A second rescue round must stay strike-free too.
+    compressor.update_from_response({"prompt_tokens": compressor.threshold_tokens + 5_000})
+    assert compressor._ineffective_compression_count == 0
+
+    # Control: a real rewrite that arms the verdict still strikes when the count
+    # stays over threshold — the breaker itself is untouched by this change.
+    compressor._verify_compaction_cleared_threshold = True
+    compressor.update_from_response({"prompt_tokens": compressor.threshold_tokens + 5_000})
+    assert compressor._ineffective_compression_count == 1
+
+
+def test_rescue_prune_strips_persistence_markers():
+    """The rescue is a NEW compress() exit with changed content, so it owes the
+    same final scrub as the success path (#57491): a leaked ``_db_persisted``
+    marker makes the rotation flush skip the row, dropping the pruned transcript
+    from state.db."""
+    compressor = _compressor()
+    messages = _sidecar_messages()
+    for row in messages:
+        if isinstance(row, dict):
+            row["_db_persisted"] = True
+
+    with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=2):
+        result = compressor.compress(messages, current_tokens=300_000)
+
+    assert compressor._last_progress_was_sidecar_prune is True
+    assert all("_db_persisted" not in row for row in result if isinstance(row, dict))
+    # The prune itself still happened on this run.
+    telemetry = compressor._last_compression_telemetry or {}
+    assert telemetry.get("pruned_stale_replay_messages") == 2

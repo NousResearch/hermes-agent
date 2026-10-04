@@ -6,10 +6,13 @@ run at picker time on multi-GB files.
 
 from __future__ import annotations
 
+import logging
 import re
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _GGUF_MAGIC = b"GGUF"
 
@@ -181,9 +184,24 @@ class GGUFHeader:
         return self.head_dim_k
 
 
-def read_gguf_header(path: str | Path) -> GGUFHeader:
-    path = Path(path)
+def _split_parts(path: Path) -> "list[Path] | None":
+    """Every on-disk part of the split ``path`` belongs to, first part first; None when ``path`` is
+    not a split member or no other part is present.
 
+    A split is priced as the set, never as one file: publishers lay shards out so the first part
+    can hold little more than metadata while the bulk sits in the later ones, so reading one part
+    prices the model at whatever fraction of its weights that part happens to hold."""
+    m = SPLIT_PART_RE.search(path.name)
+    if m is None:
+        return None
+    stem, total = path.name[: m.start()], int(m.group(2))
+    parts = [p for p in (path.with_name(f"{stem}-{i:05d}-of-{total:05d}.gguf")
+                         for i in range(1, total + 1)) if p.is_file()]
+    return parts if len(parts) > 1 else None
+
+
+def _read_part(path: Path) -> GGUFHeader:
+    """One file's own header: metadata and that file's tensor table."""
     def read(f, fmt: str):
         return struct.unpack(fmt, f.read(struct.calcsize(fmt)))
 
@@ -237,3 +255,47 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
     return GGUFHeader(path=str(path), version=version, metadata=metadata,
                       n_tensors=n_tensors, tensor_bytes=tensor_bytes,
                       embd_table_bytes=embd_bytes, ffn_block_bytes=ffn_block_bytes)
+
+
+def read_gguf_header(path: str | Path) -> GGUFHeader:
+    """Header for a MODEL, not for a file: a split GGUF is priced as the sum of its parts.
+
+    Weights, the host-side embedding-table duplicate and the per-block FFN map are all summed
+    across the shards on disk, because a split is a layout choice, not a smaller model — pricing
+    part 1 alone underprices every model whose first shard is a metadata stub (the Hugging Face
+    layout), which then makes the physics check and the residency cap admit giants the card cannot
+    hold. Architecture metadata (block count, train context, the per-layer SWA pattern, vocab) is
+    taken from the first part, which is where GGUF writes it.
+
+    A part that has gone missing or become unreadable is skipped rather than fatal: a half-arrived
+    split prices at what is actually on disk. Refusing it is ``staged_in(require_complete=True)``'s
+    job — an incomplete split is never servable, it is only underpriced here."""
+    path = Path(path)
+    parts = _split_parts(path)
+    if parts is None:
+        return _read_part(path)
+
+    first = _read_part(parts[0])
+    readable = [first]
+    for part in parts[1:]:
+        try:
+            readable.append(_read_part(part))
+        except (ValueError, OSError, struct.error) as exc:
+            # struct.error is neither ValueError nor OSError, and it is what a header cut
+            # mid-stream actually raises. A part that cannot be parsed is priced out, not fatal.
+            logger.debug("split part unreadable %s: %s", part.name, exc)
+    if len(readable) == 1:
+        return first
+
+    ffn_block_bytes: dict[int, int] = {}
+    for header in readable:
+        for block, nbytes in header.ffn_block_bytes.items():
+            ffn_block_bytes[block] = ffn_block_bytes.get(block, 0) + nbytes
+    return GGUFHeader(
+        # The path stays the part the caller named: it is the model id source and the preset's
+        # ``model`` key, and llama.cpp resolves the split from any one of its members.
+        path=str(path), version=first.version, metadata=first.metadata,
+        n_tensors=sum(h.n_tensors for h in readable),
+        tensor_bytes=sum(h.tensor_bytes for h in readable),
+        embd_table_bytes=sum(h.embd_table_bytes for h in readable),
+        ffn_block_bytes=ffn_block_bytes)

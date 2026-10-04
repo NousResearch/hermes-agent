@@ -305,18 +305,55 @@ def _platform_enum(platform_name):
 
 def _resolve_platform_config(platform_name, config):
     """``(platform, pconfig, registry_entry, error)``. Plugin platforms must be registered;
-    disabled/missing platforms error, except Weixin, which may be configured purely via .env."""
+    disabled/missing platforms error, except Weixin, which may be configured purely via .env.
+
+    Multi-account Weixin (#47129): ``weixin:<account>`` names resolve through the
+    weixin_multi discovery layer (accounts/*.json) first, falling back to the
+    single-account .env synthesis for plain ``weixin``.
+    """
     from gateway.config import Platform
     from gateway.platform_registry import platform_registry
     entry = platform_registry.get(platform_name)
-    if entry is None and platform_name not in {member.value for member in Platform}:
-        return None, None, None, f"Unknown or unregistered plugin platform: {platform_name}"
+    if entry is None and platform_name not in {member.value for member in Platform} \
+            and not (platform_name.startswith("weixin:") and platform_registry.get(platform_name) is not None):
+        if platform_name.startswith("weixin:") and platform_name.split(":", 1)[1].strip():
+            pass  # qualified weixin:<account> — validated against accounts/ below
+        else:
+            return None, None, None, f"Unknown or unregistered plugin platform: {platform_name}"
     platform, err = _platform_enum(platform_name)
     if err:
         return None, None, None, err
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
-        pconfig = _weixin_env_pconfig() if platform_name == "weixin" else None
+        if platform_name == "weixin" or platform_name.startswith("weixin:"):
+            if platform_name.startswith("weixin:"):
+                extra_account = platform_name.split(":", 1)[1].strip()
+                try:
+                    from gateway.platforms.weixin_multi import (
+                        _build_extra_platform_config,
+                        _load_persisted_account,
+                    )
+                    from hermes_constants import get_hermes_home
+
+                    persisted = _load_persisted_account(
+                        str(get_hermes_home()), extra_account
+                    )
+                except Exception as load_err:
+                    return None, None, None, (
+                        f"Weixin multi-account lookup failed for "
+                        f"'{extra_account}': {load_err}"
+                    )
+                if persisted is None:
+                    return None, None, None, (
+                        f"Unknown Weixin account '{extra_account}'. Configure it "
+                        f"under ~/.hermes/weixin/accounts/{extra_account}.json or "
+                        f"use the default account via platform 'weixin'."
+                    )
+                from gateway.config import PlatformConfig
+
+                pconfig = _build_extra_platform_config(extra_account, persisted, PlatformConfig(enabled=True))
+            else:
+                pconfig = _weixin_env_pconfig()
     if pconfig is None:
         return None, None, None, _not_configured_error(platform_name, platform, entry)
     return platform, pconfig, entry, None

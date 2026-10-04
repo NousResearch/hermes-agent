@@ -3618,6 +3618,32 @@ class GatewayRunner(
         self._startup_restore_in_progress = False
         self._startup_restore_queue: List[MessageEvent] = []
         self._startup_restore_tasks: List[asyncio.Task] = []
+
+        # ── Multi-account Weixin discovery ────────────────────────────────
+        # If the user has more than one WeChat personal account saved
+        # under ``~/.hermes/weixin/accounts/*.json``, promote each one
+        # (beyond the primary account already configured under
+        # ``platforms.weixin``) to a standalone entry in
+        # ``config.platforms`` plus a matching ``platform_registry``
+        # factory, so the loop below connects each one as its own
+        # adapter.  See ``gateway.platforms.weixin_multi`` for the
+        # discovery contract.
+        try:
+            from gateway.platforms.weixin_multi import (
+                register_persisted_weixin_accounts,
+            )
+            from hermes_constants import get_hermes_home as _g_hh
+            _registered_extra = register_persisted_weixin_accounts(
+                self.config, str(_g_hh())
+            )
+            if _registered_extra:
+                logger.info(
+                    "weixin-multi: %d extra Weixin account(s) enabled: %s",
+                    len(_registered_extra),
+                    ", ".join(_registered_extra),
+                )
+        except Exception as e:
+            logger.debug("weixin-multi: discovery failed: %s", e)
         # Set by start_gateway() only for an explicit ``--replace`` launch; scoped to each adapter's
         # cold-start connect and removed before any reconnect can run.
         self._platform_lock_takeover_on_start = False

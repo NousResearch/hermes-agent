@@ -16,27 +16,31 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 ROLE_TAG = re.compile("<" + "/?(?:tool|system|assistant)" + ">", re.IGNORECASE)
-# Every extension skill_view will serve (tools.skills_tool_plugin._SKILL_FILE_EXTS) plus asset scripts.
-SERVED_EXTS = {".md", ".py", ".yaml", ".yml", ".json", ".tex", ".sh", ".mjs", ".js", ".txt"}
 
 
-def bundled_skill_files() -> list[Path]:
-    paths = [
-        p
-        for root in ("skills", "optional-skills")
-        if (REPO_ROOT / root).is_dir()
-        for p in sorted((REPO_ROOT / root).rglob("*"))
-        if p.suffix in SERVED_EXTS and p.is_file() and ".hub" not in p.parts
-    ]
-    assert paths, "bundled skills tree not found under skills/ or optional-skills/"
-    return paths
+def bundled_skill_texts() -> list[tuple[Path, str]]:
+    # skill_view serves ANY file under a skill root that decodes as UTF-8 text, whatever its
+    # suffix, so scan everything and skip only what fails that same strict decode.
+    texts = []
+    for root in ("skills", "optional-skills", "plugins"):
+        if not (REPO_ROOT / root).is_dir():
+            continue
+        for path in sorted((REPO_ROOT / root).rglob("*")):
+            if not path.is_file() or ".hub" in path.parts:
+                continue
+            try:
+                texts.append((path, path.read_text(encoding="utf-8")))
+            except UnicodeDecodeError:
+                continue
+    assert texts, "bundled skills tree not found under skills/, optional-skills/ or plugins/"
+    return texts
 
 
 def test_bundled_skills_have_no_role_tag_placeholder():
     offenders = [
         f"{path.relative_to(REPO_ROOT)}:{lineno}"
-        for path in bundled_skill_files()
-        for lineno, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1)
+        for path, text in bundled_skill_texts()
+        for lineno, line in enumerate(text.splitlines(), start=1)
         if ROLE_TAG.search(line)
     ]
     assert offenders == [], (

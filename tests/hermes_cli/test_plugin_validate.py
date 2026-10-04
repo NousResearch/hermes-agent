@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import hermes_yaml as yaml
+import pytest
 
 from hermes_cli.plugin_validate import validate_plugin_dir
 from hermes_cli.plugin_validate_desktop import desktop_surface_hits, is_desktop_surface
@@ -516,3 +517,27 @@ def test_calver_requires_hermes_floor_fails_admission(tmp_path: Path) -> None:
     report = validate_plugin_dir(_make_plugin(tmp_path, manifest={**BASE_MANIFEST, "requires_hermes": ">=2026.9.24"}))
     assert not report.ok
     assert any("CalVer" in failure for failure in report.failures)
+
+
+@pytest.mark.parametrize("spec,valid", [
+    (">=0.21.5", True),
+    (">=999.9.9", True),
+    (">=0.21, !=2026.9.24", False),
+    (">=0.21, !=banana", False),
+    (">=v2026.9.24", False),
+    ("2026.9.24", False),
+])
+def test_version_space_through_plugin_admission(tmp_path, spec, valid):
+    report = validate_plugin_dir(_make_plugin(
+        tmp_path, manifest={**BASE_MANIFEST, "requires_hermes": spec}))
+    assert report.ok is valid, report.failures
+
+
+@pytest.mark.parametrize("spec", [">=v2026.9.24", "2026.9.24"])
+def test_loader_recognizes_legacy_manifest_date_spellings(monkeypatch, spec):
+    from hermes_cli import plugins_manifest
+
+    monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "0.21.5")
+    error = plugins_manifest.requires_hermes_error(
+        plugins_manifest.PluginManifest(name="fixture-plugin", requires_hermes=spec))
+    assert error is not None and "CalVer" in error

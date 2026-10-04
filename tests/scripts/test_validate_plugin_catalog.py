@@ -7,6 +7,7 @@ the CLI contract via subprocess (the same way CI invokes it).
 """
 
 import json
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -325,3 +326,67 @@ def test_directory_mode_all_valid_exits_zero(tmp_path):
     )
     result = run_validator(str(tmp_path))
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("spec,valid,calver", [
+    ("", True, False),
+    ("  ", True, False),
+    (">=0.21, !=2026.9.24", False, True),
+    (" \t>= 0.21,\t != 2026.09.24  ", False, True),
+    (">=0.21, !=0.21.4", True, False),
+    (">=999.9.9", True, False),
+    (">=1000", True, False),
+    (">=10000.1.1", True, False),
+    (">=2026.13.24", True, False),
+    (">=2026.2.29", True, False),
+    (">=2024.2.29", False, True),
+    (">=0.21, !=banana", False, False),
+    (">=0.21, !=2026.x.24", False, False),
+    (">=0.21, >", False, False),
+    ("banana", False, False),
+] + [(f"{op}2026.9.24", False, True) for op in (">=", ">", "<=", "<", "==", "!=")])
+def test_requires_hermes_version_space_agreement(tmp_path, monkeypatch, spec, valid, calver):
+    """Whole-spec helpers and actual CLI admission agree without tracebacks.
+
+    Future semver floors remain structurally valid; running-version compatibility
+    is a separate gate. Loader syntax is intentionally permissive for malformed
+    versions, whereas both admission paths reject them.
+    """
+    from hermes_cli import plugin_validate, plugins_manifest
+
+    catalog = runpy.run_path(str(SCRIPT))
+    assert catalog["_requires_hermes_version_space_valid"](spec) is valid
+    assert plugin_validate._requires_hermes_version_space_valid(spec) is valid
+    assert plugins_manifest.requires_hermes_uses_calver(spec) is calver
+
+    report = plugin_validate.ValidationReport()
+    plugin_validate._check_requires_hermes(report, {"requires_hermes": spec})
+    assert report.ok is valid
+
+    path = write_entry(tmp_path, {**VALID_ENTRY, "requires_hermes": spec})
+    result = run_validator("--json", str(path))
+    assert result.returncode == (0 if valid else 1), result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is valid
+    assert "Traceback" not in result.stderr
+    if calver:
+        assert any("CalVer" in error for error in payload["files"][0]["errors"])
+
+    monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "0.21.5")
+    error = plugins_manifest.requires_hermes_error(
+        plugins_manifest.PluginManifest(name="fixture-plugin", requires_hermes=spec))
+    assert (error is not None and "CalVer" in error) is calver
+    if spec == ">=999.9.9":
+        assert error == "requires hermes >=999.9.9, running 0.21.5"
+    if spec in ("", "  ", ">=0.21, !=0.21.4"):
+        assert error is None
+
+
+def test_checked_in_catalog_passes():
+    result = run_validator("--json", str(REPO_ROOT / "plugin-catalog"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    assert all(entry["ok"] for entry in payload["files"])
+    rich_ui = next(entry for entry in payload["files"] if entry["path"].endswith("/hermes-rich-ui.yaml"))
+    assert rich_ui["errors"] == []

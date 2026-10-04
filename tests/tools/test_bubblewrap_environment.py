@@ -1313,8 +1313,11 @@ class TestStagedRoots:
             env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
         try:
             bound = self._ro_binds(env)
-            expected = {str(hermes_home / new) for new, _old in credential_files._CACHE_DIRS}
+            spillover = str(hermes_home / "cache" / "spillover")
+            expected = {str(hermes_home / new) for new, _old in credential_files._CACHE_DIRS} - {spillover}
             assert expected and expected <= bound
+            # The archive of oversized tool results of every session is not staged data.
+            assert spillover not in bound
         finally:
             env.cleanup()
 

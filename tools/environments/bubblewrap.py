@@ -278,18 +278,26 @@ def staged_data_roots() -> tuple[str, ...]:
     a root added there is bound here with no change to this module. A
     registry that cannot be read binds nothing and warns; the sandbox
     still starts, with those paths hidden as before.
+
+    One root of the registry is left out: the archive of oversized tool
+    results. It holds the tool output of every session of the profile,
+    which can carry secrets, and nothing in it says which session a file
+    belongs to. An oversized result is written into the state dir of the
+    environment instead (see BubblewrapEnvironment.hides_hermes_home).
     """
     try:
         from tools import credential_files
+        from tools.tool_result_storage import get_spillover_dir
 
         mounts = credential_files.get_cache_directory_mounts()
+        spillover = os.path.realpath(str(get_spillover_dir()))
     except Exception:
         logger.warning("bubblewrap: could not read the staged data registry; staged data paths stay hidden", exc_info=True)
         return ()
     roots: list[str] = []
     for mount in mounts:
         real = os.path.realpath(mount["host_path"])
-        if real not in roots:
+        if real not in roots and not _is_within(real, spillover):
             roots.append(real)
     return tuple(roots)
 
@@ -1059,6 +1067,11 @@ class BubblewrapEnvironment(LocalEnvironment):
     snapshot and cwd file, the empty file bound over sensitive files, and
     their removal on cleanup.
     """
+
+    # Read by tools.tool_result_storage: a command here cannot open a file
+    # under HERMES_HOME/cache/spillover, so an oversized tool result is
+    # written through the environment, into its state dir.
+    hides_hermes_home = True
 
     def __init__(
         self,

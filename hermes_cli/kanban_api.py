@@ -52,7 +52,7 @@ _SESSION_ID_RE = re.compile(r"\b\d{8}_\d{6}_[0-9a-f]{6,}\b")
 # command (``curl -H 'Authorization: Bearer ...'``) or a shell trace. A bare
 # ``Bearer <token>`` (logged without its header name) is redacted too.
 _AUTH_HEADER_RE = re.compile(
-    r"(?i)(authorization\s*:\s*(?:bearer|basic)\s+|\bbearer\s+)[^\s]+"
+    r"""(?i)(authorization\\?["']?\s*[:=]\s*\\?["']?(?:bearer|basic)\s+|\bbearer\s+)[^\s"'\\]+"""
 )
 
 # Known-safe validation messages from ``kanban_db`` that may be echoed to an

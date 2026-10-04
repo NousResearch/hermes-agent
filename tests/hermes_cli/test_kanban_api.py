@@ -199,7 +199,9 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
         "GET https://example.test?access_token=query-token-42\n"
         "cat /secret.txt from /workspace\n"
         "copy \\\\fileserver\\private\\report.txt C:\\Users\\John Doe\\private\\ledger.txt\n"
-        "  hermes --resume 20261004_101112_abc123\n",
+        "  hermes --resume 20261004_101112_abc123\n"
+        'request headers {"Authorization": "Basic dXNlcjpodW50ZXIy"}\n',
+
         encoding="utf-8",
     )
     log_response = client.get(f"/api/plugins/kanban/v1/tasks/{parent_id}/log")
@@ -211,7 +213,8 @@ def test_links_actions_and_observability_are_sanitized(client: TestClient) -> No
     assert "bare-opaque-token-42" not in log_body["excerpt"]
     assert "query-token-42" not in log_body["excerpt"]
     assert "/secret.txt" not in log_body["excerpt"] and "/workspace" not in log_body["excerpt"]
-    for leaked in ("fileserver", "report.txt", "Doe", "ledger.txt", "20261004_101112_abc123"):
+    for leaked in ("fileserver", "report.txt", "Doe", "ledger.txt", "20261004_101112_abc123",
+                   "dXNlcjpodW50ZXIy"):
         assert leaked not in log_body["excerpt"], leaked
 
     unlinked = client.delete(f"/api/plugins/kanban/v1/tasks/{parent_id}/links/{child_id}")
@@ -721,9 +724,6 @@ def test_log_tail_is_cut_after_redaction(client: TestClient) -> None:
         ).json()
         assert "0123456789" not in body["excerpt"], tail_bytes
 
-
-def test_actions_fire_lifecycle_hooks_for_the_requested_board(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
     key_body = "".join(f"KEYBODY{line:02d}{'A' * 55}\n" for line in range(20))
     log_path.write_text(
         "starting\n-----BEGIN PRIVATE KEY-----\n" + key_body + "-----END PRIVATE KEY-----\ndone\n",
@@ -735,6 +735,9 @@ def test_actions_fire_lifecycle_hooks_for_the_requested_board(
         assert "KEYBODY" not in body["excerpt"], tail_bytes
         assert len(body["excerpt"].encode()) <= tail_bytes
 
+
+def test_actions_fire_lifecycle_hooks_for_the_requested_board(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     kanban_db.create_board("ops")
     fired: list[tuple[str, object]] = []

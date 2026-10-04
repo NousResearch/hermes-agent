@@ -11,11 +11,13 @@ row while that worker kept executing. The guard mirrors ``request_review``'s: a
 from __future__ import annotations
 
 import os
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban as kb_cli
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_connect as kbc
 
@@ -75,6 +77,48 @@ def test_claimless_complete_of_unclaimed_card_unchanged(conn):
     tid = kb.create_task(conn, title="admin", assignee="coder")
     assert kb.complete_task(conn, tid, result="done") is True
     assert conn.execute("SELECT status FROM tasks WHERE id = ?", (tid,)).fetchone()["status"] == "done"
+
+
+def test_force_complete_unassigned_triage_parent_releases_children(conn):
+    parent = kb.create_task(conn, title="unroutable", triage=True)
+    child = kb.create_task(conn, title="finished work", assignee="coder", parents=(parent,))
+    assert kb.get_task(conn, parent).assignee is None
+    assert kb.get_task(conn, child).status == "todo"
+
+    # Normal completion must not silently turn a triage card into a done card.
+    assert kb.complete_task(conn, parent, summary="operator closes unroutable work") is False
+    assert kb.get_task(conn, parent).status == "triage"
+    assert kb.get_task(conn, child).status == "todo"
+
+    assert kb.complete_task(conn, parent, summary="operator closes unroutable work", force=True)
+    assert kb.get_task(conn, parent).status == "done"
+    assert kb.get_task(conn, child).status == "ready"
+    assert kb.complete_task(conn, child, summary="finished")
+    assert kb.get_task(conn, child).status == "done"
+
+
+def test_cli_triage_requires_explicit_force_and_evidence(conn, capsys):
+    parent = kb.create_task(conn, title="unroutable", triage=True)
+    args = Namespace(task_ids=[parent], result="operator closed unroutable work",
+                     summary=None, metadata=None, force=False)
+    assert kb_cli._cmd_complete(args) == 1
+    assert "use --force" in capsys.readouterr().err
+    assert kb.get_task(conn, parent).status == "triage"
+
+    args.force = True
+    args.result = None
+    assert kb_cli._cmd_complete(args) == 1
+    assert kb.get_task(conn, parent).status == "triage"
+    args.result = "operator closed unroutable work"
+    assert kb_cli._cmd_complete(args) == 0
+    assert kb.get_task(conn, parent).status == "done"
+
+
+def test_force_does_not_bypass_triage_parent_dependency(conn):
+    root = kb.create_task(conn, title="first gate", triage=True)
+    child = kb.create_task(conn, title="second gate", triage=True, parents=(root,))
+    assert not kb.complete_task(conn, child, summary="premature", force=True)
+    assert kb.get_task(conn, child).status == "triage"
 
 
 def test_request_review_shares_the_live_worker_fence(conn):

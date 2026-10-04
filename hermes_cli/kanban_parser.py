@@ -301,8 +301,8 @@ _SPECS = [
              help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                   '"tests_run": 12}\'). Stored on the closing run.'),
         _arg("--force", action="store_true",
-             help="Override the live-claim guard: complete a running, claimed task "
-                  "even without owning its run (closes the worker's run)."),
+             help="Complete a triage task without dispatching it, or override the live-claim "
+                  "guard on a running task (closes the worker's run)."),
     ], help="Mark one or more tasks done"),
     _cmd("edit", [
         _TASK_ID,

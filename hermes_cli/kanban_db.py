@@ -2806,12 +2806,14 @@ def complete_task(
     created_cards: Optional[Iterable[str]] = None, expected_run_id: Optional[int] = None,
     fire_lifecycle_hook: bool = True, force: bool = False,
 ) -> bool:
-    """``running|ready|blocked|review -> done``; records ``result``.
+    """``running|ready|blocked|review -> done``; ``triage`` requires ``force``.
 
     ``ready`` is accepted for manual CLI completion, ``review`` for human
-    approval. A ``running`` task under a live claim is only completed with
-    proof of ownership (``expected_run_id``) or ``force=True`` (explicit
-    operator override) — otherwise :class:`LiveClaimError`, the same fence
+    approval. ``force`` also lets an operator close an unroutable triage card
+    without making it dispatchable. A ``running`` task under a live claim is
+    only completed with proof of ownership (``expected_run_id``) or
+    ``force=True`` (explicit operator override) — otherwise :class:`LiveClaimError`,
+    the same fence
     :func:`request_review` applies. With no active run the handoff fields survive via
     :func:`_synthesize_ended_run`. ``summary`` (defaults to ``result``) and
     ``metadata`` land on the closing run for :func:`build_worker_context`.
@@ -2865,8 +2867,11 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked', 'review')
                 """
+        statuses = "'running', 'ready', 'blocked', 'review'"
+        if force:
+            statuses += ", 'triage'"
+        sql += f" AND status IN ({statuses})"
         params: tuple = (result, now, task_id)
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"

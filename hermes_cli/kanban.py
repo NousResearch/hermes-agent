@@ -938,6 +938,9 @@ def _cmd_complete(args: argparse.Namespace) -> int:
                     detail = ", ".join(f"{pid} ({status})" for pid, status in blockers)
                     fail_msg[tid] = (f"cannot complete {tid}: unsatisfied parent dependencies: {detail}; "
                                      f"complete the parents first, or `hermes kanban unlink <parent> {tid}`.")
+                elif (task := kb.get_task(conn, tid)) and task.status == "triage":
+                    fail_msg[tid] = (f"cannot complete {tid}: task is in triage; use --force with "
+                                     "--result or --summary to close it without dispatching, or archive it.")
             return done
 
         return _bulk_apply(ids, op, lambda tid: f"Completed {tid}", fail_msg.__getitem__)

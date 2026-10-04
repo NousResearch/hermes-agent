@@ -292,7 +292,7 @@ class CLIVoiceMixin:
         self._voice_tts_done.clear()
         try:
             from tools.tts_tool import text_to_speech_tool
-            from tools.voice_mode import play_audio_file
+            from tools.voice_mode import play_audio_file, playback_stop_count
             # Shared cleaner strips markdown/emoji/⋗ blocks/verifier footer; the TTS tool owns
             # provider request limits and long-form chunking.
             try:
@@ -327,7 +327,10 @@ class CLIVoiceMixin:
                 tts_result = {}
             # The tool result is authoritative — chunked long-form output returns several files.
             play_paths = tts_result.get("file_paths") or [tts_result.get("file_path") or mp3_path]
+            stops = playback_stop_count()
             for play_path in play_paths if tts_result.get("success") else []:
+                if playback_stop_count() != stops:
+                    break  # cut mid-reply; the next part would start playing
                 if os.path.isfile(play_path) and os.path.getsize(play_path) > 0:
                     play_audio_file(play_path)
             # Clean up all generated files (play_paths + mp3_path + ogg variant)

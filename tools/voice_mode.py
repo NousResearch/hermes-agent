@@ -997,6 +997,12 @@ def stop_playback() -> None:
         sd.stop()
 
 
+def playback_stop_count() -> int:
+    """How many times stop_playback() has run. Callers that play a reply file by file compare it
+    between files, so a stop ends the whole reply and not just the file that was playing."""
+    return _stop_requests
+
+
 def _wsl_powershell_tts_available() -> bool:
     """WSL2 PowerShell TTS fallback usable. OUTPUT only (Media.SoundPlayer on the host) —
     recording still needs a PulseAudio bridge, so callers keep surfacing that guidance."""

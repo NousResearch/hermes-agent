@@ -315,6 +315,32 @@ class TestVoiceSpeakResponseReal:
             mock_tts.call_args.kwargs["output_path"].rsplit(".", 1)[0] + ".ogg"
         )
 
+    def test_stop_mid_reply_skips_the_remaining_parts(self, monkeypatch, tmp_path):
+        """A long reply comes back as several files. Stopping the first one used to leave the
+        loop free to play the next part from the top."""
+        import tools.voice_mode as vm
+        from tools import tts_tool
+
+        parts = []
+        for name in ("part1.mp3", "part2.mp3"):
+            (tmp_path / name).write_bytes(b"\xff\xfb")
+            parts.append(str(tmp_path / name))
+        played = []
+
+        def _barged_in(path):
+            played.append(path)
+            vm.stop_playback()
+            return False
+
+        monkeypatch.setattr(
+            tts_tool, "text_to_speech_tool",
+            lambda **_kw: json.dumps({"success": True, "file_paths": parts}))
+        monkeypatch.setattr(vm, "play_audio_file", _barged_in)
+
+        _make_voice_cli(_voice_tts=True)._voice_speak_response("A reply split in two")
+
+        assert played == parts[:1]
+
 
 class TestVoiceStopAndTranscribeReal:
     """Tests _voice_stop_and_transcribe with real CLI instance."""

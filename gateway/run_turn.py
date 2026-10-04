@@ -509,7 +509,7 @@ class GatewayTurnMixin:
             )
         return session_entry
 
-    async def _hmwa_open_session(self, session_entry, session_key, source):
+    async def _hmwa_open_session(self, session_entry, session_key, source, *, internal=False):
         """Consume auto-reset / fresh-reset flags and emit ``session:start`` for new sessions.
         Returns ``(_was_auto_reset, _is_new_session)``."""
         # Consume was_auto_reset immediately so it cannot re-fire and wipe overrides set between turns.
@@ -528,15 +528,15 @@ class GatewayTurnMixin:
             session_entry.was_auto_reset = False
 
         _is_fresh_reset = getattr(session_entry, "is_fresh_reset", False)
-        _is_first_agent_turn = session_entry.metadata.pop("first_agent_turn_pending", False)
-        _is_new_session = (
+        _is_first_agent_turn = session_entry.metadata.get("first_agent_turn_pending", False)
+        _is_new_session = not internal and (
             session_entry.created_at == session_entry.updated_at
             or _was_auto_reset
             or _is_fresh_reset
             or _is_first_agent_turn
         )
         # Consume is_fresh_reset so it doesn't leak onto later messages in the same session.
-        if _is_fresh_reset:
+        if _is_fresh_reset and not internal:
             # See #6508.
             session_entry.is_fresh_reset = False
         if _is_new_session:
@@ -547,6 +547,18 @@ class GatewayTurnMixin:
                 "session_key": session_key,
             })
         return _was_auto_reset, _is_new_session
+
+    async def _hmwa_complete_first_user_turn(self, event, session_entry, agent_result):
+        """Commit first-user-turn consumption only after successful agent execution."""
+        if event.internal or agent_result.get("failed"):
+            return
+        pending = session_entry.metadata.pop("first_agent_turn_pending", False)
+        if pending:
+            try:
+                await self.async_session_store.update_session(session_entry.session_key)
+            except Exception:
+                session_entry.metadata["first_agent_turn_pending"] = pending
+                raise
 
     async def _hmwa_deliver_auto_reset_notice(self, session_entry, source, turn_sidecar_notes):
         """Stage the auto-reset sidecar note for the agent and notify the user (policy-gated)."""
@@ -2054,7 +2066,9 @@ class GatewayTurnMixin:
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
         from gateway.run import _load_gateway_config
-        _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
+        _was_auto_reset, _is_new_session = await self._hmwa_open_session(
+            session_entry, session_key, source, internal=event.internal,
+        )
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
@@ -2236,6 +2250,8 @@ class GatewayTurnMixin:
                 self._hmwa_discard_stale_result(source, _quick_key, run_generation)
                 return None
 
+            if session_entry.session_id == _run_start_session_id:
+                await self._hmwa_complete_first_user_turn(event, session_entry, agent_result)
             response, _intentional_silence, agent_messages = await self._hmwa_shape_agent_response(
                 agent_result, source, history, session_entry, session_key,
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,

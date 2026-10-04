@@ -1448,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent ag múchadh"
     standalone_quit: "seachadta"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Ceadaigh uair amháin"
     confirm_always_approve: "Ceadaigh i gcónaí"
@@ -2721,6 +2719,7 @@ cli:
       restored: "Staid aischurtha ó: {snapshot_id}"
       restart_recommended: "Moltar atosú do phróisis gateway/deais chun athruithe state.db a ghlacadh."
       not_found: "Níor aimsíodh an roghchóip: {snapshot_id}"
+      restore_incomplete: "Níor athchóiríodh an roghchóip {snapshot_id} go hiomlán; diúltaíodh roinnt comhad (féach na logaí)"
       usage_prune: "Úsáid: /snapshot prune [keep-count]"
       pruned: "Baineadh {deleted} seanroghchóip(eanna) (ag coinneáil {keep})."
     export:

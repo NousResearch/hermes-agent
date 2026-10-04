@@ -3593,32 +3593,65 @@ class GatewayTurnMixin:
         the active model and the next message retries the primary). Skip failed runs: evicting
         would loop bad model → fallback → evict → recreate."""
         from gateway.run import _resolve_gateway_model
+        from hermes_cli.model_switch import _effective_model_candidate
         session_key = turn_ctx.session_key
         _agent = turn_ctx.agent_holder[0]
         _result_for_fb = turn_ctx.result_holder[0]
         if _agent is None or not hasattr(_agent, 'model') or (_result_for_fb and _result_for_fb.get("failed")):
             return
         _src = getattr(turn_ctx, "source", None)
-        _user_cfg = getattr(turn_ctx, "user_config", None)
-        try:
-            if _src is not None and getattr(_src, "platform", None) is not None:
-                _cfg_model = self._resolve_model_for_channel(
-                    _src.platform, str(getattr(_src, "chat_id", "") or ""),
-                    user_config=_user_cfg,
-                    thread_id=str(getattr(_src, "thread_id", "") or "") or None,
-                    parent_id=str(getattr(_src, "parent_chat_id", "") or "") or None,
-                )
-            else:
-                _cfg_model = _resolve_gateway_model(_user_cfg)
-        except Exception:
-            _cfg_model = _resolve_gateway_model(_user_cfg)
-        # Normalize as AIAgent.__init__ does (vendor prefix stripped on native providers), else the
-        # cached agent is evicted every turn, destroying prompt caching.
+        # Winning intent: session /model override -> channel_overrides -> global,
+        # mirroring _resolve_session_agent_runtime. The session tier lives in the
+        # session state (the turn context carries no user_config), and each tier
+        # keeps its OWN provider so the baseline is never normalized against a
+        # fallback-activated agent's route (review: #132238 R2/R3).
+        _cfg_model: str = ""
+        _cfg_provider = None
+        _override = None
+        if session_key:
+            _state = self._peek_session_state(session_key)
+            _override = _state.conversation.model_override if _state else None
+        if _override and _override.get("model"):
+            _cfg_model = str(_override["model"])
+            _cfg_provider = _override.get("provider")
+        elif _src is not None and getattr(_src, "platform", None) is not None:
+            _ovr = self._channel_override(
+                _src.platform, str(getattr(_src, "chat_id", "") or ""),
+                thread_id=str(getattr(_src, "thread_id", "") or "") or None,
+                parent_id=str(getattr(_src, "parent_chat_id", "") or "") or None,
+            )
+            _cfg_model = _resolve_gateway_model()
+            if _ovr and _effective_model_candidate(_ovr):
+                _cfg_model = str(_effective_model_candidate(_ovr))
+                _cfg_provider = _ovr.get("provider") if isinstance(_ovr, dict) else None
+        else:
+            _cfg_model = _resolve_gateway_model()
+        # A failed resolution must skip the drift check, not evict against a
+        # baseline already known to be wrong for overridden chats (review:
+        # #132238).
+        if not _cfg_model:
+            return
+        # Normalize as AIAgent.__init__ does (vendor prefix stripped on native
+        # providers), against the INTENT's provider when it carries one — never
+        # the fallback-activated agent's provider alone, so a cross-provider
+        # equivalent-model fallback still evicts per this method's
+        # successful-fallback policy (review: #132238 R3).
         with suppress(Exception):
             from hermes_cli.model_normalize import _AGGREGATOR_PROVIDERS, normalize_model_for_provider
-            _agent_provider = getattr(_agent, 'provider', '') or ''
-            if _agent_provider and _agent_provider not in _AGGREGATOR_PROVIDERS:
-                _cfg_model = normalize_model_for_provider(_cfg_model, _agent_provider)
+            _provider_for_norm = _cfg_provider or getattr(_agent, 'provider', '') or ''
+            if _provider_for_norm and _provider_for_norm not in _AGGREGATOR_PROVIDERS:
+                _cfg_model = normalize_model_for_provider(_cfg_model, _provider_for_norm)
+        # Route pinning as AIAgent.__init__ applies (the Nous welcome host pins
+        # its one model regardless of any channel override), so a welcome-host
+        # user's healthy turn is never evicted every turn (review: #132238 R1).
+        with suppress(Exception):
+            from hermes_cli.anon_auth import pin_model_for_route
+            _cfg_model = pin_model_for_route(
+                getattr(_agent, 'provider', '') or '',
+                getattr(_agent, 'base_url', None), _cfg_model,
+            )
+        if not _cfg_model:
+            return
         if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent, _cfg_model):
             self._evict_cached_agent(session_key)
 

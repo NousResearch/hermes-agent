@@ -345,8 +345,10 @@ def _web_backend_active(provider: dict, config: dict) -> bool:
     ``web.extract_backend`` override first and only then fall back to the shared
     ``web.backend`` (``tools/web_tools.py``: ``_get_search_backend`` /
     ``_get_extract_backend``), so a vendor serving one capability through its
-    override is in use even when the shared key names a different one. Managed Nous
-    rows never reach here — they answer in ``_managed_provider_active``.
+    override is in use even when the shared key names a different one. An override
+    shadows the shared key for its own capability only, so the shared key still
+    serves whichever capability was left without one. Managed Nous rows never reach
+    here — they answer in ``_managed_provider_active``.
     """
     backend = provider.get("web_backend")
     if not backend:
@@ -354,12 +356,17 @@ def _web_backend_active(provider: dict, config: dict) -> bool:
     raw_web_cfg = config.get("web")
     web_cfg = raw_web_cfg if isinstance(raw_web_cfg, dict) else {}
     # Dispatch lower-cases and strips the configured name; compare the same way.
-    selected = set()
-    for key in ("backend", "search_backend", "extract_backend"):
+    def _name(key: str) -> str:
         value = web_cfg.get(key)
-        if isinstance(value, str) and value.strip():
-            selected.add(value.lower().strip())
-    return backend in selected and _web_tier_matches(provider, config)
+        return value.lower().strip() if isinstance(value, str) else ""
+
+    shared = _name("backend")
+    serving = {
+        _name(key) or shared  # per-capability override wins, else the shared key
+        for key in ("search_backend", "extract_backend")
+    }
+    serving.discard("")
+    return backend in serving and _web_tier_matches(provider, config)
 
 
 # Managed-row marker -> (config section, key) the pick writes, in check order.

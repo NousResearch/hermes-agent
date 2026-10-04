@@ -22,7 +22,20 @@ from cron.jobs import (  # noqa: E402
     rearm_oneshot,
     JOBS_FILE,
 )
-from cron.scheduler import tick  # noqa: E402
+
+
+# The package must not import ``cron.scheduler`` eagerly: ``-m cron.scheduler`` runs this
+# ``__init__`` first, and a pre-imported module makes runpy re-execute it as ``__main__``
+# after it already sits in sys.modules — the double-import the external worker
+# intermittently crashes on (#132732). Consumers import ``tick`` from ``cron.scheduler``
+# directly; this only keeps ``from cron import tick`` working.
+def __getattr__(name):  # PEP 562 — keep ``tick`` lazy (#132732)
+    if name == "tick":
+        from cron.scheduler import tick
+
+        return tick
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "create_job",

@@ -915,6 +915,85 @@ fn unreadable_creation_time_gets_the_v1_age_ceiling() {
 }
 
 #[test]
+fn windows_open_process_access_denied_is_alive_other_failures_dead() {
+    // D9 parity with `_early_recovery._pid_is_running`: an elevated / other-user process we
+    // may not open exists (alive); a missing pid (ERROR_INVALID_PARAMETER) and anything else
+    // is dead.
+    assert!(liveness_from_open_error(WIN32_ERROR_ACCESS_DENIED));
+    assert!(liveness_from_open_error(5));
+    for err in [0, 2, 6, 87, 1168] {
+        assert!(!liveness_from_open_error(err), "error {err}");
+    }
+}
+
+#[test]
+fn access_denied_foreign_owner_is_live_only_within_the_v1_ceiling() {
+    // On Windows an access-denied pid is alive while its creation time is unreadable, so the
+    // combined verdict is `_identity_live`'s: live within UPDATE_MARKER_MAX_AGE_SECS of
+    // started_at, dead after, for v2 and v1 markers and for the delegate alike.
+    let pid = 2_000_000_011;
+    let started = 1_791_079_348;
+    let denied = |p: u32| p == pid && liveness_from_open_error(WIN32_ERROR_ACCESS_DENIED);
+    let unreadable = |_: u32| None;
+    let ceiling = UPDATE_MARKER_MAX_AGE_SECS;
+    for body in [
+        format!("{pid}\n{started}\nct:1791079300.125\n"),
+        format!("{pid}\n{started}\n"),
+        format!("2147483647\n{started}\nct:1.000\ndelegate:{pid} ct:1791079300.125\n"),
+    ] {
+        let record = parse_marker(body.as_bytes()).unwrap();
+        let holder = |now| {
+            marker_live_holder(&record, &world_with(now, &denied, &unreadable))
+                .map(|owner| owner.pid)
+        };
+        assert_eq!(
+            holder(started + ceiling),
+            Some(pid),
+            "{body:?} at the ceiling"
+        );
+        assert_eq!(
+            holder(started + ceiling + 1),
+            None,
+            "{body:?} past the ceiling"
+        );
+    }
+}
+
+#[test]
+fn started_at_u64_max_never_overflows_the_marker_age() {
+    // A started_at in the future (here u64::MAX) is age 0, never a panic: a v1 owner is then
+    // within the ceiling, and release of a foreign marker keeps it.
+    let pid = 2_000_000_011;
+    let body = format!("{pid}\n{}\n", u64::MAX);
+    let record = parse_marker(body.as_bytes()).unwrap();
+    assert_eq!(record.started_at, u64::MAX);
+    let alive = |p: u32| p == pid;
+    let unreadable = |_: u32| None;
+    let world = world_with(1_791_079_348, &alive, &unreadable);
+    let owner = marker_live_holder(&record, &world).expect("v1 owner, age 0: live");
+    assert_eq!((owner.pid, owner.age_secs), (pid, 0));
+    assert_eq!(release_decision(body.as_bytes(), &world), Release::Keep);
+    // One past u64::MAX does not fit: malformed, not an error.
+    assert!(parse_marker(format!("{pid}\n18446744073709551616\n").as_bytes()).is_none());
+}
+
+#[test]
+fn oversized_creation_time_never_matches_a_live_process() {
+    // 400 digits overflows f64 to +inf: the ct is well-formed text (kept byte-identical on a
+    // rewrite) but its distance from any real creation time is infinite.
+    let pid = 2_000_000_011;
+    let huge = "1".repeat(400);
+    let body = format!("{pid}\n1791079348\nct:{huge}\n");
+    let record = parse_marker(body.as_bytes()).unwrap();
+    assert_eq!(record.ct, Some(f64::INFINITY));
+    assert_eq!(record.ct_text.as_deref(), Some(huge.as_str()));
+    let alive = |p: u32| p == pid;
+    let actual = |_: u32| Some(1_791_079_348.328);
+    let world = world_with(1_791_079_348, &alive, &actual);
+    assert!(marker_live_holder(&record, &world).is_none());
+}
+
+#[test]
 fn fresh_empty_marker_is_a_claim_in_flight() {
     // A3: a 0-byte marker younger than 5 s is a claimant between its
     // exclusive create and its write — live, and never deleted.

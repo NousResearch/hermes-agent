@@ -592,6 +592,8 @@ fn process_creation_time(pid: u32) -> Option<f64> {
     let ok = unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle.is_null() {
+            // Access denied included: `pid_is_alive` calls such a pid alive, and an unreadable
+            // creation time leaves it only the v1 age ceiling (`identity_live`).
             return None;
         }
         let ok = GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user);
@@ -610,21 +612,38 @@ fn process_creation_time(_pid: u32) -> Option<f64> {
     None
 }
 
+/// `ERROR_ACCESS_DENIED` (winerror.h); spelled out so the decision below is testable off Windows.
+#[cfg(any(windows, test))]
+const WIN32_ERROR_ACCESS_DENIED: u32 = 5;
+
+/// Liveness verdict when `OpenProcess` on a pid fails with `GetLastError() == err`.
+///
+/// Access denied means the process EXISTS but belongs to another user or runs elevated: alive,
+/// as `hermes_cli/_early_recovery._pid_is_running` decides — racing an elevated updater is worse
+/// than postponing. Its creation time is then unreadable too (`process_creation_time` is
+/// `None`), so `identity_live` bounds it by the v1 age ceiling, never forever. Any other failure
+/// (`ERROR_INVALID_PARAMETER` for a pid that does not exist, ...) is dead.
+#[cfg(any(windows, test))]
+fn liveness_from_open_error(err: u32) -> bool {
+    err == WIN32_ERROR_ACCESS_DENIED
+}
+
 /// True when a process with `pid` currently exists.
 #[cfg(windows)]
 fn pid_is_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, STILL_ACTIVE};
     use windows_sys::Win32::System::Threading::{
         GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
+    // pid 0 is the System Idle Process, never an updater (Python: `pid <= 0` is dead).
+    if pid == 0 {
+        return false;
+    }
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle.is_null() {
-            // Either the pid is gone or we lack rights to open it. A pid we
-            // can't inspect is treated as dead so an unopenable straggler
-            // can't wedge every future update.
-            return false;
+            return liveness_from_open_error(GetLastError());
         }
         let mut code: u32 = 0;
         let ok = GetExitCodeProcess(handle, &mut code);

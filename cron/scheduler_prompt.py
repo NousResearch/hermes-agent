@@ -42,13 +42,15 @@ def _prepend_context_block(prompt: str, heading: str, intro: str, body: str) -> 
 
 def _job_skill_names(job: dict) -> list[str]:
     """Normalized skill names from ``skills`` (list or str) or the legacy singular ``skill``."""
+    from cron.jobs import _normalize_skill_list
+
     skills = job.get("skills")
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []
     elif isinstance(skills, str):
         skills = [skills]
-    return [str(name).strip() for name in skills if str(name).strip()]
+    return _normalize_skill_list(None, skills)
 
 
 _MAX_CONTEXT_CHARS = 8000

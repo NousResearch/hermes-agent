@@ -18,9 +18,15 @@ def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None)
     """Deduped, stripped skill names; None when neither argument was given."""
     if skills is None and single_skill is None:
         return None
+    from cron.jobs import _skill_list_items
+
+    items: list[str] = []
+    source = list(skills) if skills is not None else [single_skill]
+    for item in source:
+        items.extend(_skill_list_items(item or ""))
     normalized: list[str] = []
-    for item in list(skills) if skills is not None else [single_skill]:
-        text = str(item or "").strip()
+    for text in items:
+        text = str(text or "").strip()
         if text and text not in normalized:
             normalized.append(text)
     return normalized
@@ -695,8 +701,43 @@ def _next_run_overdue_issue(next_run: str) -> Optional[str]:
     return f"next_run_at is {amount} overdue — job is not firing (is the scheduler running?)"
 
 
-def _cron_doctor_issues_for_job(job: dict[str, Any]) -> list[str]:
+def _skills_repr_strings(job: dict[str, Any]) -> list[str]:
+    """``skills``/``skill`` entries that were stringified as a whole list/dict (an LLM passing
+    ``"['x']"`` instead of ``['x']``). Read from the RAW stored record — list_jobs() heals this
+    shape on read, so the healed view can no longer see it."""
+    raw_skills = job.get("skills")
+    raw_items: list[Any] = [raw_skills] if isinstance(raw_skills, str) else list(raw_skills or [])
+    legacy = job.get("skill")
+    if isinstance(legacy, str):
+        raw_items.insert(0, legacy)
+    bad: list[str] = []
+    for item in raw_items:
+        if isinstance(item, str) and item.strip() != _skill_list_repr(item):
+            bad.append(item.strip())
+    return list(dict.fromkeys(bad))
+
+
+def _skill_list_repr(value: Any) -> str:
+    """The normalized form of one skills entry: bare name, or '' when it parsed as a whole
+    list/dict literal of strings (i.e. the malformed shape)."""
+    from cron.jobs import _skill_list_items
+
+    parts = _skill_list_items(value)
+    if len(parts) == 1 and isinstance(parts[0], str):
+        return parts[0].strip()
+    return ""
+
+
+def _cron_doctor_issues_for_job(
+    job: dict[str, Any], raw_job: Optional[dict[str, Any]] = None
+) -> list[str]:
     issues: list[str] = []
+    if bad_skills := _skills_repr_strings(raw_job if raw_job is not None else job):
+        issues.append(
+            "skills were stored as a stringified list (e.g. \"['x']\" instead of ['x']) — "
+            "runs treat it as one bogus skill name and the skills never load. "
+            "Fix: `hermes cron edit <id> --skill <name>` to rewrite the field, "
+            "or edit jobs.json directly.")
     last_status = str(job.get("last_status") or "").strip().lower()
     # "delivery_failed" = the agent run succeeded; the delivery issue below reports it.
     if last_status and last_status not in {"ok", "delivery_failed", "delivery_queued"}:
@@ -734,9 +775,16 @@ def _cron_doctor_issues_for_job(job: dict[str, Any]) -> list[str]:
 
 def cron_doctor() -> int:
     """Run read-only cron health checks and return a shell-friendly status."""
-    from cron.jobs import list_jobs
+    from cron.jobs import list_jobs, load_jobs
     jobs = list_jobs(include_disabled=False)
-    findings = [(job, issues) for job in jobs if (issues := _cron_doctor_issues_for_job(job))]
+    # Raw records let doctor see corruption that the read path heals on the way through
+    # (list_jobs normalizes stringified skills lists, hiding the malformed shape).
+    raw_by_id = {raw.get("id"): raw for raw in load_jobs()}
+    findings = [
+        (job, issues)
+        for job in jobs
+        if (issues := _cron_doctor_issues_for_job(job, raw_by_id.get(job.get("id"))))
+    ]
     if not findings:
         print(color("✓ Cron doctor found no issues", Colors.GREEN))
         note = f"  Checked {len(jobs)} active job(s)." if jobs else "  No active jobs configured."

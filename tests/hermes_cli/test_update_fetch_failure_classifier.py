@@ -140,8 +140,14 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
     calls = []
 
     def run(cmd, **kwargs):
-        calls.append((cmd[1:], kwargs))
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        # Only network verbs are under test here; local reads (e.g. the branch probe the
+        # parked-branch fork sync performs) are not part of the prompt contract.
+        if cmd[1] in {"fetch", "pull", "push"}:
+            calls.append((cmd[1:], kwargs))
+        # tmp_path is not a checkout, so answer the branch probe: a checkout on `main` is
+        # the case this test exercises.
+        out = "main\n" if "rev-parse" in cmd else ""
+        return subprocess.CompletedProcess(cmd, 0, out, "")
 
     monkeypatch.setattr(subprocess, "run", run)
     update_cmd._git_run(["git"], ["fetch", "origin", "main"], cwd=tmp_path, network=True, check=True)

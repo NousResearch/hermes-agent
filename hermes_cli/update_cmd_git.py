@@ -301,6 +301,30 @@ def _sync_fork_with_upstream(git_cmd: list[str], cwd: Path) -> bool:
     return _git_ok(git_cmd, ["push", "origin", "main", "--force-with-lease"], cwd, network=True)
 
 
+def _pull_would_advance_the_fork(checked_out_branch: str) -> bool:
+    """True when ``git pull --ff-only upstream main`` would advance the fork's ``main``.
+
+    ``git pull`` fast-forwards the CHECKED-OUT branch, not the local ``main`` ref, so the pull only
+    advances the fork when the checkout already sits on ``main``. On any other branch it tries to move
+    that branch instead, and on a custom branch carrying commits upstream lacks it cannot fast-forward
+    at all - which is what leaves ``origin/main`` behind ``upstream/main`` while the run still ends
+    on "Fork is up to date".
+    """
+    return checked_out_branch == "main"
+
+
+def _advance_fork_main_without_checkout(git_cmd: list[str], cwd: Path, *, expected_origin_sha: str) -> bool:
+    """Fast-forward ``origin/main`` to ``upstream/main`` without touching the working checkout.
+
+    A ref-to-ref push leased against the ``origin/main`` that was just compared, so a fork that moved
+    underneath us fails loudly instead of being overwritten.
+    """
+    return _git_ok(git_cmd, [
+        "push", "origin", "refs/remotes/upstream/main:refs/heads/main",
+        f"--force-with-lease=refs/heads/main:{expected_origin_sha}",
+    ], cwd, network=True)
+
+
 def _offer_upstream_remote(git_cmd: list[str], cwd: Path, *, assume_yes: bool, input_fn) -> bool:
     """Prompt to add ``upstream`` and add it; False when the user declined, the run is non-interactive, or add failed.
 
@@ -342,7 +366,8 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
 
     See #97052.
     """
-    from hermes_cli.update_cmd import _count_commits_between, _has_upstream_remote, _no_prompt_git_kwargs, _should_skip_upstream_prompt
+    from hermes_cli.update_cmd import (_count_commits_between, _has_upstream_remote,
+                                        _no_prompt_git_kwargs, _should_skip_upstream_prompt)
     from hermes_cli.update_cmd_check import tracking_refspec
     if not _has_upstream_remote(git_cmd, cwd) and (
         _should_skip_upstream_prompt() or not _offer_upstream_remote(git_cmd, cwd, assume_yes=assume_yes, input_fn=input_fn)
@@ -369,7 +394,21 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
     if upstream_ahead == 0:
         print("  ✓ Fork is up to date with upstream")
         return True
-    print(f"\n→ Fork is {upstream_ahead} commit(s) behind upstream\n→ Pulling from upstream...")
+    print(f"\n→ Fork is {upstream_ahead} commit(s) behind upstream")
+    checked_out = _git_stdout(git_cmd, ["rev-parse", "--abbrev-ref", "HEAD"], cwd) or ""
+    if not _pull_would_advance_the_fork(checked_out):
+        # `git pull --ff-only upstream main` would fast-forward the CHECKED-OUT branch, which on a
+        # parked custom branch either fails outright or moves commits the updater does not own.
+        # Advance the fork ref directly instead and leave the working tree alone; the next update
+        # merges the advanced origin/main in through the normal parked-branch path.
+        print(f"  ℹ Checkout is on '{checked_out}', not 'main' - advancing the fork ref directly")
+        origin_sha = _git_stdout(git_cmd, ["rev-parse", "origin/main"], cwd)
+        if origin_sha and _advance_fork_main_without_checkout(git_cmd, cwd, expected_origin_sha=origin_sha):
+            print("  ✓ Fork synced with upstream (checkout untouched)")
+            return True
+        print("  ✗ Failed to advance the fork. You may need to resolve this manually.")
+        return False
+    print("→ Pulling from upstream...")
     try:
         subprocess.run(git_cmd + ["pull", "--ff-only", "upstream", "main"], cwd=cwd, check=True, **_no_prompt_git_kwargs())
     except subprocess.CalledProcessError:

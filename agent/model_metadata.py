@@ -2103,12 +2103,19 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
         model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
     )
     # 3b. Hardcoded catalog as a last resort: a proxied Anthropic gateway fails the probes above
-    # but its model name still matches DEFAULT_CONTEXT_LENGTHS.
-    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
-    if hit:
-        logger.info("Using hardcoded context length %s for model %r (custom endpoint, catalog match on %r)", f"{hit[1]:,}", model, hit[0])
-        return hit[1]
-    # Same silent-256K bug class as the step-9 fallback — warn here too.
+    # but its model name still matches DEFAULT_CONTEXT_LENGTHS. A LOCAL server is not that case —
+    # its window is whatever it was launched with (`--ctx-size`, `max_model_len`), so a cloud API's
+    # limit for the same model *name* describes it not at all, and probes that just failed mean we
+    # have no live evidence either way. Guessing high is the costly direction here: the compression
+    # trigger derives from this window, so an inflated value puts compaction past the real limit and
+    # the session dies at the endpoint instead of compacting before it.
+    if not is_local_endpoint(base_url):
+        hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
+        if hit:
+            logger.info("Using hardcoded context length %s for model %r (custom endpoint, catalog match on %r)", f"{hit[1]:,}", model, hit[0])
+            return hit[1]
+    # Same silent-256K bug class as the step-9 fallback — warn here too. This also covers a local
+    # endpoint that reached here because its catalog match was declined: the guess must be visible.
     _warn_context_length_fallback(model, base_url)
     return DEFAULT_FALLBACK_CONTEXT
 

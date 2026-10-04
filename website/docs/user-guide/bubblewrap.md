@@ -78,8 +78,8 @@ your home directory and shows only what is on an allowlist.
 - **Dot entries** (`~/.pgpass`, `~/.mozilla`, `~/.zz-some-tool`) do not
   exist inside the sandbox unless they are allowed. An allowed dot entry
   is read-only, always: a command cannot edit `~/.bashrc` or
-  `~/.gitconfig`, which would run code in your own shells later. (An
-  entry that is a symlink is the exception: see
+  `~/.gitconfig`, which would run code in your own shells later. (For
+  an entry that is a symlink, see
   [Dot entries that are symlinks](#dot-entries-that-are-symlinks).)
 - **`~/.config`, `~/.local` and `~/.local/share`** follow the same rule
   one level down: only an allowed child is visible. They hold one
@@ -141,18 +141,31 @@ its target, resolved when the backend starts.
 ### Dot entries that are symlinks
 
 A dot entry that is a symlink cannot be removed or replaced from inside
-the sandbox: the top of the home directory is read-only. What it points
-at is not protected. If `~/.bashrc` is a link into `~/dotfiles`, and the
-working directory (or a read-write bind) makes `~/dotfiles` writable, a
-command can change the file your next login shell reads. The same holds
-for any dot entry your shells or desktop read at startup.
+the sandbox: the top of the home directory is read-only. That does not
+protect what the link leads to. If `~/.bashrc` is a link into
+`~/dotfiles`, and the working directory (or a read-write bind) makes
+`~/dotfiles` writable, a command could change the file your next login
+shell reads, long after the sandbox is gone. The same holds for any dot
+entry your shells or desktop read at startup.
 
-Hermes logs a warning when the backend starts and names each dot symlink
-at the top of the home directory whose target a command can write to.
-The warning is a notice, not a protection. To keep such targets out of
-reach, use a project directory as the working directory instead of the
-home directory or the directory that holds your dotfiles. A plain dot
-entry (a `~/.bashrc` that is a file) is read-only in every case.
+So the backend does not start in that case. When it starts, it follows
+each dot symlink at the top of the home directory, one step at a time,
+and refuses with an error that names the entry when any link, directory
+or final target on the way lies in the working directory or in a
+read-write bind. A target that does not exist yet counts too, when a
+command could create it. The error is a configuration error, like an
+unusable bind: fix it by using a project directory as the working
+directory instead of the home directory or the directory that holds
+your dotfiles, or by making the bind read-only. There is no option that
+turns the check off.
+
+A link is accepted when nothing on its way is writable inside the
+sandbox: the target is outside the working directory and every
+read-write bind, or under a hidden path, or (with the home directory as
+the working directory) inside a dot entry of the home directory. A plain
+dot entry (a `~/.bashrc` that is a file) is read-only in every case. The
+check covers the dot entries at the top of the home directory, not links
+deeper down such as `~/.config/fish`.
 
 The allowlist and the hidden set are fixed when the backend starts, so a
 command cannot widen them by changing `PATH`. The listing of the home
@@ -172,14 +185,20 @@ Four things under `HERMES_HOME` stay reachable, because a command needs
 them:
 
 - the sandbox's own state directory;
-- the scratch directory `HERMES_HOME/cache/scratch`, which is `TMPDIR` for
-  every command. It is writable (read-only in the `restricted` profile)
-  and a file written there is still there for the next command. It is
-  the temp directory of every Hermes process, not of the sandbox alone
-  (see [Limitations](#limitations));
+- the scratch path `HERMES_HOME/cache/scratch`, which is `TMPDIR` for
+  every command. On the host that directory is the temp directory of
+  every Hermes process, so the sandbox does not get it: each sandbox
+  environment has a scratch directory of its own, shown at that path. It
+  is writable (read-only in the `restricted` profile), a file written
+  there is still there for the next command, and it is removed with the
+  environment. Nothing that another session or another Hermes component
+  keeps in the shared directory is visible, whenever it is created;
 - the staged data directories (attachments, cached documents, images,
   audio, video, screenshots, pasted text and the other entries Hermes
-  hands the model as file paths), read-only;
+  hands the model as file paths), read-only. The archive of oversized
+  tool results (`cache/spillover`) is not one of them: it holds the tool
+  output of every session of the profile. An oversized result is written
+  into the sandbox's own state directory instead;
 - `HERMES_HOME/home` under `terminal.home_mode: profile`, where it is the
   subprocess `HOME`, readable and writable.
 
@@ -192,8 +211,8 @@ read-only. Point it at a project or scratch directory.
 
 With the home directory as the working directory, the existing non-dot
 entries of it are writable and nothing else is: the dot entries are
-read-only or hidden (except through a dot entry that is a symlink into a
-writable directory, see
+read-only or hidden (a dot entry that is a symlink into a writable
+directory stops the backend, see
 [Dot entries that are symlinks](#dot-entries-that-are-symlinks)), and no
 new file or directory can be made at the top of the home directory. Create it on the host first, or work in a
 subdirectory. A file at the top of the home directory can be written in
@@ -348,15 +367,15 @@ detached process could not outlive it.
   kept inside project directories are readable by a command. Keep secrets
   in dot entries, or name them in `bubblewrap_hide`. A dotfiles directory
   with a non-dot name (`~/dotfiles`) is visible as a whole.
-- The scratch directory is shared. Hermes points `TMPDIR` of all its own
-  processes at `HERMES_HOME/cache/scratch`, and the sandbox gets that
-  whole directory. The backend masks what other Hermes components keep
-  there: every unix socket at its top level and one level down (the
-  control sockets of the browser tool and of the code kernel), and the
-  direct-message payloads of the messaging gateway (`hermes-dm-*`). Two
-  things stay reachable: any other file there, such as the stored tool
-  results in `hermes-results/`, and a socket that is created while a
-  command is already running, for that command.
+- The scratch directory of a sandbox is not the one the host-side tools
+  see. A file a command writes to `$TMPDIR` is in the sandbox's own
+  scratch directory; `read_file` and the other file tools run on the
+  host and find the shared `HERMES_HOME/cache/scratch` at that path. Use
+  the working directory for a file both sides need.
+- The staged data directories are shared by the sessions of a profile:
+  a command can read an attachment or a cached document that another
+  session of the same profile staged. Use separate profiles to keep
+  sessions apart.
 - The `PATH` rule reads the `PATH` of the Hermes process. A toolchain that
   only your shell startup files put on `PATH`, in a dot directory the
   shipped list does not name, needs a `bubblewrap_home_allow` entry.

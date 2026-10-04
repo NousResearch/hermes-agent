@@ -275,6 +275,15 @@ def retrying_reads():
 
 
 class ChannelReader:
+    # One shared header set for every channel read (JSON, YAML, XML,
+    # .appinstaller readback, bytes): `Accept: */*` because read_bytes serves
+    # non-JSON too, and the same `hermes-update` UA as source_releases._read so
+    # a Cloudflare zone rule can name one client (review: #132280). A shared
+    # constant across source_releases + pm + release_channels is follow-up.
+    _CHANNEL_HEADERS = {
+        "User-Agent": "hermes-update", "Cache-Control": "no-cache", "Accept": "*/*",
+    }
+
     def __init__(self, base_url: str, repository: str | None = None, opener=None):
         self.base_url = public_base(base_url)
         self.repository = validate_repository(repository) if repository is not None else None
@@ -290,7 +299,7 @@ class ChannelReader:
         from pm.network import retry_network
 
         def read() -> bytes:
-            with self.opener(Request(url, headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) hermes-pm/1.0", "Cache-Control": "no-cache", "Accept": "application/json, */*;q=0.8"}), timeout=30) as response:
+            with self.opener(Request(url, headers=_CHANNEL_HEADERS), timeout=30) as response:
                 if response.geturl() != url:
                     raise ChannelError("Channel archive redirects are not permitted")
                 return response.read(MAX_METADATA + 1)

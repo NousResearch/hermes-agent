@@ -1265,12 +1265,20 @@ class GatewayTurnMixin:
         _hyg_checkpoint_required = _is_truthy(
             ((_load_cfg() or {}).get("compression") or {}).get("checkpoint_required"), default=False,
         )
-        _hyg_agent = AIAgent(
-            **_hyg_runtime, model=_hyg_model, max_iterations=4, quiet_mode=True,
-            skip_memory=not _hyg_checkpoint_required, enabled_toolsets=["memory"],
-            session_id=session_entry.session_id, session_db=_hyg_session_db,
-        )
-        _seed_hygiene_system_prompt(_hyg_agent, _hyg_session_row)
+        # Construction loads the context engine and can block for tens of seconds when other
+        # worker turns hold that load lock. Built inline it stalls the event loop past the
+        # adapter heartbeat ACK window, so the socket closes mid-conversation (#123702).
+        # asyncio.to_thread copies the current context, so profile-scoped contextvars still apply.
+        def _build_hygiene_agent():
+            agent = AIAgent(
+                **_hyg_runtime, model=_hyg_model, max_iterations=4, quiet_mode=True,
+                skip_memory=not _hyg_checkpoint_required, enabled_toolsets=["memory"],
+                session_id=session_entry.session_id, session_db=_hyg_session_db,
+            )
+            _seed_hygiene_system_prompt(agent, _hyg_session_row)
+            return agent
+
+        _hyg_agent = await asyncio.to_thread(_build_hygiene_agent)
         # The stamp only marks this agent as no real surface. Since #104414 Platform is not a
         # restore-identity field, so it no longer forces the next live turn to rebuild; the seed's
         # retain flag is what keeps the reduced-toolset build out of the session row (#122822).

@@ -60,7 +60,7 @@ export function KeyField({
   varKey: string
 }) {
   const { t } = useI18n()
-  const { edits, onClear, onReveal, onSave, revealed, saving, setEdits } = rowProps
+  const { edits, onClear, onHideReveal, onReveal, onSave, revealed, saving, setEdits } = rowProps
   const editing = edits[editKey] !== undefined
   const [showSecret, setShowSecret] = useState(false)
   const isSecret = isKeyVar(varKey, info)
@@ -107,6 +107,11 @@ export function KeyField({
         {isSecret && (
           <Button
             aria-label={valueRevealed ? t.settings.envActions.hideValue : t.settings.envActions.revealValue}
+            onBlur={() => {
+              if (valueRevealed) {
+                onHideReveal(varKey)
+              }
+            }}
             onClick={() => void onReveal(varKey)}
             size="icon-xs"
             type="button"

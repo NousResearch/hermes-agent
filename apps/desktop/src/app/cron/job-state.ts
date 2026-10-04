@@ -19,10 +19,15 @@ export function jobState(job: CronJob): string {
   return state || (job.enabled === false ? 'disabled' : 'scheduled')
 }
 
-export function truncateText(value: string, max: number): string {
-  const codePoints = Array.from(value)
+// Grapheme segmentation, the same idiom as profile-short-label.ts: code points alone still
+// cut ZWJ sequences, flags, skin tones, and combining marks mid-cluster. A job name is raw
+// user input, so "🇨🇳 每日简报" is a plausible value to keep intact.
+const truncateGraphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 
-  return codePoints.length > max ? `${codePoints.slice(0, max).join('')}…` : value
+export function truncateText(value: string, max: number): string {
+  const graphemes = Array.from(truncateGraphemes.segment(value), ({ segment }) => segment)
+
+  return graphemes.length > max ? `${graphemes.slice(0, max).join('')}…` : value
 }
 
 // Human label for a job: name → first 60 of prompt → first 60 of script → id.

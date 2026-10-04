@@ -81,6 +81,8 @@ ROUTE_ROLES: Mapping[str, str] = {
     # Earned autonomy: each triaged action's state, ledger and recent verdicts. Readable by a
     # viewer — it is how the business sees what its agents may do alone, and on what record.
     "/autonomy": "viewer",
+    # The contact list itself is customer data: chat ids of real people. Admin only.
+    "/contacts": "admin",
 }
 
 #: Minimum role per *write* route, kept separate from :data:`ROUTE_ROLES` on purpose.
@@ -122,6 +124,9 @@ WRITE_ROUTES: Mapping[str, str] = {
     "/settings/identity": "admin",
     "/settings/logo": "admin",
     "/settings/agent-name": "admin",
+    # Who the tenant's customers and own people are. Admin: it decides whether a message
+    # can count as going to a customer when triage lets a call run without a person.
+    "/settings/contacts": "admin",
     # A corpus is what agents read. Adding to it, removing from it, or rebuilding the index
     # all change what the workforce knows.
     "/knowledge/upload": "admin",

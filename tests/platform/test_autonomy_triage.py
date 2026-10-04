@@ -48,7 +48,12 @@ def autonomy_block(*, provider="fake", mode="shadow", data="metadata_only", stat
     return "\n".join(lines) + "\n"
 
 
-def install(tmp_path, block="", name="b"):
+#: The tenant's contact list in these tests: the chat ``ARGS`` sends to is a listed customer,
+#: so the default set's recipient fact passes and each test is about the questions it names.
+CONTACTS = "customers: [telegram:123456789]\ninternal: [slack:C0TEAM]\n"
+
+
+def install(tmp_path, block="", name="b", contacts=CONTACTS):
     """The example bundle with ``block`` as its autonomy block — or with none at all.
 
     The example ships a shadow/fake block as the last thing in its policy; each test states
@@ -56,6 +61,8 @@ def install(tmp_path, block="", name="b"):
     """
     root = tmp_path / name
     shutil.copytree(EXAMPLE_BUNDLE, root)
+    if contacts is not None:  # "" is an empty list, replacing the example's own
+        (root / "contacts.yaml").write_text(contacts)
     policy = root / "policy.yaml"
     text = policy.read_text()
     marker = "\n# Risk triage and earned autonomy"
@@ -232,10 +239,9 @@ def test_a_crash_between_intent_and_outcome_leaves_a_detectable_open_intent(grad
 @pytest.mark.parametrize("overrides", [
     {"financial_commitment": {"type": "noul", "p": 0.10}},                       # at its limit
     {"sensitivity": {"type": "score", "probabilities": [1.0, 0.0, 0.0, 0.0], "confidence": 0.8999}},
-    {"recipient": {"type": "choice", "choice": "new_contact", "confidence": 0.99, "probabilities": {
-        "existing_customer": 0.0, "new_contact": 1.0, "internal": 0.0, "unknown": 0.0}}},
-    {"recipient": {"type": "choice"}},                                            # malformed
-], ids=["noul-at-threshold", "confidence-just-below", "choice-not-allowed", "malformed-answer"])
+    {"sensitivity": {"type": "score", "probabilities": [0.0, 1.0, 0.0, 0.0], "confidence": 0.99}},
+    {"sensitivity": {"type": "score"}},                                           # malformed
+], ids=["noul-at-threshold", "confidence-just-below", "score-above-allowed", "malformed-answer"])
 def test_one_failing_answer_escalates_with_its_reason(graduated, monkeypatch, overrides):
     home, _ = graduated
     p = plugin(home, monkeypatch)

@@ -13,7 +13,7 @@
  */
 
 import * as React from "react";
-import { Building2, Check, Loader2, Palette, Trash2, Upload } from "lucide-react";
+import { Building2, Check, Contact, Loader2, Palette, Trash2, Upload } from "lucide-react";
 
 import { GlassPanel, SectionHeader } from "@/components/glass";
 import { TextArea, TextInput } from "@/components/form";
@@ -63,7 +63,74 @@ export function SettingsScreen({ onChanged }: { onChanged?: () => void }) {
       <Company settings={loaded.data} onSaved={refresh} />
       <Branding settings={loaded.data} onSaved={refresh} />
       <LogoPanel settings={loaded.data} onSaved={refresh} />
+      <ContactsPanel />
     </div>
+  );
+}
+
+/* ── Contacts ─────────────────────────────────────────────────────────────── */
+
+/* Who the business says its customers and its own people are. Earned autonomy only counts a
+ * message as going to a customer when its recipient is on this list — never because the agent
+ * said so, or because the message sounded like it. Admin-only: these are chat ids of real
+ * people. One send target per line, as the agent writes one: telegram:12345, slack:C0TEAM. */
+
+type ContactLists = { internal: string[]; customers: string[] };
+
+function ContactsPanel() {
+  const [nonce, setNonce] = React.useState(0);
+  const loaded = usePanel<ContactLists>("/contacts", 0, nonce);
+  const server = React.useMemo(
+    () => (loaded.state === "ok"
+      ? { internal: loaded.data.internal.join("\n"), customers: loaded.data.customers.join("\n") }
+      : undefined),
+    [loaded],
+  );
+  const editor = useEditable(server, async (value) => {
+    const lines = (text: string) => text.split("\n").map((l) => l.trim()).filter(Boolean);
+    const result = await post("/settings/contacts", {
+      internal: lines(value.internal), customers: lines(value.customers),
+    });
+    setNonce((n) => n + 1);
+    return result;
+  });
+
+  if (loaded.state === "forbidden") return null;  // a viewer does not see real people's chat ids
+  if (loaded.state !== "ok" || !server) {
+    return (
+      <GlassPanel className="p-5">
+        <p className={`text-[13px] ${loaded.state === "error" ? "text-blocked" : "text-ink-faint"}`}>
+          {loaded.state === "error" ? `Contacts could not be read. ${loaded.message}` : "reading…"}
+        </p>
+      </GlassPanel>
+    );
+  }
+  const v = editor.value;
+  const count = (text: string) => text.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#")).length;
+
+  return (
+    <GlassPanel className="p-5">
+      <SectionHeader
+        icon={Contact} title="Contacts"
+        detail="Who your customers and your own people are. Triage only treats a message as going to a customer when the recipient is listed here."
+      />
+      <div className="grid gap-4 sm:grid-cols-2">
+        <TextArea id="contacts-customers" label={`Customers (${count(v.customers)})`} value={v.customers} mono rows={6}
+          placeholder={"telegram:12345\ntelegram:67890"}
+          onChange={(customers) => editor.edit((c) => ({ ...c, customers }))}
+          hint="One send target per line. Messages to these can earn autonomy." />
+        <TextArea id="contacts-internal" label={`Internal (${count(v.internal)})`} value={v.internal} mono rows={6}
+          placeholder={"slack:C0TEAM\ntelegram:1001"}
+          onChange={(internal) => editor.edit((c) => ({ ...c, internal }))}
+          hint="Your own staff and team channels." />
+      </div>
+      <p className="text-ink-faint mt-3 text-[11.5px] leading-relaxed">
+        Someone who has written to an agent but is not listed here counts as a known contact, and a
+        person still checks messages to them. Groups and public channels always go to a person.
+      </p>
+      <SaveBar dirty={editor.dirty} busy={editor.busy} state={editor.state}
+               onSave={editor.submit} onDiscard={editor.discard} label="Save contacts" />
+    </GlassPanel>
   );
 }
 

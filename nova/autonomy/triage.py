@@ -35,7 +35,12 @@ AUTO_OK = "auto_ok"
 ESCALATE = "escalate"
 
 NOUL, CHOICE, SCORE = "noul", "choice", "score"
-QUESTION_TYPES = (NOUL, CHOICE, SCORE)
+#: A fact NOVA answers itself, from records the agent cannot write, rather than asking the
+#: provider to guess: who a message is going to.
+RECIPIENT = "recipient"
+#: Question types the provider answers. Everything else is answered here.
+PROVIDER_TYPES = (NOUL, CHOICE, SCORE)
+QUESTION_TYPES = PROVIDER_TYPES + (RECIPIENT,)
 
 
 def _probability(value: Any) -> Optional[float]:
@@ -105,8 +110,28 @@ def _check_score(question: Mapping[str, Any], answer: Mapping[str, Any]) -> Opti
     return None
 
 
+#: What each recipient answer means, in the words a person reads in a failed check.
+RECIPIENT_MEANING = {
+    "existing_customer": "a customer on the tenant's contact list",
+    "internal": "on the tenant's internal contact list",
+    "known_contact": "someone who has written to us before but is not on the contact list",
+    "broadcast": "a group or channel, not one person",
+    "unknown": "someone never seen: not on the contact list and no conversation with us",
+}
+RECIPIENT_ANSWERS = tuple(RECIPIENT_MEANING)
+
+
+def _check_recipient(question: Mapping[str, Any], answer: Mapping[str, Any]) -> Optional[str]:
+    found = answer.get("choice")
+    if found not in RECIPIENT_MEANING:
+        return "no valid answer"
+    if found not in set(question.get("allowed") or ()):
+        return f"the recipient is {RECIPIENT_MEANING[found]}"
+    return None
+
+
 _CHECKS: Dict[str, Callable[[Mapping[str, Any], Mapping[str, Any]], Optional[str]]] = {
-    NOUL: _check_noul, CHOICE: _check_choice, SCORE: _check_score,
+    NOUL: _check_noul, CHOICE: _check_choice, SCORE: _check_score, RECIPIENT: _check_recipient,
 }
 
 
@@ -266,7 +291,10 @@ def digest(value: Any) -> str:
 
 
 def safe_answers(questions: Sequence[Mapping[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """The fake provider's answers: the safest possible answer to each question."""
+    """The fake provider's answers: the safest possible answer to each provider question.
+
+    Facts NOVA answers itself (the recipient) are not the provider's to answer, fake or not.
+    """
     out: Dict[str, Dict[str, Any]] = {}
     for q in questions:
         if q.get("type") == NOUL:
@@ -297,3 +325,80 @@ def explain(result: Mapping[str, Any], *, mode: str, proceed: bool) -> str:
         more = f" (+{len(failed) - 4} more)" if len(failed) > 4 else ""
         return f"{head} — {reasons}{more}."
     return head + "."
+
+
+# -- the recipient, looked up ------------------------------------------------------------
+#
+# Who a message is going to is a fact, so it is looked up rather than guessed — and only
+# in records the agent cannot write: the tenant's contact list (compiled into the policy)
+# and the gateway's channel directory (rebuilt by the gateway from real conversations,
+# outside every workspace). The agent's own arguments say *where* it is sending, never
+# *who* that is. Anything that cannot be established is "unknown", which a person checks.
+
+#: Directory chat types that reach more than one person.
+_BROADCAST_TYPES = {"group", "supergroup", "channel", "forum", "thread", "server", "guild", "room"}
+
+
+def provider_questions(questions: Sequence[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
+    return [q for q in questions if q.get("type") in PROVIDER_TYPES]
+
+
+def _target(args: Any) -> tuple:
+    """``(platform, [candidate ids])`` from a ``platform:chat[:thread]`` target."""
+    target = args.get("target") if isinstance(args, Mapping) else None
+    if not isinstance(target, str) or ":" not in target:
+        return "", []
+    platform, rest = target.split(":", 1)
+    platform, rest = platform.strip().lower(), rest.strip()
+    if not platform or not rest:
+        return "", []
+    candidates = [rest]
+    if ":" in rest:  # a trailing thread id; some platforms' ids contain ':' themselves
+        candidates.append(rest.rsplit(":", 1)[0])
+    return platform, candidates
+
+
+def _directory_entries(directory: Any, platform: str) -> List[Mapping[str, Any]]:
+    platforms = directory.get("platforms") if isinstance(directory, Mapping) else None
+    entries = platforms.get(platform) if isinstance(platforms, Mapping) else None
+    return [e for e in entries if isinstance(e, Mapping)] if isinstance(entries, list) else []
+
+
+def recipient_answer(args: Any, contacts: Optional[Mapping[str, Any]],
+                     directories: Sequence[Any] = ()) -> Dict[str, Any]:
+    """``{"type": "recipient", "choice", "source"}`` for one call. Never raises.
+
+    Order: the tenant's contact list (an explicit declaration wins), then the channel
+    directory — a group or channel is a broadcast, a direct chat that has written to us is a
+    known contact — then unknown. A friendly name (``telegram:Lena``) is resolved through
+    the directory first, exactly and unambiguously, or not at all.
+    """
+    try:
+        platform, candidates = _target(args)
+        if not platform:
+            return {"type": RECIPIENT, "choice": "unknown", "source": "no recipient in the call"}
+        entries = [e for d in directories for e in _directory_entries(d, platform)]
+        ids = list(candidates)
+        for candidate in candidates:
+            if any(str(e.get("id")) == candidate for e in entries):
+                break
+            query = candidate.lstrip("#@").strip().lower()
+            named = [e for e in entries if str(e.get("name") or "").lstrip("#@").strip().lower() == query]
+            if len({str(e.get("id")) for e in named}) == 1:
+                ids.insert(0, str(named[0].get("id")))
+                break
+        keys = {f"{platform}:{i}" for i in ids}
+        lists = contacts if isinstance(contacts, Mapping) else {}
+        if keys & set(lists.get("internal") or ()):
+            return {"type": RECIPIENT, "choice": "internal", "source": "contact list"}
+        if keys & set(lists.get("customers") or ()):
+            return {"type": RECIPIENT, "choice": "existing_customer", "source": "contact list"}
+        seen = [e for e in entries if str(e.get("id")) in ids]
+        if seen:
+            kind = str(seen[0].get("type") or "dm").lower()
+            if kind in _BROADCAST_TYPES:
+                return {"type": RECIPIENT, "choice": "broadcast", "source": "channel directory"}
+            return {"type": RECIPIENT, "choice": "known_contact", "source": "channel directory"}
+        return {"type": RECIPIENT, "choice": "unknown", "source": "not found"}
+    except Exception:  # noqa: BLE001 — a lookup that fails establishes nothing
+        return {"type": RECIPIENT, "choice": "unknown", "source": "lookup failed"}

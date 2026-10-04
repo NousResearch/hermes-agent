@@ -53,6 +53,8 @@ WRITABLE_FILES = (
     "deployment.yaml",
     # An action's earned autonomy state; written only by promotion and demotion.
     "autonomy_state.yaml",
+    # Who the tenant's customers and own people are (Settings → Contacts).
+    "contacts.yaml",
 )
 
 

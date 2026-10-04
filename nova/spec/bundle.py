@@ -209,13 +209,20 @@ def load_bundle(root: Path | str, *, env: Optional[Mapping[str, str]] = None) ->
         if policy_path.is_file()
         else None
     )
+    # The tenant's contact list is validated whether or not triage uses it: a malformed file
+    # is refused at load, not discovered when a message is triaged.
+    from nova.autonomy.contacts import load_contacts
+
+    contacts = load_contacts(root)
     if policy is not None and policy.autonomy is not None:
-        # The earned state of each triaged action, as NOVA last recorded it.
+        # The earned state of each triaged action, as NOVA last recorded it, and who the
+        # tenant says its customers and its own people are.
         from dataclasses import replace
 
         from nova.autonomy.state import load_states
 
-        policy = replace(policy, autonomy=policy.autonomy.with_states(load_states(root)))
+        policy = replace(policy, autonomy=policy.autonomy.with_states(load_states(root))
+                         .with_contacts(contacts.compiled()))
 
     knowledge = load_catalog(root, env=env)
     objectives = load_objectives(root, env=env)

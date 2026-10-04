@@ -113,7 +113,7 @@ MAX_INSTRUCTIONS_CHARS = 20000
 KNOWLEDGE_ACTIONS = ("upload", "remove", "reindex", "sync")
 
 #: What an administrator may change about the tenant itself.
-SETTINGS_ACTIONS = ("organization", "identity", "logo", "agent-name")
+SETTINGS_ACTIONS = ("organization", "identity", "logo", "agent-name", "contacts")
 
 AGENT_ACTIONS = ("update", "soul", "duplicate", "archive", "restore", "delete", "credentials",
                  "mcp", "plugins")
@@ -339,6 +339,10 @@ class ControlAPI:
             return self.simulate(query)
         if tail == "/decisions":
             return self.decisions(query)
+        if tail == "/contacts":
+            from nova.autonomy.contacts import load_contacts
+
+            return Response(200, load_contacts(self.bundle.root).to_dict())
         if tail == "/autonomy":
             from nova.control import autonomy
 
@@ -1554,6 +1558,24 @@ class ControlAPI:
                 principal, kind="settings.identity_changed",
                 subject=self.bundle.tenant_id, detail={"fields": sorted(fields)},
                 operation=lambda: branding.update_identity(root, fields),
+            )
+
+        if what == "contacts":
+            from nova.autonomy.contacts import Contacts, write_contacts
+            from nova.errors import SpecError
+
+            lists = {name: payload.get(name) for name in ("internal", "customers")}
+            if not all(isinstance(v, list) and all(isinstance(x, str) for x in v) for v in lists.values()):
+                return _error(400, "send internal and customers as lists of send targets")
+            try:
+                contacts = Contacts.from_lines(lists["internal"], lists["customers"])
+            except SpecError as exc:
+                return _error(400, str(exc))
+            return self._agent_write(
+                principal, kind="settings.contacts_changed", subject=self.bundle.tenant_id,
+                # Counts, not entries: the list is chat ids of real people.
+                detail={"internal": len(contacts.internal), "customers": len(contacts.customers)},
+                operation=lambda: write_contacts(root, contacts),
             )
 
         if what == "agent-name":

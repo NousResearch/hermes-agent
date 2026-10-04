@@ -38,6 +38,6 @@ class FakeProvider:
         if self.fail:
             raise ProviderError(self.fail)
         safe = safe_answers(compiled)
-        normalized = {q["id"]: dict(self.scripted.get(q["id"]) or safe[q["id"]]) for q in compiled}
+        normalized = {q["id"]: dict(self.scripted.get(q["id"]) or safe[q["id"]]) for q in compiled if q["id"] in safe}
         return answers_from(normalized, provider=self.name, model_version=self.model_version,
                             latency_ms=int(self.delay_seconds * 1000))

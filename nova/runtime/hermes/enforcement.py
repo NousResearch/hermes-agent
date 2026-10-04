@@ -554,16 +554,23 @@ def _triage(policy: Dict[str, Any], decision: Decision, tool_name: str, args: Di
                                          _triage_rule.secret_values(os.environ))
         ask = _PROVIDERS.get(provider)
         failure: Dict[str, str] = {}
+        # Facts NOVA looks up itself — who the message goes to — from records the agent
+        # cannot write. Only the rest goes to the provider.
+        asked = _triage_rule.provider_questions(questions)
+        facts = {str(q["id"]): _triage_rule.recipient_answer(args, config.get("contacts"), _directories())
+                 for q in questions if q.get("type") == _triage_rule.RECIPIENT}
 
         def run():
             try:
-                return ask(state, questions, timeout)
+                return ask(state, asked, timeout)
             except Exception as exc:  # noqa: BLE001 — recorded, and means "no answer"
                 failure["reason"] = str(getattr(exc, "reason", "") or type(exc).__name__)
                 return None
 
         answered = _triage_rule.within_deadline(run, timeout) if ask else None
         normalized, version, latency = answered[:3] if answered else (None, "", int((time.monotonic() - started) * 1000))
+        if normalized is not None:
+            normalized = {**normalized, **facts}
         usage = answered[3] if answered and len(answered) > 3 and isinstance(answered[3], dict) else {}
         result = _triage_rule.combine(questions, normalized)
         if answered is None:
@@ -598,6 +605,24 @@ def _triage(policy: Dict[str, Any], decision: Decision, tool_name: str, args: Di
                        "failed": [{"id": "", "why": f"triage error ({type(exc).__name__})"}]})
     _write_event(policy, "policy.triage", {**detail, **{k: v for k, v in call.items() if v}})
     return {"proceed": proceed, "note": note}
+
+
+def _directories() -> list:
+    """The gateway's channel directory, wherever this profile's gateway wrote it. Read-only.
+
+    The runtime writes it into its home; a profile served on its own writes it into the
+    profile. Both are outside every workspace, so the agent's file tools cannot edit them.
+    A missing or unreadable file contributes nothing, which makes a recipient unknown.
+    """
+    found = []
+    for base in (Path(__file__).resolve().parents[2], _plugin_home()):
+        try:
+            loaded = json.loads((base / "channel_directory.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(loaded, dict):
+            found.append(loaded)
+    return found
 
 
 def _still_graduated(action: str, model_version: str) -> bool:

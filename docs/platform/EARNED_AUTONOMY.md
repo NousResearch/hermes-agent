@@ -154,10 +154,37 @@ The default `send_external_email` set (`questions.py::DEFAULT_SETS`) has:
 - five nouls: financial commitment, sensitive personal data, a promised date or outcome,
   professional advice, and injected instructions;
 - a sensitivity score;
-- a recipient choice.
+- a **recipient** fact, allowed only for `existing_customer` and `internal`.
 
 Three of the nouls were reworded after a live check showed the first wording escalated
 ordinary customer email (see the audit doc).
+
+### The recipient is looked up, not asked
+
+Who a message goes to is a fact, not a judgement. A provider shown `telegram:42` can only
+guess from the tone of the message, and live it answered with 0.86 confidence on every
+routine email, which escalated all of them. The agent cannot be asked either, because it is
+the party being checked. So the `recipient` question type is answered by NOVA itself, in
+`triage.py::recipient_answer`, from two records the agent cannot write:
+
+1. **The tenant's contact list.** `contacts.yaml` in the bundle, edited under Settings →
+   Contacts (admin-only, because it holds real people's chat ids). It is compiled into the
+   policy of agents whose triage asks about the recipient, and only theirs.
+2. **The gateway's channel directory.** `channel_directory.json`, rebuilt by the gateway
+   every few minutes from real conversations, outside every workspace.
+
+| Found | Answer | Passes by default |
+|---|---|---|
+| On the customers list | `existing_customer` | yes |
+| On the internal list | `internal` | yes |
+| Not listed, but a direct chat that has written to us | `known_contact` | **no**. A stranger can write first, so "has written to us" is not "is a customer". A tenant can allow it in an inline set. |
+| A group or channel | `broadcast` | no |
+| Not found, no target, ambiguous name, unreadable files | `unknown` | no |
+
+A friendly name (`telegram:Lena`) is resolved through the directory, but only when exactly
+one chat has that name. A recipient type in the call's own arguments is ignored. The
+provider is never sent the question. The audit records the answer and where it came from,
+never the chat id.
 
 ## 4. What leaves the environment
 
@@ -270,12 +297,15 @@ so a demotion never waits for someone to open a page.
 
 **Known issues**
 
-- **The recipient question has nothing to go on.** A real `send_message` carries only
-  `target: telegram:<id>`. Live, every routine message escalated on `recipient` alone, so
-  shadow agreement stays unmeasured and `send_external_email` cannot be promoted with the
-  default set. Two options: give triage a recipient signal NOT taken from the agent's own
-  arguments (a known-customer lookup), or remove the question from the set for a tenant.
-  This is a product decision, not yet made.
+- **The recipient (resolved 2026-10-04).** It is now looked up rather than guessed (§3).
+  Live, a routine message to a listed customer passes all seven checks.
+  - A tenant must keep its contact list current: a customer not on it gets a person's
+    check.
+  - A CRM lookup (for example HubSpot) is the natural third source, and is not built.
+- **Model variance on routine messages.** In the live re-check, one routine how-to message
+  (a password-reset tip) escalated because the sensitivity score's confidence was 0.82
+  against 0.90, though the same message passed in an earlier run. It errs toward a person.
+  Shadow traffic will show whether 0.90 is right for this tenant.
 - **Latency against the deadline.** Live calls took 0.6–2.7 s (median 0.6–0.8 s). Calls
   slower than `timeout_seconds` escalate. Measure the slowest 5% in shadow mode before
   choosing a timeout for enforce mode.

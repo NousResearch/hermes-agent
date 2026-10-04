@@ -1,12 +1,16 @@
 """Triage question sets: what is asked about an approval-gated call, and what passes.
 
-Three atomic question types, each with its own explicit threshold:
+Three atomic question types the provider answers, each with its own explicit threshold,
+and one fact NOVA answers itself:
 
 * :class:`Noul` — "how likely is this statement true?"; fails at ``p >= block_above``.
 * :class:`Score` — a rating on ordered ``levels``; fails above ``max_allowed_level``, or when
   ``min_confidence`` is not met.
 * :class:`Choice` — one of ``options``; fails outside ``allowed``, or when ``min_confidence``
   is not met.
+* :class:`Recipient` — who a message goes to, looked up in the tenant's contact list and the
+  gateway's channel directory; fails unless the answer is one of ``allowed``. A model could
+  only guess this from the tone of the message, so it is never asked.
 
 A noul has no ``min_confidence``: the provider reports only its probability, so the
 threshold *is* the confidence bar (see ``docs/platform/AUTONOMY_AUDIT.md`` Q5).
@@ -22,7 +26,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence, Union
 
-from nova.autonomy.triage import CHOICE, NOUL, SCORE
+from nova.autonomy.triage import CHOICE, NOUL, RECIPIENT, RECIPIENT_ANSWERS, SCORE
 from nova.errors import SpecError
 
 DEFAULT_MIN_CONFIDENCE = 0.90
@@ -96,7 +100,21 @@ class Choice:
                 "allowed": list(self.allowed), "min_confidence": self.min_confidence}
 
 
-Question = Union[Noul, Score, Choice]
+@dataclass(frozen=True)
+class Recipient:
+    """Who a message goes to — answered by NOVA from the contact list and the channel
+    directory, never by the provider. Fails unless the answer is one of ``allowed``."""
+
+    id: str
+    allowed: tuple[str, ...]
+
+    type = RECIPIENT
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "type": RECIPIENT, "allowed": list(self.allowed)}
+
+
+Question = Union[Noul, Score, Choice, Recipient]
 
 
 def parse_question(raw: Mapping[str, Any], where: str = "question") -> Question:
@@ -113,6 +131,13 @@ def parse_question(raw: Mapping[str, Any], where: str = "question") -> Question:
         _only(raw, {"id", "type", "statement", "block_above"}, at)
         return Noul(qid, _text(raw.get("statement"), f"{at}.statement"),
                     _fraction(raw.get("block_above"), f"{at}.block_above"))
+    if kind == RECIPIENT:
+        _only(raw, {"id", "type", "allowed"}, at)
+        allowed = _names(raw.get("allowed"), f"{at}.allowed")
+        if not allowed or not set(allowed) <= set(RECIPIENT_ANSWERS):
+            raise SpecError(f"{at}.allowed must be a non-empty subset of {list(RECIPIENT_ANSWERS)}",
+                            field=f"{at}.allowed")
+        return Recipient(qid, allowed)
     minimum = _fraction(raw.get("min_confidence", DEFAULT_MIN_CONFIDENCE), f"{at}.min_confidence")
     if kind == SCORE:
         _only(raw, {"id", "type", "rubric", "levels", "max_allowed_level", "min_confidence"}, at)
@@ -134,7 +159,7 @@ def parse_question(raw: Mapping[str, Any], where: str = "question") -> Question:
         if not allowed or not set(allowed) <= set(options):
             raise SpecError(f"{at}.allowed must be a non-empty subset of the options", field=f"{at}.allowed")
         return Choice(qid, _text(raw.get("prompt"), f"{at}.prompt"), options, allowed, minimum)
-    raise SpecError(f"{at}.type must be noul, score or choice", field=f"{at}.type")
+    raise SpecError(f"{at}.type must be noul, score, choice or recipient", field=f"{at}.type")
 
 
 def _only(raw: Mapping[str, Any], known: set[str], at: str) -> None:
@@ -192,9 +217,10 @@ DEFAULT_SETS: dict[str, list[dict[str, Any]]] = {
         {"id": "sensitivity", "type": SCORE, "rubric": "How sensitive is sending this message for the business?",
          "levels": ["routine", "minor", "significant", "critical"], "max_allowed_level": "routine",
          "min_confidence": DEFAULT_MIN_CONFIDENCE},
-        {"id": "recipient", "type": CHOICE, "prompt": "Who is the recipient?",
-         "options": ["existing_customer", "new_contact", "internal", "unknown"],
-         "allowed": ["existing_customer", "internal"], "min_confidence": DEFAULT_MIN_CONFIDENCE},
+        # Looked up, not asked: the provider could only guess from the tone of the message.
+        # "known_contact" (has written to us, not on the contact list) is not allowed by
+        # default; a tenant that wants it allows it in an inline set.
+        {"id": "recipient", "type": RECIPIENT, "allowed": ["existing_customer", "internal"]},
     ],
 }
 
@@ -214,6 +240,6 @@ def question_set_for(action: str, configured: Any, *, min_confidence: Optional[f
         raw: Sequence[Mapping[str, Any]] = DEFAULT_SETS[action]
         if min_confidence is not None:
             minimum = _fraction(min_confidence, "autonomy.min_confidence")
-            raw = [{**q, "min_confidence": minimum} if q["type"] != NOUL else q for q in raw]
+            raw = [{**q, "min_confidence": minimum} if q["type"] in (SCORE, CHOICE) else q for q in raw]
         return QuestionSet.parse(list(raw), where)
     return QuestionSet.parse(configured, where)

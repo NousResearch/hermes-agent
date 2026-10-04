@@ -135,6 +135,8 @@ class AutonomySpec:
     actions: Mapping[str, ActionAutonomy] = field(default_factory=dict)
     promotion: PromotionRules = field(default_factory=PromotionRules)
     demotion: DemotionRules = field(default_factory=DemotionRules)
+    #: The tenant's contact list (``contacts.yaml``), attached at bundle load.
+    contacts: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def active(self) -> bool:
@@ -190,6 +192,9 @@ class AutonomySpec:
         doc.reject_unknown()
         return cls(provider, mode, data, timeout, minimum, actions, promotion, demotion)
 
+    def with_contacts(self, contacts: Mapping[str, Any]) -> "AutonomySpec":
+        return replace(self, contacts=dict(contacts or {}))
+
     def with_states(self, states: Mapping[str, Mapping[str, Any]]) -> "AutonomySpec":
         """This spec with each action's state taken from the machine-written state file.
 
@@ -228,5 +233,11 @@ class AutonomySpec:
                    if name in approval_actions}
         if not actions:
             return None
-        return {"provider": self.provider, "mode": self.mode, "data": self.data,
-                "timeout_seconds": self.timeout_seconds, "actions": actions}
+        compiled = {"provider": self.provider, "mode": self.mode, "data": self.data,
+                    "timeout_seconds": self.timeout_seconds, "actions": actions}
+        if any(q.get("type") == "recipient" for a in actions.values() for q in a["questions"]):
+            # Only for an agent whose triage asks about the recipient: the list is customer
+            # data, and an agent that never needs it does not carry it.
+            compiled["contacts"] = {"internal": sorted(self.contacts.get("internal") or ()),
+                                    "customers": sorted(self.contacts.get("customers") or ())}
+        return compiled

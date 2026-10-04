@@ -1,0 +1,8 @@
+# Who Acme's customers and own people are (Settings → Contacts in the Control Centre).
+# Triage only treats a message as going to a customer when its recipient is listed here:
+# never because the agent said so, and never because the message sounded like it.
+# One send target per entry, as the agent writes one: platform:chat.
+customers:
+  - telegram:123456789
+internal:
+  - slack:C0ACMEOPS

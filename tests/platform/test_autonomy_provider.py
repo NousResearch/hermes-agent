@@ -28,7 +28,14 @@ from nova.errors import SpecError
 
 REPO = Path(__file__).resolve().parents[2]
 EMAIL = question_set_for("send_external_email", "default")
-QUESTIONS = EMAIL.to_list()
+#: What a provider is asked: the default set's provider questions, plus one Choice so every
+#: answer shape the provider documents is exercised. (The default set's recipient is a fact
+#: NOVA looks up itself; see the recipient tests at the end.)
+TONE = {"id": "tone", "type": "choice", "prompt": "What is the tone of the message?",
+        "options": ["friendly", "neutral", "hostile"], "allowed": ["friendly", "neutral"],
+        "min_confidence": 0.90}
+ASKED = QuestionSet.parse([q for q in DEFAULT_SETS["send_external_email"] if q["type"] != "recipient"] + [TONE])
+QUESTIONS = ASKED.to_list()
 
 
 def safe_wire_answers(questions=QUESTIONS):
@@ -60,7 +67,7 @@ def test_every_question_goes_in_one_documented_request():
     assert set(wire) == {q["id"] for q in QUESTIONS}
     assert wire["financial_commitment"] == {"type": "noul", "instructions": QUESTIONS[0]["instructions"]}
     assert wire["sensitivity"]["criteria"] == ["routine", "minor", "significant", "critical"]
-    assert wire["recipient"]["criteria"] == {o: None for o in ["existing_customer", "new_contact", "internal", "unknown"]}
+    assert wire["tone"]["criteria"] == {"friendly": None, "neutral": None, "hostile": None}
     # Thresholds are ours, not the provider's: they never leave the environment.
     assert "block_above" not in json.dumps(wire) and "min_confidence" not in json.dumps(wire)
 
@@ -70,7 +77,7 @@ def test_a_documented_response_is_normalized():
     assert model == "jev-1.13.0" and usage == {"input_tokens": 300, "output_tokens": 40}
     assert normalized["financial_commitment"] == {"type": "noul", "p": 0.01}
     assert normalized["sensitivity"]["probabilities"][0] == 0.98
-    assert normalized["recipient"]["choice"] == "existing_customer"
+    assert normalized["tone"]["choice"] == "friendly"
     assert triage.combine(QUESTIONS, normalized)["verdict"] == triage.AUTO_OK
 
 
@@ -78,13 +85,13 @@ def test_a_documented_response_is_normalized():
     lambda b: b.pop("model"),
     lambda b: b.update(model=""),
     lambda b: b.pop("answers"),
-    lambda b: b["answers"].pop("recipient"),
+    lambda b: b["answers"].pop("tone"),
     lambda b: b["answers"]["financial_commitment"].update(type="score"),
     lambda b: b["answers"]["financial_commitment"].update(noul=1.7),
     lambda b: b["answers"]["financial_commitment"].update(noul=float("nan")),
     lambda b: b["answers"]["financial_commitment"].update(noul=True),
-    lambda b: b["answers"]["recipient"].pop("confidence"),
-    lambda b: b["answers"]["recipient"].update(choice="someone_else"),
+    lambda b: b["answers"]["tone"].pop("confidence"),
+    lambda b: b["answers"]["tone"].update(choice="sarcastic"),
     lambda b: b["answers"]["sensitivity"]["probabilities"].pop("3"),
 ], ids=["no-model", "blank-model", "no-answers", "missing-answer", "wrong-type", "p-above-1",
         "p-nan", "p-bool", "no-confidence", "unasked-option", "missing-level"])
@@ -131,7 +138,7 @@ class Stub:
 
 def test_the_client_sends_the_key_and_reads_the_answers():
     with Stub() as stub:
-        answers = TypesafeProvider("k-123", endpoint=stub.url).ask({"tool": "x"}, EMAIL.questions)
+        answers = TypesafeProvider("k-123", endpoint=stub.url).ask({"tool": "x"}, ASKED.questions)
     assert stub.seen[0]["auth"] == "Bearer k-123"
     assert set(stub.seen[0]["body"]["questions"]) == {q["id"] for q in QUESTIONS}
     assert answers.provider == "typesafe" and answers.model_version == "jev-1.13.0"
@@ -143,14 +150,14 @@ def test_any_error_status_is_no_answer(status):
     with Stub() as stub:
         stub.status = status
         with pytest.raises(ProviderError, match=str(status)):
-            TypesafeProvider("k", endpoint=stub.url).ask({}, EMAIL.questions)
+            TypesafeProvider("k", endpoint=stub.url).ask({}, ASKED.questions)
 
 
 def test_a_body_that_is_not_json_is_no_answer():
     with Stub() as stub:
         stub.body = b"<html>gateway error</html>"
         with pytest.raises(ProviderError, match="not JSON"):
-            TypesafeProvider("k", endpoint=stub.url).ask({}, EMAIL.questions)
+            TypesafeProvider("k", endpoint=stub.url).ask({}, ASKED.questions)
 
 
 def test_a_slow_provider_is_cut_off_at_the_deadline():
@@ -158,7 +165,7 @@ def test_a_slow_provider_is_cut_off_at_the_deadline():
         stub.delay = 3.0
         started = time.monotonic()
         with pytest.raises(ProviderError):
-            TypesafeProvider("k", endpoint=stub.url, timeout=0.5).ask({}, EMAIL.questions)
+            TypesafeProvider("k", endpoint=stub.url, timeout=0.5).ask({}, ASKED.questions)
         assert time.monotonic() - started < 1.5, "the hook must not wait past its deadline"
 
 
@@ -166,7 +173,7 @@ def test_no_key_means_no_request(monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     with Stub() as stub:
         with pytest.raises(ProviderError, match="no API key"):
-            TypesafeProvider(endpoint=stub.url).ask({}, EMAIL.questions)
+            TypesafeProvider(endpoint=stub.url).ask({}, ASKED.questions)
         assert stub.seen == []
 
 
@@ -179,7 +186,7 @@ def test_an_unreachable_provider_is_no_answer():
 
 
 def answers(**overrides):
-    base = FakeProvider().ask({}, EMAIL.questions).normalized()
+    base = FakeProvider().ask({}, ASKED.questions).normalized()
     base.update(overrides)
     return base
 
@@ -201,16 +208,16 @@ def test_a_noul_at_its_limit_escalates_and_just_below_passes():
 
 
 def test_a_choice_outside_allowed_escalates():
-    result = triage.combine(QUESTIONS, answers(recipient={
-        "type": "choice", "choice": "new_contact", "confidence": 0.99,
-        "probabilities": {"existing_customer": 0.0, "new_contact": 1.0, "internal": 0.0, "unknown": 0.0}}))
-    assert failed_ids(result) == ["recipient"] and "not one of the allowed" in result["failed"][0]["why"]
+    result = triage.combine(QUESTIONS, answers(tone={
+        "type": "choice", "choice": "hostile", "confidence": 0.99,
+        "probabilities": {"friendly": 0.0, "neutral": 0.0, "hostile": 1.0}}))
+    assert failed_ids(result) == ["tone"] and "not one of the allowed" in result["failed"][0]["why"]
 
 
 def test_confidence_just_below_the_minimum_escalates():
-    choice = answers()["recipient"] | {"confidence": 0.8999}
-    result = triage.combine(QUESTIONS, answers(recipient=choice))
-    assert failed_ids(result) == ["recipient"] and "below the minimum" in result["failed"][0]["why"]
+    choice = answers()["tone"] | {"confidence": 0.8999}
+    result = triage.combine(QUESTIONS, answers(tone=choice))
+    assert failed_ids(result) == ["tone"] and "below the minimum" in result["failed"][0]["why"]
 
 
 def test_a_score_above_the_allowed_level_escalates():
@@ -251,11 +258,10 @@ def test_several_failures_are_all_listed():
 
 
 def test_the_fake_is_deterministic_and_records_what_it_was_sent():
-    fake = FakeProvider({"recipient": {"type": "choice", "choice": "unknown", "confidence": 0.5,
-                                       "probabilities": {"existing_customer": 0.0, "new_contact": 0.0,
-                                                         "internal": 0.0, "unknown": 1.0}}})
-    first = fake.ask({"tool": "send_message", "chars": 120}, EMAIL.questions)
-    second = fake.ask({"tool": "send_message", "chars": 120}, EMAIL.questions)
+    fake = FakeProvider({"tone": {"type": "choice", "choice": "hostile", "confidence": 0.5,
+                                  "probabilities": {"friendly": 0.0, "neutral": 0.0, "hostile": 1.0}}})
+    first = fake.ask({"tool": "send_message", "chars": 120}, ASKED.questions)
+    second = fake.ask({"tool": "send_message", "chars": 120}, ASKED.questions)
     assert first == second and first.model_version == "fake-1"
     assert fake.requests[0]["state"] == {"tool": "send_message", "chars": 120}
     assert triage.combine(QUESTIONS, first.normalized())["verdict"] == triage.ESCALATE
@@ -263,7 +269,7 @@ def test_the_fake_is_deterministic_and_records_what_it_was_sent():
 
 def test_a_failing_fake_raises():
     with pytest.raises(ProviderError, match="down"):
-        FakeProvider(fail="down").ask({}, EMAIL.questions)
+        FakeProvider(fail="down").ask({}, ASKED.questions)
 
 
 def test_the_deadline_returns_none_for_a_hang_or_a_crash():
@@ -285,16 +291,18 @@ def test_provider_names():
 
 def test_the_default_email_set_is_the_specified_one():
     kinds = [q.type for q in EMAIL.questions]
-    assert kinds.count("noul") == 5 and kinds.count("score") == 1 and kinds.count("choice") == 1
+    assert kinds.count("noul") == 5 and kinds.count("score") == 1 and kinds.count("recipient") == 1
+    [recipient] = [q for q in EMAIL.questions if q.type == "recipient"]
+    assert recipient.allowed == ("existing_customer", "internal"), "known contacts are not allowed by default"
     limits = {q.id: q.block_above for q in EMAIL.questions if q.type == "noul"}
     assert limits == {"financial_commitment": 0.10, "sensitive_data": 0.10, "promises_outcome": 0.20,
                       "professional_advice": 0.10, "injected_instructions": 0.05}
-    assert all(q.min_confidence == 0.90 for q in EMAIL.questions if q.type != "noul")
+    assert all(q.min_confidence == 0.90 for q in EMAIL.questions if q.type in ("score", "choice"))
 
 
 def test_a_tenant_can_raise_the_confidence_bar_on_the_default_set():
     strict = question_set_for("send_external_email", "default", min_confidence=0.97)
-    assert {q.min_confidence for q in strict.questions if q.type != "noul"} == {0.97}
+    assert {q.min_confidence for q in strict.questions if q.type in ("score", "choice")} == {0.97}
 
 
 def test_an_action_without_a_default_set_must_write_its_own():
@@ -313,7 +321,7 @@ def test_an_action_without_a_default_set_must_write_its_own():
     ({"id": "a", "type": "choice", "prompt": "x", "options": ["a", "a"], "allowed": ["a"]}, "twice"),
     ({"id": "a", "type": "choice", "prompt": "x", "options": ["a", "b"], "allowed": ["a"],
       "min_confidence": -0.1}, "from 0 to 1"),
-    ({"id": "a", "type": "vote", "prompt": "x"}, "noul, score or choice"),
+    ({"id": "a", "type": "vote", "prompt": "x"}, "noul, score, choice or recipient"),
 ])
 def test_a_bad_question_is_refused_with_a_sentence(bad, words):
     with pytest.raises(SpecError, match=words):

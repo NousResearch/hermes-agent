@@ -33,6 +33,9 @@ import urllib.request
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 NAME = "typesafe"
+#: The question types this provider answers. Others (the recipient) are facts NOVA looks up
+#: itself, and are neither sent nor expected back.
+ANSWERS = ("noul", "choice", "score")
 ENDPOINT = "https://api.typesafe.ai/v1/systemone"
 DEFAULT_MODEL = "jev-latest"
 #: The SDK's own variable name, so a key already set for TypeSafe's tools is found here too.
@@ -67,7 +70,7 @@ def build_request(state: Any, questions: Sequence[Mapping[str, Any]], *, model: 
     return {
         "state": state,
         "model": model,
-        "questions": {str(q["id"]): _wire_question(q) for q in questions},
+        "questions": {str(q["id"]): _wire_question(q) for q in questions if q.get("type") in ANSWERS},
     }
 
 
@@ -115,7 +118,8 @@ def parse_response(body: Any, questions: Sequence[Mapping[str, Any]]) -> Tuple[D
     answers = body.get("answers")
     if not isinstance(answers, Mapping):
         raise TriageProviderError("the response has no answers")
-    normalized = {str(q["id"]): _normalize(q, answers.get(str(q["id"]))) for q in questions}
+    normalized = {str(q["id"]): _normalize(q, answers.get(str(q["id"])))
+                  for q in questions if q.get("type") in ANSWERS}
     usage = body.get("usage") if isinstance(body.get("usage"), Mapping) else {}
     return normalized, model.strip(), {
         key: int(usage[key]) for key in ("input_tokens", "output_tokens")
@@ -139,7 +143,7 @@ def request_answers(
     """
     if not api_key or not api_key.strip():
         raise TriageProviderError(f"no API key ({API_KEY_ENV} is not set)")
-    if not questions:
+    if not any(q.get("type") in ANSWERS for q in questions):
         raise TriageProviderError("no questions to ask")
     payload = json.dumps(build_request(state, questions, model=model), ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(

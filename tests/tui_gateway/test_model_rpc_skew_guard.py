@@ -158,3 +158,16 @@ def test_stale_slash_exec_model_refuses_before_the_worker(monkeypatch):
 
     assert resp.get("error", {}).get("code") == 5098, resp
     worker.run.assert_not_called()
+
+
+def test_stale_moa_one_shot_refuses_on_a_lazy_session(monkeypatch):
+    # A session with no agent yet takes /moa as an override the first build consumes, without ever
+    # reaching _apply_model_switch; it must refuse up front too.
+    _skewed(monkeypatch)
+    monkeypatch.setitem(server._sessions, "lazy", {"agent": None, "session_key": "k", "running": False})
+
+    resp = _call("command.dispatch", {"name": "moa", "arg": "compare these", "session_id": "lazy"})
+
+    assert resp.get("error", {}).get("code") == 5098, resp
+    assert "model_override" not in server._sessions["lazy"]
+    assert "moa_one_shot_restore" not in server._sessions["lazy"]

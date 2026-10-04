@@ -167,7 +167,14 @@ def _ensure_sherpa_model(root: Optional[Path] = None) -> Path:
     logger.info("wake word: downloading sherpa KWS model (one-time, ~13 MB)")
     urllib.request.urlretrieve(_SHERPA_KWS_MODEL_URL, archive)  # noqa: S310
     with tarfile.open(archive, "r:bz2") as tf:
-        tf.extractall(root, filter="data")
+        try:
+            tf.extractall(root, filter="data")
+        except TypeError:
+            # Python < 3.12 has no `filter` kwarg / tarfile.data_filter.
+            for member in tf.getmembers():
+                if member.name.startswith("/") or ".." in Path(member.name).parts:
+                    raise tarfile.TarError(f"refusing unsafe tar member: {member.name!r}")
+            tf.extractall(root)
     archive.unlink(missing_ok=True)
     if not (target / "tokens.txt").exists():
         raise RuntimeError(f"sherpa KWS model unpack failed: {target}")

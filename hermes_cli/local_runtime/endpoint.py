@@ -95,7 +95,8 @@ def llamacpp_auth_headers(base_url: str, api_key: object) -> dict:
     ``Authorization`` alongside, which keeps pre-0.4 llama.cpp builds working. Empty
     when there is no usable key (placeholder included) or no managed server.
     """
-    if not isinstance(api_key, str) or not api_key.strip() or api_key == "no-key-required":
+    if (not isinstance(api_key, str) or not api_key.strip()
+            or api_key == "no-key-required"):
         return {}
     with suppress(Exception):
         root = managed_root()

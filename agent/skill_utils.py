@@ -434,6 +434,13 @@ def pick_skill_candidate(candidates) -> Tuple[Optional[int], List[int]]:
     copies under one root resolve to the strictly best ``rank``, anything else is ambiguous (None)."""
     top = min(c[0] for c in candidates)
     contenders = [i for i, c in enumerate(candidates) if c[0] == top]
+    if len(contenders) > 1:
+        # One file reached through two roots (a symlink or junction between same-tier dirs) is one
+        # skill: skill_view already dedups its candidates by resolved path, so keep the first view.
+        by_file: Dict[str, int] = {}
+        for i in contenders:
+            by_file.setdefault(os.path.realpath(candidates[i][3]), i)
+        contenders = list(by_file.values())
     if len(contenders) > 1 and len({candidates[i][1] for i in contenders}) == 1 and provably_same_skill(
             [candidates[i][3] for i in contenders]):
         ranked = sorted(contenders, key=lambda i: candidates[i][2])

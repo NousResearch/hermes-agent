@@ -1044,10 +1044,12 @@ async def test_hygiene_fence_cancel_records_cooldown_without_abort_flag(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("lock_state", [True, None], ids=["held", "unreadable"])
 async def test_hygiene_skips_when_compression_already_in_flight(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, lock_state
 ):
-    """Do not spawn a sibling hygiene compressor while a lock is already held."""
+    """Do not spawn a sibling hygiene compressor while a lock is held, nor when the lock
+    state is unreadable (``None``): an unknown state must stay as conservative as a held lock."""
     from hermes_state import SessionDB
 
     session_id = "sess-in-flight"
@@ -1074,7 +1076,7 @@ async def test_hygiene_skips_when_compression_already_in_flight(
         runner, _adapter, event = _make_cooldown_runner(
             monkeypatch, tmp_path, ShouldNotRunAgent, db, session_id
         )
-        runner._session_has_compression_in_flight = AsyncMock(return_value=True)
+        runner._session_has_compression_in_flight = AsyncMock(return_value=lock_state)
         assert await runner._handle_message(event) == "ok"
         assert ShouldNotRunAgent.instances == 0
         assert runner._run_agent.await_count == 1

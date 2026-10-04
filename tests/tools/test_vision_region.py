@@ -85,6 +85,28 @@ class TestCropImageRegion:
             assert actual.size == (40, 60)
             assert list(actual.convert("RGB").getdata()) == list(expected.getdata())
 
+        # Pass 1 (the full image the model reads coordinates off) must show the pixels the crop
+        # indexes, whether or not the provider honours EXIF — so decode it without the tag. The
+        # file is small enough that no resize runs.
+        from agent.image_routing import _file_to_data_url
+        from tools.vision_tools import _vision_analyze_native
+
+        native = asyncio.run(_vision_analyze_native(str(src), "full shot"))
+        full_views = {
+            "attachment": _file_to_data_url(src),
+            "vision_analyze": next(p["image_url"]["url"] for p in native["content"] if p.get("type") == "image_url"),
+        }
+        for label, url in full_views.items():
+            with Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1]))) as shown:
+                seen = shown.convert("RGB").crop(region)
+            diffs = [abs(a - b) for pa, pb in zip(seen.getdata(), expected.getdata()) for a, b in zip(pa, pb)]
+            assert seen.size == expected.size and max(diffs) < 16, label  # JPEG re-encode tolerance
+
+        # Without the tag nothing is re-encoded: the attachment carries the file's own bytes.
+        untagged = tmp_path / "plain.jpg"
+        image.save(untagged, format="JPEG", quality=95)
+        assert base64.b64decode(_file_to_data_url(untagged).split(",", 1)[1]) == untagged.read_bytes()
+
     def test_zero_area_rejected_with_actual_dims_in_error(self, tmp_path):
         from tools.vision_tools import _crop_image_region
 

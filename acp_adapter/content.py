@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ from acp.schema import (
     AudioContentBlock, BlobResourceContents, EmbeddedResourceContentBlock, ImageContentBlock,
     ResourceContentBlock, TextContentBlock, TextResourceContents,
 )
+
+from tools.vision_tools_image_prep import upright_image_bytes
 
 logger = logging.getLogger("acp_adapter.server")
 
@@ -133,6 +136,7 @@ def _text_parts(**kwargs: Any) -> list[dict[str, Any]]:
 
 def _image_parts(uri: str, display: str, data: bytes, mime: str) -> list[dict[str, Any]]:
     """Text header + image_url data URL so vision models can see the attachment."""
+    data, mime = upright_image_bytes(data, mime)
     return [
         {"type": "text", "text": f"[Attached image: {display}]" + (f"\nURI: {uri}" if uri else "")},
         {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"}},
@@ -239,6 +243,13 @@ def _image_block_to_openai_part(block: ImageContentBlock) -> dict[str, Any] | No
     mime_type = _attr(block, "mime_type") or "image/png"
     if data:
         url = data if data.startswith("data:") else f"data:{mime_type};base64,{data}"
+        # vision_analyze region crops index the upright image; the model must see the same pixels.
+        header, _, payload = url.partition(",")
+        with contextlib.suppress(ValueError):
+            raw = base64.b64decode(payload, validate=True)
+            upright, mime = upright_image_bytes(raw, header[5:].partition(";")[0] or mime_type)
+            if upright is not raw:
+                url = f"data:{mime};base64,{base64.b64encode(upright).decode('ascii')}"
     elif uri:
         url = uri
     else:

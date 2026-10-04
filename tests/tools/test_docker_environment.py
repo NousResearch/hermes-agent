@@ -1739,6 +1739,37 @@ def _home_bootstrap_exec_calls(calls):
             if isinstance(c, list) and len(c) >= 2 and c[1] == "exec" and "-u" in c and "0" in c]
 
 
+def _exercise_home_bootstrap(script, user, passwd_entry, tmp_path):
+    """Run the bootstrap script exactly as ``docker exec ... sh -c SCRIPT hermes-home name``
+    would, under a POSIX sh with stubbed ``getent``/``chown`` on PATH, against a real
+    filesystem: ``passwd_entry``'s home field points inside *tmp_path*, so a correct script
+    really creates it and a stubbed ``chown`` (the test process is not root) records its
+    argv. Returns ``(chown_argv, home_exists)`` — the observable contract, not the text."""
+    stub_bin = tmp_path / "stub-bin"
+    stub_bin.mkdir(exist_ok=True)
+    (stub_bin / "getent").write_text(
+        '#!/bin/sh\n[ "$1" = passwd ] && [ "$2" = "$STUB_USER" ] '
+        '&& printf \'%s\\n\' "$STUB_PASSWD_ENTRY" && exit 0\nexit 2\n')
+    (stub_bin / "chown").write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$STUB_CHOWN_LOG"\nexit 0\n')
+    for stub in stub_bin.iterdir():
+        stub.chmod(0o755)
+    home = passwd_entry.rstrip("\n").split(":")[5]
+    env = {
+        "PATH": f"{stub_bin}{os.pathsep}{os.environ.get('PATH', os.defpath)}",
+        "STUB_USER": user,
+        "STUB_PASSWD_ENTRY": passwd_entry,
+        "STUB_CHOWN_LOG": str(tmp_path / "chown.log"),
+    }
+    # ``-c SCRIPT hermes-home name``: $0/$1 land exactly as they do through docker exec.
+    # Popen, not subprocess.run: this test file's docker mocks monkeypatch ``run`` on the
+    # shared subprocess module, and the stub bootstrap must actually execute.
+    subprocess.Popen(["/bin/sh", "-c", script, "hermes-home", user], env=env).wait()
+    log = tmp_path / "chown.log"
+    chown_argv = log.read_text().strip() if log.exists() else ""
+    return chown_argv, os.path.isdir(home)
+
+
 def _make_booted_env(monkeypatch, container_user):
     """Boot a DockerEnvironment with docker mocked: ``version`` ok, ``run`` returns a fresh
     container id, ``ps`` finds no reusable container, and ``inspect`` (the container query,
@@ -1762,10 +1793,12 @@ def _make_booted_env(monkeypatch, container_user):
     return _make_dummy_env(), calls
 
 
-def test_container_boot_ensures_home_for_non_root_image_user(monkeypatch):
+def test_container_boot_ensures_home_for_non_root_image_user(monkeypatch, tmp_path):
     """A non-root image user (hermes-sandbox:desktop's `pn`) must get a root-side, idempotent
     $HOME bootstrap after container start — without it every $HOME write (browser cache,
-    agent-browser install) fails or hangs (#127341)."""
+    agent-browser install) fails or hangs (#127341). The script is executed against a stub
+    passwd, so the assertions are its behaviour: the home really appears and chown receives
+    (uid, gid, home) — not substring matches on the script text."""
     env, calls = _make_booted_env(monkeypatch, "pn")
 
     execs = _home_bootstrap_exec_calls(calls)
@@ -1776,12 +1809,31 @@ def test_container_boot_ensures_home_for_non_root_image_user(monkeypatch):
     assert env._container_id in argv
     script_index = argv.index("-c") + 1
     script = argv[script_index]
-    assert "getent passwd" in script
-    assert "mkdir -p" in script
-    assert "chown" in script
     # The user spec travels as a parameter, never spliced into the script text.
     assert argv[-1] == "pn"
     assert "pn" not in script
+
+    home = tmp_path / "home" / "pn"
+    passwd_entry = f"pn:x:4242:4343::{home}:/bin/sh"
+    chown_argv, home_exists = _exercise_home_bootstrap(script, "pn", passwd_entry, tmp_path)
+    assert home_exists, "the passwd-declared home must actually be created"
+    assert chown_argv == f"4242:4343 {home}"
+
+
+def test_home_bootstrap_is_idempotent_on_an_existing_home(monkeypatch, tmp_path):
+    """The bootstrap must be safe to re-run against a container whose home already exists
+    (reattached containers heal on the next session): mkdir -p stays a no-op and the
+    chown re-stamps the same triple."""
+    _, calls = _make_booted_env(monkeypatch, "pn")
+    argv = _home_bootstrap_exec_calls(calls)[0]
+    script = argv[argv.index("-c") + 1]
+
+    home = tmp_path / "home" / "pn"
+    home.mkdir(parents=True)
+    passwd_entry = f"pn:x:4242:4343::{home}:/bin/sh"
+    chown_argv, home_exists = _exercise_home_bootstrap(script, "pn", passwd_entry, tmp_path)
+    assert home_exists
+    assert chown_argv == f"4242:4343 {home}"
 
 
 @pytest.mark.parametrize("container_user", ["", "root", "0:0", "root:root"])

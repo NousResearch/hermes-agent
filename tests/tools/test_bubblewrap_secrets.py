@@ -1445,3 +1445,25 @@ class TestScratchMaskIntegration:
             sock.close()
         assert "CONNECTED" in out
 
+
+@needs_bwrap
+class TestScratchMaskUnderPinsIntegration:
+    """A pin inside the scratch dir rebinds a host directory. The mask must
+    land on top of it, or the pin shows what the mask hid."""
+
+    def test_mask_holds_beside_a_hide_entry_that_needs_a_pin(self, work_dir, hermes_home):
+        scratch = hermes_home / "cache" / "scratch"
+        hidden = _write(scratch / "a" / "b" / "s.txt")
+        dm_hidden = _write(scratch / "hermes-dm-1" / "sub" / "h.txt")
+        _write(scratch / "hermes-dm-1" / "sub" / "keep.txt")
+        sock = _listen(scratch / "a" / "ctl.sock")
+        config = BubblewrapConfig(hide=(str(hidden), str(dm_hidden)))
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=config)
+        try:
+            out = env.execute(f"cd {scratch}/a && {CONNECT} ctl.sock")["output"]
+            assert "blocked" in out and "CONNECTED" not in out, out
+            out = env.execute(f"cat {scratch}/hermes-dm-1/sub/keep.txt {dm_hidden} {hidden} 2>&1")["output"]
+            assert MARKER not in out
+        finally:
+            env.cleanup()
+            sock.close()

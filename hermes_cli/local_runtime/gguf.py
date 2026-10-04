@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import re
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -264,38 +264,37 @@ def read_gguf_header(path: str | Path) -> GGUFHeader:
     across the shards on disk, because a split is a layout choice, not a smaller model — pricing
     part 1 alone underprices every model whose first shard is a metadata stub (the Hugging Face
     layout), which then makes the physics check and the residency cap admit giants the card cannot
-    hold. Architecture metadata (block count, train context, the per-layer SWA pattern, vocab) is
-    taken from the first part, which is where GGUF writes it.
+    hold. A split writer repeats the metadata in every shard, so architecture facts (block count,
+    train context, the per-layer SWA pattern, vocab) come from the part named by the caller.
 
-    A part that has gone missing or become unreadable is skipped rather than fatal: a half-arrived
-    split prices at what is actually on disk. Refusing it is ``staged_in(require_complete=True)``'s
-    job — an incomplete split is never servable, it is only underpriced here."""
+    A sibling that has gone missing or become unreadable is skipped rather than fatal: a
+    half-arrived split prices at what is actually on disk. Refusing it is
+    ``staged_in(require_complete=True)``'s job — an incomplete split is never servable, it is only
+    underpriced here. The part the caller named is the exception: if that one cannot be read there
+    is no header to answer with."""
     path = Path(path)
+    named = _read_part(path)
     parts = _split_parts(path)
     if parts is None:
-        return _read_part(path)
+        return named
 
-    first = _read_part(parts[0])
-    readable = [first]
-    for part in parts[1:]:
+    readable = [named]
+    for part in parts:
+        if part == path:
+            continue
         try:
             readable.append(_read_part(part))
         except (ValueError, OSError, struct.error) as exc:
             # struct.error is neither ValueError nor OSError, and it is what a header cut
-            # mid-stream actually raises. A part that cannot be parsed is priced out, not fatal.
+            # mid-stream actually raises. A part we cannot parse is priced out, not fatal.
             logger.debug("split part unreadable %s: %s", part.name, exc)
-    if len(readable) == 1:
-        return first
 
     ffn_block_bytes: dict[int, int] = {}
     for header in readable:
         for block, nbytes in header.ffn_block_bytes.items():
             ffn_block_bytes[block] = ffn_block_bytes.get(block, 0) + nbytes
-    return GGUFHeader(
-        # The path stays the part the caller named: it is the model id source and the preset's
-        # ``model`` key, and llama.cpp resolves the split from any one of its members.
-        path=str(path), version=first.version, metadata=first.metadata,
-        n_tensors=sum(h.n_tensors for h in readable),
-        tensor_bytes=sum(h.tensor_bytes for h in readable),
-        embd_table_bytes=sum(h.embd_table_bytes for h in readable),
-        ffn_block_bytes=ffn_block_bytes)
+    return replace(named,
+                   n_tensors=sum(h.n_tensors for h in readable),
+                   tensor_bytes=sum(h.tensor_bytes for h in readable),
+                   embd_table_bytes=sum(h.embd_table_bytes for h in readable),
+                   ffn_block_bytes=ffn_block_bytes)

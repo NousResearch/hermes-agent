@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import re
 import struct
+from pathlib import Path
+
+import pytest
 
 from hermes_cli.local_runtime.context_policy import spill_overrides
 from hermes_cli.local_runtime.estimator import profile_from_gguf
@@ -95,6 +98,20 @@ def test_naming_alone_is_not_a_split(tmp_path):
     assert read_gguf_header(only).tensor_bytes == 64 << 20
 
 
+def test_any_part_prices_the_split_and_answers_with_its_own_path(tmp_path):
+    """The caller may name any member: llama.cpp resolves a split from whichever part it is given,
+    and the header's path is what becomes the model id and the preset's ``model`` key."""
+    parts = _split(tmp_path, "any-part", [
+        {"tensors": []},
+        {"tensors": [("blk.0.attn_q.weight", 16 << 20)]},
+    ])
+
+    for part in parts:
+        header = read_gguf_header(part)
+        assert Path(header.path) == part
+        assert header.tensor_bytes == 64 << 20
+
+
 def test_embedding_table_outside_part_one_is_still_priced(tmp_path):
     """``embd_table_bytes`` prices the host-side duplicate of a fully offloaded embedding table.
     When that tensor sits outside part 1 the duplicate was priced at 0, understating the load by
@@ -149,6 +166,35 @@ def test_unreadable_shard_does_not_price_the_split_away(tmp_path):
     header = read_gguf_header(parts[0])
 
     assert header.tensor_bytes == 2 * (64 << 20)   # parts 1 and 3; the truncated one dropped
+
+
+def test_a_corrupt_first_shard_cannot_break_a_read_of_a_healthy_one(tmp_path):
+    """Only the shard the caller named has to be readable. A split writer repeats the metadata in
+    every part, so a later part describes the model on its own — and an unreadable one elsewhere in
+    the split must not take the whole model out of pricing."""
+    parts = _split(tmp_path, "corrupt-head", [
+        {"tensors": []},
+        {"tensors": [("blk.0.attn_q.weight", 16 << 20)]},
+    ])
+    parts[0].write_bytes(b"GGUF\x03\x00")
+
+    header = read_gguf_header(parts[1])
+
+    assert header.tensor_bytes == 64 << 20
+    assert header.n_layer == 12 and header.n_ctx_train == 65536
+
+
+def test_the_named_shard_must_be_readable(tmp_path):
+    """The one case that stays fatal: the caller asked about this file, and there is no header to
+    answer with. Every caller turns this into "skip the model", never into a wrong price."""
+    parts = _split(tmp_path, "unreadable-named", [
+        {"tensors": [("blk.0.attn_q.weight", 16 << 20)]},
+        {"tensors": [("blk.1.attn_q.weight", 16 << 20)]},
+    ])
+    parts[1].write_bytes(b"GGUF\x03\x00")
+
+    with pytest.raises((ValueError, struct.error)):
+        read_gguf_header(parts[1])
 
 
 def test_residency_cap_prices_a_split_against_the_card(tmp_path, monkeypatch):

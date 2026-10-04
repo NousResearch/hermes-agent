@@ -44,6 +44,16 @@ def _planned_stop_marker_path(profile_path: Path) -> Path:
     return Path(profile_path) / ".gateway-planned-stop.json"
 
 
+def _planned_stop_markers(running_pids, profile_processes, service_gateway_pids) -> dict:
+    """``{pid: marker path}`` for each gateway the socket pause will ask (profile-mapped, not SCM)."""
+    markers = {}
+    for pid in running_pids:
+        home = None if pid in service_gateway_pids else getattr(profile_processes.get(pid), "path", None)
+        if home:
+            markers[pid] = _planned_stop_marker_path(Path(home))
+    return markers
+
+
 def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
     """Write a planned-stop marker into a specific profile home."""
     try:
@@ -959,9 +969,8 @@ def _pause_windows_gateways_for_update() -> dict | None:
         # The intent (and where each request goes), right before the first request. A live entry is owed
         # only once its request was issued (mark_stop_sent, or this update's marker still on disk): a
         # crash before that leaves it "never asked" (still serving, dropped), after it, draining (owed).
-        pause_record.mark_stop_requested(intended, running_pids, markers={
-            pid: _planned_stop_marker_path(Path(profile_processes[pid].path)) for pid in running_pids
-            if pid in profile_processes and pid not in service_gateway_pids})
+        pause_record.mark_stop_requested(
+            intended, running_pids, markers=_planned_stop_markers(running_pids, profile_processes, service_gateway_pids))
     profiles = _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids, unmapped_pids, unmapped,
                                       on_request=lambda pid: pause_record.mark_stop_sent(intended, pid))
     token = {"resume_needed": True, "profiles": profiles, "unmapped_pids": unmapped_pids, "unmapped": unmapped}

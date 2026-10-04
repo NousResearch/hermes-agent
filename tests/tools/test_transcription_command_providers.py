@@ -212,6 +212,30 @@ class TestTranscribeCommandSTT:
         assert result["success"] is True
         assert result["transcript"] == "stdout transcript"
 
+    def test_silent_capture_is_success_with_empty_transcript(self, tmp_path):
+        """Exit-0 provider writing an empty transcript file = no speech, not a failure:
+        the voice loop must re-listen quietly like the built-in providers (#132951)."""
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        cfg = {
+            "type": "command",
+            "command": _python_emit_command(""),
+        }
+        result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
+        assert result["success"] is True
+        assert result["transcript"] == ""
+        assert result["provider"] == "fake-cli"
+
+    def test_missing_output_file_and_no_stdout_still_fails(self, tmp_path):
+        """A provider that exits 0 without writing the output file or stdout broke its
+        contract — that stays a failure (distinct from the empty-transcript case)."""
+        audio = _make_silent_wav(tmp_path / "input.wav")
+        cfg = {
+            "type": "command",
+            "command": f'"{sys.executable}" -c "pass"',
+        }
+        result = _transcribe_command_stt(str(audio), "fake-cli", cfg, {})
+        assert result["success"] is False
+        assert "wrote no output file" in result["error"]
 
     def test_language_defaults_to_en(self, tmp_path):
         audio = _make_silent_wav(tmp_path / "input.wav")

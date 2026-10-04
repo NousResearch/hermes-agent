@@ -434,3 +434,19 @@ def test_runtime_rebind_of_hermes_core_fails_admission(tmp_path):
         "m._PROVIDER_MODELS[...] (__init__.py:11)",
     ]
     assert core_override_findings(good) == []
+
+
+def test_core_override_through_a_method_patch_helper(tmp_path):
+    """A patch helper on a class (``self._patches.bind(module, name, fn)``) is caught like a plain one."""
+    bad = _make_plugin(tmp_path, manifest=dict(BASE_MANIFEST, name="bad"), init_py=(
+        "from agent import auxiliary_client\n"
+        "class Patches:\n"
+        "    def bind(self, target, name, fn):\n"
+        "        setattr(target, name, fn)\n"
+        "def register(ctx):\n"
+        "    Patches().bind(auxiliary_client, '_relay_sync_stream', print)\n"
+    ))
+
+    from hermes_cli.plugin_validate_core_override import core_override_findings
+
+    assert core_override_findings(bad) == ["bind(auxiliary_client, ...) (__init__.py:6)"]

@@ -20,12 +20,13 @@
  *    Mode until previously-painted rows were carried forward.
  */
 
+import { queryClient } from '@hermes/plugin-sdk'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { renderHook, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $lastRoster, ROSTER_KEY, useRoster } from './data'
+import { $botMeta, $lastRoster, botMentionTag, cachedUnionRoster, primeRoster, ROSTER_KEY, useRoster } from './data'
 import type { RosterRow } from './types'
 
 const { hostMock } = vi.hoisted(() => ({
@@ -40,12 +41,12 @@ const { hostMock } = vi.hoisted(() => ({
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { atom } = await import('nanostores')
-  const { useQuery } = await import('@tanstack/react-query')
+  const { QueryClient: Client, useQuery } = await import('@tanstack/react-query')
 
   return {
     atom,
     host: hostMock,
-    queryClient: { getQueryData: vi.fn(), invalidateQueries: vi.fn() },
+    queryClient: new Client({ defaultOptions: { queries: { retry: false } } }),
     useQuery,
     useValue: (store: { get: () => unknown }) => store.get()
   }
@@ -657,7 +658,7 @@ describe('the roster only caches rows from the connection it is keyed under', ()
     hostMock.profileRoutes = undefined
   })
 
-  it("asks the keyed connection by route, not an ambient socket that sits on another machine", async () => {
+  it('asks the keyed connection by route, not an ambient socket that sits on another machine', async () => {
     hostMock.state.connectionId.get.mockReturnValue('vps')
     hostMock.agents.mockRejectedValue(new Error('no union roster on this build'))
     hostMock.profileRoutes = vi.fn(async () => routes)
@@ -696,5 +697,37 @@ describe('the roster only caches rows from the connection it is keyed under', ()
     expect(client.getQueryData(localKey)).toBeUndefined()
     expect(hostMock.request).not.toHaveBeenCalled()
     expect(hostMock.requestProfile.mock.calls.every(([route]) => route.connectionId === 'vps')).toBe(true)
+  })
+})
+
+describe('a launch that never opens the Bots pane', () => {
+  it('names a remote bot by what its backend reports, not a stale cached title', async () => {
+    queryClient.clear()
+    $botMeta.set({ 'vps::default': { title: 'Agent B' } })
+    hostMock.state.connectionId.get.mockReturnValue('local')
+    hostMock.request.mockResolvedValue({ profiles: [{ display_name: 'Agent B', name: 'default' }] })
+    hostMock.agents.mockResolvedValue({
+      agents: [
+        { connectionId: 'local', connectionKind: 'local', handle: 'default', profile: 'default' },
+        {
+          connectionId: 'vps',
+          connectionKind: 'remote',
+          connectionLabel: 'VPS',
+          handle: 'default',
+          profile: 'default',
+          profileMetadata: { display_name: 'Agent A', title: 'Agent A' }
+        }
+      ],
+      primaryConnectionId: 'local'
+    })
+
+    await primeRoster()
+
+    const vps = cachedUnionRoster()?.profiles?.find(row => row.connectionId === 'vps')
+
+    expect(vps).toBeTruthy()
+    // The composer's @handle and group prompts read these; the pane never ran.
+    expect(botMentionTag(vps!)).toBe('agent-a')
+    expect($botMeta.get()['vps::default']?.title).toBe('Agent A')
   })
 })

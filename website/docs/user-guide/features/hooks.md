@@ -1023,7 +1023,7 @@ def my_callback(session_id: str | None, platform: str, **kwargs):
 | `session_id` | `str` or `None` | The outgoing session ID. May be `None` if no active session existed. |
 | `platform` | `str` | `"cli"` or the messaging platform name (`"telegram"`, `"discord"`, etc.). |
 
-**Fires:** In CLI/TUI teardown and in gateway reset or shutdown paths. Gateway shutdown can finalize without a matching `on_session_reset`.
+**Fires:** In CLI/TUI teardown (including the end of a `hermes -z` one-shot run, success or failure) and in gateway reset or shutdown paths. Gateway shutdown can finalize without a matching `on_session_reset`.
 
 **Return value:** Ignored.
 

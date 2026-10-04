@@ -379,6 +379,11 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     from hermes_cli.update_lock import UpdateLock, read_live_update
 
     current = pm.venv_is_current(project_root=root)
+    from pm.environments import owning_home_root
+
+    owner = owning_home_root(root)
+    if owner is not None:
+        return _prepare_borrowed_launch(root, owner, current=current)
     pending = completion_pending_path(root)
     owed_to_cli = current and pending.is_file() and _supervised_child()
     _may_retry, _attempts, _backoff = completion_retry_state(root)
@@ -436,6 +441,41 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     return None
 
 
+def _prepare_borrowed_launch(root: Path, owner: Path, *, current: bool) -> Path | None:
+    """Launch a checkout that another data root owns (#123238).
+
+    Dependency state is per data root, so a borrowing root -- a test's temporary
+    ``HERMES_HOME``, a per-task home -- still gets an environment of its own, synced exactly
+    as a process spawned under a live update syncs. The rest is the checkout's, and so the
+    owner's: launchers, product builds, post-update maintenance, the install stamp and the
+    owner's own update markers. None of it is armed, run or published from here, so a
+    borrowing launch cannot rebind the shared launchers, rebuild products another root is
+    serving, or race the owner's tail under a lock that lives in a different home.
+    """
+    import os
+    import sys
+    import pm
+    from hermes_cli._launchers import resolve_store_python
+    from hermes_cli.update_lock import UpdateLock
+
+    if not current:
+        lock = UpdateLock()
+        if not lock.acquire():
+            raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
+        try:
+            _sync_source_dependencies(root, arm=False, borrowed_from=owner)
+        finally:
+            lock.release()
+        if not pm.venv_is_current(project_root=root):
+            # Relaunching would land back here and sync again, forever.
+            raise RuntimeError("dependency sync left this install out of date")
+    python = resolve_store_python(root)
+    if python is None:
+        raise RuntimeError("source update has no managed Python; run `hermes pm install`")
+    same = os.path.normcase(os.path.abspath(python)) == os.path.normcase(os.path.abspath(sys.executable))
+    return python if not current or not same else None
+
+
 def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     """Sync dependencies when they are stale, then run the tail the marker still owes."""
     import sys
@@ -491,15 +531,22 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     clear_completion(root)
 
 
-def _sync_source_dependencies(root: Path, *, arm: bool) -> None:
-    """Commit the tree's dependency generation; *arm* also owes the tail afterwards."""
+def _sync_source_dependencies(root: Path, *, arm: bool, borrowed_from: Path | None = None) -> None:
+    """Commit the tree's dependency generation; *arm* also owes the tail afterwards.
+
+    *borrowed_from* names the data root that owns the checkout when this one only borrows
+    it: the sync is this root's own, but the checkout's update markers stay the owner's.
+    """
     import sys
     import pm
     from pm.client import ensure_tools_for_sync
     from pm.environments import runtime_facts_path
     from pm.extras import legacy_selection
 
-    if not arm:
+    if borrowed_from is not None:
+        print(f"hermes: preparing dependencies for this data root (the checkout's updates belong to "
+              f"{borrowed_from})...", file=sys.stderr, flush=True)
+    elif not arm:
         print("hermes: preparing dependencies for this update...", file=sys.stderr, flush=True)
     refuse_foreign_owned_venv(root)
     if arm:
@@ -514,6 +561,8 @@ def _sync_source_dependencies(root: Path, *, arm: bool) -> None:
     ensure_tools_for_sync()
     pm.sync_venv(extras, explicit=True, project_root=root, evict_incompatible_plugins=True)
     collect_superseded_generations(root)
+    if borrowed_from is not None:
+        return  # The checkout's markers describe the owner's environment, not this one.
     # These can predate the swap. Once PM commits the replacement they
     # must not make early recovery immediately rebuild it a second time.
     for name in (".update-incomplete", ".lazy-refresh-incomplete"):

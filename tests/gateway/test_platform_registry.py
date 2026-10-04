@@ -1,9 +1,13 @@
 """Tests for the platform adapter registry and dynamic Platform enum."""
 
+import threading
 from unittest.mock import MagicMock
+
+import pytest
 
 from gateway.platform_registry import PlatformRegistry, PlatformEntry
 from gateway.config import Platform, GatewayConfig
+from hermes_cli import plugins_loader
 
 
 # ── Platform enum dynamic members ─────────────────────────────────────────
@@ -677,3 +681,39 @@ class TestMigratedPlatformWiring:
                 "probe and the active installer — status displays would "
                 "pip-install as a side effect"
             )
+
+
+@pytest.mark.parametrize("timeout, nested_sees_sibling", [(0.5, False), (0, True)])
+def test_registry_walk_from_plugin_load_worker_does_not_wait_on_parent(monkeypatch, timeout, nested_sees_sibling):
+    """register() re-walking the registry on its deadline worker must not block on its own or a sibling load;
+    with the deadline disabled (inline loads) a nested get() must still load the sibling, as on main."""
+    monkeypatch.setattr(plugins_loader, "_resolve_plugin_load_timeout", lambda: timeout)
+    reg = PlatformRegistry()
+    abandoned = []
+    nested = []
+
+    class Ctx:
+        def _abandon_load(self):
+            abandoned.append(True)
+
+    discovery_lock = threading.RLock()  # like PluginManager._discovery_lock, held while joining the worker
+
+    def make_loader(name):
+        def register():
+            reg.plugin_entries()
+            if name == "reentrant":
+                nested.append(reg.get("sibling") is not None)
+            reg.register(PlatformEntry(name=name, label=name, adapter_factory=lambda cfg: None,
+                                       check_fn=lambda: True, source="plugin"))
+
+        def loader():
+            with discovery_lock:
+                plugins_loader.run_with_load_deadline(name, Ctx(), register)
+        return loader
+
+    for name in ("reentrant", "sibling"):
+        reg.register_deferred(name, make_loader(name))
+
+    assert sorted(e.name for e in reg.plugin_entries()) == ["reentrant", "sibling"]
+    assert nested == [nested_sees_sibling]
+    assert abandoned == []

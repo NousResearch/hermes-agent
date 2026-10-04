@@ -1443,6 +1443,9 @@ def create_task(
     in the active profile's projects.db — see ``_resolve_project_link``.
     ``workspace_kind=None`` (omitted) inherits a project-scoped board's project;
     an explicit ``"scratch"`` or ``project_id=""`` is a request for no project.
+    ``skills`` pins force-loaded skills for the worker; names the assignee's
+    profile cannot load are dropped and recorded on the ``created`` event as
+    ``dropped_skills``, and the spawn path filters again for legacy cards.
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract

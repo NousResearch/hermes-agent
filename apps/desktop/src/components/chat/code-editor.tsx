@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { useTheme } from '@/themes/context'
 
 import { githubEditorTheme } from './code-editor-theme'
+import { markdownLivePreview } from './markdown-live-preview'
 
 type FormatOutcome = { ok: true } | { ok: false; error: string }
 
@@ -55,6 +56,12 @@ interface CodeEditorProps {
   // Read once at mount. To load a different file or discard edits, remount the
   // component (give it a new React `key`) rather than pushing a new value in.
   initialValue: string
+  /**
+   * Markdown live preview (Obsidian-style): headings, emphasis, links, quotes
+   * and bullets render in place; syntax marks reappear around the caret. The
+   * buffer stays plain Markdown. Toggles live without losing the cursor/undo.
+   */
+  livePreview?: boolean
   onCancel?: () => void
   onChange: (value: string) => void
   /** Button or Mod-Shift-F. */
@@ -168,6 +175,12 @@ const FRAMED_THEME = EditorView.theme({
   '.cm-line': { padding: '0' }
 })
 
+// Source mode keeps the code-view gutter; live preview drops it (rendered
+// headings have their own heights) and wraps lines like prose.
+function livePreviewExtensions(enabled: boolean) {
+  return enabled ? [EditorView.lineWrapping, markdownLivePreview()] : [lineNumbers()]
+}
+
 // A deliberately small CodeMirror 6 surface for *spot edits* — not an IDE: line
 // numbers, history, selection, bracket matching, syntax highlighting. No fold
 // gutter, autocomplete, or active-line chrome, so it reads like the preview it
@@ -183,6 +196,7 @@ export function CodeEditor({
   filePath,
   highlight,
   initialValue,
+  livePreview = false,
   onCancel,
   onChange,
   onCursorChange,
@@ -196,6 +210,7 @@ export function CodeEditor({
   const themeConf = useRef(new Compartment())
   const highlightConf = useRef(new Compartment())
   const editableConf = useRef(new Compartment())
+  const livePreviewConf = useRef(new Compartment())
   const onCancelRef = useRef(onCancel)
   const onChangeRef = useRef(onChange)
   const onCursorChangeRef = useRef(onCursorChange)
@@ -239,7 +254,8 @@ export function CodeEditor({
       doc: initialValue,
       extensions: [
         // Gutter only outside framed mode — framed prose reads better flush.
-        ...(framed ? [] : [lineNumbers()]),
+        // Live preview swaps the gutter for wrapped prose (see compartment).
+        ...(framed ? [] : [livePreviewConf.current.of(livePreviewExtensions(livePreview))]),
         history(),
         drawSelection(),
         indentOnInput(),
@@ -368,6 +384,14 @@ export function CodeEditor({
   useEffect(() => {
     viewRef.current?.dispatch({ effects: editableConf.current.reconfigure(EditorState.readOnly.of(disabled)) })
   }, [disabled])
+
+  useEffect(() => {
+    if (framed) {
+      return
+    }
+
+    viewRef.current?.dispatch({ effects: livePreviewConf.current.reconfigure(livePreviewExtensions(livePreview)) })
+  }, [framed, livePreview])
 
   if (!framed) {
     return <div className={cn('h-full min-h-0 overflow-hidden', className)} ref={hostRef} />

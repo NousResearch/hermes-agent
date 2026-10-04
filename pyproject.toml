@@ -406,7 +406,6 @@ mcp = [
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
 # wheel targets and intentionally unavailable on other platforms.
 nemo-relay = []
-homeassistant = ["aiohttp==3.14.3"]
 sms = ["aiohttp==3.14.3"]
 teams = [
   "microsoft-teams-apps==2.0.13.4",
@@ -455,7 +454,6 @@ termux-all = [
   # first use, so they're no longer eager-installed here.
   "hermes-agent[termux]",
   "hermes-agent[google]",
-  "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[web]",
   "hermes-agent[pty]",
@@ -526,7 +524,6 @@ all = [
   "hermes-agent[pty]",
   "hermes-agent[mcp]",
   "hermes-agent[uvloop]",
-  "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",
   "hermes-agent[google]",

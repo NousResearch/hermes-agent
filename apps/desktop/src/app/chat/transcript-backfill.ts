@@ -96,10 +96,23 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
 
   const existingRowIndices = new Map<number, number>()
   const existingIdIndices = new Map<string, number>()
+  // Part-level durable identity. Hydration folds a turn's tool rows and its
+  // final reply into one bubble addressed by its FIRST source row
+  // (message.rowId), while the final reply rides inside as a text part with
+  // its own sourceRowId. Message-level matching alone misses that shared
+  // final row and appends the fold next to the settled live bubble, so the
+  // same reply renders twice (#123801).
+  const existingPartRowIndices = new Map<number, number>()
 
   existing.forEach((message, index) => {
     if (message.rowId !== undefined) {
       existingRowIndices.set(message.rowId, index)
+    }
+
+    for (const part of message.parts) {
+      if (part.sourceRowId !== undefined) {
+        existingPartRowIndices.set(part.sourceRowId, index)
+      }
     }
 
     existingIdIndices.set(message.id, index)
@@ -113,10 +126,30 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
   let pending: ChatMessage[] = []
   let lastAnchor = -1
 
+  const heldRowAnchor = (row: number) => existingRowIndices.get(row) ?? existingPartRowIndices.get(row)
+
+  // A fetched fold is only a duplicate when EVERY row it carries is already
+  // held; one unheld row (narration beside a tool call) means dropping it
+  // would lose that content, so it is appended as before.
+  const partRowAnchor = (message: ChatMessage): number | undefined => {
+    const anchors = transcriptRowIds(message).map(heldRowAnchor)
+
+    if (!anchors.length || anchors.includes(undefined)) {
+      return undefined
+    }
+
+    // With a rowId the fold is addressed by its FIRST source row, the same key
+    // hydration uses. Without one its part rows are the only identity, and the
+    // last of them is the turn's final reply — the row the settled live bubble
+    // holds (#123801) — so preceding pending rows land before that bubble.
+    return message.rowId !== undefined ? anchors[0] : anchors[anchors.length - 1]
+  }
+
   for (const message of olderPage) {
     const anchor =
       (message.rowId !== undefined ? existingRowIndices.get(message.rowId) : undefined) ??
-      existingIdIndices.get(message.id)
+      existingIdIndices.get(message.id) ??
+      partRowAnchor(message)
 
     if (anchor === undefined) {
       pending.push(message)

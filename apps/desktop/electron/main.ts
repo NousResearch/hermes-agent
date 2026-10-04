@@ -598,7 +598,15 @@ import {
   updateHandoffConflict,
   writeUpdateMarker
 } from './update-marker'
-import { heldCeilingNotice, type HeldState, heldWaitMessage, liveMarkerProbe } from './update-marker-gate'
+import {
+  allowStartOverHold,
+  type HeldState,
+  heldWaitMessage,
+  HOLD_SCREEN_GRACE_MS,
+  liveMarkerProbe,
+  requestHoldRecheck,
+  startAnywayLogLine
+} from './update-marker-gate'
 import { updateConnectionsBeforeLocal } from './update-order'
 import {
   resolveUpdaterMechanism,
@@ -2244,7 +2252,10 @@ let bootProgressState = {
   retryable: false,
   running: false,
   statusCode: null,
-  timestamp: Date.now()
+  timestamp: Date.now(),
+  // The blocked boot screen (R8 D3): set while an update hold keeps the local
+  // backend from starting, null otherwise.
+  updateHold: null as UpdateHoldWire | null
 }
 
 // Chromium owns its --log-file for the life of the process, so the startup
@@ -3086,6 +3097,70 @@ function relaunchIntoSwappedBundle() {
   return true
 }
 
+// What the blocked boot screen shows (R8 D3). The renderer mirrors this as
+// `DesktopUpdateHold` in src/global.d.ts.
+interface UpdateHoldWire {
+  holdId: string
+  verdict: 'held' | 'busy' | 'error'
+  ownerPid: number | null
+  since: number
+  checkedAt: number
+  logPath: string
+}
+
+// The hold the boot screen currently shows; the IPC handlers below act on it
+// only (a Start anyway for a hold the user never saw is refused).
+let currentUpdateHold: HeldState | null = null
+
+function updateHoldWire(state: HeldState): UpdateHoldWire {
+  return {
+    holdId: state.holdId,
+    verdict: state.verdict === 'live' ? 'held' : state.verdict,
+    ownerPid: state.ownerPid,
+    since: state.since,
+    checkedAt: state.checkedAt,
+    logPath: path.join(HERMES_HOME, 'logs', 'update.log')
+  }
+}
+
+function clearUpdateHold() {
+  if (!currentUpdateHold && !bootProgressState.updateHold) {
+    return
+  }
+
+  currentUpdateHold = null
+  updateBootProgress({ updateHold: null })
+}
+
+function showUpdateHold(state: HeldState) {
+  const previous = currentUpdateHold
+  const sameHold = previous?.holdId === state.holdId && previous.verdict === state.verdict
+
+  if (sameHold && previous.checkedAt === state.checkedAt && bootProgressState.updateHold) {
+    return
+  }
+
+  if (previous?.holdId !== state.holdId) {
+    rememberLog(
+      `[updates] boot blocked: the update marker is ${state.verdict}` +
+        `${state.ownerPid ? ` (update pid ${state.ownerPid}, exited)` : ''}, hold ${state.holdId}; ` +
+        'the backend stays stopped until the hold ends, the user quits, or the user confirms Start anyway'
+    )
+  }
+
+  currentUpdateHold = state
+  updateBootProgress({
+    phase: 'backend.update-held',
+    // Logged by updateBootProgress: only when what holds the install changes,
+    // not on every re-check.
+    ...(sameHold ? {} : { message: heldWaitMessage(state) }),
+    progress: 12,
+    running: true,
+    error: null,
+    updateHold: updateHoldWire(state)
+  })
+}
+
 // Block until no live update is in progress (or we hit the wait timeout).
 // Emits a boot-progress phase so the renderer shows "Update in progress…"
 // rather than a frozen splash. Returns true if it parked at all.
@@ -3095,16 +3170,16 @@ async function waitForUpdateToFinish() {
   // Marker line 2 of the run this boot parked on: the result we report is that
   // run's, never an older one (C2 started_at match).
   let parkedRunStartedAt: number | null = null
-  // A dead marker whose checkout a leftover process still holds (R6): its
-  // state this poll, and whether its ceiling let us through (review R6 m7).
+  // A dead marker whose checkout a leftover process still holds (R6), or whose
+  // ownership the helper could not establish: its state this poll, and since
+  // when it has blocked this wait (the blocked screen's grace, R8 D3).
   let held: HeldState | null = null
-  let heldExpired: HeldState | null = null
+  let blockedSince: number | null = null
 
   const gateDeps = updateGateDeps(
     marker => (parkedRunStartedAt = marker.startedAt),
     state => {
       held = state
-      heldExpired = state.expired ? state : heldExpired
     }
   )
 
@@ -3116,14 +3191,29 @@ async function waitForUpdateToFinish() {
         rememberLog(`[updates] update in progress (${reason}); deferring backend start until it finishes`)
       }
 
-      const heldNow = held
+      const heldNow: HeldState | null = held
       held = null
 
       if (reason === 'marker' && heldNow) {
+        blockedSince = heldNow.blocking ? (blockedSince ?? Date.now()) : null
+
+        // Never a timeout (R8 D3): past the grace the boot shows the blocked
+        // screen and stays parked until the hold ends, the user quits, or the
+        // user confirms Start anyway (IPC below).
+        if (blockedSince !== null && Date.now() - blockedSince >= HOLD_SCREEN_GRACE_MS) {
+          showUpdateHold(heldNow)
+
+          return
+        }
+
+        clearUpdateHold()
         await advanceBootProgress('backend.update-wait', heldWaitMessage(heldNow), 12)
 
         return
       }
+
+      blockedSince = null
+      clearUpdateHold()
 
       // A live update owner is waited out, never aged out (C1 rule 3): booting
       // a backend into a half-replaced runtime is the failure this gate exists
@@ -3152,6 +3242,8 @@ async function waitForUpdateToFinish() {
     pollMs: UPDATE_WAIT_POLL_MS,
     timeoutMs: UPDATE_WAIT_TIMEOUT_MS
   })
+
+  clearUpdateHold()
 
   // The detached hand-off script (scripts/desktop-update/windows.ps1) runs hidden;
   // its result file is the ONLY way the user learns a detached update
@@ -3222,17 +3314,6 @@ async function waitForUpdateToFinish() {
 
   if (outcome === 'cancelled') {
     localBackendLifecycle.assertCanStart()
-  }
-
-  if (heldExpired) {
-    // The way forward when the gate stopped waiting on a held checkout: boot
-    // goes on (non-blocking dialog); the marker stays for the scripts/Python.
-    void dialog.showMessageBox({
-      type: 'warning',
-      title: 'Hermes update',
-      message: 'Hermes started while an earlier update still holds the install',
-      detail: heldCeilingNotice(heldExpired)
-    })
   }
 
   if (outcome === 'clear') {
@@ -12358,8 +12439,22 @@ async function runPoolBackendStart(
   // silently for background profiles — so we only log while parked.
   {
     let poolAnnounced = false
+    let poolHoldLogged: string | null = null
 
-    await waitForUpdateClearance(updateGateDeps(), {
+    // A blocking hold never ages out here either (R8 D3). Pool backends have
+    // no boot screen of their own: the primary window's Start anyway (scoped
+    // to the same marker body) releases this wait too.
+    const poolGateDeps = updateGateDeps(undefined, state => {
+      if (state.blocking && poolHoldLogged !== state.holdId) {
+        poolHoldLogged = state.holdId
+        rememberLog(
+          `[updates] pool backend start for profile "${profile}" blocked: update marker ${state.verdict}, ` +
+            `hold ${state.holdId}; waiting for the hold to end or a Start anyway on the boot screen`
+        )
+      }
+    })
+
+    await waitForUpdateClearance(poolGateDeps, {
       signal: localBackendLifecycle.signal,
       isCancelled: (): boolean => backendPool.get(poolKey) !== entry,
       onWaitTick: reason => {
@@ -16145,6 +16240,57 @@ ipcMain.handle('hermes:bootstrap:repair', async (): Promise<{ ok: boolean; bundl
 
   return { ok: true }
 })
+
+// The blocked boot screen's three ways out (R8 D3). Only the primary window's
+// boot surface can drive them, and only for the hold it is showing.
+function isPrimaryBootSender(event: Electron.IpcMainInvokeEvent) {
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents)
+}
+
+ipcMain.handle('hermes:update-hold:recheck', async event => {
+  if (!isPrimaryBootSender(event) || !currentUpdateHold) {
+    return { ok: false }
+  }
+
+  rememberLog(`[updates] boot blocked (hold ${currentUpdateHold.holdId}): user asked to check again`)
+  requestHoldRecheck()
+
+  return { ok: true }
+})
+
+ipcMain.handle('hermes:update-hold:quit', async event => {
+  if (!isPrimaryBootSender(event)) {
+    return { ok: false }
+  }
+
+  rememberLog(
+    `[updates] user quit Hermes from the update-hold screen${currentUpdateHold ? ` (hold ${currentUpdateHold.holdId})` : ''}`
+  )
+  app.quit()
+
+  return { ok: true }
+})
+
+ipcMain.handle('hermes:update-hold:start-anyway', async (event, request: { holdId?: unknown; confirmed?: unknown }) => {
+  const hold = currentUpdateHold
+
+  if (!isPrimaryBootSender(event) || !hold || request?.confirmed !== true || request.holdId !== hold.holdId) {
+    rememberLog(
+      `[updates] Start anyway refused: ${hold ? `hold ${hold.holdId}` : 'no hold'} is not the confirmed hold ` +
+        `(${typeof request?.holdId === 'string' ? request.holdId.slice(0, 32) : 'none'})`
+    )
+
+    return { ok: false }
+  }
+
+  rememberLog(startAnywayLogLine(hold))
+  // The override must survive whatever the backend start does next.
+  flushDesktopLogBufferSync()
+  allowStartOverHold(hold.holdId)
+
+  return { ok: true }
+})
+
 ipcMain.handle('hermes:bootstrap:continue-local', async () => {
   rememberLog('[bootstrap] local install selected by renderer; continuing first-launch bootstrap')
   continueFirstRunLocalBootstrap()

@@ -481,6 +481,33 @@ export const frOverrides = {
       signInToRemoteGateway: 'Se connecter au gateway distante',
       signInWithProvider: provider => `Se connecter avec ${provider}`,
       identityProvider: "votre fournisseur d'identité"
+    },
+    updateHold: {
+      title: 'Une mise à jour précédente bloque encore Hermes',
+      titleUnverified: 'Hermes ne peut pas confirmer la fin de la dernière mise à jour',
+      description:
+        "Hermes attend avant de démarrer pour ne pas charger des fichiers qu'une mise à jour modifie peut-être encore. Il démarre tout seul dès que le blocage cesse.",
+      heldByProcess: pid =>
+        `La mise à jour (processus ${pid}) s'est terminée, mais un processus qu'elle a lancé bloque encore l'installation de Hermes.`,
+      heldUnknown:
+        "Une mise à jour s'est terminée, mais un processus qu'elle a lancé bloque encore l'installation de Hermes.",
+      unverified:
+        "L'assistant de mise à jour n'a pas pu vérifier qui détient l'installation de Hermes. Hermes continue de vérifier.",
+      since: time => `En attente depuis ${time}`,
+      lastChecked: time => `Dernière vérification ${time}`,
+      recoveryHint:
+        "Cela se règle généralement en quelques minutes. Sinon : quittez Hermes, arrêtez les processus git ou hermes restants (ou redémarrez l'ordinateur), puis rouvrez Hermes.",
+      checkAgain: 'Vérifier à nouveau',
+      quit: 'Quitter Hermes',
+      openLogs: 'Ouvrir les journaux',
+      startAnyway: 'Démarrer quand même…',
+      confirmTitle: 'Démarrer Hermes alors que la mise à jour le bloque encore ?',
+      confirmBody:
+        'Le processus de mise à jour restant modifie peut-être encore les fichiers de Hermes. Démarrer maintenant peut charger une installation à moitié mise à jour, qui risque de ne pas fonctionner avant une nouvelle mise à jour. Hermes consigne ce choix dans son journal et laisse le marqueur de mise à jour en place.',
+      confirmKeepWaiting: 'Continuer à attendre',
+      confirmStart: 'Démarrer quand même',
+      startAnywayRefused:
+        "Ce qui bloque l'installation a changé avant que Hermes puisse démarrer. Vérifiez et réessayez."
     }
   },
   notifications: {

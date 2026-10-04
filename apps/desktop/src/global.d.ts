@@ -610,6 +610,12 @@ declare global {
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
       recycleBackend?: (profile?: null | string) => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>
+      // The blocked boot screen's actions (an earlier update still holds the install).
+      updateHold: {
+        recheck: () => Promise<{ ok: boolean }>
+        quit: () => Promise<{ ok: boolean }>
+        startAnyway: (request: { holdId: string; confirmed: true }) => Promise<{ ok: boolean }>
+      }
       repairBootstrap: () => Promise<{ ok: boolean; error?: string }>
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
@@ -1394,6 +1400,22 @@ export interface DesktopBootProgress {
   /** Structured HTTP status when the boot failure carried one (e.g. 503). */
   statusCode?: number | null
   timestamp: number
+  /** Set while an earlier update's hold keeps the local backend from starting (blocked boot screen). */
+  updateHold?: DesktopUpdateHold | null
+}
+
+/** What holds the install while the boot is blocked (electron/main.ts UpdateHoldWire). */
+export interface DesktopUpdateHold {
+  holdId: string
+  /** `held`: a leftover process holds the checkout lock; `busy`/`error`: ownership could not be verified. */
+  verdict: 'held' | 'busy' | 'error'
+  /** The update process that wrote the marker (exited), when known. */
+  ownerPid: number | null
+  /** Epoch ms the hold was first seen. */
+  since: number
+  /** Epoch ms of the latest check. */
+  checkedAt: number
+  logPath: string
 }
 
 // First-launch install ("bootstrap") event types -- emitted by

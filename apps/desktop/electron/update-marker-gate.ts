@@ -14,29 +14,31 @@
  *   (dead = not running, as before minus the deletion).
  *
  * The helper is asked once per distinct dead marker body per wait; a `held` /
- * `busy` / `live` answer is re-asked every `reprobeMs` (5 s) because only the
- * script can see the lock being released.
+ * `busy` / `error` / `live` answer is re-asked every `reprobeMs` (5 s), or on
+ * the next poll after a Retry, because only the script can see the lock being
+ * released.
  *
- * Only verified `held` has a ceiling (review R6 m7): no owner identity is alive,
- * only some process still holding the checkout lock, and that can be a
- * leaked long-lived one. The scripts stop waiting on it after RELEASE_WAIT_S
- * (7200 s); the gate stops blocking after the same span, counted from the
- * marker's line 2 (the last time an owner wrote it; the scripts keep it young
- * while they live) or, when line 2 is unreadable, from the first time this
- * process saw the body held. Past the ceiling the probe answers "not
- * running", logs it once and reports it through `onHeld` so the caller can
- * tell the user; the marker is left exactly as it is. A helper `live <pid>`
- * names a live identity and is waited out like any live marker (C1 rule 3).
- * `busy`/`error` are indeterminate, retried without granting clearance.
+ * No verdict has a ceiling (review R8 D3). `held` means no owner identity is
+ * alive but some process still holds the checkout lock; it may be a leaked
+ * long-lived one, and it may still be writing the install. `busy` / `error`
+ * mean the helper could not establish ownership at all. None of them ever
+ * opens the gate by itself: past a short grace the caller shows a blocked
+ * boot screen (what holds the install, Retry, Quit) whose only way through
+ * while the hold lasts is an explicit, confirmed, logged "Start anyway"
+ * (`allowStartOverHold`), scoped to the exact marker body the user saw. The
+ * marker is never touched. A helper `live <pid>` names a live identity and is
+ * waited out like any live marker (C1 rule 3).
  */
+
+import { createHash } from 'node:crypto'
 
 import { type CreateTimeProbe, inspectUpdateMarker } from './update-marker'
 import type { MarkerHelperVerdict } from './updater/marker-helper'
 
 export const HELD_REPROBE_MS = 5_000
 
-/** The scripts' own wait on the checkout lock (posix.sh RELEASE_WAIT_S, marker.ps1 MarkerReleaseWaitSeconds). */
-export const HELD_CEILING_MS = 7_200_000
+/** How long a blocking verdict must last in one wait before the boot shows the blocked screen. */
+export const HOLD_SCREEN_GRACE_MS = 5_000
 
 /** Why a dead marker still keeps the gate closed, as the script helper put it. */
 export interface HeldState {
@@ -45,12 +47,14 @@ export interface HeldState {
   ownerPid: number | null
   /** The live process the helper named (`live <pid>`), else null. */
   livePid: number | null
-  /** Epoch ms the ceiling counts from. */
+  /** Stable id of the marker body this answer is about; "Start anyway" is scoped to it. */
+  holdId: string
+  /** Epoch ms this process first saw this marker body keep the gate closed. */
   since: number
-  /** Ms until the gate stops blocking; null when there is no ceiling (`live`). */
-  remainingMs: number | null
-  /** The ceiling passed: the gate is open and the marker untouched. */
-  expired: boolean
+  /** Epoch ms of the helper answer this state reflects. */
+  checkedAt: number
+  /** No live identity owns the install (`held`), or ownership could not be established (`busy`/`error`). */
+  blocking: boolean
 }
 
 export interface LiveMarkerProbeOptions {
@@ -59,22 +63,20 @@ export interface LiveMarkerProbeOptions {
   reclaim: (() => Promise<MarkerHelperVerdict>) | null
   createTime?: CreateTimeProbe
   onLiveMarker?: (marker: { startedAt: number | null }) => void
-  /** Every answer that comes from a running helper verdict (boot progress, the ceiling notice). */
+  /** Every answer that comes from a running helper verdict (boot progress, the blocked screen). */
   onHeld?: (state: HeldState) => void
   log?: (line: string) => void
   now?: () => number
   reprobeMs?: number
-  /** Test seam; production is HELD_CEILING_MS. */
-  heldCeilingMs?: number
 }
 
 const STILL_RUNNING = new Set(['held', 'busy', 'live', 'error'])
 
 // First sighting of each held body, process-wide: a later gate wait (a pool
-// backend, a reconnect) continues the same ceiling instead of restarting it.
+// backend, a reconnect) reports the same "since".
 const firstHeldAt = new Map<string, number>()
 
-function heldSince(key: string, startedAt: number | null, at: number): number {
+function heldSince(key: string, at: number): number {
   if (!firstHeldAt.has(key)) {
     if (firstHeldAt.size >= 16) {
       firstHeldAt.clear()
@@ -83,9 +85,40 @@ function heldSince(key: string, startedAt: number | null, at: number): number {
     firstHeldAt.set(key, at)
   }
 
-  const written = startedAt !== null && Number.isFinite(startedAt) && startedAt > 0 ? startedAt * 1000 : Infinity
+  return firstHeldAt.get(key)!
+}
 
-  return Math.min(firstHeldAt.get(key)!, written)
+// Marker bodies the user explicitly chose to start over (R8 D3), process-wide
+// so a pool backend wait honours the same decision. A different body (a new
+// update, a new owner) blocks again.
+const startAnywayHolds = new Set<string>()
+
+// Bumped by an explicit Retry: every probe re-asks the helper on its next poll.
+let recheckGeneration = 0
+
+/** The stable id of a marker body (what `HeldState.holdId` carries). */
+export function markerHoldId(raw: Buffer): string {
+  return createHash('sha256').update(raw).digest('hex').slice(0, 16)
+}
+
+/**
+ * The user confirmed "Start anyway" over this exact held marker body. The
+ * caller logs the override; the marker is left in place.
+ */
+export function allowStartOverHold(holdId: string): void {
+  startAnywayHolds.add(holdId)
+}
+
+/** Retry: ask the script helper again on the next poll instead of waiting out the re-probe interval. */
+export function requestHoldRecheck(): void {
+  recheckGeneration += 1
+}
+
+/** Test seam: forget process-wide hold state. */
+export function resetHoldStateForTests(): void {
+  firstHeldAt.clear()
+  startAnywayHolds.clear()
+  recheckGeneration = 0
 }
 
 /** `hasLiveMarker` for one gate wait (create it per wait, never module-wide). */
@@ -97,10 +130,12 @@ export function liveMarkerProbe({
   onHeld,
   log,
   now = Date.now,
-  reprobeMs = HELD_REPROBE_MS,
-  heldCeilingMs = HELD_CEILING_MS
+  reprobeMs = HELD_REPROBE_MS
 }: LiveMarkerProbeOptions): () => Promise<boolean> {
-  const asked = new Map<string, { verdict: MarkerHelperVerdict; at: number; expiryLogged?: boolean }>()
+  const asked = new Map<
+    string,
+    { verdict: MarkerHelperVerdict; at: number; generation: number; overrideLogged?: boolean }
+  >()
 
   return async () => {
     const inspection = await inspectUpdateMarker(hermesHome, { createTime, now })
@@ -115,19 +150,27 @@ export function liveMarkerProbe({
       return false
     }
 
-    const key = inspection.raw.toString('hex')
-    const previous = asked.get(key)
+    const holdId = markerHoldId(inspection.raw)
+    const previous = asked.get(holdId)
     let entry = previous
 
-    if (!previous || (STILL_RUNNING.has(previous.verdict.kind) && now() - previous.at >= reprobeMs)) {
+    const due =
+      !previous ||
+      (STILL_RUNNING.has(previous.verdict.kind) &&
+        (now() - previous.at >= reprobeMs || previous.generation !== recheckGeneration))
+
+    if (due) {
+      const generation = recheckGeneration
       const verdict = await reclaim()
 
       if (!previous || STILL_RUNNING.has(previous.verdict.kind) !== STILL_RUNNING.has(verdict.kind)) {
-        log?.(`[updates] dead update marker: script helper says ${verdict.kind}${'pid' in verdict ? ` ${verdict.pid}` : ''}`)
+        log?.(
+          `[updates] dead update marker: script helper says ${verdict.kind}${'pid' in verdict ? ` ${verdict.pid}` : ''}`
+        )
       }
 
-      entry = { ...previous, verdict, at: now() }
-      asked.set(key, entry)
+      entry = { ...previous, verdict, at: now(), generation }
+      asked.set(holdId, entry)
     }
 
     const { verdict } = entry!
@@ -136,45 +179,33 @@ export function liveMarkerProbe({
       return false
     }
 
-    const startedAt = inspection.marker?.startedAt ?? null
-    const since = heldSince(key, startedAt, now())
-    // `busy`/`error` did not establish ownership: stale bytes cannot grant clearance.
-    const remainingMs = verdict.kind === 'held' ? Math.max(0, since + heldCeilingMs - now()) : null
-
     const state: HeldState = {
       verdict: verdict.kind as HeldState['verdict'],
       ownerPid: inspection.marker?.pid ?? null,
       livePid: 'pid' in verdict ? verdict.pid : null,
-      since,
-      remainingMs,
-      expired: remainingMs === 0
+      holdId,
+      since: heldSince(holdId, now()),
+      checkedAt: entry!.at,
+      blocking: verdict.kind !== 'live'
     }
 
-    onHeld?.(state)
-
-    if (state.expired) {
-      if (!entry!.expiryLogged) {
-        entry!.expiryLogged = true
+    if (state.blocking && startAnywayHolds.has(holdId)) {
+      if (!entry!.overrideLogged) {
+        entry!.overrideLogged = true
         log?.(
-          `[updates] update marker still ${state.verdict} ${Math.round((now() - since) / 60_000)} min after its owner` +
-            `${state.ownerPid ? ` (pid ${state.ownerPid})` : ''} last wrote it; no longer blocking start-up` +
-            ' (the scripts stop waiting at the same ceiling). The marker is left in place.'
+          `[updates] update marker still ${state.verdict} (hold ${holdId}); not blocking start-up because the user ` +
+            'chose Start anyway. The marker is left in place.'
         )
       }
 
       return false
     }
 
-    onLiveMarker?.({ startedAt })
+    onHeld?.(state)
+    onLiveMarker?.({ startedAt: inspection.marker?.startedAt ?? null })
 
     return true
   }
-}
-
-function duration(ms: number): string {
-  const m = Math.max(1, Math.ceil(ms / 60_000))
-
-  return m >= 120 ? `${Math.round(m / 60)} hours` : m === 1 ? '1 minute' : `${m} minutes`
 }
 
 /** Boot-progress text while a dead marker's checkout is still held. */
@@ -189,20 +220,15 @@ export function heldWaitMessage(state: HeldState): string {
 
   const who = state.ownerPid ? `the update (process ${state.ownerPid}) exited, but a process` : 'a process'
 
-  return (
-    `An update is still finishing: ${who} it started still holds the Hermes install. ` +
-    `Hermes will start when that process exits, or in ${duration(state.remainingMs ?? 0)} at the latest.`
-  )
+  return `An update is still finishing: ${who} it started still holds the Hermes install. Hermes will start when it lets go.`
 }
 
-/** Dialog detail once the ceiling let Hermes start over a still-held checkout. */
-export function heldCeilingNotice(state: HeldState): string {
-  const owner = state.ownerPid ? ` (process ${state.ownerPid}, now exited)` : ''
-
+/** The log line for a confirmed "Start anyway" (R8 D3). */
+export function startAnywayLogLine(state: HeldState): string {
   return (
-    `An earlier update${owner} left a process that still held the Hermes install ${duration(HELD_CEILING_MS)} ` +
-    'later, so Hermes started without waiting for it. The update marker was left in place.\n\n' +
-    'If something looks wrong: quit Hermes, end leftover git or hermes processes (or restart the computer), ' +
-    'then run the update again from Settings or with `hermes update`. Details are in logs/update.log.'
+    `[updates] USER OVERRIDE: Start anyway over an update marker the helper reports ${state.verdict}` +
+    `${state.ownerPid ? ` (update pid ${state.ownerPid}, exited)` : ''}, hold ${state.holdId}, ` +
+    `blocking since ${new Date(state.since).toISOString()}; starting the local backend without waiting. ` +
+    'The marker is left in place.'
   )
 }

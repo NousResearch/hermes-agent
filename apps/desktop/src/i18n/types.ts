@@ -500,6 +500,27 @@ export interface Translations {
       signInWithProvider: (provider: string) => string
       identityProvider: string
     }
+    // The blocked boot screen while an earlier update still holds the install (R8 D3).
+    updateHold: {
+      title: string
+      titleUnverified: string
+      description: string
+      heldByProcess: (pid: number) => string
+      heldUnknown: string
+      unverified: string
+      since: (time: string) => string
+      lastChecked: (time: string) => string
+      recoveryHint: string
+      checkAgain: string
+      quit: string
+      openLogs: string
+      startAnyway: string
+      confirmTitle: string
+      confirmBody: string
+      confirmKeepWaiting: string
+      confirmStart: string
+      startAnywayRefused: string
+    }
   }
 
   notifications: {

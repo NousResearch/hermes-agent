@@ -471,6 +471,30 @@ export const en: Translations = {
       signInToRemoteGateway: 'Sign in to remote gateway',
       signInWithProvider: provider => `Sign in with ${provider}`,
       identityProvider: 'your identity provider'
+    },
+    updateHold: {
+      title: 'An earlier update still holds Hermes',
+      titleUnverified: "Hermes can't confirm the last update finished",
+      description:
+        "Hermes is holding off on starting so it can't load files an update may still be changing. It starts by itself as soon as the hold ends.",
+      heldByProcess: pid =>
+        `The update (process ${pid}) exited, but a process it started still holds the Hermes install.`,
+      heldUnknown: 'An update exited, but a process it started still holds the Hermes install.',
+      unverified: "The update helper couldn't check who owns the Hermes install right now. Hermes keeps checking.",
+      since: time => `Waiting since ${time}`,
+      lastChecked: time => `Last checked ${time}`,
+      recoveryHint:
+        'This usually clears in a few minutes. If it does not: quit Hermes, end leftover git or hermes processes (or restart the computer), then open Hermes again.',
+      checkAgain: 'Check again',
+      quit: 'Quit Hermes',
+      openLogs: 'Open logs',
+      startAnyway: 'Start anyway…',
+      confirmTitle: 'Start Hermes while the update still holds it?',
+      confirmBody:
+        "The leftover update process may still be changing Hermes' files. Starting now can load a half-updated install, which may not work until you run the update again. Hermes records this choice in its log and leaves the update marker in place.",
+      confirmKeepWaiting: 'Keep waiting',
+      confirmStart: 'Start anyway',
+      startAnywayRefused: 'What holds the install changed before Hermes could start. Review it and try again.'
     }
   },
 

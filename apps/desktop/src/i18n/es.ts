@@ -481,6 +481,32 @@ export const esOverrides = {
       signInToRemoteGateway: 'Iniciar sesión en el gateway remoto',
       signInWithProvider: provider => `Iniciar sesión con ${provider}`,
       identityProvider: 'tu proveedor de identidad'
+    },
+    updateHold: {
+      title: 'Una actualización anterior todavía retiene Hermes',
+      titleUnverified: 'Hermes no puede confirmar que la última actualización terminó',
+      description:
+        'Hermes espera antes de iniciar para no cargar archivos que una actualización quizá todavía esté cambiando. Se inicia solo en cuanto termine la retención.',
+      heldByProcess: pid =>
+        `La actualización (proceso ${pid}) terminó, pero un proceso que inició todavía retiene la instalación de Hermes.`,
+      heldUnknown: 'Una actualización terminó, pero un proceso que inició todavía retiene la instalación de Hermes.',
+      unverified:
+        'El asistente de actualización no pudo comprobar quién tiene la instalación de Hermes. Hermes sigue comprobando.',
+      since: time => `Esperando desde ${time}`,
+      lastChecked: time => `Última comprobación ${time}`,
+      recoveryHint:
+        'Esto suele resolverse en unos minutos. Si no: cierra Hermes, termina los procesos git o hermes que queden (o reinicia el equipo) y vuelve a abrir Hermes.',
+      checkAgain: 'Comprobar de nuevo',
+      quit: 'Salir de Hermes',
+      openLogs: 'Abrir registros',
+      startAnyway: 'Iniciar de todos modos…',
+      confirmTitle: '¿Iniciar Hermes mientras la actualización todavía lo retiene?',
+      confirmBody:
+        'El proceso de actualización restante quizá siga cambiando archivos de Hermes. Iniciar ahora puede cargar una instalación a medio actualizar, que puede no funcionar hasta que vuelvas a ejecutar la actualización. Hermes registra esta decisión y deja el marcador de actualización en su lugar.',
+      confirmKeepWaiting: 'Seguir esperando',
+      confirmStart: 'Iniciar de todos modos',
+      startAnywayRefused:
+        'Lo que retiene la instalación cambió antes de que Hermes pudiera iniciar. Revísalo e inténtalo de nuevo.'
     }
   },
   notifications: {

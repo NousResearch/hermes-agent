@@ -481,6 +481,33 @@ export const deOverrides = {
       signInToRemoteGateway: 'Beim Remote-Gateway anmelden',
       signInWithProvider: provider => `Mit ${provider} anmelden`,
       identityProvider: 'Ihr Identity-Provider'
+    },
+    updateHold: {
+      title: 'Ein früheres Update hält Hermes noch fest',
+      titleUnverified: 'Hermes kann nicht bestätigen, dass das letzte Update fertig ist',
+      description:
+        'Hermes startet noch nicht, damit es keine Dateien lädt, die ein Update womöglich noch ändert. Sobald die Sperre endet, startet Hermes von selbst.',
+      heldByProcess: pid =>
+        `Das Update (Prozess ${pid}) wurde beendet, aber ein von ihm gestarteter Prozess hält die Hermes-Installation noch fest.`,
+      heldUnknown:
+        'Ein Update wurde beendet, aber ein von ihm gestarteter Prozess hält die Hermes-Installation noch fest.',
+      unverified:
+        'Der Update-Helfer konnte gerade nicht prüfen, wem die Hermes-Installation gehört. Hermes prüft weiter.',
+      since: time => `Wartet seit ${time}`,
+      lastChecked: time => `Zuletzt geprüft ${time}`,
+      recoveryHint:
+        'Das löst sich meist in wenigen Minuten. Falls nicht: Hermes beenden, übrig gebliebene git- oder hermes-Prozesse beenden (oder den Computer neu starten) und Hermes erneut öffnen.',
+      checkAgain: 'Erneut prüfen',
+      quit: 'Hermes beenden',
+      openLogs: 'Logs öffnen',
+      startAnyway: 'Trotzdem starten…',
+      confirmTitle: 'Hermes starten, obwohl das Update es noch festhält?',
+      confirmBody:
+        'Der übrig gebliebene Update-Prozess ändert womöglich noch Dateien von Hermes. Ein Start jetzt kann eine halb aktualisierte Installation laden, die erst nach einem erneuten Update wieder funktioniert. Hermes protokolliert diese Entscheidung und lässt die Update-Markierung bestehen.',
+      confirmKeepWaiting: 'Weiter warten',
+      confirmStart: 'Trotzdem starten',
+      startAnywayRefused:
+        'Was die Installation festhält, hat sich geändert, bevor Hermes starten konnte. Bitte erneut prüfen.'
     }
   },
   notifications: {

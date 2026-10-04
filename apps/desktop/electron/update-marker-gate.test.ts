@@ -12,12 +12,23 @@ import path from 'path'
 import { afterEach, describe, test } from 'vitest'
 
 import { markerPath } from './update-marker'
-import { HELD_CEILING_MS, type HeldState, heldWaitMessage, liveMarkerProbe } from './update-marker-gate'
+import {
+  allowStartOverHold,
+  type HeldState,
+  heldWaitMessage,
+  liveMarkerProbe,
+  requestHoldRecheck,
+  resetHoldStateForTests
+} from './update-marker-gate'
 import { cleanupMarkerFixtures, deadPid, liveOwner, minutesAgo, tmpHome } from './update-marker.test-helpers'
 import { runMarkerHelper } from './updater/marker-helper'
 import { cleanupFakeCheckouts, fakeHelperCheckout } from './updater/marker-helper.test-helpers'
 
+// The old held ceiling (scripts' RELEASE_WAIT_S); the gate must not honour it.
+const OLD_HELD_CEILING_MS = 7_200_000
+
 afterEach(() => {
+  resetHoldStateForTests()
   cleanupMarkerFixtures()
   cleanupFakeCheckouts()
 })
@@ -45,7 +56,7 @@ describe.skipIf(process.platform === 'win32')('gate over a dead marker (R6)', ()
     })
   }
 
-  test('`held` stops blocking at the scripts\' 7200 s ceiling: told to the user, logged once, marker never touched (R6 m7)', async () => {
+  test('`held` never opens the gate by itself, long past the old 7200 s ceiling; Retry re-asks at once (R8 D3)', async () => {
     const { root, home } = fakeHelperCheckout()
     const owner = await deadPid()
     const body = `${owner}\n${minutesAgo(1)}\nct:1.000\n`
@@ -53,26 +64,47 @@ describe.skipIf(process.platform === 'win32')('gate over a dead marker (R6)', ()
     fs.writeFileSync(path.join(home, 'helper-verdict'), 'held')
     let clock = Date.now()
     const states: HeldState[] = []
-    const logs: string[] = []
-    const hasLiveMarker = gate(root, home, () => clock, { onHeld: s => states.push(s), log: l => logs.push(l) })
+    const hasLiveMarker = gate(root, home, () => clock, { onHeld: s => states.push(s) })
 
-    assert.equal(await hasLiveMarker(), true, 'held: still parked')
-    clock += HELD_CEILING_MS - 2 * 60_000
-    assert.equal(await hasLiveMarker(), true, 'still inside the ceiling (counted from line 2, a minute ago)')
-
-    clock += 2 * 60_000
-    assert.equal(await hasLiveMarker(), false, 'past the ceiling the gate stops blocking')
-    assert.equal(await hasLiveMarker(), false)
+    assert.equal(await hasLiveMarker(), true, 'held: parked')
+    clock += 10 * OLD_HELD_CEILING_MS
+    assert.equal(await hasLiveMarker(), true, 'still parked: a hold is never aged out')
+    assert.equal(await gate(root, home, () => clock)(), true, 'a later gate wait is parked too')
     assert.equal(fs.readFileSync(markerPath(home), 'utf8'), body, 'Desktop never mutates the marker (A7)')
 
     const [first] = states
-    assert.deepEqual([first.verdict, first.ownerPid, first.expired], ['held', owner, false])
-    assert.ok(first.remainingMs! > HELD_CEILING_MS - 2 * 60_000, 'counted from line 2, not from boot')
+    assert.deepEqual([first.verdict, first.ownerPid, first.blocking], ['held', owner, true])
+    assert.equal(states.at(-1)!.holdId, first.holdId, 'one hold id per marker body')
     assert.match(heldWaitMessage(first), new RegExp(`update \\(process ${owner}\\) exited.*still holds`))
-    assert.equal(states.at(-1)!.expired, true)
-    assert.equal(logs.filter(l => l.includes('no longer blocking')).length, 1, 'logged once')
 
-    assert.equal(await gate(root, home, () => clock)(), false, 'a later gate wait does not restart the ceiling')
+    const calls = helperCalls(home).length
+    assert.equal(await hasLiveMarker(), true)
+    assert.equal(helperCalls(home).length, calls, 'inside the re-probe interval: not re-asked')
+    requestHoldRecheck()
+    fs.writeFileSync(path.join(home, 'helper-verdict'), 'reclaimed')
+    assert.equal(await hasLiveMarker(), false, 'Retry re-asks at once; the hold ended, so the gate opens')
+    assert.equal(helperCalls(home).length, calls + 1)
+  })
+
+  test('a confirmed Start anyway opens only the hold it names, for every wait; a new marker body blocks again (R8 D3)', async () => {
+    const { root, home } = fakeHelperCheckout()
+    const body = `${await deadPid()}\n${minutesAgo(1)}\nct:1.000\n`
+    fs.writeFileSync(markerPath(home), body)
+    fs.writeFileSync(path.join(home, 'helper-verdict'), 'held')
+    const states: HeldState[] = []
+    const logs: string[] = []
+    const primary = gate(root, home, undefined, { onHeld: s => states.push(s), log: l => logs.push(l) })
+
+    assert.equal(await primary(), true)
+    allowStartOverHold(states[0].holdId)
+    assert.equal(await primary(), false, 'the confirmed hold no longer blocks this wait')
+    assert.equal(await primary(), false)
+    assert.equal(await gate(root, home)(), false, 'nor a pool backend wait in the same process')
+    assert.equal(logs.filter(l => l.includes('chose Start anyway')).length, 1, 'the override is logged once per wait')
+    assert.equal(fs.readFileSync(markerPath(home), 'utf8'), body, 'the marker stays in place')
+
+    fs.writeFileSync(markerPath(home), `${await deadPid()}\n${minutesAgo(1)}\nct:2.000\n`)
+    assert.equal(await primary(), true, 'a different marker body is a different hold: blocked again')
   })
 
   test('a failing protocol-2 helper keeps the gate parked and is retried after recovery', async () => {
@@ -99,25 +131,11 @@ describe.skipIf(process.platform === 'win32')('gate over a dead marker (R6)', ()
     fs.writeFileSync(path.join(home, 'helper-verdict'), 'busy')
     const states: HeldState[] = []
     assert.equal(await gate(root, home, undefined, { onHeld: s => states.push(s) })(), true)
-    assert.equal(states[0].remainingMs, null)
-    assert.equal(states[0].expired, false)
+    assert.equal(states[0].blocking, true, 'blocks like held: the boot screen offers the same ways out')
     assert.match(heldWaitMessage(states[0]), /verify.*ownership/)
   })
 
-  test('a malformed held marker counts its ceiling from the first sighting, across gate waits', async () => {
-    const { root, home } = fakeHelperCheckout()
-    fs.writeFileSync(markerPath(home), `garbage-${process.pid}-${Date.now()}\n`)
-    fs.writeFileSync(path.join(home, 'helper-verdict'), 'held')
-    let clock = Date.now()
-
-    assert.equal(await gate(root, home, () => clock)(), true)
-    clock += HELD_CEILING_MS - 1_000
-    assert.equal(await gate(root, home, () => clock)(), true, 'a new wait continues the same count')
-    clock += 1_000
-    assert.equal(await gate(root, home, () => clock)(), false)
-  })
-
-  test('a helper `live <pid>` names a live identity: no ceiling', async () => {
+  test('a helper `live <pid>` names a live identity: waited out, not a blocked screen', async () => {
     const { root, home } = fakeHelperCheckout()
     fs.writeFileSync(markerPath(home), `${await deadPid()}\n${minutesAgo(1)}\nct:1.000\n`)
     fs.writeFileSync(path.join(home, 'helper-verdict'), 'live 4242')
@@ -126,9 +144,9 @@ describe.skipIf(process.platform === 'win32')('gate over a dead marker (R6)', ()
     const hasLiveMarker = gate(root, home, () => clock, { onHeld: s => states.push(s) })
 
     assert.equal(await hasLiveMarker(), true)
-    clock += 10 * HELD_CEILING_MS
+    clock += 10 * OLD_HELD_CEILING_MS
     assert.equal(await hasLiveMarker(), true)
-    assert.equal(states.at(-1)!.remainingMs, null)
+    assert.equal(states.at(-1)!.blocking, false)
     assert.equal(states.at(-1)!.livePid, 4242)
   })
 

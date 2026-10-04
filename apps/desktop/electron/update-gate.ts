@@ -85,9 +85,10 @@ export interface WaitForUpdateClearanceOptions {
  * Windows update is exactly the failure the gate exists for. The marker reader
  * still bounds the wait: an owner whose creation time cannot be read stops
  * reading live at the 20-minute ceiling (A1), so a reused pid never parks
- * boot forever, and a dead marker whose checkout a leftover process still
- * holds (`held`) stops reading live at the scripts' 7200 s ceiling
- * (update-marker-gate.ts, review R6 m7).
+ * boot forever. A dead marker whose checkout a leftover process still holds
+ * (`held`) never ages out: the caller shows a blocked boot screen whose only
+ * way through while the hold lasts is a confirmed, logged Start anyway
+ * (update-marker-gate.ts, review R8 D3).
  */
 export async function waitForUpdateClearance(
   deps: UpdateGateDeps,

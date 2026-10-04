@@ -587,10 +587,11 @@ def test_invalid_room_dispatch_http_403_is_definitively_not_admitted(monkeypatch
 
 
 @pytest.mark.parametrize("status,definite", [
-    (400, True), (401, True), (403, True), (404, True), (422, True),
-    (408, False), (409, False), (425, False), (429, False),
+    (400, True), (401, True), (403, True), (404, True), (408, True), (422, True), (425, True),
+    (429, True), (409, False),
 ])
-def test_uncertain_admission_http_status_does_not_prove_nonadmission(monkeypatch, status, definite):
+def test_only_an_idempotency_conflict_leaves_an_admission_refusal_uncertain(
+        monkeypatch, status, definite):
     def rejected(*args, **kwargs):
         raise urllib.error.HTTPError("https://peer.example.test/v1/runs", status, "refused", {},
                                      io.BytesIO(b'{"error":{"code":"fixture_refusal"}}'))
@@ -602,8 +603,7 @@ def test_uncertain_admission_http_status_does_not_prove_nonadmission(monkeypatch
     assert caught.value.status_code == status
 
 
-@pytest.mark.parametrize("status", [408, 409, 425, 429])
-def test_first_uncertain_http_reply_replays_only_the_same_frozen_request(tmp_path, status):
+def test_first_idempotency_conflict_replays_only_the_same_frozen_request(tmp_path):
     requests = []
 
     class RefuseFirst(FakePeer):
@@ -611,7 +611,7 @@ def test_first_uncertain_http_reply_replays_only_the_same_frozen_request(tmp_pat
             data = self.rfile.read(int(self.headers["Content-Length"]))
             requests.append((self.path, data, self.headers["Idempotency-Key"], self.headers["Authorization"]))
             if len(requests) == 1:
-                return self._json({"error": {"code": "idempotency_conflict"}}, status)
+                return self._json({"error": {"code": "idempotency_key_conflict"}}, 409)
             return self._json({"run_id": "retained-run", "status": "started", "replayed": True}, 202)
 
     server = HTTPServer(("127.0.0.1", 0), RefuseFirst)

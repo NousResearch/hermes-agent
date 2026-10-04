@@ -30,6 +30,14 @@ TRANSCRIPT_CAP_DROP_REASON = "transcript_cap_drop"
 # Monotonic tiebreaker so same-second spool files replay in drop order.
 _TRANSCRIPT_SPOOL_SEQ = itertools.count()
 
+# Message keys persisted only for assistant rows (None otherwise) — mirrors
+# gateway.session_transcript._ASSISTANT_ONLY_KEYS so restart recovery keeps the
+# same fidelity as the live drain.
+_ASSISTANT_ONLY_KEYS = (
+    "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
+    "codex_message_items",
+)
+
 
 def _get_flush_dir():
     """Return the pending-messages flush directory under the active HERMES_HOME."""
@@ -206,6 +214,16 @@ def _serialise_value(value: Any) -> Optional[dict]:
     return {"text": str(value)}
 
 
+def _payload_session_id(payload: Any) -> str:
+    """Best-effort session identity for per-session failure gating."""
+    if not isinstance(payload, dict):
+        return ""
+    data = payload.get("data") or {}
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("session_id") or payload.get("session_key") or "")
+
+
 def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
     """Replay flush-dir ``*.json`` files via ``SessionDB.append_message``, deleting each on success.
 
@@ -216,7 +234,19 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
     branch. A returned ``db`` routes the append to the profile store owning the key (multiplexed
     gateways); ``None`` falls back to ``session_db``. Returns the number of messages recovered.
     """
-    flush_files = sorted(_get_flush_dir().glob("*.json"))
+    # Replay in drop order, not name order: spool names are pending-{uuid4}.json
+    # so name order is random and would permanently shuffle transcripts (fixes
+    # #123658). Unparseable files sort last and are preserved.
+    def _sort_key(path: Path):
+        try:
+            probe = json.loads(path.read_text(encoding="utf-8-sig"))
+            if isinstance(probe, dict):
+                return (0, probe.get("ts", 0), probe.get("seq", 0), path.name)
+        except Exception:
+            pass
+        return (1, 0, 0, path.name)
+
+    flush_files = sorted(_get_flush_dir().glob("*.json"), key=_sort_key)
     if not flush_files:
         return 0
     own_db = session_db is None
@@ -224,6 +254,10 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
         from hermes_state_registry import acquire
         session_db = acquire()
     recovered = 0
+    # Sessions whose append already failed this pass: their later files stay on
+    # disk in order instead of landing ahead of the failed row (fixes #123658).
+    # Other sessions keep recovering (see test_recover_skips_failing_payload...).
+    failed_sessions: set = set()
     try:
         for path in flush_files:
             # One unparseable payload or rejected append must only skip THIS file: the file is
@@ -236,11 +270,21 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
                 # not automatic DB insertion. Skip them silently.
                 if payload.get("reason") == "shutdown-with-unpersisted-agent-history":
                     continue
+                if isinstance(payload, dict) and _payload_session_id(payload) in failed_sessions:
+                    continue
                 if _recover_one_payload(session_db, path, payload,
                                         session_resolver=session_resolver):
                     recovered += 1
                     path.unlink(missing_ok=True)
             except Exception as exc:
+                # A failed append poisons this session's later files (they would land
+                # ahead of the failed row): hold them back, keep recovering others.
+                try:
+                    _sid = _payload_session_id(payload)
+                except Exception:
+                    _sid = ""
+                if _sid:
+                    failed_sessions.add(_sid)
                 logger.warning("Failed to recover pending message from %s: %s", path, exc)
     finally:
         if own_db:  # shutdown cancellation/interrupt must not strand an owned DB
@@ -265,9 +309,26 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
             logger.warning("Cannot recover structurally invalid transcript spool "
                            "file %s; preserved for manual inspection", path)
             return False
-        session_db.append_message(session_id=spooled_sid, role=message.get("role", "unknown"),
-                                  content=message.get("content") or "",
-                                  timestamp=message.get("timestamp") or payload.get("ts"))
+        # Full-fidelity replay like the live drain: tool calls, reasoning,
+        # platform ids, sidecars and display typing must survive a restart or the
+        # next replay diverges (fixes #123658).
+        from agent.turn_context import extract_api_content_sidecar
+
+        _is_assistant = message.get("role") == "assistant"
+        session_db.append_message(
+            session_id=spooled_sid, role=message.get("role", "unknown"),
+            content=message.get("content"),
+            tool_name=message.get("tool_name"),
+            tool_calls=message.get("tool_calls"),
+            tool_call_id=message.get("tool_call_id"),
+            **{k: message.get(k) if _is_assistant else None for k in _ASSISTANT_ONLY_KEYS},
+            platform_message_id=(message.get("platform_message_id") or message.get("message_id")),
+            observed=bool(message.get("observed")),
+            timestamp=message.get("timestamp") if "timestamp" in message else payload.get("ts"),
+            api_content=extract_api_content_sidecar(message),
+            display_kind=message.get("display_kind"),
+            display_metadata=message.get("display_metadata"),
+        )
         return True
     session_key, data = payload.get("session_key", ""), payload.get("data", {})
     text = data.get("text", "")

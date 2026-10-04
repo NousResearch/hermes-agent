@@ -889,8 +889,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._schedule_held_inbound_redispatch()
 
     def _notification_kwargs(self, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """In "important" mode return disable_notification=True unless ``metadata["notify"]``."""
-        if getattr(self, "_notifications_mode", "important") != "important" or (metadata or {}).get("notify"):
+        """In "important" mode return disable_notification=True unless ``metadata["notify"]``.
+
+        An approval prompt never counts as "unimportant": silently delivered prompts are
+        indistinguishable from "no prompt" and cost the full approval window before the
+        command is refused (#132516)."""
+        meta = metadata or {}
+        if (getattr(self, "_notifications_mode", "important") != "important"
+                or meta.get("notify") or meta.get("is_approval_prompt")):
             return {}
         return {"disable_notification": True}
 

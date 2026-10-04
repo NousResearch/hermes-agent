@@ -34,10 +34,12 @@ Layout of the argv (later mounts overlay earlier ones):
    hidden as a whole, and so is the default HOME/.hermes when HERMES_HOME
    points elsewhere, so a profile's sandbox cannot read the default
    home's credentials
-8. a scratch directory of this environment alone, bound over the path of
-   the Hermes scratch dir (TMPDIR) and writable with the cwd, so nothing
-   that other Hermes processes or sessions keep in the shared scratch
-   dir is in view; and the staged data roots of the cache registry,
+8. an empty read-only directory over the path of the Hermes scratch dir,
+   so nothing that other Hermes processes or sessions keep in the shared
+   scratch dir is in view, and inside it the scratch directory of this
+   environment alone, at its own host path and writable with the cwd
+   (TMPDIR of a command points at it); and the staged data roots of the
+   cache registry,
    read-only, on top of that overlay; then once more the overlay of each
    hidden path that lies under one of those roots
 9. under terminal.home_mode=profile, HERMES_HOME/home read-write on top of
@@ -89,6 +91,7 @@ import json
 import logging
 import os
 import resource  # windows-footgun: ok — bubblewrap is a Linux-only backend
+import shlex
 import shutil
 import signal
 import stat
@@ -98,7 +101,7 @@ import uuid
 from dataclasses import dataclass, replace
 from typing import Iterable, Mapping, Sequence
 
-from hermes_constants import get_hermes_home, get_real_home, get_scratch_dir
+from hermes_constants import SCRATCH_TMP_ENV_VARS, get_hermes_home, get_real_home, get_scratch_dir
 from tools.environments import bubblewrap_home
 from tools.environments.base import EnvironmentConnectionError, get_sandbox_dir
 from tools.environments.local import LocalEnvironment, _resolve_local_initial_cwd
@@ -431,15 +434,29 @@ def empty_file_path(state_dir: str) -> str:
     return state_dir.rstrip(os.sep) + ".empty"
 
 
-def scratch_src_path(state_dir: str) -> str:
-    """Host path of the directory bound over the Hermes scratch path.
+def scratch_view_path(state_dir: str) -> str:
+    """Host path of the directory bound read-only over the Hermes scratch path.
 
+    It holds one empty directory, the mount point of the environment's
+    own scratch dir, and nothing else: it is what a command sees of the
+    scratch path in place of the directory every Hermes process shares.
     Beside the state dir, like the empty file and for the same reason:
-    the bind over the scratch path is the only way in. At a path a
-    command can write to it could be swapped for a symlink to a hidden
-    directory, which bwrap would follow on the next spawn.
+    at a path a command can write to it could be swapped for a symlink
+    to a hidden directory, which bwrap would follow on the next spawn.
     """
     return state_dir.rstrip(os.sep) + ".scratch"
+
+
+def private_scratch_path(scratch_dir: str, state_dir: str) -> str:
+    """Host path of the scratch directory of one environment, inside the Hermes scratch dir.
+
+    The same path on the host and in the sandbox, so the cwd tracking and
+    the host-side file tools see what a command wrote there. The name
+    carries the id of the state dir, so two environments never share one.
+    It is a top-level entry of the scratch dir: the pruning of idle
+    scratch entries covers one that a crashed process left behind.
+    """
+    return os.path.join(scratch_dir, "hermes-" + os.path.basename(state_dir.rstrip(os.sep)))
 
 
 def sensitive_overlay_args(hidden_paths: Sequence[str], state_dir: str) -> list[str]:
@@ -685,7 +702,8 @@ def build_bwrap_args(
     home_root: str | None | object = _UNRESOLVED,
     home_allow: Sequence[str] | None = None,
     scratch_dir: str | None = None,
-    scratch_src: str | None = None,
+    scratch_view: str | None = None,
+    scratch_private: str | None = None,
     staged_roots: Sequence[str] = (),
 ) -> list[str]:
     """Build the bwrap argv prefix; the caller appends the shell argv after the trailing ``--``.
@@ -697,9 +715,11 @@ def build_bwrap_args(
     resolved at construction; when omitted they are resolved from *home*
     and *hermes_home* on this call, with no PATH and no operator items,
     which suits tests of the pure builder only. *scratch_dir* is the path of the
-    Hermes scratch directory and *scratch_src* the directory of this
-    environment that is bound over it, on top of the HERMES_HOME overlay;
-    without both nothing is bound. *staged_roots* are the staged data directories under
+    Hermes scratch directory, *scratch_view* the empty directory bound
+    read-only over it on top of the HERMES_HOME overlay, and
+    *scratch_private* the scratch directory of this environment under
+    that path, bound at its own path; without the first two nothing is
+    bound. *staged_roots* are the staged data directories under
     HERMES_HOME, bound back read-only. The listing of the top of
     HOME is the one input read from the host at each call, so a directory
     made on the host later shows in the next spawn.
@@ -769,18 +789,20 @@ def build_bwrap_args(
     # them a command can write to.
     restored: list[str] = []
     restored_rw: list[str] = []
-    # The scratch dir is TMPDIR for every command, and the system prompt
-    # tells the model to put temporary files there. It lies under the
-    # hidden HERMES_HOME: left hidden, a write lands in that spawn's own
-    # tmpfs and is gone by the next command, with no error. The host
-    # directory is TMPDIR of every Hermes process, so it also holds
-    # control sockets and message payloads of other sessions, and a new
-    # one can appear while a command runs. So a directory of this
-    # environment alone goes over that path. It follows the cwd: writable
-    # with it, read-only under the restricted profile, where a write then
-    # fails where the command can see it.
-    if scratch_dir and scratch_src:
-        late.append(("--bind" if profile.writable_cwd else "--ro-bind", scratch_src, scratch_dir))
+    # The Hermes scratch dir lies under the hidden HERMES_HOME: left
+    # hidden, a write there lands in that spawn's own tmpfs and is gone by
+    # the next command, with no error. The host directory is TMPDIR of
+    # every Hermes process, so it also holds control sockets and message
+    # payloads of other sessions, and a new one can appear while a command
+    # runs. So the sandbox gets an empty read-only directory at that path,
+    # and inside it the scratch dir of this environment alone, at its host
+    # path. That one follows the cwd: writable with it, read-only under
+    # the restricted profile. A write to the scratch path itself fails
+    # where the command can see it.
+    if scratch_dir and scratch_view:
+        late.append(("--ro-bind", scratch_view, scratch_dir))
+        if scratch_private:
+            late.append(("--bind" if profile.writable_cwd else "--ro-bind", scratch_private, scratch_private))
     # Attachments, cached documents and the other staged data live under
     # HERMES_HOME, and Hermes hands the model their host paths. Read-only:
     # a command opens them, it does not produce them. The -try form lets a
@@ -1173,12 +1195,15 @@ class BubblewrapEnvironment(LocalEnvironment):
             self._config,
             binds=tuple(resolve_bind_dests(expand_bind_srcs(filter_binds(self._config.binds, self._hidden_paths)))),
         )
-        # Resolved once, like every other mount path. Only the path is used:
-        # a directory of this environment is bound over it, so the host
-        # directory, which every Hermes process shares, is never in view.
-        # get_scratch_dir makes the directory; pruning stays with the
-        # process that owns the home.
-        self._scratch_dir: str = os.path.realpath(str(get_scratch_dir(self._hermes_home, prune=False)))
+        # Resolved once, like every other mount path. The host directory,
+        # which every Hermes process shares, is never bound: the sandbox
+        # gets an empty view of that path and a directory of this
+        # environment inside it. get_scratch_dir makes the directory;
+        # pruning stays with the process that owns the home.
+        scratch_as_named = str(get_scratch_dir(self._hermes_home, prune=False))
+        self._scratch_dir: str = os.path.realpath(scratch_as_named)
+        # The spellings of that path a process environment can carry.
+        self._scratch_names: tuple[str, ...] = tuple(dict.fromkeys((scratch_as_named, self._scratch_dir)))
         self._staged_roots = staged_data_roots()
         # A terminal.bubblewrap_hide entry at or above one of these roots
         # wins: the root is not bound back.
@@ -1202,8 +1227,11 @@ class BubblewrapEnvironment(LocalEnvironment):
         # write to what shows at the hidden file paths.
         self._empty_file = empty_file_path(self._state_dir)
         os.close(os.open(self._empty_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o400))
-        self._scratch_src = scratch_src_path(self._state_dir)
-        os.mkdir(self._scratch_src, mode=0o700)
+        self._scratch_view = scratch_view_path(self._state_dir)
+        self._scratch_private = private_scratch_path(self._scratch_dir, self._state_dir)
+        os.mkdir(self._scratch_private, mode=0o700)
+        # The view holds the mount point of the private dir and nothing else.
+        os.makedirs(os.path.join(self._scratch_view, os.path.basename(self._scratch_private)), mode=0o700)
         try:
             super().__init__(cwd=self._initial_cwd, timeout=timeout, env=env)
         except BaseException:
@@ -1489,10 +1517,10 @@ class BubblewrapEnvironment(LocalEnvironment):
         on top of the overlay. The profile home under home_mode=profile
         does, read-write, so a sandbox dir under it is refused first,
         whether the profile home is a directory under HERMES_HOME or a
-        symlink to a directory outside every hidden path. The directory
-        bound over the scratch path covers that path whole, so a sandbox
-        dir under the scratch path is refused too: the state dir could
-        not be bound at its own path there. The staged data roots land
+        symlink to a directory outside every hidden path. A read-only
+        directory covers the scratch path, so a sandbox dir under the
+        scratch path is refused too: the state dir could not be bound at
+        its own path there. The staged data roots land
         on the overlay too, but read-only. An operator
         bind cannot re-expose the dir: filter_binds
         drops a source under a hidden path and a source containing one
@@ -1588,7 +1616,8 @@ class BubblewrapEnvironment(LocalEnvironment):
             home_root=self._home_root,
             home_allow=self._home_allow,
             scratch_dir=self._scratch_dir,
-            scratch_src=self._scratch_src,
+            scratch_view=self._scratch_view,
+            scratch_private=self._scratch_private,
             staged_roots=self._staged_roots,
         )
 
@@ -1629,7 +1658,17 @@ class BubblewrapEnvironment(LocalEnvironment):
         # exports SSH_AUTH_SOCK from ~/.bashrc. Unset them in front of the
         # command: that runs after the snapshot is sourced, and the export
         # dump that follows the command then omits them too.
-        return super()._wrap_command(f"unset {' '.join(HOST_SOCKET_VARS)}; {command}", cwd)
+        # Hermes points TMPDIR, TMP and TEMP of its processes at the shared
+        # scratch dir, which is read-only and empty here. A variable that
+        # names it is pointed at the scratch dir of this environment
+        # instead. One the operator set to another place is left alone, as
+        # Hermes leaves it alone.
+        private = shlex.quote(self._scratch_private)
+        shared = "|".join(shlex.quote(path) for path in self._scratch_names)
+        retarget = "".join(
+            f'case "${{{name}-}}" in {shared}) export {name}={private};; esac; ' for name in SCRATCH_TMP_ENV_VARS
+        )
+        return super()._wrap_command(f"unset {' '.join(HOST_SOCKET_VARS)}; {retarget}{command}", cwd)
 
     def _prlimit_prefix(self) -> list[str]:
         """prlimit in front of bwrap: the per-process memory and CPU limits."""
@@ -1694,7 +1733,10 @@ class BubblewrapEnvironment(LocalEnvironment):
 
     def _remove_state(self) -> None:
         shutil.rmtree(self._state_dir, ignore_errors=True)
-        shutil.rmtree(scratch_src_path(self._state_dir), ignore_errors=True)
+        shutil.rmtree(scratch_view_path(self._state_dir), ignore_errors=True)
+        scratch_private = getattr(self, "_scratch_private", None)
+        if scratch_private:
+            shutil.rmtree(scratch_private, ignore_errors=True)
         try:
             os.unlink(self._empty_file)
         except OSError:

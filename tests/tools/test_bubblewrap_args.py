@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from tools.environments.bubblewrap import (
-    scratch_src_path,
+    private_scratch_path,
+    scratch_view_path,
     BindMount,
     BubblewrapConfig,
     PROFILE_NAMES,
@@ -700,7 +701,8 @@ class TestPinTargetInsideTheBind:
 
 
 class TestScratchDir:
-    """A directory of the environment is bound over the scratch path, on top of the HERMES_HOME overlay."""
+    """An empty read-only view goes over the scratch path, and the scratch
+    dir of the environment is bound inside it at its own host path."""
 
     @pytest.fixture
     def scratch(self, tmp_path):
@@ -710,50 +712,65 @@ class TestScratchDir:
         (scratch / "agent-browser-s1").mkdir()
         return scratch
 
-    def test_scratch_bind_follows_the_profile(self, paths, scratch):
-        src = scratch_src_path(paths["state_dir"])
-        hermes_home = str(scratch.parent.parent)
-        for profile, flag in (("restricted", "--ro-bind"), ("workspace", "--bind"), ("network", "--bind")):
-            argv = build(BubblewrapConfig(profile=profile), paths=paths, hermes_home=hermes_home,
-                         scratch_dir=str(scratch), scratch_src=src)
-            assert (src, str(scratch)) in triples(argv, flag)
+    @staticmethod
+    def _kwargs(paths, scratch):
+        return {
+            "hermes_home": str(scratch.parent.parent),
+            "scratch_dir": str(scratch),
+            "scratch_view": scratch_view_path(paths["state_dir"]),
+            "scratch_private": private_scratch_path(str(scratch), paths["state_dir"]),
+        }
 
-    def test_scratch_bind_sits_after_the_overlay_and_before_the_state_dir(self, paths, scratch):
-        hermes_home = scratch.parent.parent
-        src = scratch_src_path(paths["state_dir"])
-        argv = build(paths=paths, hermes_home=str(hermes_home), scratch_dir=str(scratch), scratch_src=src)
-        i_overlay = next(i for i, a in enumerate(argv) if a == "--tmpfs" and argv[i + 1] == str(hermes_home))
-        i_scratch = next(i for i, a in enumerate(argv) if a == "--bind" and argv[i + 1] == src)
+    def test_private_scratch_bind_follows_the_profile_and_the_view_is_read_only(self, paths, scratch):
+        kwargs = self._kwargs(paths, scratch)
+        private = kwargs["scratch_private"]
+        for profile, flag in (("restricted", "--ro-bind"), ("workspace", "--bind"), ("network", "--bind")):
+            argv = build(BubblewrapConfig(profile=profile), paths=paths, **kwargs)
+            assert (private, private) in triples(argv, flag)
+            assert (kwargs["scratch_view"], str(scratch)) in triples(argv, "--ro-bind")
+
+    def test_scratch_binds_sit_after_the_overlay_and_before_the_state_dir(self, paths, scratch):
+        kwargs = self._kwargs(paths, scratch)
+        argv = build(paths=paths, **kwargs)
+        i_overlay = next(i for i, a in enumerate(argv) if a == "--tmpfs" and argv[i + 1] == kwargs["hermes_home"])
+        i_view = next(i for i, a in enumerate(argv) if a == "--ro-bind" and argv[i + 1] == kwargs["scratch_view"])
+        i_private = next(i for i, a in enumerate(argv) if a == "--bind" and argv[i + 1] == kwargs["scratch_private"])
         i_state = next(i for i, a in enumerate(argv) if a == "--bind" and argv[i + 1] == paths["state_dir"])
-        assert i_overlay < i_scratch < i_state
+        assert i_overlay < i_view < i_private < i_state
 
     def test_scratch_under_home_is_bound_before_home_is_sealed(self, paths):
         scratch = Path(paths["hermes_home"]) / "cache" / "scratch"
         scratch.mkdir(parents=True)
-        src = scratch_src_path(paths["state_dir"])
-        argv = build(paths=paths, scratch_dir=str(scratch), scratch_src=src)
-        i_scratch = next(i for i, a in enumerate(argv) if a == "--bind" and argv[i + 1] == src)
+        kwargs = self._kwargs(paths, scratch)
+        kwargs.pop("hermes_home")
+        argv = build(paths=paths, **kwargs)
+        i_private = next(i for i, a in enumerate(argv) if a == "--bind" and argv[i + 1] == kwargs["scratch_private"])
         i_seal = next(i for i, a in enumerate(argv) if a == "--remount-ro" and argv[i + 1] == paths["home"])
-        assert i_scratch < i_seal
+        assert i_private < i_seal
 
     def test_host_scratch_dir_is_never_a_mount_source(self, paths, scratch):
-        src = scratch_src_path(paths["state_dir"])
-        argv = build(paths=paths, hermes_home=str(scratch.parent.parent), scratch_dir=str(scratch), scratch_src=src)
-        # The scratch path shows once, as the destination of the one bind;
-        # no entry of the host directory is named at all.
+        kwargs = self._kwargs(paths, scratch)
+        argv = build(paths=paths, **kwargs)
+        # The scratch path shows once, as the destination of the view; the
+        # one entry of the host directory that is named is the private dir.
         assert argv.count(str(scratch)) == 1
-        assert argv[argv.index(str(scratch)) - 1] == src
-        assert not any(a.startswith(str(scratch) + os.sep) for a in argv)
+        assert argv[argv.index(str(scratch)) - 1] == kwargs["scratch_view"]
+        assert {a for a in argv if a.startswith(str(scratch) + os.sep)} == {kwargs["scratch_private"]}
 
-    def test_no_scratch_bind_without_both_paths(self, paths, scratch):
-        for kwargs in ({}, {"scratch_dir": str(scratch)}, {"scratch_src": scratch_src_path(paths["state_dir"])}):
-            argv = build(paths=paths, hermes_home=str(scratch.parent.parent), **kwargs)
-            assert not any(a.endswith(os.path.join("cache", "scratch")) for a in argv)
+    def test_no_scratch_bind_without_the_path_and_the_view(self, paths, scratch):
+        full = self._kwargs(paths, scratch)
+        for keep in ((), ("scratch_dir",), ("scratch_view", "scratch_private")):
+            kwargs = {key: full[key] for key in ("hermes_home", *keep)}
+            argv = build(paths=paths, **kwargs)
+            assert not any(os.path.join("cache", "scratch") in a for a in argv)
 
-    def test_scratch_source_sits_beside_the_state_dir(self, paths):
-        src = scratch_src_path(paths["state_dir"])
-        assert os.path.dirname(src) == os.path.dirname(paths["state_dir"])
-        assert not src.startswith(paths["state_dir"] + os.sep)
+    def test_view_sits_beside_the_state_dir_and_the_private_dir_in_the_scratch_dir(self, paths, scratch):
+        view = scratch_view_path(paths["state_dir"])
+        assert os.path.dirname(view) == os.path.dirname(paths["state_dir"])
+        assert not view.startswith(paths["state_dir"] + os.sep)
+        private = private_scratch_path(str(scratch), paths["state_dir"])
+        assert os.path.dirname(private) == str(scratch)
+        assert os.path.basename(paths["state_dir"]) in os.path.basename(private)
 
 
 class TestHideBelowRestoredRoots:

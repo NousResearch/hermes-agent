@@ -99,6 +99,11 @@ from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _shared_extra_or_secret,
     get_scoped_secret as _get_scoped_secret, send_error
 )
+# One host table for both Feishu flows — the QR app-registration device flow at the bottom of this
+# module and the user OAuth grant — so a Lark tenant can never end up consenting on a Feishu host.
+# It is defined in the leaf module of the two, which this facade imports.
+from tools.feishu_user_auth import (
+    ACCOUNTS_BASE_URLS as _ONBOARD_ACCOUNTS_URLS, OPEN_BASE_URLS as _ONBOARD_OPEN_URLS)
 
 
 logger = logging.getLogger(__name__)
@@ -199,12 +204,7 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
 
-# QR onboarding constants
-_ONBOARD_ACCOUNTS_URLS = {
-    "feishu": "https://accounts.feishu.cn",
-    "lark": "https://accounts.larksuite.com",
-}
-_ONBOARD_OPEN_URLS = {"feishu": "https://open.feishu.cn", "lark": "https://open.larksuite.com"}
+# QR onboarding constants (host tables come from tools.feishu_user_auth — see the import block)
 _REGISTRATION_PATH = "/oauth/v1/app/registration"
 _ONBOARD_REQUEST_TIMEOUT_S = 10
 
@@ -4492,3 +4492,7 @@ def register(ctx) -> None:
         standalone_sender_fn=_standalone_send, max_message_length=8000, emoji="🪽",
         allow_update_command=True,
     )
+    from . import feishu_cli as _cli
+    ctx.register_cli_command(
+        name="feishu", help="Manage Feishu / Lark user access (login, status, logout)",
+        setup_fn=_cli.register_cli, handler_fn=_cli.dispatch)

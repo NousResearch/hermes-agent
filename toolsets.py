@@ -47,6 +47,9 @@ _FEISHU_TOOLS = [
     "feishu_doc_read", "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
     "feishu_drive_reply_comment", "feishu_drive_add_comment",
 ]
+# User-scoped (``user_access_token``) reads — a separate list because ``feishu_drive`` slices
+# _FEISHU_TOOLS positionally, and because these stay out of the schema until `hermes feishu login`.
+_FEISHU_USER_TOOLS = ["feishu_message_search", "feishu_message_list"]
 _YUANBAO_TOOLS = ["yb_query_group_info", "yb_query_group_members", "yb_send_dm", "yb_search_sticker", "yb_send_sticker"]
 
 
@@ -175,6 +178,9 @@ TOOLSETS = {
     "yuanbao": _ts("Yuanbao platform tools - group info, member queries, DM, stickers", _YUANBAO_TOOLS),
     "feishu_doc": _ts("Read Feishu/Lark document content", ["feishu_doc_read"]),
     "feishu_drive": _ts("Feishu/Lark document comment operations (list, reply, add)", _FEISHU_TOOLS[1:]),
+    "feishu_user": _ts(
+        "Feishu/Lark message search and chat history read as the authorized user "
+        "(requires `hermes feishu login`)", _FEISHU_USER_TOOLS),
     "spotify": _ts(
         "Native Spotify playback, search, playlist, album, and library tools",
         ["spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
@@ -229,7 +235,9 @@ TOOLSETS = {
     "hermes-mattermost": _bundle("Mattermost bot toolset - self-hosted team messaging (full access)"),
     "hermes-matrix": _bundle("Matrix bot toolset - decentralized encrypted messaging (full access)"),
     "hermes-dingtalk": _bundle("DingTalk bot toolset - enterprise messaging platform (full access)"),
-    "hermes-feishu": _bundle("Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)", _FEISHU_TOOLS),
+    "hermes-feishu": _bundle(
+        "Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)",
+        _FEISHU_TOOLS + _FEISHU_USER_TOOLS),
     "hermes-weixin": _bundle("Weixin bot toolset - personal WeChat messaging via iLink (full access)"),
     "hermes-qqbot": _bundle("QQBot toolset - QQ messaging via Official Bot API v2 (full access)"),
     "hermes-wecom": _bundle("WeCom bot toolset - enterprise WeChat messaging (full access)"),

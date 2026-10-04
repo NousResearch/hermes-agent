@@ -275,18 +275,24 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
     @property
     def has_visible_delivery_surface(self) -> bool:
         """Whether any durable visible delivery exists this turn: an open preview
-        message (incl. the ``__no_edit__`` sentinel), a landed send, an open native
-        bubble, or a finalized segment / commentary. False means the consumer never
-        showed anything — the gateway's normal final send is then the ONLY delivery
+        message (incl. the ``__no_edit__`` sentinel), a preview still on screen after
+        teardown cleared ``_message_id`` (post-split sealed heads keep their ids in
+        ``_preview_message_ids`` — exactly what ``_stale_preview_ids`` treats as the
+        record of visible previews), a landed send, an open native bubble, or a
+        finalized segment / commentary. False means the consumer never showed
+        anything — the gateway's normal final send is then the ONLY delivery
         and cannot duplicate, so its duplicate-risk diagnostic must stay silent
         (#127395). Draft frames are deliberately excluded: they are ephemeral
-        previews, not durable deliveries (same gate as ``delivered_final_matches``)."""
+        previews, not durable deliveries (same gate as ``delivered_final_matches``);
+        the silence-marker retract clears ``_preview_message_ids`` along with the
+        previews it deleted, so that teardown still reads as no surface."""
         return bool(
             self._message_id is not None
             or self._already_sent
             or self._native_stream_opened
             or self._delivered_segment_texts
             or self._delivered_commentary_texts
+            or self._preview_message_ids
         )
 
     async def _notify_before_finalize(self) -> None:
@@ -532,7 +538,13 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                        "falling back to send() for pre-prompt text (chat=%s)",
                        _reason, self.chat_id)
         try:
-            if getattr(await self.adapter.send(self.chat_id, finalize_text), "success", False):
+            result = await self.adapter.send(self.chat_id, finalize_text)
+            if getattr(result, "success", False):
+                # The pre-prompt text IS on screen — track the landed message as a
+                # preview, or the duplicate-risk diagnostic would read this consumer
+                # as "no visible surface" (#127395); fresh-final cleanup then owns it
+                # like any other tracked preview.
+                self._track_preview_id(getattr(result, "message_id", None))
                 return True
         except Exception as send_err:
             logger.warning("%s boundary: fallback send also failed: %s", _reason, send_err)

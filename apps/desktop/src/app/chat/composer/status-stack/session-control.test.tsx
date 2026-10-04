@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -258,6 +258,166 @@ describe('ComposerStatusStack session-control UI', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  // 12b. heartbeat edits stage the live message/interval and submit the exact update action
+  it('edits the heartbeat message and interval through heartbeat.update', async () => {
+    mockRunSessionControlAction.mockResolvedValue({
+      display: null,
+      message: null,
+      notice: null,
+      output: '✓ Heartbeat updated (every 10m): Check the deploy',
+      type: 'exec'
+    })
+
+    $sessionControlBySession.set({
+      [SID]: mockEntry({
+        snapshot: sampleSnapshot({ goal: null, heartbeat: sampleHeartbeat() })
+      })
+    })
+
+    renderStack()
+
+    fireEvent.click(screen.getByRole('button', { name: /heartbeat actions/i }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /edit heartbeat/i }))
+
+    const message = screen.getByLabelText('Message') as HTMLTextAreaElement
+    const frequency = screen.getByLabelText('Frequency') as HTMLInputElement
+
+    // Prefilled from the live heartbeat (1800s → 30m).
+    expect(message.value).toBe('System health check')
+    expect(frequency.value).toBe('30m')
+
+    fireEvent.change(message, { target: { value: 'Check the deploy' } })
+    fireEvent.change(frequency, { target: { value: '10m' } })
+    fireEvent.submit(message.closest('form')!)
+
+    await waitFor(() => {
+      expect(mockRunSessionControlAction).toHaveBeenCalledWith(SID, 'heartbeat.update', {
+        interval: '10m',
+        prompt: 'Check the deploy'
+      })
+    })
+  })
+
+  it('sends only the message when only the message changed, so a newer interval survives', async () => {
+    mockRunSessionControlAction.mockResolvedValue({
+      display: null,
+      message: null,
+      notice: null,
+      output: '✓ Heartbeat updated (every 30m): Check the deploy',
+      type: 'exec'
+    })
+
+    $sessionControlBySession.set({
+      [SID]: mockEntry({
+        snapshot: sampleSnapshot({ goal: null, heartbeat: sampleHeartbeat() })
+      })
+    })
+
+    renderStack()
+
+    fireEvent.click(screen.getByRole('button', { name: /heartbeat actions/i }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /edit heartbeat/i }))
+
+    const message = screen.getByLabelText('Message') as HTMLTextAreaElement
+
+    // Another window moves the frequency to 10m while this dialog still stages 30m.
+    $sessionControlBySession.set({
+      [SID]: mockEntry({
+        snapshot: sampleSnapshot({ goal: null, heartbeat: sampleHeartbeat({ interval_seconds: 600 }) })
+      })
+    })
+
+    fireEvent.change(message, { target: { value: 'Check the deploy' } })
+    fireEvent.submit(message.closest('form')!)
+
+    await waitFor(() => {
+      expect(mockRunSessionControlAction).toHaveBeenCalledWith(SID, 'heartbeat.update', {
+        prompt: 'Check the deploy'
+      })
+    })
+  })
+
+  it('sends only the frequency when only the frequency changed', async () => {
+    mockRunSessionControlAction.mockResolvedValue({
+      display: null,
+      message: null,
+      notice: null,
+      output: '✓ Heartbeat updated (every 10m): System health check',
+      type: 'exec'
+    })
+
+    $sessionControlBySession.set({
+      [SID]: mockEntry({
+        snapshot: sampleSnapshot({ goal: null, heartbeat: sampleHeartbeat() })
+      })
+    })
+
+    renderStack()
+
+    fireEvent.click(screen.getByRole('button', { name: /heartbeat actions/i }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /edit heartbeat/i }))
+
+    const frequency = screen.getByLabelText('Frequency') as HTMLInputElement
+    fireEvent.change(frequency, { target: { value: '10m' } })
+    fireEvent.submit(frequency.closest('form')!)
+
+    await waitFor(() => {
+      expect(mockRunSessionControlAction).toHaveBeenCalledWith(SID, 'heartbeat.update', { interval: '10m' })
+    })
+  })
+
+  it('closes the edit without a request when nothing changed', async () => {
+    $sessionControlBySession.set({
+      [SID]: mockEntry({
+        snapshot: sampleSnapshot({ goal: null, heartbeat: sampleHeartbeat() })
+      })
+    })
+
+    renderStack()
+
+    fireEvent.click(screen.getByRole('button', { name: /heartbeat actions/i }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /edit heartbeat/i }))
+
+    const message = screen.getByLabelText('Message') as HTMLTextAreaElement
+    fireEvent.submit(message.closest('form')!)
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Message')).toBeNull()
+    })
+    expect(mockRunSessionControlAction).not.toHaveBeenCalled()
+  })
+
+  it('keeps the heartbeat edit open with the backend error when the update is rejected', async () => {
+    mockRunSessionControlAction.mockRejectedValue(
+      new Error("heartbeat interval 'banana' is not an interval like 10m, 2h, or 90s")
+    )
+
+    $sessionControlBySession.set({
+      [SID]: mockEntry({
+        snapshot: sampleSnapshot({ goal: null, heartbeat: sampleHeartbeat() })
+      })
+    })
+
+    renderStack()
+
+    fireEvent.click(screen.getByRole('button', { name: /heartbeat actions/i }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /edit heartbeat/i }))
+
+    const frequency = screen.getByLabelText('Frequency') as HTMLInputElement
+    fireEvent.change(frequency, { target: { value: 'banana' } })
+    fireEvent.submit(frequency.closest('form')!)
+
+    expect((await within(screen.getByRole('dialog')).findByRole('alert')).textContent).toContain('banana')
+    expect((screen.getByLabelText('Frequency') as HTMLInputElement).value).toBe('banana')
+
+    fireEvent.click(screen.getByRole('button', { name: /cancel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /heartbeat actions/i }))
+    fireEvent.click(await screen.findByRole('menuitem', { name: /edit heartbeat/i }))
+
+    expect(within(screen.getByRole('dialog')).queryByRole('alert')).toBeNull()
+    expect((screen.getByLabelText('Frequency') as HTMLInputElement).value).toBe('30m')
   })
 
   // 13. action rejection produces alert/live feedback

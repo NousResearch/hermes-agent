@@ -3,7 +3,7 @@ repo: https://github.com/ergocogn/hermes-desktop-plugin-vault-view
 sha: 532c9b95f204cafb224e33c8075c4a774ad6f7eb
 version: "0.4.8"
 title: Vault View
-description: "Local Markdown vault workspace for Hermes Desktop: visual editing, progressive reading, cached image previews, shared tabs, tag search, links, backlinks and a graph. Compatible with Obsidian vaults. File transport requires a Linux/macOS gateway; Windows Desktop requires a WSL-hosted Unix backend, not a native Windows gateway; ffmpeg thumbnails are optional. Remote images and agent guidance are opt-in and disabled by default; automatic note-content sharing is disabled; direct Obsidian opening is temporarily hidden."
+description: "Local Markdown vault workspace for Hermes Desktop: visual editing, progressive reading, cached image previews, shared tabs, tag search, links, backlinks and a graph. Compatible with Obsidian vaults. File transport requires a Linux/macOS gateway; Windows Desktop requires a WSL-hosted Unix backend, not a native Windows gateway; ffmpeg thumbnails are optional. Remote images and agent guidance are opt-in and disabled by default; automatic note-content sharing is disabled; direct Obsidian opening is temporarily hidden. Disclosure — reads and writes notes in the vault folder you choose through Desktop shell commands on the gateway host; remote Markdown images and agent navigation guidance stay off until you opt in."
 maintainer: ergocogn
 tier: community
 category: desktop

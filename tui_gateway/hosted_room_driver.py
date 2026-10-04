@@ -801,7 +801,13 @@ class HostedRoomRuntime:
         for task in unresolved:
             attempt_key = (
                 binding.room_id, task["identity"].task_id, int(task["execution_generation"]))
-            is_local = self._transport_for(binding, task) is self.rpc
+            try:
+                is_local = self._transport_for(binding, task) is self.rpc
+            except Exception as exc:
+                # A peer whose admission recovery keeps failing must still reach the deadline.
+                self._record_error(
+                    f"task {task['identity'].task_id} recovery probe failed: {exc}")
+                is_local = False
             if is_local and attempt_key not in inspected:
                 inspection = self._inspect_local_recovery_session(task)
                 inspected.add(attempt_key)

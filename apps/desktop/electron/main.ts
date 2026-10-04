@@ -755,6 +755,11 @@ if (REMOTE_DISPLAY_REASON) {
   )
 }
 
+// Acquire ownership before any pre-ready recovery ladder can write markers.
+// A secondary launch exits without before-quit cleanup, so it must not leave
+// booting evidence behind for the primary's next startup.
+const isPrimaryInstance: boolean = acquireSingleInstanceLock()
+
 // #108047: a local Windows renderer crash loop with STATUS_STACK_BUFFER_OVERRUN
 // (0xC0000409) is recovered by disabling GPU — NOT by dropping the sandbox
 // (that path stays owned by STATUS_BREAKPOINT / #38216). Must run before app
@@ -764,7 +769,7 @@ let windowsGpuStackCookieFallbackActive = false
 let windowsGpuStackCookieFallbackSticky = false
 let windowsGpuStackCookieRelaunchAttempted = false
 
-if (IS_WINDOWS) {
+if (isPrimaryInstance && IS_WINDOWS) {
   const windowsGpuUserData = app.getPath('userData')
 
   const gpuStackCookieDecision = decideWindowsGpuStackCookieLaunch({
@@ -874,7 +879,7 @@ nvidiaEglFallbackActive = NVIDIA_EGL_FALLBACK.enable
 // left behind by a launch that never reached first paint is itself evidence
 // of a GPU death (the "GPU process isn't usable" FATAL abort wins the race
 // against our relaunch handler), and the next launch engages from it.
-if (NVIDIA_DRIVER_MAJOR !== null) {
+if (isPrimaryInstance && NVIDIA_DRIVER_MAJOR !== null) {
   try {
     writeNvidiaEglMarker(app.getPath('userData'), NVIDIA_EGL_FALLBACK.nextMarker)
   } catch {
@@ -896,7 +901,7 @@ if (NVIDIA_EGL_FALLBACK.enable) {
 // Chromium's "GPU process isn't usable" FATAL abort ends the process, flip the
 // marker sticky, and relaunch once with SwiftShader. `killed` counts (the
 // #40077 GPU process died to Chromium's health-check SIGTERM, exit_code=15).
-if (NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
+if (isPrimaryInstance && NVIDIA_DRIVER_MAJOR !== null && process.platform === 'linux') {
   app.on('child-process-gone', (_event, details) => {
     if (
       !shouldRelaunchForNvidiaGpuDeath({
@@ -949,7 +954,7 @@ let linuxGpuRelaunchAttempted = false
 const LINUX_GPU_SOFTWARE_ACTIVE =
   Boolean(REMOTE_DISPLAY_REASON) || NVIDIA_EGL_FALLBACK.enable || alreadyHasDisableGpu(process.argv, process.env)
 
-if (process.platform === 'linux') {
+if (isPrimaryInstance && process.platform === 'linux') {
   const linuxGpuUserData = app.getPath('userData')
 
   const linuxGpuDecision = decideLinuxGpuLaunch({
@@ -1017,9 +1022,6 @@ function acquireSingleInstanceLock(): boolean {
 
   return false
 }
-
-const isPrimaryInstance: boolean = acquireSingleInstanceLock()
-
 
 // Windows sandbox / GPU breakpoint crash recovery (#38216).
 //

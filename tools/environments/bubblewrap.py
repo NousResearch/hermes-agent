@@ -74,8 +74,9 @@ the new one.
 
 One set of mounts does grow after construction: the archive files of
 oversized tool results that the host hands to this environment
-(expose_spillover_file). Each is a single file, bound read-only, named
-by the Hermes process and never by a command.
+(expose_spillover_file). Each is a single file, a copy kept beside the
+state dir and bound read-only at the path of the archive, named by the
+Hermes process and never by a command.
 
 Resource limits are applied by prlimit(1) from util-linux, in two
 places. In front of the bwrap argv above, prlimit sets RLIMIT_AS and
@@ -461,6 +462,15 @@ def scratch_view_path(state_dir: str) -> str:
     return state_dir.rstrip(os.sep) + ".scratch"
 
 
+def archive_copies_path(state_dir: str) -> str:
+    """Host path of the directory that holds this environment's copies of tool result archives.
+
+    Beside the state dir, like the empty file: the copies are bind
+    sources, and no command may reach or replace them.
+    """
+    return state_dir.rstrip(os.sep) + ".archives"
+
+
 def private_scratch_path(scratch_dir: str, state_dir: str) -> str:
     """Host path of the scratch directory of one environment, inside the Hermes scratch dir.
 
@@ -719,7 +729,7 @@ def build_bwrap_args(
     scratch_view: str | None = None,
     scratch_private: str | None = None,
     staged_roots: Sequence[str] = (),
-    staged_files: Sequence[str] = (),
+    staged_files: Sequence[tuple[str, str]] = (),
     sandbox_overlays: Sequence[str] = (),
 ) -> list[str]:
     """Build the bwrap argv prefix; the caller appends the shell argv after the trailing ``--``.
@@ -737,7 +747,8 @@ def build_bwrap_args(
     that path, bound at its own path; without the first two nothing is
     bound. *staged_roots* are the staged data directories under
     HERMES_HOME, bound back read-only, and *staged_files* the single
-    files under it that this environment was handed, bound the same way.
+    files under it that this environment was handed, as (source, path)
+    pairs, bound the same way.
     *sandbox_overlays* are the paths at which a sandbox dir that no hidden
     path covers would show; each gets a tmpfs below the state dir bind. The listing of the top of
     HOME is the one input read from the host at each call, so a directory
@@ -827,7 +838,7 @@ def build_bwrap_args(
     # a command opens them, it does not produce them. The -try form lets a
     # root that is gone from the host drop out instead of failing the spawn.
     late += [("--ro-bind-try", root, root) for root in staged_roots]
-    late += [("--ro-bind-try", path, path) for path in staged_files]
+    late += [("--ro-bind-try", src, path) for src, path in staged_files]
     restored += staged_roots
     if config.home_mode in PROFILE_HOME_MODES:
         profile_home = os.path.join(os.path.abspath(os.path.expanduser(hermes_home)), "home")
@@ -1234,8 +1245,9 @@ class BubblewrapEnvironment(LocalEnvironment):
         ))
         self._staged_roots = staged_data_roots()
         # Archive files of oversized tool results this environment was
-        # handed (expose_spillover_file), newest last.
-        self._spillover_files: list[str] = []
+        # handed (expose_spillover_file), newest last: the path of each
+        # and the copy that is bound there.
+        self._spillover_files: dict[str, str] = {}
         # A terminal.bubblewrap_hide entry at or above one of these roots
         # wins: the root is not bound back.
         covered = [root for root in self._staged_roots if any(_is_within(root, path) for path in self._operator_hidden)]
@@ -1665,11 +1677,14 @@ class BubblewrapEnvironment(LocalEnvironment):
         Called on the host by tools.tool_result_storage when it hands the
         model the path of an archive. The directory of those archives is
         not bound, since it holds the tool output of every session of the
-        profile; the files named here are bound read-only, one by one, in
-        every later spawn. Only a regular file directly in that directory
-        is accepted, and a terminal.bubblewrap_hide entry over it wins.
-        The newest SPILLOVER_BIND_MAX files are kept. Returns whether the
-        file is bound.
+        profile. What a command sees at the path is a copy taken now, bound
+        read-only in every later spawn: the name of an archive comes from
+        the tool call id alone, ids repeat between sessions, and a later
+        write under the same name belongs to whoever made it. Only a
+        regular file directly in that directory is accepted, and a
+        terminal.bubblewrap_hide entry over it wins. The newest
+        SPILLOVER_BIND_MAX files are kept. Returns whether the file is
+        bound.
         """
         try:
             from tools.tool_result_storage import get_spillover_dir
@@ -1682,10 +1697,24 @@ class BubblewrapEnvironment(LocalEnvironment):
             return False
         if any(_is_within(real, hidden) for hidden in self._operator_hidden):
             return False
-        if real in self._spillover_files:
-            self._spillover_files.remove(real)
-        self._spillover_files.append(real)
-        del self._spillover_files[:-SPILLOVER_BIND_MAX]
+        copies = archive_copies_path(self._state_dir)
+        copy = os.path.join(copies, os.path.basename(real))
+        try:
+            os.makedirs(copies, mode=0o700, exist_ok=True)
+            partial = f"{copy}.{uuid.uuid4().hex[:8]}.part"
+            shutil.copyfile(real, partial)
+            os.replace(partial, copy)
+        except OSError:
+            logger.warning("bubblewrap: could not copy the tool result archive %s; it stays hidden", real, exc_info=True)
+            return False
+        self._spillover_files.pop(real, None)
+        self._spillover_files[real] = copy
+        while len(self._spillover_files) > SPILLOVER_BIND_MAX:
+            dropped = self._spillover_files.pop(next(iter(self._spillover_files)))
+            try:
+                os.unlink(dropped)
+            except OSError:
+                pass
         return True
 
     def _bwrap_prefix(self, tracked_cwd: str) -> list[str]:
@@ -1704,7 +1733,7 @@ class BubblewrapEnvironment(LocalEnvironment):
             scratch_view=self._scratch_view,
             scratch_private=self._scratch_private,
             staged_roots=self._staged_roots,
-            staged_files=tuple(self._spillover_files),
+            staged_files=tuple((copy, path) for path, copy in self._spillover_files.items()),
             sandbox_overlays=self._sandbox_overlays,
         )
 
@@ -1841,6 +1870,7 @@ class BubblewrapEnvironment(LocalEnvironment):
     def _remove_state(self) -> None:
         shutil.rmtree(self._state_dir, ignore_errors=True)
         shutil.rmtree(scratch_view_path(self._state_dir), ignore_errors=True)
+        shutil.rmtree(archive_copies_path(self._state_dir), ignore_errors=True)
         scratch_private = getattr(self, "_scratch_private", None)
         if scratch_private:
             shutil.rmtree(scratch_private, ignore_errors=True)

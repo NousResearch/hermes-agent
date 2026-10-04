@@ -1299,6 +1299,34 @@ class TestStagedDataIntegration:
         # The reference in the conversation stays good for the host-side file tools.
         assert Path(path).read_text() == content
 
+    def test_two_sessions_with_the_same_tool_call_id_each_read_their_own_result(self, work_dir, hermes_home):
+        # The archive name comes from the tool call id alone, and ids repeat
+        # between sessions: the later write replaces the file on the host.
+        from tools.tool_result_storage import extract_persisted_path, maybe_persist_tool_result
+
+        def result_of(session: str) -> str:
+            return "".join(f"{session} line {i}\n" for i in range(4000))
+
+        first = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        second = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            paths = []
+            for env, session in ((first, "FIRST-SESSION"), (second, "SECOND-SESSION")):
+                message = maybe_persist_tool_result(result_of(session), "terminal", "functions.terminal:0", env=env, threshold=1000)
+                paths.append(extract_persisted_path(message))
+            assert paths[0] == paths[1]
+            out_first = first.execute(f"head -n 1 {paths[0]}; grep -c SECOND-SESSION {paths[0]}")["output"].split("\n")
+            assert out_first[0] == "FIRST-SESSION line 0" and out_first[1] == "0"
+            assert second.execute(f"head -n 1 {paths[0]}")["output"].strip() == "SECOND-SESSION line 0"
+            # The copies are bind sources only: no command finds them at their own path.
+            sandboxes = Path(first.get_temp_dir()).parent
+            assert first.execute(f"ls -A {sandboxes}")["output"].split() == [Path(first.get_temp_dir()).name]
+            assert "SESSION line" not in first.execute(f"cat {sandboxes}/*/* 2>&1")["output"]
+        finally:
+            first.cleanup()
+            second.cleanup()
+        assert list(sandboxes.iterdir()) == []
+
     def test_archive_file_pruned_on_the_host_does_not_fail_the_spawn(self, work_dir, hermes_home):
         archive = _write(hermes_home / "cache" / "spillover" / "call_1.txt", VISIBLE)
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)

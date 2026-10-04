@@ -38,6 +38,59 @@ def install_state_dir(project_root: Path) -> Path:
     return installs_root() / install_key(project_root)
 
 
+def owning_home_root(project_root: Path) -> Path | None:
+    """The data root that owns this checkout when the active root only borrows it, else ``None``.
+
+    Dependency state is scoped per data root (``<root>/installs/<install_key>``), but a source
+    checkout -- its launchers, product builds and install stamp -- exists once. A launch under
+    another root (a test's temporary ``HERMES_HOME``, a per-task home, a CI service home) borrows
+    it: the root that installed it already holds committed state for it, under the root the
+    checkout sits in (``<root>/hermes-agent``) or else the platform default root. ``None`` when
+    the active root's state is that state (the owner itself, or one of its profiles), and when no
+    such root has state for this checkout -- a fresh install, or a custom root that owns its own
+    tree -- so those keep today's behaviour (#123238).
+
+    A borrowing launch's own sync leaves ``facts.json`` under the borrower too, so state alone
+    cannot name the owner. The checkout's ``hermes`` launcher can: only the owner publishes it,
+    and it execs the owner's store Python. With no live launcher to ask, the root the checkout
+    sits in outranks the platform default.
+    """
+    from hermes_constants import _get_platform_default_hermes_home
+
+    root = Path(project_root).resolve()
+    key = install_key(root)
+    candidates = [candidate for candidate in dict.fromkeys((root.parent, _get_platform_default_hermes_home()))
+                  if (candidate / "installs" / key / "facts.json").is_file()]
+    if not candidates:
+        return None
+    owner = _launcher_bound_root(root, candidates) or candidates[0]
+    try:
+        if (owner / "installs" / key).resolve() == install_state_dir(root).resolve():
+            return None
+    except OSError:
+        pass
+    return owner
+
+
+def _launcher_bound_root(project_root: Path, candidates: list[Path]) -> Path | None:
+    """The candidate whose ``tools/`` holds the live interpreter the checkout's launcher execs."""
+    from hermes_cli._launchers import _launcher_python
+
+    local = project_root / ".hermes" / "bin"
+    for name in (("hermes.exe", "hermes.cmd") if os.name == "nt" else ("hermes",)):
+        python = _launcher_python(local / name)
+        if python is None or not python.is_file():
+            continue
+        for candidate in candidates:
+            try:
+                store = (candidate / "tools").resolve()
+                if any(parent.resolve() == store for parent in python.parents):
+                    return candidate
+            except (OSError, RuntimeError, ValueError):
+                continue
+    return None
+
+
 def install_state_permission_message(project_root: Path, exc: PermissionError) -> str | None:
     """Describe an access failure inside this install's dependency state."""
     if not exc.filename:
@@ -112,11 +165,19 @@ def base_venv(project_root: Path) -> Path:
     return payload_venv(project_root) or project_venv_dir(Path(project_root).resolve()) or Path(project_root).resolve() / "venv"
 
 
-def store_root(project_root: Path) -> Path:
-    """Resolve a payload-relative or stamped store before PM imports."""
-    override = os.environ.get("HERMES_RUNTIME_DIR")
-    if override:
-        return Path(override).resolve()
+def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Path:
+    """Resolve a payload-relative or stamped store before PM imports.
+
+    ``HERMES_RUNTIME_DIR`` exists so a running process can point PM at a
+    non-default runtime location. Publication paths must pass
+    ``honor_runtime_override=False``: a persisted artifact (an installed
+    launcher) has to bind the store of the tree it serves, never a runtime
+    directory inherited through the environment.
+    """
+    if honor_runtime_override:
+        override = os.environ.get("HERMES_RUNTIME_DIR")
+        if override:
+            return Path(override).resolve()
     root = Path(project_root).resolve()
     manifest_path = root.parent / "manifest.json"
     if manifest_path.is_file():
@@ -134,10 +195,21 @@ def store_root(project_root: Path) -> Path:
             try:
                 data = json.loads(stamp.read_text(encoding="utf-8-sig"))
             except (OSError, ValueError):
-                return get_default_hermes_root() / "tools"
+                return _unstamped_store(root)
             value = data.get("runtimeDir") if isinstance(data, dict) else None
-            return Path(value).resolve() if value else get_default_hermes_root() / "tools"
+            return Path(value).resolve() if value else _unstamped_store(root)
     return get_default_hermes_root() / "tools"
+
+
+def _unstamped_store(project_root: Path) -> Path:
+    """The store of a stamp that names none (source stamps never do): the owning root's.
+
+    The data root's ``tools/`` is the default, but a borrowing root's would be a new store per
+    temporary home -- a full tool download on its first launch, and an interpreter that dies
+    with the home. The checkout's own launchers exec the owner's interpreter, so a borrowing
+    launch resolves the same one (#123238).
+    """
+    return (owning_home_root(project_root) or get_default_hermes_root()) / "tools"
 
 
 def flush_before_selecting() -> None:

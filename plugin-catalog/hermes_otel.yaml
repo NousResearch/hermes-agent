@@ -1,13 +1,8 @@
-name: hermes-otel
+name: hermes_otel
 repo: https://github.com/briancaffey/hermes-otel
 sha: "d234865b13e997e0b3a50dc18aaad7c7d7b1b1fe"
 subdir: hermes_otel
-description: 'OpenTelemetry for Hermes Agent: sessions, LLM and API calls, tool calls, sub-agents and
-  approvals as OTLP traces, metrics and logs to any OTLP backend. Disclosure — sends span data, including
-  prompts, tool arguments and tool output, only to the backends you configure; by default (content_capture:
-  full) whole prompts and responses, unclipped; preview clips to 1200 chars, off sends no content; with
-  none configured it keeps a local SQLite store under $HERMES_HOME and sends nothing; installs opentelemetry-api,
-  -sdk, opentelemetry-exporter-otlp-proto-http and PyYAML into the Hermes venv.'
+description: "OpenTelemetry for Hermes Agent: sessions, LLM and API calls, tool calls, sub-agents and approvals as OTLP traces, metrics and logs to any OTLP backend. Disclosure — sends span data including prompts, tool arguments and tool output only to backends you configure (a backends: list, an OTEL_* variable, or LANGSMITH_TRACING=true); by default content_capture is full and unclipped (preview clips to 1200 chars, off sends none); vendor SDK keys already in the environment are used only after that opt-in; with nothing configured it keeps a local owner-only SQLite store under $HERMES_HOME and sends nothing; installs opentelemetry-api, -sdk, -exporter-otlp-proto-http (>=1.35,<2) and PyYAML."
 maintainer: briancaffey
 tier: community
 category: general

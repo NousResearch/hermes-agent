@@ -1,5 +1,5 @@
 import type { GatewayEvent } from '@hermes/shared'
-import { act, cleanup } from '@testing-library/react'
+import { act, cleanup, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
@@ -435,6 +435,35 @@ describe('useMessageStream interim text sealing', () => {
     expect(assistantMessages()).toEqual(['first reply'])
     expect(getState().turnLive).toBe(true)
   })
+
+  it.each(['message.delta', 'message.interim'] as const)(
+    'renders %s when a backend restart resets the replay sequence',
+    async type => {
+      mountStream()
+      await act(() =>
+        stream.handleEvent({ type: 'message.start', session_id: SID, seq: 1, replayEpoch: 'before', payload: {} })
+      )
+      await act(() =>
+        stream.handleEvent({
+          type: 'message.complete', session_id: SID, seq: 137, replayEpoch: 'before', payload: { text: 'previous reply' }
+        })
+      )
+
+      // The mounted renderer survives the backend process; the new socket
+      // tags its frames with the new replay epoch and starts seq at 1 again.
+      await act(() =>
+        stream.handleEvent({ type: 'message.start', session_id: SID, seq: 1, replayEpoch: 'after', payload: {} })
+      )
+      await act(() =>
+        stream.handleEvent({
+          type, session_id: SID, seq: 2, replayEpoch: 'after', payload: { text: 'after restart', already_streamed: true }
+        })
+      )
+
+      await waitFor(() => expect(assistantMessages()).toEqual(['previous reply', 'after restart']))
+      expect(getState().turnLive).toBe(true)
+    }
+  )
 
   it('ignores malformed message.interim payload', async () => {
     mountStream()

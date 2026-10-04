@@ -133,9 +133,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     []
   )
 
-  // `seq` is monotonic per session. Keep a terminal watermark across a new
-  // message.start so replayed stream frames from the prior turn cannot attach
-  // to its fresh bubble (# duplicate desktop replies).
+  // Terminal sequences belong to one backend replay epoch; a restart resets
+  // their numbering. Retain each epoch's watermark across message.start so
+  // replayed frames cannot attach to the next turn's fresh bubble.
   const terminalMessageSeqBySessionRef = useRef<Map<string, number>>(new Map())
 
   return useCallback(
@@ -227,9 +227,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         setSessionProviderWait(sessionId, '')
       }
 
+      const terminalSessionKey = `${event.replayEpoch ?? `conn:${event.connectionId ?? ''}`}\u0000${sessionId}`
+
       if (sessionId && event.type === 'message.complete' && typeof event.seq === 'number' && Number.isSafeInteger(event.seq)) {
-        const previous = terminalMessageSeqBySessionRef.current.get(sessionId)
-        terminalMessageSeqBySessionRef.current.set(sessionId, previous === undefined ? event.seq : Math.max(previous, event.seq))
+        const previous = terminalMessageSeqBySessionRef.current.get(terminalSessionKey)
+        terminalMessageSeqBySessionRef.current.set(terminalSessionKey, previous === undefined ? event.seq : Math.max(previous, event.seq))
       }
 
       const staleStreamFrame = (): boolean => {
@@ -242,7 +244,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           return false
         }
 
-        const terminalSeq = terminalMessageSeqBySessionRef.current.get(sessionId)
+        const terminalSeq = terminalMessageSeqBySessionRef.current.get(terminalSessionKey)
 
         return terminalSeq !== undefined && event.seq <= terminalSeq
       }

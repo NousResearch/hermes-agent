@@ -12,6 +12,8 @@ import logging
 import os
 import threading
 from contextlib import contextmanager, suppress
+from contextvars import ContextVar
+from functools import wraps
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
@@ -144,21 +146,56 @@ def activity_count(record: Dict[str, Any]) -> int:
 
 
 # --- Provenance — which skills are agent-created (and thus eligible for curation) ---
+# Read-only reports share one snapshot, never a process-lifetime ownership decision.
+# A manifest mtime alone cannot invalidate edits to SKILL.md or support files.
+_bundled_report_cache: ContextVar[Optional[Dict[Tuple[Path, Path], Set[str]]]] = ContextVar(
+    "bundled_report_cache", default=None)
+
+
+def _provenance_snapshot(func):
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        if _bundled_report_cache.get() is not None:
+            return func(*args, **kwargs)
+        token = _bundled_report_cache.set({})
+        try:
+            return func(*args, **kwargs)
+        finally:
+            _bundled_report_cache.reset(token)
+    return wrapped
+
+
 def _read_bundled_names() -> Set[str]:
-    """Built-in names: ``.bundled_manifest`` ("name:hash" per line) plus the curator suppression list, which
-    only ever records built-ins; a pruned built-in whose manifest entry an older sync cleaned after the
-    catalog dropped it is still not agent-authored (#95415). Empty if both are missing/unreadable."""
-    lines = _read_lines(_skills_dir() / ".bundled_manifest", "Failed to read bundled manifest: %s")
-    names = {n for n in (line.split(":", 1)[0].strip() for line in lines) if n} | read_suppressed_names()
-    # A restored profile may contain pristine bundled skills before its manifest is rebuilt.
-    # Consult the shipped tree as a fallback so missing provenance never becomes agent authorship.
+    """Recorded built-ins plus content-proven restored copies (never name alone).
+
+    Existing manifest/suppression ownership remains authoritative. The fallback
+    uses sync's complete-package hash, including support files and excluding
+    generated runtime caches. Reports index once; every new report or standalone
+    policy check observes current files, even without a manifest change.
+    """
+    base = _skills_dir()
     bundled_root = get_bundled_skills_dir(Path(__file__).parent.parent / "skills")
-    if bundled_root.exists():
-        names.update(
-            _read_skill_name(skill_md, skill_md.parent.name)
-            for skill_md in bundled_root.rglob("SKILL.md")
-            if not is_excluded_skill_path(skill_md.relative_to(bundled_root), root=bundled_root)
-        )
+    key = (base, bundled_root)
+    cache = _bundled_report_cache.get()
+    if cache is not None and key in cache:
+        return cache[key]
+    lines = _read_lines(base / ".bundled_manifest", "Failed to read bundled manifest: %s")
+    names = {n for n in (line.split(":", 1)[0].strip() for line in lines) if n} | read_suppressed_names()
+    if bundled_root.exists() and base.exists():
+        # Lazy import: skills_sync imports our frontmatter reader at startup.
+        from tools.skills_sync import _dir_hash, _discover_bundled_skills
+
+        shipped = dict(_discover_bundled_skills(bundled_root))
+        hashes: Dict[str, str] = {}
+        for name, md in _iter_skill_mds(base, local_only=True):
+            if name in names or name not in shipped:
+                continue
+            if name not in hashes:
+                hashes[name] = _dir_hash(shipped[name])
+            if _dir_hash(md.parent) == hashes[name]:
+                names.add(name)
+    if cache is not None:
+        cache[key] = names
     return names
 
 
@@ -230,6 +267,7 @@ def _iter_skill_mds(base: Path, *, local_only: bool) -> Iterator[Tuple[str, Path
             yield _read_skill_name(skill_md, fallback=skill_md.parent.name), skill_md
 
 
+@_provenance_snapshot
 def _scan_local_skills(keep: Callable[[str, Path, Set[str], Dict[str, Any]], bool]) -> List[str]:
     """Sorted local skill names passing *keep(name, skill_md, bundled, usage)*; hub/protected names never reach it."""
     if not (base := _skills_dir()).exists():
@@ -320,6 +358,7 @@ def list_unmanaged_skill_names() -> List[str]:
         and is_curation_eligible(name, md))
 
 
+@_provenance_snapshot
 def unmanaged_report() -> List[Dict[str, Any]]:
     """Rows for :func:`list_unmanaged_skill_names`; ``has_provenance_key`` (False = pre-dates ``created_by``) explains
     WHY, it is not a signal to adopt on."""
@@ -605,6 +644,7 @@ def forget(skill_name: str) -> None:
 def _relocate(src: Path, dest: Path, skill_name: str, action: str, **capture_kwargs: Any) -> Tuple[bool, str]:
     """Move *src* to *dest* for *action* ("archive" | "restore") inside a best-effort audit-ledger entry, then apply
     suppression + state side effects; rename falls back to shutil.move across devices."""
+    bundled = is_bundled(skill_name)  # retain fallback ownership before moving the pristine local copy
     try:
         from tools import skill_ledger as _ledger
         _ledger_before = _ledger.capture_before(src, **capture_kwargs)
@@ -624,7 +664,7 @@ def _relocate(src: Path, dest: Path, skill_name: str, action: str, **capture_kwa
         # idle skill archived today would already look older than any TTL.
         with suppress(OSError):
             os.utime(dest)
-    if not archiving or is_bundled(skill_name):  # pruning a built-in only sticks if the re-seeder skips it
+    if not archiving or bundled:  # pruning a built-in only sticks if the re-seeder skips it
         _toggle_suppressed_name(skill_name, add=archiving)
     set_state(skill_name, STATE_ARCHIVED if archiving else STATE_ACTIVE)
     with suppress(Exception):
@@ -711,6 +751,7 @@ def _find_external_skill_dir(skill_name: str) -> Optional[Path]:
 
 
 # --- Reporting — for the curator CLI / slash command ---
+@_provenance_snapshot
 def curated_report() -> List[Dict[str, Any]]:
     """One backfilled row per curator-managed skill with ``provenance`` and ``_persisted`` (real record exists; fresh
     backfills get their inactivity clock seeded instead of counting as ancient)."""
@@ -728,6 +769,7 @@ def provenance(skill_name: str) -> str:
     return "hub" if is_hub_installed(skill_name) else "bundled" if is_bundled(skill_name) else "agent"
 
 
+@_provenance_snapshot
 def usage_report() -> List[Dict[str, Any]]:
     """Usage rows for EVERY skill on disk (built-ins and hub included); ``curated_report()`` is the managed subset."""
     if not (base := _skills_dir()).exists():

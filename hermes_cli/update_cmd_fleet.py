@@ -1644,7 +1644,7 @@ def _recover_after_restart_phase_abort(
     from hermes_cli.update_abort_recovery import _owed_stale_serve_rows
     from hermes_cli.update_cmd import (
         _abort_recovery_is_complete, _recover_gateway_restart_after_abort, _surviving_pre_update_serve_runtimes,
-        _warn_stale_serve_runtimes, _write_gateway_update_exit_code,
+        _warn_stale_serve_runtimes,
     )
     logger.debug("Gateway restart during update failed: %s", e)
     out.phase_errors.append(str(e))
@@ -1704,11 +1704,10 @@ def _recover_after_restart_phase_abort(
         or _owed_stale_serve_rows(_stale_runtime_rows)
         or _serve_units_failed
     ):
+        # Owed restart (C3): verification records the follow-up; the /update marker stays committed.
         out.incomplete = True
         _warn_gateway_restart_phase_aborted(e, _surviving)
         _warn_stale_serve_runtimes(_stale_runtime_rows)
-        if gateway_mode:
-            _write_gateway_update_exit_code(False)
     out.record_receipt(phase_error=str(e), fresh_recovery=_recovery_result)
 
 
@@ -1727,7 +1726,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     Never raises: a phase abort runs fresh-child recovery and fails closed unless
     every planned gateway is verifiably covered.
     """
-    from hermes_cli.update_cmd import _m, _write_gateway_update_exit_code
+    from hermes_cli.update_cmd import _m
     # All bookkeeping is declared before the try so abort recovery and fleet reconciliation
     # can read it even if the phase raises early. ``pre_restart_gateway_pids`` stays empty
     # until we are about to stop/drain, so an early exception has nothing to fail closed on,
@@ -1787,9 +1786,8 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
         _restart_manual_gateways(out, _drain_budget)
 
         if out.failed_or_stale_units:
+            # Owed restart (C3): verification records the follow-up; the /update marker stays committed.
             out.incomplete = True
-            if gateway_mode:
-                _write_gateway_update_exit_code(False)
         _warn_incomplete_gateway_fleet_restart(out.failed_or_stale_units)
         out.record_receipt()
         _force_kill_stuck_gateways(out.killed_pids)

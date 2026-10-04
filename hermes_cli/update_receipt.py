@@ -45,6 +45,8 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 _RECEIPT_KEEP = 20  # keep the last N receipts per profile home
+#: Terminal records finalized by THIS process, by update id (see ``finalized_receipt``).
+_FINALIZED: dict[str, dict[str, Any]] = {}
 COMMAND_BOUNDARY_STOP_REASON = "completed at command boundary"
 
 # Receipt state is per-CONTEXT, not a module global: a nested
@@ -330,7 +332,8 @@ def persist_running_receipt() -> None:
 
 
 #: Follow-up steps whose failure leaves the source-update tail owed (``source-completion-pending``).
-TAIL_FOLLOWUPS = frozenset({"dependencies", "launchers", "build", "maintenance", "config_migration", "completion"})
+TAIL_FOLLOWUPS = frozenset({"dependencies", "launchers", "build", "maintenance", "profile_sync",
+                            "config_migration", "completion"})
 
 #: Follow-ups that mean the BUILD stage did not succeed (C3: the receipt names what actually failed):
 #: the products or the launchers the build publishes failed, or the tail raised before proving them.
@@ -466,6 +469,9 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         receipt.finalize(outcome)
         if stop_reason:
             receipt.data["stop_reason"] = stop_reason
+        # The terminal facts exist before the store is touched; a store that refuses the write
+        # (after the commit point) must not erase them for this process's own caller.
+        _FINALIZED[str(receipt.data.get("update_id"))] = receipt.data
         if fleet is not None:
             receipt.data["fleet"] = fleet
         # Manual serve restart obligations outlive one receipt rotation: carry the previous
@@ -590,6 +596,17 @@ def _publish_shared_metrics(data: dict[str, Any]) -> None:
         from hermes_cli.observability.shared_metrics_update import record_update_receipt
 
         record_update_receipt(data)
+
+
+def finalized_receipt(update_id: str) -> Optional[dict[str, Any]]:
+    """The terminal record this process finalized for ``update_id``, published or not.
+
+    The completion child answers its parent from this when the receipt store refused the
+    terminal write: the run is still correlated and terminal, only its archive is missing
+    (already reported by ``⚠ Update receipt not written``).
+    """
+    data = _FINALIZED.get(str(update_id))
+    return copy.deepcopy(data) if data is not None else None
 
 
 def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason: str = "") -> Optional[Path]:

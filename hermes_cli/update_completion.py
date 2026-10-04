@@ -132,16 +132,21 @@ def _resume_receipt(data: dict) -> None:
 
 
 def _read_terminal_receipt(request: dict) -> dict | None:
-    from hermes_cli.update_receipt import _receipt_dir
+    from hermes_cli import update_receipt
 
     # The ROOT home's receipts (the run's own file), never latest.json: another
     # profile/context may have finalized more recently.
-    directory = _receipt_dir()
-    for path in directory.glob(f"update_*_{request['receipt']['update_id']}.json"):
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-        if data.get("update_id") == request["receipt"]["update_id"] and data.get("finished_at"):
-            return data
-    return None
+    update_id = request["receipt"]["update_id"]
+    try:
+        for path in update_receipt._receipt_dir().glob(f"update_*_{update_id}.json"):
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            if data.get("update_id") == update_id and data.get("finished_at"):
+                return data
+    except (OSError, ValueError):
+        pass
+    # The store refused the terminal write after the commit point (loudly): this process still
+    # holds the correlated terminal record it finalized, so the exit status never turns into 1.
+    return update_receipt.finalized_receipt(update_id)
 
 
 def _running_record(request: dict) -> dict | None:

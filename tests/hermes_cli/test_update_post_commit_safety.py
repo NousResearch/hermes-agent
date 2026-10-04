@@ -57,6 +57,7 @@ _CHILD = textwrap.dedent('''
     from hermes_cli import update_cmd_fleet_verify as verify, update_cmd_maint as maint
     entered = cell / "migration-entered"
     gateway_migrate.maybe_auto_migrate_after_update = lambda: entered.write_text("entered")
+    real_restart = update_cmd._restart_gateway_fleet_after_update
     update_cmd._restart_gateway_fleet_after_update = lambda plan, gateway_mode: fleet._GatewayRestartOutcome(
         incomplete=False, phase_errors=[], pre_restart_gateway_pids=[], restarted_services=[],
         failed_or_stale_units=[], relaunched_profiles=[], externally_supervised_profiles=[], killed_pids=set())
@@ -65,6 +66,43 @@ _CHILD = textwrap.dedent('''
     maint._refresh_dashboard_after_update = lambda **kwargs: None
     verify._print_legacy_units_warning = lambda: None
     verify._collect_fleet_snapshot = lambda *args: []
+    windows_resume = None
+    marker = home / ".update_exit_code"
+    if mode.startswith("ipc-"):
+        # Barrier: verification starts after the restart phase returned. A gateway /update reader
+        # polling the marker can consume it from here on, before the run ever finalizes.
+        verify._print_legacy_units_warning = lambda: (cell / "marker-at-verify").write_text(
+            marker.read_text() if marker.exists() else "absent")
+    if mode in ("ipc-failed-unit", "ipc-abort"):
+        # The real restart phase; only the host's service manager and process table are replaced.
+        from hermes_cli import gateway as gateway_module
+        update_cmd._restart_gateway_fleet_after_update = real_restart
+        fleet._restart_manual_gateways = lambda out, budget: None
+        fleet._force_kill_stuck_gateways = lambda pids: None
+        if mode == "ipc-failed-unit":
+            gateway_module.find_gateway_pids = lambda **kwargs: []
+            fleet._restart_systemd_gateway_units = lambda restarted, failed, *rest: failed.append(
+                "hermes-gateway-probe.service")
+        else:
+            def unavailable(*args, **kwargs):
+                raise RuntimeError("systemctl unavailable")
+            gateway_module.find_gateway_pids = unavailable
+            fleet._restart_systemd_gateway_units = unavailable
+            update_cmd._recover_gateway_restart_after_abort = lambda plan, **kwargs: {}
+    if mode == "ipc-windows":
+        # The Windows service manager refuses the paused gateway's restart.
+        from hermes_cli import main as hermes_main
+        def scm(token):
+            if token and token.get("resume_needed"):
+                raise RuntimeError("Could not restart Windows gateway service(s): HermesGatewayProbe")
+        hermes_main._resume_windows_gateways_after_update = scm
+        update_cmd._resume_windows_gateways_after_update = scm
+        windows_resume = {"resume_needed": True, "services": ["HermesGatewayProbe"],
+                          "service_profiles": {"HermesGatewayProbe": "probe"}}
+    if mode == "profile-sync":
+        def profile_sync():
+            raise SystemExit("profile skill sync exited 3")
+        maint._sync_profiles_after_update = profile_sync
     from hermes_cli import update_receipt
     from hermes_cli.venv_sync import arm_completion, completion_pending_path
     arm_completion(source)
@@ -73,25 +111,37 @@ _CHILD = textwrap.dedent('''
     # The completion process never inherits the parent's open receipt context.
     update_receipt._current.reset(update_receipt._current.get().current_token)
     request = {"schema": 1, "source": str(source), "home": str(home), "branch": "main", "desktop": False,
-               "assume_yes": True, "gateway_mode": False, "no_gateway_restart": mode == "config-ro",
+               "assume_yes": True, "gateway_mode": mode.startswith("ipc-"),
+               "no_gateway_restart": mode == "config-ro",
                "pre_update_version": None, "snapshot_id": None, "sibling_snapshots": {}, "plan": None,
-               "receipt": receipt, "windows_resume": None}
+               "receipt": receipt, "windows_resume": windows_resume}
     if mode == "config-ro":
         home.chmod(0o555)  # a late filesystem failure: the profile home refuses the config write
-    from hermes_cli.update_completion import _finish
+    if mode.startswith("receipts-blocked"):
+        # The receipt store fails after the commit point: its directory is now an ordinary file.
+        import shutil
+        shutil.rmtree(update_receipt._receipt_dir())
+        update_receipt._receipt_dir().write_text("not a directory")
+    from hermes_cli.update_completion import _finish, _settle_after_commit
     try:
-        code = _finish(request, cell / "result.json")
+        if mode == "receipts-blocked-settle":
+            code = _settle_after_commit(request, cell / "result.json", "dependencies", "dependency sync refused")
+        else:
+            code = _finish(request, cell / "result.json")
     finally:
         home.chmod(0o755)
     latest = update_receipt.read_latest_receipt() or {}
+    result = json.loads((cell / "result.json").read_text()) if (cell / "result.json").exists() else None
     (cell / "summary.json").write_text(json.dumps({
-        "code": code, "outcome": latest.get("outcome"),
+        "code": code, "outcome": latest.get("outcome"), "update_id": receipt["update_id"], "result": result,
         "followups": [row["step"] for row in latest.get("followups", [])],
         "stages": {mark["name"]: mark["outcome"] for mark in latest.get("stages", [])},
         "config_version": yaml.safe_load((home / "config.yaml").read_text())["_config_version"],
         "latest_config_version": DEFAULT_CONFIG["_config_version"],
         "pending": completion_pending_path(source).is_file(),
         "stamp": (source / "install-stamp.json").is_file(),
+        "marker_at_verify": (cell / "marker-at-verify").read_text() if (cell / "marker-at-verify").exists() else None,
+        "marker_final": marker.read_text() if marker.exists() else None,
         "migration_entered": entered.is_file()}))
 ''')
 
@@ -105,7 +155,9 @@ def _run_completion(tmp_path: Path, mode: str, *, sqlite: str | None = None) -> 
         (root_home / name).mkdir(parents=True, exist_ok=True)
     env = _child_env(HOME=str(cell / "home"), HERMES_HOME=str(profile), HERMES_DISABLE_LAZY_INSTALLS="1",
                      HERMES_RUNTIME_DIR=str(tmp_path / "store"), PYTHONDONTWRITEBYTECODE="1",
-                     XDG_CONFIG_HOME=str(cell / "home/.config"), XDG_CACHE_HOME=str(cell / "home/.cache"))
+                     XDG_CONFIG_HOME=str(cell / "home/.config"), XDG_CACHE_HOME=str(cell / "home/.cache"),
+                     XDG_STATE_HOME=str(cell / "home/.local/state"),
+                     HERMES_GATEWAY_LOCK_DIR=str(cell / "home/.local/state/hermes/gateway-locks"))
     if sqlite is not None:
         payload = json.dumps({"base_prefix": sys.base_prefix, "executable": sys.executable,
                               "python_version": list(sys.version_info[:3]),
@@ -156,6 +208,52 @@ def test_config_format_write_failure_is_owed_not_reported_complete(tmp_path):
     assert summary["stamp"] is False
     # C3: the receipt names what actually failed. The build succeeded; only the config is owed.
     assert summary["stages"].get("build") == "success", summary["stages"]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores directory modes")
+def test_profile_sync_followup_keeps_the_tail_owed(tmp_path):
+    summary = _run_completion(tmp_path, "profile-sync")
+    assert summary["code"] == 0, summary["output"]
+    assert summary["outcome"] == "success"
+    assert summary["followups"] == ["profile_sync"]
+    # A profile sync that did not finish is tail work: retried by the next launch, never stamped done.
+    assert summary["pending"] is True
+    assert summary["stamp"] is False
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("path", ["finish", "settle"])
+def test_receipt_store_failure_after_commit_keeps_exit_zero_and_a_correlated_receipt(tmp_path, path):
+    """The receipt store is written after the commit point: losing it is loud, never exit 1."""
+    summary = _run_completion(tmp_path, f"receipts-blocked-{path}")
+    assert "Update receipt not written" in summary["output"]
+    assert summary["code"] == 0, summary["output"]
+    result = summary["result"]
+    assert result["exit_code"] == 0
+    # run_completion's correlation gate: this run's id, terminal, and its outcome agrees with exit 0.
+    receipt = result["receipt"]
+    assert receipt is not None, summary["output"]
+    assert receipt["update_id"] == summary["update_id"]
+    assert receipt["finished_at"]
+    assert receipt["outcome"] == "success"
+    # Retry obligations are unchanged: owed dependencies stay armed, a finished tail is cleared.
+    if path == "settle":
+        assert [row["step"] for row in receipt["followups"]] == ["dependencies"]
+    assert summary["pending"] is (path == "settle")
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("branch", ["failed-unit", "abort", "windows"])
+def test_restart_failure_is_owed_and_never_reported_as_a_failed_update(tmp_path, branch):
+    """The gateway /update reader hears the committed success; the restart is a follow-up."""
+    summary = _run_completion(tmp_path, f"ipc-{branch}")
+    assert summary["code"] == 0, summary["output"]
+    assert summary["outcome"] == "success"
+    assert "gateway_restart" in summary["followups"], summary["output"]
+    # What a reader sees between the failed restart and the run's finalize, and at the end.
+    assert summary["marker_at_verify"] == "0", summary["output"]
+    assert summary["marker_final"] == "0"
 
 
 _RECEIPT_CHILD = textwrap.dedent('''

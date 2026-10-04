@@ -45,6 +45,8 @@ RUN apt-get -o Acquire::Retries=3 update && \
 # Same digest as sqlite_build: the built libsqlite must match this libc.
 FROM debian:13.4@sha256:e2d08da6f42ef4b09b165d55528a12727aeed8240dc9edf888e3ec07e10ef9da AS runtime_base
 
+LABEL org.opencontainers.image.source="https://github.com/NousResearch/hermes-agent"
+
 # Disable Python stdout buffering to ensure logs are printed immediately.
 # Do not write .pyc files at runtime: /opt/hermes is immutable in the
 # published container and writable state belongs under /opt/data.

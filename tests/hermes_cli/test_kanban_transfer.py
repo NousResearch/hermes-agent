@@ -203,6 +203,24 @@ def test_claimed_task_arrives_unclaimed_and_queued(kanban_root, tmp_path):
     assert task["consecutive_failures"] == 0
 
 
+def test_run_session_link_never_travels(kanban_root, tmp_path):
+    """``worker_session_id`` names a session in the exporter's state.db, and the transcript API
+    reads whatever session it names — an archive must not be able to choose one."""
+    ids = _seed_board()
+    with kbc.connect_closing(board="alpha") as conn:
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, started_at, worker_session_id) "
+                "VALUES (?, 'default', 'done', 1, 'someone-elses-session')", (ids["scratch"],))
+    archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]
+
+    kanban_root("target")
+    board = kt.import_board(archive)["board"]
+    with kbc.connect_closing(board=board) as conn:
+        sessions = [row["worker_session_id"] for row in conn.execute("SELECT worker_session_id FROM task_runs")]
+    assert sessions == [None]
+
+
 def test_gateway_subscriptions_never_travel(kanban_root, tmp_path):
     ids = _seed_board()
     _subscribe(ids["scratch"])

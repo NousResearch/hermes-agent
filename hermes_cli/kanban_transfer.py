@@ -100,7 +100,8 @@ def _scrub_local_state(conn: sqlite3.Connection) -> None:
         """,
         (int(time.time()),),
     )
-    conn.execute("UPDATE task_runs SET claim_lock = NULL, worker_pid = NULL")
+    # worker_session_id names a session in this machine's state.db; the transcript API reads it.
+    conn.execute("UPDATE task_runs SET claim_lock = NULL, worker_pid = NULL, worker_session_id = NULL")
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

@@ -132,6 +132,33 @@ export function stripDiffFileHeaders(diff: string): string {
   return lines.slice(start).join('\n')
 }
 
+// Parse a single-line diff like: @@ -279,0 +280 @@\n+            return None
+function parseSingleLineHunk(diff: string): ParsedHunk | null {
+  const lines = stripDiffFileHeaders(diff).split('\n')
+  if (lines.length < 2) return null
+  
+  const hunkMarker = lines[0]
+  const changeLine = lines[1]
+  
+  // Match the hunk marker
+  const match = /@@ -(\d+)(?:,0)? \+(\d+)(?:,0)? @@/.exec(hunkMarker)
+  if (!match) return null
+  
+  const oldStart = Number(match[1])
+  const newStart = Number(match[2])
+  
+  // Extract the change line (might have whitespace prefix if there were context lines)
+  const trimmed = changeLine.trim()
+  const kind = diffKind(trimmed)
+  const text = stripDiffMarker(trimmed)
+  
+  return {
+    oldStart,
+    newStart,
+    lines: [{ kind, text }]
+  }
+}
+
 function parseHunks(diff: string): ParsedHunk[] {
   const hunks: ParsedHunk[] = []
   let active: null | ParsedHunk = null
@@ -171,8 +198,25 @@ function parseDiff(diff: string): DiffLine[] {
 
   if (hunks.length === 0) {
     // Fallback for unexpected non-hunk payloads.
-    return stripDiffFileHeaders(diff)
-      .split('\n')
+    // For single-line diffs (e.g., @@ -n,0 +n @@ with no context),
+    // parseHunks returns empty, so we manually parse the @@ line if present.
+    const stripped = stripDiffFileHeaders(diff)
+    const lines = stripped.split('\n')
+    
+    // Check if this is a single-line diff: contains @@ and exactly one +/- line
+    const hasHunkMarker = lines.some(line => line.startsWith('@@'))
+    const hasChangeMarker = lines.some(line => line.startsWith('+') || line.startsWith('-'))
+    
+    if (hasHunkMarker && hasChangeMarker) {
+      // Single-line diff: parse the @@ hunk manually
+      const hunk = parseSingleLineHunk(stripped)
+      if (hunk) {
+        return hunk.lines.map(line => ({ kind: line.kind, text: line.text }))
+      }
+    }
+    
+    // Last resort: treat remaining lines as context
+    return lines
       .map(line => ({ kind: diffKind(line), text: stripDiffMarker(line) }))
   }
 

@@ -45,6 +45,17 @@ function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string; stderr:
   })
 }
 
+// Find the git repository root for the given path, or return null if not in a repo.
+async function repoRoot(cwd: string, gitBin: string): Promise<string | null> {
+  try {
+    const git = gitFor(cwd, gitBin)
+    const root = (await git.raw(['rev-parse', '--show-toplevel'])).trim()
+    return root || null
+  } catch {
+    return null
+  }
+}
+
 function gitFor(cwd, gitBin) {
   // `gitBin` is resolved inside the Electron main process from known install
   // locations or PATH — never renderer/user input. simple-git's custom-binary
@@ -257,7 +268,12 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
     return { files: [], base: null }
   }
 
-  const git = gitFor(cwd, gitBin)
+  const root = await repoRoot(cwd, gitBin)
+  if (!root) {
+    return { files: [], base: null }
+  }
+
+  const git = gitFor(root, gitBin)
 
   try {
     if (scope === 'branch' || scope === 'lastTurn') {
@@ -300,7 +316,7 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
       }
 
       files.sort((a, b) => a.path.localeCompare(b.path))
-      await fillUntrackedCounts(cwd, files)
+      await fillUntrackedCounts(root, files)
 
       return { files, base }
     }
@@ -333,7 +349,7 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
     })
 
     files.sort((a, b) => a.path.localeCompare(b.path))
-    await fillUntrackedCounts(cwd, files)
+    await fillUntrackedCounts(root, files)
 
     return { files, base: null }
   } catch {
@@ -350,7 +366,12 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
     return ''
   }
 
-  const git = gitFor(cwd, gitBin)
+  const root = await repoRoot(cwd, gitBin)
+  if (!root) {
+    return ''
+  }
+
+  const git = gitFor(root, gitBin)
   const safe = args => git.diff(args).catch(() => '')
 
   if (scope === 'branch') {
@@ -377,7 +398,7 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
   // --no-index (exits non-zero by design when files differ, so go around
   // simple-git's reject-on-nonzero with a raw execFile).
   return execGit(gitBin || 'git', ['diff', '--no-index', '--', '/dev/null', filePath], {
-    cwd,
+    cwd: root,
     timeoutMs: 30_000
   }).then(
     result => result.stdout,
@@ -398,7 +419,12 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
     return ''
   }
 
-  const git = gitFor(cwd, gitBin)
+  const root = await repoRoot(cwd, gitBin)
+  if (!root) {
+    return ''
+  }
+
+  const git = gitFor(root, gitBin)
   const head = await git.diff(['HEAD', '--', filePath]).catch(() => '')
 
   if (head.trim()) {
@@ -414,7 +440,7 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
   }
 
   return execGit(gitBin || 'git', ['diff', '--no-index', '--', '/dev/null', filePath], {
-    cwd,
+    cwd: root,
     timeoutMs: 30_000
   }).then(
     result => result.stdout,
@@ -424,17 +450,17 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
 
 async function reviewStage(repoPath, filePath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review stage' })
-
-  await gitFor(cwd, gitBin).raw(filePath ? ['add', '--', filePath] : ['add', '-A'])
-
+  const root = await repoRoot(cwd, gitBin)
+  if (!root) return { ok: true }
+  await gitFor(root, gitBin).raw(filePath ? ['add', '--', filePath] : ['add', '-A'])
   return { ok: true }
 }
 
 async function reviewUnstage(repoPath, filePath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review unstage' })
-
-  await gitFor(cwd, gitBin).raw(filePath ? ['reset', '-q', 'HEAD', '--', filePath] : ['reset', '-q', 'HEAD'])
-
+  const root = await repoRoot(cwd, gitBin)
+  if (!root) return { ok: true }
+  await gitFor(root, gitBin).raw(filePath ? ['reset', '-q', 'HEAD', '--', filePath] : ['reset', '-q', 'HEAD'])
   return { ok: true }
 }
 
@@ -442,7 +468,9 @@ async function reviewUnstage(repoPath, filePath, gitBin) {
 // confirms first. Restores tracked files and removes untracked ones.
 async function reviewRevert(repoPath, filePath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review revert' })
-  const git = gitFor(cwd, gitBin)
+  const root = await repoRoot(cwd, gitBin)
+  if (!root) return { ok: true }
+  const git = gitFor(root, gitBin)
 
   if (filePath) {
     await git.raw(['checkout', 'HEAD', '--', filePath]).catch(() => undefined)
@@ -465,8 +493,11 @@ async function reviewRevParse(repoPath, ref, gitBin) {
     return null
   }
 
+  const root = await repoRoot(cwd, gitBin)
+  if (!root) return null
+
   try {
-    return (await gitFor(cwd, gitBin).revparse([ref || 'HEAD'])).trim() || null
+    return (await gitFor(root, gitBin).revparse([ref || 'HEAD'])).trim() || null
   } catch {
     return null
   }
@@ -477,7 +508,9 @@ async function reviewRevParse(repoPath, ref, gitBin) {
 // setting upstream on the first push.
 async function reviewCommit(repoPath, message, push, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review commit' })
-  const git = gitFor(cwd, gitBin)
+  const root = await repoRoot(cwd, gitBin)
+  if (!root) throw new Error('Not a git repository')
+  const git = gitFor(root, gitBin)
   const status = await git.status()
 
   if (status.staged.length === 0) {
@@ -513,7 +546,10 @@ async function reviewCommitContext(repoPath, gitBin) {
     return { diff: '', recent: '' }
   }
 
-  const git = gitFor(cwd, gitBin)
+  const root = await repoRoot(cwd, gitBin)
+  if (!root) return { diff: '', recent: '' }
+
+  const git = gitFor(root, gitBin)
   const safe = args => git.diff(args).catch(() => '')
 
   let status
@@ -552,7 +588,9 @@ async function reviewCommitContext(repoPath, gitBin) {
 
 async function reviewPush(repoPath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review push' })
-  const git = gitFor(cwd, gitBin)
+  const root = await repoRoot(cwd, gitBin)
+  if (!root) return { ok: true }
+  const git = gitFor(root, gitBin)
   const status = await git.status()
 
   if (status.tracking) {
@@ -576,13 +614,16 @@ async function reviewShipInfo(repoPath, ghBin) {
     return { ghReady: false, pr: null }
   }
 
-  const auth = await runGh(['auth', 'status'], cwd, ghBin)
+  const root = await repoRoot(cwd, ghBin)
+  if (!root) return { ghReady: false, pr: null }
+
+  const auth = await runGh(['auth', 'status'], root, ghBin)
 
   if (!auth.ok) {
     return { ghReady: false, pr: null }
   }
 
-  const view = await runGh(['pr', 'view', '--json', 'url,state,number'], cwd, ghBin)
+  const view = await runGh(['pr', 'view', '--json', 'url,state,number'], root, ghBin)
 
   if (!view.ok) {
     // gh exits non-zero when no PR exists for the branch — that's not an error.
@@ -645,6 +686,9 @@ async function reviewPrList(repoPath, ghBin, branches, numbers) {
     return { ghReady: false, prs: [] }
   }
 
+  const root = await repoRoot(cwd, ghBin)
+  if (!root) return { ghReady: false, prs: [] }
+
   const wanted = [...new Set((branches || []).filter(Boolean).map(String))].slice(0, PR_QUERY_BRANCH_CAP)
   const byNumber = [...new Set((numbers || []).map(Number).filter(Boolean))].slice(0, PR_QUERY_BRANCH_CAP)
 
@@ -652,7 +696,7 @@ async function reviewPrList(repoPath, ghBin, branches, numbers) {
     return { ghReady: false, prs: [] }
   }
 
-  const repo = await runGh(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], cwd, ghBin)
+  const repo = await runGh(['repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], root, ghBin)
   const [owner, name] = repo.stdout.trim().split('/')
 
   if (!repo.ok || !owner || !name) {
@@ -673,7 +717,7 @@ async function reviewPrList(repoPath, ghBin, branches, numbers) {
 
   for (const [branchChunk, numberChunk] of chunks) {
     const query = prQueryFor(owner, name, branchChunk, numberChunk)
-    const res = await runGh(['api', 'graphql', '-f', `query=${query}`], cwd, ghBin)
+    const res = await runGh(['api', 'graphql', '-f', `query=${query}`], root, ghBin)
 
     if (!res.ok) {
       continue
@@ -706,11 +750,20 @@ async function reviewPrList(repoPath, ghBin, branches, numbers) {
 // Create a PR for the current branch (pushing first so gh has a remote ref),
 // letting gh fill title/body from the commits. Returns the new PR url.
 async function reviewCreatePr(repoPath, gitBin, ghBin) {
-  const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review create PR' })
+  let cwd
 
-  await reviewPush(repoPath, gitBin).catch(() => undefined)
+  try {
+    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review create PR' })
+  } catch {
+    throw new Error('Invalid repository path')
+  }
 
-  const created = await runGh(['pr', 'create', '--fill'], cwd, ghBin)
+  const root = await repoRoot(cwd, gitBin)
+  if (!root) throw new Error('Not a git repository')
+
+  await reviewPush(root, gitBin).catch(() => undefined)
+
+  const created = await runGh(['pr', 'create', '--fill'], root, ghBin)
 
   if (!created.ok) {
     // gh's own stderr says why the create failed (e.g. "no commits between
@@ -750,10 +803,13 @@ async function repoStatus(repoPath, gitBin) {
     return null
   }
 
+  let root: string | null = null
   let git
 
   try {
-    git = gitFor(cwd, gitBin)
+    root = await repoRoot(cwd, gitBin)
+    if (!root) return null
+    git = gitFor(root, gitBin)
   } catch {
     return null
   }
@@ -816,7 +872,7 @@ async function repoStatus(repoPath, gitBin) {
 
     for (let i = 0; i < untracked.length; i += UNTRACKED_LINE_COUNT_CONCURRENCY) {
       const batch = await Promise.all(
-        untracked.slice(i, i + UNTRACKED_LINE_COUNT_CONCURRENCY).map(path => untrackedInsertions(cwd, path))
+        untracked.slice(i, i + UNTRACKED_LINE_COUNT_CONCURRENCY).map(path => untrackedInsertions(root, path))
       )
 
       result.added += batch.reduce((sum, n) => sum + n, 0)

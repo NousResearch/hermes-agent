@@ -101,8 +101,9 @@ def _json_equal(left: Any, right: Any) -> bool:
 
 
 def _run_awaitable(value: Any) -> Any:
-    # Keep the Relay funnel bounded too: the regular tool executor's deadline is
-    # bypassed when a managed tool enters this adapter directly.
+    # Bound cooperative async Relay waits when this adapter is entered directly.
+    # wait_for cannot preempt a synchronous callback blocking the event loop;
+    # interactive/delegation/connection handlers retain their own wait lifecycle.
     from agent.tool_executor import _resolve_sequential_tool_timeout
 
     return relay_llm._run_awaitable(

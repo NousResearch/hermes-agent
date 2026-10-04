@@ -37,6 +37,11 @@ def _failed_result(request: dict, result_path: Path, code: int) -> int:
 
 def run_completion(request: dict) -> dict:
     """Wait for new code; zero exit without a correlated terminal result fails closed."""
+    from pm.libatomic import install_before_lock
+
+    # The child below runs in a new session without a controlling terminal,
+    # so this is the last point where sudo can ask for a password.
+    install_before_lock()
     root = Path(request["source"])
     env = dict(os.environ, HERMES_HOME=request["home"], PYTHONUNBUFFERED="1")
     for key in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"):

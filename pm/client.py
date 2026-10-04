@@ -244,11 +244,11 @@ def ensure_tools_for_sync() -> None:
     gate it; a failed download fails the update.
     """
     from pm.install import activate
-    from pm.libatomic import warm_sudo_before_install
+    from pm.libatomic import install_before_lock
     from pm.lock import Lockfile
     from pm.registry import tool_roots
 
-    warm_sudo_before_install()
+    install_before_lock()
     for name in tool_roots(Lockfile(paths.lockfile_path()).names()):
         ensure(name, explicit=True)
     problems = activate(allow_incomplete=True)

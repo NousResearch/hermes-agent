@@ -1,8 +1,8 @@
 """Install the host libatomic package required by official Linux Node.
 
-Two entry points: warm_sudo_before_install() lets an interactive update cache
-a sudo ticket before PM takes its install lock, and try_install_libatomic()
-is the non-interactive repair run from Nodejs.repair_staged_verification().
+Two entry points: install_before_lock() lets an interactive update install
+the package (asking for sudo) before PM takes its install lock, and
+try_install_libatomic() is the non-interactive repair run from Nodejs.repair_staged_verification().
 Package verification itself remains diagnostic and side-effect free.
 """
 
@@ -87,14 +87,14 @@ def _command_plan(command: tuple[str, ...]) -> tuple[list[str] | None, str, str]
     return None, "", f"as root: {shlex.join(command)}"
 
 
-def warm_sudo_before_install() -> None:
-    """Let a terminal user authorize sudo before PM takes its install lock.
+def install_before_lock() -> None:
+    """Install the libatomic package interactively before PM takes its lock.
 
-    The staged repair can only use ``sudo -n``, so on a password-sudo host it
-    succeeds only with a cached ticket. Updates enter PM directly, without the
-    shell installer's prerequisites stage, so cache the ticket here: only on a
-    glibc Linux host still missing libatomic.so.1, non-root, interactive, and
-    only when sudo would actually ask.
+    Inside the lock the repair may only use ``sudo -n``, so a password-sudo
+    host needs the password asked here, where a prompt cannot wedge PM. Run
+    only on a glibc Linux host still missing libatomic.so.1, with a
+    controlling terminal sudo can read from (detached children, gateway and
+    Desktop updates have none), and only when sudo would actually ask.
     """
     import ctypes
     import sys
@@ -102,8 +102,6 @@ def warm_sudo_before_install() -> None:
     from pm.store import MUSL_TARGETS, current_target
 
     if not sys.platform.startswith("linux") or _is_root():
-        return
-    if not (sys.stdin and sys.stdin.isatty() and sys.stdout and sys.stdout.isatty()):
         return
     target = current_target()
     if target in MUSL_TARGETS or target.endswith("-bionic"):
@@ -113,27 +111,40 @@ def warm_sudo_before_install() -> None:
         return
     except OSError:
         pass
-    # Prompt only when the repair would actually run sudo with the ticket.
     command = _host_install_command()
     argv = _command_plan(command)[0] if command else None
-    if not argv:
+    if not argv or not _has_terminal():
         return
     sudo = argv[0]
     if subprocess.run([sudo, "-n", "true"], stdin=subprocess.DEVNULL,
                       capture_output=True, check=False).returncode == 0:
-        return
+        return  # the non-interactive repair will succeed on its own
     print("→ Node.js needs libatomic.so.1; sudo may ask for your password to install it", flush=True)
-    try:
-        subprocess.run([sudo, "-v"], timeout=300, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+    _install([sudo], command, stdin=None)
 
 
-def _run(argv: list[str]) -> bool:
+def _has_terminal() -> bool:
     try:
-        return subprocess.run(argv, stdin=subprocess.DEVNULL, timeout=300, check=False).returncode == 0
+        os.close(os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY))
+    except OSError:
+        return False
+    return True
+
+
+def _run(argv: list[str], stdin=subprocess.DEVNULL) -> bool:
+    try:
+        return subprocess.run(argv, stdin=stdin, timeout=300, check=False).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def _install(prefix: list[str], command: tuple[str, ...], stdin=subprocess.DEVNULL) -> bool:
+    if _run([*prefix, *command], stdin):
+        return True
+    if command[0] != "apt-get":
+        return False
+    # Minimal Debian/Ubuntu images ship empty package lists.
+    return _run([*prefix, "apt-get", "update", "-qq"], stdin) and _run([*prefix, *command], stdin)
 
 
 def try_install_libatomic() -> tuple[bool, str]:
@@ -162,10 +173,4 @@ def _attempt() -> tuple[bool, str]:
         return False, remedy
 
     print(f"→ Node needs libatomic.so.1; trying non-interactive {attempt_display}", flush=True)
-    if _run(argv):
-        return True, remedy
-    if command[0] != "apt-get":
-        return False, remedy
-    # Minimal Debian/Ubuntu images ship empty package lists.
-    update = argv[: len(argv) - len(command)] + ["apt-get", "update", "-qq"]
-    return _run(update) and _run(argv), remedy
+    return _install(argv[: len(argv) - len(command)], command), remedy

@@ -94,3 +94,22 @@ def test_installer_sudo_warmup_honours_non_interactive(tmp_path, flags):
 
     prompted = log.is_file() and "-v" in log.read_text().split()
     assert prompted is (flags == "")
+
+
+def test_update_completion_installs_before_detaching(monkeypatch):
+    """run_completion's child has no controlling terminal; the interactive install runs first."""
+    from hermes_cli import update_completion
+    from pm import libatomic
+
+    order = []
+    monkeypatch.setattr(libatomic, "install_before_lock", lambda: order.append("install"))
+
+    def popen(*_args, **_kwargs):
+        order.append("detach")
+        raise RuntimeError("stop after spawn")
+
+    monkeypatch.setattr(update_completion.subprocess, "Popen", popen)
+    with pytest.raises(RuntimeError, match="stop after spawn"):
+        update_completion.run_completion({"source": "/nonexistent", "home": "/nonexistent",
+                                          "receipt": {"update_id": "u"}})
+    assert order == ["install", "detach"]

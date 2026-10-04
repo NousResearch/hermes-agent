@@ -42,7 +42,7 @@ def run_completion(request: dict) -> dict:
     # this is the last point where sudo can ask for a password. Run the new
     # tree's pre-install as its own process (this parent stays stdlib-only); a
     # tree without it, or any failure, just leaves the in-lock repair to report.
-    subprocess.run([sys.executable, "-I", "-S", "-c",
+    subprocess.run([sys.executable, "-I", "-S", "-B", "-c",
                     "import sys; sys.path.insert(0, sys.argv[1]); "
                     "from pm.libatomic import install_before_lock; install_before_lock()", str(root)],
                    cwd=root, stdout=None, stderr=subprocess.DEVNULL, check=False)

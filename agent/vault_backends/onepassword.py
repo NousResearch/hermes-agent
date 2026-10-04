@@ -38,6 +38,8 @@ class OnePasswordLoginBackend(LoginBackend):
         from agent.secret_scope import get_secret
         env_name = str(self.cfg.get("service_account_token_env") or "OP_SERVICE_ACCOUNT_TOKEN")
         self._service_token = get_secret(env_name, "") or ""
+        # item id -> vault id, filled by list_items. Service accounts must pass --vault to `op item get`.
+        self._item_vaults: Dict[str, str] = {}
 
     # ── auth ────────────────────────────────────────────────────────────────
 
@@ -109,6 +111,9 @@ class OnePasswordLoginBackend(LoginBackend):
             if not origins:
                 continue
             username = str(item.get("additional_information") or "").strip() or None
+            vault = item.get("vault") if isinstance(item.get("vault"), dict) else {}
+            if vault.get("id"):
+                self._item_vaults[str(item.get("id"))] = str(vault["id"])
             out.append(VaultItemMeta(
                 id=f"{self.prefix}{item.get('id')}", kind="login", label=str(item.get("title") or origins[0]),
                 origin=origins[0], created_at=str(item.get("created_at") or ""),
@@ -119,14 +124,23 @@ class OnePasswordLoginBackend(LoginBackend):
     def get_meta(self, handle: str) -> Optional[VaultItemMeta]:
         return next((m for m in self.list_items() if m.id == handle), None)
 
+    def _vault_args(self, item_id: str) -> List[str]:
+        """``--vault <id>`` for ``op item get``: mandatory for service accounts, harmless otherwise."""
+        if item_id not in self._item_vaults:
+            self.list_items()
+        vault_id = self._item_vaults.get(item_id)
+        return ["--vault", vault_id] if vault_id else []
+
     def resolve_password(self, handle: str) -> str:
         item_id = handle[len(self.prefix):]
-        return self._run("item", "get", item_id, "--fields", "label=password", "--reveal").rstrip("\r\n")
+        return self._run("item", "get", item_id, *self._vault_args(item_id),
+                         "--fields", "label=password", "--reveal").rstrip("\r\n")
 
     def resolve_otp(self, handle: str) -> Optional[str]:
         # `--otp` mints the current TOTP from the item's one-time-password field; items without one error out.
+        item_id = handle[len(self.prefix):]
         try:
-            code = self._run("item", "get", handle[len(self.prefix):], "--otp").strip()
+            code = self._run("item", "get", item_id, *self._vault_args(item_id), "--otp").strip()
         except Exception:
             return None
         return code if code.isdigit() else None

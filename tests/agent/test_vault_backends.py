@@ -223,6 +223,34 @@ def test_onepassword_multi_url_item_binds_every_saved_web_origin():
     assert _web_origins(["androidapp://com.x"]) == ("androidapp://com.x",)
 
 
+def test_onepassword_item_get_passes_the_vault_recorded_by_list_items():
+    """`op item get` refuses a bare item id under a service-account token ("a vault query must be
+    provided"); the vault id captured during list_items is forwarded as --vault, and a cold
+    resolve lists first to learn it."""
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+
+    backend = OnePasswordLoginBackend({"enabled": True})
+    items_json = json.dumps([{
+        "id": "gh", "title": "GitHub", "created_at": "2026-01-01T00:00:00Z",
+        "vault": {"id": "vault123", "name": "Agents"},
+        "urls": [{"href": "https://github.com"}],
+    }])
+    calls = []
+
+    def fake_run(*args):
+        calls.append(args)
+        return items_json if args[:2] == ("item", "list") else "s3cret\n"
+
+    with patch.object(OnePasswordLoginBackend, "is_unlocked", return_value=True), \
+         patch.object(backend, "_run", side_effect=fake_run):
+        assert backend.resolve_password("op:gh") == "s3cret"  # cold: lists first, then gets
+        assert calls[0][:2] == ("item", "list")
+        assert calls[1] == ("item", "get", "gh", "--vault", "vault123", "--fields", "label=password", "--reveal")
+        calls.clear()
+        backend.resolve_otp("op:gh")  # warm: no second list
+        assert calls == [("item", "get", "gh", "--vault", "vault123", "--otp")]
+
+
 def test_onepassword_backend_env_forwards_config_directory(monkeypatch):
     """Vault reads use the same explicit 1Password CLI config location."""
     from agent.vault_backends.onepassword import OnePasswordLoginBackend

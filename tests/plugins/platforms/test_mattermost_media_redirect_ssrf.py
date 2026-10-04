@@ -28,12 +28,12 @@ def _redirecting_adapter():
 def test_send_image_blocks_redirect_to_metadata():
     adapter, session, public, _evil = _redirecting_adapter()
 
-    with patch(
-        "tools.url_safety.async_is_safe_url",
-        new=AsyncMock(side_effect=lambda url: url == public),
-    ):
+    async_safe_url = AsyncMock(side_effect=lambda url: url == public)
+    with patch("tools.url_safety.async_is_safe_url", new=async_safe_url):
         asyncio.run(adapter.send_image("channel-1", public))
 
+    assert async_safe_url.await_args_list[0].args == (public,)
+    assert async_safe_url.await_args_list[1].args == ("http://169.254.169.254/latest/meta-data/",)
     assert session.get.call_args.kwargs["allow_redirects"] is False
     adapter.send.assert_awaited_once()
 
@@ -41,11 +41,11 @@ def test_send_image_blocks_redirect_to_metadata():
 def test_send_multiple_images_blocks_redirect_to_metadata():
     adapter, session, public, _evil = _redirecting_adapter()
 
-    with patch(
-        "tools.url_safety.async_is_safe_url",
-        new=AsyncMock(side_effect=lambda url: url == public),
-    ):
+    async_safe_url = AsyncMock(side_effect=lambda url: url == public)
+    with patch("tools.url_safety.async_is_safe_url", new=async_safe_url):
         asyncio.run(adapter.send_multiple_images("channel-1", [(public, "alt")]))
 
+    assert async_safe_url.await_args_list[0].args == (public,)
+    assert async_safe_url.await_args_list[1].args == ("http://169.254.169.254/latest/meta-data/",)
     assert session.get.call_args.kwargs["allow_redirects"] is False
     adapter._upload_file.assert_not_awaited()

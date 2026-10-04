@@ -234,9 +234,12 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   profile's scope; gate/allowlist reads go through `platform_gate_env`. A `if not os.getenv(X):
   os.environ[X] = …` bridge is first-profile-wins across the process — test two profiles with
   conflicting flags before touching precedence.
-- **Unserved is reported, never silent.** Shared-ingress platforms (WhatsApp bridge, Relay) run on
-  the default profile only; a secondary enabling one is logged once with the remedy and stamped
-  into runtime status (`run_adapters.py::_note_unserved_secondary_platform`). `needs_attention` is
+- **Unserved is reported, never silent.** Shared-ingress platforms (Relay) run on the default
+  profile only; a secondary enabling one is logged once with the remedy and stamped into runtime
+  status (`run_adapters.py::_note_unserved_secondary_platform`). The WhatsApp bridge is per profile:
+  a paired secondary gets its own adapter and port (`plugins/platforms/whatsapp/bridge_ownership.py`),
+  an unpaired one is reported as `whatsapp_unpaired`, and a secondary never adopts or signals a
+  bridge its own pidfile (pid + start time + port) does not identify. `needs_attention` is
   set and cleared at the single writer (`_update_platform_runtime_status`) on the connect path.
 - **One launch-home identity.** "Does this task serve a routed profile?" compares the override
   with `hermes_constants.get_routing_process_hermes_home()` (`agent/secret_scope.py::

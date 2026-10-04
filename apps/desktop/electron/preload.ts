@@ -391,7 +391,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
   setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
   setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
-  setKeepAwake: on => ipcRenderer.send('hermes:keep-awake', on),
+  setKeepAwake: mode => ipcRenderer.send('hermes:keep-awake', mode),
   minimizeToTray: {
     get: () => ipcRenderer.invoke('hermes:minimize-to-tray:get'),
     set: on => ipcRenderer.invoke('hermes:minimize-to-tray:set', on),

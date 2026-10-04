@@ -1700,7 +1700,10 @@ export const frOverrides = {
         "Retirer tous les ensembles d'outils activés ? Cela désactive la mémoire, le terminal, la recherche web, la délégation et la plupart des autres outils jusqu'à leur réactivation.",
       keepAwakeTitle: "Garder l'ordinateur éveillé",
       keepAwakeDesc:
-        "Empêcher cette machine de se mettre en veille pendant les exécutions longues ou nocturnes. L'écran peut toujours s'obscurcir.",
+        "Empêcher cette machine de se mettre en veille. « Pendant le travail » ne s'applique que pendant qu'un tour est en cours : les exécutions nocturnes continuent sans garder le portable éveillé toute la semaine. L'écran peut toujours s'obscurcir.",
+      keepAwakeOff: 'Désactivé',
+      keepAwakeWhileWorking: 'Pendant le travail',
+      keepAwakeAlways: 'Toujours',
       disableF12Title: 'Désactiver les outils de développement avec F12',
       disableF12Desc:
         "Empêcher F12 d'ouvrir les outils de développement. Ctrl+Maj+I (ou Cmd+Option+I sur Mac) continue de fonctionner.",
@@ -2107,6 +2110,8 @@ export const frOverrides = {
       defaultsLabel: 'Par défaut',
       reasoning: 'Raisonnement',
       reasoningOff: 'Désactivé',
+      speed: 'Vitesse',
+      speedStandard: 'Standard',
       defaultsFailed: "Échec de l'enregistrement des modèles par défaut",
       loadFailed: 'Impossible de charger les modèles',
       restartRequired:
@@ -2874,6 +2879,7 @@ export const frOverrides = {
         no_interactive_session: 'aucune session interactive',
         version_too_old: 'version trop ancienne',
         missing_app: 'application manquante',
+        unsupported_gpu: 'GPU non prise en charge',
         unknown: 'état inconnu'
       },
       catalogTitle: 'Catalogue de plugins',
@@ -3320,6 +3326,9 @@ export const frOverrides = {
     replaceValue: 'Remplacer la valeur actuelle',
     openDocs: 'Ouvrir la documentation',
     clearField: key => `Effacer ${key}`,
+    addListEntry: 'Ajouter',
+    removeListEntry: 'Retirer',
+    listEntryPlaceholder: 'Saisir un identifiant',
     enableAria: name => `Activer ${name}`,
     disableAria: name => `Désactiver ${name}`,
     platformEnabled: name => `${name} activé`,
@@ -3400,7 +3409,7 @@ export const frOverrides = {
       },
       TELEGRAM_ALLOWED_USERS: {
         label: "IDs d'utilisateurs Telegram autorisés",
-        help: "Recommandé. IDs numériques séparés par des virgules depuis @userinfobot. Sans cela, n'importe qui peut envoyer un message privé à votre bot."
+        help: "Recommandé. IDs numériques (un par case) depuis @userinfobot. Sans cela, n'importe qui peut envoyer un message privé à votre bot."
       },
       TELEGRAM_PROXY: {
         label: 'URL du proxy',
@@ -3412,7 +3421,7 @@ export const frOverrides = {
       },
       DISCORD_ALLOWED_USERS: {
         label: "IDs d'utilisateurs Discord autorisés",
-        help: "Recommandé. IDs d'utilisateurs Discord séparés par des virgules."
+        help: "Recommandé. IDs d'utilisateurs Discord (un par case)."
       },
       DISCORD_REPLY_TO_MODE: {
         label: 'Style de réponse',
@@ -3462,7 +3471,7 @@ export const frOverrides = {
       },
       SLACK_ALLOWED_USERS: {
         label: "IDs d'utilisateurs Slack autorisés",
-        help: "Recommandé. IDs d'utilisateurs Slack séparés par des virgules."
+        help: "Recommandé. IDs d'utilisateurs Slack (un par case)."
       },
       MATTERMOST_URL: {
         label: 'URL du serveur',
@@ -3473,7 +3482,7 @@ export const frOverrides = {
       },
       MATTERMOST_ALLOWED_USERS: {
         label: "IDs d'utilisateurs autorisés",
-        help: "Recommandé. IDs d'utilisateurs Mattermost séparés par des virgules."
+        help: "Recommandé. IDs d'utilisateurs Mattermost (un par case)."
       },
       MATRIX_HOMESERVER: {
         label: 'URL du homeserver',
@@ -3488,7 +3497,7 @@ export const frOverrides = {
       },
       MATRIX_ALLOWED_USERS: {
         label: "IDs d'utilisateurs Matrix autorisés",
-        help: "Recommandé. IDs d'utilisateurs séparés par des virgules au format @utilisateur:serveur."
+        help: "Recommandé. IDs d'utilisateurs (un par case) au format @utilisateur:serveur."
       },
       SIGNAL_HTTP_URL: {
         label: 'URL du pont Signal',
@@ -3501,7 +3510,7 @@ export const frOverrides = {
       },
       SIGNAL_ALLOWED_USERS: {
         label: 'Utilisateurs Signal autorisés',
-        help: 'Recommandé. Identifiants Signal séparés par des virgules.'
+        help: 'Recommandé. Identifiants Signal (un par case).'
       },
       WHATSAPP_ENABLED: {
         label: 'Activer le pont WhatsApp',
@@ -3512,7 +3521,7 @@ export const frOverrides = {
       },
       WHATSAPP_ALLOWED_USERS: {
         label: 'Utilisateurs WhatsApp autorisés',
-        help: 'Recommandé. Numéros de téléphone ou IDs WhatsApp séparés par des virgules.'
+        help: 'Recommandé. Numéros de téléphone ou IDs WhatsApp (un par case).'
       }
     },
     platformIntro: {}
@@ -5077,6 +5086,8 @@ export const frOverrides = {
       options: 'Options',
       thinking: 'Réflexion',
       fast: 'Rapide',
+      ultrafast: 'Ultrafast',
+      useStandardSpeed: 'Utiliser la vitesse standard',
       effort: 'Effort',
       minimal: 'Minimal',
       low: 'Faible',

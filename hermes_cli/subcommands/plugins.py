@@ -23,7 +23,8 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         help="Bare plugin catalog entry name (see `hermes plugins search`), Git URL, or owner/repo "
             "shorthand (e.g. anpicasso/hermes-plugin-chrome-profiles)")
     plugins_install.add_argument(
-        "--force", "-f", action="store_true", help="Remove existing plugin and reinstall")
+        "--force", "-f", action="store_true",
+        help="Reinstall over an existing plugin (from the same source, your untracked files are kept)")
     plugins_install.add_argument(
         "--ref", metavar="COMMIT_SHA",
         help="Install exactly one immutable 40-character Git commit SHA")

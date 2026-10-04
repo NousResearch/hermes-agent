@@ -305,10 +305,12 @@ def _sanitize_cwd_for_live_env(env: Any, new_cwd: str) -> Optional[str]:
     are already rejected on the creation paths. This write classifies the
     directory mounted at ``/workspace`` as unusable before that prefix
     heuristic, then remaps the match (or a child of it) to its container mount
-    instead of storing the host path. Non-container backends apply the override
-    verbatim (ACP project-root switching must keep working).
+    instead of storing the host path. SSH maps the Hermes subprocess home onto
+    the peer's home, as environment creation already does. Other backends apply
+    the override verbatim (ACP project-root switching must keep working).
     """
     env_type = getattr(env, "env_type", None)
+    new_cwd = coerce_ssh_remote_cwd(new_cwd, env_type)
     if not env_type or not _is_container_backend(env_type):
         return new_cwd
     host_mount = getattr(env, "host_cwd", None)
@@ -998,7 +1000,7 @@ def _resolve_command_cwd(
             recorded, default_cwd,
         )
         return coerce_ssh_remote_cwd(_container_visible_default(default_cwd, env_type, env), env_type)
-    return recorded or coerce_ssh_remote_cwd(_container_visible_default(default_cwd, env_type, env), env_type)
+    return coerce_ssh_remote_cwd(recorded or _container_visible_default(default_cwd, env_type, env), env_type)
 
 
 def _error_json(error: str, *, exit_code: int = -1, status: Optional[str] = None, **extra) -> str:

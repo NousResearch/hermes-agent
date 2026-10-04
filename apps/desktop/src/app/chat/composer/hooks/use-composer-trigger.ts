@@ -233,12 +233,17 @@ export function useComposerTrigger({
   // Space/Tab — neither should dead-end on a popover.
   const argStageEmpty = trigger?.kind === '/' && slashArgStage(trigger.query) && !triggerLoading && !triggerItems.length
 
-  const slashArgumentMode =
-    trigger?.kind === '/' && slashArgStage(trigger.query)
-      ? desktopSlashCommandArgumentMode(slashCommandToken(trigger.query))
-      : null
+  const slashCommandArgumentMode =
+    trigger?.kind === '/' ? desktopSlashCommandArgumentMode(slashCommandToken(trigger.query)) : null
+
+  const slashArgumentMode = trigger?.kind === '/' && slashArgStage(trigger.query) ? slashCommandArgumentMode : null
 
   const slashFreeTextArgStage = slashArgumentMode === 'mixed' || slashArgumentMode === 'text'
+  // The first space is still part of the command token from the trigger's
+  // point of view (`/title` rather than `/title My`). Keep it literal for
+  // arbitrary-prose commands so the completion cannot chip the command before
+  // its argument has a chance to exist.
+  const slashFreeTextCommand = slashCommandArgumentMode === 'mixed' || slashCommandArgumentMode === 'text'
 
   const closeTrigger = () => {
     setTrigger(null)
@@ -468,6 +473,7 @@ export function useComposerTrigger({
     replaceTriggerWithChip,
     setTriggerActive,
     slashFreeTextArgStage,
+    slashFreeTextCommand,
     trigger,
     triggerActive,
     triggerActiveExplicit,

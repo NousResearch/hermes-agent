@@ -18,7 +18,6 @@ import time
 
 import pytest
 
-from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.git import _git_world as G
 from tests.e2e.core.upgrade.git._smart_http import Fault
@@ -68,11 +67,8 @@ def test_transport_failure_is_reported_as_failure(w, fault):
     w.srv.clear_faults()
     assert armed.fired, f"the {fault} fault never fired; the cell exercised nothing:\n{w.diag(cp, mark)}"
     _assert_failed_truthfully(w, cp, before, mark)
-    with known_failure(r"claims .*history diverged",
-                       "gated on #124642: a ff-merge that failed for a non-divergence reason (lazy fetch cut) is "
-                       "reported as diverged history, a rescue ref is written and `git reset --hard` is advised"):
-        assert "diverged" not in G.output(cp) and not w.refs("refs/hermes-update-backups"), (
-            f"a transport failure claims local history diverged (and writes a rescue ref):\n{w.diag(cp, mark)}")
+    assert "diverged" not in G.output(cp) and not w.refs("refs/hermes-update-backups"), (
+        f"a transport failure claims local history diverged (and writes a rescue ref):\n{w.diag(cp, mark)}")
 
 
 def test_retry_after_interrupted_fetches_heals_without_refetching_history(w):

@@ -7,6 +7,7 @@ import logging
 import sys
 import threading
 import time
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -42,6 +43,7 @@ from cron.jobs import (
     remove_job,
     resolve_job_ref,
     resume_job,
+    trigger_job,
     update_job)
 from tools.cronjob_prompt_scan import _scan_cron_prompt
 from tools.cronjob_job_args import (
@@ -152,6 +154,60 @@ def _forward_relay_fronted_run(job: Dict[str, Any], extra_prompt: Optional[str] 
             "This job targets a relay-fronted platform, which has no "
             "standalone sender. Start the gateway — its ticker will "
             "deliver the job on schedule via the live relay adapter."),
+    })
+
+
+def _primary_routed_delivery_platforms(job: Dict[str, Any]) -> set:
+    """Delivery-platform names this satellite profile reaches only through the primary gateway's
+    ``profile_routes``: routed here, with no credential of its own to send standalone."""
+    try:
+        from cron.scheduler import _resolve_delivery_targets
+        from cron.scheduler_preflight import _delivery_platform_routed_from_primary_gateway
+        routed = {t["platform"] for t in _resolve_delivery_targets(job) or []
+                  if t.get("platform") and _delivery_platform_routed_from_primary_gateway(t["platform"])}
+        if not routed:
+            return set()
+        from gateway.config import load_gateway_config
+        return routed - {p.value for p in load_gateway_config().get_connected_platforms()}
+    except Exception:
+        return set()
+
+
+def _hand_off_primary_routed_run(job: Dict[str, Any], extra_prompt: Optional[str] = None) -> Optional[str]:
+    """Queue a manual run for the gateway ticker when the job delivers through the primary gateway's
+    profile route: only the gateway process holding the primary's bot can send it, so an in-process
+    run would spend the whole turn and then record ``delivery_failed`` (#120330). Returns a JSON
+    result string when the hand-off engages, else None (normal in-process run)."""
+    runner_ref = getattr(sys.modules.get("gateway.run"), "_gateway_runner_ref", None)
+    if callable(runner_ref) and runner_ref() is not None:
+        return None  # inside the gateway: its live adapter delivers (#89302)
+    if not is_job_runnable(job):
+        return None  # keep the normal paused refusal; trigger_job would resume the job
+    routed = _primary_routed_delivery_platforms(job)
+    if not routed:
+        return None
+    from hermes_cli.cron import _builtin_gateway_liveness
+    alive = _builtin_gateway_liveness()
+    if alive is not True:
+        # None = the probe could not tell; a run queued for a ticker that may not exist is worse
+        # than an honest refusal (nothing would ever pick it up).
+        cause = ("Start the gateway — its ticker will deliver the job on schedule." if alive is False
+                 else "Could not determine whether a gateway serves this profile; check "
+                      "`hermes cron status` and re-run.")
+        return _dumps({
+            "success": False,
+            "error": (
+                f"This job delivers to {', '.join(sorted(routed))} through the primary "
+                f"gateway's profile route, which has no standalone sender. {cause}"),
+        })
+    updated = trigger_job(job["id"], extra_prompt=extra_prompt)
+    _notify_provider_jobs_changed_safe()
+    return _dumps({
+        "success": True,
+        "job": _format_job(updated),
+        "note": (
+            "This job delivers through the primary gateway's profile route; it was "
+            "queued for that gateway's next scheduler tick, which runs and delivers it."),
     })
 
 
@@ -271,6 +327,10 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
     job_id = job["id"]
     _registered = False
     fire_owner = None
+
+    registration_owner = object()
+    running_future = Future()
+    running_future.set_running_or_notify_cancel()
     try:
         from cron.scheduler import release_running_job, run_one_job, try_register_running_job
 
@@ -280,7 +340,9 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         # In-flight dedupe (idea from #53395 by @izumi0uu): the fire claim's TTL (300s) is routinely
         # outlived by real jobs, so it alone cannot stop a manual run from double-firing a job the ticker
         # (or another manual run) is still executing.
-        if not try_register_running_job(job_id):
+        if not try_register_running_job(
+            job_id, owner=registration_owner, future=running_future,
+        ):
             return {"claimed": True, "success": False, "error": _ALREADY_RUNNING_ERROR}
         _registered = True
 
@@ -296,6 +358,22 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         # task" and can break encrypted Matrix delivery (#61495 — salvaged from #63586 by @Fly-onlyone).
         runner = runner_ref() if callable(runner_ref) else None
         adapters = getattr(runner, "adapters", None) if runner is not None else None
+        # ``runner.adapters`` is the LAUNCH profile's map; under multiplex the run executes with
+        # HERMES_HOME bound to the owning profile, so resolve that profile's adapters the way the
+        # ticker (``tick_adapters_for``) does — fail closed, never the default bot (#124248). A
+        # resolution error propagates to the ``except`` below and marks the run failed.
+        if runner is not None and hasattr(runner, "_adapters_for_profile"):
+            from hermes_constants import get_hermes_home, profile_name_for_home
+
+            profile = profile_name_for_home(get_hermes_home())
+            adapters = runner._adapters_for_profile(profile)
+            # A credentialless shared-bot satellite borrows the primary's bot for ROUTED targets
+            # only — the same grant the ticker's ``tick_adapters_for`` makes, never the full map.
+            if getattr(runner, "_is_shared_bot_satellite", lambda _p: False)(profile):
+                from cron.scheduler_preflight import (
+                    SharedRouteAdapters, _primary_profile_routes_for_current_home)
+
+                adapters = SharedRouteAdapters(adapters, _primary_profile_routes_for_current_home())
         gateway_loop = getattr(runner, "_gateway_loop", None) if runner is not None else None
         try:
             # run_one_job records last_run_at/last_status via mark_job_run; `job` is the
@@ -304,7 +382,7 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
                 processed = run_one_job(job, adapters=adapters, loop=gateway_loop, extra_prompt=extra_prompt)
         finally:
             _registered = False
-            release_running_job(job_id)
+            release_running_job(job_id, owner=registration_owner)
         refreshed = get_job(job_id) or {}
         execution = None
         execution_id = job.get("execution_id")
@@ -328,15 +406,14 @@ def _run_claimed_job(job: Dict[str, Any], extra_prompt: Optional[str] = None) ->
         return {"claimed": True, "success": bool(processed and ok), "error": run_error}
     except Exception as e:
         logger.error("Failed to execute cron job %s immediately: %s", job_id, e)
-        if _registered:
-            # Raised before the run's own release (e.g. heartbeat setup): don't leave the
-            # job marked in-flight. Only release registrations WE took — a bare discard
-            # could erase a ticker-owned entry.
-            with contextlib.suppress(Exception):
-                release_running_job(job_id)
         with contextlib.suppress(Exception):
             mark_job_run(job_id, False, str(e), expected_fire_owner=fire_owner)
         return {"claimed": True, "success": False, "error": str(e)}
+    finally:
+        # Setup failures and BaseException must release only our registration.
+        if _registered:
+            release_running_job(job_id, owner=registration_owner)
+        running_future.set_result(None)
 
 
 def execute_job_for_event(
@@ -681,6 +758,10 @@ def _action_run(job: Dict[str, Any], a: Dict[str, Any]) -> str:
         scan_error = _scan_cron_prompt(extra_prompt)
         if scan_error:
             return tool_error(scan_error, success=False)
+    # Primary-routed satellite delivery has no sender outside the gateway: hand the run to its ticker.
+    handed_off = _hand_off_primary_routed_run(job, extra_prompt=extra_prompt)
+    if handed_off is not None:
+        return handed_off
     # A manual run must actually run even with no ticker active. Preferred: background
     # dispatch (handle now, outcome as a completion event); inline fallback otherwise.
     bg = _try_dispatch_background_run(job, session_id=a["session_id"], extra_prompt=extra_prompt)
@@ -1114,26 +1195,3 @@ registry.register(
     emoji="⏰",
     dynamic_schema_overrides=_cronjob_schema_overrides,
 )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import re  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'effective_job_state': ('cron.jobs', 'effective_job_state'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

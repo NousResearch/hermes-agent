@@ -343,3 +343,42 @@ class TestRedactCdpErrorText:
         out = _redact_cdp_error_text(err)
         assert "127.0.0.1:9222" in out
         assert "refused" in out
+
+
+class TestCdpSessionCommandArgs:
+    """A CDP-attached session runs in its own agent-browser daemon (--session) attached
+    to the remote browser (--cdp). Without --session every CDP task shared the default
+    daemon, so one task's snapshot refs (and its close) leaked into the others."""
+
+    def _argv(self, monkeypatch, session_info):
+        from tools import browser_tool_session as bt_session
+
+        captured = []
+
+        def fake_spawn(task_id, info, cmd_parts, *rest):
+            captured.extend(cmd_parts)
+            return {"success": True, "data": {}}
+
+        monkeypatch.setattr("tools.browser_tool_cdp._ensure_cdp_supervisor", lambda task_id: None)
+        monkeypatch.setattr(bt_session, "_spawn_and_collect", fake_spawn)
+        _engine, result = bt_session._dispatch_browser_command(
+            "test-task", session_info, "/usr/bin/agent-browser", "click", ["@e4"], 30, None)
+        assert result["success"] is True
+        return captured
+
+    def test_cdp_session_passes_its_own_session_and_cdp_url(self, monkeypatch):
+        argv = self._argv(monkeypatch, {
+            "session_name": "cdp_test_123",
+            "cdp_url": "ws://127.0.0.1:9222/devtools/browser/abc",
+        })
+
+        assert argv.count("--session") == 1
+        assert argv[argv.index("--session") + 1] == "cdp_test_123"
+        assert argv[argv.index("--cdp") + 1] == "ws://127.0.0.1:9222/devtools/browser/abc"
+        assert argv[-2:] == ["click", "@e4"]
+
+    def test_local_session_keeps_session_without_cdp(self, monkeypatch):
+        argv = self._argv(monkeypatch, {"session_name": "local_test_456"})
+
+        assert argv[argv.index("--session") + 1] == "local_test_456"
+        assert "--cdp" not in argv

@@ -21,7 +21,6 @@ import { ExternalOpenFailedDialog } from '@/components/external-open-failed-dial
 import { FindBar } from '@/components/find-bar'
 import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
-import { IntroRevealGate } from '@/components/intro-reveal'
 import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { OnboardingChatGate } from '@/components/onboarding-chat/gate'
@@ -35,6 +34,7 @@ import {
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
+import { SharedMetricsConsentDialog } from '@/components/shared-metrics/consent-dialog'
 import { TipHost } from '@/components/tips'
 import { emitGatewayEvent } from '@/contrib/events'
 import { translateNow } from '@/i18n'
@@ -88,6 +88,7 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { reportPendingUpdateRun } from '@/store/shared-metrics'
 import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
@@ -162,6 +163,7 @@ import {
   useBackgroundSync
 } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
+import { useDesktopMetrics } from './hooks/use-desktop-metrics'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
@@ -560,6 +562,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const {
     archiveSession,
     branchCurrentSession,
+    branchLoadedSession,
     branchStoredSession,
     createBackendSessionForSend,
     openNewSessionTile,
@@ -567,6 +570,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     resumeSession,
     selectSidebarItem,
     startFreshSessionDraft,
+    submitTextToNewSession,
     unarchiveSession
   } = useSessionActions({
     activeSessionId,
@@ -581,6 +585,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onFreshDraftRouteIntent: clearRoutedSessionIntent,
     requestGateway,
     resetViewSync,
+    routedSessionId,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionId,
     selectedStoredSessionIdRef,
@@ -789,6 +794,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // the tile TAB menu needs, without touching the primary view).
   useSessionTileDelegate({
     archiveSession,
+    branchLoadedSession,
     branchStoredSession,
     executeSlashCommand,
     removeSession,
@@ -804,7 +810,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // The global-hotkey Quick Entry window's bridge: its captured text rides the
   // SAME submit machinery the normal composer uses (current chat / picked
   // session / new session), and it hears gateway truth from this window.
-  useQuickEntryBridge({ startFreshSessionDraft, submitText })
+  useQuickEntryBridge({ submitText, submitTextToNewSession })
 
   // Leaving HUD mode hands this window the session back (see hud/handoff).
   useHudHandoff({ navigate, resumeSession })
@@ -940,6 +946,24 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       void armWakeWord(requestGateway)
     }
   }, [gatewayState, requestGateway])
+
+  useEffect(() => {
+    if (gatewayState !== 'open' || isAuxiliaryWindow()) {
+      return
+    }
+
+    const report = () => void reportPendingUpdateRun(requestGateway)
+    report()
+
+    return window.hermesDesktop?.updates?.onPendingRun?.(report)
+  }, [gatewayState, requestGateway])
+
+  useDesktopMetrics({
+    enabled: !isAuxiliaryWindow(),
+    gatewayOpen: gatewayState === 'open',
+    pathname: location.pathname,
+    profile: activeGatewayProfile
+  })
 
   const activeIsMessaging =
     !!selectedStoredSessionId &&
@@ -1334,7 +1358,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
       <RemoteDisplayBanner />
       {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
-      {!isAuxiliaryWindow() && <IntroRevealGate enabled={gatewayState === 'open'} />}
       {!isAuxiliaryWindow() && (
         <OnboardingChatGate
           enabled={gatewayState === 'open'}
@@ -1350,6 +1373,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             void refreshCurrentModel()
             void queryClient.invalidateQueries({ queryKey: ['model-options'] })
           }}
+          profile={activeGatewayProfile}
+          requestGateway={requestGateway}
+        />
+      )}
+      {!isAuxiliaryWindow() && (
+        <SharedMetricsConsentDialog
+          enabled={gatewayState === 'open'}
           profile={activeGatewayProfile}
           requestGateway={requestGateway}
         />

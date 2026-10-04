@@ -291,6 +291,11 @@
   },
   {
     "path": "hermes_cli/main_desktop.py",
+    "symbol": "_install_rebuilt_macos_bundles",
+    "kind": "bare_which"
+  },
+  {
+    "path": "hermes_cli/main_desktop.py",
     "symbol": "cmd_gui",
     "kind": "bare_which"
   },
@@ -342,11 +347,6 @@
   {
     "path": "hermes_cli/session_lost_and_found.py",
     "symbol": "find_sqlite3_cli",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/setup.py",
-    "symbol": "_check_espeak_ng",
     "kind": "bare_which"
   },
   {
@@ -427,6 +427,16 @@
   {
     "path": "hermes_constants.py",
     "symbol": "find_node_executable",
+    "kind": "bare_which"
+  },
+  {
+    "path": "pm/libatomic.py",
+    "symbol": "_command_plan",
+    "kind": "bare_which"
+  },
+  {
+    "path": "pm/libatomic.py",
+    "symbol": "_host_install_command",
     "kind": "bare_which"
   },
   {
@@ -562,11 +572,6 @@
   {
     "path": "tools/skillevaluator_scan.py",
     "symbol": "run_tier1_scan",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/skillevaluator_scan.py",
-    "symbol": "scanner_available",
     "kind": "bare_which"
   },
   {

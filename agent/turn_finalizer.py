@@ -326,6 +326,17 @@ def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) 
 def _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger) -> None:
     """Always INFO so agent.log captures WHY every turn ended; WARNING when the last
     message is a tool result (the "just stops" scenario)."""
+    _touch = getattr(agent, "_touch_activity", None)
+    if callable(_touch):
+        # Stamp the activity clock at the loop's end (#131740): the watchdog's stall
+        # surface then names the finalizer ("turn end logged") instead of the last
+        # API call, and a turn that wedges in the post-loop tail is measured — and
+        # aborted — from when the loop actually finished, not from the last provider
+        # response. Never raises into the finalizer.
+        try:
+            _touch("turn end logged")
+        except Exception:
+            logger.debug("turn-end activity stamp failed", exc_info=True)
     _last_msg_role = messages[-1].get("role") if messages else None
     _last_tool_name = None
     if _last_msg_role == "tool":
@@ -577,6 +588,9 @@ def finalize_turn(
     )
 
     _rollback_interrupted_preflight_display(agent, interrupted)
+
+    from hermes_cli.observability.shared_metrics_harness import finish_turn
+    finish_turn(agent, _turn_exit_reason, final_response, interrupted=interrupted, failed=failed)
 
     _cleanup_errors: List[str] = []
     # The model has answered (or the loop gave up): a title upgrade held back because it shares a

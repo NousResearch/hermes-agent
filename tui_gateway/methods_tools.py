@@ -66,6 +66,8 @@ def _profile_scoped_rpc(
             try:
                 with scope:
                     return body(*args)
+            except ProfileUnavailableError:
+                raise  # a body that binds ``profile`` itself (_session_home_scope) reports 4064 via dispatch
             except Exception as e:
                 return _err(rid, fail_code, f"{prefix}{e}")
         handler.__doc__ = body.__doc__
@@ -213,10 +215,24 @@ def _joined_output(r) -> str:
     return "\n".join(p for p in (r.stdout or "", r.stderr or "") if p).strip()
 
 
+def _session_toolsets(session) -> tuple:
+    """``(enabled, disabled)`` a session's read-back RPCs must reflect: the live agent's sets once built,
+    else what that session's profile would build with — ``_load_enabled_toolsets`` under the session's
+    profile scope, the same read ``_build_agent``/``_refresh_live_sessions`` make and the key
+    ``profiles.configure`` pins. A session whose agent is not built yet (``session.create`` with no
+    prompt) otherwise read back as "everything enabled" (#117977). ``None`` = all toolsets.
+    No session → the launch profile's config."""
+    agent = session.get("agent") if session else None
+    if agent is not None:
+        return getattr(agent, "enabled_toolsets", None), getattr(agent, "disabled_toolsets", None)
+    with _session_profile_runtime_scope(session or {}):
+        return _load_enabled_toolsets(_resolve_agent_platform(_session_source(session))), _load_disabled_toolsets()
+
+
 def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:
     toolsets = _tools_mod("toolsets")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = set((getattr(session["agent"], "enabled_toolsets", []) if session else _load_enabled_toolsets()) or [])
+    enabled = set(_session_toolsets(session)[0] or [])
     items = []
     for name in sorted(toolsets.get_all_toolsets().keys()):
         if info := toolsets.get_toolset_info(name):
@@ -476,7 +492,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
     ``agent.skill_commands`` guard), ``""`` when none."""
     usage, origin_of = _skill_usage_lookup()
     sc = _tools_mod("agent.skill_commands")
-    for k, info in sorted(sc.scan_skill_commands().items()):
+    for k, info in sorted(sc.get_skill_commands().items()):
         cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
@@ -488,28 +504,31 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
 def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
     (skills' message wins, then quick commands', then plugins'); only with no failure does it carry
-    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). Skill
-    discovery is bound to the calling session's profile and workspace (``_completion_cwd``: its record,
-    else the cwd a new session would be seeded with) so project-local skills register for the repo the
-    session is actually in (#114359)."""
+    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). Quick
+    command, plugin command and skill discovery are all home-keyed, so every loader runs bound to the
+    calling session's profile and workspace (``_completion_cwd``: its record, else the cwd a new
+    session would be seeded with) so project-local skills register for the repo the session is
+    actually in (#114359); a session-less draft is bound to ``params['profile']`` (#124651), and an
+    unknown profile is 4064 like ``complete.slash`` — never a launch-profile palette."""
     cat = _Catalog()
     _catalog_registry(cat)
     warning = ""
-    try:
-        _catalog_quick_commands(cat)
-    except Exception as e:
-        warning = f"quick_commands discovery unavailable: {e}"
-    try:
-        _catalog_plugin_commands(cat)
-    except Exception as e:
-        warning = warning or f"plugin command discovery unavailable: {e}"
     skills: dict[str, dict] = {}
-    try:
-        with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
+                             profile=params.get("profile")):
+        try:
+            _catalog_quick_commands(cat)
+        except Exception as e:
+            warning = f"quick_commands discovery unavailable: {e}"
+        try:
+            _catalog_plugin_commands(cat)
+        except Exception as e:
+            warning = warning or f"plugin command discovery unavailable: {e}"
+        try:
             collision_note = _catalog_skills(cat, skills)  # always runs: skills must list even when a loader failed
-        warning = warning or collision_note
-    except Exception as e:
-        warning = f"skill discovery unavailable: {e}"
+            warning = warning or collision_note
+        except Exception as e:
+            warning = f"skill discovery unavailable: {e}"
     return _ok(rid, {
         "pairs": cat.pairs, "sub": {k: v[:] for k, v in _tools_mod("hermes_cli.commands").SUBCOMMANDS.items()},
         "canon": cat.canon,
@@ -542,7 +561,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     r = _tools_mod("hermes_cli.commands").resolve_command(params.get("name", ""))
     if r:
-        return _ok(rid, {"canonical": r.name, "description": r.description, "category": r.category})
+        return _ok(rid, {"canonical": r.name, "description": r.describe(), "category": r.category})
     return _err(rid, 4011, f"unknown command: {params.get('name')}")
 
 
@@ -589,7 +608,7 @@ def _run_plugin_command(handler, arg: str, session=None) -> str:
 
 
 @contextlib.contextmanager
-def _session_home_scope(session, cwd: str | None = None):
+def _session_home_scope(session, cwd: str | None = None, profile: str | None = None):
     """Bind HERMES_HOME and the logical cwd to the session for the block.
 
     Skill/bundle/quick-command resolution is home-keyed (``skills.external_dirs``, ``skill-bundles/``,
@@ -598,10 +617,13 @@ def _session_home_scope(session, cwd: str | None = None):
     are cwd-keyed (``find_project_root`` reads the session-bound cwd first): these RPCs run on the socket
     thread with no session context, where the terminal scope resolves a placeholder ``terminal.cwd`` to
     ``$HOME`` and no project skill ever registers or dispatches (#114359). ``cwd`` overrides the session
-    record (a session-less catalog request binds the workspace a new session would be seeded with)."""
+    record (a session-less catalog request binds the workspace a new session would be seeded with).
+    ``profile`` scopes a session-less call (a Desktop draft names its rail-selected profile) (#124651)."""
     hc = _tools_mod("hermes_constants")
     rc = _tools_mod("agent.runtime_cwd")
     profile_home = session.get("profile_home") if session else None
+    if not session and profile:
+        profile_home = str(_profile_home(profile) or "") or None
     cwd = cwd or (str(session.get("cwd") or "") if session else "")
     token = hc.set_hermes_home_override(profile_home) if profile_home else None
     cwd_token = rc.set_session_cwd(cwd) if cwd else None
@@ -698,7 +720,25 @@ def _dispatch_skill(rid, params, session, name, arg):
         sc = _tools_mod("agent.skill_commands")
         cmds, key = sc.get_skill_commands(), f"/{name}"
         if key in cmds:
-            msg = sc.build_skill_invocation_message(key, arg, task_id=session.get("session_key", "") if session else "")
+            # Stacked leading /skill tokens (up to 5, cli.py + gateway parity, #74705): the
+            # first token matched above; consume any further leading skill tokens from `arg`,
+            # then build one invocation that loads every skill over the remaining instruction.
+            extra_keys, user_instruction = sc.split_stacked_skill_commands(arg)
+            if extra_keys:
+                stacked = sc.build_stacked_skill_invocation_message(
+                    [key, *extra_keys], user_instruction,
+                    task_id=session.get("session_key", "") if session else "")
+                if stacked:
+                    msg, loaded_names, missing = stacked
+                    notice = f"⚡ Loading {len(loaded_names)} stacked skills: {', '.join(loaded_names)}"
+                    if missing:
+                        notice += f"\nSkipped missing skills: {', '.join(missing)}"
+                    return _ok(rid, {
+                        "type": "skill", "message": msg, "name": cmds[key].get("name", name),
+                        "notice": notice, "display": _skill_scaffold_projection(msg)})
+            msg = sc.build_skill_invocation_message(
+                key, user_instruction,
+                task_id=session.get("session_key", "") if session else "")
             if msg:  # UIs render `display`, never `message`.
                 return _ok(rid, {
                     "type": "skill", "message": msg, "name": cmds[key].get("name", name),
@@ -725,7 +765,24 @@ def _prompt_builtin(module: str, fn: str, kw: str = ""):
 
 _cmd_learn = _prompt_builtin("agent.learn_prompt", "build_learn_prompt")
 _cmd_plan = _prompt_builtin("agent.plan_prompt", "build_plan_prompt")
-_cmd_init = _prompt_builtin("hermes_cli.init_command", "build_init_prompt_for_cwd", kw="extra")
+
+
+def _cmd_init(rid, params, session, name, arg):
+    """/init: build the AGENTS.md prompt against the SESSION's active directory, then submit it
+    as a normal turn (the live agent does the scan and the write). The desktop app launches the
+    backend from the home directory, so a process-cwd fallback scans and updates the HOME's
+    AGENTS.md instead of the workspace attached to the session."""
+    from hermes_cli.init_command import build_init_prompt_for_cwd
+    from tools.terminal_tool import get_session_cwd
+
+    skey = session.get("session_key") if session else None
+    cwd = None
+    with contextlib.suppress(Exception):  # no record → the builder's ladder decides
+        cwd = get_session_cwd(skey) if skey else None
+    if not (cwd and os.path.isdir(cwd)):  # a deleted project/removed worktree must not win
+        cwd = _session_cwd(session) if session else None
+    return _ok(rid, {"type": "send", "message": build_init_prompt_for_cwd(
+        extra=arg, cwd=cwd, session_key=skey)})
 
 
 def _cmd_moa(rid, params, session, name, arg):
@@ -749,7 +806,8 @@ def _cmd_moa(rid, params, session, name, arg):
             try:  # persist_override=False: turn-scoped, never persist the MoA provider to config.yaml
                 _apply_model_switch(
                     params.get("session_id", ""), session, f"{preset} --provider moa",
-                    confirm_expensive_model=False, pin_session_override=True, persist_override=False)
+                    confirm_expensive_model=False, pin_session_override=True, persist_override=False,
+                    count_switch=False)
             except Exception:
                 session.pop("moa_one_shot_restore", None)
                 raise
@@ -806,7 +864,15 @@ def _cmd_retry(rid, params, session, name, arg):
         if err:
             return err
         content = cc.retryable_user_text(rewound[1].get("content"))
+    _tui_model_friction("retry", session)
     return _ok(rid, {"type": "send", "message": content})
+
+
+def _tui_model_friction(signal, session, turns=1):
+    from hermes_cli.observability.shared_metrics_model import record_model_friction
+    record_model_friction(
+        signal, session_id=session.get("session_key"), agent=session.get("agent"),
+        hermes_home=session.get("profile_home"), turns=turns)
 
 
 def _cmd_steer(rid, params, session, name, arg):
@@ -904,6 +970,7 @@ def _cmd_undo(rid, params, session, name, arg):
         ):
             with contextlib.suppress(Exception):
                 step()
+    _tui_model_friction("undo", session, turns_undone)
     turn_word = "turn" if turns_undone == 1 else "turns"
     notice = f"↶ Undid {turns_undone} {turn_word} ({rewound_count} message(s)). Edit and resubmit, or send a new message."
     return _ok(rid, {"type": "prefill", "message": target_text, "notice": notice})
@@ -943,11 +1010,90 @@ def _cmd_compress(rid, params, session, name, arg):
         return _err(rid, 5009, f"compress failed: {exc}")
 
 
+# ─── /memory + /skills write-approval review ─────────────────────────────────
+# The review surface (pending / approve / reject / diff / approval) is owned by the shared handler
+# hermes_cli/write_approval_commands.handle_pending_subcommand, which the classic CLI and the
+# messaging gateway already reach. Desktop/TUI clients normally get it through slash.exec ->
+# _SlashWorker (a private HermesCLI), but command.dispatch is their FALLBACK stage — with no
+# route here, a failed worker turned every /memory into the routing refusal "not a quick/
+# plugin/bundle/skill command: memory", so staged writes had no review path at all.
+#
+# The store must resolve under the SAME home as the command, which is why these run inside the
+# dispatcher's `_session_home_scope(session)` block: `load_on_disk_store()` reads the profile's
+# MEMORY.md/USER.md and its memory char limits (see the scope note on `_session_home_scope`,
+# #110695).
+_MEMORY_USAGE = ("Unknown /memory subcommand. "
+                 "Use: pending, approve <id>, reject <id>, approval <on|off>.")
+_SKILLS_USAGE = ("Unknown /skills subcommand here. "
+                 "Use: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. "
+                 "(Search/install/browse are terminal-side.)")
+
+
+def _pending_subcommand_store(session):
+    """Memory store for the session's own profile: the live agent's store when there is one, else a
+    freshly loaded on-disk store — mirroring cli.py's /memory handler and the gateway's (Desktop/TUI
+    sessions have no long-lived agent store). ``None`` when even that fails, which the shared handler
+    reports as "memory store unavailable" instead of claiming the write was applied."""
+    if session:
+        with contextlib.suppress(Exception):
+            store = getattr(session.get("agent"), "_memory_store", None)
+            if store is not None:
+                return store
+    with contextlib.suppress(Exception):
+        return _tools_mod("tools.memory_tool").load_on_disk_store()
+    return None
+
+
+def _write_approval_mode_setter(subsystem: str):
+    """Persist ``<subsystem>.write_approval`` into the SESSION's profile config (this runs inside
+    ``_session_home_scope``, so ``_write_config_key`` writes the right profile's config.yaml)."""
+    return lambda enabled: _write_config_key(f"{subsystem}.write_approval", bool(enabled))
+
+
+def _run_pending_review(rid, subsystem: str, arg: str, session, *, unknown: str):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    out = handle_pending_subcommand(
+        subsystem, (arg or "").split(),
+        memory_store=_pending_subcommand_store(session) if subsystem == wa.MEMORY else None,
+        set_mode_fn=_write_approval_mode_setter(subsystem))
+    return _exec_out(rid, out if out is not None else unknown)
+
+
+def _cmd_memory(rid, params, session, name, arg):
+    """/memory — review staged memory writes, approve/reject them, toggle the gate."""
+    return _run_pending_review(rid, "memory", arg, session, unknown=_MEMORY_USAGE)
+
+
+def _cmd_skills(rid, params, session, name, arg):
+    """/skills write-approval subcommands only; the hub subcommands stay with the slash worker.
+
+    Returns None (falls through to the routing refusal, unchanged behaviour) for anything outside
+    the review surface — ``search``/``install``/``browse``/``inspect`` are the CLI skills hub's,
+    never a staged-write review. The allowlist mirrors the registry-declared review slice
+    (``CommandDef("skills", desktop_subcommands=...)`` in hermes_cli/commands.py)."""
+    sub = (arg or "").split()
+    commands = _tools_mod("hermes_cli.commands")
+    allowed = getattr(commands.resolve_command("skills"), "desktop_subcommands", None) or ()
+    if not sub or sub[0].lower() not in allowed:
+        return None
+    from tools import write_approval as wa
+    # The gate being off must not strand writes that are already staged (gateway parity): still
+    # answer when a pile exists, and point at the toggle when there is nothing to review.
+    if (sub[0].lower() not in {"approval", "mode"} and not wa.write_approval_enabled(wa.SKILLS)
+            and wa.pending_count(wa.SKILLS) == 0):
+        return _exec_out(rid, "Skill write approval is off (skills.write_approval). "
+                              "Enable it with /skills approval on, then review staged writes "
+                              "with /skills pending.")
+    return _run_pending_review(rid, "skills", arg, session, unknown=_SKILLS_USAGE)
+
+
 _SLASH_BUILTINS = {
     "queue": _cmd_queue, "q": _cmd_queue, "learn": _cmd_learn, "plan": _cmd_plan, "init": _cmd_init,
     "moa": _cmd_moa, "focus": _cmd_focus, "retry": _cmd_retry, "steer": _cmd_steer, "goal": _cmd_goal,
     "loop": _cmd_loop, "undo": _cmd_undo, "snapshot": _cmd_snapshot, "snap": _cmd_snapshot,
-    "compress": _cmd_compress, "compact": _cmd_compress}
+    "compress": _cmd_compress, "compact": _cmd_compress,
+    "memory": _cmd_memory, "skills": _cmd_skills}
 
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
@@ -1029,7 +1175,12 @@ def _(rid, params: dict) -> dict:
                 except Exception as e:
                     return _err(rid, 5030, f"slash worker start failed: {e}")
     try:
-        payload = {"output": worker.run(cmd) or "(no output)"}
+        output = worker.run(cmd)
+        if seed := (worker.pop_seed() if hasattr(worker, "pop_seed") else ""):
+            # /prompt//blueprint composed a next-turn prompt in the worker; route it as a
+            # send dispatch (both Desktop and TUI clients already handle {type:"send"}).
+            return _ok(rid, {"type": "send", "message": seed})
+        payload = {"output": output or "(no output)"}
         if warning := _mirror_slash_side_effects(sid, session, cmd):
             payload["warning"] = warning
         if base in _SESSION_CONTROL_SLASHES:
@@ -1064,8 +1215,9 @@ def _(rid, params: dict, session) -> dict:
     def go(mgr, cwd):
         if not mgr.enabled:
             return _ok(rid, {"enabled": False, "checkpoints": []})
-        keys = ("hash", "timestamp", "message")
-        rows = [{k: c.get(k, "") for k in keys} for c in mgr.list_checkpoints(cwd)]
+        # The TUI renders ``message``; the manager calls it ``reason``.
+        rows = [{"hash": c.get("hash", ""), "timestamp": c.get("timestamp", ""), "message": c.get("reason", "")}
+                for c in mgr.list_checkpoints(cwd)]
         return _ok(rid, {"enabled": True, "checkpoints": rows})
     return _with_checkpoints(session, go)
 
@@ -1133,11 +1285,15 @@ def _container_checkpoint_refusal(session, mgr, cwd) -> str | None:
 
 
 @method("browser.manage")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     action = params.get("action", "status")
-    if action == "status":
+    if action in {"status", "use"}:
+        from tools.browser_use_cli import is_browser_use_cli_mode, set_browser_use_mode
+        if action == "use":
+            set_browser_use_mode(params.get("enabled", True) is not False)
         url = _resolve_browser_cdp_url()
-        return _ok(rid, {"connected": bool(url), "url": url})
+        return _ok(rid, {"connected": bool(url), "url": url, "browser_use": is_browser_use_cli_mode()})
     if action == "disconnect":
         return _browser_disconnect(rid)
     if action == "connect":
@@ -1169,8 +1325,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     mt = _tools_mod("model_tools")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = getattr(session["agent"], "enabled_toolsets", None) if session else _load_enabled_toolsets()
-    disabled = getattr(session["agent"], "disabled_toolsets", None) if session else _load_disabled_toolsets()
+    enabled, disabled = _session_toolsets(session)
     # Pre-assembly list: /tools must also show tools deferred behind the tool_search bridge (as the CLI).
     tools = mt.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True,
                                     skip_tool_search_assembly=True)
@@ -1296,12 +1451,33 @@ del _name, _fn, _keys
 def _skills_search(rid, params, query):
     search, gh = _tools_mod("tools.skills_hub_search"), _tools_mod("tools.skills_hub_github")
     raw = search.unified_search(query, search.create_source_router(gh.GitHubAuth()), source_filter="all", limit=20) or []
-    return _ok(rid, {"results": [{"name": r.name, "description": r.description} for r in raw]})
+    return _ok(rid, {"results": [{"name": r.name, "description": r.describe()} for r in raw]})
 
 
 def _skills_install(rid, params, query):
-    quiet = _tools_mod("types").SimpleNamespace(print=lambda *a, **k: None)
-    _tools_mod("hermes_cli.skills_hub").do_install(query, skip_confirm=True, console=quiet)
+    """Install via `do_install(skip_confirm=True)`; the profile-scoped console is a sink, so the
+    RPC must carry the outcome itself. The install path prints a full scan report before the
+    gate (skills_hub._scan_quarantined); a blocked or failed install returned `installed: True`
+    before, which read as success to every caller (#63307 Part B)."""
+    class _Capture:
+        """Console stand-in: collect lines so the verdict travels with the response."""
+
+        def __init__(self):
+            self.lines = []
+
+        def print(self, *args, **kwargs):
+            self.lines.append(" ".join(str(a) for a in args))
+
+    captured = _Capture()
+    verdict = _tools_mod("hermes_cli.skills_hub").do_install(
+        query, skip_confirm=True, console=captured)
+    installed = verdict is True
+    if not installed:
+        # The tail carries the reason the CLI user would have seen: the scan-block message,
+        # the "Multiple skills named" candidate table, or the fetch failure.
+        log = "\n".join(captured.lines[-12:]).strip()
+        return _err(rid, 5031, log.splitlines()[-1] if log else "skill install failed",
+                    data={"installed": False, "name": query, "log": log or None})
     return _ok(rid, {"installed": True, "name": query})
 
 
@@ -1337,7 +1513,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     # Bound like ``commands.catalog``: an unbound rescan runs against the launch env, reports the session's
     # project skills as "Removed" and republishes a registry without them (#114359).
-    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params)):
+    with _session_home_scope(_sessions.get(params.get("session_id", "")), cwd=_completion_cwd(params),
+                             profile=params.get("profile")):
         result = _tools_mod("agent.skill_commands").reload_skills()
     added, removed = result.get("added") or [], result.get("removed") or []
     lines = ["Reloading skills..."] + ([] if added or removed else ["No new skills detected."])
@@ -1416,8 +1593,9 @@ def _(rid, params: dict) -> dict:
     # Explicit url/command wins. Otherwise a desktop catalog id is resolved
     # before the CLI preset registry — that registry raises, and the wrapper
     # turns the raise into 5024 before the 4063 check below can run.
+    catalog = _tools_mod("hermes_cli.mcp_catalog")
+    entry = None
     if preset and not (server_config.get("url") or server_config.get("command")):
-        catalog = _tools_mod("hermes_cli.mcp_catalog")
         entry = catalog.get_entry(preset)
         if entry is not None:
             for key, value in catalog._build_server_config(entry, install_dir=None).items():
@@ -1434,7 +1612,10 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4063, "config must specify a 'url' (http) or 'command' (stdio), or a valid 'preset'")
     if bearer_token := params.get("bearer_token"):
         server_config["headers"] = mc._save_bearer_auth_token(name, str(bearer_token))
-    if not mc._save_mcp_server(name, server_config):
+    saved_ok = mc._save_mcp_server(name, server_config)
+    source = "catalog" if entry is not None else ("url" if server_config.get("url") else "local")
+    catalog.record_mcp_install(source, entry.name if entry else None, "success" if saved_ok else "failed")
+    if not saved_ok:
         return _err(rid, 4001, f"server '{name}' rejected: suspicious command/args configuration")
     saved = mc._get_mcp_servers().get(name, server_config)
     return _ok(rid, {"ok": True, "name": name, "server": _mcp_summarize_server(name, saved)})
@@ -1616,9 +1797,9 @@ def _plugin_rows() -> list[dict]:
     pc = _tools_mod("hermes_cli.plugins_cmd")
     cat = _tools_mod("hermes_cli.plugins_cmd_catalog")
     enabled, disabled = pc._get_enabled_set(), pc._get_disabled_set()
-    pins = cat.catalog_pins()  # powers the desktop's "Update to <pin>" affordance
-    versions = cat.catalog_versions()
-    titles = cat.catalog_titles()  # server-sentence display names: ONE live-catalog resolution
+    # pins power the desktop's "Update to <pin>" affordance; titles are the server-sentence display
+    # names. One live-catalog resolution for the whole listing (see ``catalog_rows_maps``).
+    pins, versions, titles = cat.catalog_rows_maps()
     ref_pins = pc._read_install_metadata()  # ``--ref`` installs: pinned_sha so the desktop can show the pin
     out = []
     active = pc._category_active_names()

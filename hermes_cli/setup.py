@@ -381,8 +381,10 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     _info("Choose how to connect to your main chat model.",
           f"   Guide: {_DOCS_BASE}/integrations/providers", None)
     from hermes_cli.main import select_provider_and_model
+    from hermes_cli.observability.shared_metrics_setup import provider_setup_surface
     try:
-        select_provider_and_model()
+        with provider_setup_surface("cli_setup"):
+            select_provider_and_model()
     except (SystemExit, KeyboardInterrupt):
         _info(None, "Provider setup skipped.")
     except Exception as exc:
@@ -399,15 +401,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     config.clear()
     config.update(load_config())
     save_config(config)
-
-
-# =============================================================================
-# Section 1b: TTS Provider Configuration
-
-
-def _check_espeak_ng() -> bool:
-    """Check if espeak-ng is installed."""
-    return shutil.which("espeak-ng") is not None or shutil.which("espeak") is not None
 
 
 # =============================================================================
@@ -532,25 +525,31 @@ _SEND_CONSENT_EXPLAINER = (
 def setup_telemetry(config: dict):
     """Configure the local shared-metrics subscriber and optional sending."""
     print_header("Shared Metrics")
-    _info("Shared metrics contain only bounded counters and histograms.",
+    _info("Shared metrics contain only bounded counters: activity, session length,",
+          "outcomes, error classes, model routes and token totals, built-in tool, command",
+          "and catalog names, bucketed setup counts, update results and timing, crashes,",
+          "startup and reply speed, messaging-platform health, how Hermes gets used",
+          "(agent accuracy and efficiency, active time per surface, which features and",
+          "settings are used or switched off, provider setup outcomes), and coarse",
+          "machine facts (RAM range, GPU type, version age and channel, updates behind,",
+          "local model server yes/no). Never prompts, files, paths, setting values or",
+          "error text.",
           "Collection is local. Sending them to Nous is a separate opt-in.")
+    # The answer is written to config.yaml here, not by the caller's later save: that save strips
+    # values equal to the defaults, so a "no" would vanish and every surface would ask again.
+    from hermes_cli.observability.shared_metrics_consent import save_consent
+
     shared_metrics = _sub_dict(_sub_dict(config, "telemetry"), "shared_metrics")
-    current = shared_metrics.get("enabled") is True
-    shared_metrics["enabled"] = prompt_yes_no("Enable local shared metrics?", default=current)
-    if not shared_metrics["enabled"]:
+    if not prompt_yes_no("Enable local shared metrics?", default=shared_metrics.get("enabled") is True):
         print_info("Local shared metrics disabled.")
-        # Sending cannot outlive collection (send=true would log an error every run, never send).
+        # Sending cannot outlive collection; turning collection off withdraws send consent too.
         if shared_metrics.get("send") is True:
-            shared_metrics["send"] = False
             print_info("Sending shared metrics disabled as well.")
-        # Turning collection off withdraws send consent too. Recorded unconditionally: the send
-        # key may already be false while the consent window is still open, and it must close.
-        _record_send_consent_change(enabled=False)
+        save_consent(False, False, config)
         return
     print_success("Local shared metrics enabled.")
     _info(*_SEND_CONSENT_EXPLAINER)
-    shared_metrics["send"] = prompt_yes_no("Send shared metrics to Nous?", default=shared_metrics.get("send") is True)
-    _record_send_consent_change(enabled=shared_metrics["send"])
+    save_consent(True, prompt_yes_no("Send shared metrics to Nous?", default=shared_metrics.get("send") is True), config)
     if shared_metrics["send"]:
         print_success("Sending shared metrics enabled.")
     else:
@@ -715,6 +714,7 @@ def _run_setup_wizard_impl(args):
         # backwards-compatible no-op here.
         if quick_requested:
             _run_setup_steps([("Quick Setup", lambda: _run_quick_setup(config, hermes_home))])
+            _record_setup_completed(config)
             return
         print_header("Reconfigure", gap=True)
         print_success("You already have Hermes configured.")
@@ -735,6 +735,7 @@ def _run_setup_wizard_impl(args):
         if runner is not None:
             from hermes_cli import setup_quick
             _run_setup_steps([(label, lambda: getattr(setup_quick, runner)(config, hermes_home, is_existing))])
+            _record_setup_completed(config)
             return
     _run_full_setup(config, hermes_home, is_existing=is_existing, migration_ran=migration_ran)
 
@@ -745,32 +746,15 @@ def _run_setup_wizard_impl(args):
               "If setup changed a value you customized, restore it with:",
               f"  cp {_backup_path} {config_path}")
     _print_setup_summary(config, hermes_home)
+    _record_setup_completed(config)
 
 
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Any  # noqa: F401,E402
-from typing import Dict  # noqa: F401,E402
-from typing import Optional  # noqa: F401,E402
-import json  # noqa: F401,E402
-import shutil  # noqa: F401,E402
+def _record_setup_completed(config: dict) -> None:
+    """Count a wizard run that finished. Every setup flow ends here, so the one-time
+    shared-metrics offer runs first: a user who opts in now is counted; the API checks enablement."""
+    from hermes_cli.observability.shared_metrics_consent import offer_consent_if_undecided
 
-
-_PLUGIN_COMPAT_LAZY = {
-    'get_nous_subscription_features': ('hermes_cli.nous_subscription', 'get_nous_subscription_features'),
-    'get_optional_skills_dir': ('hermes_constants', 'get_optional_skills_dir'),
-    'managed_nous_tools_enabled': ('tools.tool_backend_helpers', 'managed_nous_tools_enabled'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----
+    offer_consent_if_undecided(config)
+    from hermes_cli.observability.shared_metrics_events import record_setup_completed
+    model = config.get("model")
+    record_setup_completed(surface="cli", provider=model.get("provider") if isinstance(model, dict) else None)

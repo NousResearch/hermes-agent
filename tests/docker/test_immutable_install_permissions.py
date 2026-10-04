@@ -4,7 +4,9 @@ from __future__ import annotations
 import subprocess
 import textwrap
 
-from tests.docker.conftest import docker_exec, docker_exec_sh, start_container
+from tests.docker.conftest import (
+    docker_exec, docker_exec_sh, start_container, wait_for_container_ready,
+)
 
 
 def test_container_sets_hosted_write_policy_env(built_image: str) -> None:
@@ -48,6 +50,26 @@ def test_container_initializes_private_file_scratch_dir(
         "assert denied('/tmp/.X11-unix/X1') is not None",
     )
     assert policy.returncode == 0, policy.stdout + policy.stderr
+
+
+def test_container_boots_when_scratch_chown_fails(
+    built_image: str, container_name: str,
+) -> None:
+    # Without CAP_CHOWN, root cannot chown, as under rootless Podman.
+    subprocess.run(
+        ["docker", "run", "-d", "--name", container_name, "--cap-drop", "CHOWN",
+         built_image, "sleep", "infinity"],
+        check=True, capture_output=True, timeout=60,
+    )
+    wait_for_container_ready(container_name)
+    scratch = docker_exec_sh(
+        container_name,
+        'test -d /tmp/hermes-files && test ! -L /tmp/hermes-files && '
+        'test "$(stat -c %u /tmp/hermes-files)" = "0" && '
+        'test "$(stat -c %a /tmp/hermes-files)" = "700" && '
+        '! touch /tmp/hermes-files/write-probe 2>/dev/null',
+    )
+    assert scratch.returncode == 0, scratch.stderr[-2000:]
 
 
 def test_hermes_user_cannot_modify_install_but_can_write_data(built_image: str) -> None:

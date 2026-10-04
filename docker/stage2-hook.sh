@@ -405,16 +405,15 @@ mkdir -p "$file_scratch_dir" || {
     echo "[stage2] ERROR: could not create file scratch directory $file_scratch_dir"
     exit 1
 }
-chown hermes:hermes "$file_scratch_dir" || {
-    echo "[stage2] ERROR: could not chown file scratch directory $file_scratch_dir"
-    exit 1
-}
-chmod 0700 "$file_scratch_dir" || {
-    echo "[stage2] ERROR: could not chmod file scratch directory $file_scratch_dir"
-    exit 1
-}
+# Rootless Podman maps root to an unprivileged UID, so chown can fail. The dir
+# then stays root owned and 0700: hermes cannot write it, and the boot goes on.
+chown hermes:hermes "$file_scratch_dir" 2>/dev/null || \
+    echo "[stage2] Warning: chown $file_scratch_dir failed (rootless container?), continuing"
+chmod 0700 "$file_scratch_dir" 2>/dev/null || \
+    echo "[stage2] Warning: chmod $file_scratch_dir failed (rootless container?), continuing"
+file_scratch_owner=$(stat -c %u "$file_scratch_dir" 2>/dev/null || echo unknown)
 if [ ! -d "$file_scratch_dir" ] || [ -L "$file_scratch_dir" ] || \
-   [ "$(stat -c %u "$file_scratch_dir" 2>/dev/null || echo unknown)" != "$actual_hermes_uid" ] || \
+   { [ "$file_scratch_owner" != "$actual_hermes_uid" ] && [ "$file_scratch_owner" != "0" ]; } || \
    [ "$(stat -c %a "$file_scratch_dir" 2>/dev/null || echo unknown)" != "700" ]; then
     echo "[stage2] ERROR: file scratch directory validation failed for $file_scratch_dir"
     exit 1

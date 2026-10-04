@@ -462,12 +462,17 @@ def restart_safe_gateway_child_argv(
     return GatewayChildDispatch("scoped", scoped)
 
 
-def _stop_systemd_unit(unit_name: str) -> bool:
+def _stop_systemd_unit(unit_name: str, *, no_block: bool = False) -> bool:
     """Stop a transient systemd user scope by unit name.
     Reaps the *entire* cgroup — catching double-forked descendants reparented to init
     inside the scope that survive a plain PID signal (SIGTERM all, SIGKILL after
     ``TimeoutStopSec``). True if stopped or already gone; False if ``systemctl`` is
     unavailable or the stop failed.
+
+    ``no_block`` enqueues the job and returns without waiting for it (``systemctl
+    --no-block``): the ExecStopPost scope sweep runs on the restart path, where
+    waiting out a stop job for an escapee that ignores SIGTERM would spend the
+    unit's ``TimeoutStopSec``.
 
     See #70716.
     """
@@ -478,7 +483,7 @@ def _stop_systemd_unit(unit_name: str) -> bool:
         return False
     try:
         result = subprocess.run(
-            [binary, "--user", "stop", unit_name],
+            [binary, "--user", *(("--no-block",) if no_block else ()), "stop", unit_name],
             capture_output=True,
             timeout=15,
             stdin=subprocess.DEVNULL,

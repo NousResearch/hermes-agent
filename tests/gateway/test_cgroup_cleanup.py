@@ -103,11 +103,60 @@ class TestLiveGatewayGuard:
         assert cgroup_cleanup.reap_cgroup(cgroup_path) == 1
         assert killed == [777]
 
-        # The kill set comes from a fresh cgroup.procs read taken after the
-        # (slow) guard: a PID that exited meanwhile is not signalled (it may be
-        # reused outside the cgroup) and an orphan spawned meanwhile is reaped.
-        reads = iter([[777, os.getpid()], [888, os.getpid()]])
-        monkeypatch.setattr(cgroup_cleanup, "_read_cgroup_pids", lambda _p: next(reads))
-        killed.clear()
-        assert cgroup_cleanup.reap_cgroup(cgroup_path) == 1
-        assert killed == [888]
+class TestForegroundScopeSweep:
+    """The ExecStopPost parity for foreground scopes (#70716): a SIGKILLed gateway
+    leaves its long-lived command in ``hermes-fg-<pid>-*.scope``, which neither the
+    unit's KillMode nor the cgroup reap reaches, and the next gateway has a new PID."""
+
+    def test_sweep_reads_the_dead_pid_from_the_record_and_does_not_block(self, monkeypatch):
+        import gateway.status
+
+        monkeypatch.setattr(gateway.status, "_read_pid_record", lambda path=None: {"pid": 4242})
+        seen: dict = {}
+        monkeypatch.setattr(
+            "tools.environments.local.stop_foreground_scopes",
+            lambda pid=None, **kw: seen.update(pid=pid, **kw),
+        )
+
+        assert cgroup_cleanup.reap_foreground_scopes() is True
+        # KillMode=mixed never reaches the scope, so $MAINPID would have to — and it is
+        # unset in ExecStopPost. The record is the substitute; the PID stays in the glob.
+        assert seen == {"pid": 4242, "no_block": True}
+
+    def test_sweep_accepts_an_explicit_pid(self, monkeypatch):
+        seen: list = []
+        monkeypatch.setattr(
+            "tools.environments.local.stop_foreground_scopes",
+            lambda pid=None, **kw: seen.append((pid, kw)),
+        )
+
+        assert cgroup_cleanup.reap_foreground_scopes(777) is True
+        assert seen == [(777, {"no_block": True})]
+
+    def test_no_sweep_without_a_record(self, monkeypatch):
+        # A graceful stop unlinks the record before exiting, and it also stops its own
+        # scopes in-process — so a missing record must not turn into a blind sweep.
+        import gateway.status
+
+        monkeypatch.setattr(gateway.status, "_read_pid_record", lambda path=None: None)
+        called: list = []
+        monkeypatch.setattr(
+            "tools.environments.local.stop_foreground_scopes", lambda *a, **kw: called.append(a)
+        )
+
+        assert cgroup_cleanup.reap_foreground_scopes() is False
+        assert called == []
+
+    def test_main_sweeps_only_after_a_permitted_reap(self, monkeypatch):
+        monkeypatch.setattr(cgroup_cleanup, "_parent_is_systemd", lambda: True)
+        swept: list = []
+        monkeypatch.setattr(cgroup_cleanup, "reap_foreground_scopes", lambda *a, **kw: swept.append(a))
+
+        # Refusal path (a live gateway is in the cgroup): its scopes must survive.
+        monkeypatch.setattr(cgroup_cleanup, "reap_cgroup", lambda *_a: None)
+        assert cgroup_cleanup.main() == 1
+        assert swept == []
+
+        monkeypatch.setattr(cgroup_cleanup, "reap_cgroup", lambda *_a: 0)
+        assert cgroup_cleanup.main() == 0
+        assert swept == [()]

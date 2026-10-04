@@ -58,6 +58,14 @@ import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
+export async function applyWhenConfirmed(confirmFn: () => Promise<boolean>, apply: () => void): Promise<void> {
+  await confirmFn().then(ok => {
+    if (ok) apply()
+  }).catch(() => {
+    console.debug('[toolsets-wipe] confirm() rejected — treating as cancellation')
+  })
+}
+
 export function ConfigSettings({
   activeSectionId,
   subpage,
@@ -284,11 +292,7 @@ function ConfigSettingsInner({
     // Auto-save is debounced with no undo, so confirm a non-empty → empty
     // transition before applying it. Every other edit passes through untouched.
     if (config && clearsEnabledToolsets(config, next)) {
-      void confirm({ destructive: true, title: c.toolsetsWipeConfirm }).then(ok => {
-        if (ok) {
-          applyConfig(next)
-        }
-      })
+      void applyWhenConfirmed(() => confirm({ destructive: true, title: c.toolsetsWipeConfirm }), () => applyConfig(next))
 
       return
     }

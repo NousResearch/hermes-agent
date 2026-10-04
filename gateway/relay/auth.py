@@ -22,6 +22,16 @@ def sign(payload: str, secret: str) -> str:
     return hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def is_usable_secret(secret: object) -> bool:
+    """True when ``secret`` is a string with at least one non-space character.
+
+    A whitespace-only value is what an unset key looks like in config. It is
+    falsy to a person and truthy to ``if not secret``, so a bare falsy check
+    lets it through. Non-strings are rejected for the same reason.
+    """
+    return isinstance(secret, str) and bool(secret.strip())
+
+
 def make_token(payload: str, secret: str, ttl_seconds: int = 0) -> str:
     """``base64url(f"{payload}:{exp}:{sig}")``; ``exp`` unix seconds (0 = never).
 

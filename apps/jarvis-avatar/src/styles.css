@@ -1,0 +1,80 @@
+/* Sora (SIL Open Font License 1.1) — arquivos locais em assets/fonts */
+@font-face{font-family:'Sora';font-style:normal;font-weight:300;font-display:swap;src:url(../assets/fonts/sora-300.woff2) format('woff2')}
+@font-face{font-family:'Sora';font-style:normal;font-weight:600;font-display:swap;src:url(../assets/fonts/sora-600.woff2) format('woff2')}
+@font-face{font-family:'Sora';font-style:normal;font-weight:700;font-display:swap;src:url(../assets/fonts/sora-700.woff2) format('woff2')}
+:root{
+  --void:#02040b;
+  --holo:#2e86ff;
+  --rim:#9be1ff;
+  --core:#ffb648;
+  --ink:#dcebff;
+  --mist:#7c97b8;
+  --glass:rgba(6,20,48,.52);
+  --edge:rgba(155,225,255,.18);
+  --font:'Sora','Avenir Next','Segoe UI Variable','Segoe UI',ui-sans-serif,system-ui,sans-serif;
+  color-scheme:dark;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px);
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+*,*::before,*::after{box-sizing:inherit}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;height:100%;overflow:hidden;background:var(--void);color:var(--ink);font:300 15px/1.45 var(--font);
+  -webkit-font-smoothing:antialiased;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+#bloom{pointer-events:none;mix-blend-mode:screen;filter:blur(8px) brightness(1.7) saturate(1.2);opacity:0}
+
+.status{position:fixed;top:calc(18px + env(safe-area-inset-top,0px));left:22px;z-index:5;display:flex;align-items:center;gap:10px;
+  font-size:14px;color:var(--mist);pointer-events:none;transition:opacity .4s}
+.status b{font-weight:600;color:var(--ink)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--rim);box-shadow:0 0 12px var(--rim);transition:background .5s,box-shadow .5s}
+body[data-state="listening"] .dot{animation:pulse 1.1s ease-in-out infinite}
+body[data-state="thinking"] .dot{background:var(--core);box-shadow:0 0 14px var(--core)}
+body[data-state="speaking"] .dot{background:#fff;box-shadow:0 0 16px var(--rim)}
+@keyframes pulse{50%{transform:scale(1.6);opacity:.6}}
+
+#dock{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:6;
+  width:min(600px,calc(100vw - 24px));display:flex;flex-direction:column;align-items:center;gap:8px;transition:opacity .4s}
+.say{display:flex;align-items:center;gap:6px;width:100%;padding:6px 6px 6px 20px;background:var(--glass);border:1px solid var(--edge);
+  border-radius:999px;backdrop-filter:blur(16px) saturate(1.4);-webkit-backdrop-filter:blur(16px) saturate(1.4);transition:border-color .3s}
+.say:focus-within{border-color:rgba(155,225,255,.45)}
+.say input{flex:1;min-width:0;padding:10px 0;background:none;border:0;outline:0;color:var(--ink);font:inherit;font-size:15px;
+  user-select:text;-webkit-user-select:text}
+.say input::placeholder{color:var(--mist)}
+.say button{flex:none;min-height:44px;padding:0 22px;border:0;border-radius:999px;cursor:pointer;color:#031026;font:600 14px/1 var(--font);
+  background:linear-gradient(180deg,var(--rim),var(--holo))}
+.controls{display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:0 2px;font-size:14px}
+.controls button{position:relative;min-height:44px;padding:10px 12px;border:0;border-radius:10px;background:none;cursor:pointer;
+  color:var(--mist);font:inherit;transition:color .25s}
+.controls button:hover,.controls button[aria-pressed="true"]{color:var(--ink)}
+.controls button[aria-pressed="true"]::after{content:"";position:absolute;left:12px;right:12px;bottom:7px;height:1px;
+  background:var(--rim);box-shadow:0 0 8px var(--rim)}
+#think[aria-pressed="true"]::after{background:var(--core);box-shadow:0 0 8px var(--core)}
+.gap{width:1px;height:18px;margin:0 8px;background:var(--edge)}
+button:focus-visible,input:focus-visible{outline:2px solid var(--rim);outline-offset:2px}
+
+#hint{position:fixed;left:0;right:0;bottom:calc(140px + env(safe-area-inset-bottom,0px));z-index:4;margin:0;text-align:center;
+  font-size:13px;color:var(--mist);pointer-events:none;opacity:0;transition:opacity 1s}
+body.ready #hint{animation:hintLife 10s ease forwards}
+@keyframes hintLife{0%{opacity:0}10%{opacity:1}85%{opacity:1}100%{opacity:0}}
+#toast{position:fixed;left:50%;top:calc(16px + env(safe-area-inset-top,0px));z-index:7;transform:translate(-50%,-8px);
+  max-width:min(560px,calc(100vw - 32px));padding:10px 16px;border-radius:14px;background:var(--glass);border:1px solid var(--edge);
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);font-size:14px;text-align:center;opacity:0;pointer-events:none;
+  transition:opacity .3s,transform .3s}
+#toast.on{opacity:1;transform:translate(-50%,0)}
+#fps{position:fixed;top:calc(18px + env(safe-area-inset-top,0px));right:22px;z-index:5;display:none;font-size:12px;color:var(--mist);pointer-events:none}
+body.debug #fps{display:block}
+#loading{position:fixed;inset:0;z-index:8;display:grid;place-items:center;font-size:14px;color:var(--mist);background:var(--void);transition:opacity .8s}
+body.ready #loading{opacity:0;pointer-events:none}
+body.hide-ui #dock,body.hide-ui .status,body.hide-ui #hint{opacity:0;pointer-events:none}
+#nogl{position:fixed;inset:0;z-index:9;display:grid;place-items:center;padding:24px;text-align:center;background:var(--void)}
+#nogl[hidden]{display:none}
+@media (max-width:560px){
+  #hint{bottom:calc(196px + env(safe-area-inset-bottom,0px))}
+  .controls{font-size:13px}
+  .controls button{padding:10px 9px}
+  .gap{flex-basis:100%;width:auto;height:0;margin:0;background:none}
+}
+@media (prefers-reduced-motion:reduce){
+  body[data-state="listening"] .dot{animation:none}
+}

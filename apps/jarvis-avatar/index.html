@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jarvis — avatar de partículas</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="src/styles.css">
+<!-- as camadas da cena começam a baixar junto com o HTML -->
+<link rel="preload" as="image" href="assets/img/fundo.webp">
+<link rel="preload" as="image" href="assets/img/emissao.png">
+<link rel="preload" as="image" href="assets/img/info.png">
+</head>
+<body data-state="idle">
+<canvas id="gl" aria-label="Avatar do Jarvis formado por partículas"></canvas>
+<canvas id="bloom" aria-hidden="true"></canvas>
+
+<div class="status" aria-live="polite"><span class="dot"></span><span><b>Jarvis</b> <span id="state">está pronto</span></span></div>
+<div id="fps"></div>
+<div id="toast" role="status"></div>
+<p id="hint">Passe o mouse pela figura e clique para soltar uma onda</p>
+
+<div id="dock">
+  <div class="say">
+    <input id="say" type="text" maxlength="80" autocomplete="off" spellcheck="false"
+           placeholder="Escreva algo para o Jarvis falar" aria-label="Texto para o Jarvis falar ou formar com partículas">
+    <button id="speak" type="button">Falar</button>
+  </div>
+  <div class="controls" role="toolbar" aria-label="Controles do Jarvis">
+    <button id="mic" type="button" aria-pressed="false">Microfone</button>
+    <button id="think" type="button" aria-pressed="false">Pensar</button>
+    <span class="gap" aria-hidden="true"></span>
+    <button type="button" data-shape="head" aria-pressed="true">Cabeça</button>
+    <button type="button" data-shape="sphere" aria-pressed="false">Esfera</button>
+    <button type="button" data-shape="galaxy" aria-pressed="false">Galáxia</button>
+    <button type="button" data-shape="text" aria-pressed="false">Texto</button>
+  </div>
+</div>
+
+<div id="loading">Carregando o Jarvis…</div>
+<div id="nogl" hidden><p>Não foi possível iniciar a cena 3D.</p></div>
+
+<script type="module" src="src/main.js"></script>
+</body>
+</html>

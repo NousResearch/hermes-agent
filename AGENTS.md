@@ -458,3 +458,6 @@ Adicionadas em 2026-09-02 — regras específicas deste fork (não alteram o gui
 4. **Commits** em Conventional Commits; mensagem resume a intenção.
 5. **Idioma**: responder ao usuário em pt-BR.
 6. **Compounding**: adicionar aqui gotchas conforme surgirem.
+7. **`apps/jarvis-avatar/`** (avatar WebGL, sem package.json — fora dos workspaces npm): `index.html` usa módulos ES e
+   só abre via http (`python3 -m http.server`); para artifact/arquivo único rode `python3 build.py` → `dist/jarvis.html`.
+   O build concatena os módulos sem bundler: nomes de topo precisam ser únicos entre `src/*.js` (o build acusa colisão).

@@ -141,6 +141,31 @@ class TestAuxClientEndpointMatchedProviderHeaders:
         assert headers.get("x-headroom-base-url") == "https://api.z.ai/api/coding/paas/v4"
         assert headers.get("x-headroom-original-path") == "/chat/completions"
 
+    def test_endpoint_matched_headers_never_override_codex_identity(self, tmp_path):
+        """A ``providers:`` entry keyed on the official Codex URL must not strip the
+        required identity headers: ``apply_required_codex_headers`` is documented as
+        landing AFTER user/provider overrides (AI review ordering catch — merging the
+        endpoint headers later let ``originator`` be overridden, diverging from both
+        base and the async twin)."""
+        _write_config(tmp_path, {
+            "model": {"default": "gpt-5.2", "provider": "codex"},
+            "providers": {
+                "codex": {
+                    "api": "https://chatgpt.com/backend-api/codex",
+                    "extra_headers": {
+                        "originator": "evil-override",
+                        "User-Agent": "curl/8.7.1",
+                    },
+                },
+            },
+        })
+        from agent.auxiliary_client import _create_openai_client
+        client = _create_openai_client(
+            api_key="k", base_url="https://chatgpt.com/backend-api/codex")
+        headers = getattr(client, "default_headers", {}) or {}
+        assert headers.get("originator") == "hermes-agent"
+        assert headers.get("User-Agent") != "curl/8.7.1"
+
     def test_other_endpoint_gets_no_headers(self, tmp_path):
         """Matching is by exact normalized URL: an entry declaring another endpoint
         must not leak its headers onto this client."""

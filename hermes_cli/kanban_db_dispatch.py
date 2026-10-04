@@ -1582,6 +1582,26 @@ def check_respawn_guard(
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
         return None
 
+    # The wall is the profile's provider, not the card's: while the profile's most recent run ended
+    # ``rate_limited`` inside the cooldown, spawning ANOTHER of its cards only parks a slot behind the same
+    # wall (reviewer: 163 zero-API runs held a slot ~1,264 s each). Any later run of the profile that
+    # ended otherwise proves the provider answered, so it supersedes the stamp. Derived from the run
+    # records, like the per-task rule above; no second counter. A card whose own latest run was
+    # rate-limited is decided by that rule (it returns above), so this one only holds its siblings.
+    if rl_cooldown > 0:
+        profile_run = conn.execute(
+            "SELECT r.outcome, r.ended_at FROM task_runs r "
+            "WHERE r.profile = (SELECT assignee FROM tasks WHERE id = ?) AND r.ended_at IS NOT NULL "
+            "ORDER BY r.ended_at DESC, r.id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        if (
+            profile_run is not None
+            and profile_run["outcome"] == "rate_limited"
+            and (now - int(profile_run["ended_at"])) < rl_cooldown
+        ):
+            return "provider_rate_limit_cooldown"
+
     # 2. Quota / auth blocker: retrying immediately will not help.  A plain
     # crash is different: its persisted error includes the worker's last
     # captured output, which is context rather than a diagnosis and may contain

@@ -249,12 +249,17 @@ def build_write_approval_paths(home: str) -> set[str]:
 _HERMES_PROTECTED_SUBPATHS = ("state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile")
 
 
-def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
+def _classify_write_denial(path: str, *, entry: bool = False, remote_namespace: bool = False) -> Optional[str]:
     """Return ``'credential'``, ``'safe_root'``, ``'nt_namespace'``, or ``None`` if writes are allowed.
 
     ``entry=True`` is for ops that unlink/rename the directory entry itself (a
     symlink, not its target): the entry — parent realpath'd, final component
-    kept — is vetted as well as the target it resolves to."""
+    kept — is vetted as well as the target it resolves to.
+
+    ``remote_namespace=True`` marks the path as living on another host (an ssh
+    terminal backend): the Hermes-host ``HERMES_WRITE_SAFE_ROOT`` names
+    directories that do not exist there, so only that check is skipped — every
+    other guard (NT namespace, credential denylists) still applies."""
     # NT/device-namespace check runs on the RAW string, before realpath():
     # resolving such a path is itself the NTLM-leak trigger, and namespace
     # prefixes defeat string-prefix denylist comparison after normalization.
@@ -269,15 +274,16 @@ def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
 
     if is_protected_path(path) or (entry and is_protected_path(path, follow=False)):
         return "credential"
-    denial = _classify_resolved_write_denial(homes, resolved)
+    denial = _classify_resolved_write_denial(homes, resolved, remote_namespace=remote_namespace)
     if denial or not entry:
         return denial
     parent, leaf = split_entry(os.path.expanduser(str(path)))
     entry_path = os.path.join(os.path.realpath(parent or "."), leaf)
-    return _classify_resolved_write_denial(homes, entry_path)
+    return _classify_resolved_write_denial(homes, entry_path, remote_namespace=remote_namespace)
 
 
-def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[str]:
+def _classify_resolved_write_denial(homes: set[str], resolved: str, *,
+                                    remote_namespace: bool = False) -> Optional[str]:
     """Credential / protected-subpath / safe-root verdict for an already-resolved path."""
     # Approval-gated paths are allowed at this layer so interactive tools can
     # prompt; checked first so the ``.ssh/`` prefix deny doesn't swallow them.
@@ -298,21 +304,28 @@ def _classify_resolved_write_denial(homes: set[str], resolved: str) -> Optional[
                     return "credential"
 
     safe_roots = get_safe_write_roots()
-    if safe_roots and not any(_is_under(resolved, root) for root in safe_roots):
+    if safe_roots and not remote_namespace and not any(_is_under(resolved, root) for root in safe_roots):
+        # A remote-namespace path (ssh backend) is realpath'd here only lexically —
+        # the Hermes-host safe roots name directories on the wrong machine, and the
+        # terminal tool on the same connection is already unrestricted, so refusing
+        # remote writes the shell allows only breaks file tools (a Docker image
+        # pinning HERMES_WRITE_SAFE_ROOT to its own /opt/data, #132620).
         return "safe_root"
 
     return None
 
 
-def is_write_denied(path: str) -> bool:
-    """Return True if path is blocked by the write denylist or safe root."""
-    return _classify_write_denial(path) is not None
+def is_write_denied(path: str, *, remote_namespace: bool = False) -> bool:
+    """Return True if path is blocked by the write denylist or safe root
+    (``remote_namespace``: see :func:`_classify_write_denial`)."""
+    return _classify_write_denial(path, remote_namespace=remote_namespace) is not None
 
 
-def get_write_denied_error(path: str, *, verb: str = "Write", entry: bool = False) -> Optional[str]:
+def get_write_denied_error(path: str, *, verb: str = "Write", entry: bool = False,
+                           remote_namespace: bool = False) -> Optional[str]:
     """Return a user/model-facing error when writes to ``path`` are blocked
-    (``entry``: see :func:`_classify_write_denial`)."""
-    denial = _classify_write_denial(path, entry=entry)
+    (``entry`` / ``remote_namespace``: see :func:`_classify_write_denial`)."""
+    denial = _classify_write_denial(path, entry=entry, remote_namespace=remote_namespace)
     if denial == "safe_root":
         roots_display = os.pathsep.join(sorted(get_safe_write_roots()))
         return (

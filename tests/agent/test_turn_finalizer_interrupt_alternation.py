@@ -236,6 +236,32 @@ def test_non_interrupted_tool_tail_gets_visible_close():
     _assert_no_tool_then_user(follow_on)
 
 
+def test_tool_tail_preserves_incremental_persistence_failure():
+    """A failed result append already has a cause; the silent-tail close must keep it."""
+    agent = _StubAgent()
+    agent._last_persistence_error_cause = "locked"
+    result = finalize_turn(
+        agent,
+        final_response="",
+        api_call_count=1,
+        interrupted=False,
+        failed=True,
+        messages=_pending_tool_result_tail(),
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message="edit the file",
+        original_user_message="edit the file",
+        _should_review_memory=False,
+        _turn_exit_reason="session_persistence_failed",
+    )
+
+    assert result["failed"] is True
+    assert result["completed"] is False
+    assert result["turn_exit_reason"] == "session_persistence_failed"
+    assert result["failure_reason"] == "session_persistence_failed:locked"
+
+
 def test_tool_tail_with_streamed_text_is_recovered_not_marked_pending():
     """A turn whose stream already delivered text is #95514's stream-recovery case; the
     ``pending_tool_result`` close must not fire over it."""

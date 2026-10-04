@@ -24,9 +24,66 @@ def test_exact_default_detach_invalidates_but_child_detach_does_not(h):
 
 def test_default_attachment_aba_stays_invalid(h):
     captured = h.registry.capture(h.sup.task_id, timeout=1)
-    h.on_loop(lambda: h.sup._set_page_session('B'))
+    h.on_loop(lambda: h.sup._set_page_session('replacement'))
     h.on_loop(lambda: h.sup._set_page_session('default-page'))
     assert not captured.valid
+
+
+def test_publication_before_claim_preserves_cleanup_after_default_detach(h, monkeypatch):
+    from tools.browser_supervisor_capture import _AttachmentHandoff
+    captured = h.registry.capture(h.sup.task_id, timeout=2)
+    entered, release = threading.Event(), threading.Event()
+    original_claim = _AttachmentHandoff.claim
+    def delayed_claim(handoff):
+        entered.set()
+        assert release.wait(3)
+        return original_claim(handoff)
+    monkeypatch.setattr(_AttachmentHandoff, 'claim', delayed_claim)
+    with h.caller(lambda: captured.call('Target.attachToTarget', {'targetId':'child'}, session_id=None, timeout=2)) as caller:
+        request = h.wire.command('Target.attachToTarget')
+        h.reply(request, {'sessionId':'owned-but-unclaimed'})
+        assert entered.wait(2)
+        try:
+            import json
+            h.loop.call_soon_threadsafe(h.wire.incoming.put_nowait, json.dumps({'method':'Target.detachedFromTarget', 'params':{'sessionId':'default-page'}}))
+            h.on_loop(lambda: None)
+            assert not captured.valid
+        finally:
+            release.set()
+        with pytest.raises(bs.CapturedCDPInvalid):
+            caller.result(2)
+        cleanup = h.wire.command('Target.detachFromTarget')
+        assert cleanup['params'] == {'sessionId':'owned-but-unclaimed'}
+        assert len([x for x in h.wire.sent if x['method']=='Target.detachFromTarget']) == 1
+        h.reply(cleanup)
+        h.retired()
+
+
+def test_wrong_wire_response_does_not_resolve_captured_request(h):
+    captured = h.registry.capture(h.sup.task_id, timeout=2)
+    with h.caller(lambda: captured.call('Runtime.evaluate', {'expression':'void 0'}, session_id=None, timeout=2)) as caller:
+        old = h.wire
+        request = old.command('Runtime.evaluate')
+        h.reconnect()
+        h.reply(request, {'wrong-wire':True})
+        h.on_loop(lambda: None)
+        assert request['id'] in h.sup._pending_calls
+        assert not caller.done()
+        h.reply(request, {'original-wire':True}, wire=old)
+        with pytest.raises(bs.CapturedCDPInvalid):
+            caller.result(2)
+        h.retired()
+
+
+def test_old_wire_default_detach_cannot_invalidate_replacement_capture(h):
+    import json
+    old = h.reconnect()
+    # ABA of the visible session ID must not let an old-wire event touch the new capture.
+    h.on_loop(lambda: h.sup._set_page_session('default-page'))
+    replacement = h.registry.capture(h.sup.task_id, timeout=1)
+    h.on_loop(lambda: old.incoming.put_nowait(json.dumps({'method':'Target.detachedFromTarget','params':{'sessionId':'default-page'}})))
+    h.on_loop(lambda: None)
+    assert replacement.valid
 
 
 def test_timed_out_queued_write_never_dispatches(h):

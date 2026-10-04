@@ -116,9 +116,15 @@ async def test_slash_and_thread_starter_turns_match_a_message_turn(monkeypatch, 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["channel", "thread-under-bound-parent", "renamed-after-join", "speaker-uncached"])
-async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch, case):
-    monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: True)
+@pytest.mark.parametrize("case,discord_tools", [
+    ("channel", True),
+    ("thread-under-bound-parent", True),
+    ("renamed-after-join", True),
+    ("speaker-uncached", True),
+    ("thread-under-bound-parent", False),
+])
+async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch, case, discord_tools):
+    monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: discord_tools)
     parent = _parent()
     channel = _Thread(800, parent) if case == "thread-under-bound-parent" else parent
     adapter = _adapter(monkeypatch, parent.id)

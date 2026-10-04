@@ -101,6 +101,16 @@ def durable_user_row_content(agent, msg: Dict, content: Any, api_content: Any) -
         if api_content is None and isinstance(content, str) and content != override:
             api_content = content
         content = _content_with_turn_override(msg, content, override)
+    elif (
+        isinstance(content, list) and isinstance(override, str) and override
+        and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+    ):
+        # Plain-text override over a native multimodal turn (#132971): the string may not replace the
+        # part list wholesale (that drops the media), so swap only the text part for the clean
+        # transcript and keep the media parts — platform routing notes and transient attachment cache
+        # paths stay out of the durable row while it still records that an image was attached.
+        media = [p for p in content if isinstance(p, dict) and p.get("type") in _IMAGE_PART_TYPES]
+        content = [{"type": "text", "text": override}, *media]
     return content, api_content
 
 

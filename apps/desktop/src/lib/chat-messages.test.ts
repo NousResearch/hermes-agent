@@ -401,35 +401,38 @@ describe('toChatMessages', () => {
     }
   })
 
-  it('hides synthetic continuation nudges both when marked hidden and on legacy untyped rows', () => {
+  it('hides every known legacy continuation scaffold, including max-iteration and dropped-tools rows', () => {
+    const legacyNudges = [
+      '[System: The previous response was cut off by a network error mid-stream — a transport interruption, NOT a change in your capabilities. Your tools are still fully available; call them as normal and ignore any earlier claim that you lack tool access. Continue the task from where you left off. Do not restart or repeat prior text.]',
+      '[System: The previous response was cut off by a network error mid-stream. Continue exactly where you left off. Do not restart or repeat prior text. Finish the answer directly.]',
+      '[System: Your previous response was truncated by the output length limit. Continue exactly where you left off. Do not restart or repeat prior text. Finish the answer directly.]',
+      '[System: Your previous tool call (write_file) was too large and the stream timed out before it could be delivered. Do NOT retry the same tool call with the same large content. Instead, break the content into multiple smaller tool calls (e.g. use multiple patch calls or write smaller files). Each tool call\'s arguments must be under ~8K tokens to avoid stream timeouts. The cut was a transport interruption, not a capability change — your tools remain fully available.]',
+      '[System: Your previous response contained only internal reasoning and never produced a visible answer or tool call. Do not keep thinking. Produce your final answer as plain text now (or make the tool call you were planning).]',
+      '[System: Continue now. Execute the required tool calls and only send your final answer after completing the task.]',
+      '[System: Your previous message ended the turn with a fragment that is not a usable answer. If the task is unfinished, continue it and then give the complete answer. If that fragment WAS your complete answer, send it again exactly as before.]',
+      'Your previous turn indicated a tool call but none was included. Do not narrate a plan or restate intent — issue the actual tool call now to continue the task.',
+      'You just executed tool calls but returned an empty response. Please process the tool results above and continue with the task.',
+      "You've reached the maximum number of tool-calling iterations allowed. Please provide a final response summarizing what you've found and accomplished so far, without calling any more tools.",
+      'Continue from the compressed conversation context above. This marker exists because no human user turn was available.',
+      'Continue from the compressed conversation context above. This marker exists because the compacted transcript contained no preserved user turn.'
+    ]
+    const lookalike = 'Your previous turn indicated a tool call but none was included. What does that mean?'
+    const alreadyTyped = legacyNudges[5]
     const messages = toChatMessages([
       { role: 'user', content: 'build the feature', timestamp: 1 },
       { role: 'assistant', content: 'starting...', timestamp: 2 },
-      {
-        role: 'user',
-        content:
-          '[System: The previous response was cut off by a network error mid-stream — a transport interruption, NOT a change in your capabilities. Your tools are still fully available; call them as normal and ignore any earlier claim that you lack tool access. Continue the task from where you left off. Do not restart or repeat prior text.]',
-        display_kind: 'hidden',
-        timestamp: 3
-      },
-      {
-        role: 'user',
-        content:
-          '[System: The previous response was cut off by a network error mid-stream. Continue exactly where you left off. Do not restart or repeat prior text. Finish the answer directly.]',
-        timestamp: 4
-      },
-      {
-        role: 'user',
-        content:
-          '[System: Your previous response was truncated by the output length limit. Continue exactly where you left off. Do not restart or repeat prior text. Finish the answer directly.]',
-        timestamp: 5
-      },
-      { role: 'assistant', content: 'done!', timestamp: 6 }
+      { role: 'user', content: legacyNudges[0], display_kind: 'hidden', timestamp: 3 },
+      ...legacyNudges.map((content, index) => ({ role: 'user' as const, content, timestamp: 4 + index })),
+      { role: 'user', content: lookalike, timestamp: 20 },
+      { role: 'user', content: alreadyTyped, display_kind: 'skill_invocation', timestamp: 21 },
+      { role: 'assistant', content: 'done!', timestamp: 22 }
     ])
 
     expect(messages.map(chatMessageText)).toEqual([
       'build the feature',
       'starting...',
+      lookalike,
+      alreadyTyped,
       'done!'
     ])
   })

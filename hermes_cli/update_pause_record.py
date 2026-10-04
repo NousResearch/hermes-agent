@@ -24,7 +24,9 @@ with its own identity already inside (atomic replace), then retires the source; 
 two leaves two files with ONE obligation id (``pause_id``), and an update that folds orphaned sets
 into its own record lists their ids under ``absorbed`` before retiring them. Readers treat a file
 whose id another file carries as a copy, never as a second obligation, and the next mutator
-retires it.
+retires it. Completing an obligation first adds its ids to ``<record stem>.retired`` (atomic), then
+unlinks its files: an unlink Windows refuses (a reader holding the file without
+FILE_SHARE_DELETE) leaves a copy that is redundant by id, never an obligation that executes again.
 """
 
 from __future__ import annotations
@@ -286,8 +288,7 @@ def discharge(token: dict, path: Path | None = None) -> None:
     with _mutex():
         existing = read(path)
         if existing is not None and existing["token"].get("pause_id") == token.get("pause_id"):
-            with suppress(OSError):
-                path.unlink()
+            _retire(path, [(path, existing)])
 
 
 def sync(token: dict) -> None:
@@ -317,6 +318,31 @@ def _claims(path: Path) -> list[Path]:
     return sorted(path.parent.glob(f"{glob.escape(path.name)}.*.claim"))
 
 
+def _retired_path(path: Path) -> Path:
+    return path.with_suffix(".retired")
+
+
+def _retired(path: Path) -> set[str]:
+    try:
+        ids = json.loads(_retired_path(path).read_text(encoding="utf-8-sig")).get("ids")
+    except (OSError, ValueError, AttributeError):
+        return set()
+    return {str(i) for i in ids} if isinstance(ids, list) else set()
+
+
+def _retire(path: Path, carriers: list[tuple[Path, dict]]) -> None:
+    """Complete the obligations *carriers* hold (call under the mutex): their ids (and every id
+    they absorbed) go on the durable retired list FIRST; a failed write raises and deletes
+    nothing. Then the files go; one that cannot be deleted is a redundant copy from here on."""
+    ids = {str(i) for _src, body in carriers
+           for i in [body["token"].get("pause_id"), *(body["token"].get("absorbed") or [])] if i}
+    if not ids <= _retired(path):
+        _atomic_write(_retired_path(path), {"schema": 1, "ids": sorted(_retired(path) | ids)})
+    for src, _body in carriers:
+        with suppress(OSError):
+            src.unlink()
+
+
 def _holder(src: Path, body: dict) -> dict:
     """Who holds *src*: a record's owner, a claim's claimer (published with the claim itself)."""
     held_by = body.get("owner") if src.suffix == ".json" else body.get("claimer")
@@ -333,9 +359,10 @@ def _files(path: Path) -> list[tuple[Path, dict]]:
     return found
 
 
-def _redundant(found: list[tuple[Path, dict]], held: set[Path]) -> set[Path]:
-    """Files that only copy an obligation another file carries: a source an update absorbed but
-    died before retiring, or one of two same-id files a claim transfer left. Never a held file."""
+def _redundant(found: list[tuple[Path, dict]], held: set[Path], retired: set[str] = frozenset()) -> set[Path]:
+    """Files that only copy an obligation another file carries or that was completed: a source an
+    update absorbed but died before retiring, one of two same-id files a claim transfer left (the
+    furthest-progressed copy is kept), a retired id's leftover. Never a held file."""
     carriers: dict[str, Path] = {}
     for src, body in found:
         for oid in body["token"].get("absorbed") or []:
@@ -346,12 +373,13 @@ def _redundant(found: list[tuple[Path, dict]], held: set[Path]) -> set[Path]:
         oid = str(body["token"].get("pause_id") or "")
         if not oid:
             continue
-        if oid in carriers and carriers[oid] != src:
+        if oid in retired or (oid in carriers and carriers[oid] != src):
             redundant.add(src)
         else:
             by_id.setdefault(oid, []).append(src)
+    rev = {src: int(body.get("rev") or 0) for src, body in found}
     for copies in by_id.values():
-        keep = next((s for s in copies if s in held), copies[0])
+        keep = next((s for s in copies if s in held), max(copies, key=lambda s: rev[s]))
         redundant.update(s for s in copies if s != keep)
     return redundant - held
 
@@ -359,7 +387,7 @@ def _redundant(found: list[tuple[Path, dict]], held: set[Path]) -> set[Path]:
 def _survey(path: Path) -> tuple[list[tuple[Path, dict]], set[Path], set[Path]]:
     found = _files(path)
     held = {src for src, body in found if identity_is_live(_holder(src, body))}
-    return found, held, _redundant(found, held)
+    return found, held, _redundant(found, held, _retired(path))
 
 
 def orphans(path: Path | None = None) -> list[tuple[Path, dict]]:
@@ -381,13 +409,31 @@ def orphaned_record(path: Path | None = None) -> dict | None:
 def retire_redundant(path: Path | None = None) -> None:
     """Delete copies of obligations another file already carries (crash leftovers of a transfer)."""
     path = path or record_path()
-    if not path.exists() and not _claims(path):
+    if not path.exists() and not _claims(path) and not _retired_path(path).exists():
         return
     with suppress(RecordBusy), _mutex():
         _found, _held, redundant = _survey(path)
         for src in redundant:
             with suppress(OSError):
                 src.unlink()
+        _prune_retired(path)
+
+
+def _prune_retired(path: Path) -> None:
+    """Forget retired ids no file carries any more — only when every candidate file was readable
+    (one Windows would not let us read may still carry a retired id)."""
+    retired = _retired(path)
+    candidates = [p for p in (path, *_claims(path)) if p.exists()]
+    bodies = [read(p) for p in candidates]
+    if not retired or None in bodies:
+        return
+    carried = {str(b["token"].get("pause_id")) for b in bodies}
+    keep = retired & carried
+    with suppress(OSError):
+        if keep:
+            _atomic_write(_retired_path(path), {"schema": 1, "ids": sorted(keep)})
+        else:
+            _retired_path(path).unlink()
 
 
 def claim(src: Path) -> tuple[Path, dict] | None:
@@ -405,6 +451,7 @@ def claim(src: Path) -> tuple[Path, dict] | None:
             if src in held or src in redundant or src not in {s for s, _ in _found}:
                 return None
             body["claimer"] = identity()
+            body["rev"] = int(body.get("rev") or 0) + 1  # a copy left behind is never the newer one
             _atomic_write(mine, body)
             with suppress(OSError):
                 src.unlink()
@@ -608,7 +655,7 @@ def _hand_back(claim_path: Path, body: dict, token: dict, draining: dict) -> Non
             kept = {key: value for key, value in token.items() if key not in ("recovery", "resume_deferred")}
             _atomic_write(claim_path, {**body, "token": {**kept, "resume_needed": True}, "claimer": UNOWNED})
         else:
-            claim_path.unlink()
+            _retire(record_path(), [(claim_path, read(claim_path) or body)])
 
 
 def recover(argv: list[str] | None = None) -> None:

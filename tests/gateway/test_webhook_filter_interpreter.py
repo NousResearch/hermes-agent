@@ -2,6 +2,7 @@
 import logging
 import stat
 import subprocess
+import sys
 import types
 from pathlib import Path
 
@@ -170,3 +171,17 @@ def test_python_filter_times_out_on_store_bootstrap_path(tmp_path, monkeypatch, 
     assert accepted is False and transformed is None
     assert any("script timed out" in r.getMessage() for r in caplog.records)
     assert elapsed < 15, f"timeout did not tree-kill the hung script (elapsed {elapsed:.1f}s)"
+
+
+@pytest.mark.platforms("posix")  # import-chain shape is OS-independent; wine2e covers Windows
+def test_python_filter_resolver_import_failure_ignores_route(tmp_path, monkeypatch, caplog):
+    """A broken cron import chain (cron.jobs → hermes_yaml → ruamel.yaml, cron.scheduler →
+    hermes_cli.config/agent.*) must veto this route with a warning, not escape the handler as
+    an HTTP 500 (#129100 review)."""
+    monkeypatch.setitem(sys.modules, "cron.scheduler_script", None)  # import raises ImportError
+    filt = _filter_script("print('never runs')", name="filter.py")
+    with caplog.at_level(logging.WARNING, logger="gateway.platforms.webhook_filters"):
+        accepted, transformed = WebhookRouteProcessor().run_route_script(str(filt), {})
+
+    assert accepted is False and transformed is None
+    assert any("script ignored webhook" in r.getMessage() for r in caplog.records)

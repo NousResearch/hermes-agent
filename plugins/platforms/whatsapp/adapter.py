@@ -724,7 +724,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             # Acquire session ownership before adopting the bridge, but avoid
             # npm, pidfile and port cleanup when a reconnect can reuse it.
-            if is_reconnect and lock_acquired and await self._reuse_running_bridge(bridge_path):
+            if is_reconnect and lock_acquired and (not secondary or prior_bridge_is_ours) and await self._reuse_running_bridge(bridge_path):
                 return True
             if not self._ensure_bridge_deps(bridge_path.parent):
                 return False

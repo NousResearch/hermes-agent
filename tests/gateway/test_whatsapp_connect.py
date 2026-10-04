@@ -660,6 +660,30 @@ class TestReconnectFastPath:
         return adapter, app, events
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("port_was_free", [False, True])
+    async def test_secondary_reconnect_never_probes_unowned_bridge(self, live_bridge, monkeypatch, port_was_free):
+        from aiohttp import web
+        from plugins.platforms.whatsapp import bridge_ownership
+
+        adapter, app, events = live_bridge
+        adapter._runtime_status_platform_key = "whatsapp:secondary"
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            await web.TCPSite(runner, "127.0.0.1", 0).start()
+            adapter.config.extra["bridge_port"] = runner.addresses[0][1]
+            if port_was_free:
+                # Another listener can bind after allocation checks an unbound port.
+                monkeypatch.setattr(bridge_ownership, "port_is_free", lambda port: True)
+            assert await adapter.connect(is_reconnect=True) is False
+            assert events == (["lock", "npm", "unlock"] if port_was_free else [])
+            assert adapter._running is False
+            assert adapter._http_session is None
+        finally:
+            await adapter.disconnect()
+            await runner.cleanup()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("lock_allowed", [True, False])
     async def test_is_reconnect_reuses_live_bridge(self, live_bridge, monkeypatch, lock_allowed):
         from aiohttp import web

@@ -17,7 +17,15 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: all
-          node-cache-dependency-path: website/package-lock.json
+          node-cache-dependency-path: |
+            package-lock.json
+            website/package-lock.json
+
+      - name: Install shared JS test tools
+        uses: ./.github/actions/retry
+        with:
+          # Only the root-tests workspace is needed; no native postinstalls.
+          command: npm ci --workspace tests-js --ignore-scripts
 
       - name: Install website dependencies
         uses: ./.github/actions/retry
@@ -48,6 +56,10 @@ jobs:
 
       - name: Check cross-page links resolve on GitHub and on the site
         run: python3 website/scripts/check_doc_links.py
+
+      - name: Test marketplace rendering and catalog publication
+        run: npm test
+        working-directory: website
 
       - name: Lint docs diagrams
         run: npm run lint:diagrams

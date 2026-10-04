@@ -408,6 +408,14 @@ export default function PluginCatalogPage() {
   const searchRef = useRef<HTMLInputElement>(null);
   const filterPanelRef = useRef<HTMLDivElement>(null);
 
+  // Read after hydration so the static page and initial client render agree.
+  useEffect(() => {
+    const kind = new URLSearchParams(window.location.search).get("kind");
+    if (kind && Object.prototype.hasOwnProperty.call(CATEGORY_CONFIG, kind)) {
+      setCategoryFilter(kind);
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {

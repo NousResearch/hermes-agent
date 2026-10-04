@@ -267,10 +267,11 @@ marker_young_empty() { # A3 fallback writers create then write: a fresh empty fi
   [ -n "$mtime" ] && [ $(( $(marker_now) - mtime )) -lt 5 ]
 }
 
-marker_own_body() { # started -> our canonical claim (run line = the Desktop's hand-off run)
+marker_own_body() { # started -> our canonical claim (stable result / hand-off identity)
   [ -n "$MY_CT" ] || MY_CT="$(proc_ct "$MY_PID")"
   M_RUNS=""
-  [ -z "$HANDOFF_RUN" ] || M_RUNS="run:$HANDOFF_RUN"$'\n'
+  local run="${RESULT_RUN_ID:-$HANDOFF_RUN}"
+  [ -z "$run" ] || M_RUNS="run:$run"$'\n'
   MARKER_BODY="$(marker_canonical "$MY_PID" "$1" "$MY_CT")"$'\n'
 }
 

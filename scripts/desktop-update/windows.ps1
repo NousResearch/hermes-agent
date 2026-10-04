@@ -676,8 +676,8 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
     # ok result the user still must act on -- the Desktop surfaces those in
     # a dialog, not just the log (same protocol as posix.sh).
     # Atomic (tmp + rename over): a reader never sees a torn file, and the
-    # previous result survives until this one is complete. started_at equals
-    # marker line 2 so the Desktop can match the result to its run.
+    # previous result survives until this one is complete. run_id matches the
+    # marker across heartbeat rewrites; started_at stays for older consumers.
     try {
         $obj = @{
             ok         = $Ok
@@ -686,6 +686,7 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
             message    = $Message
             branch     = $Branch
             channel    = $Channel
+            run_id     = $script:ResultRunId
             started_at = $script:StartedAt
             warnings   = @($script:Warnings)
             finished_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()

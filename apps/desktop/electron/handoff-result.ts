@@ -26,6 +26,8 @@
 import fs from 'fs'
 import path from 'path'
 
+import { RUN_ID_RE } from './update-marker-judge'
+
 export const HANDOFF_RESULT_MAX_AGE_MS = 30 * 60 * 1000
 
 export interface HandoffResult {
@@ -49,9 +51,9 @@ export function handoffResultPath(hermesHome: string): string {
 /**
  * Parse first, then consume (desktop V19): an unparseable file is renamed to
  * `.corrupt` and logged — never silently dropped — so a torn result stays
- * inspectable. `expectedStartedAt` is marker line 2 of the run this boot
- * parked on; a result carrying a different `started_at` belongs to another
- * run and is discarded with a log line instead of being reported as this one.
+ * inspectable. Match the stable marker run ID, not line 2 (a heartbeat that
+ * can change before this Desktop even opens). Only older producers without
+ * run_id, or boots without an identified marker, use started_at correlation.
  */
 export function readAndConsumeHandoffResult(
   hermesHome: string,
@@ -59,8 +61,15 @@ export function readAndConsumeHandoffResult(
     now = Date.now,
     maxAgeMs = HANDOFF_RESULT_MAX_AGE_MS,
     expectedStartedAt = null,
+    expectedRunId = null,
     log = () => {}
-  }: { now?: () => number; maxAgeMs?: number; expectedStartedAt?: number | null; log?: (line: string) => void } = {}
+  }: {
+    now?: () => number
+    maxAgeMs?: number
+    expectedStartedAt?: number | null
+    expectedRunId?: string | null
+    log?: (line: string) => void
+  } = {}
 ): HandoffResult | null {
   const file = handoffResultPath(hermesHome)
   let raw: string
@@ -105,7 +114,23 @@ export function readAndConsumeHandoffResult(
     return null
   }
 
-  if (expectedStartedAt !== null && Number.isFinite(startedAt) && startedAt !== expectedStartedAt) {
+  const runId = parsed?.run_id
+
+  // Missing means legacy. A present but malformed ID must not downgrade to
+  // weaker timestamp matching (nor be normalized into another run).
+  if (runId !== undefined && (typeof runId !== 'string' || RUN_ID_RE.exec(runId)?.[0] !== runId)) {
+    log('[updates] hand-off result has an invalid run_id; discarded')
+
+    return null
+  }
+
+  if (expectedRunId !== null && runId !== undefined) {
+    if (runId !== expectedRunId) {
+      log(`[updates] hand-off result is for run ${runId}, not ${expectedRunId}; discarded`)
+
+      return null
+    }
+  } else if (expectedStartedAt !== null && Number.isFinite(startedAt) && startedAt !== expectedStartedAt) {
     log(`[updates] hand-off result is for the run started at ${startedAt}, not ${expectedStartedAt}; discarded`)
 
     return null

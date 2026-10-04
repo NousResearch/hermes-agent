@@ -100,6 +100,9 @@ LOG="$LOG_DIR/desktop-update-handoff.log"
 RESULT="$HERMES_HOME/.hermes-update-result.json"
 STATUS="${TMPDIR:-/tmp}/hermes-update-status.$$"
 STARTED_AT="$(date +%s)"  # the shim's elapsed clock; see serve-ui.py
+# Separate identity from both heartbeat time and adopt-only HANDOFF_RUN.
+# Old Desktop / direct launches need an ID too, without changing claim rules.
+RESULT_RUN_ID="${HANDOFF_RUN:-posix-$$-${STARTED_AT}-${RANDOM}}"
 
 UI_SERVER_PID="" UI_BROWSER_PID="" UI_PANEL_PID="" UI_PROFILE_DIR="" FINAL_CODE=1
 FINAL_MSG="update did not complete"
@@ -618,16 +621,16 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
 
 MANUAL=0  # 1 = update landed but the user must act (result protocol field)
 
-write_result() { # atomic (tmp + rename); started_at ties it to marker line 2
+write_result() { # atomic (tmp + rename); run_id survives marker line-2 heartbeats
   local w="" item
   for item in ${WARNINGS[@]+"${WARNINGS[@]}"}; do
     w="$w${w:+,}\"$(json_escape "$item")\""
   done
-  printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","channel":"%s","started_at":%s,"finished_at":%s,"warnings":[%s]}' \
+  printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","channel":"%s","run_id":"%s","started_at":%s,"finished_at":%s,"warnings":[%s]}' \
     "$([ "$FINAL_CODE" -eq 0 ] && echo true || echo false)" "$FINAL_CODE" \
     "$([ "$MANUAL" -eq 1 ] && echo true || echo false)" \
     "$(json_escape "$FINAL_MSG")" "$(json_escape "$BRANCH")" "$(json_escape "$CHANNEL")" \
-    "${STARTED_AT:-0}" "$(date +%s)" "$w" \
+    "$RESULT_RUN_ID" "${STARTED_AT:-0}" "$(date +%s)" "$w" \
     > "$RESULT.$$.tmp" 2>/dev/null && mv -f "$RESULT.$$.tmp" "$RESULT" 2>/dev/null
   rm -f "$RESULT.$$.tmp" 2>/dev/null || true
 }

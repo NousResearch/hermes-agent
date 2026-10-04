@@ -209,7 +209,8 @@ def test_desktop_bridge_marker_is_adopted_with_its_started_at(tmp_path, sleeper)
     result = _run(tmp_path, home, install, "--desktop-pid", str(desktop.pid), "--self-test-marker")
 
     assert result.returncode == 0, result.stdout + result.stderr
-    pid, started_at, ct = marker.read_text(encoding="utf-8-sig").splitlines()
+    pid, started_at, ct, *tags = marker.read_text(encoding="utf-8-sig").splitlines()
+    assert any(tag.startswith("run:") for tag in tags)
     assert pid != str(desktop.pid) and int(pid) > 0
     assert started_at == str(started)
     assert ct.startswith("ct:") and len(ct.split(".")[-1]) == 3
@@ -275,14 +276,16 @@ def test_script_killed_right_after_spawning_the_update_leaves_a_live_marker(tmp_
             time.sleep(0.01)
         # Kill the script the moment the delegate line is there (at most 3 s after the spawn).
         settle = time.monotonic() + 3
-        while time.monotonic() < settle and len(marker.read_text(encoding="utf-8-sig").splitlines()) < 4:
+        while time.monotonic() < settle and not any(
+            line.startswith("delegate:") for line in marker.read_text(encoding="utf-8-sig").splitlines()
+        ):
             time.sleep(0.005)
         script.kill()
         script.wait(timeout=10)
         child = int(child_pid_file.read_text(encoding="utf-8-sig"))
         lines = marker.read_text(encoding="utf-8-sig").splitlines()
         assert lines[0] == str(script.pid)
-        assert len(lines) == 4 and lines[3].startswith("delegate:"), lines
+        assert lines[3].startswith("delegate:"), lines
         delegate = int(lines[3].split()[0].split(":")[1])
         assert delegate in _ancestry(child)  # the update process (or its exec-ing launcher)
         assert lines[3] == f"delegate:{delegate} ct:{_ct(delegate)}"

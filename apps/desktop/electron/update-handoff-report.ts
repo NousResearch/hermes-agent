@@ -10,6 +10,8 @@ export interface HandoffReportHost {
   hermesHome: string
   /** Marker line 2 of the run this boot parked on (C2 started_at match), else null. */
   expectedStartedAt: number | null
+  /** Stable run id of that marker (survives heartbeat refreshes), else null. */
+  expectedRunId: string | null
   log: (line: string) => void
   dialog: Pick<Dialog, 'showMessageBox'>
   shell: Pick<Shell, 'showItemInFolder'>
@@ -29,6 +31,7 @@ export function reportHandoffResult(host: HandoffReportHost): void {
   try {
     const result = readAndConsumeHandoffResult(host.hermesHome, {
       expectedStartedAt: host.expectedStartedAt,
+      expectedRunId: host.expectedRunId,
       log: host.log
     })
 

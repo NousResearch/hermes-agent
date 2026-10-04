@@ -14,8 +14,8 @@
 
 function Write-MarkerOwnClaim([bool]$Exists, [int64]$Started, $Run, [string]$Verb) {
     # Caller holds the lock. Our canonical claim, published or rewritten.
-    $runs = @()
-    if ($Run) { $runs = @("run:$Run") }
+    if (-not $Run) { $Run = $script:ResultRunId }
+    $runs = @("run:$Run")
     $body = Format-MarkerBody $PID $Started $script:MarkerOwnCtText $null $runs
     $ok = if ($Exists) { Set-MarkerBodyLocked $body } else { (Publish-MarkerNew $body) -eq 'published' }
     if (-not $ok) {
@@ -135,6 +135,9 @@ function Invoke-MarkerAdoptLegacy($Read, [int]$Desktop) {
 
 function Invoke-MarkerClaim {
     # The FIRST act of windows.ps1. Returns claimed | adopted | refused.
+    # Keep adopt-only HandoffRun separate: old Desktop / direct launches also
+    # need a stable result identity, but must retain their legacy claim rules.
+    $script:ResultRunId = if ($HandoffRun) { $HandoffRun } else { [Guid]::NewGuid().ToString("N") }
     $epoch = Get-UnixNow
     $startedAt = 0L
     $hasStartedAt = [int64]::TryParse($env:HERMES_UPDATE_STARTED_AT, [ref]$startedAt)

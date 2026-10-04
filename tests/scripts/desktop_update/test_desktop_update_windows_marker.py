@@ -324,14 +324,14 @@ def test_script_killed_right_after_spawning_the_update_leaves_a_live_marker(tmp_
             time.sleep(0.02)
         # Kill the script the moment the delegate line is there (at most 3 s after the spawn).
         settle = time.monotonic() + 3
-        while time.monotonic() < settle and len(_marker_lines(marker)) < 4:
+        while time.monotonic() < settle and not any(line.startswith('delegate:') for line in _marker_lines(marker)):
             time.sleep(0.01)
         subprocess.run(['taskkill', '/F', '/PID', str(script.pid)], capture_output=True, check=True)
         script.wait(timeout=30)
         child = int(child_pid_file.read_text(encoding='utf-8-sig'))
         lines = marker.read_bytes().decode().splitlines()
         assert lines[0] == str(script.pid)
-        assert len(lines) == 4 and lines[3].startswith('delegate:'), lines
+        assert lines[3].startswith('delegate:'), lines
         delegate = int(lines[3].split()[0].split(':')[1])
         assert delegate in (child, _parent_pid(child), _parent_pid(_parent_pid(child)))  # update or its launcher
         assert lines[3] == f'delegate:{delegate} ct:{_creation_time(delegate)}'

@@ -81,7 +81,7 @@ export interface LiveMarkerProbeOptions {
   /** The script helper `reclaim`, or null when the checkout's script predates protocol 2. */
   reclaim: (() => Promise<MarkerHelperVerdict>) | null
   createTime?: CreateTimeProbe
-  onLiveMarker?: (marker: { startedAt: number | null }) => void
+  onLiveMarker?: (marker: { startedAt: number | null; runId: string | null }) => void
   /** Every answer that comes from a running helper verdict (boot progress, the blocked screen). */
   onHeld?: (state: HeldState) => void
   /** The gate let this wait through over a blocking hold because the user chose Start anyway. */
@@ -353,7 +353,7 @@ export function liveMarkerProbe({
         return false
       }
 
-      onLiveMarker?.({ startedAt: inspection.marker?.startedAt ?? null })
+      onLiveMarker?.({ startedAt: inspection.marker?.startedAt ?? null, runId: inspection.marker?.run ?? null })
 
       return true
     }
@@ -401,7 +401,7 @@ export function liveMarkerProbe({
     }
 
     onHeld?.(state)
-    onLiveMarker?.({ startedAt: inspection.marker?.startedAt ?? null })
+    onLiveMarker?.({ startedAt: inspection.marker?.startedAt ?? null, runId: inspection.marker?.run ?? null })
 
     return true
   }

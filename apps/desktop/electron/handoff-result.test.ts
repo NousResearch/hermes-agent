@@ -69,8 +69,43 @@ test('malformed JSON is logged and kept as .corrupt, not reported', () => {
   assert.match(logs.join('\n'), /not valid JSON/)
 })
 
-// C2: the result carries marker line 2 as started_at; a result from another
-// run is not reported as the one this boot waited on.
+test('stable run identity outranks heartbeat time; only legacy receipts use timestamp correlation', () => {
+  const home = tempHome()
+  const finished_at = Math.floor(Date.now() / 1000)
+
+  const outcomes = [
+    { ok: false, exit_code: 3, message: 'failed' },
+    { ok: true, exit_code: 0, manual: true, message: 'reopen manually' },
+    { ok: true, exit_code: 0, warnings: ['gateway restart'] }
+  ]
+
+  for (const outcome of outcomes) {
+    const receipt = { ...outcome, started_at: 100, finished_at }
+    write(home, { ...receipt, run_id: 'own-run' })
+    assert.ok(readAndConsumeHandoffResult(home, { expectedRunId: 'own-run', expectedStartedAt: 200 }))
+
+    for (const run_id of ['foreign-run', '', null, 42, 'bad run', 'own-run\n']) {
+      write(home, { ...receipt, run_id })
+      assert.equal(readAndConsumeHandoffResult(home, { expectedRunId: 'own-run', expectedStartedAt: 100 }), null)
+    }
+
+    // An older script has no run_id, even if its marker carried a run: line.
+    write(home, receipt)
+    assert.ok(readAndConsumeHandoffResult(home, { expectedRunId: 'own-run', expectedStartedAt: 100 }))
+    write(home, receipt)
+    assert.equal(readAndConsumeHandoffResult(home, { expectedRunId: 'own-run', expectedStartedAt: 200 }), null)
+    // Older markers and post-update boots have no expected stable identity.
+    write(home, { ...receipt, run_id: 'own-run' })
+    assert.ok(readAndConsumeHandoffResult(home, { expectedStartedAt: 100 }))
+    write(home, { ...receipt, run_id: 'own-run' })
+    assert.ok(readAndConsumeHandoffResult(home))
+  }
+
+  fs.rmSync(home, { recursive: true, force: true })
+})
+
+// Legacy producers correlate started_at; a result from another run is not
+// reported as the one this boot waited on.
 test('a result whose started_at differs from the parked run is discarded; a match is reported with warnings', () => {
   const home = tempHome()
   const finished_at = Math.floor(Date.now() / 1000)

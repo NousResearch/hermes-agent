@@ -141,7 +141,8 @@ def test_script_killed_before_publishing_the_delegate_runs_no_update(tmp_path: P
         assert not ran.exists(), 'the update child ran before it was published as the delegate'
         assert not _alive(child_pid), 'the never-resumed update child outlived its script'
         lines = marker.read_bytes().decode().split('\n')
-        assert lines[0] == str(script.pid) and len(lines) == 4 and lines[3] == '', lines   # no delegate line
+        assert lines[0] == str(script.pid), lines
+        assert not any(line.startswith('delegate:') for line in lines), lines
     finally:
         if lock:
             lock.release()

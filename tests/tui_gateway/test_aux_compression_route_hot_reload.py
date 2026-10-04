@@ -83,6 +83,11 @@ class TestSignatureTracksTheAuxRoute:
             _cfg({"provider": "openai-codex", "model": "aux", "base_url": "https://example.invalid/v1"})
         )
 
+    def test_changing_the_aux_window_pin_changes_the_signature(self):
+        assert server._tui_compression_config_signature(
+            _cfg({"provider": "custom", "model": "aux", "context_length": 128_000})
+        ) != server._tui_compression_config_signature(_cfg({"provider": "custom", "model": "aux"}))
+
     def test_removing_the_aux_section_changes_the_signature(self):
         assert server._tui_compression_config_signature(
             _cfg({"provider": "openai-codex", "model": "aux"})
@@ -125,7 +130,10 @@ class TestLiveAdoptionReClampsToTheCurrentAuxWindow:
             "agent.auxiliary_client._resolve_task_provider_model",
             lambda *a, **k: (aux.get("provider") or "auto", aux_model, "", "", ""),
         )
-        monkeypatch.setattr("agent.model_metadata.get_model_context_length", lambda *a, **k: aux_ctx)
+        monkeypatch.setattr(
+            "agent.model_metadata.get_model_context_length",
+            lambda *a, config_context_length=None, **k: config_context_length or aux_ctx,
+        )
         server._sync_agent_compression_with_config("sid-aux-route", session)
         return calls
 
@@ -159,6 +167,45 @@ class TestLiveAdoptionReClampsToTheCurrentAuxWindow:
         )
         assert calls == []
         assert compressor.threshold_tokens == configured
+        assert session["agent"]._compression_feasibility_checked is False
+
+    def test_removing_the_aux_section_lifts_a_previous_clamp(self, monkeypatch):
+        """No auxiliary.compression at all = auto route; a fitting window must still lift the ceiling."""
+        session, compressor = _session()
+        configured = compressor.threshold_tokens
+        self._adopt(monkeypatch, session, _cfg({"provider": "openai-codex", "model": "small-aux"}), SMALL_AUX_CTX)
+        assert compressor.threshold_tokens == SMALL_AUX_CTX
+
+        calls = self._adopt(monkeypatch, session, _cfg(), MAIN_CTX)
+        assert calls, "removing the section must re-run the probe"
+        assert compressor.threshold_tokens == configured
+
+    def test_aux_window_pin_follows_the_route(self, monkeypatch):
+        """A pin for the old aux model must not survive a route switch that drops it."""
+        session, compressor = _session()
+        configured = compressor.threshold_tokens
+        pinned = {"provider": "custom", "model": "small-aux", "context_length": SMALL_AUX_CTX}
+        self._adopt(monkeypatch, session, _cfg(pinned), MAIN_CTX)
+        assert compressor.threshold_tokens == SMALL_AUX_CTX
+
+        self._adopt(monkeypatch, session, _cfg({"provider": "custom", "model": "big-aux"}), MAIN_CTX)
+        assert session["agent"]._aux_compression_context_length_config is None
+        assert compressor.threshold_tokens == configured
+
+    def test_aux_below_minimum_keeps_the_live_session(self, monkeypatch, caplog):
+        """A hard rejection is fatal at session start, but a live edit only warns."""
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+
+        session, compressor = _session()
+        self._adopt(monkeypatch, session, _cfg({"provider": "openai-codex", "model": "small-aux"}), SMALL_AUX_CTX)
+        with caplog.at_level("WARNING"):
+            self._adopt(
+                monkeypatch, session, _cfg({"provider": "openai-codex", "model": "tiny-aux"}),
+                MINIMUM_CONTEXT_LENGTH - 1,
+            )
+        assert "tiny-aux" in caplog.text
+        assert compressor.threshold_tokens == SMALL_AUX_CTX
+        # Latch left unset so the compaction-time probe re-raises the rejection.
         assert session["agent"]._compression_feasibility_checked is False
 
     def test_adoption_never_raises_the_trigger_past_the_aux_window(self, monkeypatch):

@@ -187,6 +187,15 @@ class TestClampDoesNotCorruptDerivation:
         _run_check(agent, BIG_AUX_CTX)
         assert compressor.threshold_tokens == configured == _configured(compressor)
 
+    def test_ceiling_survives_when_the_window_cannot_be_validated(self):
+        """The ceiling is the only clamp record; it is not dropped before the window checks out."""
+        compressor = _compressor()
+        agent = _Agent(compressor)
+        _run_check(agent, SMALL_AUX_CTX)
+        compressor._resolved_context_length = 0
+        assert compressor.lift_aux_context_ceiling() is False
+        assert compressor._aux_context_ceiling == SMALL_AUX_CTX
+
     def test_restore_respects_the_absolute_threshold_cap(self):
         compressor = _compressor()
         agent = _Agent(compressor)

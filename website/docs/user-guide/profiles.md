@@ -157,7 +157,7 @@ before they bite.
   `google_chat_user_tokens/`, `<platform>_*`).
 
 Credentials that a messaging adapter shares with a non-channel capability — `HASS_TOKEN`/`HASS_URL`
-(also the Home Assistant tool), `TWILIO_*` (also the telephony skill), `EMAIL_*` (also
+(also the Home Assistant plugin's tools; plugin adapters declare these as `shared_env_prefixes`), `TWILIO_*` (also the telephony skill), `EMAIL_*` (also
 mail-sending scripts) — are stripped **only when the source's gateway would run that adapter**
 (the platform is enabled in its `config.yaml`, or its credential set is complete and not
 explicitly disabled). A source with `platforms.homeassistant.enabled: false` uses `HASS_TOKEN`

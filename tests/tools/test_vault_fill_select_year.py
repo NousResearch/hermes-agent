@@ -88,101 +88,161 @@ class TestFillScriptStringContract:
 
 @pytest.fixture(scope="module")
 def browser():
-    """A real Chromium, because the defect is JS behaviour, not a string."""
-    playwright = pytest.importorskip("playwright.sync_api")
-    launch = {"headless": True, "args": ["--no-sandbox", "--disable-dev-shm-usage"]}
-    for exe in ("/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"):
-        if Path(exe).exists():
-            launch["executable_path"] = exe
-            break
-    with playwright.sync_playwright() as pw:
+    """A real browser when Playwright + Chromium are present, else a Node DOM harness.
+
+    This NEVER skips. A Playwright-only fixture silently skips wherever Playwright is absent
+    -- including upstream's unit-test lane -- and a skip among passes reads as a clean run.
+    Node is a hard dependency of this repo, so the Node path is always exercisable; the
+    Chromium path is used when available for maximum fidelity. Both run the same assertions,
+    including the one that matters: the control must end up holding the card's real year.
+    """
+    from tests.tools._vault_js_harness import has_chromium, node_available
+
+    chromium = has_chromium()
+    if chromium:
         try:
-            br = pw.chromium.launch(**launch)
-        except Exception as exc:                      # pragma: no cover
-            pytest.skip(f"no usable Chromium: {exc}")
-        yield br
-        br.close()
+            from playwright.sync_api import sync_playwright
+
+            pw = sync_playwright().start()
+            br = pw.chromium.launch(headless=True, executable_path=chromium,
+                                    args=["--no-sandbox", "--disable-dev-shm-usage"])
+            yield _PlaywrightDriver(br)
+            br.close()
+            pw.stop()
+            return
+        except Exception:
+            pass  # fall through to Node rather than skipping
+
+    if not node_available():
+        pytest.fail("neither Chromium+Playwright nor node is available; the vault fill JS "
+                    "cannot be verified. Do not treat this as a pass.")
+    yield _NodeDriver()
 
 
-def _fill(page, token_value_pairs, nonce="n1"):
-    """Inspect the page, then fill the named tokens. Returns (parsed_result, inspected_controls)."""
-    inspected = json.loads(page.evaluate(build_inspection_js(nonce)))
+def _maybe_json(value):
+    """Playwright returns an object when the JS returns one and a string when it stringifies.
+
+    Playwright's ``evaluate`` already deserialises a returned object, so calling ``json.loads``
+    on it raises ``TypeError: not list``. Only a string needs parsing.
+    """
+    return json.loads(value) if isinstance(value, str) else value
+
+
+class _PlaywrightDriver:
+    """Runs inspection+fill in a real Chromium."""
+
+    name = "chromium"
+
+    def __init__(self, br):
+        self._br = br
+
+    def inspect(self, html, inspection_js):
+        pg = self._br.new_page()
+        pg.goto("data:text/html," + html.replace("#", "%23"), wait_until="domcontentloaded")
+        self._pg = pg
+        return _maybe_json(pg.evaluate(inspection_js))
+
+    def fill(self, fill_js):
+        pg = self._pg
+        out = _maybe_json(pg.evaluate(fill_js))
+        held_raw = pg.evaluate(
+            "() => Array.from(document.querySelectorAll('select'))"
+            ".map(s => ({name: s.name || s.id, value: s.value}))")
+        held = {c["name"]: c["value"] for c in _maybe_json(held_raw)}
+        pg.close()
+        return {"result": out, "held": held}
+
+
+class _NodeDriver:
+    """Runs inspection+fill against a minimal DOM in Node. Never skips."""
+
+    name = "node"
+
+    def __init__(self):
+        self._html = None
+
+    def inspect(self, html, inspection_js):
+        from tests.tools._vault_js_harness import run_in_node
+        self._html = html
+        return run_in_node(html, inspection_js)["inspection"]
+
+    def fill(self, fill_js):
+        from tests.tools._vault_js_harness import run_in_node
+        # same html -> identical DOM -> the inspection's index stamps still resolve
+        return run_in_node(self._html, "null", fill_js)
+
+
+def _fill(driver, html, token_value_pairs, nonce="n1"):
+    """Inspect ``html``, then fill the named tokens. Returns the driver's fill result.
+
+    ``driver`` is the object yielded by the ``browser`` fixture; ``driver.name`` says which
+    engine actually ran ('chromium' or 'node').
+    """
+    from agent.vault_login_classifier import build_fill_js, build_inspection_js
+
+    inspected = driver.inspect(html, build_inspection_js(nonce))
     fills = []
     for token, value in token_value_pairs:
         ctl = next(c for c in inspected if token in (c.get("name") or ""))
         fills.append({"index": ctl["index"], "token": token, "value": value})
-    res = page.evaluate(build_fill_js(fills, expected_origin="null", nonce=nonce))
-    return (json.loads(res) if isinstance(res, str) else res), inspected
+    return driver.fill(build_fill_js(fills, expected_origin="null", nonce=nonce))
 
 
 class TestTheDefectItself:
-    """The exact production shape, end to end in a real browser."""
+    """The exact production shape, end to end. Runs in Chromium when available, else Node.
+
+    These assertions are the point of the PR: they fail against the pre-fix code. The engine
+    used is reported so a reviewer can see the tests actually executed instead of being skipped.
+    """
+
+    def test_the_engine_is_reported_and_never_a_silent_skip(self, browser):
+        # a skip among passes is how this defect hid; make the engine visible
+        assert browser.name in ("chromium", "node"), browser.name
 
     def test_four_digit_vault_year_lands_on_a_two_digit_control(self, browser):
-        page = browser.new_page()
-        page.goto(_page_html(TWO_DIGIT_YEAR_PAGE), wait_until="domcontentloaded")
-        res, _ = _fill(page, [("cc-exp-year", "2031"), ("cc-exp-month", "10")])
-        held = page.evaluate("() => document.getElementById('y').value")
-        page.close()
+        r = _fill(browser, TWO_DIGIT_YEAR_PAGE,
+                  [("cc-exp-year", "2031"), ("cc-exp-month", "10")])
+        held = r["held"].get("cc-exp-year")
         # THE assertion: the control must express the card's real year, not its default
         assert held == "31", f"requested 2031, control holds {held!r}"
         assert held != "26", "the control kept its default -- this is the bug returning"
-        assert res["filled"] == 2 and res["skipped"] == []
+        assert r["result"]["filled"] == 2 and r["result"]["skipped"] == []
 
     def test_two_digit_vault_year_still_works(self, browser):
-        page = browser.new_page()
-        page.goto(_page_html(TWO_DIGIT_YEAR_PAGE), wait_until="domcontentloaded")
-        res, _ = _fill(page, [("cc-exp-year", "31")])
-        held = page.evaluate("() => document.getElementById('y').value")
-        page.close()
-        assert held == "31" and res["filled"] == 1
+        r = _fill(browser, TWO_DIGIT_YEAR_PAGE, [("cc-exp-year", "31")])
+        assert r["held"].get("cc-exp-year") == "31" and r["result"]["filled"] == 1
 
     def test_two_digit_year_lands_on_a_four_digit_control(self, browser):
-        page = browser.new_page()
-        page.goto(_page_html(FOUR_DIGIT_YEAR_PAGE), wait_until="domcontentloaded")
-        res, _ = _fill(page, [("cc-exp-year", "31")])
-        held = page.evaluate("() => document.getElementById('y').value")
-        page.close()
-        assert held == "2031" and res["filled"] == 1
+        r = _fill(browser, FOUR_DIGIT_YEAR_PAGE, [("cc-exp-year", "31")])
+        assert r["held"].get("cc-exp-year") == "2031" and r["result"]["filled"] == 1
 
     def test_an_unexpressible_year_is_reported_not_silently_defaulted(self, browser):
-        page = browser.new_page()
-        page.goto(_page_html(TWO_DIGIT_YEAR_PAGE), wait_until="domcontentloaded")
         # 2099 is not among 26/27/31/45
-        res, _ = _fill(page, [("cc-exp-year", "2099")])
-        held = page.evaluate("() => document.getElementById('y').value")
-        page.close()
+        r = _fill(browser, TWO_DIGIT_YEAR_PAGE, [("cc-exp-year", "2099")])
+        res = r["result"]
         assert res["filled"] == 0, "a fill that could not land must not count as written"
         assert res["requested"] == 1
         assert res["skipped"] and res["skipped"][0]["reason"] == "no_matching_option"
         assert res["skipped"][0]["token"] == "cc-exp-year"
-        assert held == "26", "the control is expected to keep its default here"
+        assert r["held"].get("cc-exp-year") == "26", "the control keeps its default here"
         # the point: the DEFAULT is still there, but now the result says so
 
     def test_the_year_fallback_does_not_touch_text_selects(self, browser):
-        page = browser.new_page()
-        page.goto(_page_html(COUNTRY_PAGE), wait_until="domcontentloaded")
         # a numeric value must not hijack a text option list
-        res, _ = _fill(page, [("country", "31")])
-        held = page.evaluate("() => document.getElementById('c').value")
-        page.close()
-        assert held in ("GB", ""), f"country select was wrongly set to {held!r}"
-        assert res["filled"] == 0
-        assert res["skipped"][0]["reason"] == "no_matching_option"
+        r = _fill(browser, COUNTRY_PAGE, [("country", "31")])
+        assert r["held"].get("country") in ("GB", ""), \
+            f"country select was wrongly set to {r['held'].get('country')!r}"
+        assert r["result"]["filled"] == 0
+        assert r["result"]["skipped"][0]["reason"] == "no_matching_option"
 
     def test_a_genuine_text_match_still_works(self, browser):
-        page = browser.new_page()
-        page.goto(_page_html(COUNTRY_PAGE), wait_until="domcontentloaded")
-        res, _ = _fill(page, [("country", "Cameroon")])
-        held = page.evaluate("() => document.getElementById('c').value")
-        page.close()
-        assert held == "CM" and res["filled"] == 1
+        r = _fill(browser, COUNTRY_PAGE, [("country", "Cameroon")])
+        assert r["held"].get("country") == "CM" and r["result"]["filled"] == 1
 
     def test_partial_fill_is_reported_field_by_field(self, browser):
-        page = browser.new_page()
-        page.goto(_page_html(TWO_DIGIT_YEAR_PAGE), wait_until="domcontentloaded")
-        res, _ = _fill(page, [("cc-exp-year", "2099"),   # cannot land
-                                    ("cc-exp-month", "10")])   # lands fine
-        page.close()
+        r = _fill(browser, TWO_DIGIT_YEAR_PAGE,
+                  [("cc-exp-year", "2099"),      # cannot land
+                   ("cc-exp-month", "10")])      # lands fine
+        res = r["result"]
         assert res["filled"] == 1 and res["requested"] == 2
         assert [s["token"] for s in res["skipped"]] == ["cc-exp-year"]

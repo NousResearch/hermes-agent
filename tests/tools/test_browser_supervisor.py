@@ -352,9 +352,10 @@ def test_evaluate_runtime_rebinds_after_page_target_closed(chrome_cdp, superviso
     out = {}
     while time.monotonic() < deadline:
         out = supervisor.evaluate_runtime("document.title", timeout=3.0)
-        if out.get("ok"):
+        if out.get("ok") and out.get("result") == "replacement-tab":
             break
-        assert "supervisor" in out["error"].lower(), out
+        # Rebound before the replacement tab finished loading: ok, title still "". Keep polling.
+        assert out.get("ok") or "supervisor" in out["error"].lower(), out
         time.sleep(0.25)
     assert out.get("ok") is True, out
     assert out["result"] == "replacement-tab"

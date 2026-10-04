@@ -105,6 +105,7 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     are sync, thread-safe bridges onto that loop; all CDP I/O lives on the loop."""
 
     _page_target_id: Optional[str] = None  # target behind _page_session_id
+    _reattaching: bool = False  # a lost-page re-attach is in flight (loop-only state)
 
     def __init__(self, task_id: str, cdp_url: str, *, dialog_policy: str = DEFAULT_DIALOG_POLICY,
                  dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S) -> None:
@@ -467,13 +468,19 @@ class CDPSupervisor(DialogSupervisionMixin, FrameTrackingMixin):
     async def _reattach_lost_page(self, lost_target_id: Optional[str]) -> None:
         """Rebind the page session after its target went away, so evaluate and the dialog bridge
         keep working. Skips ``lost_target_id``: a closing tab stays listed briefly, and attaching
-        to it leaves every later call hanging until timeout. Runs as a loop task: logs, never raises."""
-        if self._page_session_id is not None:
-            return  # already rebound (detach event and a failed call can both land here)
+        to it leaves every later call hanging until timeout. Runs as a loop task: logs, never raises.
+        The detach event and a failed call can both land here for one lost tab; the slot is
+        claimed before the first await (both run on this loop, so check-and-set is atomic),
+        otherwise both would attach and the loser's session would stay attached unreferenced."""
+        if self._page_session_id is not None or self._reattaching:
+            return
+        self._reattaching = True
         try:
             await self._attach_initial_page(exclude_target_id=lost_target_id)
         except Exception as e:
             logger.debug("CDP supervisor %s: page re-attach failed: %s", self.task_id, _redact_cdp_error_text(e))
+        finally:
+            self._reattaching = False
 
     async def _attach_initial_page(self, exclude_target_id: Optional[str] = None) -> None:
         """Find (or create) a page target, attach flattened, enable domains, install dialog bridge."""

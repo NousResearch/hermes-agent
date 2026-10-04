@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
@@ -19,19 +20,41 @@ const paths = vi.hoisted(() => [
 ])
 
 const getSessionMessages = vi.hoisted(() => vi.fn())
+const getHermesConfigRecord = vi.hoisted(() => vi.fn(async () => ({})))
 
 vi.mock('@/hermes', async () => ({
   ...(await vi.importActual('@/hermes')),
   listAllProfileSessions: async () => ({
     sessions: [{ id: 'artifact-session', title: 'Fixture', profile: 'origin-profile' }]
   }),
-  getSessionMessages
+  getSessionMessages,
+  getHermesConfigRecord
 }))
 afterEach(() => {
   cleanup()
   $connection.set(null)
   vi.clearAllMocks()
   vi.unstubAllGlobals()
+})
+
+it('replays an in-flight scan with config that arrives before its transcript', async () => {
+  let resolveConfig!: (value: object) => void
+  let resolveMessages!: (value: object) => void
+  getHermesConfigRecord.mockImplementationOnce(() => new Promise(resolve => { resolveConfig = resolve }))
+  const page = { messages: [{ role: 'assistant', timestamp: 1000,
+    content: 'https://example.com/loading.png MEDIA:/tmp/keep.txt' }] }
+  getSessionMessages.mockImplementationOnce(() => new Promise(resolve => { resolveMessages = resolve }))
+  getSessionMessages.mockResolvedValue(page)
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <MemoryRouter><ArtifactsView /></MemoryRouter>
+  </QueryClientProvider>)
+  await waitFor(() => expect(getSessionMessages).toHaveBeenCalled())
+  await act(async () => { resolveConfig({ desktop: { artifacts: { ignore: ['loading[.]png'] } } }) })
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
+  await act(async () => { resolveMessages(page) })
+  await waitFor(() => expect(getSessionMessages).toHaveBeenCalledTimes(2))
+  await screen.findByRole('button', { name: 'keep.txt' })
+  await waitFor(() => expect(screen.queryByRole('link')).toBeNull())
 })
 
 it('keeps discovered file paths and originating session scope intact through remote opening', async () => {
@@ -61,9 +84,9 @@ it('keeps discovered file paths and originating session scope intact through rem
     wsUrl: ''
   })
   render(
-    <MemoryRouter>
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><MemoryRouter>
       <ArtifactsView />
-    </MemoryRouter>
+    </MemoryRouter></QueryClientProvider>
   )
 
   for (const name of [

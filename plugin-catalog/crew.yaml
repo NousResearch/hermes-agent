@@ -1,6 +1,6 @@
 name: crew
 repo: https://github.com/macd2/Crew
-sha: fd5df106117c99c764fe627da015e1bb248d774c
+sha: 5d985cfad5c8ff90e6eb7e0b772fce235e158465
 description: One /crew message becomes verified work on the kanban board. A coordinator owns every card
   until its proof command exits 0 - one writer per card, an independent verifier, a hard token budget per
   card, and a live local dashboard of every card, run and tool call.
@@ -9,7 +9,7 @@ tier: community
 category: automation
 requires_hermes: ">=0.21"
 docs_url: https://github.com/macd2/Crew#readme
-version: "0.7.0"
+version: "0.7.8"
 platforms: [linux]
 capabilities:
   provides_tools: []

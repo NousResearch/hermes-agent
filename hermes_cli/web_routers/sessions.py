@@ -873,6 +873,24 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
             if value is not None:
                 setter(db, sid, value)
                 result[flag] = bool(value)
+        # Archiving is end-of-life in the core's design (#105588): automatic Desktop cleanup reclaims
+        # the runtime but deliberately leaves the durable row open and resumable "until the user
+        # explicitly closes or archives it". Flipping the flag alone left the runtime, its
+        # active-session lease and the transcript resident after the row dropped off the sidebar,
+        # leaking a max_concurrent_sessions slot. End the runtime on the EXPLICIT archive — the
+        # dashboard hosts the in-process gateway, and _close_session_by_id runs the normal
+        # _finalize_session funnel, which ends the row and releases the lease. Only on ``archived``:
+        # ``hidden`` is the canonical Bot Chat's normal state (born hidden, tui_gateway/methods_session.py),
+        # so closing on it would tear down a live session that owns agent-to-agent delivery.
+        if body.archived:
+            try:
+                import tui_gateway.server as gateway
+
+                gateway._close_session_by_id(sid, end_reason="archived")
+            except Exception:
+                # The flag is already durable; a failed teardown must not fail the request,
+                # but staying silent would hide a lease that keeps leaking.
+                _log.warning("archive close failed for %s; lease may stay resident", sid, exc_info=True)
         result["title"] = db.get_session_title(sid) or ""
         return result
 

@@ -17,6 +17,10 @@ published ``hermes.exe`` that really restarts the real gateway.
   must start it again.
 * readiness: a launch owes a gateway that comes back, one that never becomes ready, and an SCM
   service that cannot start. The ready one runs; only the other two stay owed.
+* never asked: the REAL pause dies after recording its intent to stop the gateway, before asking it.
+  The gateway keeps serving and owes nothing; when the user stops it later, no launch restarts it.
+* asked: the REAL pause dies right after issuing the request (planned-stop marker on disk), before
+  the socket call. The gateway drains and exits on its own; the next launch restarts it once.
 """
 
 from __future__ import annotations
@@ -224,7 +228,10 @@ def _draining(machine, out: dict) -> None:
 pid = {live}
 token = {{"resume_needed": True, "profiles": {{"default": pid}}, "identities": {{str(pid): r.identity(pid)["ct"]}}}}
 if hasattr(r, "mark_stop_requested"):
-    r.mark_stop_requested(r.record_pause(token, None, []), [pid])
+    token = r.record_pause(token, None, [])
+    r.mark_stop_requested(token, [pid])
+    if hasattr(r, "mark_stop_sent"):  # the request went out; the gateway has not exited yet
+        r.mark_stop_sent(token, pid)
 else:  # the old design has no stop record: write the same fact it would have needed
     r.write(r.stamp_tree({{**token, "stop_requested": [str(pid)]}}), owner=r.identity())
 print("asked", flush=True)
@@ -262,6 +269,53 @@ orphan({{"default": {dead}, "ghost": {dead}}}, services=["{_MISSING_SERVICE}"],
     _clear(machine)
 
 
+def _gone(pid: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while psutil.pid_exists(pid) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    return not psutil.pid_exists(pid)
+
+
+# The real pause, killed on one line of the installed update_cmd_windows (texts present before and
+# after round 6, so the same cell runs on the red branch).
+_PAUSE = """
+from hermes_cli import update_cmd_windows as w
+stop_at(getattr(w, sys.argv[2]), (sys.argv[3],), "kill")
+w._pause_windows_gateways_for_update()
+"""
+
+
+def _never_asked(machine, out: dict) -> None:
+    live = _fresh_gateway(machine)
+    out["never_kill"] = _run_driver(machine, "never-asked-update", _PAUSE, "_pause_windows_gateways_for_update",
+                                    "profiles = _stop_windows_gateways(")
+    out["never_intent"] = _owed(machine)
+    out["never_live_before"] = psutil.pid_exists(live)
+    out["never_launch_while"] = _launch(machine, "never-asked-while-serving")
+    out["never_live_after_launch"] = psutil.pid_exists(live)
+    out["never_owed_while"] = _owed(machine)
+    # The user's deliberate stop, after the update's obligation was retired.
+    out["never_user_stop"] = machine.hermes("gateway", "stop", label="never-asked-user-stop", timeout=180)
+    out["never_gone"] = _gone(live, 60)
+    out["never_launch_after"] = _launch(machine, "never-asked-after-user-stop")
+    out["never_running_after"] = _running(machine, live, 30)
+    out["never_owed_after"] = _owed(machine)
+    _clear(machine)
+
+
+def _asked(machine, out: dict) -> None:
+    live = _fresh_gateway(machine)
+    out["asked_kill"] = _run_driver(machine, "asked-update", _PAUSE, "_request_socket_pauses",
+                                    "ack = pause_gateway_for_update(Path(proc.path))")
+    out["asked_owed_at_death"] = _owed(machine)
+    out["asked_gone"] = _gone(live, 120)  # the gateway acts on the request on disk by itself
+    out["asked_launch"] = _launch(machine, "asked-after-exit")
+    out["asked_running"] = _running(machine, live, 150)
+    out["asked_again"] = _launch(machine, "asked-again")
+    out["asked_owed"] = _owed(machine)
+    _clear(machine)
+
+
 @pytest.fixture(scope="module")
 def journey(tmp_path_factory):
     out: dict = {}
@@ -277,7 +331,7 @@ def journey(tmp_path_factory):
             off = machine.hermes("config", "set", "gateway.respawn_storm.max_starts", "0", label="storm-breaker-off")
             assert off.returncode == 0, fail_with(machine, "harness: could not disable the respawn-storm breaker", off)
             with machine.gateway_phase():
-                for cell in (_claim_race, _publish_crash, _draining, _readiness):
+                for cell in (_claim_race, _publish_crash, _draining, _readiness, _never_asked, _asked):
                     started = time.monotonic()
                     try:
                         cell(machine, out)
@@ -350,3 +404,36 @@ def test_each_runtime_is_retired_only_on_its_own_readiness(journey) -> None:
         m, f"retired on another target's readiness (owed profiles {owed[0].get('profiles')})", run)
     assert owed[0].get("services") == [_MISSING_SERVICE], fail_with(
         m, f"the service that did not start is not owed (services {owed[0].get('services')})", run)
+
+
+def test_a_gateway_the_update_never_asked_is_left_serving_and_a_user_stop_is_final(journey) -> None:
+    _no_error(journey, "never_asked")
+    m, during, after = journey["machine"], journey["never_launch_while"], journey["never_launch_after"]
+    rc, text = journey["never_kill"]
+    assert rc == 71 and len(journey["never_intent"]) == 1 and journey["never_live_before"], fail_with(
+        m, f"premise: the pause did not die between its intent and its request (rc={rc}, "
+           f"records={journey['never_intent']})\n{text}")
+    assert journey["never_live_after_launch"] and _restarts(during.stdout) == 0, fail_with(
+        m, "a launch restarted (replaced) a gateway the update never asked to stop", during)
+    assert journey["never_owed_while"] == [], fail_with(
+        m, f"a gateway never asked to stop is held as draining (owed while it serves: {journey['never_owed_while']})",
+        during)
+    assert journey["never_gone"], fail_with(m, "premise: the user's `hermes gateway stop` did not stop it",
+                                            journey["never_user_stop"])
+    assert _restarts(after.stdout) == 0 and journey["never_running_after"] is None, fail_with(
+        m, "a gateway the user stopped was restarted for an update that never stopped it", after)
+    assert journey["never_owed_after"] == [], fail_with(m, f"debt left: {journey['never_owed_after']}", after)
+
+
+def test_a_gateway_the_update_asked_is_restarted_once_after_it_exits(journey) -> None:
+    _no_error(journey, "asked")
+    m, run = journey["machine"], journey["asked_launch"]
+    rc, text = journey["asked_kill"]
+    assert rc == 71 and len(journey["asked_owed_at_death"]) == 1, fail_with(
+        m, f"premise: the pause did not die right after issuing its request (rc={rc}, "
+           f"records={journey['asked_owed_at_death']})\n{text}")
+    assert journey["asked_gone"], fail_with(m, "premise: the asked gateway never acted on the request on disk", run)
+    assert _restarts(run.stdout) == 1 and journey["asked_running"], fail_with(
+        m, "a gateway the update asked to stop was not started again after it exited", run)
+    assert _restarts(journey["asked_again"].stdout) == 0 and journey["asked_owed"] == [], fail_with(
+        m, f"a restarted gateway was owed again: {journey['asked_owed']}", journey["asked_again"])

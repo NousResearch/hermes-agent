@@ -190,7 +190,7 @@ VALID_HOOKS: Set[str] = {
     # Gateway platform-boundary observer hooks (#64176). Observer-only; each callback isolated by
     # invoke_hook. This surface grants no adapter handles or platform actions. Fired today: Telegram
     # "reaction" + "message_edited"; Discord "message_edited", "message_deleted", "thread_created",
-    # "thread_renamed". Each event type carries its own event-local additive payload contract (see
+    # "thread_renamed"; Webhook "delivery_received", "delivery_completed". Each event type carries its own event-local additive payload contract (see
     # hooks.md). Other event types and hook names land here only together with real fire-sites and payload
     # contracts; no inert VALID_HOOKS surface is registered ahead of implementation.
     "gateway_platform_event",

@@ -113,7 +113,7 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     return _EXIT_CODE_SEMANTICS.get(base_cmd, {}).get(exit_code)
 
 
-def _sudo_annotations(command: str, output: str, env_type: str) -> tuple[str, bool, bool]:
+def _sudo_annotations(command: str, output: str, env_type: str, cache_target: str = "") -> tuple[str, bool, bool]:
     """Sudo failure handling -> (output, auth_failed, cache_cleared)."""
     import tools.terminal_tool as tt
     from tools.terminal_tool_sudo import (
@@ -123,7 +123,7 @@ def _sudo_annotations(command: str, output: str, env_type: str) -> tuple[str, bo
     from utils import env_var_enabled
     output = _handle_sudo_failure(output, env_type)
     auth_failed = _sudo_wrong_password_failure(output)
-    cache_cleared = _invalidate_cached_sudo_on_auth_failure(command, output)
+    cache_cleared = _invalidate_cached_sudo_on_auth_failure(command, output, cache_target)
     can_reprompt = cache_cleared and (
         tt._get_sudo_password_callback() is not None or env_var_enabled("HERMES_INTERACTIVE")
     ) and not _in_delegated_child_context()
@@ -225,7 +225,8 @@ def finalize_foreground_result(
 
     output = result.get("output", "")
     returncode = result.get("returncode", 0)
-    output, sudo_auth_failed, sudo_cache_cleared = _sudo_annotations(command, output, env_type)
+    output, sudo_auth_failed, sudo_cache_cleared = _sudo_annotations(
+        command, output, env_type, getattr(env, "_sudo_cache_target", ""))
     output = _apply_output_transform_hook(command, output, returncode, effective_task_id, env_type)
     output = _truncate_head_tail(output)
     # Strip ANSI so the model never copies escapes into file writes, then

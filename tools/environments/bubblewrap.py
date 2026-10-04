@@ -270,6 +270,58 @@ def home_replaced_by_bind(home_root: str, binds: Iterable[BindMount]) -> bool:
     return any(_is_within(home_root, bind.dest) and not _same_host_path(bind.src, bind.dest) for bind in binds)
 
 
+# How many symlinks the walk of one chain follows; the kernel stops at 40.
+DOT_LINK_MAX_HOPS = 40
+
+
+def dot_link_entries(home_root: str, name: str) -> list[str]:
+    """Every directory entry the kernel passes when it resolves *name* at the top of *home_root*.
+
+    The walk goes one path component at a time and follows each symlink
+    it meets, as path resolution does, so the list holds the links in the
+    middle of a chain and the directories that lead to them, not just the
+    final target that realpath gives. The last item is the final target,
+    or the first entry that does not exist: a command that can make it
+    decides what the link resolves to. The entry *name* itself is left
+    out. A chain longer than the kernel allows resolves to nothing on the
+    host, so the walk stops there.
+    """
+    entries: list[str] = []
+    current = home_root
+    try:
+        pending = os.readlink(os.path.join(home_root, name)).split(os.sep)
+    except OSError:
+        return entries
+    if pending and pending[0] == "":
+        current = os.sep
+    hops = 1
+    while pending:
+        part = pending.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            current = os.path.dirname(current)
+            continue
+        entry = os.path.join(current, part)
+        entries.append(entry)
+        if os.path.islink(entry):
+            hops += 1
+            if hops > DOT_LINK_MAX_HOPS:
+                break
+            try:
+                target = os.readlink(entry)
+            except OSError:
+                break
+            if os.path.isabs(target):
+                current = os.sep
+            pending = target.split(os.sep) + pending
+        elif os.path.lexists(entry):
+            current = entry
+        else:
+            break
+    return entries
+
+
 def staged_data_roots() -> tuple[str, ...]:
     """Real host paths of the staged data directories under the active HERMES_HOME.
 
@@ -1138,7 +1190,7 @@ class BubblewrapEnvironment(LocalEnvironment):
         self._check_initial_cwd()
         self._check_bind_sources()
         self._check_absent_denied_paths()
-        self._warn_writable_dot_links()
+        self._check_writable_dot_links()
         sandbox_root = os.path.realpath(get_sandbox_dir())
         self._check_sandbox_root(sandbox_root)
         # BaseEnvironment.__init__ derives the snapshot and cwd file paths
@@ -1244,19 +1296,26 @@ class BubblewrapEnvironment(LocalEnvironment):
                 self._initial_cwd,
             )
 
-    def _warn_writable_dot_links(self) -> None:
-        """Warn once about dot symlinks of HOME whose target a command can write to.
+    def _check_writable_dot_links(self) -> None:
+        """Refuse a dot symlink of HOME that a command could redirect or rewrite.
 
         A dot entry is read-only or hidden in the sandbox, and a symlink
-        at the top of HOME cannot be replaced there. What it points at is
+        at the top of HOME cannot be replaced there. What it leads to is
         another matter: ~/.bashrc linked into a dotfiles directory that the
         cwd makes writable can be rewritten through that directory, and the
-        host reads it at the next login. The backend holds nothing there.
-        Holding a link target soundly would mean fixing every directory
-        the kernel passes through on the way to it, and a chain can pass
-        through any number of them. So this is a notice to the operator,
-        not a protection: it names the entries whose resolved target lies
-        in the writable cwd or in a read-write operator bind.
+        host reads it at the next login, long after the sandbox is gone.
+        The same holds for any link or directory on the way: a command
+        that can replace one of them decides what the host reads.
+
+        The backend does not try to hold such a chain in place with
+        mounts. It walks the chain of each dot symlink at the top of HOME
+        (dot_link_entries) and refuses to start when an entry on it lies
+        in the writable cwd or in a read-write operator bind. Not counted:
+        an entry at or under a hidden path, which no command can reach; a
+        directory on the way that holds a hidden path, which is pinned as
+        a mount point and cannot be renamed or replaced; and, under a
+        source that covers HOME, the dot entries of HOME, which the layout
+        makes read-only or hides.
         """
         root = self._home_root
         if root is None:
@@ -1273,27 +1332,38 @@ class BubblewrapEnvironment(LocalEnvironment):
         except OSError:
             return
 
-        def writable(target: str) -> bool:
-            # A target under a hidden path is not reachable in the sandbox.
-            if any(_is_within(target, hidden) for hidden in self._hidden_paths):
+        def writable(entry: str, last: bool) -> bool:
+            if any(_is_within(entry, hidden) for hidden in self._hidden_paths):
+                return False
+            if not last and any(_is_within(hidden, entry) for hidden in self._hidden_paths):
                 return False
             for source in sources:
-                if not _is_within(target, source):
+                if not _is_within(entry, source):
                     continue
-                if _is_within(root, source) and _is_within(target, root):
+                if entry == source and not last:
+                    # The top of a bind is a mount point: it cannot be replaced.
+                    continue
+                if _is_within(root, source) and _is_within(entry, root):
                     # A source that covers HOME makes only its non-dot entries writable.
-                    if target == root or os.path.relpath(target, root).split(os.sep)[0].startswith("."):
+                    if entry == root or os.path.relpath(entry, root).split(os.sep)[0].startswith("."):
                         continue
                 return True
             return False
 
-        exposed = [name for name in names if writable(os.path.realpath(os.path.join(root, name)))]
-        if exposed:
-            logger.warning(
-                "bubblewrap: %s in the home directory %s a symlink to a place that is writable inside "
-                "the sandbox, so a command can change what it holds. The backend does not protect a "
-                "link target. Set terminal.cwd to a project directory to keep such targets out of reach.",
-                ", ".join(exposed), "is" if len(exposed) == 1 else "are",
+        def exposed(name: str) -> bool:
+            entries = dot_link_entries(root, name)
+            return any(writable(entry, index == len(entries) - 1) for index, entry in enumerate(entries))
+
+        refused = [name for name in names if exposed(name)]
+        if refused:
+            raise ValueError(
+                f"{', '.join(refused)} in the home directory {'is a symlink' if len(refused) == 1 else 'are symlinks'} "
+                "that a command in the bubblewrap sandbox could redirect or rewrite: the link leads "
+                "through, or ends in, a place that is writable inside the sandbox (terminal.cwd "
+                f"{self._initial_cwd} or a read-write terminal.bubblewrap_binds source). The host "
+                "reads such a file after the sandbox is gone, at the next login for a shell startup "
+                "file. Set terminal.cwd to a project directory that does not hold the link target, "
+                "or make the bind read-only."
             )
 
     def _check_absent_denied_paths(self) -> None:

@@ -152,8 +152,9 @@ class TestStateDir:
         with _no_session():
             env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
             local = LocalEnvironment(cwd=str(work_dir), timeout=10)
-        prefix = "unset " + " ".join(HOST_SOCKET_VARS) + "; "
-        assert f"eval '{prefix}echo hi'" in env._wrap_command("echo hi", str(work_dir))
+        wrapped = env._wrap_command("echo hi", str(work_dir))
+        assert "eval 'unset " + " ".join(HOST_SOCKET_VARS) + "; case " in wrapped
+        assert "esac; echo hi'" in wrapped
         assert "eval 'echo hi'" in local._wrap_command("echo hi", str(work_dir))
         assert "unset SSH_AUTH_SOCK" not in local._wrap_command("echo hi", str(work_dir))
 
@@ -350,7 +351,7 @@ class TestConstructionTimeMounts:
         # construction as well.
         assert params == [
             "config", "initial_cwd", "state_dir", "home", "hermes_home", "tracked_cwd", "bwrap_path", "hidden_paths",
-            "home_root", "home_allow", "scratch_dir", "scratch_src", "staged_roots",
+            "home_root", "home_allow", "scratch_dir", "scratch_view", "scratch_private", "staged_roots",
         ]
 
     def test_chdir_follows_tracked_cwd_with_fixed_mounts(self, sandbox_root, work_dir):

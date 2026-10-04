@@ -183,6 +183,9 @@ def hermes_home(host_dir, monkeypatch):
     (hh / "config.yaml").write_text(f"# {MARKER}\n")
     (hh / ".env").write_text(f"HERMES_MARKER={MARKER}\n")
     monkeypatch.setenv("HERMES_HOME", str(hh))
+    # As in a Hermes process: the temp variables name the scratch dir of the home.
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        monkeypatch.setenv(name, str(hh / "cache" / "scratch"))
     # No TERMINAL_SANDBOX_DIR: the state dir lands in HERMES_HOME/sandboxes,
     # the one entry allowed to show through the overlay.
     monkeypatch.delenv("TERMINAL_SANDBOX_DIR", raising=False)
@@ -951,26 +954,69 @@ class TestHomeDefaultDenyIntegration:
             env.cleanup()
 
 
+def _tmpdir(env) -> Path:
+    return Path(env.execute('printf %s "$TMPDIR"')["output"].strip())
+
+
 @needs_bwrap
 class TestScratchDirIntegration:
-    """TMPDIR points at HERMES_HOME/cache/scratch, which the overlay would hide
-    and which every Hermes process shares: the sandbox gets a directory of
-    its own at that path, kept from one command to the next."""
+    """HERMES_HOME/cache/scratch is TMPDIR of every Hermes process, and the
+    overlay would hide it: the sandbox gets a scratch dir of its own inside
+    that path, at the same path as on the host, kept from one command to
+    the next."""
 
     def test_scratch_file_written_in_one_command_is_read_in_the_next(self, work_dir, hermes_home):
         scratch = hermes_home / "cache" / "scratch"
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
         try:
-            # The test runner sets its own TMPDIR, so the commands name the
-            # scratch path that a Hermes process exports as TMPDIR.
-            result = env.execute(f"printf kept > {scratch}/scratch-probe")
+            private = _tmpdir(env)
+            assert private.parent == scratch and private.is_dir()
+            result = env.execute("printf kept > $TMPDIR/scratch-probe")
             assert result["returncode"] == 0, result["output"]
-            assert env.execute(f"cat {scratch}/scratch-probe")["output"].strip() == "kept"
-            made = env.execute(f"TMPDIR={scratch} mktemp")["output"].strip()
-            assert made.startswith(str(scratch) + os.sep)
+            assert env.execute("cat $TMPDIR/scratch-probe")["output"].strip() == "kept"
+            made = env.execute("mktemp")["output"].strip()
+            assert made.startswith(str(private) + os.sep)
             assert env.execute(f"test -f {made}")["returncode"] == 0
-            # Nothing lands in the directory the other Hermes processes use.
-            assert list(scratch.iterdir()) == []
+            assert env.execute('echo "$TMP $TEMP"')["output"].split() == [str(private)] * 2
+            # The host-side tools read the same file at the same path.
+            assert (private / "scratch-probe").read_text() == "kept"
+            # Nothing else lands in the directory the other Hermes processes use.
+            assert [entry.name for entry in scratch.iterdir()] == [private.name]
+        finally:
+            env.cleanup()
+        assert list(scratch.iterdir()) == []
+
+    def test_write_to_the_shared_scratch_path_fails_where_the_command_sees_it(self, work_dir, hermes_home):
+        scratch = hermes_home / "cache" / "scratch"
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            result = env.execute(f"printf no > {scratch}/scratch-probe")
+            assert result["returncode"] != 0
+            assert "Read-only file system" in result["output"]
+            assert env.execute(f"ls -A {scratch}")["output"].split() == [_tmpdir(env).name]
+        finally:
+            env.cleanup()
+        assert not (scratch / "scratch-probe").exists()
+
+    def test_cd_into_a_scratch_subdirectory_is_tracked(self, work_dir, hermes_home):
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            build = _tmpdir(env) / "build"
+            result = env.execute("mkdir -p $TMPDIR/build && cd $TMPDIR/build")
+            assert result["returncode"] == 0, result["output"]
+            assert env.cwd == str(build)
+            assert env.execute("pwd")["output"].strip() == str(build)
+        finally:
+            env.cleanup()
+
+    def test_temp_variable_the_operator_set_elsewhere_is_left_alone(self, work_dir, hermes_home, monkeypatch):
+        monkeypatch.setenv("TMPDIR", str(work_dir))
+        monkeypatch.delenv("TMP")
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            assert _tmpdir(env) == work_dir
+            assert env.execute('printf %s "${TMP-unset}"')["output"].strip() == "unset"
+            assert Path(env.execute('printf %s "$TEMP"')["output"].strip()).parent == hermes_home / "cache" / "scratch"
         finally:
             env.cleanup()
 
@@ -978,10 +1024,12 @@ class TestScratchDirIntegration:
         scratch = hermes_home / "cache" / "scratch"
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=BubblewrapConfig(profile="restricted"))
         try:
-            result = env.execute(f"printf no > {scratch}/scratch-probe")
-            assert result["returncode"] != 0
-            assert "Read-only file system" in result["output"]
-            assert env.execute(f"ls -A {scratch}")["output"].strip() == ""
+            private = _tmpdir(env)
+            for target in (f"{scratch}/scratch-probe", "$TMPDIR/scratch-probe"):
+                result = env.execute(f"printf no > {target}")
+                assert result["returncode"] != 0, target
+                assert "Read-only file system" in result["output"], target
+            assert list(private.iterdir()) == []
         finally:
             env.cleanup()
         assert not (scratch / "scratch-probe").exists()
@@ -990,12 +1038,14 @@ class TestScratchDirIntegration:
         hermes_home = fake_home / ".hermes"
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TMPDIR", str(hermes_home / "cache" / "scratch"))
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
         try:
-            scratch = hermes_home / "cache" / "scratch"
-            assert env.execute(f"printf kept > {scratch}/scratch-probe")["returncode"] == 0
-            assert env.execute(f"cat {scratch}/scratch-probe")["output"].strip() == "kept"
-            assert not (scratch / "scratch-probe").exists()
+            private = _tmpdir(env)
+            assert private.parent == hermes_home / "cache" / "scratch"
+            assert env.execute("printf kept > $TMPDIR/scratch-probe")["returncode"] == 0
+            assert env.execute("cat $TMPDIR/scratch-probe")["output"].strip() == "kept"
+            assert (private / "scratch-probe").read_text() == "kept"
         finally:
             env.cleanup()
 
@@ -1004,10 +1054,13 @@ class TestScratchDirIntegration:
         first = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
         second = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
         try:
-            assert first.execute(f"printf {MARKER} > {scratch}/from-first")["returncode"] == 0
-            out = second.execute(f"ls -A {scratch}; cat {scratch}/from-first 2>&1")["output"]
-            assert MARKER not in out and "from-first" not in out.replace("from-first: No such file", "")
-            assert first.execute(f"cat {scratch}/from-first")["output"].strip() == MARKER
+            mine = _tmpdir(first)
+            assert mine != _tmpdir(second)
+            assert first.execute(f"printf {MARKER} > $TMPDIR/from-first")["returncode"] == 0
+            out = second.execute(f"ls -AR {scratch}; cat {mine}/from-first {scratch}/*/* 2>&1")["output"]
+            assert MARKER not in out
+            assert mine.name not in out.replace(f"{mine}/from-first: No such file", "")
+            assert first.execute("cat $TMPDIR/from-first")["output"].strip() == MARKER
         finally:
             first.cleanup()
             second.cleanup()
@@ -1016,10 +1069,11 @@ class TestScratchDirIntegration:
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
         sandboxes = Path(env.get_temp_dir()).parent
         try:
-            assert env.execute(f"printf x > {hermes_home}/cache/scratch/f")["returncode"] == 0
+            assert env.execute("printf x > $TMPDIR/f")["returncode"] == 0
         finally:
             env.cleanup()
         assert list(sandboxes.iterdir()) == []
+        assert list((hermes_home / "cache" / "scratch").iterdir()) == []
 
 
 def _listen(path: Path):
@@ -1084,6 +1138,8 @@ class TestSharedScratchIsNotInViewIntegration:
         assert MARKER not in out
         for name in ("hermes-dm-1000", "hermes-relay-dm-early.txt", "hermes-relay-dm-late.txt", "agent-browser-s1", "top.sock"):
             assert name not in out, (name, out)
+        # The listing did run: it shows the scratch dir of this environment.
+        assert "hermes-bwrap-" in out
         assert (scratch / "hermes-relay-dm-late.txt").read_text().startswith(MARKER)
 
 
@@ -1224,7 +1280,7 @@ class TestHideBelowRestoredRootsIntegration:
         try:
             assert MARKER not in env.execute(f"cat {secret} 2>&1")["output"]
             assert env.execute(f"cat {hermes_home}/cache/documents/open.txt")["output"].strip() == VISIBLE
-            assert env.execute(f"printf ok > {hermes_home}/cache/scratch/probe")["returncode"] == 0
+            assert env.execute("printf ok > $TMPDIR/probe")["returncode"] == 0
         finally:
             env.cleanup()
 
@@ -1235,6 +1291,7 @@ class TestHideBelowRestoredRootsIntegration:
         hermes_home = fake_home / ".hermes"
         hermes_home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("TMPDIR", str(hermes_home / "cache" / "scratch"))
         self._check(hermes_home, work_dir)
 
     def test_hide_entry_equal_to_a_staged_root_keeps_that_root_hidden(self, work_dir, hermes_home):
@@ -1254,8 +1311,8 @@ class TestHideBelowRestoredRootsIntegration:
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=BubblewrapConfig(hide=(str(scratch),)))
         try:
             assert MARKER not in env.execute(f"cat {scratch}/secret.txt 2>&1")["output"]
-            assert env.execute(f"printf kept > {scratch}/probe")["returncode"] == 0
-            assert env.execute(f"cat {scratch}/probe")["output"].strip() == "kept"
+            assert env.execute("printf kept > $TMPDIR/probe")["returncode"] == 0
+            assert env.execute("cat $TMPDIR/probe")["output"].strip() == "kept"
         finally:
             env.cleanup()
 

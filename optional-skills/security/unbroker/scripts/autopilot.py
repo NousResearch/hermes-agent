@@ -312,8 +312,25 @@ def next_actions(dossier: dict, brokers_list: list[dict], cfg: dict,
                 "how": "re-run this broker's search_vectors; if gone record confirmed_removed; "
                        "if still listed record reappeared and requeue the opt-out",
             })
-        elif st in ("submitted", "verification_pending") and not mail["imap"]:
-            pass  # already covered by the digest entry above
+        elif st in ("submitted", "verification_pending"):
+            broker = by_id.get(bid) or {}
+            needs_email_verification = bool(
+                (((broker.get("optout") or {}).get("requires")) or {}).get("email_verification"))
+            if not needs_email_verification:
+                # A plain web form (or a right-to-delete email with no confirmation loop) lands in
+                # `submitted` with a processing-window recheck, but section 2 only polls
+                # email-verification brokers. Without this, the case is never re-scanned, so it can
+                # never reach confirmed_removed: it stays in `due()` forever while `fully_done`
+                # reports True and the autonomous loop and cron both stop.
+                actions.append({
+                    "type": "verify_removal",
+                    "broker_id": bid,
+                    "why": "processing window elapsed (submitted opt-out awaiting confirmation)",
+                    "how": "re-run this broker's search_vectors; if gone record confirmed_removed; "
+                           "if still listed re-send the opt-out (record submitted)",
+                })
+            # else: an email-verification broker is handled by section 2 (poll, or the human digest
+            # in draft mode), so it is not stranded here.
 
     # 4) Phase 2 opt-outs: parents first (batch_plan already ordered them)
     for row in groups.get("found") or []:

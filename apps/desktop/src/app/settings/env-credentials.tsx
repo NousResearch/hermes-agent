@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -55,6 +55,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<string | null>(null)
+  const revealGeneration = useRef<Record<string, number>>({})
 
   // Best-effort cleanup of a retired localStorage flag (global "Show
   // advanced" toggle) — everything in these views is configuration-level.
@@ -175,6 +176,7 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
   }
 
   function handleHideReveal(key: string) {
+    revealGeneration.current[key] = (revealGeneration.current[key] ?? 0) + 1
     setRevealed(c => withoutKey(c, key))
   }
 
@@ -185,9 +187,15 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
       return
     }
 
+    const generation = (revealGeneration.current[key] ?? 0) + 1
+    revealGeneration.current[key] = generation
+
     try {
       const result = await revealEnvVar(key, profile)
-      setRevealed(c => ({ ...c, [key]: result.value }))
+
+      if (revealGeneration.current[key] === generation) {
+        setRevealed(c => ({ ...c, [key]: result.value }))
+      }
     } catch (err) {
       notifyError(err, toolsets.failedReveal(key))
     }

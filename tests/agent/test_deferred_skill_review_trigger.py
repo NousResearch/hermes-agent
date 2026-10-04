@@ -66,7 +66,7 @@ def test_skill_review_trigger_follows_session_reachability(runtime, config_yaml,
     agent._skill_nudge_interval = 1
 
     if runtime == "chat_completions":
-        agent._iters_since_skill = 1
+        assert agent._iters_since_skill == 0
         agent.run_conversation("hello")
     else:
         from agent.codex_runtime import _finish_codex_turn
@@ -103,7 +103,7 @@ def test_deferred_skill_review_writes_through_bridge():
     agent = _build_agent(_DEFER_SKILL_MANAGE, client)
     assert "skill_manage" not in agent.valid_tool_names
     agent._skill_nudge_interval = 1
-    agent._iters_since_skill = 1
+    assert agent._iters_since_skill == 0
 
     # The review fork builds its own client: keep the provider boundary controlled for it too.
     with patch("agent.process_bootstrap.OpenAI", return_value=client):

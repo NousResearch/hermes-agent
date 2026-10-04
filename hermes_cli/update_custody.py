@@ -20,6 +20,12 @@ can still write the checkout, and must NOT leak into processes that outlive the 
   then resumed, so it and everything it spawns die with the lock owner. The Node build goes
   through ``pm.progress.run_contained`` (whose Popen it never sees): :func:`contained_command`
   wraps it in a stdlib launcher that joins the job before it starts node.
+* Windows fails CLOSED (D2): a child the job refuses is never run. The msvcrt byte lock belongs
+  to the process that took it — an inherited handle does not keep it, the kernel unlocks it when
+  the owner exits — so nothing else could fence a writer outside the job: after the owner's
+  death the lock would be free while it still wrote. A refused bind kills the still-suspended
+  child; a refused launcher join exits before it starts node; either raises
+  :class:`CustodyRefused`, a clear refusal of that step instead of an unfenced writer.
 
 Every updater git runner (``update_cmd._git_run``, ``update_cmd_git._git_run``,
 ``update_cmd_stash``, ``update_cmd_check``, ``gitlock``, ``update_cmd_commit``,
@@ -68,6 +74,22 @@ _GLOBAL_WITH_VALUE = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--names
                                 "--config-env", "--super-prefix", "--attr-source", "--list-cmds"})
 
 _CREATE_SUSPENDED = 0x00000004
+
+
+class CustodyRefused(OSError):
+    """Windows would not put an update child in the update's kill-on-close job, so the child was
+    never run (D2): outside the job it could outlive a killed update and write the checkout after
+    the checkout lock is free."""
+
+    def __init__(self, argv: Sequence[str], cause: object) -> None:
+        import os
+
+        name = os.path.basename(str(argv[0])) if argv else "child"
+        super().__init__(
+            f"Windows would not put `{name}` in this update's process job ({cause}), so it was not "
+            "run: a checkout writer outside the job could outlive a killed update and write the "
+            "checkout after its lock is released. Run the command again from a regular terminal, "
+            "outside any sandbox or tool that confines the processes it starts.")
 
 
 def git_subcommand(args: Sequence[str]) -> str | None:
@@ -144,21 +166,26 @@ def _lock_fds(inherit_lock: bool) -> tuple[int, ...]:
 def _bind_suspended(proc: subprocess.Popen) -> None:
     """Assign a CREATE_SUSPENDED child to the update's kill-on-close job, then resume it.
 
-    Suspended until bound, so nothing it spawns can escape the job. A failed bind still resumes
-    (the update must not hang on a weaker lock); a failed resume kills the child."""
+    Suspended until bound, so nothing it spawns can escape the job. A refused bind kills the
+    child before it ran a single instruction and raises :class:`CustodyRefused` (D2: never an
+    unfenced writer); a failed resume kills the child."""
     import ctypes
 
-    from hermes_cli.update_lock import bind_child_to_update_tree
+    from hermes_cli.update_lock import _bind_to_kill_on_close_job
 
     try:
-        bind_child_to_update_tree(proc)
-    finally:
-        ntdll = ctypes.WinDLL("ntdll")
-        ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
-        ntdll.NtResumeProcess.restype = ctypes.c_long
-        if ntdll.NtResumeProcess(int(proc._handle)) != 0:
-            proc.kill()
-            raise OSError(f"could not resume update child {proc.pid}")
+        _bind_to_kill_on_close_job(proc)
+    except OSError as exc:
+        proc.kill()
+        proc.wait()
+        logger.warning("Refused update child %s: the update's job would not take it (%s)", proc.args, exc)
+        raise CustodyRefused(proc.args if isinstance(proc.args, (list, tuple)) else [proc.args], exc) from exc
+    ntdll = ctypes.WinDLL("ntdll")
+    ntdll.NtResumeProcess.argtypes = [ctypes.c_void_p]
+    ntdll.NtResumeProcess.restype = ctypes.c_long
+    if ntdll.NtResumeProcess(int(proc._handle)) != 0:
+        proc.kill()
+        raise OSError(f"could not resume update child {proc.pid}")
 
 
 def popen(argv: Sequence[str], *, inherit_lock: bool = False, **kwargs) -> subprocess.Popen:
@@ -280,11 +307,12 @@ def _prefetch_for_move(git_cmd: list[str], args: list[str], kwargs: dict) -> Non
 
 # A stdlib launcher for children whose Popen the updater never sees (``run_contained``): it
 # joins the job named by an inherited handle, drops that handle (only the owner's handle may
-# keep the job open) and runs the real command with the same stdio. A refused join never fails
-# the build: the command runs outside the job (the pre-custody behavior), says so on stderr and
-# writes the notice to the report file (argv[2]) so the updater can log it and note it in the
-# update receipt — run_contained captures the child's stderr, so stderr alone is not seen (m1).
+# keep the job open) and runs the real command with the same stdio. A refused join never runs
+# the command (D2): the launcher says so on stderr, writes the notice to the report file
+# (argv[2]) — run_contained captures the child's stderr, so stderr alone is not seen (m1) — and
+# exits; the updater logs the notice, notes it in the receipt and raises CustodyRefused.
 _CUSTODY_UNAVAILABLE = "hermes: update custody unavailable"
+_REFUSED_EXIT = 87
 _JOIN_JOB = (
     "import ctypes, subprocess, sys\n"
     "k = ctypes.WinDLL('kernel32', use_last_error=True)\n"
@@ -294,7 +322,7 @@ _JOIN_JOB = (
     "h = ctypes.c_void_p(int(sys.argv[1]))\n"
     "if not k.AssignProcessToJobObject(h, k.GetCurrentProcess()):\n"
     f"    note = ('{_CUSTODY_UNAVAILABLE} (could not join the update job: %d); '\n"
-    "            'this child runs outside it' % ctypes.get_last_error())\n"
+    "            'the command was not run' % ctypes.get_last_error())\n"
     "    sys.stderr.write(note + '\\n')\n"
     "    sys.stderr.flush()\n"
     "    try:\n"
@@ -302,6 +330,7 @@ _JOIN_JOB = (
     "            report.write(note)\n"
     "    except OSError:\n"
     "        pass\n"
+    f"    sys.exit({_REFUSED_EXIT})\n"
     "k.CloseHandle(h)\n"
     "sys.exit(subprocess.call(sys.argv[3:], stdin=subprocess.DEVNULL))\n"
 )
@@ -352,16 +381,18 @@ def _join_launcher_python() -> str:
 def contained_command(argv: Sequence[str], *, inherit_lock: bool = True):
     """``(argv, kwargs)`` for a checkout writer started by a runner that hides its Popen (the Node
     build in ``pm.progress.run_contained``). POSIX: the lock fd. Windows inside an update: the
-    command runs under a launcher that joins the update's kill-on-close job first."""
+    command runs under a launcher that joins the update's kill-on-close job first; when the job
+    cannot be handed over or the join is refused, the command never runs and
+    :class:`CustodyRefused` is raised (D2)."""
     argv = list(argv)
     if not (sys.platform == "win32" and _held() is not None):
         fds = _lock_fds(inherit_lock)
         yield argv, ({"pass_fds": fds} if fds else {})
         return
-    handle = _inheritable_job_handle()
-    if handle is None:
-        yield argv, {}
-        return
+    try:
+        handle = _inheritable_job_handle()
+    except OSError as exc:
+        raise CustodyRefused(argv, exc) from exc
     import os
     import tempfile
 
@@ -376,11 +407,15 @@ def contained_command(argv: Sequence[str], *, inherit_lock: bool = True):
         import ctypes
 
         ctypes.WinDLL("kernel32").CloseHandle(ctypes.c_void_p(handle))
-        _report_refused_join(report, argv)
+        note = _report_refused_join(report, argv)
+        if note:
+            cause = note.removeprefix(f"{_CUSTODY_UNAVAILABLE} (").partition(")")[0]
+            raise CustodyRefused(argv, cause)
 
 
-def _inheritable_job_handle() -> int | None:
-    """An inheritable duplicate of the update's kill-on-close job handle (Windows), or None."""
+def _inheritable_job_handle() -> int:
+    """An inheritable duplicate of the update's kill-on-close job handle (Windows). Raises
+    ``OSError`` when the job cannot be created or duplicated."""
     import ctypes
 
     from hermes_cli.update_lock import update_tree_job
@@ -399,4 +434,4 @@ def _inheritable_job_handle() -> int | None:
         return int(dup.value)
     except OSError as exc:
         logger.warning("Could not hand the update's job to a build child: %s", exc)
-        return None
+        raise

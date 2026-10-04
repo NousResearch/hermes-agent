@@ -180,7 +180,7 @@ def test_a_refused_build_join_is_logged_and_noted_in_the_receipt(tmp_path, monke
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     report = tmp_path / "report.txt"
-    note = f"{update_custody._CUSTODY_UNAVAILABLE} (could not join the update job: 5); this child runs outside it"
+    note = f"{update_custody._CUSTODY_UNAVAILABLE} (could not join the update job: 5); the command was not run"
     report.write_text(note, encoding="utf-8")
     with ur.update_receipt_scope():
         ur.begin_update_receipt()

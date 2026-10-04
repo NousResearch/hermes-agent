@@ -147,7 +147,8 @@ def _tree_dies_with_its_owner(tmp_path: Path, install: Path, owner_args: list[st
             owner.kill()
 
 
-def test_killed_owner_takes_its_git_child_down(tmp_path):
+def _git_install(tmp_path: Path) -> Path:
+    """A checkout whose ``f.txt`` clean filter is the blocker: a ``stash push`` blocks in git."""
     exe = Path(sys.executable).as_posix()
     if any(ch in exe for ch in " =~%#'\"&;|<>()$`*?["):
         pytest.skip("the clean filter must run without a shell: interpreter path has shell metacharacters")
@@ -163,10 +164,11 @@ def test_killed_owner_takes_its_git_child_down(tmp_path):
     _git(install, "config", "filter.block.clean", exe)
     (install / ".git" / "info" / "attributes").write_text("f.txt filter=block\n", encoding="utf-8")
     (install / "f.txt").write_text(_blocker(tmp_path), encoding="utf-8")
-    _tree_dies_with_its_owner(tmp_path, install, [_GIT_OWNER, str(REPO_ROOT), str(install), str(tmp_path / "m")])
+    return install
 
 
-def test_killed_owner_takes_its_node_build_down(tmp_path):
+def _build_install(tmp_path: Path) -> tuple[Path, Path]:
+    """A checkout whose ``node`` (a .bat on the build PATH) runs the blocker."""
     install = tmp_path / "checkout"
     install.mkdir()
     (install / "build.py").write_text(_blocker(tmp_path), encoding="utf-8")
@@ -174,13 +176,99 @@ def test_killed_owner_takes_its_node_build_down(tmp_path):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "node.bat").write_text(f'@"{sys.executable}" "{install / "build.py"}"\r\n', encoding="utf-8")
+    return install, bin_dir
+
+
+def test_killed_owner_takes_its_git_child_down(tmp_path):
+    install = _git_install(tmp_path)
+    _tree_dies_with_its_owner(tmp_path, install, [_GIT_OWNER, str(REPO_ROOT), str(install), str(tmp_path / "m")])
+
+
+def test_killed_owner_takes_its_node_build_down(tmp_path):
+    install, bin_dir = _build_install(tmp_path)
     _tree_dies_with_its_owner(tmp_path, install,
                               [_BUILD_OWNER, str(REPO_ROOT), str(install), str(tmp_path / "m"), str(bin_dir)])
 
 
-def test_a_refused_job_join_still_runs_the_child(tmp_path):
-    """Custody degrades, never fails: a launcher whose join is refused runs its command anyway."""
-    from hermes_cli.update_custody import _CUSTODY_UNAVAILABLE, _JOIN_JOB
+# --- D2: a child the job refuses is fenced or never runs ---------------------------------------
+#
+# Negative control: the update's job handle is replaced by an event handle right before the
+# writer starts, so the REAL AssignProcessToJobObject refuses it (ERROR_INVALID_HANDLE) the way it
+# refuses a process it cannot nest. Invariant: once the owner is killed, an update writer still
+# alive means the checkout lock is still held — or the writer never ran and the owner refused it
+# with a clear message. Never a live writer behind a free lock.
+_REFUSE_JOBS = (
+    "import ctypes\n"
+    "from hermes_cli import update_lock as _ul\n"
+    "_k = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+    "_k.CreateEventW.restype = ctypes.c_void_p\n"
+    "_ul._JOBS[:] = [_k.CreateEventW(None, True, False, None)]\n"
+)
+_GIT_REFUSED_OWNER = _GIT_OWNER.replace("_git_run([", _REFUSE_JOBS + "_git_run([")
+_BUILD_REFUSED_OWNER = _BUILD_OWNER.replace("env = {", _REFUSE_JOBS + "env = {")
+REFUSED = "so it was not run"
+
+
+def _writer_fenced_or_refused(tmp_path: Path, install: Path, owner_args: list[str]) -> str:
+    import psutil
+
+    owner = subprocess.Popen([sys.executable, "-c", *owner_args], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                             errors="replace")
+    pid_file, tree = tmp_path / "blocker.pid", []
+
+    def started() -> bool:
+        return pid_file.exists() and bool(pid_file.read_text(encoding="utf-8-sig").strip())
+
+    try:
+        deadline = time.time() + 60
+        while not started() and owner.poll() is None:
+            assert time.time() < deadline, "the owner neither ran nor refused its writer"
+            time.sleep(0.1)
+        time.sleep(0.5)  # an exiting owner's writer may still be starting
+        if not started():
+            out = owner.communicate(timeout=30)[0]
+            assert owner.returncode != 0 and REFUSED in out, f"the owner neither ran nor refused its writer:\n{out}"
+            return "refused"
+        blocker = psutil.Process(int(pid_file.read_text(encoding="utf-8-sig")))
+        tree = [blocker, *(p for p in blocker.parents() if p.pid != owner.pid and owner.pid in
+                           {q.pid for q in p.parents()})]
+        subprocess.run(["taskkill", "/F", "/PID", str(owner.pid)], capture_output=True, check=False)
+        owner.wait(timeout=30)
+        deadline = time.time() + 15
+        while any(p.is_running() for p in tree) and time.time() < deadline:
+            time.sleep(0.2)
+        survivors = [f"{p.pid}:{p.name()}" for p in tree if p.is_running()]
+        assert not survivors or update_in_progress(install), \
+            f"update writer(s) {survivors} outlived the killed owner while the checkout lock is free"
+        return "fenced"
+    finally:
+        (tmp_path / "go").touch()
+        for proc in tree:
+            with contextlib.suppress(Exception):
+                proc.kill()
+        if owner.poll() is None:
+            owner.kill()
+
+
+def test_a_git_child_the_job_refuses_never_runs_unfenced(tmp_path):
+    install = _git_install(tmp_path)
+    outcome = _writer_fenced_or_refused(
+        tmp_path, install, [_GIT_REFUSED_OWNER, str(REPO_ROOT), str(install), str(tmp_path / "m")])
+    if outcome == "refused":  # refused before it ran: the checkout is untouched
+        stash = subprocess.run(["git", "-C", str(install), "stash", "list"], capture_output=True)
+        assert stash.stdout == b"", stash
+
+
+def test_a_node_build_the_job_refuses_never_runs_unfenced(tmp_path):
+    install, bin_dir = _build_install(tmp_path)
+    _writer_fenced_or_refused(
+        tmp_path, install, [_BUILD_REFUSED_OWNER, str(REPO_ROOT), str(install), str(tmp_path / "m"), str(bin_dir)])
+
+
+def test_a_refused_job_join_never_runs_the_command(tmp_path):
+    """D2: a launcher whose join is refused exits without running its command (m1: and says so)."""
+    from hermes_cli.update_custody import _CUSTODY_UNAVAILABLE, _JOIN_JOB, _REFUSED_EXIT
 
     child = "import sys; print('built'); sys.exit(3)"
     launcher = tmp_path / "join_job.py"  # a file, not -c: the guard reads argv text as a command line
@@ -188,8 +276,8 @@ def test_a_refused_job_join_still_runs_the_child(tmp_path):
     report = tmp_path / "report.txt"
     out = subprocess.run([sys.executable, "-I", "-S", str(launcher), "0", str(report), sys.executable, "-c", child],
                          capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
-    assert out.returncode == 3, out
-    assert out.stdout.strip() == "built"
+    assert out.returncode == _REFUSED_EXIT, out
+    assert "built" not in out.stdout
     assert _CUSTODY_UNAVAILABLE in out.stderr
     # m1: the notice also lands in the report the updater turns into a warning + receipt step
-    assert _CUSTODY_UNAVAILABLE in report.read_text(encoding="utf-8")
+    assert _CUSTODY_UNAVAILABLE in report.read_text(encoding="utf-8-sig")

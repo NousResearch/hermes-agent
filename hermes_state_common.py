@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
+from hermes_state_pidns import persistent_record_pidns_checkable, pid_namespace_id
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
@@ -1141,9 +1142,11 @@ def _write_lock_holder_record(handle) -> None:
     from a live wedged one.
 
     Written under the flock so contenders that time out can tell an orphaned-fd holder (recorded process
-    dead, flock inherited by a forked child — issue #100108) from a live wedged holder.
+    dead, flock inherited by a forked child — issue #100108) from a live wedged holder.  ``pidns``: see
+    ``hermes_state_pidns``.
     """
-    record = {"pid": os.getpid(), "start_ticks": _proc_start_ticks(os.getpid()), "acquired_at": time.time()}
+    record = {"pid": os.getpid(), "pidns": pid_namespace_id(),
+              "start_ticks": _proc_start_ticks(os.getpid()), "acquired_at": time.time()}
     _rewrite_lock_file(handle, json.dumps(record, sort_keys=True).encode("utf-8"))
 
 
@@ -1154,13 +1157,16 @@ def _clear_lock_holder_record(handle) -> None:
 
 def _lock_holder_provably_dead(record) -> bool:
     """True ONLY when the recorded holder is provably dead or PID-recycled.  Anything indeterminate
-    (no/malformed record, PID owned by another user, /proc unavailable) is False: FAIL CLOSED and defer."""
+    (no/malformed record, PID owned by another user, /proc unavailable, foreign PID namespace)
+    is False: FAIL CLOSED and defer.  Unstamped records keep probing: see ``hermes_state_pidns``."""
     try:
         pid = int(record["pid"])
     except (KeyError, TypeError, ValueError):
         return False
     if pid <= 0:
         return False
+    if not persistent_record_pidns_checkable(record.get("pidns")):
+        return False  # foreign namespace: a local reading is not proof — defer
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

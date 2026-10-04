@@ -1017,6 +1017,20 @@ class TestPinnedGuard:
         # Skill still exists
         assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
+    def test_delete_by_categorized_name_still_refuses_pinned_and_essential(self, tmp_path):
+        """_find_skill accepts `category/name` too; the pin and essential guards must still see the
+        skill, or naming it by its categorized path deletes a pinned or essential skill."""
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT, category="research")
+            _create_skill("hermes-agent", VALID_SKILL_CONTENT, category="autonomous-ai-agents")
+            with self._pin("my-skill"):
+                pinned = _delete_skill("research/my-skill")
+                essential = _delete_skill("autonomous-ai-agents/hermes-agent")
+        assert pinned["success"] is False and "pinned" in pinned["error"].lower()
+        assert essential["success"] is False and "essential" in essential["error"].lower()
+        assert (tmp_path / "research" / "my-skill" / "SKILL.md").exists()
+        assert (tmp_path / "autonomous-ai-agents" / "hermes-agent" / "SKILL.md").exists()
+
     def test_broken_sidecar_fails_open(self, tmp_path):
         """If skill_usage.get_record raises, we allow delete through.
 
@@ -1029,6 +1043,75 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+
+class TestPinUnderEitherName:
+    """skill_manage finds a skill by folder, but skills_list, ``hermes curator pin`` and the
+    usage records name it by its frontmatter ``name:``. A pin or essential marker recorded under
+    either name protects the skill however it is reached. Real skills dir, real pin store."""
+
+    @staticmethod
+    def _make(rel: str, frontmatter_name: str) -> Path:
+        from hermes_constants import get_hermes_home
+        skill_dir = get_hermes_home() / "skills" / rel
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT.replace("test-skill", frontmatter_name))
+        return skill_dir
+
+    @pytest.mark.parametrize("rel, frontmatter_name, pin_under, refusal", [
+        ("research/my-dir", "my-skill", "my-skill", "pinned"),
+        ("research/my-dir", "my-skill", "my-dir", "pinned"),
+        ("autonomous-ai-agents/hermes-agent-local", "hermes-agent", None, "essential")])
+    def test_delete_refused(self, rel, frontmatter_name, pin_under, refusal):
+        from tools import skill_usage
+        skill_dir = self._make(rel, frontmatter_name)
+        if pin_under:
+            assert skill_usage.set_pinned(pin_under, True)
+
+        result = json.loads(skill_manage(action="delete", name=skill_dir.name))
+
+        assert result["success"] is False and refusal in result["error"], result
+        assert (skill_dir / "SKILL.md").exists()
+
+    @pytest.mark.parametrize("rename", [
+        {"action": "patch", "old_string": "name: my-skill", "new_string": "name: renamed-skill"},
+        {"action": "edit", "content": VALID_SKILL_CONTENT.replace("test-skill", "renamed-skill")}],
+        ids=["patch", "edit"])
+    def test_pin_follows_a_frontmatter_rename(self, rename):
+        """Edits stay allowed on a pinned skill, so its frontmatter name can change under the pin:
+        the pin moves with it, and unpinning the name it now carries releases it."""
+        from tools import skill_usage
+        skill_dir = self._make("research/my-dir", "my-skill")
+        assert skill_usage.set_pinned("my-skill", True)
+
+        renamed = json.loads(skill_manage(name="my-dir", **rename))
+        refused = json.loads(skill_manage(action="delete", name="my-dir"))
+        assert renamed["success"] is True, renamed
+        assert refused["success"] is False and "pinned" in refused["error"], refused
+        assert (skill_dir / "SKILL.md").exists()
+
+        assert skill_usage.set_pinned("renamed-skill", False)
+        released = json.loads(skill_manage(action="delete", name="my-dir"))
+        assert released["success"] is True, released
+
+    def test_background_review_patch_refused_when_pinned_by_frontmatter_name(self):
+        from tools import skill_usage
+        from tools.skill_manager_guards import mark_background_review_skill_read
+        from tools.skill_provenance import BACKGROUND_REVIEW, reset_current_write_origin, set_current_write_origin
+        skill_dir = self._make("my-dir", "my-skill")
+        skill_usage.record_created("my-dir", agent_created=True)  # curator-owned under its folder name
+        assert skill_usage.set_pinned("my-skill", True)
+
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            mark_background_review_skill_read(skill_dir / "SKILL.md")
+            result = json.loads(skill_manage(action="patch", name="my-dir",
+                                             old_string="Do the thing.", new_string="Rewritten."))
+        finally:
+            reset_current_write_origin(token)
+
+        assert result["success"] is False and "pinned" in result["error"], result
+        assert "Do the thing." in (skill_dir / "SKILL.md").read_text()
 
 
 # ---------------------------------------------------------------------------

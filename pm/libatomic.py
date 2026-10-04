@@ -101,9 +101,12 @@ def install_before_lock() -> None:
 
     from pm.store import MUSL_TARGETS, current_target
 
-    if not sys.platform.startswith("linux") or _is_root():
+    if not sys.platform.startswith("linux") or _is_root() or not _has_terminal():
         return
-    target = current_target()
+    try:
+        target = current_target()
+    except RuntimeError:  # unsupported architecture: PM reports it elsewhere
+        return
     if target in MUSL_TARGETS or target.endswith("-bionic"):
         return
     try:
@@ -112,15 +115,17 @@ def install_before_lock() -> None:
     except OSError:
         pass
     command = _host_install_command()
-    argv = _command_plan(command)[0] if command else None
-    if not argv or not _has_terminal():
+    if command is None:
+        return
+    argv = _command_plan(command)[0]
+    if not argv:
         return
     sudo = argv[0]
-    if subprocess.run([sudo, "-n", "true"], stdin=subprocess.DEVNULL,
-                      capture_output=True, check=False).returncode == 0:
+    if _run([sudo, "-n", "true"], timeout=10):
         return  # the non-interactive repair will succeed on its own
     print("→ Node.js needs libatomic.so.1; sudo may ask for your password to install it", flush=True)
-    _install([sudo], command, stdin=None)
+    # Outside PM's lock: no timeout, so a slow prompt or mirror is never killed mid-dpkg.
+    _install([sudo], command, stdin=None, timeout=None)
 
 
 def _has_terminal() -> bool:
@@ -131,20 +136,22 @@ def _has_terminal() -> bool:
     return True
 
 
-def _run(argv: list[str], stdin=subprocess.DEVNULL) -> bool:
+def _run(argv: list[str], stdin: int | None = subprocess.DEVNULL, timeout: float | None = 300) -> bool:
     try:
-        return subprocess.run(argv, stdin=stdin, timeout=300, check=False).returncode == 0
+        return subprocess.run(argv, stdin=stdin, timeout=timeout, check=False).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
 
 
-def _install(prefix: list[str], command: tuple[str, ...], stdin=subprocess.DEVNULL) -> bool:
-    if _run([*prefix, *command], stdin):
+def _install(prefix: list[str], command: tuple[str, ...], stdin: int | None = subprocess.DEVNULL,
+             timeout: float | None = 300) -> bool:
+    if _run([*prefix, *command], stdin, timeout):
         return True
     if command[0] != "apt-get":
         return False
     # Minimal Debian/Ubuntu images ship empty package lists.
-    return _run([*prefix, "apt-get", "update", "-qq"], stdin) and _run([*prefix, *command], stdin)
+    return (_run([*prefix, "apt-get", "update", "-qq"], stdin, timeout)
+            and _run([*prefix, *command], stdin, timeout))
 
 
 def try_install_libatomic() -> tuple[bool, str]:

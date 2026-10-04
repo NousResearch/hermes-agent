@@ -97,19 +97,22 @@ def test_installer_sudo_warmup_honours_non_interactive(tmp_path, flags):
 
 
 def test_update_completion_installs_before_detaching(monkeypatch):
-    """run_completion's child has no controlling terminal; the interactive install runs first."""
+    """run_completion's child has no controlling terminal; the pre-install runs first, in-session."""
     from hermes_cli import update_completion
-    from pm import libatomic
 
-    order = []
-    monkeypatch.setattr(libatomic, "install_before_lock", lambda: order.append("install"))
+    calls = []
+    monkeypatch.setattr(update_completion.subprocess, "run",
+                        lambda argv, **kw: calls.append(("run", argv, kw)))
 
-    def popen(*_args, **_kwargs):
-        order.append("detach")
+    def popen(argv, **kw):
+        calls.append(("popen", argv, kw))
         raise RuntimeError("stop after spawn")
 
     monkeypatch.setattr(update_completion.subprocess, "Popen", popen)
     with pytest.raises(RuntimeError, match="stop after spawn"):
         update_completion.run_completion({"source": "/nonexistent", "home": "/nonexistent",
                                           "receipt": {"update_id": "u"}})
-    assert order == ["install", "detach"]
+    assert [kind for kind, _argv, _kw in calls] == ["run", "popen"]
+    _kind, argv, kw = calls[0]
+    assert "install_before_lock" in " ".join(argv)
+    assert "start_new_session" not in kw and kw.get("check") is False

@@ -687,7 +687,7 @@ def _record_skill_install(identifier: str, bundle, outcome: str) -> None:
 
 def _restore_archived_install(identifier: str, c: Console, invalidate_cache: bool) -> bool:
     """Honor an explicit install request with a matching local archive before network resolution."""
-    name = identifier.rstrip("/").rsplit("/", 1)[-1]
+    name = identifier
     if not _VALID_NAME_RE.fullmatch(name):
         return False
     from tools.skill_usage import list_archived_skill_names, restore_skill
@@ -696,7 +696,8 @@ def _restore_archived_install(identifier: str, c: Console, invalidate_cache: boo
     restored, message = restore_skill(name, allow_bundled=True)
     if not restored:
         return False
-    c.print(f"[bold green]Restored from your archive:[/] {name}")
+    origin = "current bundled source" if message.startswith("restored current bundled source") else "your archive"
+    c.print(f"[bold green]Restored from {origin}:[/] {name}")
     c.print(f"[dim]{message}[/]\n")
     _finish_change(c, invalidate_cache, "Skill will be available", "activate")
     return True
@@ -705,7 +706,7 @@ def _restore_archived_install(identifier: str, c: Console, invalidate_cache: boo
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
-               source_id: Optional[str] = None) -> None:
+               source_id: Optional[str] = None) -> Optional[dict]:
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
     cannot resolve to a same-named skill elsewhere.
@@ -714,8 +715,10 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     of an installed skill run through here too and are not installs, nor is a cancelled prompt."""
     from tools.skills_hub import HubLockFile
     fresh = not HubLockFile().get_installed(identifier.rstrip("/").rsplit("/", 1)[-1])
-    if _restore_archived_install(identifier, console or _console, invalidate_cache):
-        return
+    if not source_id and not category and not name_override and _restore_archived_install(identifier, console or _console, invalidate_cache):
+        # Archived local packages have no registry provenance. Do not invent a hub
+        # lock entry: consumers can use this explicit success receipt instead.
+        return {"name": identifier, "already_installed": False, "restored": True}
     try:
         bundle, outcome = _install_skill(identifier, category, force, console or _console,
                                          skip_confirm, invalidate_cache, name_override, source_id)

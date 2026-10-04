@@ -102,8 +102,9 @@ class HostInstaller:
         return None
 
     def install_skill(self, identifier: str, *, force: bool) -> Dict[str, Any]:
-        """Install headless; ``{name, already_installed}``. ``do_install`` reports only by printing, so
-        success is read from the hub lock file and failure from its last line. A skill that is already
+        """Install headless; ``{name, already_installed}``. Local archive restoration
+        returns an explicit receipt; remote install success is read from the hub
+        lock file and failure from its last line. A skill that is already
         installed (force off) is left as it is and reported so."""
         from rich.console import Console
 
@@ -117,8 +118,10 @@ class HostInstaller:
         if before is not None and not force:
             return {"name": str(before["name"]), "already_installed": True}
         out = io.StringIO()
-        do_install(identifier, force=force, skip_confirm=True,
-                   console=Console(file=out, width=200, no_color=True, highlight=False))
+        receipt = do_install(identifier, force=force, skip_confirm=True,
+                             console=Console(file=out, width=200, no_color=True, highlight=False))
+        if isinstance(receipt, dict) and receipt.get("restored"):
+            return receipt
         after = entry()
         if after is None or (before is not None and after.get("updated_at") == before.get("updated_at")):
             lines = [line.strip() for line in out.getvalue().splitlines() if line.strip()]

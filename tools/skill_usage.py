@@ -654,12 +654,33 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
 
 
 def restore_skill(skill_name: str, *, allow_bundled: bool = False) -> Tuple[bool, str]:
-    """Move an archived skill back to the flat layout (nesting NOT reconstructed). Refuses a name now colliding with
-    a hub skill, or a bundled built-in unless ``curator.prune_builtins`` is on (restoring lifts a prune), unless an explicit
-    install request passes ``allow_bundled``."""
+    """Restore an archived skill to the flat layout. Refuse hub collisions.
+
+    Ordinary bundled restoration requires curator pruning. An explicit install
+    (``allow_bundled``) instead copies the current shipped package, preserves the
+    archived version, and resets sync tracking and suppression.
+    """
     if is_hub_installed(skill_name):
         return False, f"skill '{skill_name}' is now hub-installed; restore would shadow the upstream version"
-    if is_bundled(skill_name) and not _prune_builtins_enabled() and not allow_bundled:
+    if is_bundled(skill_name) and allow_bundled:
+        # Explicit install chooses today's shipped package, never a stale archived
+        # version. Keep the archive intact as a user-owned recovery copy.
+        from tools import skills_sync
+        bundled_root = skills_sync._get_bundled_dir()
+        source = dict(skills_sync._discover_bundled_skills(bundled_root)).get(skill_name)
+        if source is None:
+            return False, f"no current bundled source for '{skill_name}'"
+        dest = skills_sync._compute_relative_dest(source, bundled_root)
+        if _find_skill_dir(skill_name) or dest.exists():
+            return False, f"active skill '{skill_name}' already exists"
+        skills_sync._copy_dir(source, dest)
+        manifest = skills_sync._read_manifest()
+        manifest[skill_name] = skills_sync._dir_hash(source)
+        skills_sync._write_manifest(manifest)
+        _toggle_suppressed_name(skill_name, add=False)
+        set_state(skill_name, STATE_ACTIVE)
+        return True, f"restored current bundled source to {dest} (archive preserved)"
+    if is_bundled(skill_name) and not _prune_builtins_enabled():
         return False, f"skill '{skill_name}' is now bundled; restore would shadow the upstream version"
     archive_root = _archive_dir()
     if not archive_root.exists():

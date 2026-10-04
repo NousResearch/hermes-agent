@@ -59,7 +59,13 @@ CRON_SLUG_ID = "cron_job-1_20260707_195958"      # legacy/user job id, real in l
 BG_ID = "bg_124526_be5bed"
 ROOM_ID = "room_" + "0123456789abcdef" * 2
 
-DERIVED_IDS = [CRON_ID, CRON_SLUG_ID, BG_ID, ROOM_ID]
+TUI_BG_ID = "bg_be5bed"
+API_ID = "api_1790000000_0123abcd"
+API_CHAT_ID = "api-0123456789abcdef"
+RUN_ID = "run_" + "0123456789abcdef" * 2
+UUID_ID = "0b36145a-e5c7-4d2a-9f00-0123456789ab"
+
+DERIVED_IDS = [CRON_ID, CRON_SLUG_ID, BG_ID, ROOM_ID, TUI_BG_ID, API_ID, API_CHAT_ID, RUN_ID, UUID_ID]
 
 # Near-misses and arbitrary cell values. These sit at the id position of a candidate
 # layout, so accepting any of them costs real wrong-column-mapping safety.
@@ -74,6 +80,8 @@ NOT_SESSION_IDS = [
     "/Users/adam/some/path", "https://example.com", "hello world",
     '{"json": true}', "claude-opus-5", "assistant",
     "20260101_100500",
+    "bg_abcde", "api_123_0123abcd", "api-0123", "run_" + "a" * 31,
+    "0b36145a-e5c7-1d2a-9f00-0123456789ab",
 ]
 
 

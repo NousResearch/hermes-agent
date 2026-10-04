@@ -44,7 +44,7 @@ record claims, and saves it in its own `platforms/whatsapp/bridge_port` file for
 subsequent starts. Operators can pre-create that file with a port number; delete
 it to have a new port allocated. The launch profile uses port 3000 unless it
 already has that file (from serving as a secondary), in which case its gateway
-and `hermes whatsapp send` both keep using the recorded port.
+and `hermes send --to whatsapp:<chat_id>` both keep using the recorded port.
 
 A secondary adopts a bridge already running on its port only when its own
 session pidfile identifies that process (pid, kernel start time, and the port it
@@ -70,11 +70,12 @@ platforms:
 A gateway identifies a running bridge by the session directory the bridge
 reports in `/health`. A bridge serving another profile's session is never
 adopted and never stopped: the second profile's WhatsApp fails to start with
-`whatsapp_bridge_foreign_session`, naming the port and the other session. On
-Linux and macOS, a process that holds the port but does not answer `/health` in
-time is left running too, and WhatsApp fails with the retryable
-`whatsapp_bridge_unresponsive`. `hermes whatsapp send` and cron delivery check
-the same field and refuse to send through another profile's bridge. If you
+`whatsapp_bridge_foreign_session`, naming the port and the other session. A
+process that holds the port but does not answer `/health` in time is left
+running too, and WhatsApp fails with the retryable
+`whatsapp_bridge_unresponsive`. `hermes send --to whatsapp:<chat_id>` and cron
+delivery check the same field and send nothing through another profile's bridge
+or through one whose `/health` fails. If you
 override `session_path`, keep it distinct per profile, or the profiles share one
 WhatsApp login. Bridges started by an older Hermes report no session directory
 and are restarted once, as after a bridge update.

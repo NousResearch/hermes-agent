@@ -233,23 +233,25 @@ def test_secondary_standalone_sends_use_active_profile_port_for_text_media_and_m
         assert record.read_text(encoding="utf-8") == str(persisted_port)
 
 
-@pytest.mark.parametrize("reported", ["own", "other", None], ids=["own-session", "other-profile-session", "pre-session-bridge"])
+@pytest.mark.parametrize("reported", ["own", "other", None, "unhealthy"],
+                         ids=["own-session", "other-profile-session", "pre-session-bridge", "health-503"])
 def test_standalone_send_posts_only_through_this_profiles_bridge(tmp_path, reported):
     """Profiles sharing a bridge_port must not send from each other's WhatsApp account, text or media."""
     own = tmp_path / "b" / "session"
     media = tmp_path / "image.png"
     media.write_bytes(b"image")
-    health = {"session": str(own if reported == "own" else tmp_path / "a" / "session")} if reported else {}
+    sessions = {"own": own, "other": tmp_path / "a" / "session"}
+    health = _resp(503) if reported == "unhealthy" else _resp(200, {"session": str(sessions[reported])} if reported else {})
     session_ctx, calls = _session_with(
-        [_resp(200, {"messageId": "text"}), _resp(200, {"messageId": "media"})], health=_resp(200, health))
+        [_resp(200, {"messageId": "text"}), _resp(200, {"messageId": "media"})], health=health)
     with patch("aiohttp.ClientSession", return_value=session_ctx):
         result = asyncio.run(_standalone_send(
             SimpleNamespace(token="", extra={"bridge_port": 3000, "session_path": str(own)}), "12345", "hello",
             media_files=[(str(media), False)],
         ))
     posted = [url for url, _ in calls if not url.endswith("/health")]
-    if reported == "other":
-        assert "another profile's session" in result["error"]
+    if reported in ("other", "unhealthy"):
+        assert "nothing was sent" in result["error"]
         assert posted == []
     else:
         assert result.get("success") is True, result

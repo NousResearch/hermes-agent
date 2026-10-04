@@ -72,6 +72,11 @@ def _windows_listener_pids(port: int) -> list:
     return _safe_ints(p[4] for p in rows if len(p) >= 5 and p[3] == "LISTENING" and p[1].endswith(f":{port}"))
 
 
+def _port_listener_pids(port: int) -> list:
+    """Listening PIDs on ``port`` for this platform: netstat on Windows, lsof/ss elsewhere."""
+    return _windows_listener_pids(port) if _IS_WINDOWS else _listener_pids_on_port(port)
+
+
 def _pid_looks_like_node_bridge(pid: int) -> bool:
     """Fail-closed: the live process must be a ``node`` executable (a scan-time PID can be a stranger by kill time).
 
@@ -92,7 +97,7 @@ def _pid_looks_like_node_bridge(pid: int) -> bool:
 def _kill_port_process(port: int) -> None:
     """Kill any node bridge *listening* on the given TCP port (never a client); SIGTERM on POSIX, taskkill /F on Windows."""
     with suppress(Exception):
-        for pid in (_windows_listener_pids(port) if _IS_WINDOWS else _listener_pids_on_port(port)):
+        for pid in _port_listener_pids(port):
             # Killing a mistyped or recycled PID is unrecoverable — verify first.
             if pid <= 0 or not _pid_looks_like_node_bridge(pid):
                 logger.warning("[whatsapp] Not killing PID %s on port %d: process is not a node bridge (or identity unverifiable)", pid, port)
@@ -350,13 +355,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return getattr(self._http_session, method)(self._bridge_url(path), **kwargs, timeout=aiohttp.ClientTimeout(total=timeout))
 
     async def _probe_bridge_health(self) -> tuple[bool, Any]:
-        """GET /health with a fresh session → ``(http_200, json)``; unparseable 200 body → ``(True, None)``; connection errors propagate."""
+        """GET /health with a fresh session → ``(http_200, json)``; unparseable 200 body → ``(True, None)``; connection errors and timeouts propagate."""
         import aiohttp
         async with aiohttp.ClientSession() as session, session.get(self._bridge_url("health"), timeout=aiohttp.ClientTimeout(total=2)) as resp:
             if resp.status != 200:
                 return False, None
             try:
                 return True, await resp.json()
+            except asyncio.TimeoutError:
+                raise  # a body that never arrives is no answer, the same as headers that never arrive
             except Exception:
                 return True, None
 
@@ -600,7 +607,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     # No /health answer is no ownership evidence (another profile's busy bridge looks the same), and
                     # our own stale bridge was just reaped by its pidfile: a holder that remains is left running.
                     await asyncio.sleep(1)
-                    if _listener_pids_on_port(self._bridge_port):
+                    try:
+                        held = bool(_port_listener_pids(self._bridge_port))
+                    except Exception:
+                        held = True  # listeners could not be listed: still no evidence to kill on
+                    if held:
                         self._set_fatal_error(
                             "whatsapp_bridge_unresponsive",
                             f"Port {self._bridge_port} is held by a process that did not answer /health in time, so "
@@ -1059,7 +1070,10 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
                 f"http://localhost:{bridge_port}/health",
                 timeout=aiohttp.ClientTimeout(total=5),
             ) as resp:
-                health = await resp.json() if resp.status == 200 else {}
+                if resp.status != 200:
+                    return send_error(
+                        f"WhatsApp bridge on port {bridge_port} answered /health with HTTP {resp.status}; nothing was sent.")
+                health = await resp.json()
             reported_session = health.get("session")
             if reported_session and reported_session != own_session:
                 return send_error(

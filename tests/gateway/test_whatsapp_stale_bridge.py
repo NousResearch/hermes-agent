@@ -18,7 +18,6 @@ package.json changes, not only when node_modules is missing.
 
 import asyncio
 import os
-from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -83,13 +82,14 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     return adapter
 
 
-def _mock_health(json_data):
-    """Mock aiohttp.ClientSession whose GET returns 200 + *json_data*."""
+def _mock_health(json_data, raise_on=None):
+    """Mock aiohttp.ClientSession whose GET returns 200 + *json_data*; ``raise_on`` "headers"/"body" times out that phase."""
     mock_resp = MagicMock()
     mock_resp.status = 200
-    mock_resp.json = AsyncMock(return_value=json_data)
+    mock_resp.json = AsyncMock(return_value=json_data, side_effect=asyncio.TimeoutError if raise_on == "body" else None)
     mock_session = MagicMock()
-    mock_session.get = MagicMock(return_value=_AsyncCM(mock_resp))
+    mock_session.get = MagicMock(
+        return_value=_AsyncCM(mock_resp), side_effect=asyncio.TimeoutError if raise_on == "headers" else None)
     mock_session.close = AsyncMock()
     return MagicMock(return_value=_AsyncCM(mock_session))
 
@@ -162,8 +162,11 @@ class TestStaleBridgeHandshake:
         ("own", "connected", None),
         ("other", "connected", "whatsapp_bridge_foreign_session"),
         ("other", "disconnected", "whatsapp_bridge_foreign_session"),
-        ("unanswered", None, "whatsapp_bridge_unresponsive"),
-    ], ids=["own-session-adopted", "other-session-connected", "other-session-starting", "no-health-answer"])
+        ("headers-timeout", None, "whatsapp_bridge_unresponsive"),
+        ("body-timeout", None, "whatsapp_bridge_unresponsive"),
+        ("body-timeout-windows", None, "whatsapp_bridge_unresponsive"),
+    ], ids=["own-session-adopted", "other-session-connected", "other-session-starting",
+            "health-headers-timeout", "health-body-timeout", "health-body-timeout-windows"])
     async def test_bridge_is_adopted_or_left_running_by_its_session(self, tmp_path, holder, status, fatal):
         """Two profiles default to one bridge_port; only this profile's own session may be adopted. Another profile's
         bridge is never killed, even while it reports ``disconnected`` (startup, reconnect, QR wait), and neither is a
@@ -183,19 +186,20 @@ class TestStaleBridgeHandshake:
                 "scriptHash": _file_content_hash(bridge_dir / "bridge.js"),
                 "sendReadReceipts": False,
                 "session": str(reported),
-            }
+            },
+            raise_on=holder.split("-")[0] if "timeout" in holder else None,
         )
-        unanswered = (patch.object(adapter, "_probe_bridge_health", AsyncMock(side_effect=asyncio.TimeoutError))
-                      if holder == "unanswered" else nullcontext())
+        windows = holder.endswith("-windows")  # the listener scan must be the platform's own, or Windows still kills
 
         with (
-            unanswered,
             patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True),
             patch("aiohttp.ClientSession", mock_client),
             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock),
             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile") as mock_kill_pidfile,
             patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port,
-            patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port", return_value=[4242]),
+            patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", windows),
+            patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port", return_value=[] if windows else [4242]),
+            patch("plugins.platforms.whatsapp.adapter._windows_listener_pids", return_value=[4242] if windows else []),
             patch("subprocess.Popen", return_value=MagicMock()) as mock_popen,
             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True),
         ):

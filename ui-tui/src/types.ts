@@ -1,8 +1,9 @@
-import type { ProjectInfo, SessionLiveInfo, SubagentStatus } from '@hermes/shared/gateway-events'
+import type { ProjectInfo, SessionLiveInfo, SubagentStatus, ToolLabel } from '@hermes/shared/gateway-events'
 
 export interface ActiveTool {
   context?: string
   id: string
+  labels?: ToolLabel[]
   name: string
   verboseArgs?: string
   startedAt?: number
@@ -114,7 +115,7 @@ export interface ConfirmReq {
   title: string
 }
 
-export interface ClarifyBatchQuestion {
+export interface ClarifyQuestion {
   choices: string[] | null
   multiSelect?: boolean
   qid: string
@@ -122,11 +123,8 @@ export interface ClarifyBatchQuestion {
 }
 
 export interface ClarifyReq {
-  choices: string[] | null
-  question: string
   requestId: string
-  /** Batch (multi-question) clarify: present instead of question/choices. */
-  questions?: ClarifyBatchQuestion[]
+  questions: ClarifyQuestion[]
   /** Answers already locked server-side (qid → answer): seeded from the
    *  reconnect replay, updated as the user locks each question. */
   answers?: Record<string, string>
@@ -201,6 +199,24 @@ export interface VaultUnlockReq {
   backend: string
   displayName: string
   requestId: string
+}
+
+/**
+ * `vault.save_login` server→client request — save a new website login from a
+ * browser sign-in page. Two-step capture (identifier shown, password masked);
+ * the answer goes only to the encrypted vault, never to the model.
+ */
+export interface VaultSaveLoginReq {
+  origin: string
+  requestId: string
+  site: string
+}
+
+/** `vault.code` server→client request — a one-time sign-in code the user reads from their device. */
+export interface VaultCodeReq {
+  hint: string
+  requestId: string
+  site: string
 }
 
 export interface PanelData {

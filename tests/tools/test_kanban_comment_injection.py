@@ -158,3 +158,36 @@ def test_delegated_child_in_worker_process_neither_receives_nor_consumes_notes(w
     _unthrottle()
     assert kt.inject_new_comments_from_env(worker) is True
     assert "operator note" in worker.steers[0]
+
+
+def test_skips_own_authored_comments_without_env_profile(worker_home, monkeypatch):
+    """Own comments are skipped even when ``HERMES_PROFILE`` is absent: the
+    injection filter resolves the worker's identity the same way the persisted
+    write side does (env → ``HERMES_HOME``-derived active profile), so a worker's
+    own notes can never steer its live turn as fake operator messages."""
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="identity echo guard")
+    finally:
+        conn.close()
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    agent = FakeAgent()
+
+    _unthrottle()
+    kt.inject_new_comments_from_env(agent)  # seed
+
+    identity = kt._persisted_identity()
+    assert identity != "worker"  # resolved from HERMES_HOME, not the generic label
+
+    conn = kbc.connect()
+    try:
+        kb.add_comment(conn, tid, author=identity, body="note to self")
+    finally:
+        conn.close()
+
+    _unthrottle()
+    assert kt.inject_new_comments_from_env(agent) is False
+    assert agent.steers == []

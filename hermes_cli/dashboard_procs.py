@@ -1016,3 +1016,145 @@ def _reap_orphaned_desktop_local_serves(
         print(f"⟲ Reaped {len(killed)} orphaned desktop-local serve backend(s) ({reason}): {killed or matched}")
     return {"matched": matched, "killed": killed, "failed": failed}
 
+
+def _is_desktop_ssh_serve_cmdline(command: str) -> bool:
+    """True for Desktop SSH-isolated serves: ``hermes serve --isolated`` with an
+    ``--ssh-owner-nonce`` and ``--ssh-session-token-file``.
+
+    Same canonical token matching as the local shape: this predicate decides a
+    kill, so argv substrings are never enough.
+    """
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    if _hermes_holder_subcommand(command) != "serve":
+        return False
+    tokens = command.lower().split()
+    return (
+        _flag_value(tokens, "--isolated") is not None
+        or "--isolated" in tokens
+    ) and _flag_value(tokens, "--ssh-owner-nonce") is not None and _flag_value(
+        tokens, "--ssh-session-token-file"
+    ) is not None
+
+
+def _ssh_serve_lock_pid(command: str) -> int | None:
+    """PID claimed by this SSH backend's own ``backend.lock.json``.
+
+    Returns ``None`` when the lock is missing/unreadable/invalid (fail-closed:
+    callers must not reap). A lock naming a *different* PID means this backend
+    was superseded by a reconnect spawn.
+    """
+    tokens = command.split()
+    token_file = _flag_value([t.lower() for t in tokens], "--ssh-session-token-file")
+    if not token_file:
+        return None
+    # Recover the original-case path: flags are case-insensitive, paths are not.
+    token_file = next(
+        (tokens[i + 1] for i, tok in enumerate(tokens[:-1]) if tok.lower() == "--ssh-session-token-file"
+         or tok.lower().startswith("--ssh-session-token-file=")),
+        token_file,
+    )
+    if token_file.lower().startswith("--ssh-session-token-file="):
+        token_file = token_file.partition("=")[2]
+    try:
+        lock_path = Path(token_file).expanduser().parent / BACKEND_LOCK_NAME
+        parsed = json.loads(lock_path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    pid = parsed.get("pid")
+    try:
+        return int(pid) if pid is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _reap_superseded_desktop_ssh_serves(
+    *, reason: str = "superseded desktop-ssh hermes serve", signal_term=None, signal_kill=None,
+    sleep_fn=None, lock_owned_pids_fn=None, process_age_seconds_fn=None) -> dict[str, list]:
+    """Kill superseded Desktop-SSH ``hermes serve`` backends. Never raises.
+
+    A reconnect storm overwrites ``backend.lock.json`` while the previous PID
+    keeps running detached (ppid 1); each orphan holds 150–360 MB until the
+    host OOMs (fixes #132034). Reaped only if ALL hold: SSH-isolated shape;
+    ppid 0/1; not self / parent / env-excluded; not claimed by any valid lock;
+    its own lock names a *different* live PID (superseded) or is absent with a
+    stale age; older than ``_REAP_MIN_AGE_SECONDS``. Unreadable locks are
+    fail-closed (no reap).
+    """
+    import signal as _signal
+    import time as _time
+    signal_term = _signal.SIGTERM if signal_term is None else signal_term
+    signal_kill = getattr(_signal, "SIGKILL", _signal.SIGTERM) if signal_kill is None else signal_kill
+    sleep_fn = sleep_fn or _time.sleep
+    lock_owned_pids_fn = lock_owned_pids_fn or _lock_owned_serve_pids
+    process_age_seconds_fn = process_age_seconds_fn or _process_age_seconds
+    if sys.platform == "win32":
+        return _empty_result()
+
+    def _owned_pids() -> set[int]:
+        try:
+            return set(lock_owned_pids_fn())
+        except Exception:
+            return set()
+
+    def _is_stale(pid: int) -> bool:
+        try:
+            return process_age_seconds_fn(pid) >= _REAP_MIN_AGE_SECONDS
+        except Exception:
+            return False
+
+    exclude = _exclude_pids_from_env() | {os.getpid()} | _owned_pids()
+    with contextlib.suppress(Exception):
+        exclude.add(os.getppid())
+    try:
+        scanned = _scan_dashboard_processes(exclude_pids=exclude)
+    except Exception:
+        return _empty_result()
+    owned_now = _owned_pids()
+    matched = []
+    for pid, cmd in scanned:
+        if not _is_desktop_ssh_serve_cmdline(cmd) or pid in owned_now:
+            continue
+        if _process_ppid(pid) not in (0, 1) or not _is_stale(pid):
+            continue
+        lock_pid = _ssh_serve_lock_pid(cmd)
+        if lock_pid == pid:
+            continue  # its own lock still names it: live backend, never reap
+        if lock_pid is None:
+            continue  # unreadable lock: fail closed
+        matched.append(pid)
+    if not matched:
+        return _empty_result()
+    descendants = _posix_descendants(matched)
+    killed: list[int] = []
+    failed: list[int] = []
+    for pid in matched:
+        try:
+            os.kill(pid, signal_term)
+        except ProcessLookupError:
+            continue
+        except OSError:
+            failed.append(pid)
+    sleep_fn(1.5)
+    import psutil
+    for pid in matched:
+        if pid in failed:
+            continue
+        try:
+            if psutil.pid_exists(pid):
+                os.kill(pid, signal_kill)
+            killed.append(pid)
+        except ProcessLookupError:
+            killed.append(pid)
+        except OSError:
+            failed.append(pid)
+    from gateway.status import get_process_start_time
+    for pid, (root, start) in descendants.items():
+        if root not in failed and start is not None and get_process_start_time(pid) == start:
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal_kill)
+    with contextlib.suppress(Exception):
+        print(f"⟲ Reaped {len(killed)} superseded desktop-ssh serve backend(s) ({reason}): {killed or matched}")
+    return {"matched": matched, "killed": killed, "failed": failed}
+

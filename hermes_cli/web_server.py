@@ -1341,6 +1341,11 @@ def _on_server_started(
 
         reap_orphaned_mcp_helpers()
 
+    def _reap_superseded_ssh_serves() -> None:
+        from hermes_cli.dashboard_procs import _reap_superseded_desktop_ssh_serves
+
+        _reap_superseded_desktop_ssh_serves()
+
     if is_desktop_owned_backend():
         _best_effort("orphan desktop-local serve reap", _reap_desktop_serves)
     # Same sweep for stdio MCP helpers (#61514): positive identity only (spawn
@@ -1352,6 +1357,9 @@ def _on_server_started(
     # SSH-isolated backends are detached from any parent on purpose (#91668); their liveness signal
     # is "does a client still hold a WebSocket" (#101626).
     if getattr(app.state, "ssh_isolated_clients", None) is not None:
+        # A reconnect storm overwrites backend.lock.json while the previous PID
+        # keeps running detached; each orphan holds memory until OOM (#132034).
+        _best_effort("superseded desktop-ssh serve reap", _reap_superseded_ssh_serves)
         from hermes_cli.web_server_idle_exit import DEFAULT_IDLE_GRACE_S, start_idle_watchdog
         try:
             grace = float((load_config().get("dashboard") or {}).get("ssh_isolated_idle_grace_s", DEFAULT_IDLE_GRACE_S))

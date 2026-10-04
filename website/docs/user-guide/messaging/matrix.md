@@ -361,25 +361,40 @@ Hermes supports Matrix end-to-end encryption, so you can chat with your bot in e
 
 ### Requirements
 
-E2EE requires the `mautrix` library with encryption extras and the `libolm` C library:
+E2EE requires the `mautrix` library with encryption extras:
 
 ```bash
 # Request the declared Matrix dependencies
 python -c "import pm; pm.sync_venv(['matrix'], explicit=True)"
 ```
 
-You also need `libolm` installed on your system:
+On Linux this installs the E2EE closure (`python-olm`) from a prebuilt wheel.
+On macOS the `matrix` extra installs base `mautrix`, which supports
+unencrypted rooms; E2EE additionally needs `python-olm`.
+
+`python-olm` publishes no macOS wheel, and its sdist does not build
+unpatched on current toolchains: `libolm` was archived upstream, its CMake
+floor predates CMake 4's removal of that compatibility, and recent Clang
+rejects one line of the vendored `olm/list.hh`. `python-olm` compiles its
+own vendored `libolm`, so no system package is needed — the `brew install
+libolm` guidance no longer applies (the formula was removed from Homebrew).
+To enable E2EE on macOS, build `python-olm` from the sdist once:
 
 ```bash
-# Debian/Ubuntu
-sudo apt install libolm-dev
+# macOS: build python-olm from source (vendored libolm, no system package)
+pip download python-olm==3.2.16 --no-binary :all:
+tar xzf python-olm-3.2.16.tar.gz
 
-# macOS
-brew install libolm
-
-# Fedora
-sudo dnf install libolm-devel
+# CMake 4 removed compatibility with the project's <3.5 minimum:
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+# Apple Clang rejects the const-qualified iterator in the vendored libolm —
+# edit include/olm/list.hh: `T * const other_pos` becomes `T * other_pos`
+pip wheel --no-deps -w wheelhouse ./python-olm-3.2.16
+pip install wheelhouse/python_olm-3.2.16-*.whl
 ```
+
+The resulting wheel is tagged for the interpreter it was built with; rebuild
+after a Python version change.
 
 ### Enable E2EE
 

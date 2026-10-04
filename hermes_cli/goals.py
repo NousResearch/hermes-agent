@@ -1212,10 +1212,10 @@ class GoalManager:
 
         Unlike ``resume`` (the budget-reset verb) this spends no budget and changes no
         status: the goal was never paused, only its turn was killed. Returns None when
-        there is nothing active to continue.
+        there is nothing active to continue or no turn budget remains.
         """
         state = self._state
-        if state is None or not self.is_active():
+        if state is None or not self.is_active() or state.turns_used >= state.max_turns:
             return None
         if state.interrupted_at is not None:
             state.interrupted_at = None

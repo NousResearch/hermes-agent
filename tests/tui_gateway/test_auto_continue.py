@@ -587,6 +587,22 @@ def test_reported_interruption_reaches_the_control_snapshot(schedule_env, goal_h
     )
 
 
+def test_late_interruption_publishes_the_control_snapshot(emits, schedule_env, goal_home):
+    """Deferred hydration can discover the crash after Desktop's first control read."""
+    _set_goal("session-key")
+    session = _session()
+    assert "interrupted_at" not in server._snapshot_control("session-key")["goal"]
+    record_turn_start(goal_home, "session-key", "prompt")
+
+    result = server._maybe_schedule_auto_continue("sid", session, "session-key")
+
+    updates = [payload["control"] for event, sid, payload in emits
+               if event == "session.control.update" and sid == "sid"]
+    assert updates and updates[-1]["goal"]["interrupted_at"] == result["interrupted_at"]
+    assert updates[-1] == server._snapshot_control("session-key")
+    assert not schedule_env
+
+
 def test_opt_in_auto_resume_runs_the_goals_own_continuation_prompt(
     emits, schedule_env, goal_home, monkeypatch
 ):
@@ -630,6 +646,97 @@ def test_auto_resumed_goal_keeps_its_budget(emits, schedule_env, goal_home, monk
     (text, _kwargs), = schedule_env
     assert text == mgr.next_continuation_prompt()
     assert load_goal("session-key").turns_used == 6
+
+
+@pytest.mark.parametrize("transition", ["pause", "clear", "replace", "exhaust"])
+def test_auto_goal_recovery_revalidates_after_agent_build(
+    emits, schedule_env, goal_home, monkeypatch, transition
+):
+    from hermes_cli.goals import GoalManager, load_goal
+
+    original = _set_goal("session-key")
+    record_turn_start(goal_home, "session-key", "prompt")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"goals": {"auto_resume_on_reconnect": True}})
+
+    def change_goal(session, rid, timeout):
+        mgr = GoalManager("session-key")
+        if transition == "pause":
+            mgr.pause()
+        elif transition == "clear":
+            mgr.clear()
+        elif transition == "replace":
+            mgr.set(original.state.goal)
+            mgr.state.created_at = original.state.created_at + 1
+            mgr._save()
+        else:
+            mgr.state.turns_used = mgr.state.max_turns
+            mgr._save()
+        return None
+
+    monkeypatch.setattr(server, "_wait_agent", change_goal)
+    session = _session()
+
+    server._maybe_schedule_auto_continue("sid", session, "session-key")
+
+    assert not schedule_env
+    assert not [event for event, _, _ in emits if event == "message.start"]
+    assert session["running"] is False
+    assert session["_auto_continue_scheduled"] is False
+    assert "_auto_continue_attempt" not in session
+    if transition == "pause":
+        assert load_goal("session-key").status == "paused"
+
+
+@pytest.mark.parametrize("preexisting_lease", [False, True])
+def test_aborted_goal_recovery_releases_only_its_new_lease(
+    schedule_env, goal_home, monkeypatch, preexisting_lease
+):
+    from hermes_cli.active_sessions import try_acquire_active_session
+    from hermes_cli.goals import GoalManager
+
+    _set_goal("session-key")
+    config = {"max_concurrent_sessions": 1, "goals": {"auto_resume_on_reconnect": True}}
+    monkeypatch.setattr(server, "_load_cfg", lambda: config)
+    session = _session(profile_home=str(goal_home))
+    if preexisting_lease:
+        assert server._ensure_active_session_slot("sid", session) is None
+    held_lease = session.get("active_session_lease")
+    record_turn_start(goal_home, "session-key", "prompt")
+
+    def pause_during_build(session, rid, timeout):
+        GoalManager("session-key").pause()
+        return None
+
+    monkeypatch.setattr(server, "_wait_agent", pause_during_build)
+    try:
+        server._maybe_schedule_auto_continue("sid", session, "session-key")
+        assert not schedule_env
+        assert session.get("active_session_lease") is held_lease
+        if held_lease is not None:
+            assert not held_lease.released
+        else:
+            lease, refusal = try_acquire_active_session(
+                session_id="next-session", surface="tui", config=config, registry_home=goal_home,
+                metadata={"live_session_id": "next-runtime"},
+            )
+            assert refusal is None
+            assert lease is not None
+            lease.release()
+    finally:
+        server._release_active_session_slot(session)
+
+
+def test_auto_goal_recovery_refuses_an_exhausted_budget(schedule_env, goal_home, monkeypatch):
+    mgr = _set_goal("session-key")
+    mgr.state.turns_used = mgr.state.max_turns
+    mgr._save()
+    record_turn_start(goal_home, "session-key", "prompt")
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"goals": {"auto_resume_on_reconnect": True}})
+
+    result = server._maybe_schedule_auto_continue("sid", _session(), "session-key")
+
+    assert not schedule_env
+    assert result["goal_interrupted"] is True
 
 
 def test_auto_resume_still_honours_the_crash_loop_breaker(

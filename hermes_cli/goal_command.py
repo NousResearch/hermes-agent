@@ -5,7 +5,7 @@ parses subcommands and mutates goal state. It never changes conversation history
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 from typing import Callable
 
@@ -52,11 +52,11 @@ def _resume(mgr, arg, render):
                              prompt=mgr.next_continuation_prompt())
 
 
-def _continue(mgr, arg, render):
+def _recover(mgr, arg, render):
     """Crash recovery: pick the active goal back up without spending the resume budget reset."""
     prompt = mgr.continue_after_interruption()
     if prompt is None:
-        return GoalCommandResult(render("gateway.no_active_goal", "No active goal to continue."))
+        return GoalCommandResult("No active goal with remaining budget to recover. Use /goal resume to unpause or reset the budget.")
     return GoalCommandResult(render("gateway.goal.continuing", "▶ Goal continuing: {goal}", goal=mgr.state.goal),
                              prompt=prompt)
 
@@ -106,8 +106,23 @@ def _gate_clear(mgr, arg):
 _GATE_HANDLERS = {"add": _gate_add, "remove": _gate_remove, "rm": _gate_remove, "clear": _gate_clear}
 _EXACT_HANDLERS = {
     "": _status, "status": _status, "show": _show, "pause": _pause,
-    "resume": _resume, "continue": _continue, "clear": _clear, "stop": _clear, "done": _clear, "unwait": _unwait,
+    "resume": _resume, "continue": _resume, "unpause": _resume,
+    "recover": _recover,
+    "clear": _clear, "stop": _clear, "done": _clear, "unwait": _unwait,
 }
+# Non-destructive control verbs: with trailing words the verb still wins, so
+# `/goal resume last goal` resumes instead of silently replacing the goal text.
+# clear/stop/done stay out — guessing wrong would end a goal the user meant to keep.
+_BARE_CONTROL_VERBS = frozenset({"resume", "continue", "unpause", "recover", "pause", "status", "show", "unwait"})
+# First words that make a command goal control (the gateway busy path dispatches these).
+_CONTROL_FIRST_WORDS = _BARE_CONTROL_VERBS | {"wait", "gate"}
+
+
+def _bare_control(mgr, verb, rest, render):
+    result = _EXACT_HANDLERS[verb](mgr, "", render)
+    return replace(result, output=result.output + (
+        f"\n(ignored {rest!r}: a control command never sets goal text — use /goal -- <text> "
+        "when the goal really starts with a control word.)"))
 
 
 def _gate(mgr, arg, authorize_gate):
@@ -144,9 +159,12 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
     else:
         headline, contract = goals.parse_contract(arg)
         contract = contract if not contract.is_empty() else None
+    previous = mgr.state.goal if mgr.has_goal() else ""
     state = mgr.set(headline or arg, contract=contract)
     output = render("gateway.goal.set", "⊙ Goal set ({budget}-turn budget): {goal}",
                     budget=state.max_turns, goal=state.goal)
+    if previous and previous != state.goal:
+        output += f"\n(replaced the previous goal)\n  was: {previous}"
     if state.has_contract():
         label = "Drafted completion contract:" if drafting else "Completion contract:"
         output += f"\n{label}\n{state.contract.render_block()}"
@@ -161,14 +179,15 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
         output += (f"\nAfter each turn, a judge model checks if the goal is done{against}. "
                    "Hermes keeps working until it is, you pause/clear it, or the budget is "
                    "exhausted. Use /goal status, /goal show, /goal pause, /goal resume, "
-                   "/goal continue (pick up after a crash), /goal clear.")
+                   "/goal recover (pick up after a crash without resetting the budget), /goal clear.")
     return GoalCommandResult(output, goals.goal_kick_prompt(state.goal, last_user_message), kickoff=True)
 
 
 def is_goal_control(arg: str) -> bool:
     """Whether this command controls an existing goal rather than replacing it."""
     normalized = arg.strip().lower()
-    return normalized in _EXACT_HANDLERS or normalized.split(None, 1)[0] in {"wait", "gate"}
+    first = normalized.split(None, 1)[0] if normalized else ""
+    return normalized in _EXACT_HANDLERS or first in _CONTROL_FIRST_WORDS
 
 
 def dispatch_goal_command(
@@ -187,8 +206,14 @@ def dispatch_goal_command(
     rest = tokens[1].strip() if len(tokens) > 1 else ""
     prefix = "Invalid goal"
     try:
+        if verb == "--":
+            # Verbatim goal text for goals that start with a control word (`/goal -- pause the cron`).
+            return _set(mgr, rest, drafting=False, last_user_message=last_user_message,
+                        render=render, progress=progress)
         if handler := _EXACT_HANDLERS.get(arg.lower()):
             return handler(mgr, "", render)
+        if verb in _BARE_CONTROL_VERBS:
+            return _bare_control(mgr, verb, rest, render)
         if verb == "wait":
             prefix = "/goal wait"
             return _wait(mgr, rest)

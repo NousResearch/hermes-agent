@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 _ACTION_COMMAND_MAP: dict[str, tuple[str, str]] = {
     "goal.pause": ("goal", "pause"),
     "goal.resume": ("goal", "resume"),
-    "goal.continue": ("goal", "continue"),
+    "goal.continue": ("goal", "recover"),
     "goal.clear": ("goal", "clear"),
     "goal.unwait": ("goal", "unwait"),
     "loop.pause": ("loop", "pause"),
@@ -395,9 +395,8 @@ def _manager_error_message(action: str, exc: Exception) -> str:
 def _dispatch_envelope(response: dict, *, command: str | None = None) -> dict:
     """Keep the command result's user-visible envelope without adding model-facing data.
 
-    ``display`` is the command the Desktop should show for a hidden prompt; the shared
-    ``/goal`` handler labels every continuation ``/goal resume``, so the action's own verb
-    wins when we know it.
+    ``display`` is the command the Desktop should show for a hidden prompt; the action's
+    exact command wins over any canonical label returned by the shared handler.
     """
     result = response.get("result") or {}
     display = result.get("display")

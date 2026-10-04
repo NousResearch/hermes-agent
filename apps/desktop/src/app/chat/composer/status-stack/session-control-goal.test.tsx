@@ -134,7 +134,7 @@ describe('goal card interrupted state', () => {
     const onSubmit = vi.fn().mockResolvedValue(true)
 
     mockRunSessionControlAction.mockResolvedValue({
-      display: '/goal continue',
+      display: '/goal recover',
       message: 'Continue toward goal: Ship the crash-resume flow',
       notice: null,
       output: null,
@@ -161,7 +161,7 @@ describe('goal card interrupted state', () => {
 
   it('offers the same continue action from the goal menu', async () => {
     mockRunSessionControlAction.mockResolvedValue({
-      display: '/goal continue',
+      display: '/goal recover',
       message: 'Continue toward goal: Ship the crash-resume flow',
       notice: null,
       output: null,

@@ -1,4 +1,4 @@
-"""``/goal continue`` — pick a crash-interrupted goal back up.
+"""``/goal recover`` — pick a crash-interrupted goal back up.
 
 ``resume`` is the budget-exhausted verb: it un-pauses and resets ``turns_used``.
 A goal whose turn died with the backend was never paused and never finished a
@@ -133,14 +133,14 @@ def test_mark_interrupted_only_applies_to_an_active_goal(hermes_home):
     assert load_goal("interrupt-paused").interrupted_at is None
 
 
-def test_goal_continue_command_returns_the_continuation_prompt(hermes_home):
+def test_goal_recover_command_returns_the_continuation_prompt(hermes_home):
     from hermes_cli.goal_command import dispatch_goal_command
 
-    mgr = _manager("continue-command")
+    mgr = _manager("recover-command")
     mgr.state.turns_used = 4
     mgr._save()
 
-    result = dispatch_goal_command(mgr, "continue", authorize_gate=lambda: None)
+    result = dispatch_goal_command(mgr, "recover", authorize_gate=lambda: None)
 
     assert not result.error
     assert result.prompt == mgr.next_continuation_prompt()
@@ -148,14 +148,88 @@ def test_goal_continue_command_returns_the_continuation_prompt(hermes_home):
     assert mgr.state.turns_used == 4
 
 
-def test_goal_continue_command_on_a_paused_goal_offers_no_prompt(hermes_home):
+def test_goal_recover_command_on_a_paused_goal_offers_no_prompt(hermes_home):
     from hermes_cli.goal_command import dispatch_goal_command
 
     mgr = _manager("continue-command-paused")
     mgr.pause()
 
-    result = dispatch_goal_command(mgr, "continue", authorize_gate=lambda: None)
+    result = dispatch_goal_command(mgr, "recover", authorize_gate=lambda: None)
 
     assert result.prompt is None
     assert not result.error
-    assert "continue" in result.output.lower()
+    assert "recover" in result.output.lower()
+
+
+@pytest.mark.parametrize("turns_used", [12, 13])
+def test_recovery_refuses_an_exhausted_budget_without_clearing_interruption(hermes_home, turns_used):
+    from hermes_cli.goal_command import dispatch_goal_command
+    from hermes_cli.goals import load_goal
+
+    mgr = _manager("recover-exhausted")
+    assert mgr.state is not None
+    mgr.state.max_turns = 12
+    mgr.state.turns_used = turns_used
+    mgr.mark_interrupted(1234.0)
+    before = mgr.state.to_json()
+
+    assert mgr.continue_after_interruption() is None
+    result = dispatch_goal_command(mgr, "recover", authorize_gate=lambda: None)
+
+    assert result.prompt is None
+    assert "/goal resume" in result.output
+    persisted = load_goal(mgr.session_id)
+    assert persisted is not None
+    assert persisted.to_json() == before
+
+
+def test_recover_keeps_contract_subgoals_and_gate_retry_state(hermes_home):
+    from hermes_cli.goal_command import dispatch_goal_command
+    from hermes_cli.goals import GoalContract, load_goal
+
+    mgr = _manager("recover-contract")
+    mgr.set_contract(GoalContract(outcome="Ship safely", verification="Tests pass"))
+    mgr.add_subgoal("Keep upstream aliases")
+    gate = mgr.add_gate("exit 5")
+    gate.attempts = 2
+    gate.max_retries = 4
+    gate.last_exit_code = 5
+    gate.last_output_tail = "Needs another repair"
+    mgr.state.turns_used = 7
+    mgr.mark_interrupted(1234.0)
+    before = load_goal(mgr.session_id)
+
+    result = dispatch_goal_command(mgr, "recover the work", authorize_gate=lambda: "not authorized")
+
+    persisted = load_goal(mgr.session_id)
+    assert persisted is not None and before is not None
+    assert result.prompt and "Tests pass" in result.prompt and "Keep upstream aliases" in result.prompt
+    assert persisted.goal == before.goal
+    assert persisted.contract == before.contract
+    assert persisted.subgoals == before.subgoals
+    assert persisted.gates == before.gates
+    assert persisted.turns_used == before.turns_used
+    assert persisted.created_at == before.created_at
+    assert persisted.interrupted_at is None
+
+
+def test_recovered_goal_still_requires_real_quality_gates(hermes_home, monkeypatch, tmp_path):
+    from hermes_cli.goal_command import dispatch_goal_command
+    from hermes_cli.goals import load_goal
+
+    monkeypatch.chdir(tmp_path)
+    mgr = _manager("recover-gate-enforcement")
+    mgr.add_gate("exit 5")
+    mgr.state.turns_used = 7
+    mgr.mark_interrupted(1234.0)
+
+    assert dispatch_goal_command(mgr, "recover", authorize_gate=lambda: None).prompt
+    decision = mgr.evaluate_after_turn("I think it is done")
+
+    persisted = load_goal(mgr.session_id)
+    assert persisted is not None
+    assert decision["verdict"] == "gate_failed"
+    assert persisted.status == "active"
+    assert persisted.turns_used == 8
+    assert persisted.gates[0].attempts == 1
+    assert persisted.gates[0].last_exit_code == 5

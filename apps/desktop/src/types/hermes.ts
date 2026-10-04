@@ -323,6 +323,8 @@ export interface CustomEndpointValidationResponse {
 export interface MessagingEnvVarInfo {
   advanced: boolean
   description: string
+  /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
+  is_list?: boolean
   is_password: boolean
   is_set: boolean
   key: string
@@ -330,6 +332,8 @@ export interface MessagingEnvVarInfo {
   redacted_value: null | string
   required: boolean
   url: null | string
+  /** Plain saved value, sent only for allowlists (they are IDs, not secrets). */
+  value?: null | string
 }
 
 export interface MessagingHomeChannel {
@@ -583,6 +587,12 @@ export interface SessionInfo {
   actual_cost_usd?: null | number
   estimated_cost_usd?: null | number
   is_active: boolean
+  /** Cron run rows only (`source === 'cron'`): the scheduler still OWNS this
+   *  never-closed run — its in-flight execution is held by a live process.
+   *  Unlike {@link is_active} (a 300s activity window) it stays true through a
+   *  long tool call and is false for a zombie whose process died (#88443).
+   *  Undefined against older backends and for non-cron rows. */
+  scheduler_owned?: boolean
   last_active: number
   message_count: number
   model: null | string

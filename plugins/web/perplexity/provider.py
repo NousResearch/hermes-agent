@@ -21,9 +21,11 @@ Env vars::
     PERPLEXITY_API_KEY=...       # required for direct search and extract
     PERPLEXITY_BASE_URL=...      # optional override of https://api.perplexity.ai
 
-No anonymous tier. The Nous Subscription selection serves search through
-``perplexity-gateway.<TOOL_GATEWAY_DOMAIN>`` using the Nous token; a direct
-key takes precedence. Managed extract stays on Firecrawl.
+No anonymous tier at Perplexity itself. The managed route serves search through
+``perplexity-gateway.<TOOL_GATEWAY_DOMAIN>`` as ``search_type: "fast"``, which the
+gateway serves to any Nous identity (paid, unpaid or anonymous guest); a direct key
+takes precedence.
+Managed extract stays on Firecrawl.
 
 Extract caveat: Perplexity's only supported page-content route returns the
 passages of a page relevant to a *query* (elisions marked ``…``), not the
@@ -77,7 +79,7 @@ def _managed_gateway(token_reader=None):
 
     if not _managed_web_search():
         return None
-    return gw.resolve_managed_tool_gateway("perplexity", token_reader=token_reader)
+    return gw.resolve_free_search_gateway(token_reader=token_reader)
 
 
 def _perplexity_request(endpoint: str, payload: Dict[str, Any], gateway=None) -> Dict[str, Any]:
@@ -209,14 +211,17 @@ class PerplexityWebSearchProvider(WebSearchProvider):
                 return {"success": False, "error": "Interrupted"}
 
             from agent.web_search_provider import get_provider_env
+            from tools.managed_tool_gateway import resolve_free_search_gateway
             from tools.web_tools import _managed_web_search
 
             direct = bool(get_provider_env("PERPLEXITY_API_KEY"))
-            gateway = None if direct else _managed_gateway()
-            if gateway is None and not direct and _managed_web_search():
+            managed = False if direct else _managed_web_search()
+            gateway = resolve_free_search_gateway() if managed else None
+            if gateway is None and managed:
                 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, selection_error
+
                 raise ValueError(selection_error(
-                    "web", NOUS_MANAGED_PROVIDER, "the Nous Tool Gateway is not available (not entitled or unreachable)"))
+                    "web", NOUS_MANAGED_PROVIDER, "there is no usable Nous identity (sign in with `/login`)"))
             logger.info("Perplexity search: '%s' (limit=%d%s)", query, limit, ", managed" if gateway else "")
             payload = {
                 "query": query,

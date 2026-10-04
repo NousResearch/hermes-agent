@@ -140,6 +140,7 @@ class SessionCreateParams(ProfileParams):
     provider: str | None = None
     reasoning_effort: str | None = None
     fast: bool | None = None  # presence is the contract: omitted inherits, true pins priority, false pins normal
+    service_tier: str | None = None
     close_on_disconnect: bool = False
     hidden: bool = False
     room_plumbing: bool = False

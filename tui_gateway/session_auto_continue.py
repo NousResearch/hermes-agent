@@ -76,13 +76,15 @@ def _active_goal_manager_for_session(session: dict, session_key: str):
 
 
 def _schedule_auto_continue_turn(
-    sid: str, session: dict, *, text: str, marker: dict, attempt: int, status: dict) -> bool:
+    sid: str, session: dict, *, text: str, marker: dict, attempt: int, status: dict,
+    goal_identity: tuple[str, str, float] | None = None) -> bool:
     """Run the continuation on a session worker after the deferred agent build, so the client that
     just resumed streams it. ``status`` is the status.update payload announcing the continuation.
     Returns False when no worker could be started (the caller un-schedules)."""
     marker_prompt = marker["prompt"]
 
     def kickoff() -> None:
+        continuation_text = text
         rid = f"__auto_continue__{int(time.time() * 1000)}"
         try:
             _start_agent_build(sid, session)
@@ -103,12 +105,29 @@ def _schedule_auto_continue_turn(
         # marker and still be mid-turn. Leave the marker so a later resume retries.
         # Running the continuation anyway would be the double-writer this fence exists to prevent. See
         # #94778.
+        held_lease = session.get("active_session_lease")
         if _ensure_active_session_slot(sid, session) is not None:
             logger.info("auto-continue for %s refused: session has another live owner", sid)
             with session["history_lock"]:
                 session["running"] = False
                 session["_auto_continue_scheduled"] = False
             return
+        if goal_identity is not None:
+            # Agent construction can outlive a pause, replacement, or budget exhaustion.
+            # Read the current goal after that wait; never dispatch the captured stale intent.
+            session_key, goal_title, created_at = goal_identity
+            with _session_profile_runtime_scope(session):
+                current = _active_goal_manager_for_session(session, session_key)
+                same_goal = current is not None and (
+                    current.state.goal, current.state.created_at) == (goal_title, created_at)
+                continuation_text = current.continue_after_interruption() if same_goal else None
+            if not continuation_text:
+                if session.get("active_session_lease") is not held_lease:
+                    _release_active_session_slot(session)
+                with session["history_lock"]:
+                    session["running"] = False
+                    session["_auto_continue_scheduled"] = False
+                return
         with session["history_lock"]:
             # Marker inputs read back by _run_prompt_submit: attempt count (crash breaker) and the ORIGINAL prompt (no
             # nested notes). Set here, not at schedule time, so a bail above leaves nothing for a racing user turn.
@@ -121,7 +140,7 @@ def _schedule_auto_continue_turn(
                     _emit("status.update", sid, status)
                     _emit("message.start", sid)
                 render_notification(announce, platform="tui", diagnostic=diagnostic)
-                _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue",
+                _run_prompt_submit(rid, sid, session, continuation_text, display_kind="auto_continue",
                     **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
         except Exception as exc:
             _notif_log_failure("auto-continue dispatch failed", exc)
@@ -152,11 +171,13 @@ def _goal_auto_continue(
         with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
             goal_mgr.mark_interrupted(marker["started_at"])
         clear_turn_marker(home, session_key)
+        _publish_session_control_snapshot(sid, session)
         return {"goal_interrupted": True, "goal_title": title, "interrupted_at": marker["started_at"]}
     session["_auto_continue_scheduled"] = True
     if not _schedule_auto_continue_turn(
             sid, session, text=text, marker=marker, attempt=attempt,
-            status={"kind": "goal", "text": f"▶ Goal continuing after restart: {title}"}):
+            status={"kind": "goal", "text": f"▶ Goal continuing after restart: {title}"},
+            goal_identity=(session_key, title, goal_mgr.state.created_at)):
         session["_auto_continue_scheduled"] = False
         return None
     logger.info("goal auto-continue scheduled for session %s (attempt %d)", session_key, attempt)

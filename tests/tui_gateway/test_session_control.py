@@ -232,6 +232,23 @@ class TestStructuredRead:
         assert _control(server, sid)["revision"] != before["revision"]
 
 class TestDispatcherBackedMutations:
+    def test_direct_recover_dispatch_reports_recovery_not_budget_reset(self, server, session):
+        from hermes_cli.goals import load_goal
+
+        sid, key, _ = session
+        _save_goal(key, turns_used=8, interrupted_at=1234.0)
+        response = server.handle_request({
+            "jsonrpc": "2.0", "id": "direct", "method": "command.dispatch",
+            "params": {"session_id": sid, "name": "goal", "arg": "recover the work"},
+        })
+        assert "error" not in response, response
+        assert response["result"]["type"] == "send"
+        assert response["result"]["display"] == "/goal recover"
+        persisted = load_goal(key)
+        assert persisted is not None
+        assert persisted.turns_used == 8
+        assert persisted.interrupted_at is None
+
     def test_goal_pause_resume_clear_mutate_real_persisted_state(self, server, session):
         sid, key, _ = session
         _save_goal(key, status="active", turns_used=8)
@@ -264,7 +281,7 @@ class TestDispatcherBackedMutations:
         dispatch = response["result"]["dispatch"]
         assert dispatch["type"] == "send"
         assert dispatch["message"] == GoalManager(key).next_continuation_prompt()
-        assert dispatch["display"] == "/goal continue"
+        assert dispatch["display"] == "/goal recover"
         assert load_goal(key).goal in dispatch["notice"]
         # Unlike goal.resume, no budget refund and no status change.
         assert load_goal(key).turns_used == 8
@@ -300,7 +317,7 @@ class TestDispatcherBackedMutations:
 
         assert rpc("session.control.read", session_id=sid)["control"]["goal"]["interrupted_at"] == 1234.0
         assert "goal.continue" in {a.value for a in SessionControlAction}
-        assert rpc("session.control", session_id=sid, action="goal.continue")["dispatch"]["display"] == "/goal continue"
+        assert rpc("session.control", session_id=sid, action="goal.continue")["dispatch"]["display"] == "/goal recover"
 
     def test_goal_continue_on_a_paused_goal_offers_no_prompt(self, server, session):
         sid, key, _ = session
@@ -311,9 +328,36 @@ class TestDispatcherBackedMutations:
         dispatch = response["result"]["dispatch"]
         assert dispatch["message"] is None
         assert dispatch["type"] == "exec"
-        assert "continue" in dispatch["output"].lower()
+        assert "recover" in dispatch["output"].lower()
         # A refusal must not wake the goal up.
         assert response["result"]["control"]["goal"]["status"] == "paused"
+        assert response["result"]["control"]["goal"]["turns_used"] == 4
+
+    @pytest.mark.parametrize("status, turns_used", [("active", 8), ("paused", 4), ("active", 12)])
+    def test_goal_continue_strict_rpc_preserves_budget_and_refuses_paused_or_exhausted(
+        self, server, session, status, turns_used
+    ):
+        from hermes_cli.goals import load_goal
+
+        sid, key, _ = session
+        _save_goal(key, status=status, turns_used=turns_used, interrupted_at=1234.0)
+        response = server.handle_request({
+            "jsonrpc": "2.0", "id": "recovery", "method": "session.control",
+            "params": {"session_id": sid, "action": "goal.continue"},
+        })
+        assert "error" not in response, response
+        dispatch = response["result"]["dispatch"]
+        persisted = load_goal(key)
+        assert persisted is not None
+        assert (persisted.status, persisted.turns_used) == (status, turns_used)
+        if status == "active" and turns_used < persisted.max_turns:
+            assert dispatch["type"] == "send"
+            assert dispatch["display"] == "/goal recover"
+            assert persisted.interrupted_at is None
+        else:
+            assert dispatch["type"] == "exec"
+            assert dispatch["message"] is None
+            assert persisted.interrupted_at == 1234.0
 
     def test_loop_pause_resume_stop_mutate_real_persisted_state(self, server, session):
         sid, key, _ = session

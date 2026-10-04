@@ -24,12 +24,14 @@ import {
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { $backgroundStatusBySession, type ComposerStatusItem } from '@/store/composer-status'
 import {
   activeGatewayConnectionId,
   requestGatewayForAgent,
   requestGatewayForProfile,
   retainGatewayForAgent
 } from '@/store/gateway'
+import { $goalsBySession, type SessionGoal } from '@/store/goals'
 import { $pinnedSessionIds } from '@/store/layout'
 import { $notifications, dismissNotification } from '@/store/notifications'
 import {
@@ -78,6 +80,7 @@ import {
   setCurrentModelSource,
   setCurrentProvider,
   setCurrentReasoningEffort,
+  setCurrentServiceTier,
   setMessages,
   setMessagingSessions,
   setNewChatWorkspaceTarget,
@@ -101,7 +104,8 @@ import {
   sessionTileOwnerRoute
 } from '@/store/session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from '@/store/session-unread'
-import { $retainedTodosBySession, clearSessionTodos } from '@/store/todos'
+import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
+import { $retainedTodosBySession, $todosBySession, clearSessionTodos } from '@/store/todos'
 import { loadTranscriptTail, saveTranscriptTail } from '@/store/transcript-tail-cache'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
@@ -551,6 +555,86 @@ describe('connection-qualified session deletion', () => {
     // The live state the interrupt clobbered is restored, and the row survives.
     expect(updateSessionState.mock.results.at(-1)?.value).toMatchObject({ interrupted: false, needsInput: true })
     expect($sessions.get().some(session => session.id === 'background-session')).toBe(true)
+  })
+
+  describe('subagent, todo, goal, and background cleanup', () => {
+    // Stored id, foreground runtime, and the stored→runtime mapping are all
+    // distinct: these live stores key on the event's runtime session_id.
+    const doomedIds = ['stored-doomed', 'runtime-active', 'runtime-mapped']
+
+    const seedLiveState = () => {
+      const subagents: Record<string, SubagentProgress[]> = {}
+      const todos: Record<string, { content: string; id: string; status: 'pending' }[]> = {}
+      const goals: Record<string, SessionGoal> = {}
+      const background: Record<string, ComposerStatusItem[]> = {}
+
+      for (const sid of [...doomedIds, 'runtime-other']) {
+        subagents[sid] = [{ id: `sub-${sid}` } as SubagentProgress]
+        todos[sid] = [{ content: 'todo', id: `todo-${sid}`, status: 'pending' }]
+        goals[sid] = { status: 'active', title: 'goal', updatedAt: 1 }
+        // Finished (not running) so resetSessionBackground has nothing to kill.
+        background[sid] = [{ id: `proc-${sid}`, state: 'done', title: 'proc', type: 'background' }]
+      }
+
+      $subagentsBySession.set(subagents)
+      $todosBySession.set(todos)
+      $goalsBySession.set(goals)
+      $backgroundStatusBySession.set(background)
+    }
+
+    const renderDeleting = async () => {
+      let actions: HarnessHandle | null = null
+
+      setSessions([storedSession({ id: 'stored-doomed' })])
+      render(
+        <Harness
+          activeSessionId="runtime-active"
+          onReady={value => {
+            actions = value
+          }}
+          requestGateway={vi.fn().mockResolvedValue({})}
+          runtimeIdByStoredSessionIdRef={{ current: new Map([['stored-doomed', 'runtime-mapped']]) }}
+          selectedStoredSessionId="stored-doomed"
+        />
+      )
+      await waitFor(() => expect(actions).not.toBeNull())
+
+      await act(async () => {
+        await actions?.removeSession('stored-doomed')
+      })
+    }
+
+    afterEach(() => {
+      $subagentsBySession.set({})
+      $todosBySession.set({})
+      $goalsBySession.set({})
+      $backgroundStatusBySession.set({})
+    })
+
+    it('clears subagents, todos, goals, and background status under the stored and every runtime id once the delete lands', async () => {
+      seedLiveState()
+      vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+
+      await renderDeleting()
+
+      expect(Object.keys($subagentsBySession.get())).toEqual(['runtime-other'])
+      expect(Object.keys($todosBySession.get())).toEqual(['runtime-other'])
+      expect(Object.keys($goalsBySession.get())).toEqual(['runtime-other'])
+      expect(Object.keys($backgroundStatusBySession.get())).toEqual(['runtime-other'])
+    })
+
+    it('keeps subagents, todos, goals, and background status when the delete RPC fails and the row is restored', async () => {
+      seedLiveState()
+      vi.mocked(deleteSession).mockRejectedValue(new Error('delete failed'))
+
+      await renderDeleting()
+
+      expect($sessions.get().some(session => session.id === 'stored-doomed')).toBe(true)
+      expect(Object.keys($subagentsBySession.get()).sort()).toEqual([...doomedIds, 'runtime-other'].sort())
+      expect(Object.keys($todosBySession.get()).sort()).toEqual([...doomedIds, 'runtime-other'].sort())
+      expect(Object.keys($goalsBySession.get()).sort()).toEqual([...doomedIds, 'runtime-other'].sort())
+      expect(Object.keys($backgroundStatusBySession.get()).sort()).toEqual([...doomedIds, 'runtime-other'].sort())
+    })
   })
 })
 
@@ -1424,7 +1508,7 @@ describe('createBackendSessionForSend profile routing', () => {
     expect(ambientRequest).not.toHaveBeenCalledWith('session.create', expect.anything())
   })
 
-  it('freezes the visible selector state before profile readiness and sends fast: false explicitly', async () => {
+  it('freezes the visible selector state before profile readiness and sends Priority as fast alone', async () => {
     const profileReady = deferred<void>()
     vi.mocked(ensureGatewayProfile).mockReturnValueOnce(profileReady.promise)
 
@@ -1435,7 +1519,9 @@ describe('createBackendSessionForSend profile routing', () => {
     // rides along as a per-session override.
     setCurrentModelSource('manual')
     setCurrentReasoningEffort('high')
-    setCurrentFastMode(false)
+    setCurrentFastMode(true)
+    // Priority rides as `fast` alone: a pre-Ultrafast backend rejects `service_tier`.
+    setCurrentServiceTier('priority')
 
     let createParams: Record<string, unknown> | undefined
 
@@ -1464,7 +1550,8 @@ describe('createBackendSessionForSend profile routing', () => {
     setCurrentModel('openai/gpt-5.5')
     setCurrentProvider('openai-codex')
     setCurrentReasoningEffort('low')
-    setCurrentFastMode(true)
+    setCurrentFastMode(false)
+    setCurrentServiceTier('ultrafast')
     profileReady.resolve()
 
     await act(async () => {
@@ -1472,11 +1559,12 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(createParams).toMatchObject({
-      fast: false,
+      fast: true,
       model: 'anthropic/claude-sonnet-4.6',
       provider: 'anthropic',
       reasoning_effort: 'high'
     })
+    expect(createParams).not.toHaveProperty('service_tier')
   })
 
   it('falls back to the entered project cwd when the current cwd is blank', async () => {

@@ -58,12 +58,14 @@ What you'll see:
 | Command | What it does |
 |---|---|
 | `/goal <text>` | Set (or replace) the standing goal. Kicks off the first turn immediately so you don't need to send a separate message. |
+| `/goal -- <text>` | Set goal text that starts with a control word (`/goal -- pause the nightly cron`). Without `--`, `resume`/`continue`/`unpause`/`recover`/`pause`/`status`/`show`/`unwait` followed by words run the control command and ignore the rest. |
 | `/goal draft <text>` | Draft a structured completion contract from a plain-language objective, then set it. See [Completion contracts](#completion-contracts). |
 | `/goal show` | Print the active goal's completion contract. |
 | `/goal` or `/goal status` | Show the current goal, its status, and turns used. |
 | `/goal pause` | Stop the auto-continuation loop without clearing the goal. |
 | `/goal resume` | Resume the loop (resets the turn counter back to zero). |
-| `/goal continue` | Take the next step toward the goal without resetting the turn counter. Used by the Desktop's **Resume goal** action after a crash. |
+| `/goal continue` or `/goal unpause` | Alias of `/goal resume`: unpause the goal and reset the turn counter. |
+| `/goal recover` | Take the next step toward an active goal without resetting the turn counter. Refuses paused goals and exhausted budgets; use `/goal resume` for those. Used by the Desktop's **Resume goal** action after a crash. |
 | `/goal clear` | Drop the goal entirely. |
 | `/goal wait <pid> [reason]` | Park the loop on a background process — it stops re-poking the agent every turn while the process runs, and auto-resumes when it exits. |
 | `/goal unwait` | Drop the wait barrier and resume the loop immediately. |
@@ -222,7 +224,7 @@ Goal state lives in `SessionDB.state_meta` keyed by `goal:<session_id>`. That me
 
 If the process running the turn dies mid-goal — you quit the Desktop app, the backend is killed, the machine reboots — the goal is not lost. It stays `active` with the same `turns_used`; only the interrupted turn is gone.
 
-On reconnect the Desktop marks the goal card **Interrupted** and offers a **Resume goal** action. That action runs `/goal continue`: it takes the next step toward the same goal **without resetting the turn budget**, unlike `/goal resume`, which pauses-to-resume and zeroes the counter. The interrupted turn is not replayed — the agent picks up from the persisted state.
+On reconnect the Desktop marks the goal card **Interrupted** and offers a **Resume goal** action. That action runs `/goal recover` through the existing `goal.continue` control action: it takes the next step toward the same active goal **without resetting the turn budget**, unlike `/goal resume` (and its `/goal continue` and `/goal unpause` aliases), which unpauses the goal and zeroes the counter. Recovery refuses paused goals and exhausted budgets. The interrupted turn is not replayed — the agent picks up from the persisted state, retaining its completion contract, subgoals, and quality gates.
 
 To have the continuation fire automatically as soon as the app reconnects, opt in:
 

@@ -71,6 +71,7 @@ describe('message.reaction bridge session scope', () => {
     if (typeof updater !== 'function') {
       throw new Error('expected an updater function')
     }
+
     const optimistic = { id: 'm1', role: 'assistant', rowId: undefined }
     const next = updater([optimistic] as never)
 
@@ -86,6 +87,7 @@ describe('message.reaction bridge session scope', () => {
     if (typeof updater !== 'function') {
       throw new Error('expected an updater function')
     }
+
     const durable = { id: 'm1', role: 'assistant', rowId: 4242 }
     const optimistic = { id: 'm2', role: 'assistant', rowId: undefined }
     const next = updater([durable, optimistic] as never)

@@ -8,10 +8,13 @@ can still write the checkout, and must NOT leak into processes that outlive the 
   forks a detached gc/maintenance child that would inherit (POSIX) or outlive (Windows) the lock.
 * POSIX: the lock fd is inherited ONLY by git commands that mutate the worktree, index or refs
   locally (:data:`LOCAL_MUTATORS`, run with ``core.fsmonitor=false`` so no fsmonitor daemon
-  starts under them). Network/credential commands (fetch, ls-remote, credential) and readers run
-  without it: a ``git credential-cache--daemon`` they start never holds the checkout. A killed
-  fetch that leaves ``*.lock`` ref files is recovered by the stale-lock rules
-  (``gitlock.clear_stale_git_locks``).
+  starts under them, and with no credential helper). Network/credential commands (fetch,
+  ls-remote, credential) and readers run without it: a ``git credential-cache--daemon`` they
+  start never holds the checkout. A partial clone's mutator would lazily fetch the objects a move
+  needs as a child holding the fd (and start the daemon under it), so before a move the objects
+  are fetched without the fd and with the user's helpers (:func:`_prefetch_for_move`); a lazy
+  fetch the prefetch missed still runs, just without a helper. A killed fetch that leaves
+  ``*.lock`` ref files is recovered by the stale-lock rules (``gitlock.clear_stale_git_locks``).
 * Windows has no fd inheritance: while this process holds (or joined) the checkout lock, every
   child started here is created SUSPENDED, assigned to the update's kill-on-close job and only
   then resumed, so it and everything it spawns die with the lock owner. The Node build goes
@@ -19,8 +22,14 @@ can still write the checkout, and must NOT leak into processes that outlive the 
   wraps it in a stdlib launcher that joins the job before it starts node.
 
 Every updater git runner (``update_cmd._git_run``, ``update_cmd_git._git_run``,
-``update_cmd_stash``, ``update_cmd_check``, ``gitlock``, ``update_cmd_commit``) calls
-:func:`run_git`; nothing else spawns updater git.
+``update_cmd_stash``, ``update_cmd_check``, ``gitlock``, ``update_cmd_commit``,
+``_early_recovery``'s restore) calls :func:`run_git`. One exception keeps its own runner: the
+lazy-fetch pack fold (``gitlock.consolidate_lazy_fetch_packs``) needs ``bounded_probe_run``'s
+tree-kill on timeout, so it takes the same custody through :func:`spawn_kwargs` (``gc`` writes
+packed refs: it is a local mutator and holds the fd, with its repack/pack-objects children).
+Not covered, on purpose: the read-only release/check readers (``source_releases``,
+``source_check``: ``ls-remote``, ``cherry``, ``rev-parse``) run their own probes; they never get
+the lock fd and write nothing, so they cannot leak or outlive custody of the checkout.
 """
 
 from __future__ import annotations
@@ -36,16 +45,23 @@ logger = logging.getLogger(__name__)
 # No detached child: `git gc --auto` / `maintenance run --auto --detach` would otherwise fork a
 # daemonized repack after any command that writes objects (commit, merge, fetch, stash).
 GIT_NO_DETACH = ("-c", "gc.autoDetach=false", "-c", "maintenance.auto=false")
-# Local mutators only (they hold the lock fd): never start an fsmonitor daemon under it.
-_MUTATOR_CONFIG = ("-c", "core.fsmonitor=false")
+# Local mutators only (they hold the lock fd): never start an fsmonitor daemon under it, and no
+# credential helper — a promisor lazy fetch under a mutator would start `git
+# credential-cache--daemon` holding the fd for its lifetime (900 s by default, m3).
+_MUTATOR_CONFIG = ("-c", "core.fsmonitor=false", "-c", "credential.helper=")
 
 # git subcommands that write the worktree, the index or refs on THIS machine. Only these inherit
 # the checkout lock fd: if the updater dies mid-command, the checkout stays locked until git exits.
+# No `pull` (fetch + merge: its network half must not hold the fd; the updater fetches, then
+# merges). `gc` packs refs (and its repack writes the object store).
 LOCAL_MUTATORS = frozenset({
-    "add", "am", "apply", "checkout", "checkout-index", "cherry-pick", "clean", "commit", "merge",
-    "mv", "pull", "read-tree", "rebase", "reset", "restore", "revert", "rm", "stash", "switch",
+    "add", "am", "apply", "checkout", "checkout-index", "cherry-pick", "clean", "commit", "gc",
+    "merge", "mv", "read-tree", "rebase", "reset", "restore", "revert", "rm", "stash", "switch",
     "update-index", "update-ref", "symbolic-ref", "tag", "branch", "worktree",
 })
+# Mutators that move the checkout to another commit: what they read from a promisor remote is
+# fetched first, without the fd (_prefetch_for_move).
+_MOVES = frozenset({"checkout", "merge", "read-tree", "reset", "switch"})
 
 # Global options before the subcommand that take a separate value argument.
 _GLOBAL_WITH_VALUE = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path",
@@ -193,7 +209,73 @@ def run_git(git_cmd: Sequence[str], args: Sequence[str], **kwargs) -> subprocess
     """THE updater git runner: custody config in argv, the lock fd only into local mutators,
     Windows job binding inside an update. ``kwargs`` are ``subprocess.run``'s."""
     argv = git_argv(git_cmd, args)
-    return run(argv, inherit_lock=is_local_mutator(argv[1:]), **kwargs)
+    mutator = is_local_mutator(argv[1:])
+    if mutator:
+        _prefetch_for_move(list(git_cmd), list(args), kwargs)
+    return run(argv, inherit_lock=mutator, **kwargs)
+
+
+def spawn_kwargs(args: Sequence[str]) -> dict:
+    """The Popen kwargs :func:`run_git` would give a git child (``args`` = its argv after the
+    executable, custody config included): the lock fd for a local mutator, else the Linux
+    parent-death signal. For a runner that needs its own Popen (the bounded gc fold)."""
+    return _custody_kwargs(is_local_mutator(args), {})
+
+
+def _partial_clone(git_cmd: Sequence[str], kwargs: dict) -> bool:
+    """The repository has a promisor remote (``extensions.partialClone``), read from disk."""
+    from pathlib import Path
+
+    from hermes_cli.update_lock import _git_common_dir
+
+    cwd = kwargs.get("cwd")
+    for flag, value in zip(git_cmd, git_cmd[1:]):
+        if flag == "-C":
+            cwd = Path(cwd or ".") / value
+    common = _git_common_dir(Path(cwd or "."))
+    try:
+        return common is not None and "partialclone" in \
+            (common / "config").read_text(encoding="utf-8-sig", errors="replace").lower()
+    except OSError:
+        return False
+
+
+def _prefetch_for_move(git_cmd: list[str], args: list[str], kwargs: dict) -> None:
+    """Partial clones: fetch what a move to another commit will read — the target's changed trees
+    and blobs — WITHOUT the lock fd and with the user's credential helpers, so the mutator (which
+    has neither helper nor reason to fetch) never starts a lazy fetch or a credential daemon under
+    the fd (m3). ``git diff HEAD <target>`` reads exactly the trees and blobs that differ from the
+    checked-out tree; the rest is local. Best effort: a miss only leaves a helper-less lazy fetch."""
+    sub = git_subcommand(args)
+    if sub not in _MOVES or not _partial_clone(git_cmd, kwargs):
+        return
+    common = {key: kwargs[key] for key in ("cwd", "env") if key in kwargs}
+
+    def resolve(*query: str, stdin: str | None = None) -> str | None:
+        out = run(git_argv(git_cmd, list(query)), capture_output=True, text=True, encoding="utf-8",
+                  errors="replace", input=stdin, **({} if stdin is not None else {"stdin": subprocess.DEVNULL}),
+                  **common)
+        return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else None
+
+    try:
+        targets = []
+        for arg in args[args.index(sub) + 1:]:
+            if arg == "--":
+                break
+            if not arg.startswith("-"):
+                targets.append(resolve("rev-parse", "--verify", "-q", f"{arg}^{{commit}}"))
+        targets = [target for target in dict.fromkeys(targets) if target]
+        if not targets:
+            return
+        # An unborn HEAD (a fresh clone) has nothing checked out: diff from the empty tree.
+        base = resolve("rev-parse", "--verify", "-q", "HEAD^{commit}") \
+            or resolve("hash-object", "-t", "tree", "--stdin", stdin="")
+        for target in targets:
+            if base and target != base:
+                run(git_argv(git_cmd, ["diff", "--binary", "--no-ext-diff", "--no-textconv", base, target]),
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **common)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        logger.debug("Could not prefetch the objects for git %s: %s", sub, exc)
 
 
 # A stdlib launcher for children whose Popen the updater never sees (``run_contained``): it

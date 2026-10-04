@@ -195,3 +195,74 @@ def test_a_refused_build_join_is_logged_and_noted_in_the_receipt(tmp_path, monke
     empty = tmp_path / "joined.txt"
     empty.write_text("", encoding="utf-8")
     assert update_custody._report_refused_join(str(empty), ["node"]) is None  # joined: silent
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc fd listing")
+def test_a_partial_clone_move_never_fetches_under_the_lock_fd(repo, tmp_path, monkeypatch):
+    """m3: installer checkouts are partial clones, so `reset --hard <target>` used to fetch the
+    target's missing objects itself — as a descendant holding the lock fd, with the user's
+    credential helper (a `git credential-cache--daemon` then held the checkout for 900 s). The
+    objects are fetched first without the fd; the mutator runs with no helper and fetches nothing."""
+    recorder = tmp_path / "recorder.sh"
+    recorder.write_text(_RECORDER, encoding="utf-8")
+    recorder.chmod(0o755)
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(repo), str(origin)], check=True, env=_env(tmp_path))
+    _git(origin, "config", "uploadpack.allowFilter", "true")
+    _git(origin, "config", "uploadpack.allowAnySHA1InWant", "true")
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", "--filter=blob:none", f"file://{origin}", str(clone)],
+                   check=True, env=_env(tmp_path))
+    (repo / "new.txt").write_text("only on the remote\n", encoding="utf-8")
+    _git(repo, "add", "new.txt")
+    _git(repo, "commit", "-qm", "two")
+    _git(repo, "push", "-q", str(origin), "main")
+    _git(clone, "fetch", "-q", "origin")
+    _git(clone, "config", "remote.origin.uploadpack", f"{recorder} git-upload-pack")
+    missing = [o for o in _git(clone, "rev-list", "--objects", "--missing=print", "origin/main").split() if o[0] == "?"]
+    assert missing, "fixture: the new blob must be missing locally"
+    out = tmp_path / "upload-pack.out"
+    monkeypatch.setenv("HERMES_TEST_LOCK", os.path.realpath(ul.checkout_lock_path(clone)))
+    monkeypatch.setenv("HERMES_TEST_OUT", str(out))
+
+    from hermes_cli.update_custody import run_git
+
+    lock = ul.UpdateLock(path=tmp_path / "marker", install_root=clone)
+    assert lock.acquire()
+    try:
+        moved = run_git(["git"], ["reset", "--hard", "origin/main"], cwd=clone, capture_output=True, text=True)
+        assert moved.returncode == 0, moved.stderr
+    finally:
+        lock.release()
+    assert (clone / "new.txt").read_text(encoding="utf-8-sig") == "only on the remote\n"
+    served = out.read_text(encoding="utf-8-sig").split()
+    assert served and "yes" not in served, f"an upload-pack (a lazy fetch) ran holding the checkout lock: {served}"
+    assert "credential.helper=" in moved.args, moved.args
+
+
+def test_the_gc_fold_runs_in_checkout_custody(repo, tmp_path):
+    """m4: the lazy-fetch pack fold (`gc --auto`, which packs refs) ran outside custody: no lock
+    fd, no death signal, so it outlived a killed owner and repacked under the next one. It is a
+    local mutator now and its bounded runner passes run_git's custody (POSIX: the lock fd, which
+    its repack/pack-objects children inherit). `pull` is gone: its network half must not hold it."""
+    from hermes_cli._subprocess_compat import bounded_probe_run
+    from hermes_cli.update_custody import LOCAL_MUTATORS, git_argv, spawn_kwargs
+
+    assert "pull" not in LOCAL_MUTATORS
+    argv = git_argv(["git"], ["-c", "gc.writeCommitGraph=false", "gc", "--auto"])
+    lock = ul.UpdateLock(path=tmp_path / "marker", install_root=repo)
+    assert lock.acquire()
+    try:
+        custody = spawn_kwargs(argv[1:])
+        if sys.platform == "win32":
+            return  # the bounded runner's own kill-on-close job: dies with the owner
+        lock_path = os.path.realpath(ul.checkout_lock_path(repo))
+        probe = ("import os, sys\n"
+                 "print(any(os.path.realpath(f'/proc/self/fd/{fd}') == sys.argv[1]\n"
+                 "          for fd in os.listdir('/proc/self/fd')))")
+        held = bounded_probe_run([sys.executable, "-c", probe, lock_path], timeout=30, popen_kwargs=custody)
+    finally:
+        lock.release()
+    assert custody.get("pass_fds"), f"gc gets no lock fd: {custody}"
+    if Path("/proc/self/fd").is_dir():
+        assert held is not None and held.stdout.strip() == "True", held

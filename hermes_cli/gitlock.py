@@ -19,7 +19,7 @@ from hermes_cli._subprocess_compat import (
     noninteractive_git_env,
     windows_hide_flags,
 )
-from hermes_cli.update_custody import git_argv, run_git
+from hermes_cli.update_custody import git_argv, run_git, spawn_kwargs
 
 logger = logging.getLogger(__name__)
 

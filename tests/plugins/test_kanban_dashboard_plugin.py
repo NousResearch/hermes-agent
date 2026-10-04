@@ -1198,3 +1198,30 @@ def test_nudge_does_not_warn_when_triage_is_manual(client, kanban_home):
     nudge = client.post("/api/plugins/kanban/dispatch")
     assert nudge.status_code == 200, nudge.text
     assert "warning" not in nudge.json()
+
+
+def test_nudge_warning_survives_the_board_refresh():
+    """Regression: the nudge warning was set, then loadBoard() cleared it.
+
+    ``onNudgeDispatch`` sets the dispatcher's triage warning and immediately calls
+    ``loadBoard()``, whose success handler ends in ``setError(null)`` — the only
+    one in the bundle. The board fetch is a network round trip, so it always
+    resolved after the warning was set and the warning never rendered. This cannot
+    be a Python test of the bundle's runtime, so it pins the two edits that fix it.
+    """
+    from pathlib import Path
+
+    bundle = (Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text()
+
+    # loadBoard takes a keepError flag and honours it instead of unconditionally clearing.
+    assert "const loadBoard = useCallback((keepError) => {" in bundle, \
+        "loadBoard must accept a keepError argument"
+    assert "if (!keepError) setError(null);" in bundle, \
+        "loadBoard must not clear an error the caller just set"
+
+    # The nudge passes that flag. Ordering is not the fix: loadBoard's success
+    # handler runs in a later microtask, so setError(warning) wins regardless —
+    # what matters is that the refresh is told not to clear it.
+    nudge = bundle[bundle.index("onNudgeDispatch:"):][:600]
+    assert "loadBoard(!!warning)" in nudge, "the nudge must preserve its own warning"
+    assert "if (warning) setError(warning);" in nudge, "the nudge must still surface the warning"

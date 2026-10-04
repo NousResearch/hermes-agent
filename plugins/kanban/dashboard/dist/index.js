@@ -685,7 +685,11 @@
     }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
     // --- fetch full board ---------------------------------------------------
-    const loadBoard = useCallback(() => {
+    // keepError: don't clear an error the caller just set. A nudge sets the
+    // dispatcher's triage warning and then refreshes the board; without this the
+    // board fetch's own setError(null) wipes the warning before anyone sees it
+    // (and the fetch is a round trip, so it always wins the race).
+    const loadBoard = useCallback((keepError) => {
       const qs = new URLSearchParams();
       if (tenantFilter) qs.set("tenant", tenantFilter);
       if (includeArchived) qs.set("include_archived", "true");
@@ -694,7 +698,7 @@
         .then(function (data) {
           setBoardData(data);
           cursorRef.current = data.latest_event_id || 0;
-          setError(null);
+          if (!keepError) setError(null);
         })
         .catch(function (err) {
           setError(String(err && err.message ? err.message : err));
@@ -1322,8 +1326,10 @@
             SDK.fetchJSON(withBoard(`${API}/dispatch?max=8`, board), { method: "POST" })
               .then(function (res) {
                 // Triage tasks need the gateway's auto-decomposer; say so when it is absent.
-                if (res && res.warning) setError(res.warning);
-                loadBoard();
+                // Keep the error through the refresh below, or the board fetch clears it.
+                var warning = res && res.warning ? res.warning : null;
+                loadBoard(!!warning);
+                if (warning) setError(warning);
               })
               .catch(function (e) { setError(String(e.message || e)); });
           },

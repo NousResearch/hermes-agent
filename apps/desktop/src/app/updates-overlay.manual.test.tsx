@@ -154,6 +154,20 @@ it('keeps the install actions in a non-scrolling footer below the changelog scro
   expect(scrollArea).toBeTruthy()
   expect(scrollArea?.className).toContain('overflow-y-auto')
 
+  // The footer's pinning rests on utility classes across three elements, and the
+  // footer only holds if the merged body class actually resolves to a flex column —
+  // tailwind-merge lets the shell's `grid` win when the override drops `flex`. Assert
+  // the merged class strings (jsdom has no layout engine, so these are the honest
+  // ceiling): the body must be a flex column, and both the wrapper and the scroll
+  // area must carry `flex-1`, or the footer has no flex context to divide (#128170).
+  const body = overlay.firstElementChild as HTMLElement
+  expect(body.className).toContain('flex')
+  expect(body.className).toContain('flex-col')
+  expect(body.className).not.toContain('grid ')
+  const wrapper = scrollArea?.parentElement as HTMLElement
+  expect(wrapper.className).toContain('flex-1')
+  expect(scrollArea?.className).toContain('flex-1')
+
   // The actions sit in their own pinned footer, outside the scrolling box, so
   // a long changelog can never push them below the fold (#128170).
   const footer = overlay.querySelector('[data-slot="update-actions"]')

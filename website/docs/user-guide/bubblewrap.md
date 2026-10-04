@@ -78,7 +78,9 @@ your home directory and shows only what is on an allowlist.
 - **Dot entries** (`~/.pgpass`, `~/.mozilla`, `~/.zz-some-tool`) do not
   exist inside the sandbox unless they are allowed. An allowed dot entry
   is read-only, always: a command cannot edit `~/.bashrc` or
-  `~/.gitconfig`, which would run code in your own shells later.
+  `~/.gitconfig`, which would run code in your own shells later. (An
+  entry that is a symlink is the exception: see
+  [Dot entries that are symlinks](#dot-entries-that-are-symlinks).)
 - **`~/.config`, `~/.local` and `~/.local/share`** follow the same rule
   one level down: only an allowed child is visible. They hold one
   directory per application, and many of those keep a login session.
@@ -138,38 +140,19 @@ its target, resolved when the backend starts.
 
 ### Dot entries that are symlinks
 
-Your shells read `~/.bashrc` wherever it points. When it is a link into a
-directory a command can write to (`~/dotfiles` with the home directory as
-the working directory), a command that changed the target would run code
-in your next login. So the backend reads the chain of every dot symlink
-at the top of the home directory once, when it starts, whether the entry
-is on the allowlist or not, and keeps what a command could write to
-read-only:
+A dot entry that is a symlink cannot be removed or replaced from inside
+the sandbox: the top of the home directory is read-only. What it points
+at is not protected. If `~/.bashrc` is a link into `~/dotfiles`, and the
+working directory (or a read-write bind) makes `~/dotfiles` writable, a
+command can change the file your next login shell reads. The same holds
+for any dot entry your shells or desktop read at startup.
 
-- the file or directory the chain ends at;
-- the directory that holds a middle link of a longer chain
-  (`~/.bashrc -> dotfiles/bashrc -> sub/bashrc` makes `~/dotfiles`
-  read-only as a whole), because a link cannot be protected on its own.
-  A working directory inside such a directory is read-only, and Hermes
-  logs a warning that says which directory causes it;
-- the directory a missing target would be created in.
-
-The rest of the directory stays writable. The backend refuses to start,
-with a message that names the entry and the path, when a chain passes
-through a place it cannot hold read-only:
-
-- a directory that contains the home directory, while the working
-  directory makes it writable;
-- the Hermes scratch directory or the profile home;
-- a read-write entry of `bubblewrap_binds` whose `dest` differs from its
-  `src`;
-- any writable place, while a bind puts another directory over the home
-  directory.
-
-Use a project directory as the working directory, or bind the directory
-at its own path, to get past the refusal. The chains are read at start
-only: a link you create or change later is not protected until the
-backend starts again, which is the next Hermes session.
+Hermes logs a warning when the backend starts and names each dot symlink
+at the top of the home directory whose target a command can write to.
+The warning is a notice, not a protection. To keep such targets out of
+reach, use a project directory as the working directory instead of the
+home directory or the directory that holds your dotfiles. A plain dot
+entry (a `~/.bashrc` that is a file) is read-only in every case.
 
 The allowlist and the hidden set are fixed when the backend starts, so a
 command cannot widen them by changing `PATH`. The listing of the home

@@ -351,7 +351,6 @@ class TestConstructionTimeMounts:
         assert params == [
             "config", "initial_cwd", "state_dir", "home", "hermes_home", "tracked_cwd", "bwrap_path", "hidden_paths",
             "home_root", "home_allow", "scratch_dir", "staged_roots",
-            "readonly_paths",
         ]
 
     def test_chdir_follows_tracked_cwd_with_fixed_mounts(self, sandbox_root, work_dir):
@@ -1368,212 +1367,56 @@ class TestStagedRoots:
             env.cleanup()
 
 
-class TestLinkedDotEntryGuard:
-    """A dot entry that is a symlink is held read-only where a command reaches
-    its chain at its own host path, and refused where the backend cannot
-    hold it."""
+class TestWritableDotLinkWarning:
+    """The backend holds nothing at the target of a dot symlink. It names the
+    entries whose target a command can write to, once, at construction."""
 
     @pytest.fixture
-    def base(self, tmp_path):
-        base = tmp_path / "homes"
-        base.mkdir()
-        return base
-
-    @pytest.fixture
-    def fake_home(self, base, monkeypatch):
-        home = base / "home"
-        home.mkdir()
+    def fake_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "homes" / "home"
+        (home / "dotfiles").mkdir(parents=True)
+        (home / "dotfiles" / "bashrc").write_text("x")
+        (home / ".bashrc").symlink_to("dotfiles/bashrc")
+        (home / ".zz-real").mkdir()
+        (home / ".zz-link").symlink_to(".zz-real")
         monkeypatch.setenv("HOME", str(home))
         return home
 
-    def test_chain_through_a_writable_parent_of_home_is_refused(self, sandbox_root, base, fake_home):
-        (base / "proj").mkdir()
-        (base / "proj" / "real").write_text("x")
-        (base / "mid").symlink_to("proj/real")
-        (fake_home / ".bashrc").symlink_to("../mid")
-        with _no_session(), pytest.raises(ValueError) as exc:
-            BubblewrapEnvironment(cwd=str(base), timeout=10)
-        assert ".bashrc" in str(exc.value)
-        assert str(base) in str(exc.value)
-        assert "terminal.cwd" in str(exc.value)
-        assert not sandbox_root.exists() or not any(sandbox_root.iterdir())
-
-    def test_chain_through_a_parent_of_home_constructs_when_it_is_not_writable(self, sandbox_root, base, fake_home, work_dir):
-        (base / "proj").mkdir()
-        (base / "proj" / "real").write_text("x")
-        (base / "mid").symlink_to("proj/real")
-        (fake_home / ".bashrc").symlink_to("../mid")
-        with _no_session():
-            BubblewrapEnvironment(cwd=str(work_dir), timeout=10).cleanup()
-            BubblewrapEnvironment(cwd=str(base), timeout=10, config=BubblewrapConfig(profile="restricted")).cleanup()
-
-    @pytest.mark.parametrize("profile, refused", [("network", True), ("workspace", True), ("restricted", False)])
-    def test_chain_into_the_scratch_dir_is_refused_while_it_is_writable(self, sandbox_root, work_dir, fake_home, tmp_path, monkeypatch, profile, refused):
-        hermes_home = tmp_path / "hermes"
-        scratch = hermes_home / "cache" / "scratch"
-        scratch.mkdir(parents=True)
-        (scratch / "rc").write_text("x")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        (fake_home / ".bashrc").symlink_to(scratch / "rc")
-        config = BubblewrapConfig(profile=profile)
-        if refused:
-            with _no_session(), pytest.raises(ValueError, match="scratch") as exc:
-                BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
-            assert ".bashrc" in str(exc.value)
-        else:
-            with _no_session():
-                BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config).cleanup()
-
-    @pytest.mark.parametrize("mode, refused", [("profile", True), ("auto", False)])
-    def test_chain_into_the_profile_home_follows_home_mode(self, sandbox_root, work_dir, fake_home, tmp_path, monkeypatch, mode, refused):
-        hermes_home = tmp_path / "hermes"
-        (hermes_home / "home").mkdir(parents=True)
-        (hermes_home / "home" / "rc").write_text("x")
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        (fake_home / ".profile").symlink_to(hermes_home / "home" / "rc")
-        config = BubblewrapConfig(home_mode=mode)
-        if refused:
-            with _no_session(), pytest.raises(ValueError, match="profile home") as exc:
-                BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
-            assert ".profile" in str(exc.value)
-        else:
-            with _no_session():
-                BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config).cleanup()
-
-    def test_target_reached_through_a_bind_at_another_path_is_refused(self, sandbox_root, work_dir, fake_home, tmp_path):
-        shared = tmp_path / "shared"
-        shared.mkdir()
-        (shared / "gitconfig").write_text("x")
-        mnt = tmp_path / "mnt"
-        mnt.mkdir()
-        (fake_home / ".gitconfig").symlink_to(shared / "gitconfig")
-        config = BubblewrapConfig(binds=(BindMount(src=str(shared), dest=str(mnt), readonly=False),))
-        with _no_session(), pytest.raises(ValueError) as exc:
-            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
-        assert ".gitconfig" in str(exc.value)
-        assert str(shared) in str(exc.value)
-        assert "terminal.bubblewrap_binds" in str(exc.value)
-
-    def test_read_only_bind_at_another_path_is_not_refused(self, sandbox_root, work_dir, fake_home, tmp_path):
-        shared = tmp_path / "shared"
-        shared.mkdir()
-        (shared / "gitconfig").write_text("x")
-        mnt = tmp_path / "mnt"
-        mnt.mkdir()
-        (fake_home / ".gitconfig").symlink_to(shared / "gitconfig")
-        config = BubblewrapConfig(binds=(BindMount(src=str(shared), dest=str(mnt), readonly=True),))
-        with _no_session():
-            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config).cleanup()
-
-    def test_bind_that_replaces_home_with_a_writable_target_is_refused(self, sandbox_root, work_dir, fake_home, tmp_path):
-        other = tmp_path / "other-home"
-        other.mkdir()
-        (work_dir / "gitconfig").write_text("x")
-        (fake_home / ".gitconfig").symlink_to(work_dir / "gitconfig")
-        config = BubblewrapConfig(binds=(BindMount(src=str(other), dest=str(fake_home), readonly=True),))
-        with _no_session(), pytest.raises(ValueError) as exc:
-            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
-        assert ".gitconfig" in str(exc.value)
-
-    def test_bind_that_replaces_home_constructs_when_no_chain_part_is_writable(self, sandbox_root, work_dir, fake_home, tmp_path):
-        other = tmp_path / "other-home"
-        other.mkdir()
-        elsewhere = tmp_path / "elsewhere"
-        elsewhere.mkdir()
-        (elsewhere / "gitconfig").write_text("x")
-        (fake_home / ".gitconfig").symlink_to(elsewhere / "gitconfig")
-        config = BubblewrapConfig(binds=(BindMount(src=str(other), dest=str(fake_home), readonly=True),))
-        with _no_session():
-            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config).cleanup()
-
     @staticmethod
-    def _all_denied_present(home, prefix):
-        for rel in bubblewrap.SENSITIVE_HOME_PATHS:
-            if rel.startswith(prefix + "/"):
-                (home / rel).mkdir(parents=True)
+    def _warnings(caplog):
+        return [r.getMessage() for r in caplog.records if "does not protect a link target" in r.getMessage()]
 
-    def test_middle_link_in_a_default_deny_directory_under_the_cwd_is_held(self, sandbox_root, fake_home, tmp_path):
-        target = tmp_path / "ro" / "bashrc"
-        target.parent.mkdir()
-        target.write_text("x")
-        share = fake_home / ".local" / "share"
-        share.mkdir(parents=True)
-        self._all_denied_present(fake_home, ".local/share")
-        (share / "l").symlink_to(target)
-        (fake_home / ".bashrc").symlink_to(".local/share/l")
-        with _no_session():
-            env = BubblewrapEnvironment(cwd=str(share), timeout=10)
-        try:
-            assert env._link_readonly == (str(share),)
-        finally:
-            env.cleanup()
+    def test_warns_once_and_names_the_entry_when_the_cwd_covers_the_target(self, sandbox_root, fake_home, caplog):
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
+            BubblewrapEnvironment(cwd=str(fake_home), timeout=10).cleanup()
+        messages = self._warnings(caplog)
+        assert len(messages) == 1
+        assert ".bashrc" in messages[0]
+        # A link to a dot entry of HOME is not writable through a cwd at HOME.
+        assert ".zz-link" not in messages[0]
 
-    def test_middle_link_in_a_default_deny_directory_under_a_bind_is_held(self, sandbox_root, work_dir, fake_home, tmp_path):
-        target = tmp_path / "ro" / "bashrc"
-        target.parent.mkdir()
-        target.write_text("x")
-        config_dir = fake_home / ".config"
-        config_dir.mkdir()
-        self._all_denied_present(fake_home, ".config")
-        (config_dir / "l").symlink_to(target)
-        (fake_home / ".bashrc").symlink_to(".config/l")
-        config = BubblewrapConfig(binds=(BindMount(src=str(config_dir), dest=str(config_dir), readonly=False),))
-        with _no_session():
-            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
-        try:
-            assert env._link_readonly == (str(config_dir),)
-        finally:
-            env.cleanup()
-
-    def test_absent_target_in_the_cwd_holds_the_directory_it_would_be_made_in(self, sandbox_root, work_dir, fake_home):
-        (fake_home / ".bashrc").symlink_to(work_dir / "bashrc")
-        with _no_session():
-            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
-        try:
-            assert env._link_readonly == (str(work_dir),)
-        finally:
-            env.cleanup()
-
-    def test_directory_target_that_holds_the_cwd_is_held(self, sandbox_root, work_dir, fake_home):
-        (work_dir / "vim" / "sub").mkdir(parents=True)
-        (fake_home / ".vim").symlink_to(work_dir / "vim")
-        with _no_session():
-            env = BubblewrapEnvironment(cwd=str(work_dir / "vim" / "sub"), timeout=10)
-        try:
-            assert env._link_readonly == (str(work_dir / "vim"),)
-        finally:
-            env.cleanup()
-
-    def test_directory_of_a_middle_link_above_the_cwd_is_not_held(self, sandbox_root, work_dir, fake_home, tmp_path):
-        # A command below that directory cannot change the link in it.
-        target = tmp_path / "ro" / "bashrc"
-        target.parent.mkdir()
-        target.write_text("x")
-        (work_dir / "sub").mkdir()
-        (work_dir / "l").symlink_to(target)
-        (fake_home / ".bashrc").symlink_to(work_dir / "l")
-        with _no_session():
-            env = BubblewrapEnvironment(cwd=str(work_dir / "sub"), timeout=10)
-        try:
-            assert env._link_readonly == ()
-        finally:
-            env.cleanup()
-
-    def test_held_parts_are_the_writable_ones_only(self, sandbox_root, fake_home):
+    def test_warns_for_a_target_in_a_read_write_bind(self, sandbox_root, work_dir, fake_home, caplog):
         dotfiles = fake_home / "dotfiles"
-        (dotfiles / "sub").mkdir(parents=True)
-        (dotfiles / "sub" / "bashrc").write_text("x")
-        (dotfiles / "bashrc").symlink_to("sub/bashrc")
-        (fake_home / ".bashrc").symlink_to("dotfiles/bashrc")
-        with _no_session():
-            inner = BubblewrapEnvironment(cwd=str(dotfiles / "sub"), timeout=10)
-            outer = BubblewrapEnvironment(cwd=str(dotfiles), timeout=10)
-        try:
-            assert inner._link_readonly == (str(dotfiles / "sub" / "bashrc"),)
-            assert outer._link_readonly == (str(dotfiles), str(dotfiles / "sub" / "bashrc"))
-        finally:
-            inner.cleanup()
-            outer.cleanup()
+        config = BubblewrapConfig(binds=(BindMount(src=str(dotfiles), dest=str(dotfiles), readonly=False),))
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
+            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config).cleanup()
+        assert len(self._warnings(caplog)) == 1
+
+    @pytest.mark.parametrize("profile", ["restricted", "network"])
+    def test_silent_when_no_target_is_writable(self, sandbox_root, work_dir, fake_home, caplog, profile):
+        cwd = fake_home if profile == "restricted" else work_dir
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
+            BubblewrapEnvironment(cwd=str(cwd), timeout=10, config=BubblewrapConfig(profile=profile)).cleanup()
+        assert self._warnings(caplog) == []
+
+    def test_backend_has_no_chain_walk_and_no_hold_of_link_targets(self):
+        from tools.environments import bubblewrap_home
+
+        for module in (bubblewrap, bubblewrap_home):
+            source = inspect.getsource(module)
+            assert "readonly_paths" not in source
+            assert "link_protection" not in source
+            assert "_link_chain" not in source
 
 
 class TestMaskedCwdRecovery:

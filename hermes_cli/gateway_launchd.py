@@ -7,6 +7,7 @@ intercepting the moved code.
 from __future__ import annotations
 
 from pathlib import Path
+import ast
 import contextlib
 import json
 import os
@@ -15,6 +16,7 @@ import shlex
 import subprocess
 import sys
 import time
+from html import unescape
 from xml.sax.saxutils import escape
 
 
@@ -348,7 +350,75 @@ def _launchd_degrade_or_raise(exc: subprocess.CalledProcessError, what: str) -> 
     _launchd_fallback_to_detached(f"{what} exit {exc.returncode}")
 
 
-_LAUNCHER_IN_DEFINITION_RE = re.compile(r"exec (?P<launcher>\S*?/\.hermes/bin/hermes)")
+#: ``ProgramArguments`` carries a shell command inside a JXA wrapper (``$.system(<JSON string>)``),
+#: XML-escaped on the way into the plist, so the code root a definition will run is recoverable from
+#: its text without parsing the plist. The exec'd program is either the store-Python launcher --
+#: ``exec <root>/.hermes/bin/hermes``, ``shlex.join``-quoted when the path has a space -- or, on an
+#: externally owned runtime (Nix, a developer venv), a ``python -I -c`` bootstrap that names its root
+#: only through the ``sys.path`` entry it prepends.
+_EXEC_SHELL_RE = re.compile(r"\$\.system\(\s*(?P<argument>\"(?:[^\"\\]|\\.)*\")")
+_LAUNCHER_PATH_SUFFIX = "/.hermes/bin/hermes"
+_BOOTSTRAP_ROOT_IN_CODE_RE = re.compile(
+    r"sys\.path\.insert\(\s*0\s*,\s*(?P<literal>'[^']*'|\"[^\"]*\")\s*\)"
+)
+
+
+class UnviableLauncherRootError(RuntimeError):
+    """A service definition was refused: its code root cannot resolve its own dependencies."""
+
+
+def _definition_code_command(definition: str) -> str | None:
+    """The shell command a definition's wrapper runs, or None when it carries none.
+
+    Two escape layers sit between the plist text and the command -- XML entities from the plist and
+    the JSON string the JXA wrapper is built from -- so both come off before the command is read. That
+    is what makes the exec'd program legible: ``shlex.join`` had already quoted any argument holding a
+    space, and its quoting survives the encodings.
+    """
+    match = _EXEC_SHELL_RE.search(unescape(definition))
+    if match is None:
+        return None
+    try:
+        command = json.loads(match.group("argument"))
+    except ValueError:  # a malformed JSON string names no command
+        return None
+    return command if isinstance(command, str) else None
+
+
+def _bootstrap_code_root(words: list[str]) -> Path | None:
+    """The root a ``python -I -c`` bootstrap prepends to ``sys.path``, or None."""
+    for index, word in enumerate(words[:-1]):
+        if word != "-c":
+            continue
+        match = _BOOTSTRAP_ROOT_IN_CODE_RE.search(words[index + 1])
+        if match is None:
+            continue
+        with contextlib.suppress(SyntaxError, ValueError):
+            return Path(ast.literal_eval(match.group("literal")))
+    return None
+
+
+def installed_service_launcher_root(definition: str) -> Path | None:
+    """The code root an installed service definition will run, or None when it names none.
+
+    A store-Python install names the root as ``exec <root>/.hermes/bin/hermes …``; an externally owned
+    runtime (Nix, a developer venv) has no launcher path at all and names it only in the ``python -I
+    -c`` bootstrap it prepends to ``sys.path``. Both are read off the same decoded command, with shell
+    rules rather than a character-class regex, so a root like ``/Users/John Appleseed/…`` names itself
+    like any other instead of falling through as if it named none.
+    """
+    command = _definition_code_command(definition)
+    if command is None:
+        return None
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return None
+    if len(words) < 2 or words[0] != "exec":
+        return None
+    if words[1].endswith(_LAUNCHER_PATH_SUFFIX):
+        return Path(words[1]).parent.parent.parent
+    return _bootstrap_code_root(words)
 
 
 def launcher_root_is_viable(root: Path) -> bool:
@@ -382,7 +452,7 @@ def assert_launcher_root_is_viable(root: Path) -> None:
     """
     if launcher_root_is_viable(root):
         return
-    raise RuntimeError(
+    raise UnviableLauncherRootError(
         "refusing to write a service definition whose code root cannot resolve its dependencies: "
         f"{root}\n"
         '  A launcher at this root exits 1 with "no dependency environment is committed for this '
@@ -390,18 +460,6 @@ def assert_launcher_root_is_viable(root: Path) -> None:
         "  Write the definition from the install root that owns the install state instead, i.e.\n"
         "    <install root>/.hermes/bin/hermes gateway install --force"
     )
-
-
-def installed_service_launcher_root(definition: str) -> Path | None:
-    """The code root an installed service definition will run, or None when it names none.
-
-    ``ProgramArguments`` carries ``exec <root>/.hermes/bin/hermes ...`` inside the osascript string, so
-    the launcher path is recoverable from text without parsing the plist.
-    """
-    match = _LAUNCHER_IN_DEFINITION_RE.search(definition)
-    if match is None:
-        return None
-    return Path(match.group("launcher")).parent.parent.parent
 
 
 def generate_launchd_plist() -> str:
@@ -517,13 +575,22 @@ def generate_launchd_plist() -> str:
 
 
 def launchd_plist_is_current() -> bool:
-    """Check if the installed launchd plist matches the currently generated one."""
+    """Check if the installed launchd plist matches the currently generated one.
+
+    A read: a code root that cannot resolve its own dependencies has no definition to compare
+    against, and that is reported as not-current rather than raised, so callers that only ask
+    "does this need a rewrite?" get an answer instead of a traceback.
+    """
     plist_path = _gw().get_launchd_plist_path()
     if not plist_path.exists():
         return False
     installed = plist_path.read_text(encoding="utf-8-sig")
     norm = _gw()._normalize_launchd_plist_for_comparison
-    return norm(installed) == norm(_gw().generate_launchd_plist())
+    try:
+        generated = _gw().generate_launchd_plist()
+    except UnviableLauncherRootError:
+        return False
+    return norm(installed) == norm(generated)
 
 
 def _spawn_deferred_launchd_reload(
@@ -596,12 +663,19 @@ def _spawn_deferred_launchd_reload(
 
 def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed plist when the generated one differs, then bootout/bootstrap so launchd
-    re-reads it immediately."""
+    re-reads it immediately. False when there is nothing to do, and False without writing when this
+    code root cannot resolve its dependencies (see ``assert_launcher_root_is_viable``)."""
     plist_path = _gw().get_launchd_plist_path()
     if not plist_path.exists() or _gw().launchd_plist_is_current():
         return False
 
-    new_plist = _gw().generate_launchd_plist()
+    try:
+        new_plist = _gw().generate_launchd_plist()
+    except UnviableLauncherRootError as exc:
+        # Refusing the rewrite is the point — the previous definition is left untouched. Say so here,
+        # because this returns a bare bool that a caller would otherwise read as "nothing to do".
+        _gw().print_error(str(exc))
+        return False
     if _gw()._refuse_temp_home_service_write(new_plist, "launchd plist"):
         return False
 
@@ -947,7 +1021,16 @@ def wait_for_launchd_gateway_supervision(
         time.sleep(max(poll_interval, 0.01))
 
 
-def launchd_status(deep: bool = False):
+def launchd_status(deep: bool = False) -> bool:
+    """Print the launchd service status; return whether the installed definition is usable.
+
+    A definition that names a DIFFERENT code root is named as such rather than reported as matching.
+    The verdict is as strong as what the definition exposes: a store-Python install names its root
+    with ``exec <root>/.hermes/bin/hermes``, an external runtime with the ``sys.path`` root its
+    bootstrap prepends (both read by ``installed_service_launcher_root``); a definition that names
+    neither falls back to the exact plist-text comparison. The return value is what a scripted caller
+    reads — a stale or mismatched definition is not-ok, not exit 0.
+    """
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
     try:
@@ -989,6 +1072,7 @@ def launchd_status(deep: bool = False):
         service_definition_ok = True
     else:
         print("⚠ Service definition is stale relative to the current Hermes install")
+        print("  Run: hermes gateway start")
         service_definition_ok = False
 
     if not service_listed:
@@ -1024,3 +1108,5 @@ def launchd_status(deep: bool = False):
             print()
             print("Recent logs:")
             subprocess.run(["tail", "-20", str(log_file)], timeout=10)
+
+    return service_definition_ok

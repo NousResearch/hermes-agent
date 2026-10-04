@@ -1,8 +1,9 @@
-"""User-facing copy for ``hermes gateway start/stop/restart`` failures on systemd hosts.
+"""User-facing copy for ``hermes gateway install/start/stop/restart`` failures.
 
 ``hermes_cli/gateway.py`` is a facade; this sibling owns the small exception -> guidance table so
-the most common Linux service failures (``systemctl`` exited non-zero, or there is no ``systemctl``
-at all) end as a next step instead of a traceback.
+the most common service failures (``systemctl`` exited non-zero, there is no ``systemctl`` at all,
+or a definition was refused because the code root it would run cannot resolve its dependencies) end
+as a next step instead of a traceback.
 """
 
 from __future__ import annotations
@@ -15,6 +16,15 @@ class SystemctlUnavailableError(RuntimeError):
 
     def __init__(self) -> None:
         super().__init__("systemctl is not available on this system")
+
+
+def _unviable_launcher_root_lines(exc: BaseException) -> list[str] | None:
+    """The refusal message already carries the why and the repair; add only the outcome."""
+    from hermes_cli.gateway_launchd import UnviableLauncherRootError
+
+    if not isinstance(exc, UnviableLauncherRootError):
+        return None
+    return [*str(exc).splitlines(), "  The installed service definition was left unchanged."]
 
 
 _JOURNAL_HINT = 'journalctl --user -u hermes-gateway --since "5 min ago"'
@@ -40,10 +50,12 @@ def _verb_for(exc: subprocess.CalledProcessError) -> str:
 
 
 def explain_service_failure(exc: BaseException) -> list[str] | None:
-    """Lines to print for a systemd service failure escaping the gateway command, or None
-    when *exc* is not one this module knows how to explain (callers re-raise)."""
+    """Lines to print for a service failure escaping the gateway command, or None when *exc* is not
+    one this module knows how to explain (callers re-raise)."""
     if isinstance(exc, SystemctlUnavailableError):
         return list(_NO_SYSTEMCTL_LINES)
+    if (refusal := _unviable_launcher_root_lines(exc)) is not None:
+        return refusal
     if isinstance(exc, subprocess.CalledProcessError):
         lines = [line.format(verb=_verb_for(exc), journal=_JOURNAL_HINT) for line in _SYSTEMCTL_FAILED_LINES]
         lines.append(f"Details: {exc}")

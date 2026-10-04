@@ -1234,7 +1234,7 @@ class SessionStore(
     # restart-resume freshness gate (#85709).
     def switch_session(
         self, session_key: str, target_session_id: str, *, expected_session_id: Optional[str] = None,
-        preserve_prompt_pin: bool = True,
+        preserve_prompt_pin: bool = True, end_reason: str = "session_switch",
     ) -> Optional[SessionEntry]:
         """Point a session key at an existing session ID (``/resume``): ends the current row and
         reopens the target so resume matches the CLI.
@@ -1242,8 +1242,10 @@ class SessionStore(
         ``expected_session_id`` makes the repoint a compare-and-swap: ``None`` is returned when
         the key no longer points at that session, so a caller that resolved against a snapshot
         across an await (async-delegation re-pin) cannot overwrite a concurrent /new or /resume.
-        Prompt pins follow non-boundary repoints by default; /resume opts out explicitly because it
-        starts a different conversation on the same routing key.
+        ``end_reason`` defaults to the explicit ``session_switch`` boundary used by /resume; internal
+        compression-tip healing passes ``compression`` so late completions follow the verified lineage
+        instead of being mistaken for a user reset. Prompt pins follow non-boundary repoints by default;
+        /resume opts out explicitly because it starts a different conversation on the same routing key.
         """
         with self._lock:
             old_entry = self._entry_locked(session_key)
@@ -1268,7 +1270,7 @@ class SessionStore(
 
         if self._db_for_key(session_key) and old_entry.session_id:
             self._promote_session_reset(
-                session_key, old_entry.session_id, "session_switch",
+                session_key, old_entry.session_id, end_reason,
                 log=lambda e: logger.debug("Session DB end_session failed: %s", e),
             )
         if self._db_for_key(session_key):

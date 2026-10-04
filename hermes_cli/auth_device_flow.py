@@ -321,11 +321,15 @@ def _poll_device_token_generic(
     """RFC 8628 device-code polling loop shared by the Nous and xAI flows.
 
     ``authorization_pending`` sleeps and retries; ``slow_down`` grows the interval by 1s (cap 30s).
-    Every other error, a non-JSON error body, and the deadline become provider-specific exceptions
-    via the supplied factories so each caller keeps its exact error contract.
+    A non-JSON 408/429/5xx, or a 403 carrying ``x-vercel-mitigated`` (edge/WAF mitigation, never a
+    real OAuth error), backs off — honoring ``Retry-After``, capped at 60s and at the device-code
+    deadline — instead of aborting a login the user may still be approving. Every other error, a
+    non-JSON error body, and the deadline become provider-specific exceptions via the supplied
+    factories so each caller keeps its exact error contract.
     """
     deadline = time.monotonic() + max(1, expires_in)
     current_interval = poll_interval
+    edge_backoff = 0.0  # kept apart from current_interval so slow_down/pending pacing is untouched
     while time.monotonic() < deadline:
         response = post()
         if response.status_code == 200:
@@ -335,8 +339,21 @@ def _poll_device_token_generic(
         try:
             error_payload = response.json()
         except Exception:
+            status = response.status_code
+            # Edge/WAF mitigation: back off and keep polling until the device code expires.
+            if status in {408, 429} or status >= 500 or (
+                    status == 403 and response.headers.get("x-vercel-mitigated")):
+                from agent.retry_utils import parse_retry_after_seconds
+                retry_after = parse_retry_after_seconds(response.headers)
+                if retry_after is not None:
+                    edge_backoff = min(max(current_interval, retry_after), 60)
+                else:
+                    edge_backoff = min(max(edge_backoff * 2, current_interval * 2, 5), 60)
+                time.sleep(max(0.0, min(edge_backoff, deadline - time.monotonic())))
+                continue
             response.raise_for_status()
             raise on_non_json_error(response)
+        edge_backoff = 0.0
         error_code = str(error_payload.get("error") or "")
         if error_code == "authorization_pending":
             time.sleep(current_interval)
@@ -358,9 +375,11 @@ def _poll_for_token(
             raise ValueError("Token response did not include access_token")
 
     def _error(_response, error_payload) -> Exception:
-        error_code = error_payload.get("error", "")
-        description = error_payload.get("error_description") or "Unknown authentication error"
-        return RuntimeError(f"{error_code}: {description}")
+        # Plain copy per OAuth error code; the raw ``code: description`` stays on a Details line.
+        from hermes_cli.auth_error_copy import device_flow_error
+        return device_flow_error(
+            str(error_payload.get("error", "") or ""),
+            str(error_payload.get("error_description") or "Unknown authentication error"))
 
     return _poll_device_token_generic(
         lambda: client.post(

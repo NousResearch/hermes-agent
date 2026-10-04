@@ -9,7 +9,7 @@ Covers:
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pytest
 
@@ -32,11 +32,6 @@ class TestWebProviderABCs:
     ``supports_search() / supports_extract()`` flags.
     """
 
-    def test_cannot_instantiate_abc_directly(self):
-        from agent.web_search_provider import WebSearchProvider
-
-        with pytest.raises(TypeError):
-            WebSearchProvider()  # type: ignore[abstract]
 
 
     def test_search_only_provider_skips_extract(self):

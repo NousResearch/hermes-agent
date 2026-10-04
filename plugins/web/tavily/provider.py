@@ -57,13 +57,13 @@ def _normalize_tavily_search_results(response: Dict[str, Any]) -> Dict[str, Any]
     ])
 
 
-def _normalize_tavily_documents(response: Dict[str, Any], fallback_url: str = "") -> List[Dict[str, Any]]:
-    """Map ``/extract`` to documents; ``failed_results`` / ``failed_urls`` become ``error`` entries."""
+def _normalize_tavily_documents(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Map ``/extract`` to documents without attributing missing URLs to a request."""
     documents = [
-        document(r.get("url", fallback_url), r.get("title", ""), r.get("raw_content", "") or r.get("content", ""))
+        document(r.get("url", ""), r.get("title", ""), r.get("raw_content", "") or r.get("content", ""))
         for r in response.get("results", [])
     ]
-    documents += [_failed_document(f.get("url", fallback_url), f.get("error", "extraction failed")) for f in response.get("failed_results", [])]
+    documents += [_failed_document(f.get("url", ""), f.get("error", "extraction failed")) for f in response.get("failed_results", [])]
     documents += [_failed_document(str(u), "extraction failed") for u in response.get("failed_urls", [])]
     return documents
 
@@ -113,7 +113,7 @@ class TavilyWebSearchProvider(BaseWebSearchProvider):
                 return extract_fail(urls, missing)
             logger.info("Tavily %sextract: %d URL(s)", prefix, len(urls))
             raw = _tavily_request("extract", {"urls": urls, "include_images": False}, api_key=key)
-            return _normalize_tavily_documents(raw, fallback_url=urls[0] if urls else "")
+            return _normalize_tavily_documents(raw)
 
         return run_extract("Tavily", logger, urls, _body)
 
@@ -122,25 +122,3 @@ class TavilyWebSearchProvider(BaseWebSearchProvider):
             "Tavily", "free · key optional", "Search + extract. Opt-in keyless; set TAVILY_API_KEY for higher limits.",
             "TAVILY_API_KEY", "Tavily API key (optional — keyless works when Tavily is selected)", "https://app.tavily.com/home",
         )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'WebSearchProvider': ('agent.web_search_provider', 'WebSearchProvider'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

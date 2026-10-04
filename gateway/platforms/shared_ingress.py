@@ -24,6 +24,11 @@ logger = logging.getLogger(__name__)
 _WILDCARD_HOSTS = frozenset({"", "0.0.0.0", "::", "*"})
 
 
+def is_wildcard_host(host: Any) -> bool:
+    """True for the dual-stack default (None/"") and the per-family wildcards."""
+    return host is None or str(host).strip() in _WILDCARD_HOSTS
+
+
 def shared_ingress_profile(adapter: Any) -> Optional[str]:
     """Profile name when *adapter* was constructed in shared-listener mode, else None."""
     return getattr(adapter, "_shared_listener_profile", None) or None
@@ -31,7 +36,7 @@ def shared_ingress_profile(adapter: Any) -> Optional[str]:
 
 def listener_base_url(host: Any, port: Any) -> str:
     """``http://host:port`` clients use to reach a listener bound on ``host`` (wildcards → loopback)."""
-    host = "127.0.0.1" if host is None or str(host).strip() in _WILDCARD_HOSTS else str(host)
+    host = "127.0.0.1" if is_wildcard_host(host) else str(host)
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     return f"http://{host}:{port or 0}"

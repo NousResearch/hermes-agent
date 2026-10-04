@@ -162,9 +162,14 @@ export const uk: Translations = {
     deleteSelectedConfirmMessage:
       "Це назавжди видалить {count} вибраних сесій і всі їхні повідомлення. Цю дію неможливо скасувати.",
     selectedSessionsDeleted: "Видалено сесій: {count}",
+    selectedSessionsSkippedActive: "Видалено: {deleted}; залишено: {count}, бо хід ще виконується",
     failedToDeleteSelected: "Не вдалося видалити вибрані сесії",
     resumeInChat: "Продовжити в чаті",
     newChat: "Новий чат",
+    workspace: "робоча папка",
+    workspaceDefault: "За замовчуванням",
+    workspaceRescan: "Пересканувати репозиторії",
+    workspaceCustom: "Інший шлях…",
     previousPage: "Попередня сторінка",
     nextPage: "Наступна сторінка",
     roles: {
@@ -325,6 +330,8 @@ export const uk: Translations = {
     disableRuntime: "Вимкнути",
     enableAfterInstall: "Увімкнути після встановлення",
     enableRuntime: "Увімкнути",
+    toggleTakesEffectAfterRestart:
+      "Збережено — перезапустіть шлюз, щоб застосувати зміну.",
     forceReinstall: "Примусово перевстановити (спершу видалити наявну теку)",
     headline:
       "Знаходьте, встановлюйте, вмикайте та оновлюйте плагіни Hermes (паритет з `hermes plugins`).",

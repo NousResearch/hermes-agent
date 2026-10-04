@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
+_log = logging.getLogger(__name__)
+
 _PLUGINS_ROOT = Path(__file__).parent
 
 
@@ -39,16 +41,25 @@ def iter_plugin_dirs(root: Path) -> List[Path]:
     """Sorted child dirs of *root* that have an ``__init__.py`` (skips ``_``/``.`` names)."""
     if not root.is_dir():
         return []
-    return [child for child in sorted(root.iterdir())
-            if child.is_dir() and not child.name.startswith(("_", ".")) and (child / "__init__.py").exists()]
+    dirs: List[Path] = []
+    for child in sorted(root.iterdir()):
+        if child.name.startswith(("_", ".")):
+            continue
+        try:
+            if child.is_dir() and (child / "__init__.py").exists():
+                dirs.append(child)
+        except OSError as exc:  # one mode-000 / ACL-denied child must not abort the listing
+            _log.warning("Skipping unreadable plugin directory %s: %s", child, exc)
+    return dirs
 
 
 def read_plugin_description(plugin_dir: Path) -> str:
     """Return ``description`` from ``plugin.yaml`` (empty string if absent/unreadable)."""
     try:
-        import yaml
+        from utils import fast_safe_load
+
         with open(plugin_dir / "plugin.yaml", encoding="utf-8-sig") as f:
-            meta = yaml.safe_load(f) or {}
+            meta = fast_safe_load(f) or {}
         return meta.get("description", "")
     except Exception:
         return ""
@@ -88,6 +99,12 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
     init_file = plugin_dir / "__init__.py"
     if not init_file.exists():
         return None
+    if synthetic_namespace:  # user code: never imported in-process under plugins.isolation: host
+        from hermes_cli.plugin_isolation import in_process_import_refusal
+        refusal = in_process_import_refusal(f"plugin {plugin_dir.name!r} (loaded as {module_name})")
+        if refusal:
+            logger.warning("%s", refusal)
+            return None
     # A synthetic package shell has no __file__; only reuse modules loaded from disk.
     cached = sys.modules.get(module_name)
     if cached is not None and getattr(cached, "__file__", None):
@@ -110,6 +127,8 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
         sub_mod = _new_module(full_sub_name, sub_file)
         if _exec(sub_mod, logger):
             loaded_submodules.append((sub_file.stem, sub_mod))
+        else:
+            sys.modules.pop(full_sub_name, None)
     if not _exec(mod, logger):
         sys.modules.pop(module_name, None)
         return None

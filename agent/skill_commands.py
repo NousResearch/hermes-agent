@@ -11,14 +11,21 @@ from typing import Any, Dict, Optional
 from hermes_constants import display_hermes_home
 from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
+from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
 
 logger = logging.getLogger(__name__)
 
-_skill_commands: Dict[str, Dict[str, Any]] = {}
-_skill_commands_platform: Optional[str] = None
-_skill_commands_home: Optional[str] = None
-# Guards the (map, platform-tag, home-tag) triple so publication and the
-# freshness lookup always see a consistent snapshot. Scanning stays outside.
+# Multi-slot skill-command cache keyed by the full resolved identity
+# (_resolve_skill_commands_platform(), _resolve_skill_commands_home(),
+# _resolve_skill_commands_project()). The previous single-slot memo held ONE
+# (platform, home, project) triple; a Desktop serve process whose identity
+# flaps across requests (profile-home overrides, per-session project roots)
+# missed on every poll and rescanned the whole skills dir ~3x/5s, re-logging
+# the collision warnings each time (#104849). Each distinct identity is
+# scanned once and memoized; reload_skills() clears every slot. Guards
+# publication and the freshness lookup so a reader always sees a consistent
+# (key, map) pair. Scanning stays outside the lock (#14536, #74574).
+_skill_commands_by_key: Dict[tuple, Dict[str, Dict[str, Any]]] = {}
 _publish_lock = threading.Lock()
 # ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
 # instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
@@ -44,13 +51,28 @@ _BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
 # the single-skill and the bundle header ("work" / "/clean /work").
 _SKILL_NAME_RE = re.compile(re.escape(_SKILL_INVOCATION_PREFIX) + r'"([^"]*)"')
 
+# Gateway auto-load scaffold (gateway/run_turn.py ``_hmwa_auto_load_skills``): a channel-bound
+# skill prepended to the user's text on a NEW session. Unlike the invocation scaffolds above it
+# carries no instruction marker — the user's text simply follows the payload blocks — so the
+# describer strips the header + body and renders the typed request (session previews, titles).
+_AUTO_LOAD_PREFIX = '[IMPORTANT: The "'
+_AUTO_LOAD_SUFFIX_RE = re.compile(r'" skill is auto-loaded\. Follow its instructions for this session\.\]')
+# Closing sentence of the skill-directory footer note (see _SKILL_DIR_NOTE in this module):
+# the last thing in every built payload, so it marks where an auto-load payload ends and the
+# next payload or the user's typed text begins.
+_SKILL_DIR_NOTE_END = "then run them with the terminal tool using the absolute path."
+
 # SQL LIKE pattern for listing queries that recognize scaffolding before the row
 # reaches Python (no LIKE wildcards in the prefix, so no ESCAPE clause needed).
 SKILL_SCAFFOLD_SQL_LIKE = _SKILL_INVOCATION_PREFIX + "%"
+# Gateway auto-load scaffold (see _AUTO_LOAD_PREFIX): recognized by listing queries so
+# long auto-load rows get the same head+tail excerpt window and describe shaping.
+AUTO_LOAD_SCAFFOLD_SQL_LIKE = _AUTO_LOAD_PREFIX + "%"
 
 # Marks where a preview query joined the head and tail of a long scaffolded
 # message; ``describe_skill_invocation`` cuts there rather than show the body.
 SKILL_EXCERPT_JOINT = "\x1e"
+
 
 
 def slugify_skill_name(name: str) -> str:
@@ -93,12 +115,47 @@ def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
     return None
 
 
+def _describe_auto_loaded_skill_turn(content: str) -> Optional[str]:
+    """``[IMPORTANT: The "X" skill is auto-loaded. …]`` + payload(s) + typed text
+    -> the typed text.
+
+    ``_hmwa_auto_load_skills`` builds each payload with ``_build_skill_message``
+    (activation header, body, then the skill-directory footer note) and appends the
+    user's text as the final block. The footer's closing sentence is the reliable
+    payload-end marker: the user's text is what follows the LAST footer. A header
+    quoted inside a body (a skill embedding the scaffold in an example) carries no
+    footer, so it cannot end the payload early. ``/<skill>`` renders when no user
+    text follows, matching the single-skill describer's bare-invocation shape."""
+    if not content.startswith(_AUTO_LOAD_PREFIX):
+        return None
+    name_match = re.match(re.escape(_AUTO_LOAD_PREFIX) + r'([^"]*)"', content)
+    name = name_match.group(1) if name_match else ""
+    # The payload footer ends with this exact sentence (_build_skill_message); the
+    # user's text is the last thing after the FINAL footer in the message.
+    footer_end = content.rfind(_SKILL_DIR_NOTE_END)
+    if footer_end == -1:
+        return f"/{name}" if name else None
+    tail = content[footer_end + len(_SKILL_DIR_NOTE_END):]
+    if not tail.strip():
+        return f"/{name}" if name else None
+    return " ".join(tail.split()) or None
+
+
 def describe_skill_invocation(content: Any, separator: str = " — ") -> Optional[str]:
     """Render a slash-skill-expanded turn the way the user typed it:
     ``"/work — fix the title leak"``, ``"/work"`` for a bare invocation, or
     ``None`` when *content* is not scaffolding. ``separator=" "`` gives the
-    literal invocation as typed (chat transcripts)."""
-    if not isinstance(content, str) or not content.startswith(_SKILL_INVOCATION_PREFIX):
+    literal invocation as typed (chat transcripts).
+
+    A gateway auto-load scaffold (channel-bound skill on a new session) is also
+    scaffolding: the typed request follows the skill payload, so it renders as
+    that request — the header/body never reaches a preview or a title (#48359).
+    """
+    if not isinstance(content, str):
+        return None
+    if content.startswith(_AUTO_LOAD_PREFIX):
+        return _describe_auto_loaded_skill_turn(content)
+    if not content.startswith(_SKILL_INVOCATION_PREFIX):
         return None
     match = _SKILL_NAME_RE.match(content)
     name = (match.group(1) if match else "").strip()
@@ -152,6 +209,15 @@ def _resolve_skill_commands_home() -> str:
     return str(get_hermes_home())
 
 
+def _resolve_skill_commands_project() -> Optional[str]:
+    """The project root the scan's project skills resolve from (None outside a repo). One multi-session
+    host serves sessions in different repos; without this tag the first session's project skills stayed
+    published for every other session's ``get_skill_commands`` lookup (#114359)."""
+    from agent.skill_utils import find_project_root
+    root = find_project_root()
+    return str(root) if root is not None else None
+
+
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
     raw_identifier = (skill_identifier or "").strip()
@@ -178,6 +244,32 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         except Exception:
             skill_dir = None
     return loaded_skill, skill_dir, str(loaded_skill.get("name") or normalized)
+
+
+def ambiguous_skill_label(identifier: str, payload: dict) -> Optional[str]:
+    """``Ambiguous skill name X: use one of <paths>`` when a failed skill_view *payload* is a same-tier
+    name collision, else None — so preload/cron say why instead of "Unknown"/"not found"."""
+    load_names = payload.get("load_names") if isinstance(payload, dict) else None
+    return f"{AMBIGUOUS_SKILL_PREFIX}{identifier}: use one of {', '.join(load_names)}" if load_names else None
+
+
+def _missing_skill_label(identifier: str) -> str:
+    """Display form of an identifier that failed to load (failure path only: re-asks skill_view)."""
+    try:
+        from tools.skills_tool import skill_view
+        from agent.skill_utils import normalize_skill_lookup_name
+        payload = json.loads(skill_view(normalize_skill_lookup_name(identifier), preprocess=False))
+    except Exception:
+        return identifier
+    return ambiguous_skill_label(identifier, payload) or identifier
+
+
+def format_missing_skills(missing: list[str]) -> str:
+    """One error line for unresolved preload identifiers: ambiguous ones keep their own wording,
+    the rest are reported as ``Unknown skill(s): ...``."""
+    ambiguous = [m for m in missing if m.startswith(AMBIGUOUS_SKILL_PREFIX)]
+    unknown = [m for m in missing if m not in ambiguous]
+    return "; ".join(ambiguous + ([f"Unknown skill(s): {', '.join(unknown)}"] if unknown else []))
 
 
 def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None:
@@ -220,11 +312,13 @@ def _setup_note(loaded_skill: dict[str, Any]) -> Optional[str]:
 def _supporting_files(loaded_skill: dict[str, Any], skill_dir: Path | None) -> list[str]:
     """Skill-relative support file paths: from ``linked_files`` or a disk walk."""
     linked = (loaded_skill.get("linked_files") or {}).values()
-    supporting = [entry for entries in linked if isinstance(entries, list) for entry in entries]
+    supporting = [Path(entry).as_posix() for entries in linked if isinstance(entries, list) for entry in entries]
     if not supporting and skill_dir:
         for subdir in ("references", "templates", "scripts", "assets"):
             files = sorted((skill_dir / subdir).rglob("*"))
-            supporting += [str(f.relative_to(skill_dir)) for f in files if f.is_file() and not f.is_symlink()]
+            # as_posix so listed paths match the footer's examples (scripts/foo.js)
+            # on every OS — str(relative_to) emits backslashes on Windows.
+            supporting += [f.relative_to(skill_dir).as_posix() for f in files if f.is_file() and not f.is_symlink()]
     return supporting
 
 
@@ -323,17 +417,32 @@ def _scaffold_header(
     return "\n".join(lines)
 
 
-_SCAN_SKIP_PARTS = {'.git', '.github', '.hub', '.archive'}
+_SCAN_SKIP_PARTS = {'.git', '.github', '.hub', '.archive', '.locks'}
 
 
-def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]], resolve_command) -> None:
+def skill_command_collision_note(name: str) -> Optional[str]:
+    """User-facing note when *name*'s slash slug is a core command (name or alias), else None.
+
+    The single source of the collision predicate: ``scan_skill_commands`` uses it to skip
+    auto-registration (the shadowing guard from 370ebf2d3 — the skill map is consulted before
+    built-in handlers), and the ``/skills`` listing plus the command palette render the note so
+    the skipped skill is explained where the user looks, not only in the log.
+    """
+    from hermes_cli.commands import resolve_command
+    cmd_name = slugify_skill_name(name)
+    if not cmd_name or resolve_command(cmd_name) is None:
+        return None
+    return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
+
+
+def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]]) -> None:
     """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
-    from tools.skills_tool import _parse_frontmatter, skill_matches_platform, skill_matches_environment
+    from tools.skills_tool import _parse_frontmatter, skill_matches_apps, skill_matches_platform, skill_matches_environment
     if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
         return
-    frontmatter, body = _parse_frontmatter(skill_md.read_text(encoding='utf-8'))
+    frontmatter, body = _parse_frontmatter(skill_md.read_text(encoding='utf-8-sig'))
     # OS gate is hard; environment gate (kanban/docker/s6) is offer-time only.
-    if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
+    if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
         return
     name = frontmatter.get('name', skill_md.parent.name)
     if name in seen_names or name in disabled:
@@ -346,9 +455,9 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dic
     cmd_name = slugify_skill_name(name)
     if not cmd_name:
         return
-    # A collision with a core command (name or alias, via resolve_command) skips
-    # auto-registration; the skill stays loadable via /skill <name>.
-    if resolve_command(cmd_name) is not None:
+    # A collision with a core command (name or alias) skips auto-registration; the skill stays
+    # loadable via /skill <name>. The same predicate feeds the /skills + palette notes.
+    if skill_command_collision_note(name) is not None:
         logger.warning("Skill %r generates slash command '/%s' which collides with a core Hermes command; "
                        "skipping auto-registration. Use '/skill %s' instead.", name, cmd_name, name)
         return
@@ -368,9 +477,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Builds a local map and publishes once at the end: writing straight into the
     global exposed partial results to overlapping scans, which then logged
     bogus "already claimed" collisions against their own incumbents."""
-    global _skill_commands, _skill_commands_platform, _skill_commands_home
-    platform = _resolve_skill_commands_platform()
-    home = _resolve_skill_commands_home()
+    key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     # Build into a local map and publish once, at the end. Writing straight into the global made a scan's
     # partial results visible to everything else in the process: a second, overlapping scan deduped against
     # its own (empty) ``seen_names`` but collided against the first scan's already- published slugs, logging
@@ -378,60 +485,47 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     # (#74574).
     commands: Dict[str, Dict[str, Any]] = {}
     try:
-        from tools.skills_tool import _skills_dir, _get_disabled_skill_names
-        from agent.skill_utils import (
-            get_external_skills_dirs, get_project_skills_dirs, iter_project_skill_files, iter_skill_index_files,
-        )
-        from hermes_cli.commands import resolve_command
+        from tools.skills_tool import _get_disabled_skill_names, _skill_catalog
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
-        # Precedence: project (through the quarantine chokepoint) > local > external.
-        # Resolve the local dir at call time: import-time SKILLS_DIR is frozen to
-        # the launch home, but a multiplexed profile scope may have changed it.
-        # See #67277.
-        skills_dir = _skills_dir()
-        iters = [iter_project_skill_files(d) for d in get_project_skills_dirs()]
-        local = [skills_dir] if skills_dir.exists() else []
-        iters += [iter_skill_index_files(d, "SKILL.md") for d in local + get_external_skills_dirs()]
-        for _iter in iters:
-            for skill_md in _iter:
+        # Only names skill_view resolves to exactly this file get a /command: the shared catalog applies
+        # project > local > create_dir > external precedence (live profile dir, #67277) and leaves
+        # same-tier duplicates to their exact paths (`/skill a/one`), so a bare slug never guesses.
+        for entry in _skill_catalog():
+            if entry["status"] == "unique":
                 try:
-                    _scan_skill_md(skill_md, disabled, seen_names, commands, resolve_command)
+                    _scan_skill_md(Path(entry["path"]), disabled, seen_names, commands)
                 except Exception:
                     continue
     except Exception:
-        pass
-    # Publish map + tags as ONE step: a reader landing between bare assignments
-    # could accept the new map under a stale platform tag and serve another
-    # platform's disabled-skill view.
+        logger.debug("Skill command scan failed", exc_info=True)
+    # Publish the scanned map atomically: a reader must see a consistent
+    # (key, map) pair. Only the publish/lookup pair is locked; the scan above
+    # (file I/O, deferred imports) stays outside it (#14536, #74574).
     with _publish_lock:
-        # Bare assignments are not atomic together: a reader landing between them sees the NEW map still
-        # carrying the OLD platform tag, and if that stale tag happens to match its own platform it accepts
-        # the map without rescanning — serving another platform's disabled-skill view, exactly the leak
-        # #14536 closed. Only the publish/lookup pair is locked; the scan above (file I/O, deferred imports)
-        # stays outside it.
-        _skill_commands = commands
-        _skill_commands_platform = platform
-        _skill_commands_home = home
+        # Publishing under the lock keeps the (key, map) pair consistent for any
+        # reader between the lookup and this store (#14536, #74574); the scan above
+        # (file I/O, deferred imports) stays outside it.
+        _skill_commands_by_key[key] = commands
     return commands
 
 
 def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     """Return the current skill commands mapping (scan first if empty). Rescans
     when the platform scope (one gateway serving Telegram and Discord) or the
-    active profile's home (Desktop profile switch) changes, so each sees its
-    own ``platform_disabled`` / ``external_dirs`` view.
+    active profile's home (Desktop profile switch) or the session's project root (two sessions in two
+    repos) changes, so each sees its own ``platform_disabled`` / ``external_dirs`` / project-skill view.
 
-    See #14536, #88023.
+    See #14536, #88023, #114359, #104849.
     """
-    current_platform = _resolve_skill_commands_platform()
-    current_home = _resolve_skill_commands_home()
+    key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     with _publish_lock:
-        commands = _skill_commands
-        is_fresh = bool(commands) and (_skill_commands_platform, _skill_commands_home) == (current_platform, current_home)
+        cached = _skill_commands_by_key.get(key)
+    if cached is not None:
+        return cached
     # Scan outside the lock — file I/O and deferred imports; concurrent scans
     # are safe since each builds its own map.
-    return commands if is_fresh else scan_skill_commands()
+    return scan_skill_commands()
 
 
 def diff_command_snapshots(before: Dict[str, str], after: Dict[str, str]) -> Dict[str, Any]:
@@ -455,7 +549,15 @@ def reload_skills() -> Dict[str, Any]:
     / ``removed`` / ``unchanged`` / ``total`` / ``commands``; descriptions are the
     full frontmatter field). Does NOT invalidate the skills system-prompt cache:
     skills are called by name, so ``/reload-skills`` costs no cache reset."""
-    before = command_snapshot(_skill_commands)
+    key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
+    with _publish_lock:
+        before_commands = _skill_commands_by_key.get(key, {})
+        # Clear the entire multi-slot cache: a skill edit could affect any
+        # platform/profile combination, so every cached identity must rescan.
+        _skill_commands_by_key.clear()
+    from tools.skills_tool import clear_skills_cache
+    clear_skills_cache()  # the scan reads the shared catalog; an explicit reload must not hit its TTL
+    before = command_snapshot(before_commands)
     new_commands = scan_skill_commands()
     result = diff_command_snapshots(before, command_snapshot(new_commands))
     result["commands"] = len(new_commands)
@@ -546,11 +648,14 @@ def _disabled_skill_names(platform: str | None = None) -> set:
 def _load_skill_blocks(
     identifiers: list[str], load, activation_note, task_id: str | None, *,
     missing_label=lambda ident: ident, disabled_names: set | None = None, disabled_as_missing: bool = False,
+    already_loaded: set | None = None,
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     """Load each distinct identifier via *load* and render its block; returns
     ``(loaded_names, missing, disabled, blocks)``. With *disabled_names*, members
     whose canonical (LOADED — identifiers may be paths) name or identifier is
-    disabled go to ``disabled`` (or ``missing`` when *disabled_as_missing*)."""
+    disabled go to ``disabled`` (or ``missing`` when *disabled_as_missing*).
+    Canonical names in *already_loaded* (e.g. skills.auto_load) count as resolved
+    but render no block, so one skill never lands in the prompt twice."""
     loaded_names: list[str] = []
     missing: list[str] = []
     disabled: list[str] = []
@@ -571,16 +676,23 @@ def _load_skill_blocks(
             else:
                 disabled.append(skill_name or identifier)
             continue
+        if already_loaded and skill_name in already_loaded:
+            loaded_names.append(skill_name)
+            continue
         blocks.append(_render_skill_block(loaded, activation_note(skill_name), task_id))
         loaded_names.append(skill_name)
     return loaded_names, missing, disabled, blocks
 
 
-def build_preloaded_skills_prompt(skill_identifiers: list[str], task_id: str | None = None) -> tuple[str, list[str], list[str]]:
+def build_preloaded_skills_prompt(
+    skill_identifiers: list[str], task_id: str | None = None, excluded_loaded_names: set[str] | None = None,
+) -> tuple[str, list[str], list[str]]:
     """Load skills for session-wide CLI/TUI preloading; returns (prompt_text,
     loaded_skill_names, missing_identifiers). Disabled skills count as missing:
     this path bypasses the scan-time filter, and ``hermes -s <skill>`` must not
-    force-load an operator-disabled skill.
+    force-load an operator-disabled skill. *excluded_loaded_names* are canonical
+    names the session already carries (skills.auto_load): they resolve as loaded
+    but are not rendered again.
 
     Disabled skills are treated the same as missing ones: this loads via a raw identifier straight into
     ``_load_skill_payload``, bypassing ``get_skill_commands()``'s scan-time disabled filter — mirrors the
@@ -592,6 +704,55 @@ def build_preloaded_skills_prompt(skill_identifiers: list[str], task_id: str | N
         lambda name: (f'[IMPORTANT: The user launched this CLI session with the "{name}" skill '
                       "preloaded. Treat its instructions as active guidance for the duration of this "
                       "session unless the user overrides them.]"),
-        task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
+        task_id, missing_label=_missing_skill_label, disabled_names=_disabled_skill_names(),
+        disabled_as_missing=True, already_loaded=excluded_loaded_names,
     )
     return "\n\n".join(prompt_parts), loaded_names, missing
+
+
+def resolve_auto_load_skills(user_config: dict | None = None) -> list[str]:
+    """``skills.auto_load`` from *user_config* (else the active profile config), deduplicated;
+    empty when unset, malformed, or the config is unreadable."""
+    if user_config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            user_config = load_config_readonly()
+        except Exception:
+            return []
+    skills_block = user_config.get("skills") if isinstance(user_config, dict) else None
+    auto_load = skills_block.get("auto_load") if isinstance(skills_block, dict) else None
+    if not isinstance(auto_load, list):
+        return []
+    names = [entry.strip() for entry in auto_load if isinstance(entry, str) and entry.strip()]
+    return list(dict.fromkeys(names))
+
+
+def build_auto_load_prompt(
+    task_id: str | None = None, user_config: dict | None = None, home_override: Path | None = None,
+) -> tuple[str, list[str], list[str]]:
+    """Render ``skills.auto_load`` as fully loaded skill blocks for a new session; returns
+    ``(prompt_text, loaded_names, missing)``. Missing and operator-disabled names are reported,
+    never raised: a typo in config must not block session start on any surface.
+
+    *home_override* makes home resolution EXPLICIT (same seam as ``build_skills_system_prompt``): the config,
+    the disabled list and the ``<home>/skills`` lookup all resolve under that home, so a gateway build thread
+    that lost the HERMES_HOME ContextVar cannot pin the launch profile's skills into another profile's prompt.
+    """
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    home_token = set_hermes_home_override(str(home_override)) if home_override is not None else None
+    try:
+        auto_skills = resolve_auto_load_skills(user_config)
+        if not auto_skills:
+            return "", [], []
+        loaded_names, missing, _disabled, prompt_parts = _load_skill_blocks(
+            auto_skills,
+            lambda identifier: _load_skill_payload(identifier, task_id=task_id),
+            lambda name: (f'[IMPORTANT: The "{name}" skill is auto-loaded via config (skills.auto_load). '
+                          "Treat its instructions as active guidance for the duration of this session unless "
+                          "the user overrides them.]"),
+            task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
+        )
+        return "\n\n".join(prompt_parts), loaded_names, missing
+    finally:
+        if home_token is not None:
+            reset_hermes_home_override(home_token)

@@ -28689,6 +28689,19 @@
             "default": null,
             "title": "Count"
           },
+          "through_row_id": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Through Row Id"
+          },
           "idempotency_key": {
             "anyOf": [
               {

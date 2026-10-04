@@ -397,6 +397,8 @@ method("session.close", params=SessionCloseParams, result=SessionCloseResult,
 class SessionBranchParams(SessionParams):
     name: str | None = None
     count: int | None = None  # keep only the first N rows of the source history
+    # Inclusive persisted-row boundary; takes precedence over the legacy row count.
+    through_row_id: int | None = Field(default=None, strict=True, gt=0)
     # #65410: the desktop's mid-chat branch retry reuses the SAME key so a
     # lost-response retry returns the SAME child instead of a duplicate.
     idempotency_key: str | None = None

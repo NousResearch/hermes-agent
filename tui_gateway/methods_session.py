@@ -2275,10 +2275,20 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
             return _db_unavailable_error(rid, code=5008)
         old_key = session["session_key"]
         history = _branch_source_history(db, session, old_key)
+        if (through_row_id := params.get("through_row_id")) is not None:
+            if type(through_row_id) is not int or through_row_id <= 0:
+                return _err(rid, 4000, "through_row_id must be a positive integer")
+            # Hydrated bubbles can fold several persisted rows and omit notices.
+            # Resolve the exact row in the authoritative display history, never a UI count.
+            cutoff = next((idx for idx, msg in enumerate(history)
+                           if msg.get("_row_id") == through_row_id), None)
+            if cutoff is None:
+                return _err(rid, 4008, "through_row_id was not found in the branch source history")
+            history = history[:cutoff + 1]
+        elif isinstance(count := params.get("count"), int) and count > 0:
+            history = history[:count]
         if not history:
             return _err(rid, 4008, "nothing to branch — send a message first")
-        if isinstance(count := params.get("count"), int) and count > 0:
-            history = history[:count]
         new_key, new_sid, source = _new_session_key(), uuid.uuid4().hex[:8], _session_source(session)
         try:
             title = params.get("name", "") or _branch_title(db, old_key)

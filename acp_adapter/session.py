@@ -586,6 +586,12 @@ class SessionManager:
                     named = _named_custom_runtime(requested_provider, base_url or runtime.get("base_url"), target_model)
                     if named and named.get("api_key") != _NOAUTH_PLACEHOLDER:
                         runtime = named
+            # A named ``custom:<name>`` entry's endpoint and key are one route. When the entry moved since
+            # the session was saved, take its current route whole rather than send the new key to the old endpoint.
+            if base_url and str(requested_provider or "").strip().lower().startswith("custom:"):
+                from hermes_cli.runtime_provider import _normalize_base_url_for_match
+                if _normalize_base_url_for_match(base_url) != _normalize_base_url_for_match(runtime.get("base_url")):
+                    base_url = api_mode = None
             kwargs.update({
                 "provider": runtime.get("provider"), "requested_provider": runtime.get("requested_provider"),
                 "api_mode": api_mode or runtime.get("api_mode"),

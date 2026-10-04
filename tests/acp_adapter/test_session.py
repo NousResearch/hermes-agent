@@ -637,7 +637,14 @@ class TestPersistence:
         api_key = api_key() if callable(api_key) else api_key
         assert (kwargs.get("provider"), kwargs.get("base_url"), api_key) == expected
 
-    def test_named_custom_provider_round_trips_without_healing(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("moved_to, expected", [
+        (None, _CLIPROXY),
+        # The entry moved to another endpoint and key after the save: restore takes both from config,
+        # never the saved endpoint with the new key.
+        (("http://cliproxy-b.example:8317/v1", "sk-cliproxy-b"),
+         ("custom", "http://cliproxy-b.example:8317/v1", "sk-cliproxy-b")),
+    ], ids=["unchanged", "entry_moved"])
+    def test_named_custom_provider_round_trips_without_healing(self, tmp_path, monkeypatch, moved_to, expected):
         """A session on a named custom provider stores ``custom:<name>``, not the bare ``custom`` it
         resolves to, so a restart restores that entry's endpoint and key without identity recovery."""
         from hermes_constants import get_hermes_home
@@ -664,12 +671,15 @@ class TestPersistence:
         manager.save_session(state.session_id)
 
         assert json.loads(db.get_session(state.session_id)["model_config"])["provider"] == "custom:cliproxyapi"
+        if moved_to:
+            (get_hermes_home() / "config.yaml").write_text(
+                self._NAMED.replace(self._CLIPROXY[1], moved_to[0]).replace(self._CLIPROXY[2], moved_to[1]))
 
         restored = SessionManager(db=db).get_session(state.session_id)
 
         assert restored is not None
         kwargs = restored.agent.kwargs
-        assert (kwargs["provider"], kwargs["base_url"], kwargs["api_key"]) == self._CLIPROXY
+        assert (kwargs["provider"], kwargs["base_url"], kwargs["api_key"]) == expected
         assert heals == []
 
     def test_only_restores_acp_sessions(self, manager):

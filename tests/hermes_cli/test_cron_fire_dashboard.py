@@ -214,14 +214,30 @@ def test_fire_endpoint_default_port(tmp_path, monkeypatch):
     import threading
     import time
 
+    import httpx
+
     released = threading.Event()
 
     def _blocking_endpoint(_profile, _home):
         released.wait(3)
-        return "http://127.0.0.1:9/api/cron/fire"  # discard port: refused, forward returns None
+        return "http://127.0.0.1:8642/api/cron/fire"
+
+    class _RefusingClient:  # gateway down without a real socket dial: forward returns None
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, **kw):
+            raise httpx.ConnectError("refused")
 
     monkeypatch.setattr(_web_server_cron, "_gateway_fire_endpoint", _blocking_endpoint)
     monkeypatch.setattr(_web_server_cron, "_cron_profile_home", lambda p: ("default", tmp_path))
+    monkeypatch.setattr(httpx, "AsyncClient", _RefusingClient)
 
     async def _heartbeat_while_resolving():
         forward = asyncio.ensure_future(

@@ -260,7 +260,7 @@ def incarnation_live(pid: int, recorded_ct=None) -> bool | None:
         pid = int(pid)
     except (TypeError, ValueError):
         return False
-    if pid <= 0 or not _pid_alive(pid):
+    if pid <= 0:
         return False
     recorded = _as_ct(recorded_ct)
     if pid == os.getpid():
@@ -268,6 +268,8 @@ def incarnation_live(pid: int, recorded_ct=None) -> bool | None:
         if own is None:
             return None  # degraded: we cannot tell our incarnations apart
         return recorded is not None and abs(own - recorded) <= _OWN_CREATE_TIME_EPSILON
+    if not _pid_alive(pid):
+        return False
     if recorded is None:
         return None
     actual = process_create_time(pid)
@@ -299,13 +301,15 @@ def _identity_live(pid: int, create_time: float | None, age: float, world: _Worl
     bounds it. Our own pid follows :func:`incarnation_live` (exact creation time, no-ct = dead).
     """
     w = world or _real_world()
-    if pid <= 0 or not w.alive(pid):
+    if pid <= 0:
         return False
-    if pid == w.pid:
+    if pid == w.pid:  # we are alive by definition: only the incarnation is in question
         if w.ct is None:
             # Degraded: our own creation time is unreadable, so our claims are v1 too.
             return create_time is None
         return create_time is not None and abs(w.ct - create_time) <= _OWN_CREATE_TIME_EPSILON
+    if not w.alive(pid):
+        return False
     actual = None if create_time is None else w.ct_of(pid)
     if actual is None:
         return age <= UPDATE_MARKER_MAX_AGE_SECONDS

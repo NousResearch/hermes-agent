@@ -240,9 +240,10 @@ const OWN_CT_EPSILON_SECS: f64 = 0.005;
 /// unbounded; a v1 record, or a live pid whose creation time cannot be read, is live only while
 /// the marker is within the v1 age ceiling.
 fn identity_live(pid: u32, recorded_ct: Option<f64>, age_secs: u64, world: &World) -> bool {
-    if pid == 0 || !(world.alive)(pid) {
+    if pid == 0 {
         return false;
     }
+    // We are alive by definition: only our incarnation is in question.
     if pid == world.pid {
         return match (recorded_ct, world.ct) {
             (Some(recorded), Some(own)) => (recorded - own).abs() <= OWN_CT_EPSILON_SECS,
@@ -250,6 +251,9 @@ fn identity_live(pid: u32, recorded_ct: Option<f64>, age_secs: u64, world: &Worl
             (None, None) => true,
             _ => false,
         };
+    }
+    if !(world.alive)(pid) {
+        return false;
     }
     let within_ceiling = age_secs <= UPDATE_MARKER_MAX_AGE_SECS;
     let Some(recorded) = recorded_ct else {

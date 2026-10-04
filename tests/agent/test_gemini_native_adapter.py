@@ -131,6 +131,44 @@ def test_consecutive_user_messages_merge_for_gemini_alternation():
     assert roles == ["user", "model"], roles
 
 
+def test_system_instruction_omits_role_for_strict_proxies():
+    """Gemini's ``systemInstruction`` is a Content object, and sending
+    ``role: system`` there is the incompatible shape. Public Google
+    (generativelanguage / Vertex) tolerates that stray role and ignores it,
+    but strict OpenAI-/Gemini-compatible proxy validators reject a
+    systemInstruction carrying ``role`` with an opaque HTTP 422
+    ``INVALID_ARGUMENT`` — and since Hermes always sends a system prompt,
+    that breaks *every* Gemini request routed through such a gateway.
+    Omitting ``role`` and emitting only ``parts`` is the most compatible
+    payload for both strict and permissive Gemini surfaces.
+    """
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    messages = [
+        {"role": "system", "content": "You are concise."},
+        {"role": "user", "content": "hi"},
+    ]
+    _, system_instruction = _build_gemini_contents(messages)
+    assert system_instruction is not None
+    assert "role" not in system_instruction, system_instruction
+    assert system_instruction == {"parts": [{"text": "You are concise."}]}
+
+
+def test_system_instruction_joins_multiple_system_messages_without_role():
+    """Multiple system messages are joined in the role-less form."""
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    messages = [
+        {"role": "system", "content": "Rule one."},
+        {"role": "system", "content": "Rule two."},
+        {"role": "user", "content": "hi"},
+    ]
+    _, system_instruction = _build_gemini_contents(messages)
+    assert system_instruction is not None
+    assert "role" not in system_instruction, system_instruction
+    assert system_instruction["parts"] == [{"text": "Rule one.\nRule two."}]
+
+
 def test_schema_bearing_tool_result_is_wrapped_as_opaque_text():
     """A tool result whose content is itself a JSON Schema must not be
     forwarded as a structured functionResponse.response.

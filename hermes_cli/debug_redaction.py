@@ -60,8 +60,10 @@ _QUOTED_HEADER_RE = re.compile(
 # word test is case-sensitive even inside the IGNORECASE regexes below. A
 # single-case run of 20+ letters is no English word, so it is a key.
 _KEY_CHARS = r"A-Za-z0-9._~+/\-"
-_KEY = rf"[{_KEY_CHARS}]+(?::[{_KEY_CHARS}]+)*=*(?![{_KEY_CHARS}=]|:[{_KEY_CHARS}])"
-_NOT_WORD = rf"(?!(?-i:[A-Z]?[a-z]{{1,19}}|[A-Z]{{1,19}})(?![{_KEY_CHARS}=]|:[{_KEY_CHARS}]))"
+# One key-end boundary shared by "is it a key" and "is it a word" so they cannot drift.
+_KEY_END = rf"(?![{_KEY_CHARS}=]|:[{_KEY_CHARS}])"
+_KEY = rf"[{_KEY_CHARS}]+(?::[{_KEY_CHARS}]+)*=*{_KEY_END}"
+_NOT_WORD = rf"(?!(?-i:[A-Z]?[a-z]{{1,19}}|[A-Z]{{1,19}}){_KEY_END})"
 # agent.redact masks the scheme of ``x-api-key: Basic <key>`` to ``***`` and
 # keeps the key, so ``***`` is a scheme too and the key is the value when it
 # is key-shaped (not a word; 4+ chars before any colon, or 6+ mixing letters

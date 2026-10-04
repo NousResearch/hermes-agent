@@ -47,3 +47,15 @@ def test_bundled_skills_have_no_role_tag_placeholder():
         "bundled skill files contain an angle-bracketed chat role name (#132504);"
         f" use the brace form (e.g. {{tool}}) instead: {offenders}"
     )
+
+
+def test_tool_error_strings_have_no_role_tag():
+    # Tool results enter history and are re-sent every turn, like a skill_view load.
+    from tools.connectors.gateway.merge import partition_calls
+    from tools.tool_search_validation import not_deferrable_error
+
+    messages = [
+        not_deferrable_error("no_such_tool_xyz"),
+        partition_calls([{"name": "connectors__bad", "arguments": {}}]).errors[0]["error"]["message"],
+    ]
+    assert [m for m in messages if ROLE_TAG.search(m)] == []

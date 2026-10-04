@@ -289,8 +289,9 @@ def test_budget_exhausted_after_empty_response_nudge_still_summarizes(real_loop,
     assert "Wrote the ledger entry." in result["final_response"]
     saved = real_loop.db.get_messages_as_conversation(real_loop.sid)
     assert saved[-1]["role"] == "assistant" and "Wrote the ledger entry." in saved[-1]["content"]
-    # The live list is the next turn's history (TUI/Desktop): the summary request must follow
-    # real history, never a retry nudge the tail-only scaffolding drop can no longer reach.
+    # The live list is the next turn's history (TUI/Desktop). budget_on_nudge: the nudge still
+    # pending at exhaustion is dropped before the summary request. budget_after_later_tool covers
+    # the exit reason only: its answered nudge pair stays mid-list, like on any turn end.
     live = result["messages"]
     ask = next(i for i, m in enumerate(live) if m.get("content") == MAX_ITERATIONS_SUMMARY_REQUEST)
     assert not live[ask - 1].get("_empty_recovery_synthetic")

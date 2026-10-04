@@ -20,7 +20,7 @@ from pathlib import Path
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pm.environments import store_root
+from pm.environments import owning_home_root, store_root
 
 
 def _inline_string_literal(value: str) -> str:
@@ -523,8 +523,11 @@ def ensure_install_launchers(repo_root: Path, out_dir: Path) -> list[str]:
     home = get_default_hermes_root().resolve()
     # The data root this checkout was installed into (<home>/hermes-agent with
     # <home>/tools) always republishes, which also heals an install that an
-    # earlier foreign launch already rebound.
-    owner = root.parent == home and store.resolve() == (home / "tools").resolve()
+    # earlier foreign launch already rebound. The layout alone is not proof: a
+    # root that only borrows the checkout can match it through
+    # HERMES_RUNTIME_DIR=<home>/tools, so it must also own the checkout.
+    owner = (root.parent == home and store.resolve() == (home / "tools").resolve()
+             and owning_home_root(root) is None)
     written = []
     for name in WINDOWS_BIN_LAUNCHERS:
         # ponytail: one guard here covers every caller (launch, sync, repair,

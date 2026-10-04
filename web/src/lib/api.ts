@@ -1679,6 +1679,10 @@ export interface MessagingPlatformEnvVar {
   help: string;
   url: string | null;
   is_password: boolean;
+  /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
+  is_list?: boolean;
+  /** Plain saved value, sent only for allowlists (they are IDs, not secrets). */
+  value?: string | null;
   advanced: boolean;
 }
 

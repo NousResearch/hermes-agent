@@ -168,6 +168,14 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         migrate_all_homes()
     except Exception as exc:
         print(f"  ⚠ Memory provider migration skipped: {exc}")
+    # Same for a gateway platform / toolset that left core (Home Assistant): every home that used
+    # it gets its catalog plugin (hermes_cli/left_core_migration.py).
+    try:
+        from hermes_cli.left_core_migration import migrate_all_homes as migrate_left_core
+
+        migrate_left_core()
+    except Exception as exc:
+        print(f"  ⚠ Plugin migration skipped: {exc}")
 
 
 if __name__ == "__main__":

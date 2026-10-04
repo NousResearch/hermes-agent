@@ -2500,6 +2500,9 @@ export interface Translations {
     replaceValue: string
     openDocs: string
     clearField: (key: string) => string
+    addListEntry: string
+    removeListEntry: string
+    listEntryPlaceholder: string
     enableAria: (name: string) => string
     disableAria: (name: string) => string
     platformEnabled: (name: string) => string

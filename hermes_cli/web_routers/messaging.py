@@ -141,14 +141,22 @@ def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> Non
         raise HTTPException(status_code=400, detail=rule[1])
 
 
+# Allowlists (``*_ALLOWED_USERS``, ``LINE_ALLOWED_GROUPS``, ``SIMPLEX_GROUP_ALLOWED``) are
+# comma-separated IDs, not secrets: clients render them as one editable entry per ID, which
+# needs the saved value instead of a redacted preview.
+_ALLOWLIST_KEY_RE = re.compile(r"_ALLOWED(?:_[A-Z]+)?$")
+
+
 def _messaging_env_info(key: str) -> dict[str, Any]:
     info = OPTIONAL_ENV_VARS.get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
+    is_password = bool(info.get("password", False))
     return {
         "description": info.get("description", ""),
         "prompt": info.get("prompt", key),
         "help": info.get("help", ""),
         "url": info.get("url"),
-        "is_password": info.get("password", False),
+        "is_password": is_password,
+        "is_list": not is_password and bool(_ALLOWLIST_KEY_RE.search(key)),
         "advanced": info.get("advanced", False),
     }
 
@@ -232,13 +240,14 @@ def _messaging_platform_payload(
         # os.environ carries the ROOT install's .env and would report root credentials as the profile's.
         return env_on_disk.get(key) or ("" if scoped else os.getenv(key, ""))
 
-    env_vars = [
-        {
+    env_vars = []
+    for key in entry["env_vars"]:
+        value, info = env_value(key), _messaging_env_info(key)
+        env_vars.append({
             "key": key, "required": key in entry["required_env"], "is_set": bool(value),
-            "redacted_value": redacted_credential_preview(value), **_messaging_env_info(key),
-        }
-        for key, value in ((key, env_value(key)) for key in entry["env_vars"])
-    ]
+            "redacted_value": redacted_credential_preview(value),
+            "value": value if info["is_list"] else None, **info,
+        })
 
     enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
     if gateway_running and runtime_platform.get("mirrored_from"):

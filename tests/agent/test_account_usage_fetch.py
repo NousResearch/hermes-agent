@@ -112,7 +112,7 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot is not None
     assert snapshot.plan == "Pro"
     assert len(snapshot.windows) == 2
-    assert snapshot.windows[0].label == "Session"
+    assert snapshot.windows[0].label == "5-hour block"
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details

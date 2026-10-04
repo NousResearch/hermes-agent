@@ -27,7 +27,7 @@ hermes -p <profile> plugins install homeassistant
 插件自行声明其 Python 依赖（`aiohttp`），因此无需安装 pip extra。旧的 `hermes-agent[homeassistant]` extra 已被移除。
 
 :::info 从内置 Home Assistant 的版本升级
-无需任何操作。每个已在使用 Home Assistant 的 profile（`.env` 中有 `HASS_TOKEN`、`config.yaml` 中启用了 `platforms.homeassistant`（或为其设置了 `token`），或 `platform_toolsets` 中列出了 `homeassistant` 工具集）都会在 `hermes update` 时自动从插件目录安装该插件（覆盖共享同一安装的所有 profile）。若该步骤未能执行，Hermes 会在该 profile 首次启动时（agent 启动或 gateway 启动）安装插件，此行为遵循 `security.allow_lazy_installs`。安装结果会显示在终端、Desktop 应用和聊天中。
+无需任何操作。每个已在使用 Home Assistant 的 profile（`.env` 中有 `HASS_TOKEN`、`config.yaml` 中启用了 `platforms.homeassistant`（或为其设置了 `token`），或 `platform_toolsets` 中列出了 `homeassistant` 工具集）都会在 `hermes update` 时自动从插件目录安装该插件（覆盖共享同一安装的所有 profile）。若该步骤未能执行，Hermes 会在该 profile 首次启动时（agent 启动或 gateway 启动）安装插件，此行为遵循 `security.allow_lazy_installs`。安装结果会显示在终端、Desktop 应用和聊天中。每个 profile 只会自动安装一次：之后若你移除插件（`hermes plugins remove homeassistant`），它将保持移除状态。
 
 您的配置保持不变：相同的 `HASS_TOKEN` / `HASS_URL` 变量、相同的 `homeassistant` 平台名称和 `platforms.homeassistant` 配置键、相同的 `homeassistant` 工具集和工具名称，以及相同的 cron `deliver: homeassistant:<notify target>` 语法。唯一的区别：与所有插件工具一样，启用 [Tool Search](../features/tools.md) 时，`ha_*` 工具通过 `tool_search` / `tool_call` 调用，而不是直接列出。
 :::

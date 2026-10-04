@@ -220,3 +220,34 @@ def test_gateway_start_outcome_waits_for_the_first_agent(tmp_path, monkeypatch):
     assert len(said) == 1 and said[0].startswith("✓ Home Assistant moved out of core")
     assert lcm.recover_at_startup(say=said.append) == [] and len(said) == 1
 
+
+
+def test_the_migration_installs_once_so_a_removal_sticks(tmp_path, monkeypatch):
+    """At most one automatic install per home: after `hermes plugins remove`, neither `hermes update`
+    nor startup reinstalls it. Until an install succeeds (catalog miss, failed install) it retries."""
+    import hermes_cli.memory_provider_migration as mpm
+    import pm.install
+    home = _home(tmp_path, env="HASS_TOKEN=abc\n")
+    plugin = home / "plugins" / "homeassistant"
+    calls = []
+
+    def install(name):
+        calls.append(name)
+        plugin.mkdir(parents=True)
+        return {"ok": True}
+
+    quiet = lambda message: None  # noqa: E731
+    monkeypatch.setattr(mpm, "catalog_source", lambda name: None)
+    assert lcm.migrate_home(home, install=install, say=quiet) == []
+    monkeypatch.setattr(mpm, "catalog_source", lambda name: name)
+    assert lcm.migrate_home(home, install=lambda n: {"ok": False, "error": "network down"}, say=quiet) == []
+    assert lcm.migrate_home(home, install=install, say=quiet) == ["homeassistant"]
+
+    import shutil
+    shutil.rmtree(plugin)  # `hermes plugins remove homeassistant`
+    assert lcm.migrate_home(home, install=install, say=quiet) == []
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr(lcm, "_install_into", lambda h: install)
+    assert lcm.recover_at_startup(say=quiet) == []
+    assert calls == ["homeassistant"] and not plugin.exists()

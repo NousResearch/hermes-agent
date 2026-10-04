@@ -31,6 +31,8 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
   predicate); `hermes update` and agent/gateway start install the plugin for homes that used it.
   Installing and converting core-era state are separate steps: the toolset-scope conversion runs
   once per home and row (`_left_core_scoped` in config.yaml) even when the plugin is already there.
+  The automatic install also happens once per home and row (`_left_core_installed`, written only
+  once the plugin dir exists): a later `hermes plugins remove` sticks, a failed install retries.
   Core special cases become `PlatformEntry` seams the plugin sets (`trusted_inbound`,
   `display_tier`, `shared_env_prefixes`), never a name check.
 - **No new third-party-product plugins (June 2026).** Observability/metrics backends, vendor SaaS

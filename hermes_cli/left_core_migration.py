@@ -9,6 +9,8 @@ reuses; memory is not a row because its plugin name comes from ``memory.provider
 * ``hermes update`` installs the plugin for every profile home sharing the venv that uses the feature.
 * Agent start and gateway start retry once per process for the active home (Desktop users update
   through the app and never run ``hermes update``), honouring ``security.allow_lazy_installs``.
+* A home gets the plugin automatically at most once (``_left_core_installed`` in its config.yaml):
+  ``hermes plugins remove`` afterwards is the user's choice and sticks.
 
 Installs go through the normal catalog install path at the reviewed pin (kill list, dependency
 constraints, enable). Unattended dependency consent covers only these rows: the feature shipped in
@@ -105,7 +107,7 @@ class LeftCoreFeature:
     private_env: tuple[str, ...] = ()
     # Toolsets the plugin registers. Core resolved them like any built-in toolset (on only where the
     # platform's saved list or default composite carried them); a plugin toolset is on for every
-    # platform whose known_plugin_toolsets does not name it, so :func:`_keep_toolset_scope` records
+    # platform whose known_plugin_toolsets does not name it, so :func:`_record_migration` records
     # them there wherever core had them off.
     toolsets: tuple[str, ...] = ()
     # Platforms whose core default composite (``hermes-<platform>``) never carried those toolsets.
@@ -150,65 +152,82 @@ def _core_carried(feature: LeftCoreFeature, selection: list) -> bool:
 
 
 _SCOPED_KEY = "_left_core_scoped"  # config.yaml: rows whose toolset scope this home already converted
+# config.yaml: rows this home has had installed (by the migration, or by the user before it ran).
+# Never written before the plugin dir exists, so a home whose install never succeeded keeps retrying.
+_INSTALLED_KEY = "_left_core_installed"
+
+
+def _marked(config: dict, key: str, feature: LeftCoreFeature) -> bool:
+    done = config.get(key)
+    return isinstance(done, list) and feature.plugin in map(str, done)
 
 
 def _scope_kept(config: dict, feature: LeftCoreFeature) -> bool:
-    done = config.get(_SCOPED_KEY)
-    return not feature.toolsets or (isinstance(done, list) and feature.plugin in map(str, done))
+    return not feature.toolsets or _marked(config, _SCOPED_KEY, feature)
 
 
-def _keep_toolset_scope(home: Path, feature: LeftCoreFeature) -> None:
-    """Record *feature*'s toolsets in ``known_plugin_toolsets[platform]`` (= off) for every platform
+def _mark(config: dict, key: str, feature: LeftCoreFeature) -> None:
+    done = config.get(key)
+    config[key] = sorted({*(map(str, done) if isinstance(done, list) else ()), feature.plugin})
+
+
+def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
+    """Keep *feature*'s core-era toolset scope, and mark it installed once its plugin is in *home*,
+    in one config write.
+
+    Scope: record the toolsets in ``known_plugin_toolsets[platform]`` (= off) for every platform
     where core had them off: a saved ``platform_toolsets`` list that does not carry them, or no list
-    on an ``off_platforms`` platform. Platforms core resolved them on for are left alone.
-
-    A one-time conversion per home and row, independent of installation: a plugin installed before
-    the update (it stays inert on a core that still ships the feature) still needs it. Completion is
-    marked under ``_left_core_scoped`` in the same config write, so a later run never undoes a choice
-    the user made since (``hermes tools``). Raises when config.yaml cannot be read or written."""
+    on an ``off_platforms`` platform. Platforms core resolved them on for are left alone. A one-time
+    conversion per home and row, independent of installation: a plugin installed before the update
+    (it stays inert on a core that still ships the feature) still needs it. Completion is marked
+    under ``_left_core_scoped`` so a later run never undoes a choice the user made since
+    (``hermes tools``). Raises when config.yaml cannot be read or written."""
     from hermes_cli.config import atomic_config_write, read_user_config_raw
     from hermes_cli.toolset_validation import parse_platform_toolsets_value
     path = home / "config.yaml"
     config = read_user_config_raw(path)
-    if _scope_kept(config, feature):
+    installed = plugin_present(feature.plugin, home) and not _marked(config, _INSTALLED_KEY, feature)
+    if _scope_kept(config, feature) and not installed:
         return
-    saved = config.get("platform_toolsets")
-    saved = saved if isinstance(saved, dict) else {}
-    selections = {str(p): parse_platform_toolsets_value(v) for p, v in saved.items()}
-    for platform in feature.off_platforms:
-        selections.setdefault(platform, None)
-    known = config.get("known_plugin_toolsets")
-    known = known if isinstance(known, dict) else {}
-    for platform, selection in selections.items():
-        if selection is None and platform not in feature.off_platforms:
-            continue  # no (valid) saved list: core's default composite carried the toolsets
-        if selection is not None and _core_carried(feature, selection):
-            continue
-        current = known.get(platform) if isinstance(known.get(platform), list) else []
-        if missing := [ts for ts in feature.toolsets if ts not in current]:
-            known[platform] = sorted({*map(str, current), *missing})
-    if known:
-        config["known_plugin_toolsets"] = known
-    done = config.get(_SCOPED_KEY)
-    config[_SCOPED_KEY] = sorted({*(map(str, done) if isinstance(done, list) else ()), feature.plugin})
+    if installed:
+        _mark(config, _INSTALLED_KEY, feature)
+    if not _scope_kept(config, feature):
+        saved = config.get("platform_toolsets")
+        saved = saved if isinstance(saved, dict) else {}
+        selections = {str(p): parse_platform_toolsets_value(v) for p, v in saved.items()}
+        for platform in feature.off_platforms:
+            selections.setdefault(platform, None)
+        known = config.get("known_plugin_toolsets")
+        known = known if isinstance(known, dict) else {}
+        for platform, selection in selections.items():
+            if selection is None and platform not in feature.off_platforms:
+                continue  # no (valid) saved list: core's default composite carried the toolsets
+            if selection is not None and _core_carried(feature, selection):
+                continue
+            current = known.get(platform) if isinstance(known.get(platform), list) else []
+            if missing := [ts for ts in feature.toolsets if ts not in current]:
+                known[platform] = sorted({*map(str, current), *missing})
+        if known:
+            config["known_plugin_toolsets"] = known
+        _mark(config, _SCOPED_KEY, feature)
     atomic_config_write(path, config)
 
 
 def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = False) -> list[LeftCoreFeature]:
-    """Rows *home* uses whose plugin is not installed and that the catalog ships (a catalog miss is
+    """Rows *home* uses whose plugin it never had and that the catalog ships (a catalog miss is
     reported through *say*). Converts the toolset scope of every row *home* uses once
-    (:func:`_keep_toolset_scope`), installed or not; a row whose scope cannot be recorded is
-    reported and skipped, never installed unscoped."""
+    (:func:`_record_migration`), installed or not; a row whose scope cannot be recorded is
+    reported and skipped, never installed unscoped. A row marked installed is done for good."""
     from hermes_cli.memory_provider_migration import catalog_source
     out = []
     for feature in LEFT_CORE:
-        present = plugin_present(feature.plugin, home)
-        if present and _scope_kept(_read_config(home), feature):
+        if _marked(_read_config(home), _INSTALLED_KEY, feature):
             continue
         if not feature.in_use(home, process_env=process_env):
             continue
+        present = plugin_present(feature.plugin, home)
         try:
-            _keep_toolset_scope(home, feature)
+            _record_migration(home, feature)
         except Exception as exc:
             say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin: its per-platform "
                 f"toolset selection could not be kept ({exc}). Check `hermes tools`"
@@ -245,6 +264,10 @@ def _install_one(home: Path, feature: LeftCoreFeature, *, install: Callable[[str
     except Exception as exc:  # network, uv, kill list — report, do not raise
         result = {"ok": False, "error": str(exc)}
     if result.get("ok"):
+        try:
+            _record_migration(home, feature)
+        except Exception as exc:  # the next run sees the plugin dir and records it then
+            logger.debug("left-core install marker not written for %s: %s", home, exc)
         say(f"  ✓ {feature.label} moved out of core — installed the '{feature.plugin}' plugin from the "
             f"catalog ({feature.unchanged}).")
         return True

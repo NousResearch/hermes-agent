@@ -329,19 +329,42 @@ def interactive_setup() -> None:
                  "  1. A unique topic name — e.g. hermes-myname-2026.",
                  "  2. The ntfy app subscribed to that topic (https://ntfy.sh/app)."):
         print_info(line)
+    # Remember the topic the derived values were last seeded from: NTFY_ALLOWED_USERS and
+    # NTFY_HOME_CHANNEL default to the subscribe topic, so on a re-run a value equal to the
+    # old topic is a derived one (a hand-set value is not) and has to follow a topic change.
+    previous_topic = (get_env_value("NTFY_TOPIC") or "").strip()
     for var, question, secret in _NTFY_SETUP_PROMPTS:
-        suffix = " [keep current]" if get_env_value(var) else ""
+        current = get_env_value(var)
+        if not current:
+            suffix = ""
+        elif secret:
+            suffix = " [keep current]"  # never echo a secret back into the prompt
+        else:
+            # Show the stored value: a bare "[keep current]" reads as "blank = the subscribe
+            # topic" even when what is kept is a different, previous topic.
+            suffix = f" [keep current: {current}]"
         value = prompt(f"{question}{suffix}", password=secret)
         if value:
             save_env_value(var, value)
     # The topic is the channel's identity (ntfy carries no authenticated user id), so a
     # single-entry allowlist gates the whole channel instead of leaving it open to anyone
-    # who guesses the topic — the baseline the docs recommend.
+    # who guesses the topic — the baseline the docs recommend. NTFY_HOME_CHANNEL is what
+    # `deliver: ntfy` cron jobs publish to, so it has to follow the topic as well.
     topic = (get_env_value("NTFY_TOPIC") or "").strip()
     if topic:
         for var in ("NTFY_ALLOWED_USERS", "NTFY_HOME_CHANNEL"):
-            if not get_env_value(var):
+            current = (get_env_value(var) or "").strip()
+            # Seed when unset, and re-derive when the value is still the topic it came from:
+            # a rotated topic otherwise leaves the allowlist on the abandoned one, where
+            # `user_id == topic` no longer authorizes and unauthorized DMs default to
+            # "ignore" — a silently dead channel — while cron keeps publishing to the old topic.
+            if current != topic and (not current or current == previous_topic):
                 save_env_value(var, topic)
+        # An explicit publish topic that mirrored the old subscribe topic follows it too;
+        # blank stays blank (the adapter falls back to the subscribe topic at runtime).
+        publish_topic = (get_env_value("NTFY_PUBLISH_TOPIC") or "").strip()
+        if publish_topic and publish_topic != topic and publish_topic == previous_topic:
+            save_env_value("NTFY_PUBLISH_TOPIC", topic)
     print_info("Done. Make sure the ntfy app is subscribed to that topic before starting the gateway.")
 
 

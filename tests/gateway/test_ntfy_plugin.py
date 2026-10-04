@@ -451,7 +451,7 @@ class TestInteractiveSetup:
     # Prompt order: topic, allowed users, server url, token, publish topic, markdown, home channel.
     _ALL_BLANK = ["", "", "", "", "", "", ""]
 
-    def _patch_io(self, monkeypatch, answers, saved, existing=None):
+    def _patch_io(self, monkeypatch, answers, saved, existing=None, prompts=None, reconfigure=False):
         import hermes_cli.cli_output as cli_output_mod
         import hermes_cli.config as config_mod
         import hermes_cli.setup as setup_mod
@@ -466,16 +466,23 @@ class TestInteractiveSetup:
             store[key] = value
             saved[key] = value
 
+        def _prompt(question, **_kw):
+            if prompts is not None:
+                prompts.append(question)
+            return next(remaining)
+
         monkeypatch.setattr(config_mod, "get_env_value", _get)
         monkeypatch.setattr(config_mod, "save_env_value", _save)
-        monkeypatch.setattr(cli_output_mod, "prompt", lambda *_a, **_kw: next(remaining))
+        monkeypatch.setattr(cli_output_mod, "prompt", _prompt)
         for name in ("print_header", "print_info", "print_success", "print_warning"):
             monkeypatch.setattr(cli_output_mod, name, lambda *_a, **_kw: None)
         # declines_reconfigure() imports get_env_value / prompt_yes_no from hermes_cli.setup at
         # call time, so the shared gate needs those patched too — otherwise it reads the real
         # env and, with a topic already set, blocks on input() under captured stdin.
+        # ``reconfigure`` is the answer to its "Reconfigure ntfy?" question: False on a fresh
+        # run (nothing set, the gate short-circuits anyway), True for the re-run cases.
         monkeypatch.setattr(setup_mod, "get_env_value", _get)
-        monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_a, **_kw: False)
+        monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_a, **_kw: reconfigure)
 
     def test_topic_seeds_allowlist_and_home_channel(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -511,6 +518,73 @@ class TestInteractiveSetup:
         self._patch_io(monkeypatch, self._ALL_BLANK, saved)
         _ntfy.interactive_setup()
         assert saved == {}
+
+    def test_rerun_with_changed_topic_rederives_the_seeded_values(self, monkeypatch, tmp_path):
+        """Rotating the topic must carry the derived allowlist / home channel with it.
+
+        On a re-run both still hold the run-1 topic, so seeding only "when the var is
+        empty" leaves them on the abandoned topic. The adapter fixes ``user_id == topic``
+        (ntfy carries no authenticated identity), the stale allowlist then fails that
+        check, and unauthorized DMs default to ``ignore`` — the channel goes silent with
+        no error and no pairing code — while ``deliver: ntfy`` cron jobs keep publishing
+        to the old topic.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved = {}
+        existing = {"NTFY_TOPIC": "t1", "NTFY_ALLOWED_USERS": "t1", "NTFY_HOME_CHANNEL": "t1"}
+        self._patch_io(monkeypatch, ["t2", *self._ALL_BLANK[1:]], saved, existing=existing,
+                       reconfigure=True)
+        _ntfy.interactive_setup()
+        assert saved == {
+            "NTFY_TOPIC": "t2",
+            "NTFY_ALLOWED_USERS": "t2",
+            "NTFY_HOME_CHANNEL": "t2",
+        }
+
+    def test_rerun_keeps_a_hand_set_allowlist_when_the_topic_changes(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved = {}
+        existing = {"NTFY_TOPIC": "t1", "NTFY_ALLOWED_USERS": "t1,hermes-out",
+                    "NTFY_HOME_CHANNEL": "t1"}
+        answers = ["t2", "t2,hermes-out", *self._ALL_BLANK[2:]]
+        self._patch_io(monkeypatch, answers, saved, existing=existing, reconfigure=True)
+        _ntfy.interactive_setup()
+        assert saved == {
+            "NTFY_TOPIC": "t2",
+            "NTFY_ALLOWED_USERS": "t2,hermes-out",
+            "NTFY_HOME_CHANNEL": "t2",
+        }
+
+    def test_rerun_with_unchanged_topic_rewrites_nothing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved = {}
+        existing = {"NTFY_TOPIC": "t1", "NTFY_ALLOWED_USERS": "t1", "NTFY_HOME_CHANNEL": "t1"}
+        self._patch_io(monkeypatch, self._ALL_BLANK, saved, existing=existing, reconfigure=True)
+        _ntfy.interactive_setup()
+        assert saved == {}
+
+    def test_publish_topic_mirroring_the_old_topic_follows_it(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved = {}
+        existing = {"NTFY_TOPIC": "t1", "NTFY_ALLOWED_USERS": "t1", "NTFY_HOME_CHANNEL": "t1",
+                    "NTFY_PUBLISH_TOPIC": "t1"}
+        self._patch_io(monkeypatch, ["t2", *self._ALL_BLANK[1:]], saved, existing=existing,
+                       reconfigure=True)
+        _ntfy.interactive_setup()
+        assert saved["NTFY_PUBLISH_TOPIC"] == "t2"
+
+    def test_keep_current_hint_shows_the_stored_value_but_never_a_secret(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        saved, prompts = {}, []
+        existing = {"NTFY_TOPIC": "t1", "NTFY_ALLOWED_USERS": "t1", "NTFY_TOKEN": "tk_secret"}
+        self._patch_io(monkeypatch, self._ALL_BLANK, saved, existing=existing, prompts=prompts,
+                       reconfigure=True)
+        _ntfy.interactive_setup()
+        topic_q = next(q for q in prompts if q.startswith("ntfy subscribe topic"))
+        token_q = next(q for q in prompts if q.startswith("ntfy auth token"))
+        assert "[keep current: t1]" in topic_q
+        assert token_q.endswith("[keep current]")
+        assert "tk_secret" not in token_q
 
 
 # ---------------------------------------------------------------------------

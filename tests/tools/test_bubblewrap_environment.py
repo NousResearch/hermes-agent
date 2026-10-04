@@ -1486,6 +1486,79 @@ class TestLinkedDotEntryGuard:
         with _no_session():
             BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config).cleanup()
 
+    @staticmethod
+    def _all_denied_present(home, prefix):
+        for rel in bubblewrap.SENSITIVE_HOME_PATHS:
+            if rel.startswith(prefix + "/"):
+                (home / rel).mkdir(parents=True)
+
+    def test_middle_link_in_a_default_deny_directory_under_the_cwd_is_held(self, sandbox_root, fake_home, tmp_path):
+        target = tmp_path / "ro" / "bashrc"
+        target.parent.mkdir()
+        target.write_text("x")
+        share = fake_home / ".local" / "share"
+        share.mkdir(parents=True)
+        self._all_denied_present(fake_home, ".local/share")
+        (share / "l").symlink_to(target)
+        (fake_home / ".bashrc").symlink_to(".local/share/l")
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(share), timeout=10)
+        try:
+            assert env._link_readonly == (str(share),)
+        finally:
+            env.cleanup()
+
+    def test_middle_link_in_a_default_deny_directory_under_a_bind_is_held(self, sandbox_root, work_dir, fake_home, tmp_path):
+        target = tmp_path / "ro" / "bashrc"
+        target.parent.mkdir()
+        target.write_text("x")
+        config_dir = fake_home / ".config"
+        config_dir.mkdir()
+        self._all_denied_present(fake_home, ".config")
+        (config_dir / "l").symlink_to(target)
+        (fake_home / ".bashrc").symlink_to(".config/l")
+        config = BubblewrapConfig(binds=(BindMount(src=str(config_dir), dest=str(config_dir), readonly=False),))
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config)
+        try:
+            assert env._link_readonly == (str(config_dir),)
+        finally:
+            env.cleanup()
+
+    def test_absent_target_in_the_cwd_holds_the_directory_it_would_be_made_in(self, sandbox_root, work_dir, fake_home):
+        (fake_home / ".bashrc").symlink_to(work_dir / "bashrc")
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=10)
+        try:
+            assert env._link_readonly == (str(work_dir),)
+        finally:
+            env.cleanup()
+
+    def test_directory_target_that_holds_the_cwd_is_held(self, sandbox_root, work_dir, fake_home):
+        (work_dir / "vim" / "sub").mkdir(parents=True)
+        (fake_home / ".vim").symlink_to(work_dir / "vim")
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir / "vim" / "sub"), timeout=10)
+        try:
+            assert env._link_readonly == (str(work_dir / "vim"),)
+        finally:
+            env.cleanup()
+
+    def test_directory_of_a_middle_link_above_the_cwd_is_not_held(self, sandbox_root, work_dir, fake_home, tmp_path):
+        # A command below that directory cannot change the link in it.
+        target = tmp_path / "ro" / "bashrc"
+        target.parent.mkdir()
+        target.write_text("x")
+        (work_dir / "sub").mkdir()
+        (work_dir / "l").symlink_to(target)
+        (fake_home / ".bashrc").symlink_to(work_dir / "l")
+        with _no_session():
+            env = BubblewrapEnvironment(cwd=str(work_dir / "sub"), timeout=10)
+        try:
+            assert env._link_readonly == ()
+        finally:
+            env.cleanup()
+
     def test_held_parts_are_the_writable_ones_only(self, sandbox_root, fake_home):
         dotfiles = fake_home / "dotfiles"
         (dotfiles / "sub").mkdir(parents=True)

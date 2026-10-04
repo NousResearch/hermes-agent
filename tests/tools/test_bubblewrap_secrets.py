@@ -1187,6 +1187,73 @@ class TestLinkedDotEntryCwdIntegration:
 
 
 @needs_bwrap
+class TestLinkedDotEntryEdgeIntegration:
+    """Chains whose parts lie where the walk has to follow the kernel exactly."""
+
+    @pytest.fixture
+    def edge_home(self, host_dir, monkeypatch):
+        home = host_dir / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        return home
+
+    def test_middle_link_in_a_default_deny_directory_cannot_be_replaced(self, sandbox_root, edge_home, host_dir):
+        _write(host_dir / "ro" / "bashrc", "ORIGINAL")
+        share = edge_home / ".local" / "share"
+        share.mkdir(parents=True)
+        for rel in SENSITIVE_HOME_PATHS:
+            if rel.startswith(".local/share/"):
+                (edge_home / rel).mkdir(parents=True)
+        (share / "l").symlink_to(host_dir / "ro" / "bashrc")
+        (edge_home / ".bashrc").symlink_to(".local/share/l")
+        env = BubblewrapEnvironment(cwd=str(share), timeout=30)
+        try:
+            assert env.execute("rm l && echo EVIL > l")["returncode"] != 0
+        finally:
+            env.cleanup()
+        assert (share / "l").is_symlink()
+        assert (edge_home / ".bashrc").read_text().strip() == "ORIGINAL"
+
+    def test_dangling_target_cannot_be_created(self, sandbox_root, edge_home, host_dir):
+        proj = host_dir / "proj"
+        proj.mkdir()
+        (edge_home / ".bashrc").symlink_to(proj / "bashrc")
+        env = BubblewrapEnvironment(cwd=str(proj), timeout=30)
+        try:
+            assert env.execute("echo EVIL > bashrc")["returncode"] != 0
+        finally:
+            env.cleanup()
+        assert not (proj / "bashrc").exists()
+
+    def test_kernel_resolution_of_dot_dot_after_a_symlinked_directory_is_followed(self, sandbox_root, edge_home, host_dir):
+        (host_dir / "ro").mkdir()
+        _write(host_dir / "ro" / "bashrc", "WRONG")
+        _write(host_dir / "other" / "bashrc", "ORIGINAL")
+        (host_dir / "other" / "deep").mkdir()
+        (host_dir / "ro" / "dl").symlink_to(host_dir / "other" / "deep")
+        (edge_home / ".bashrc").symlink_to(f"{host_dir}/ro/dl/../bashrc")
+        assert (edge_home / ".bashrc").read_text().strip() == "ORIGINAL"
+        env = BubblewrapEnvironment(cwd=str(host_dir / "other"), timeout=30)
+        try:
+            assert env.execute("echo EVIL >> bashrc")["returncode"] != 0
+            assert env.execute("printf ok > new.txt")["returncode"] == 0
+        finally:
+            env.cleanup()
+        assert (host_dir / "other" / "bashrc").read_text().strip() == "ORIGINAL"
+
+    def test_directory_target_above_the_cwd_cannot_be_written(self, sandbox_root, edge_home, host_dir):
+        sub = host_dir / "proj" / "vim" / "sub"
+        sub.mkdir(parents=True)
+        (edge_home / ".vim").symlink_to(host_dir / "proj" / "vim")
+        env = BubblewrapEnvironment(cwd=str(sub), timeout=30)
+        try:
+            assert env.execute("echo EVIL > x.vim")["returncode"] != 0
+        finally:
+            env.cleanup()
+        assert not (sub / "x.vim").exists()
+
+
+@needs_bwrap
 class TestCoveredDefaultDenyDirIntegration:
     """A bind on ~/.local covers the tmpfs of ~/.local/share below it: the
     layout must not remount a path that is no longer a mount point."""
@@ -1377,3 +1444,4 @@ class TestScratchMaskIntegration:
         finally:
             sock.close()
         assert "CONNECTED" in out
+

@@ -1360,9 +1360,13 @@ class BubblewrapEnvironment(LocalEnvironment):
         replaced = home_replaced_by_bind(root, self._config.binds)
 
         held: list[str] = []
-        for unit, path in parts:
+        for unit, path, is_target in parts:
             for label, source, at_own_path in sources:
-                if not _is_within(path, source):
+                # A command writes to a part that lies in a writable source.
+                # A target directory also counts when the source lies inside
+                # it: what is below the target is what the host reads.
+                inside = is_target and os.path.isdir(path) and _is_within(source, path)
+                if not _is_within(path, source) and not inside:
                     continue
                 if at_own_path:
                     if any(_is_within(path, hidden) for hidden in self._hidden_paths):

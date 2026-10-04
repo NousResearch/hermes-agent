@@ -420,7 +420,7 @@ class TestLinkProtection:
 
     @staticmethod
     def _paths(home, allowlist):
-        return [path for _unit, path in link_protection(home, allowlist)]
+        return [part[1] for part in link_protection(home, allowlist)]
 
     def test_link_plain_entry_needs_nothing(self, home):
         _touch(home, ".bashrc")
@@ -429,7 +429,7 @@ class TestLinkProtection:
     def test_link_target_file_is_a_part(self, home):
         target = _touch(home, "dotfiles/bash/bashrc")
         os.symlink("dotfiles/bash/bashrc", os.path.join(home, ".bashrc"))
-        assert link_protection(home, (".bashrc", ".gitconfig")) == ((".bashrc", target),)
+        assert link_protection(home, (".bashrc", ".gitconfig")) == ((".bashrc", target, True),)
 
     def test_link_chain_gives_the_directory_of_each_middle_link_and_the_last_target(self, home):
         real = _touch(home, "dotfiles/sub/bashrc")
@@ -468,7 +468,7 @@ class TestLinkProtection:
         target.parent.mkdir()
         target.write_text("x")
         os.symlink(str(target), os.path.join(home, ".gitconfig"))
-        assert link_protection(home, (".gitconfig",)) == ((".gitconfig", str(target)),)
+        assert link_protection(home, (".gitconfig",)) == ((".gitconfig", str(target), True),)
 
     def test_link_dangling_or_looping_entry_gives_nothing(self, home):
         os.symlink("nowhere", os.path.join(home, ".bashrc"))
@@ -481,7 +481,46 @@ class TestLinkProtection:
         target.mkdir()
         os.makedirs(os.path.join(home, ".config"))
         os.symlink(str(target), os.path.join(home, ".config", "git"))
-        assert link_protection(home, (".config/git",)) == ((".config/git", str(target)),)
+        # The directory the entry itself lives in is no part: only a middle link's is.
+        assert link_protection(home, (".config/git",)) == ((".config/git", str(target), True),)
 
     def test_link_protection_is_empty_without_a_home_root(self):
         assert link_protection(None, (".bashrc",)) == ()
+
+    def test_link_middle_hop_in_a_default_deny_directory_is_kept(self, home, tmp_path):
+        target = tmp_path / "ro" / "bashrc"
+        target.parent.mkdir()
+        target.write_text("x")
+        os.makedirs(os.path.join(home, ".local", "share"))
+        os.symlink(str(target), os.path.join(home, ".local", "share", "l"))
+        os.symlink(".local/share/l", os.path.join(home, ".bashrc"))
+        assert link_protection(home, (".bashrc",)) == (
+            (".bashrc", os.path.join(home, ".local", "share"), False), (".bashrc", str(target), True),
+        )
+
+    def test_link_absent_target_gives_the_nearest_directory_that_exists(self, home):
+        os.makedirs(os.path.join(home, "proj"))
+        os.symlink("proj/deep/bashrc", os.path.join(home, ".bashrc"))
+        assert link_protection(home, (".bashrc",)) == ((".bashrc", os.path.join(home, "proj"), False),)
+
+    def test_link_absent_target_keeps_the_directory_of_a_middle_link(self, home):
+        os.makedirs(os.path.join(home, "dotfiles"))
+        os.makedirs(os.path.join(home, "proj"))
+        os.symlink("../proj/gone", os.path.join(home, "dotfiles", "bashrc"))
+        os.symlink("dotfiles/bashrc", os.path.join(home, ".bashrc"))
+        assert self._paths(home, (".bashrc",)) == [os.path.join(home, "dotfiles"), os.path.join(home, "proj")]
+
+    @pytest.mark.parametrize("text", ["ro/dl/../bashrc", "ro/./dl/../../ro/dl/../bashrc", "ro//dl/../bashrc"])
+    def test_link_walk_resolves_dot_dot_after_a_symlinked_directory_as_the_kernel_does(self, home, text):
+        from tools.environments.bubblewrap_home import _link_chain
+
+        os.makedirs(os.path.join(home, "ro"))
+        os.makedirs(os.path.join(home, "other", "deep"))
+        _touch(home, "other/bashrc", "KERNEL")
+        _touch(home, "ro/bashrc", "WRONG")
+        os.symlink("../other/deep", os.path.join(home, "ro", "dl"))
+        entry = os.path.join(home, ".bashrc")
+        os.symlink(text, entry)
+        links, real = _link_chain(entry)
+        assert real == os.path.realpath(entry) == os.path.join(home, "other", "bashrc")
+        assert os.path.join(home, "ro", "dl") in links

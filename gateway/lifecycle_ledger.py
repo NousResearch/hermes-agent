@@ -257,7 +257,9 @@ def _report_unclean_exit(evidence: Dict[str, Any], home: Optional[Path]) -> None
     logger.warning(
         "Previous gateway life (pid=%s, started_at=%s) exited UNCLEANLY (no exit path ran — SIGKILL / OOM / "
         "VM death, or a process kill issued by the agent or one of its descendants, e.g. a pkill/taskkill of "
-        "the host interpreter image; see #113667). last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
+        "the host interpreter image; see #113667). A fatal signal (SIGILL/SIGSEGV — an illegal instruction in "
+        "a native dependency, say) also lands here and leaves its traceback in the gateway log or "
+        "gateway_faulthandler.log (#126099). last_heartbeat_at=%s last_mem=%s suspected_oom=%s",
         evidence.get("prior_pid"), evidence.get("prior_started_at"), evidence.get("last_heartbeat_at"),
         evidence.get("last_heartbeat_mem"), evidence.get("suspected_oom", False),
     )

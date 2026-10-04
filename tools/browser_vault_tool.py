@@ -29,9 +29,134 @@ from __future__ import annotations
 import json
 import secrets
 import logging
+import threading
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# Generated credentials deliberately outlive individual backend discovery calls, but never
+# leave process memory. Holding the lock through each operation prevents fill/finalize races.
+_MAX_SIGNUP_PENDING = 128
+_signup_pending = {}
+_signup_lock = threading.RLock()
+
+
+def _signup_key(task_id):
+    from hermes_constants import get_hermes_home
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise ValueError("Signup requires an explicit session/task ID")
+    return (str(get_hermes_home()), task_id)
+
+
+def _signup_error():
+    # Backend/DOM errors can contain secret values, including a failed evaluation's source.
+    return json.dumps({"success": False, "error": "Signup credential operation refused or failed"})
+
+
+def create_signup_login(label: str, task_id: str) -> str:
+    """Create a pending external login. The plugin must supply its session/task ID.
+
+    Returns only an opaque process-local handle and origin. No local vault fallback.
+    Pending items survive a failed operation for explicit retry/discard; process restart
+    loses the handles and leaves the clearly marked pending items in the manager.
+    """
+    from agent.vault_backends.base import enabled_backends
+    from agent.vault_signup import validate_label
+    from agent.vault_backends.onepassword import OnePasswordLoginBackend
+    try:
+        key = _signup_key(task_id)
+        validate_label(label)
+        origin = _signup_origin(task_id)
+        backend = next((b for b in enabled_backends() if type(b) is OnePasswordLoginBackend), None)
+        if backend is None:
+            return _signup_error()
+        with _signup_lock:
+            if len(_signup_pending) >= _MAX_SIGNUP_PENDING:
+                return _signup_error()
+            backend_handle = backend.create_generated_login(origin, label)
+            handle = "signup_" + secrets.token_urlsafe(24)
+            _signup_pending[(key, handle)] = (backend, backend_handle, origin)
+        return json.dumps({"success": True, "handle": handle, "origin": origin, "backend": backend.name})
+    except Exception:
+        return _signup_error()
+
+
+def _signup_origin(task_id):
+    from agent.vault_signup import validate_origin
+    result = _eval_js_secret(task_id, "window.location.origin")
+    if not result.get("success"):
+        raise ValueError("Signup requires a supervised page")
+    return validate_origin(_parse_json_result(result.get("result")))
+
+
+def _signup_entry(handle, task_id):
+    key = (_signup_key(task_id), handle)
+    return key, *_signup_pending[key]
+
+
+def fill_signup_password(handle: str, task_id: str) -> str:
+    """Fill positively identified signup controls over supervised CDP only."""
+    from agent.vault_signup import (
+        classify_signup_controls, build_signup_fill_js,
+        build_signup_inspection_js, build_signup_cleanup_js,
+    )
+    from agent.redact import register_vault_redaction_value
+    try:
+        with _signup_lock:
+            _, backend, backend_handle, origin = _signup_entry(handle, task_id)
+            if _signup_origin(task_id) != origin:
+                return _signup_error()
+            nonce = secrets.token_hex(16)
+            try:
+                inspected = _eval_js_secret(task_id, build_signup_inspection_js(nonce))
+                if not inspected.get("success"):
+                    return _signup_error()
+                controls = classify_signup_controls(_parse_json_result(inspected.get("result")))
+                if not controls:
+                    return _signup_error()
+                password = backend.resolve_password(backend_handle)
+                if not isinstance(password, str) or not password:
+                    return _signup_error()
+                register_vault_redaction_value(password)
+                result = _eval_js_secret(task_id, build_signup_fill_js(controls, password, origin, nonce))
+                del password
+                if not result.get("success"):
+                    return _signup_error()
+                data = _parse_json_result(result.get("result"))
+                if not isinstance(data, dict) or type(data.get("filled")) is not int or data["filled"] != len(controls):
+                    return _signup_error()
+            finally:
+                # Nonce-specific attributes never overwrite the page's existing locators.
+                _eval_js_secret(task_id, build_signup_cleanup_js(nonce))
+            return json.dumps({"success": True, "filled_fields": len(controls), "origin": origin})
+    except Exception:
+        return _signup_error()
+
+
+def _finalize_signup(handle, label, task_id, method):
+    from agent.vault_signup import validate_label
+    try:
+        if method == "commit_generated_login":
+            validate_label(label)
+        with _signup_lock:
+            key, backend, backend_handle, origin = _signup_entry(handle, task_id)
+            args = (backend_handle, label) if method == "commit_generated_login" else (backend_handle,)
+            getattr(backend, method)(*args)
+            del _signup_pending[key]
+        return json.dumps({"success": True, "origin": origin})
+    except Exception:
+        return _signup_error()
+
+
+def commit_signup_login(handle: str, label: str, task_id: str) -> str:
+    """Rename the pending external item and retire its process-local handle."""
+    return _finalize_signup(handle, label, task_id, "commit_generated_login")
+
+
+def discard_signup_login(handle: str, task_id: str) -> str:
+    """Delete the pending external item and retire its process-local handle."""
+    return _finalize_signup(handle, None, task_id, "discard_generated_login")
 
 
 # ---------------------------------------------------------------------------

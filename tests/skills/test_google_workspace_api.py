@@ -197,6 +197,52 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert saved["type"] == "authorized_user"
 
 
+def test_gmail_reply_encodes_non_ascii_display_name(api_module, monkeypatch, capsys):
+    """A Cyrillic (or other non-ASCII) display name in the original From header
+    must round-trip through the reply's raw MIME instead of producing invalid
+    bytes that make the Gmail API reject the send with 'Invalid To header'."""
+    import base64
+    from email import message_from_bytes
+    from email.header import decode_header
+
+    calls = []
+
+    def fake_run_gws(parts, params=None, body=None):
+        calls.append((list(parts), params, body))
+        if parts[:3] == ["gmail", "users", "messages"] and "get" in parts:
+            return {
+                "threadId": "thread1",
+                "payload": {"headers": [
+                    {"name": "From", "value": '"Евтеева Алена" <recruiter@alena-evteeva.com>'},
+                    {"name": "Subject", "value": "Job opportunity"},
+                    {"name": "Message-ID", "value": "<orig@example.com>"},
+                ]},
+            }
+        return {"id": "sent1", "threadId": "thread1"}
+
+    monkeypatch.setattr(api_module, "_run_gws", fake_run_gws)
+
+    args = types.SimpleNamespace(
+        message_id="msg1", body="Thanks!", from_header="", thread_id="",
+    )
+    api_module.gmail_reply(args)
+
+    send_call = next(c for c in calls if c[0] == ["gmail", "users", "messages", "send"])
+    raw = send_call[2]["raw"]
+    raw_bytes = base64.urlsafe_b64decode(raw)
+    assert raw_bytes.isascii()  # the actual defect: raw MIME must stay pure ASCII
+
+    parsed = message_from_bytes(raw_bytes)
+    name, addr = api_module.parseaddr(parsed["To"])
+    decoded_bytes, encoding = decode_header(name)[0]
+    decoded_name = decoded_bytes.decode(encoding) if isinstance(decoded_bytes, bytes) else decoded_bytes
+    assert decoded_name == "Евтеева Алена"
+    assert addr == "recruiter@alena-evteeva.com"
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "sent"
+
+
 def _tabbed_doc():
     """A Doc with two tabs (one nested), as the Docs API returns with includeTabsContent."""
     def body(text):

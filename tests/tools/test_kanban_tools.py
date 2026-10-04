@@ -160,6 +160,73 @@ def test_complete_waits_for_pre_verify_closure(monkeypatch, worker_env):
         conn.close()
 
 
+def test_deferred_completion_refuses_empty_evidence(monkeypatch, worker_env):
+    monkeypatch.setattr('hermes_cli.lifecycle.has_hook', lambda name: name == 'pre_verify')
+    monkeypatch.setattr('agent.delegation_context.is_dispatcher_owned_worker_context', lambda: True)
+    from tools import kanban_tools as kt
+    import os
+    out = json.loads(kt._handle_complete({'summary': '   '}))
+    assert 'error' in out
+    assert 'HERMES_KANBAN_PENDING_COMPLETION' not in os.environ
+
+
+@pytest.mark.parametrize('gate', ['parent', 'acceptance'])
+def test_deferred_completion_refusal_reaches_worker(monkeypatch, worker_env, gate):
+    import os
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    monkeypatch.setattr('hermes_cli.lifecycle.has_hook', lambda name: name == 'pre_verify')
+    monkeypatch.setattr('agent.delegation_context.is_dispatcher_owned_worker_context', lambda: True)
+    with kbc.connect() as conn:
+        if gate == 'parent':
+            parent = kb.create_task(conn, title='unfinished parent')
+            kb.link_tasks(conn, parent, worker_env, expected_child_run_id=int(os.environ['HERMES_KANBAN_RUN_ID']))
+    if gate == 'acceptance':
+        monkeypatch.setattr('hermes_cli.kanban_pr_acceptance_store.prepare_acceptance', lambda *args: object())
+        def refuse(conn, tid, receipt):
+            conn.execute('UPDATE tasks SET last_failure_error=? WHERE id=?', ('acceptance: credential fix required', tid))
+            return False
+        monkeypatch.setattr('hermes_cli.kanban_pr_acceptance_store.record_acceptance', refuse)
+    out = json.loads(kt._handle_complete({'summary': 'handoff'}))
+    assert 'error' in out
+    assert ('unsatisfied parent' if gate == 'parent' else 'credential fix required') in out['error']
+    assert 'HERMES_KANBAN_PENDING_COMPLETION' not in os.environ
+
+
+@pytest.mark.parametrize('mode', ['completed', 'interrupted', 'failed', 'budget', 'lost_cas'])
+def test_deferred_completion_real_turn_finalizer(monkeypatch, worker_env, mode):
+    import os
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from tests.agent.test_turn_finalizer_cleanup_guard import _StubAgent
+    from agent.turn_finalizer import finalize_turn
+    monkeypatch.setattr('hermes_cli.lifecycle.has_hook', lambda name: name == 'pre_verify')
+    monkeypatch.setattr('agent.delegation_context.is_dispatcher_owned_worker_context', lambda: True)
+    assert json.loads(kt._handle_complete({'summary': 'verified handoff'}))['pending_verification']
+    if mode == 'lost_cas':
+        with kbc.connect() as conn:
+            conn.execute('UPDATE tasks SET current_run_id=NULL WHERE id=?', (worker_env,))
+    agent = _StubAgent(raise_in=())
+    if mode != 'budget':
+        from types import SimpleNamespace
+        agent.iteration_budget = SimpleNamespace(used=1, max_total=3, remaining=2)
+    result = finalize_turn(agent, final_response='Finished',
+        api_call_count=3 if mode == 'budget' else 1,
+        interrupted=mode == 'interrupted', failed=mode == 'failed',
+        messages=[{'role': 'user', 'content': 'Work'}], conversation_history=None,
+        effective_task_id=worker_env, turn_id='turn', user_message='Work', original_user_message='Work',
+        _should_review_memory=False, _turn_exit_reason='unknown')
+    assert 'HERMES_KANBAN_PENDING_COMPLETION' not in os.environ
+    with kbc.connect() as conn:
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == ('done' if mode == 'completed' else 'ready' if mode == 'budget' else 'running')
+    if mode == 'lost_cas':
+        assert result['failed'] is True
+        assert 'refused' in result['final_response']
+    assert kt.finalize_pending_completion() is None
+
+
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):
     """After a phantom rejection, retrying kanban_complete with
     created_cards=[] (the documented escape hatch) must complete the

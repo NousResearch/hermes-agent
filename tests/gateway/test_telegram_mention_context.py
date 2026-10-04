@@ -93,12 +93,12 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
         }:
             text = {"mention": "😀 @hermes_bot 2", "approval": "@hermes_bot ok",
                     "prefixed_command": "@hermes_bot /status",
-                    "prefixed_addressed_command": "@hermes_bot /group@hermes_bot list",
-                    "prefixed_command_argument": "@hermes_bot /group 1 send @hermes_bot hello\nagain  ",
-                    "repeated_prefix_command": " @HeRmEs_BoT, @hermes_bot: /group 1 send @hermes_bot hello ",
-                    "ordinary_text_prefix": "@hermes_bot explain /group list",
-                    "punctuated_prefix": "@hermes_bot ! /group list",
-                    "other_bot_prefix": "@hermes_bot @ops_bot /group list"}[trigger]
+                    "prefixed_addressed_command": "@hermes_bot /model@hermes_bot gpt-5",
+                    "prefixed_command_argument": "@hermes_bot /btw did @hermes_bot answer Alice?\nKeep it short  ",
+                    "repeated_prefix_command": " @HeRmEs_BoT, @hermes_bot: /btw did @hermes_bot answer? ",
+                    "ordinary_text_prefix": "@hermes_bot explain /model gpt-5",
+                    "punctuated_prefix": "@hermes_bot ! /model gpt-5",
+                    "other_bot_prefix": "@hermes_bot @ops_bot /model gpt-5"}[trigger]
             offset = 3 if trigger == "mention" else (1 if trigger == "repeated_prefix_command" else 0)
             entities = [SimpleNamespace(type="mention", offset=offset, length=11)]
             if trigger in {"prefixed_addressed_command", "prefixed_command_argument"}:
@@ -109,7 +109,7 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
             elif trigger == "repeated_prefix_command":
                 entities.extend([
                     SimpleNamespace(type="mention", offset=text.index("@hermes_bot"), length=11),
-                    _bot_command_entity(text, "/group"),
+                    _bot_command_entity(text, "/btw"),
                     SimpleNamespace(type="mention", offset=text.rfind("@hermes_bot"), length=11),
                 ])
             elif trigger == "other_bot_prefix":
@@ -135,16 +135,16 @@ def test_sole_addressee_text_stays_clean_and_prompt_is_session_stable(trigger):
         assert len(events) == 2
         first, second = events
         expected_text = {"mention": "😀 2", "approval": "ok", "prefixed_command": "/status",
-                         "prefixed_addressed_command": "/group@hermes_bot list",
-                         "prefixed_command_argument": "/group 1 send @hermes_bot hello\nagain  ",
-                         "repeated_prefix_command": "/group 1 send @hermes_bot hello ",
-                         "ordinary_text_prefix": "explain /group list", "punctuated_prefix": "! /group list",
+                         "prefixed_addressed_command": "/model@hermes_bot gpt-5",
+                         "prefixed_command_argument": "/btw did @hermes_bot answer Alice?\nKeep it short  ",
+                         "repeated_prefix_command": "/btw did @hermes_bot answer? ",
+                         "ordinary_text_prefix": "explain /model gpt-5", "punctuated_prefix": "! /model gpt-5",
                          "code": "@hermes_bot"}.get(trigger, msg.text)
         assert first.text == expected_text
         command_cases = {"command": ("new", ""), "prefixed_command": ("status", ""),
-                         "prefixed_addressed_command": ("group", "list"),
-                         "prefixed_command_argument": ("group", "1 send @hermes_bot hello\nagain  "),
-                         "repeated_prefix_command": ("group", "1 send @hermes_bot hello ")}
+                         "prefixed_addressed_command": ("model", "gpt-5"),
+                         "prefixed_command_argument": ("btw", "did @hermes_bot answer Alice?\nKeep it short  "),
+                         "repeated_prefix_command": ("btw", "did @hermes_bot answer? ")}
         if trigger in command_cases:
             assert (first.get_command(), first.get_command_args()) == command_cases[trigger]
         if trigger in {"ordinary_text_prefix", "punctuated_prefix", "other_bot_prefix"}:
@@ -174,12 +174,13 @@ def _command_entities(text):
 
 @pytest.mark.parametrize("chat", ["group", "observed_group", "private"])
 @pytest.mark.parametrize("text,command,args", [
-    ("/group@hermes_bot list", "group", "list"),
-    ("/group@HeRmEs_BoT   1 files  monthly plan  ", "group", "1 files  monthly plan  "),
-    ("/group@hermes_bot\n1 send @hermes_bot hello\nagain", "group", "1 send @hermes_bot hello\nagain"),
-    (" \t/group@hermes_bot\tlist", "group", "list"),
-    ("/group 1 send @hermes_bot Hello, @hermes_bot\nready?", "group", "1 send @hermes_bot Hello, @hermes_bot\nready?"),
-    ("/group@hermes_bot 1 send @ops_bot hello @hermes_bot", "group", "1 send @ops_bot hello @hermes_bot"),
+    ("/model@hermes_bot gpt-5", "model", "gpt-5"),
+    ("/model@HeRmEs_BoT   anthropic/claude-sonnet-4  --global  ", "model", "anthropic/claude-sonnet-4  --global  "),
+    ("/queue@hermes_bot\nsummarise the thread\nthen ask @hermes_bot for a recap", "queue",
+     "summarise the thread\nthen ask @hermes_bot for a recap"),
+    (" \t/personality@hermes_bot\tconcise", "personality", "concise"),
+    ("/btw did @hermes_bot already answer Alice?\nKeep it short", "btw", "did @hermes_bot already answer Alice?\nKeep it short"),
+    ("/steer@hermes_bot ask @ops_bot what @hermes_bot missed", "steer", "ask @ops_bot what @hermes_bot missed"),
     ("/new@hermes_bot", "new", ""),
     ("/help\n", "help", ""),
 ])
@@ -214,7 +215,7 @@ def test_command_text_reaches_real_event_parser_unchanged(chat, text, command, a
 ])
 def test_trigger_paths_preserve_commands_without_widening_admission(carrier, other_bot, require_mention):
     async def run():
-        text = "/group@other_bot list" if other_bot else "/group@hermes_bot\nlist @hermes_bot"
+        text = "/model@ops_bot gpt-5" if other_bot else "/queue@hermes_bot\nsummarise what @hermes_bot missed"
         adapter = _make_adapter(require_mention=require_mention, free_response_chats=["-100"])
         adapter._ensure_forum_commands = AsyncMock()
         adapter._cache_inbound_av = AsyncMock(return_value=False)
@@ -234,8 +235,8 @@ def test_trigger_paths_preserve_commands_without_widening_admission(carrier, oth
             adapter._ensure_forum_commands.assert_not_awaited()
             return
         assert len(events) == 1
-        assert events[0].get_command() == "group"
-        assert events[0].get_command_args() == "list @hermes_bot"
+        assert events[0].get_command() == "queue"
+        assert events[0].get_command_args() == "summarise what @hermes_bot missed"
         assert events[0].text == text
 
     asyncio.run(run())

@@ -401,7 +401,7 @@ class TestPersistence:
         """The FIRST row written for an ACP session carries provider/base_url/api_mode,
         so a restart before any later save restores the same route (#9812)."""
         agent = SimpleNamespace(
-            model="test-model", provider="anthropic",
+            model="test-model", provider="anthropic", requested_provider="auto",
             base_url="https://anthropic.example/v1", api_mode="anthropic_messages",
         )
         db = SessionDB(tmp_path / "state.db")
@@ -636,6 +636,41 @@ class TestPersistence:
         # A key_cmd credential reaches the agent as a per-request callable; call it for the key it sends.
         api_key = api_key() if callable(api_key) else api_key
         assert (kwargs.get("provider"), kwargs.get("base_url"), api_key) == expected
+
+    def test_named_custom_provider_round_trips_without_healing(self, tmp_path, monkeypatch):
+        """A session on a named custom provider stores ``custom:<name>``, not the bare ``custom`` it
+        resolves to, so a restart restores that entry's endpoint and key without identity recovery."""
+        from hermes_constants import get_hermes_home
+
+        (get_hermes_home() / "config.yaml").write_text(self._NAMED)
+
+        class FakeAgent:
+            # The identity attributes AIAgent derives from its constructor arguments.
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.model, self.provider = kwargs.get("model"), kwargs.get("provider")
+                self.base_url, self.api_mode = kwargs.get("base_url"), kwargs.get("api_mode")
+                self.requested_provider = kwargs.get("requested_provider") or self.provider
+
+        heals = []
+        named_custom_runtime = acp_session._named_custom_runtime
+        monkeypatch.setattr(acp_session, "_named_custom_runtime",
+                            lambda *args: heals.append(args) or named_custom_runtime(*args))
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(db=db)
+        state = manager.create_session(cwd="/work")
+        state.history.append({"role": "user", "content": "hello"})
+        manager.save_session(state.session_id)
+
+        assert json.loads(db.get_session(state.session_id)["model_config"])["provider"] == "custom:cliproxyapi"
+
+        restored = SessionManager(db=db).get_session(state.session_id)
+
+        assert restored is not None
+        kwargs = restored.agent.kwargs
+        assert (kwargs["provider"], kwargs["base_url"], kwargs["api_key"]) == self._CLIPROXY
+        assert heals == []
 
     def test_only_restores_acp_sessions(self, manager):
         """get_session should not restore non-ACP sessions from DB."""

@@ -383,6 +383,11 @@ class SessionManager:
             value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
+        # A named custom provider resolves to the bare "custom" billing class; persist the requested
+        # ``custom:<name>`` instead so restore resolves that entry and its key directly.
+        requested = str(getattr(state.agent, "requested_provider", None) or "").strip()
+        if session_meta.get("provider") == "custom" and requested.startswith("custom:") and requested[7:].strip():
+            session_meta["provider"] = requested
 
         try:
             if db.get_session(state.session_id) is None:
@@ -582,7 +587,8 @@ class SessionManager:
                     if named and named.get("api_key") != _NOAUTH_PLACEHOLDER:
                         runtime = named
             kwargs.update({
-                "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
+                "provider": runtime.get("provider"), "requested_provider": runtime.get("requested_provider"),
+                "api_mode": api_mode or runtime.get("api_mode"),
                 "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
                 "credential_pool": runtime.get("credential_pool"),
                 "command": runtime.get("command"), "args": list(runtime.get("args") or []),

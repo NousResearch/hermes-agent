@@ -1314,15 +1314,12 @@ class TestSenderAuthentication(unittest.TestCase):
             msg["Authentication-Results"] = ar
         return msg
 
-    def _verify(self, from_addr, auth_results=None, authserv_id=None):
-        """authserv_id=None pins the topmost header's own id, as a correctly configured receiver would."""
+    def _verify(self, from_addr, auth_results=None, authserv_id="mx.ourserver.com"):
+        """Rows stamp the pinned receiver's id, so a verdict is judged on its content, not on a pin mismatch."""
         from plugins.platforms.email.adapter import (
-            _ar_clauses,
             _verify_sender_authentication,
             _extract_email_address,
         )
-        if authserv_id is None:
-            authserv_id = (_ar_clauses(" ".join(auth_results[0].split())) or [""])[0].strip() if auth_results else ""
         msg = self._msg(from_addr, auth_results)
         addr = _extract_email_address(from_addr)
         return _verify_sender_authentication(msg, addr, authserv_id=authserv_id)
@@ -1330,55 +1327,55 @@ class TestSenderAuthentication(unittest.TestCase):
     def test_auth_results_verdicts(self):
         ok, reason = self._verify(
             "Admin <admin@example.com>",
-            ["mx.google.com; dmarc=pass header.from=example.com; spf=pass"],
+            ["mx.ourserver.com; dmarc=pass header.from=example.com; spf=pass"],
         )
         self.assertTrue(ok, reason)
         # A dmarc=pass issued for another domain must not vouch for this From,
         # even when a later dkim clause carries an aligned header.from.
         # Verdict and header.from are read from the one dmarc clause, with (comments) stripped first.
-        for ar in ("mx.google.com; dmarc=pass header.from=evil.test",
-                   "mx.google.com; dmarc=pass header.from=evil.test; dkim=pass header.d=x.test header.from=example.com",
-                   "mx.google.com; dmarc=pass (p=none; sp=none) header.from=evil.test",
-                   "mx.google.com; dmarc=fail header.from=example.com; dmarc=pass header.from=evil.test",
+        for ar in ("mx.ourserver.com; dmarc=pass header.from=evil.test",
+                   "mx.ourserver.com; dmarc=pass header.from=evil.test; dkim=pass header.d=x.test header.from=example.com",
+                   "mx.ourserver.com; dmarc=pass (p=none; sp=none) header.from=evil.test",
+                   "mx.ourserver.com; dmarc=fail header.from=example.com; dmarc=pass header.from=evil.test",
                    # every header.from in the dmarc clause must align, not just one
-                   "mx.google.com; dmarc=pass header.from=evil.test header.from=example.com",
+                   "mx.ourserver.com; dmarc=pass header.from=evil.test header.from=example.com",
                    # ';' inside quoted-strings / nested comments must not split or smuggle a dmarc clause
-                   'mx.google.com; spf=pass smtp.mailfrom="x;dmarc=pass header.from=example.com x"@evil.test; '
+                   'mx.ourserver.com; spf=pass smtp.mailfrom="x;dmarc=pass header.from=example.com x"@evil.test; '
                    "dmarc=fail header.from=example.com",
-                   "mx.google.com; dmarc=pass (a (b) ; header.from=example.com) header.from=evil.test",
-                   'mx.google.com; dmarc=pass reason="a;b" header.from=evil.test',
-                   "mx.google.com; dmarc=pass a) ; header.from=evil.test",  # stray ')' is unbalanced
-                   "mx.google.com; dmarc=pass header.from=example.com; dmarc=pass header.from=evil.test",
-                   "mx.google.com; dmarc=pass (a ; header.from=evil.test",
-                   r'mx.google.com; spf=pass smtp.mailfrom="x\\";dmarc=pass header.from=example.com;x="y"; '
+                   "mx.ourserver.com; dmarc=pass (a (b) ; header.from=example.com) header.from=evil.test",
+                   'mx.ourserver.com; dmarc=pass reason="a;b" header.from=evil.test',
+                   "mx.ourserver.com; dmarc=pass a) ; header.from=evil.test",  # stray ')' is unbalanced
+                   "mx.ourserver.com; dmarc=pass header.from=example.com; dmarc=pass header.from=evil.test",
+                   "mx.ourserver.com; dmarc=pass (a ; header.from=evil.test",
+                   r'mx.ourserver.com; spf=pass smtp.mailfrom="x\\";dmarc=pass header.from=example.com;x="y"; '
                    "dmarc=fail header.from=example.com",
                    # spf/dkim verdicts and domains come only from their own clause, never quoted text or comments
-                   'mx.google.com; spf=fail smtp.mailfrom="x spf=pass smtp.mailfrom=example.com "@evil.test; '
+                   'mx.ourserver.com; spf=fail smtp.mailfrom="x spf=pass smtp.mailfrom=example.com "@evil.test; '
                    "dmarc=fail header.from=example.com",
-                   "mx.google.com; spf=fail (spf=pass) smtp.mailfrom=a@example.com",
-                   "mx.google.com; spf=fail smtp.mailfrom=a.spf=pass@example.com; dmarc=fail header.from=example.com",
-                   'mx.google.com; dkim=pass header.d=evil.test header.i="x header.d=example.com y"@evil.test',
-                   "mx.google.com; spf=pass smtp.mailfrom=example.com; spf=fail smtp.mailfrom=evil.test",
-                   "mx.google.com; spf=fail smtp.mailfrom=evil.test; spf=pass smtp.mailfrom=example.com",
-                   "mx.google.com; dkim=pass header.d=evil.test; dkim=fail header.d=example.com",
-                   'mx.google.com; dkim=pass header.i="x header.d=example.com"@evil.test',
+                   "mx.ourserver.com; spf=fail (spf=pass) smtp.mailfrom=a@example.com",
+                   "mx.ourserver.com; spf=fail smtp.mailfrom=a.spf=pass@example.com; dmarc=fail header.from=example.com",
+                   'mx.ourserver.com; dkim=pass header.d=evil.test header.i="x header.d=example.com y"@evil.test',
+                   "mx.ourserver.com; spf=pass smtp.mailfrom=example.com; spf=fail smtp.mailfrom=evil.test",
+                   "mx.ourserver.com; spf=fail smtp.mailfrom=evil.test; spf=pass smtp.mailfrom=example.com",
+                   "mx.ourserver.com; dkim=pass header.d=evil.test; dkim=fail header.d=example.com",
+                   'mx.ourserver.com; dkim=pass header.i="x header.d=example.com"@evil.test',
                    # an escaped quote keeps the quoted-string open, so no dmarc clause is smuggled out of it
-                   r'mx.google.com; spf=fail smtp.mailfrom="a\";dmarc=pass header.from=example.com;x=\""@evil.test'):
+                   r'mx.ourserver.com; spf=fail smtp.mailfrom="a\";dmarc=pass header.from=example.com;x=\""@evil.test'):
             ok, reason = self._verify("Admin <admin@example.com>", [ar])
             self.assertFalse(ok, ar)
         # Real MTA headers (multi-signature DKIM, comments, quoted values) keep authenticating.
-        for ar in ("mx.google.com; arc=pass (dmarc=fail header.from=evil.test); dmarc=pass header.from=example.com",
-                   'mx.google.com; dmarc=pass reason="a;b" header.from="example.com"',
-                   'mx.google.com; dmarc=pass reason="header.from=evil.test" header.from=example.com',
-                   "mx.google.com; dkim=pass header.i=@example.com header.s=s1 header.b=AbC; spf=pass (google.com: "
+        for ar in ("mx.ourserver.com; arc=pass (dmarc=fail header.from=evil.test); dmarc=pass header.from=example.com",
+                   'mx.ourserver.com; dmarc=pass reason="a;b" header.from="example.com"',
+                   'mx.ourserver.com; dmarc=pass reason="header.from=evil.test" header.from=example.com',
+                   "mx.ourserver.com; dkim=pass header.i=@example.com header.s=s1 header.b=AbC; spf=pass (google.com: "
                    "domain of admin@example.com designates 1.2.3.4 as permitted sender) smtp.mailfrom=admin@example.com; "
                    "dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=example.com",
-                   "spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=example.com; dkim=pass (signature was verified) "
+                   "mx.ourserver.com; spf=pass (sender IP is 1.2.3.4) smtp.mailfrom=example.com; dkim=pass (signature was verified) "
                    "header.d=example.com;dmarc=pass action=none header.from=example.com;compauth=pass reason=100",
-                   "mail.example.org; dmarc=pass (p=none dis=none) header.from=example.com",
-                   'mail.example.org; dkim=pass (2048-bit key; unprotected) header.d=example.com header.i=@example.com '
+                   "mx.ourserver.com; dmarc=pass (p=none dis=none) header.from=example.com",
+                   'mx.ourserver.com; dkim=pass (2048-bit key; unprotected) header.d=example.com header.i=@example.com '
                    'header.b="AbC+/1"; spf=pass smtp.mailfrom=example.com',
-                   "mx.example.org; dkim=pass (1024-bit key) header.d=esp.test header.i=@esp.test; "
+                   "mx.ourserver.com; dkim=pass (1024-bit key) header.d=esp.test header.i=@esp.test; "
                    "dkim=pass (2048-bit key) header.d=example.com header.i=@example.com; spf=softfail "
                    "smtp.mailfrom=bounce@esp.test"):
             ok, reason = self._verify("Admin <admin@example.com>", [ar])
@@ -1388,7 +1385,7 @@ class TestSenderAuthentication(unittest.TestCase):
     def test_dkim_pass_aligned_authenticates(self):
         ok, reason = self._verify(
             "admin@example.com",
-            ["mx.google.com; dkim=pass header.d=example.com"],
+            ["mx.ourserver.com; dkim=pass header.d=example.com"],
         )
         self.assertTrue(ok, reason)
 
@@ -1396,7 +1393,7 @@ class TestSenderAuthentication(unittest.TestCase):
         # SPF passes for the envelope domain, but it doesn't match From: domain.
         ok, reason = self._verify(
             "admin@example.com",
-            ["mx.google.com; spf=pass smtp.mailfrom=bounce@evil.com"],
+            ["mx.ourserver.com; spf=pass smtp.mailfrom=bounce@evil.com"],
         )
         self.assertFalse(ok, reason)
 

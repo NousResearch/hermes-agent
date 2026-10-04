@@ -905,6 +905,8 @@ class DockerEnvironment(BaseEnvironment):
                 image)
         security_args = _build_security_args(
             run_as_host_user and bool(user_args), run_exec=image_uses_s6_init, snap_compat=snap_compat)
+        reuse_security_args = _build_security_args(
+            run_as_host_user and bool(user_args), snap_compat=snap_compat)
         self._snap_compat = snap_compat
         if snap_compat:
             logger.warning(
@@ -928,7 +930,8 @@ class DockerEnvironment(BaseEnvironment):
         task_label = _sanitize_label_value(task_id)
         try:
             runtime_label = _runtime_reuse_fingerprint(
-                all_run_args, self._run_env_values)
+                reuse_security_args + all_run_args[len(security_args):],
+                self._run_env_values)
         except (OSError, RuntimeError) as exc:
             raise EnvironmentConnectionError(
                 f"Docker runtime reuse identity could not load its private key: {exc}"

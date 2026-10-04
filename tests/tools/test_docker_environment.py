@@ -1205,6 +1205,8 @@ def _mock_subprocess_run_with_reuse(
     ps_state: str | None,
     start_succeeds: bool = True,
     expected_runtime_label: str | None = None,
+    entrypoint_json: str | None = None,
+    container_image: str | None = None,
 ):
     """Reuse-aware subprocess.run mock.
 
@@ -1227,6 +1229,14 @@ def _mock_subprocess_run_with_reuse(
             sub = cmd[1]
             if sub == "version":
                 return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if cmd[1:3] == ["image", "inspect"] and entrypoint_json is not None:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=f"{entrypoint_json}\n", stderr=""
+                )
+            if sub == "inspect" and container_image is not None:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=f"{container_image}\n", stderr=""
+                )
             if sub == "ps":
                 if ps_state is None:
                     return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -1321,6 +1331,38 @@ def test_default_image_flip_reaches_existing_reuse_guard(monkeypatch):
         isinstance(cmd, list) and len(cmd) >= 2 and cmd[1] == "run"
         for cmd, _kwargs in calls
     )
+
+
+def test_default_image_flip_to_s6_reaches_existing_reuse_guard(monkeypatch):
+    """Image-derived s6 run args must not hide an old unpinned sandbox."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    _mock_subprocess_run_with_reuse(
+        monkeypatch, ps_state=None, entrypoint_json="null"
+    )
+    existing = _make_dummy_env(
+        task_id="default-image-s6-flip",
+        image="old/image:1",
+        persist_across_processes=False,
+    )
+    existing_runtime_label = existing._labels["hermes-runtime"]
+    _mock_subprocess_run_with_reuse(
+        monkeypatch,
+        ps_state="running",
+        expected_runtime_label=existing_runtime_label,
+        entrypoint_json='["/init"]',
+        container_image="old/image:1",
+    )
+
+    current = _make_dummy_env(
+        task_id="default-image-s6-flip",
+        image="hermes-agent:latest",
+    )
+
+    assert (
+        current._labels["hermes-runtime"],
+        current._container_id,
+    ) == (existing_runtime_label, "reused-cid")
 
 
 def test_reuse_rejects_container_from_different_mount_posture(monkeypatch):

@@ -49,7 +49,12 @@ def test_migration_policy(monkeypatch, capsys, case, expected):
     monkeypatch.setattr('builtins.input', prompt)
     gateway_prompts = []
     monkeypatch.setattr(update_cmd, '_gateway_prompt', lambda text, default: gateway_prompts.append((text, default)) or 'y')
-    update_cmd._check_and_apply_config_migration(assume_yes=case == 'yes', gateway_mode=case == 'gateway')
+    if case == 'migration-error':
+        # A failed write is owed, not silently completed: the owed-step guard needs the raise.
+        with pytest.raises(RuntimeError, match=r'v2 → v3 was not written: cannot write config'):
+            update_cmd._check_and_apply_config_migration(assume_yes=False, gateway_mode=False)
+    else:
+        update_cmd._check_and_apply_config_migration(assume_yes=case == 'yes', gateway_mode=case == 'gateway')
     assert calls == expected
     assert bool(prompts) is (case in {'tty-yes', 'tty-decline', 'eof', 'unicode'})
     assert bool(gateway_prompts) is (case == 'gateway')

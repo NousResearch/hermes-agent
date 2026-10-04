@@ -19,6 +19,15 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
+
+def _child_env(**values: str) -> dict[str, str]:
+    """A fresh env for a child of THIS interpreter: same dependency path, no hermes state."""
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("HERMES_", "PYTEST_"))}
+    # The test runner may provide dependencies through sys.path rather than site-packages.
+    env["PYTHONPATH"] = os.pathsep.join(path for path in sys.path if path)
+    env.update(values)
+    return env
+
 _CHILD = textwrap.dedent('''
     import copy, json, os, subprocess, sys
     from pathlib import Path
@@ -93,10 +102,9 @@ def _run_completion(tmp_path: Path, mode: str, *, sqlite: str | None = None) -> 
     profile = root_home / "profiles" / "probe"
     for name in ("logs/update_receipts", "skills", "cache", "profiles/probe"):
         (root_home / name).mkdir(parents=True, exist_ok=True)
-    env = {key: value for key, value in os.environ.items() if not key.startswith(("HERMES_", "PYTEST_"))}
-    env.update(HOME=str(cell / "home"), HERMES_HOME=str(profile), HERMES_DISABLE_LAZY_INSTALLS="1",
-               HERMES_RUNTIME_DIR=str(tmp_path / "store"), PYTHONDONTWRITEBYTECODE="1",
-               XDG_CONFIG_HOME=str(cell / "home/.config"), XDG_CACHE_HOME=str(cell / "home/.cache"))
+    env = _child_env(HOME=str(cell / "home"), HERMES_HOME=str(profile), HERMES_DISABLE_LAZY_INSTALLS="1",
+                     HERMES_RUNTIME_DIR=str(tmp_path / "store"), PYTHONDONTWRITEBYTECODE="1",
+                     XDG_CONFIG_HOME=str(cell / "home/.config"), XDG_CACHE_HOME=str(cell / "home/.cache"))
     if sqlite is not None:
         payload = json.dumps({"base_prefix": sys.base_prefix, "executable": sys.executable,
                               "python_version": list(sys.version_info[:3]),
@@ -172,8 +180,7 @@ def test_old_schema_handoff_receipt_keeps_the_previous_runs_manual_serve_debt(tm
     home.mkdir(parents=True)
     # The durable reminder store is obstructed, so the receipt is the only record of the debt.
     (home / "serve_restart_pending").write_text("not a directory\n", encoding="utf-8")
-    env = {key: value for key, value in os.environ.items() if not key.startswith(("HERMES_", "PYTEST_"))}
-    env.update(HOME=str(tmp_path / "home"), HERMES_HOME=str(home), PYTHONDONTWRITEBYTECODE="1")
+    env = _child_env(HOME=str(tmp_path / "home"), HERMES_HOME=str(home), PYTHONDONTWRITEBYTECODE="1")
     child = tmp_path / "receipt_child.py"
     child.write_text(_RECEIPT_CHILD, encoding="utf-8")
     serve = subprocess.Popen([sys.executable, "-I", "-c", "import time; print('ready', flush=True); time.sleep(120)"],

@@ -17,7 +17,7 @@ import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
 import { revealFile } from '@/store/file-actions'
-import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
+import { $gateway, activeGateway, ensureActiveGatewayOpen, gatewayActivationEpoch } from '@/store/gateway'
 import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import {
@@ -340,18 +340,31 @@ function isRetryableProjectTreeReadError(error: unknown): boolean {
 }
 
 interface ActiveProjectsContext {
+  activationEpoch: number
   gateway: HermesGateway
   profile: string
+  scope: string
 }
 
 function stillOnProjectsContext(context: ActiveProjectsContext): boolean {
-  return activeGateway() === context.gateway && projectProfile() === context.profile
+  return (
+    gatewayActivationEpoch() === context.activationEpoch &&
+    activeGateway() === context.gateway &&
+    normalizeProfileKey($activeGatewayProfile.get()) === context.profile &&
+    $profileScope.get() === context.scope
+  )
 }
 
 // Writes follow the selected gateway/profile even if the sidebar is showing
 // All profiles. That filter changes the view, not the destination.
-function stillOnWritableProjectOwner(context: ActiveProjectsContext): boolean {
-  return activeGateway() === context.gateway && normalizeProfileKey($activeGatewayProfile.get()) === context.profile
+function stillOnWritableProjectOwner(
+  context: Pick<ActiveProjectsContext, 'activationEpoch' | 'gateway' | 'profile'>
+): boolean {
+  return (
+    gatewayActivationEpoch() === context.activationEpoch &&
+    activeGateway() === context.gateway &&
+    normalizeProfileKey($activeGatewayProfile.get()) === context.profile
+  )
 }
 
 async function activeProjectsContext(profile = projectProfile()): Promise<ActiveProjectsContext> {
@@ -359,17 +372,19 @@ async function activeProjectsContext(profile = projectProfile()): Promise<Active
     throw new Error('Projects are unavailable while viewing all profiles')
   }
 
+  const activationEpoch = gatewayActivationEpoch()
+  const scope = $profileScope.get()
   let gateway = activeGateway()
 
   if (!gateway || gateway.connectionState !== 'open') {
     gateway = await ensureActiveGatewayOpen()
   }
 
-  if (!gateway || !stillOnWritableProjectOwner({ gateway, profile })) {
+  if (!gateway || !stillOnWritableProjectOwner({ activationEpoch, gateway, profile })) {
     throw new Error('Active Hermes profile changed while connecting')
   }
 
-  return { gateway, profile }
+  return { activationEpoch, gateway, profile, scope }
 }
 
 function applyPayload(payload: ProjectsPayload): void {
@@ -450,7 +465,7 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
   const generation = ++projectTreeRefreshGeneration
   const { gateway, profile } = context
 
-  if (activeGateway() === gateway) {
+  if (stillOnProjectsContext(context)) {
     $projectTreeLoading.set(true)
   }
 
@@ -490,7 +505,7 @@ async function refreshProjectTreeOn(context: ActiveProjectsContext): Promise<voi
       markProjectsRpcFailure(err)
     }
   } finally {
-    if (generation === projectTreeRefreshGeneration && activeGateway() === gateway) {
+    if (generation === projectTreeRefreshGeneration && stillOnProjectsContext(context)) {
       $projectTreeLoading.set(false)
     }
   }
@@ -519,6 +534,7 @@ export async function refreshProjectTree(): Promise<void> {
 // us to hold a backend open per profile just to draw lanes.
 async function refreshProjectTreeAcrossProfiles(): Promise<void> {
   const generation = ++projectTreeRefreshGeneration
+  const activationEpoch = gatewayActivationEpoch()
   $projectTreeLoading.set(true)
 
   try {
@@ -527,18 +543,25 @@ async function refreshProjectTreeAcrossProfiles(): Promise<void> {
       timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
     })
 
-    // A profile switch mid-flight leaves this payload describing the wrong
-    // scope; the newer refresh owns the tree.
-    if (generation !== projectTreeRefreshGeneration || $profileScope.get() !== ALL_PROFILES) {
+    // A profile or connection switch mid-flight leaves this payload describing
+    // the wrong scope; the newer route generation owns the tree even when both
+    // connections expose the same profile names.
+    if (
+      generation !== projectTreeRefreshGeneration ||
+      activationEpoch !== gatewayActivationEpoch() ||
+      $profileScope.get() !== ALL_PROFILES
+    ) {
       return
     }
 
     applyProjectTreePayload(res)
     markProjectsRpcSuccess()
   } catch (err) {
-    markProjectsRpcFailure(err)
+    if (generation === projectTreeRefreshGeneration && activationEpoch === gatewayActivationEpoch()) {
+      markProjectsRpcFailure(err)
+    }
   } finally {
-    if (generation === projectTreeRefreshGeneration) {
+    if (generation === projectTreeRefreshGeneration && activationEpoch === gatewayActivationEpoch()) {
       $projectTreeLoading.set(false)
     }
   }
@@ -989,12 +1012,20 @@ const restoreProjects = ({ projects, tree, active }: ProjectsSnapshot): void => 
   $activeProjectId.set(active)
 }
 
-// Await an already-applied optimistic write; restore the snapshot if it throws.
-async function persistOrRollback(snap: ProjectsSnapshot, write: () => Promise<void>): Promise<void> {
+// Await an already-applied optimistic write; restore the snapshot if it throws
+// while its immutable connection/profile generation still owns the cache.
+async function persistOrRollback(
+  context: ActiveProjectsContext,
+  snap: ProjectsSnapshot,
+  write: () => Promise<void>
+): Promise<void> {
   try {
     await write()
   } catch (err) {
-    restoreProjects(snap)
+    if (stillOnProjectsContext(context)) {
+      restoreProjects(snap)
+    }
+
     throw err
   }
 }
@@ -1067,7 +1098,7 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
   // The RPC may have created the project on A while the window moved to B.
   // The IDEA.md writer and cached/sidebar state below use the current owner;
   // publishing A's result there can overwrite B's file at the same path.
-  if (!stillOnWritableProjectOwner(context)) {
+  if (!context || !stillOnWritableProjectOwner(context)) {
     if (res.project) {
       notify({ kind: 'info', message: translateNow('sidebar.projects.createdInPreviousContext') })
     }
@@ -1148,7 +1179,7 @@ export async function updateProject(
 
   // Backend treats null/undefined as "leave unchanged"; "" clears (stores NULL).
   // Map explicit null → "" so "no color"/"no icon" actually clear.
-  await persistOrRollback(snap, () =>
+  await persistOrRollback(context, snap, () =>
     gatewayRequestOn(
       context.gateway,
       'projects.update',
@@ -1185,7 +1216,7 @@ export async function setProjectAppearance(
     return false
   }
 
-  await createProject({
+  const created = await createProject({
     name: project.label,
     folders: [project.path],
     primaryPath: project.path,
@@ -1194,7 +1225,7 @@ export async function setProjectAppearance(
     icon: (patch.icon ?? project.icon) || undefined
   })
 
-  return true
+  return created !== null
 }
 
 export async function addProjectFolder(
@@ -1232,14 +1263,17 @@ export async function addProjectFolder(
     }
   }
 
-  await persistOrRollback(snap, () =>
+  await persistOrRollback(context, snap, () =>
     gatewayRequestOn(
       context.gateway,
       'projects.add_folder',
       projectParams({ id, path, label: opts.label, is_primary: opts.isPrimary ?? false }, context.profile)
     )
   )
-  reconcileProjects()
+
+  if (stillOnProjectsContext(context)) {
+    reconcileProjects()
+  }
 }
 
 // True when the session currently open in the main pane belongs to `projectId`.
@@ -1280,16 +1314,21 @@ export async function deleteProject(id: string): Promise<void> {
     requestFreshSession()
   }
 
-  await persistOrRollback(snap, async () => {
-    applyPayload(
-      await gatewayRequestOn<ProjectsPayload>(
-        context.gateway,
-        'projects.delete',
-        projectParams({ id }, context.profile)
-      )
+  await persistOrRollback(context, snap, async () => {
+    const payload = await gatewayRequestOn<ProjectsPayload>(
+      context.gateway,
+      'projects.delete',
+      projectParams({ id }, context.profile)
     )
+
+    if (stillOnProjectsContext(context)) {
+      applyPayload(payload)
+    }
   })
-  void refreshProjectTree()
+
+  if (stillOnProjectsContext(context)) {
+    void refreshProjectTree()
+  }
 }
 
 export async function setActiveProject(id: null | string): Promise<void> {
@@ -1301,7 +1340,9 @@ export async function setActiveProject(id: null | string): Promise<void> {
     projectParams({ id }, context.profile)
   )
 
-  $activeProjectId.set(res.active_id ?? null)
+  if (stillOnProjectsContext(context)) {
+    $activeProjectId.set(res.active_id ?? null)
+  }
 }
 
 // ── Project management dialog ────────────────────────────────────────────────

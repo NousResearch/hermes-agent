@@ -20,6 +20,7 @@ import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { type ProjectIdeaTemplate, randomIdeaTemplates } from '@/lib/project-idea-templates'
 import { cn } from '@/lib/utils'
+import { gatewayActivationEpoch } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import {
   $newProjectDropPlacement,
@@ -96,29 +97,50 @@ export function ProjectDialog() {
   // optional hook that runs exactly when the write SUCCEEDS (before the close)
   // — the New-project drop arm is consumed there, so a failed attempt keeps
   // its placement for the retry while a successful one can't leak it forward.
-  const runSubmit = async (write: () => Promise<unknown>, onSuccess?: () => void) => {
+  const runSubmit = async (write: (isCurrent: () => boolean) => Promise<unknown>, onSuccess?: () => void) => {
     if (submitting) {
       return
     }
 
+    const activationEpoch = gatewayActivationEpoch()
+    const dialogState = $projectDialog.get()
+
+    const isCurrent = () => gatewayActivationEpoch() === activationEpoch && $projectDialog.get() === dialogState
+
     setSubmitting(true)
 
     try {
-      await write()
+      await write(isCurrent)
+
+      if (!isCurrent()) {
+        return
+      }
+
       onSuccess?.()
       closeProjectDialog()
     } catch (err) {
-      notifyError(err, p.createFailed)
+      if (isCurrent()) {
+        notifyError(err, p.createFailed)
+      }
     } finally {
-      setSubmitting(false)
+      if ($projectDialog.get() === dialogState) {
+        if (gatewayActivationEpoch() === activationEpoch) {
+          setSubmitting(false)
+        } else {
+          closeProjectDialog()
+        }
+      }
     }
   }
 
   const pickFolder = async () => {
+    const activationEpoch = gatewayActivationEpoch()
+    const dialogState = $projectDialog.get()
+
     try {
       const dir = await pickProjectFolder()
 
-      if (!dir) {
+      if (!dir || gatewayActivationEpoch() !== activationEpoch || $projectDialog.get() !== dialogState) {
         return
       }
 
@@ -139,7 +161,9 @@ export function ProjectDialog() {
         setName(prev => prev.trim() || baseName(dir) || prev)
       }
     } catch (err) {
-      notifyError(err, p.createFailed)
+      if (gatewayActivationEpoch() === activationEpoch && $projectDialog.get() === dialogState) {
+        notifyError(err, p.createFailed)
+      }
     }
   }
 
@@ -161,7 +185,7 @@ export function ProjectDialog() {
       // The arm is consumed exactly on SUCCESS (before the close): a failed
       // create leaves the dialog open for a retry that still lands where it
       // was dropped; the open-state effect discards it on cancel/teardown.
-      await runSubmit(async () => {
+      await runSubmit(async isCurrent => {
         const created = await createProject({
           dropPlacement,
           folders,
@@ -170,7 +194,7 @@ export function ProjectDialog() {
           use: true
         })
 
-        if (created) {
+        if (created && isCurrent()) {
           enterProject(created.id)
         }
       }, clearNewProjectDropPlacement)
@@ -182,16 +206,21 @@ export function ProjectDialog() {
       return
     }
 
+    const activationEpoch = gatewayActivationEpoch()
+    const dialogState = $projectDialog.get()
+
     setGeneratingIdea(true)
 
     try {
       const text = await generateProjectIdea(name)
 
-      if (text) {
+      if (text && gatewayActivationEpoch() === activationEpoch && $projectDialog.get() === dialogState) {
         setIdea(text)
       }
     } finally {
-      setGeneratingIdea(false)
+      if (gatewayActivationEpoch() === activationEpoch && $projectDialog.get() === dialogState) {
+        setGeneratingIdea(false)
+      }
     }
   }
 

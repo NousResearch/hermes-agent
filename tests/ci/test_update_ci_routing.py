@@ -305,9 +305,10 @@ def test_every_test_that_reads_a_shared_fixture_is_routed_by_it():
     for fixture, listed in cc._SHARED_FIXTURE_CONSUMERS.items():
         readers = {p for p in _tracked_mentions(Path(fixture).name) if _TEST_FILE.search(p)}
         assert readers <= set(listed), f"{fixture}: unlisted consumer(s) {sorted(readers - set(listed))}"
-        if (_REPO / fixture).is_file():  # the fixture's own PRs land it with its consumers
-            missing = [c for c in listed if not (_REPO / c).is_file()]
-            assert not missing, f"{fixture}: listed consumer(s) left the tree: {missing}"
+        # No "listed consumer left the tree" check: a batch lands the fixture and its
+        # readers in separate PRs (a branch stacked on one of them has the corpus but not
+        # the Electron / hand-off readers), and routing a path that is not there yet costs
+        # nothing. The direction that loses coverage — a reader missing here — is above.
         on = cc.classify([fixture])
         for consumer in listed:
             own = cc.classify([consumer])

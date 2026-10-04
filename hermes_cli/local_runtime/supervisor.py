@@ -157,7 +157,9 @@ class LlamaServerSupervisor:
 
     def _open(self, route: str, body: dict | None = None, timeout_s: int = 30,
               *, json_type: bool = True):
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        from hermes_cli.local_runtime.endpoint import _managed_auth_headers
+
+        headers = _managed_auth_headers(self.api_key)
         if json_type:
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(self._url(route), headers=headers,

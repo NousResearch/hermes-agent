@@ -69,9 +69,40 @@ def managed_root() -> "tuple[str, str] | None":
 def managed_get_json(base: str, api_key: str, route: str, timeout_s: float) -> object:
     """Authenticated GET against the managed router; raises on any transport/decode failure."""
     req = urllib.request.Request(f"{base}{route}",
-                                 headers={"Authorization": f"Bearer {api_key}"})
+                                 headers=_managed_auth_headers(api_key))
     with urllib.request.urlopen(req, timeout=timeout_s) as r:
         return json.loads(r.read())
+
+
+def _managed_auth_headers(api_key: str) -> dict:
+    """Both llama.cpp auth headers for one managed-router credential.
+
+    llama.cpp 0.4.x authenticates ``X-Api-Key`` and answers a Bearer-only request with
+    401 "Authentication header is not provided"; pre-0.4 builds ignore the extra header
+    and keep reading ``Authorization``, so the pair is always sent together (#132799).
+    """
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if api_key:
+        headers["X-Api-Key"] = api_key
+    return headers
+
+
+def llamacpp_auth_headers(base_url: str, api_key: object) -> dict:
+    """``X-Api-Key`` twin of the Bearer credential when *base_url* is the managed llama.cpp server.
+
+    Scoped to base URLs whose root is the ownership-checked managed router, so
+    Ollama/vLLM/user gateways never receive the header; the SDK keeps sending
+    ``Authorization`` alongside, which keeps pre-0.4 llama.cpp builds working. Empty
+    when there is no usable key (placeholder included) or no managed server.
+    """
+    if not isinstance(api_key, str) or not api_key.strip() or api_key == "no-key-required":
+        return {}
+    with suppress(Exception):
+        root = managed_root()
+        base = str(base_url or "").rsplit("/v1", 1)[0].rstrip("/")
+        if root and base and base == root[0].rstrip("/"):
+            return {"X-Api-Key": api_key}
+    return {}
 
 
 def resolve_llamacpp_endpoint(config: dict | None = None,

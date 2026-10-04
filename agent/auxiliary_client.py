@@ -193,6 +193,14 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     # SDK-internal retries by default and let Hermes control the budget; explicit callers can still override
     # via kwargs.
     kwargs.setdefault("max_retries", 0)
+    # Managed llama.cpp 0.4.x authenticates X-Api-Key, not the SDK's Bearer (#132799); an
+    # explicit default_headers from the caller still wins over the injected twin.
+    with contextlib.suppress(Exception):
+        from hermes_cli.local_runtime.endpoint import llamacpp_auth_headers
+
+        _llamacpp = llamacpp_auth_headers(base_url, api_key)
+        if _llamacpp:
+            kwargs["default_headers"] = {**_llamacpp, **(kwargs.get("default_headers") or {})}
     return OpenAI(api_key=api_key, base_url=base_url, **kwargs)
 
 

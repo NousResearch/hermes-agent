@@ -22,10 +22,11 @@ def _has_provider_config_credential(
     """Return True when config.yaml itself carries a provider credential or custom endpoint.
 
     The .env substring scan is the classic path, but a user-defined provider can hold its
-    credential entirely in config: an inline ``providers.<name>.api_key``, a
-    ``key_env``/``api_key_env`` pointer whose variable is actually set (on-disk .env or process
-    env), or a ``custom:*`` model.provider / explicit ``model.base_url`` — the "custom endpoint"
-    half of the check's label. Without this, a live custom provider is reported as missing (#132666).
+    credential entirely in config: an inline ``providers.<name>.api_key``, a ``key_cmd`` mint
+    command (documented as beating ``api_key``/``key_env``), a ``key_env``/``api_key_env``
+    pointer whose variable is actually set (on-disk .env or process env), or a ``custom:*``
+    model.provider / explicit ``model.base_url`` — the "custom endpoint" half of the check's
+    label. Without this, a live custom provider is reported as missing (#132666).
     """
     if not isinstance(cfg, dict):
         return False
@@ -38,6 +39,8 @@ def _has_provider_config_credential(
         if not isinstance(entry, dict):
             continue
         if str(entry.get("api_key") or "").strip():
+            return True
+        if str(entry.get("key_cmd") or "").strip():
             return True
         pointer = str(entry.get("key_env") or "").strip()
         if (
@@ -224,16 +227,22 @@ def _check_env_file(should_fix: bool, f: Finding) -> None:
             content = env_path.read_text(encoding="latin-1")
         env_map, cfg = None, None
         with warn_on_error(""):
-            from hermes_cli.config import load_env, read_user_config_raw
+            # load_config_readonly (not read_user_config_raw): behavioral reads must run the
+            # managed-config overlay, or a provider supplied by a managed scope is never seen.
+            from hermes_cli.config import load_config_readonly, load_env
+
             env_map = load_env()
-            if (HERMES_HOME / 'config.yaml').exists():
-                cfg = read_user_config_raw(HERMES_HOME / 'config.yaml')
+            cfg = load_config_readonly()
         env_configured = _has_provider_env_config(content)
-        if check_bool(env_configured or _has_provider_config_credential(cfg, env_map),
-                      "API key or custom endpoint configured",
-                      f"No API key or custom endpoint found in {_DHH}/.env or config.yaml"):
+        if check_bool(
+            env_configured or _has_provider_config_credential(cfg, env_map),
+            "API key or custom endpoint configured",
+            f"No API key or custom endpoint found in {_DHH}/.env or config.yaml",
+        ):
             if not env_configured:
-                check_info("Credentials resolved from config.yaml (providers:/model), not the .env file")
+                check_info(
+                    "Credentials resolved from config.yaml (providers:/model), not the .env file"
+                )
         else:
             f.issues.append("Run 'hermes setup' to configure API keys")
     elif (PROJECT_ROOT / '.env').exists():  # project root as fallback

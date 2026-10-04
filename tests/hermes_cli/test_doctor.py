@@ -18,7 +18,10 @@ import hermes_constants
 from hermes_cli import config as config_mod
 import hermes_cli.gateway as gateway_cli
 from hermes_cli import doctor as doctor_mod
-from hermes_cli.doctor_config import _has_provider_config_credential, _has_provider_env_config
+from hermes_cli.doctor_config import (
+    _has_provider_config_credential,
+    _has_provider_env_config,
+)
 from hermes_cli.doctor_report import Finding
 import shutil
 from hermes_cli import doctor_tools
@@ -172,6 +175,20 @@ class TestProviderConfigCredential:
         })
         assert not _has_provider_config_credential({"model": {"provider": "openai"}})
 
+    def test_key_cmd_provider_counts(self):
+        # key_cmd (command-minted credentials) is a documented provider source that beats
+        # api_key/key_env; a bare model.provider without the custom: prefix relies on it alone.
+        cfg = {
+            "model": {"default": "my-model", "provider": "mine"},
+            "providers": {
+                "mine": {
+                    "base_url": "https://example.internal/v1",
+                    "key_cmd": "pass show tok",
+                }
+            },
+        }
+        assert _has_provider_config_credential(cfg)
+
     def test_bare_or_tuning_only_cfg_does_not_count(self):
         assert not _has_provider_config_credential(None)
         assert not _has_provider_config_credential({})
@@ -188,6 +205,9 @@ def _patch_doctor_home(monkeypatch, tmp_path):
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
     monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    # load_config_readonly() resolves its config via $HERMES_HOME, not the patched module
+    # attribute — keep both pointing at the same tmp home or the check reads the real one.
+    monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv("HERMES_MANAGED_DIR", raising=False)
     return home
 
@@ -234,6 +254,36 @@ def test_env_check_still_fails_when_neither_source_has_credentials(
 
     assert "No API key or custom endpoint found" in out
     assert f.issues == ["Run 'hermes setup' to configure API keys"]
+
+
+def test_env_check_sees_credentials_supplied_by_managed_scope(monkeypatch, tmp_path):
+    """The config side of the check must be a behavioral load (managed overlay applied), not a
+    raw file read: a provider pinned by an administrator-managed config satisfies it too."""
+    home = _patch_doctor_home(monkeypatch, tmp_path)
+    (home / ".env").write_text("TERMINAL_ENV=local\n", encoding="utf-8")
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "config.yaml").write_text(
+        "model:\n"
+        "  default: my-model\n"
+        "  provider: custom:mylocal\n"
+        "providers:\n"
+        "  mylocal:\n"
+        "    base_url: https://example.internal/v1\n"
+        "    api_key: managed-inline-key\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        f = doctor_config._check_env_file(False)
+    out = buf.getvalue()
+
+    assert "API key or custom endpoint configured" in out
+    assert "No API key or custom endpoint found" not in out
+    assert f.issues == []
 
 
 class TestDoctorToolAvailabilitySummary:

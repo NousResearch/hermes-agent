@@ -242,7 +242,9 @@ _TUNED = "agent:\n  max_turns: 400\ncompression:\n  enabled: false\n  threshold:
     ("model:\n  default: claude-sonnet-4-5\n", "ANTHROPIC_API_KEY=sk-ant-test\n", True),
     # The installer-seeded template names no provider: still a first install.
     ("model:\n  provider: auto\n  base_url: https://openrouter.ai/api/v1\n", "", False),
-], ids=["custom-endpoint", "anthropic-key", "template-auto"])
+    # Host-wide tokens that merely double as provider credentials (Skills Hub PAT, gh, Claude Code).
+    ("", "GITHUB_TOKEN=ghp_test\nGH_TOKEN=gho_test\nCLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test\n", False),
+], ids=["custom-endpoint", "anthropic-key", "template-auto", "host-wide-tokens"])
 def test_rerun_on_any_configured_provider_keeps_tuned_agent_settings(tmp_path, monkeypatch, config_yaml, env, existing):
     """Any configured provider makes the install existing, so re-running `hermes setup` keeps the
     user's agent budget and compression instead of stamping the first-install defaults."""

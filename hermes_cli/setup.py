@@ -666,6 +666,11 @@ _FIRST_TIME_MODES = (
 )
 
 
+# Host-wide tokens that also unlock a provider (Copilot via the gh/Skills Hub PAT, Anthropic via
+# Claude Code's setup-token) but are set for other tools, so they are not a Hermes provider choice.
+_HOST_WIDE_PROVIDER_TOKENS = frozenset({"GITHUB_TOKEN", "GH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"})
+
+
 def _is_existing_install(config: dict) -> bool:
     """A provider is already configured, so the first-install defaults (agent budget, compression,
     tool checklist) must not overwrite the user's values. Any provider counts, not only OpenRouter:
@@ -681,7 +686,7 @@ def _is_existing_install(config: dict) -> bool:
         get_env_value("OPENROUTER_API_KEY") or get_env_value("OPENAI_BASE_URL")
         or get_active_provider() is not None
         or str(provider or "").strip().lower() not in ("", "auto")
-        or _dotenv_has_provider_key(get_env_path(), _provider_env_var_names()))
+        or _dotenv_has_provider_key(get_env_path(), _provider_env_var_names() - _HOST_WIDE_PROVIDER_TOKENS))
 
 
 def _run_setup_wizard_impl(args):

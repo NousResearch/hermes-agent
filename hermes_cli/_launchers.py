@@ -31,6 +31,25 @@ def _inline_string_literal(value: str) -> str:
     return "'" + escaped.replace("'", "\\x27").replace('"', "\\x22") + "'"
 
 
+def _is_scratch_python(python: str | Path) -> bool:
+    """True when *python* lives under a `<home>/cache/scratch` fixture tree.
+
+    E2E harnesses run the real CLI from venvs inside scratch homes; baking such
+    an interpreter into a published launcher exit-127s after the scratch is
+    reaped (fixes #131745). Store Python owns the ABI — prefer it whenever it
+    resolves.
+    """
+    try:
+        parts = Path(python).parts
+    except Exception:
+        return False
+    lowered = [p.lower() for p in parts]
+    return any(
+        lowered[i] == "cache" and lowered[i + 1] == "scratch"
+        for i in range(len(lowered) - 1)
+    )
+
+
 def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main",
                     code: str | None = None, python: str | Path | None = None,
                     home: str | Path | None = None) -> list[str]:
@@ -41,7 +60,10 @@ def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main"
     No selected generation or ambient PYTHONPATH is captured in the command.
     """
     root = Path(repo_root).resolve()
-    python = python or resolve_store_python(root) or Path(sys.executable)
+    store_python = resolve_store_python(root)
+    if python is not None and _is_scratch_python(python) and store_python is not None:
+        python = None
+    python = python or store_python or Path(sys.executable)
     entry = f"exec({_inline_string_literal(code)})" if code is not None else (
         f"runpy.run_module({_inline_string_literal(module)}, run_name='__main__', alter_sys=True)")
     default_home = (_inline_string_literal(str(home)) if home is not None else

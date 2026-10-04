@@ -74,7 +74,8 @@ def test_load_pool_serves_healthy_rows_beside_non_object_rows(tmp_path, monkeypa
     """A non-object row in auth.json cannot take the provider's other pooled credentials down."""
     import json
 
-    from agent.credential_pool import load_pool
+    from agent import credential_pool
+    from plugins.platforms.photon import auth as photon_auth
 
     pasted = "sk-or-v1-PASTED-AS-A-BARE-STRING"
     home = tmp_path / "hermes"
@@ -84,11 +85,16 @@ def test_load_pool_serves_healthy_rows_beside_non_object_rows(tmp_path, monkeypa
     healthy = {"id": "healthy", "label": "manual key", "auth_type": "api_key", "priority": 0,
                "source": "manual", "access_token": "sk-or-healthy"}
     (home / "auth.json").write_text(json.dumps(
-        {"version": 1, "credential_pool": {"openrouter": [pasted, None, 7, healthy]}}))
+        {"version": 1, "credential_pool": {"openrouter": [pasted, None, 7, healthy],
+                                            # Plugin readers of the same namespace hold the same contract.
+                                            "photon": [pasted, {"access_token": "photon-healthy"}]}}))
 
+    monkeypatch.setattr(credential_pool, "_NON_OBJECT_WARNED", set())
     with caplog.at_level("DEBUG"):
-        entry = load_pool("openrouter").select()
+        entry = credential_pool.load_pool("openrouter").select()
 
     assert entry is not None and entry.id == "healthy"
     assert entry.runtime_api_key == "sk-or-healthy"
+    assert "non-object row(s) of type NoneType, int, str" in caplog.text
     assert pasted not in caplog.text
+    assert photon_auth.load_photon_token() == "photon-healthy"

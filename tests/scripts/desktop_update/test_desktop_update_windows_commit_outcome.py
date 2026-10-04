@@ -110,13 +110,16 @@ def test_result_is_atomic_json_carrying_started_at_and_warnings(tmp_path: Path) 
 
 
 @pytest.mark.platforms('windows')
-def test_marker_with_a_live_delegate_is_kept_at_finish(tmp_path: Path) -> None:
+def test_marker_with_a_live_delegate_is_handed_to_it_at_finish(tmp_path: Path) -> None:
+    # A7 release rule: the owner deletes its claim unless a delegate still runs; then that
+    # delegate becomes the owner (canonical body, started_at kept, no delegate line).
     pid_file = tmp_path / 'delegate.pid'
     try:
         code, out, _, result, home = _handoff(tmp_path, HANDOFF_DELEGATE=str(pid_file))
         assert code == 0, out
         marker = (home / '.hermes-update-in-progress').read_bytes().decode().split('\n')
-        assert marker[3].startswith(f"delegate:{pid_file.read_text(encoding='utf-8-sig')} ct:"), marker
+        assert marker[0] == pid_file.read_text(encoding='utf-8-sig'), marker
+        assert marker[2].startswith('ct:') and marker[3:] == [''], marker
     finally:
         if pid_file.exists():
             subprocess.run(['taskkill', '/F', '/PID', pid_file.read_text(encoding='utf-8-sig')], capture_output=True)

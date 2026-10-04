@@ -36,16 +36,22 @@ def hermes_home(tmp_path, monkeypatch):
         "sessions:\n"
         "  auto_archive: false\n"
         "  auto_prune: false\n",
-        encoding="utf-8")
+        encoding="utf-8",
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
     # The hermetic conftest pins ``hermes_state.DEFAULT_DB_PATH`` at one sandbox store whenever
     # hermes_state is already imported, and that pin WINS over ``get_hermes_home()`` inside
     # ``_default_db_path()`` — restore the import-time sentinel so an argless ``acquire()``
     # resolves through the scope (same unpinning as the profile-scope housekeeping tests).
     import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+
+    monkeypatch.setattr(
+        hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH
+    )
     resolved = Path(hermes_state._default_db_path())
-    assert resolved.is_relative_to(tmp_path), f"unpinned store escaped the sandbox: {resolved}"
+    assert resolved.is_relative_to(tmp_path), (
+        f"unpinned store escaped the sandbox: {resolved}"
+    )
     monkeypatch.setattr(gateway_run, "_noop_housekeeping_warned_homes", set())
     return home
 
@@ -60,14 +66,20 @@ def _store_with_session(home: Path, *, stale_days: float = None) -> None:
         db.create_session("s1", "cli")
         if stale_days is not None:
             stale = time.time() - stale_days * 86400
-            db._write_sql("UPDATE sessions SET started_at = ?, last_activity_at = ?", (stale, stale))
+            db._write_sql(
+                "UPDATE sessions SET started_at = ?, last_activity_at = ?",
+                (stale, stale),
+            )
     finally:
         db.close()
 
 
 def _noop_warnings(caplog) -> list:
-    return [r for r in caplog.records
-            if r.levelno == logging.WARNING and "housekeeping is disabled" in r.getMessage()]
+    return [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "housekeeping is disabled" in r.getMessage()
+    ]
 
 
 def test_noop_config_with_stale_store_warns_once_per_process(hermes_home, caplog):
@@ -78,10 +90,15 @@ def test_noop_config_with_stale_store_warns_once_per_process(hermes_home, caplog
         gateway_run._housekeeping_state_db_maintenance()
 
     warnings = _noop_warnings(caplog)
-    assert len(warnings) == 1, "the disabled-sweep warning must fire exactly once per process"
+    assert len(warnings) == 1, (
+        "the disabled-sweep warning must fire exactly once per process"
+    )
     message = warnings[0].getMessage()
     assert str(hermes_home) in message
-    assert "sessions.auto_archive=False" in message and "sessions.auto_prune=False" in message
+    assert (
+        "sessions.auto_archive=False" in message
+        and "sessions.auto_prune=False" in message
+    )
     assert "1 session(s)" in message
 
 
@@ -92,7 +109,8 @@ def test_noop_config_with_fresh_store_stays_silent(hermes_home, caplog):
         gateway_run._housekeeping_state_db_maintenance()
 
     assert not _noop_warnings(caplog), (
-        "a deliberate opt-out with nothing to sweep is legitimate and must stay silent")
+        "a deliberate opt-out with nothing to sweep is legitimate and must stay silent"
+    )
 
 
 def test_enabled_config_sweeps_without_noop_warning(tmp_path, monkeypatch, caplog):
@@ -103,23 +121,33 @@ def test_enabled_config_sweeps_without_noop_warning(tmp_path, monkeypatch, caplo
         "  auto_archive: true\n"
         "  auto_archive_days: 3\n"
         "  min_interval_hours: 0\n",
-        encoding="utf-8")
+        encoding="utf-8",
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
     import hermes_state
-    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+
+    monkeypatch.setattr(
+        hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH
+    )
     resolved = Path(hermes_state._default_db_path())
-    assert resolved.is_relative_to(tmp_path), f"unpinned store escaped the sandbox: {resolved}"
+    assert resolved.is_relative_to(tmp_path), (
+        f"unpinned store escaped the sandbox: {resolved}"
+    )
     monkeypatch.setattr(gateway_run, "_noop_housekeeping_warned_homes", set())
     _store_with_session(home, stale_days=30)
 
     with caplog.at_level(logging.WARNING, logger="gateway.run"):
         gateway_run._housekeeping_state_db_maintenance()
 
-    assert not _noop_warnings(caplog), "an enabled sweep takes the archive path, not the no-op gate"
+    assert not _noop_warnings(caplog), (
+        "an enabled sweep takes the archive path, not the no-op gate"
+    )
     from hermes_state import SessionDB
+
     db = SessionDB(db_path=home / "state.db")
     try:
         assert bool((db.get_session("s1") or {}).get("archived")), (
-            "the stale session was not archived by the enabled sweep")
+            "the stale session was not archived by the enabled sweep"
+        )
     finally:
         db.close()

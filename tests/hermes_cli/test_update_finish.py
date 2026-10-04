@@ -400,30 +400,40 @@ def test_selected_child_builds_and_finalizes_under_parent_lock(completion):
 
 
 @pytest.mark.platforms("posix")
-def test_real_compiler_failure_retains_receipt_and_skips_completion(completion):
+def test_real_compiler_failure_is_owed_build_and_completion_continues(completion):
+    """Contract C3 for the historical takeover child: the code is committed, so a failed product
+    build is an owed ``build`` follow-up, never a failed update. Maintenance (config migration)
+    and the fleet restart still run, the exit is 0, and the tail stays pending until it builds."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_cli.venv_sync import completion_pending_path
+    import yaml
+
     source, home, request, context, result, run = completion
     _npm_graph(source)
-    # A real TypeScript error: dependency installation and TUI succeed, but
-    # neither the web product nor config/fleet completion may claim success.
+    # A real TypeScript error: dependency installation and TUI succeed; the web product fails.
     _put(source, "web/src/main.ts", "const broken: string = 42; document.body.textContent = broken;\n")
-    config_before = (home / "config.yaml").read_bytes()
     context_before = context.read_bytes()
     child = run()
-    assert child.returncode == 1, child.stdout + child.stderr
-    # Contained output reports a failure through the step's tail on stdout.
+    assert child.returncode == 0, child.stdout + child.stderr
     assert "TypeScript build failed" in child.stdout + child.stderr
     assert (source / "npm-python.json").is_file()
     assert (source / "ui-tui/dist/entry.js").is_file()
     assert not (source / "hermes_cli/web_dist/index.html").exists()
-    assert not (source / "restarted-plan.json").exists()
-    assert (home / "config.yaml").read_bytes() == config_before
+    # Maintenance and the fleet restart were not skipped by the build failure.
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    assert config["_config_version"] == DEFAULT_CONFIG["_config_version"]
+    assert config["model"]["default"] == "retained-model"
+    assert (source / "restarted-plan.json").is_file()
     assert context.read_bytes() == context_before
     receipt = json.loads((home / "logs/update_receipts/latest.json").read_text())
-    assert receipt["outcome"] == "failed"
-    assert receipt["exit_code"] == child.returncode
+    assert receipt["outcome"] == "success"
+    assert [row["step"] for row in receipt["followups"]] == ["build"]
     assert receipt["update_id"] == request["update_id"]
     assert receipt["steps"][0] == request["receipt"]["steps"][0]
     assert receipt["pm_venv_rebuild"] == request["pm_receipt"]["venv_rebuild"]
+    # The owed tail is retried by the next launch; nothing claims the tree was built.
+    assert completion_pending_path(source).is_file()
+    assert not (source / "install-stamp.json").exists()
     assert json.loads(result.read_text()) == {"resume_handled": True, "receipt_handled": True}
 
 

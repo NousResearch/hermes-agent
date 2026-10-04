@@ -40,7 +40,7 @@ _EXTRA_STORES = {
 # Single-file stores whose name has no dot; every other dotless store is a token directory.
 _DOTLESS_FILES = {"npmrc"}
 # Dot-named stores that are directories.
-_DOT_DIRS = {".ssh", ".aws", ".gnupg", ".kube"}
+_DOT_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure"}
 
 
 def _seed_stores(root):
@@ -108,8 +108,10 @@ class TestCredentialExclusion:
         (profile_dir / "config.yaml.bak-my-note").write_text(f"model:\n  api_key: {_LEAKED_KEY}\n")
         (profile_dir / "GOOGLE_CHAT_USER_TOKENS").mkdir(exist_ok=True)
         (profile_dir / "GOOGLE_CHAT_USER_TOKENS" / "upper.json").write_text("fake-credential")
-        nested = [f"skills/s/{r}" for r in (".ssh/id_rsa", ".aws/credentials", ".gnupg/x", ".kube/config", ".envrc")]
-        for rel in nested:
+        nested = [f"skills/s/{r}" for r in (".ssh/id_rsa", ".aws/credentials", ".gnupg/x", ".kube/config", ".envrc",
+                                            ".docker/config.json", ".azure/accessTokens.json",
+                                            ".config/gh/hosts.yml", ".config/gcloud/application_default_credentials.json")]
+        for rel in [*nested, "skills/s/.config/other/settings.json"]:
             (profile_dir / rel).parent.mkdir(parents=True, exist_ok=True)
             (profile_dir / rel).write_text("fake-credential")
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
@@ -133,6 +135,8 @@ class TestCredentialExclusion:
 
         assert {"testprofile/config.yaml", "testprofile/platforms/keep.json"} <= set(members)
         assert "default/config.yaml" in default_members
+        assert "default/skills/s/.config/other/settings.json" in default_members
+        assert "testprofile/skills/s/.config/other/settings.json" in members
         assert _LEAKED_KEY not in note
         rels = {*_EXTRA_STORES, *PROFILE_CREDENTIAL_PATHS, "google_chat_user_tokens/upper.json", *nested,
                 *(c.relative_to(profile_dir).as_posix() for c in copies)}

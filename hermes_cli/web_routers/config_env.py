@@ -403,15 +403,15 @@ def _models_from_custom_endpoint_entry(entry: Dict[str, Any]) -> List[str]:
 def _api_key_display(entry: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     """Return ``(has_api_key, preview)`` for a provider or model config block.
 
-    Keys live in ``.env`` behind ``key_env``; only older entries still carry a
-    plaintext ``api_key``. Checking both keeps the panel honest either way.
+    Keys live in ``.env`` behind ``key_env`` (or its ``api_key_env`` alias);
+    older entries still carry a plaintext ``api_key``.
 
     See #69449.
     """
     plaintext = str(entry.get("api_key") or "").strip()
     if plaintext:
         return True, redacted_credential_preview(plaintext)
-    key_env = str(entry.get("key_env") or "").strip()
+    key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
     if key_env:
         return True, f"${{{key_env}}}"
     return False, None
@@ -565,7 +565,7 @@ def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str, ent
     model_cfg = cfg.get("model")
     if not isinstance(model_cfg, dict) or not _model_names_provider(model_cfg, provider_key, entry):
         return
-    for field in ("provider", "base_url", "api_key", "key_env"):
+    for field in ("provider", "base_url", "api_key", "key_env", "api_key_env"):
         model_cfg.pop(field, None)
     cfg["model"] = model_cfg
 
@@ -720,8 +720,9 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     if body.make_default:
         result = _validated_main_model_selection(cfg, endpoint_id, model, base_url)
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
-        if entry.get("key_env") and isinstance(cfg["model"], dict):
-            cfg["model"]["key_env"] = entry["key_env"]
+        key_env = entry.get("key_env") or entry.get("api_key_env")
+        if key_env and isinstance(cfg["model"], dict):
+            cfg["model"]["key_env"] = key_env
             cfg["model"].pop("api_key", None)
 
     return endpoint_id, entry
@@ -804,8 +805,9 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
 
             model_cfg = _apply_main_model_assignment(
                 cfg.get("model", {}), _validated_main_model_selection(cfg, provider_key, model, base_url))
-            if entry.get("key_env"):
-                model_cfg["key_env"] = entry["key_env"]
+            key_env = entry.get("key_env") or entry.get("api_key_env")
+            if key_env:
+                model_cfg["key_env"] = key_env
                 model_cfg.pop("api_key", None)
             elif entry.get("api_key"):
                 # `cfg` is env-expanded, so a raw `${VAR}` api_key would land as

@@ -1,6 +1,6 @@
 name: cloudflare-web-search
 repo: https://github.com/Adolanium/hermes-cloudflare-web-search
-sha: cd0dca2c3cdbf801af3b7c2e8484707f27780e9b
+sha: a0ee6267fb981154affcb77b52cf092a49fae9d5
 description: >-
   Cloudflare Web Search backend for Hermes' existing web_search tool, with Ceramic,
   Exa, or Linkup selected in plugin settings. Search only; keep a separate extract
@@ -15,8 +15,14 @@ tier: community
 category: web
 title: Cloudflare Web Search
 docs_url: https://github.com/Adolanium/hermes-cloudflare-web-search#readme
-version: "1.0.0"
+version: "1.0.1"
 platforms: []
+known_issues:
+  - >-
+    Set web.cache_enabled: false in every profile using this backend. Hermes' shared
+    search cache omits profiles and routing settings, so repeated queries can reuse
+    another profile's result or an earlier provider, account, gateway, or BYOK route.
+    This setting also disables the profile's extraction result cache.
 capabilities:
   provides_tools: []
   provides_hooks: []

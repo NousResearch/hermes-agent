@@ -183,3 +183,73 @@ def test_word_rule_non_cue_words_need_a_runaway_run():
     assert guard_2.feed(
         "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu " * 2
         + "hello " * 30) is True
+
+
+
+# ---- shape 4: symbol loops ----------------------------------------------------------------
+
+# The observed litter shape: "=" wedged between nearly every phrase with runs of only 2-4.
+_SYM_SEGMENT = "= the state = = the check = = = the run = "
+
+
+def test_symbol_litter_is_cut_near_where_the_symbols_piled_up():
+    text = _SYM_SEGMENT * 8
+    guard = ReasoningLoopGuard()
+    assert guard.feed(text) is True
+    # Cut back to where the "=" pile-up started, not the littered tail.
+    assert 0 < guard.trip_index < 300
+
+    cleaned = sanitize_degenerate_reasoning(text)
+    assert cleaned.endswith(THINKING_LOOP_TRUNCATED)
+    assert len(cleaned) < len(text) // 2
+
+
+def test_symbol_rule_ignores_tables_lists_and_equations():
+    # Tables are mostly "|", bullet lists mostly "-", and equations put "=" only between
+    # operands — none of them ever place two "=" adjacent, so the rule must stay quiet.
+    table = (
+        "| 設定 | 現在 | 変更後 |\n|---|---|---|\n"
+        "| view-distance | 16 | 12 |\n| tick-distance | 4 | 2 |\n" * 4
+    )
+    bullets = "- first item of the checklist\n- second item\n- third item\n" * 8
+    equations = "alpha = 1\nbeta = 2\ngamma = 3\ndelta = 4\nepsilon = 5\n" * 12
+    for text in (table, bullets, equations):
+        guard = ReasoningLoopGuard()
+        assert guard.feed(text) is False
+        assert sanitize_degenerate_reasoning(text) is text
+
+
+def test_symbol_rule_ignores_quoting_a_degenerate_sample():
+    # An analysis message embedding a quoted "= = =" excerpt: the quoted region is locally
+    # dense, but the streamed share never reaches the bar (measured peak ~0.23 here).
+    prose = "The sample shows a degenerate stream where the equals sign is inserted between phrases: "
+    quote = '"= the state = = the check = = = the run = = = = the pid = = = = = the window = "'
+    filler = (
+        "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi "
+        "rho sigma tau "
+    ) * 3
+    text = prose * 3 + quote + " " + filler + prose + filler
+    guard = ReasoningLoopGuard()
+    assert guard.feed(text) is False
+
+
+def test_symbol_run_end_state_is_cut():
+    # The end state: nothing but "= " repeats — cut down to the bare marker.
+    text = "= " * 40
+    guard = ReasoningLoopGuard()
+    assert guard.feed(text) is True
+    assert sanitize_degenerate_reasoning(text) == THINKING_LOOP_TRUNCATED
+
+
+def test_symbol_rule_chunked_feeding_matches_single_feed():
+    text = _SYM_SEGMENT * 8
+    single = ReasoningLoopGuard()
+    assert single.feed(text) is True
+    chunked = ReasoningLoopGuard()
+    tripped = False
+    for k in range(0, len(text), 37):
+        if chunked.feed(text[k:k + 37]):
+            tripped = True
+            break
+    assert tripped is True
+    assert chunked.trip_index == single.trip_index

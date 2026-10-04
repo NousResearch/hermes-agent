@@ -8,6 +8,17 @@ function Invoke-HermesProbe {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Exe
     $psi.Arguments = (@($Arguments) | ForEach-Object { '"{0}"' -f ($_ -replace '"', '\"') }) -join ' '
+    # A command-file launcher runs through cmd.exe explicitly, exactly as the
+    # update step does: never hand CreateProcess a .cmd and let it pick an
+    # interpreter and re-parse the arguments (BatBadBut). cmd metacharacters
+    # that this quoting cannot neutralise are refused.
+    if ([IO.Path]::GetExtension($Exe) -in @('.cmd', '.bat')) {
+        if ($Exe -match '[%!"\x0D\x0A]' -or @($Arguments | Where-Object { $_ -match '[%!"\x0D\x0A]' }).Count) {
+            throw 'The legacy command launcher cannot safely quote this probe; refresh the installation launcher first.'
+        }
+        $psi.Arguments = '/d /s /c ""' + $Exe + '" ' + $psi.Arguments + '"'
+        $psi.FileName = if ($env:ComSpec) { $env:ComSpec } else { Join-Path $env:SystemRoot 'System32\cmd.exe' }
+    }
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardInput = $true

@@ -238,3 +238,103 @@ class TestVideoToolsetRegistration:
         assert entry is not None
         assert entry.toolset == "video"
         assert entry.is_async is True
+
+
+# ---------------------------------------------------------------------------
+# Auxiliary routing: task="video" so auxiliary.video config takes effect (#132701)
+# ---------------------------------------------------------------------------
+
+
+class TestVideoAuxiliaryRouting:
+    """``video_analyze`` must send ``task="video"`` so the ``auxiliary.video`` block routes the
+    call, falling back to ``auxiliary.vision`` per field when unset. Regression for #132701."""
+
+    def _run(self, coro):
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+    def _capture_call_kwargs(self, tmp_path, monkeypatch, config):
+        monkeypatch.delenv("AUXILIARY_VIDEO_MODEL", raising=False)
+        monkeypatch.delenv("AUXILIARY_VISION_MODEL", raising=False)
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"\x00" * 64)
+        captured = {}
+
+        async def capture_llm(**kwargs):
+            captured.update(kwargs)
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "OK"
+            return mock_response
+
+        with (
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch("tools.vision_tools.async_call_llm", side_effect=capture_llm),
+            patch("tools.vision_tools.extract_content_or_reasoning", return_value="OK"),
+        ):
+            result = self._run(
+                _handle_video_analyze({"video_url": str(video), "question": "what happens?"})
+            )
+        assert json.loads(result)["success"] is True
+        return captured
+
+    def test_video_block_routes_task_model_and_settings(self, tmp_path, monkeypatch):
+        captured = self._capture_call_kwargs(tmp_path, monkeypatch, {"auxiliary": {
+            "vision": {"provider": "ollama-launch", "base_url": "http://127.0.0.1:11434/v1",
+                       "model": "deepseek-v4.1-flash:cloud", "timeout": 60, "temperature": 0.5},
+            "video": {"provider": "openrouter", "model": "google/gemini-3.8-flash", "timeout": 240},
+        }})
+        assert captured["task"] == "video"
+        assert captured["model"] == "google/gemini-3.8-flash"
+        assert captured["timeout"] == 240.0
+        assert captured["temperature"] == 0.5
+
+    def test_unset_video_block_keeps_vision_settings(self, tmp_path, monkeypatch):
+        captured = self._capture_call_kwargs(tmp_path, monkeypatch, {"auxiliary": {
+            "vision": {"model": "deepseek-v4.1-flash:cloud", "timeout": 240, "temperature": 0.7},
+        }})
+        assert captured["task"] == "video"
+        assert captured["model"] == "deepseek-v4.1-flash:cloud"
+        assert captured["timeout"] == 240.0
+        assert captured["temperature"] == 0.7
+
+    def test_vision_timeout_below_video_floor_is_clamped(self, tmp_path, monkeypatch):
+        captured = self._capture_call_kwargs(tmp_path, monkeypatch, {"auxiliary": {
+            "vision": {"timeout": 77},
+        }})
+        assert captured["timeout"] == 180.0
+
+
+class TestVideoResolvesThroughVisionChain:
+    """task="video" must resolve through the vision chain, not the plain text-client cache."""
+
+    def _resolve(self, task):
+        import agent.auxiliary_client as aux
+        sentinel = MagicMock(name="client")
+        with patch.object(
+                aux, "resolve_vision_provider_client",
+                return_value=("openrouter", sentinel, "google/gemini-3.8-flash")) as mock_vision:
+            route = aux._resolve_call_client(
+                task, provider=None, model=None, base_url=None, api_key=None,
+                resolved_provider="openrouter", resolved_model="google/gemini-3.8-flash",
+                resolved_base_url=None, resolved_api_key=None, resolved_api_mode=None,
+                main_runtime={}, async_mode=False)
+        return route, sentinel, mock_vision
+
+    def test_video_task_uses_the_vision_chain(self):
+        route, sentinel, mock_vision = self._resolve("video")
+        assert route.client is sentinel
+        mock_vision.assert_called_once()
+
+    def test_text_task_does_not_use_the_vision_chain(self):
+        import agent.auxiliary_client as aux
+        sentinel = MagicMock(name="text-client")
+        with patch.object(
+                aux, "resolve_vision_provider_client",
+                return_value=("openrouter", sentinel, "m")) as mock_vision, \
+             patch.object(aux, "_get_cached_client", return_value=(sentinel, "m")):
+            route = aux._resolve_call_client(
+                "title_generation", provider=None, model=None, base_url=None, api_key=None,
+                resolved_provider="openrouter", resolved_model="m", resolved_base_url=None,
+                resolved_api_key=None, resolved_api_mode=None, main_runtime={}, async_mode=False)
+        assert route.client is sentinel
+        mock_vision.assert_not_called()

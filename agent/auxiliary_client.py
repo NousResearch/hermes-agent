@@ -3568,7 +3568,7 @@ def _is_statusless_structured_provider_error(exc: Exception) -> bool:
 # compression case. Title generation joins them because its retries multiplied the user's
 # ``auxiliary.title_generation.timeout`` (~4x: three full windows plus backoff) on a slow local
 # model, and the auto-title thread outlived the deadline the user thought they had set (#89445, #66251).
-_TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision", "title_generation"})
+_TIMEOUT_NO_RETRY_TASKS = frozenset({"compression", "vision", "video", "title_generation"})
 
 
 def _should_skip_same_provider_retry(task: Optional[str], exc: Exception) -> bool:
@@ -3791,7 +3791,7 @@ def _prepare_same_provider_retry(
     extra_headers: Optional[Dict[str, str]] = None,
 ) -> Tuple[Any, Dict[str, Any]]:
     """Rebuild (client, request kwargs) for a same-provider retry after credential recovery."""
-    if task == "vision":
+    if _is_vision_media_task(task):
         effective_provider, retry_client, retry_model = resolve_vision_provider_client(
             provider=resolved_provider, model=final_model, base_url=resolved_base_url,
             api_key=resolved_api_key, async_mode=async_mode,
@@ -4335,7 +4335,7 @@ def _try_main_agent_model_fallback(
         main_provider, main_model = _agg_provider, _agg_model
     if not main_provider or not main_model or main_provider.lower() in {"auto", ""}:
         return None, None, ""
-    if task == "vision" and (
+    if _is_vision_media_task(task) and (
             main_provider in _PROVIDERS_WITHOUT_VISION or not _main_model_supports_vision(main_provider, main_model)):
         # Same capability gate as the auto-route (_vision_main_provider_client): handing an image to a
         # text-only main model turns a transient 429 into a guaranteed 400 (#108349).
@@ -6199,6 +6199,17 @@ def _named_custom_provider_present(name: str) -> bool:
         return False
 
 
+
+def _is_vision_media_task(task: Optional[str]) -> bool:
+    """True for vision and video — both need the media-capable provider chain.
+
+    Selects vision routing (media request shaping, Copilot vision headers, vision-capable
+    auto-route, and fallback_chain rescue). A plain ``task="video"`` without this would fall
+    through to the generic text-client path and skip those gates (#132701).
+    """
+    return task in ("vision", "video")
+
+
 def _resolve_task_provider_model(
     task: str = None, provider: str = None, model: str = None, base_url: Optional[str] = None,
     api_key: Optional[str] = None,
@@ -6223,6 +6234,42 @@ def _resolve_task_provider_model(
         # User-facing spellings (``responses``, ``anthropic``, …) canonicalize here so every
         # branch downstream compares against the transport names only (#39750).
         resolved_api_mode = _canonical_api_mode(str(task_config.get("api_mode") or "")).lower() or None
+        # Video inherits unset/auto fields from vision so an unset auxiliary.video block
+        # preserves historical vision routing (#132701).
+        if task == "video":
+            vision_config = _get_auxiliary_task_config("vision")
+
+            def _blank_or_auto(val: Optional[str]) -> bool:
+                return not val or str(val).strip().lower() == "auto"
+
+            if _blank_or_auto(cfg_provider):
+                inherited = str(vision_config.get("provider", "")).strip() or None
+                if inherited:
+                    cfg_provider = inherited
+            if not cfg_model:
+                inherited = str(vision_config.get("model", "")).strip() or None
+                if inherited and inherited.lower() != "auto":
+                    cfg_model = inherited
+            if not cfg_base_url:
+                inherited = str(vision_config.get("base_url", "")).strip() or None
+                if inherited:
+                    cfg_base_url = inherited
+            if not cfg_api_key:
+                inherited = str(vision_config.get("api_key", "")).strip() or None
+                if not inherited:
+                    key_env = str(
+                        vision_config.get("key_env") or vision_config.get("api_key_env") or ""
+                    ).strip()
+                    if key_env:
+                        inherited = _scoped_key_env(key_env) or None
+                if inherited:
+                    cfg_api_key = inherited
+            if not resolved_api_mode:
+                inherited = _canonical_api_mode(
+                    str(vision_config.get("api_mode") or "")
+                ).lower() or None
+                if inherited:
+                    resolved_api_mode = inherited
     # 'auto' is a sentinel ("inherit / auto-detect"), not a model id — leaking it to the wire
     # yields a 200 with an error-text body that consumers accept as output. The explicit `model`
     # kwarg needs the same normalization: MoA slots forward preset `model:` fields through it.
@@ -6495,7 +6542,7 @@ _aux_sem_lock = threading.Lock()
 def _get_task_max_concurrency(task: Optional[str]) -> Optional[int]:
     """``auxiliary.<task>.max_concurrency`` as a positive int, or None. Vision uses this key for
     its encode/resize CPU pool; its LLM calls stay concurrent."""
-    if not task or task == "vision":
+    if not task or _is_vision_media_task(task):
         return None
     try:
         value = int(_get_auxiliary_task_config(task).get("max_concurrency"))
@@ -7428,7 +7475,7 @@ def _resolve_call_client(
     """Resolve the client for one aux call: vision chain, or cached text client with the
     explicit-provider fallback_chain / auto-chain rescue; RuntimeError when nothing is configured."""
     effective_provider = resolved_provider
-    if task == "vision":
+    if _is_vision_media_task(task):
         effective_provider, client, final_model = resolve_vision_provider_client(
             provider=resolved_provider if resolved_provider != "auto" else provider,
             model=resolved_model or model, base_url=resolved_base_url or base_url,
@@ -7462,7 +7509,7 @@ def _resolve_call_client(
                 client, final_model = fb_client, fb_model
                 if async_mode:
                     client, final_model = _to_async_client(
-                        fb_client, fb_model or "", is_vision=(task == "vision"))
+                        fb_client, fb_model or "", is_vision=_is_vision_media_task(task))
                 resolved_provider = fb_label or resolved_provider
                 effective_provider = resolved_provider
             # Auto/custom with no credentials: walk the full auto chain (not just OpenRouter).
@@ -7708,7 +7755,7 @@ def _refreshed_nous_step(route: _LadderRoute, kwargs: Dict[str, Any], message: s
         lookup_model=route.resolved_model, lookup_task=route.task, async_mode=route.async_mode,
         base_url=route.resolved_base_url, api_key=route.resolved_api_key,
         api_mode=route.resolved_api_mode, main_runtime=route.main_runtime,
-        is_vision=(route.task == "vision"),
+        is_vision=_is_vision_media_task(route.task),
     )
     if refreshed_client is None:
         return None
@@ -7728,7 +7775,7 @@ def _ladder_nous_rungs(
     # 404s); force a fresh Portal fetch and retry once.
     if _is_model_not_found_error(first_err) and client_is_nous:
         healed_model = _refresh_nous_recommended_model(
-            vision=(task == "vision"), stale_model=kwargs.get("model"))
+            vision=_is_vision_media_task(task), stale_model=kwargs.get("model"))
         if healed_model and healed_model != kwargs.get("model"):
             logger.warning("Auxiliary %s%s: model %r no longer in Nous catalog; "
                            "retrying with refreshed recommendation %r",
@@ -8400,7 +8447,7 @@ async def _async_call_llm_impl(
             if kind == "retry":
                 return await _retry_same_provider_async(**kw)
             fb_client, fb_model, fb_label = args
-            fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=(task == "vision"))
+            fb_client, _ = _to_async_client(fb_client, fb_model or "", is_vision=_is_vision_media_task(task))
             return await _call_fallback_candidate_async(fb_client, fb_model, fb_label, **kw)
         return await _drive_ladder_async(
             _start_recovery_ladder(first_err, req, retry_kwargs, task=task, async_mode=True, route_info=route_info),

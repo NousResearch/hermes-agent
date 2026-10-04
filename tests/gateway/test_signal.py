@@ -79,6 +79,22 @@ class TestSignalAdapterInit:
         assert adapter.account == "+15551234567"
         assert "group123" in adapter.group_allow_from
 
+    def test_declares_code_block_support(self, monkeypatch):
+        """Signal declares supports_code_blocks so verbose tool-progress terminal blocks render
+        as real MONOSPACE bodyRanges (markdown_to_signal already converts ``` fences), instead of
+        falling back to the flattened single-line preview plain-text platforms get."""
+        adapter = _make_signal_adapter(monkeypatch)
+        assert adapter.supports_code_blocks is True
+
+    def test_markdown_to_signal_renders_fence_as_monospace(self):
+        """End-to-end: the capability flag is meaningful only if the formatter it unlocks
+        actually turns a fenced code block into a MONOSPACE textStyle range."""
+        from gateway.platforms.signal_format import markdown_to_signal
+
+        text, styles = markdown_to_signal("```\npct config 902\n```")
+        assert "pct config 902" in text
+        assert any(style.endswith(":MONOSPACE") for style in styles)
+
 
 class TestSignalConnectCleanup:
     """Regression coverage for failed connect() cleanup."""

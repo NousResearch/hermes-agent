@@ -1586,7 +1586,7 @@ DEFAULT_CONFIG = {
         # discord / discord_admin tools: allowed actions (comma string or YAML list; empty = all,
         # subject to bot intents; unknown names dropped with a warning): list_guilds, server_info,
         # list_channels, channel_info, list_roles, member_info, search_members, fetch_messages,
-        # list_pins, pin_message, unpin_message, create_thread, add_role, remove_role.
+        # list_pins, pin_message, unpin_message, create_thread, rename_thread, add_role, remove_role.
         "server_actions": "",
         # DEPRECATED no-op (uploads are always cached; messaging auth is the gate). Kept so existing
         # configs don't error. Env: DISCORD_ALLOW_ANY_ATTACHMENT.
@@ -1597,6 +1597,7 @@ DEFAULT_CONFIG = {
         # Mention allowed users on approval prompts so owners notice them in shared channels. Env:
         # DISCORD_APPROVAL_MENTIONS.
         "approval_mentions": False,
+        "approval_mentions_scope": "all",
         # Voice-channel inactivity timeout (seconds); 0 = stay until `/voice leave`.
         "voice_channel_inactivity_timeout_seconds": 300,
         # Minimum seconds before force-stopping a VC playback; the adapter probes clip duration and

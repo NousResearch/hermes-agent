@@ -233,24 +233,56 @@ def _index_path(store: Path, dir_hash: str) -> Path:
     return store / _INDEXES_DIRNAME / dir_hash
 
 
+def _store_pathspecs(base: Path, working_dir) -> List[str]:
+    """Pathspecs naming the checkpoint base and its ``store_lock`` file inside ``working_dir``.
+
+    Empty when the base is outside the working directory (or is the working directory
+    itself, where excluding ``.`` would stage nothing).
+    """
+    try:
+        rel = _normalize_path(str(base)).relative_to(_normalize_path(str(working_dir)))
+    except (OSError, ValueError):
+        return []
+    if not rel.parts:
+        return []
+    lock = rel.parent / f".{rel.name}.lock"
+    return [rel.as_posix(), lock.as_posix()]
+
+
 def _stage_all_args(base: Path, working_dir) -> List[str]:
     """``git add -A`` that never stages the checkpoint base itself.
 
     With HERMES_HOME (or a profile home) as the working directory the store sits inside
-    the snapshotted tree, and ``info/exclude`` (relative patterns) cannot name it: every
-    snapshot then staged the previous one's packfiles and index, the store grew by about
-    its own size per checkpoint, and the eventual ``add -A`` timeout left
-    ``indexes/<hash>.lock`` behind. Exclude the base and its ``store_lock`` file by pathspec.
+    the snapshotted tree: every snapshot then staged the previous one's packfiles and
+    index, the store grew by about its own size per checkpoint, and the eventual
+    ``add -A`` timeout left ``indexes/<hash>.lock`` behind. Exclude the base and its
+    ``store_lock`` file by pathspec, which works at any nesting depth without rewriting
+    the store's ``info/exclude``.
     """
-    args = ["add", "-A"]
-    try:
-        rel = _normalize_path(str(base)).relative_to(_normalize_path(str(working_dir)))
-    except (OSError, ValueError):
-        return args
-    if not rel.parts:
-        return args
-    lock = rel.parent / f".{rel.name}.lock"
-    return [*args, "--", f":(exclude){rel.as_posix()}", f":(exclude){lock.as_posix()}"]
+    return ["add", "-A", *_exclude_store_args(base, working_dir)]
+
+
+def _exclude_store_args(base: Path, working_dir) -> List[str]:
+    """``-- :(exclude)<base> :(exclude)<lock>`` for git commands, or ``[]`` when not needed."""
+    paths = _store_pathspecs(base, working_dir)
+    return ["--", *(f":(exclude){p}" for p in paths)] if paths else []
+
+
+def _unstage_store(store: Path, working_dir, index_file: Path) -> None:
+    """Drop the base from an index re-seeded from a checkpoint taken before it was excluded.
+
+    An exclude pathspec only stops ``add -A`` from staging new store paths; it leaves
+    entries already in the index alone, so a project whose earlier snapshots captured
+    the store would carry them into every later snapshot. ``--cached`` keeps the files on
+    disk; ``-f`` is needed because a live store's index/ref files always differ from the
+    copies the old snapshot recorded.
+    """
+    paths = _store_pathspecs(store.parent, working_dir)
+    if paths:
+        _run_git(
+            ["rm", "--cached", "-r", "-f", "-q", "--ignore-unmatch", "--", *paths],
+            store, working_dir, index_file=index_file,
+        )
 
 
 def _ledger_path(store: Path, dir_hash: str) -> Path:
@@ -895,7 +927,8 @@ class CheckpointManager:
         _run_git(_stage_all_args(store.parent, abs_dir), store, abs_dir,
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
         ok, names_out, err = _run_git(
-            ["diff", "--name-only", "-z", commit_hash, "--cached"],
+            ["diff", "--name-only", "-z", commit_hash, "--cached",
+             *_exclude_store_args(store.parent, abs_dir)],
             store, abs_dir, index_file=index_file,
         )
         # Reset the index back to the project ref so it doesn't drift.
@@ -1076,12 +1109,15 @@ class CheckpointManager:
         _run_git(_stage_all_args(store.parent, abs_dir), store, abs_dir,
                  timeout=_GIT_TIMEOUT * 2, index_file=index_file)
 
+        # A checkpoint taken before the store was excluded may still contain it; never
+        # report the store as a change against such a checkpoint.
+        store_excludes = _exclude_store_args(store.parent, abs_dir)
         ok_stat, stat_out, _ = _run_git(
-            ["diff", "--stat", commit_hash, "--cached"],
+            ["diff", "--stat", commit_hash, "--cached", *store_excludes],
             store, abs_dir, index_file=index_file,
         )
         ok_diff, diff_out, _ = _run_git(
-            ["diff", commit_hash, "--cached", "--no-color"],
+            ["diff", commit_hash, "--cached", "--no-color", *store_excludes],
             store, abs_dir, index_file=index_file,
         )
 
@@ -1490,6 +1526,7 @@ class CheckpointManager:
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False
+        _unstage_store(store, working_dir, index_file)
 
         if self.max_file_size_mb > 0:
             self._drop_oversize_from_index(store, working_dir, index_file)

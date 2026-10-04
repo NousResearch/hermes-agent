@@ -113,6 +113,45 @@ class TestStoreNeverStagesItself:
         assert "notes.md" in changed
         assert not [p for p in changed if p.startswith("checkpoints/")], changed
 
+    def test_snapshot_repairs_a_store_staged_before_the_fix(self, home_as_workdir, monkeypatch):
+        """An index re-seeded from a polluted checkpoint keeps the store unless it is unstaged."""
+        home = home_as_workdir
+        mgr = CheckpointManager(enabled=True, max_snapshots=50)
+        store = _store_path()
+        fixed = _cm._stage_all_args
+        # Reproduce a store snapshotted by a release without the exclusion.
+        with monkeypatch.context() as pre_fix:
+            pre_fix.setattr(_cm, "_stage_all_args", lambda base, working_dir: ["add", "-A"])
+            pre_fix.setattr(_cm, "_unstage_store", lambda *a, **k: None, raising=False)
+            for n in range(2):
+                (home / "notes.md").write_text(f"pre-fix {n}\n")
+                mgr._checkpointed_dirs.clear()
+                assert mgr.ensure_checkpoint(str(home), f"pre-fix {n}") is True
+        polluted = _snapshot_paths(store, home)
+        assert [p for p in polluted if p.startswith("checkpoints/")], "precondition: store was staged"
+        polluted_commit = mgr.list_checkpoints(str(home))[0]["hash"]
+
+        assert _cm._stage_all_args is fixed
+        (home / "notes.md").write_text("after fix\n")
+        mgr._checkpointed_dirs.clear()
+        assert mgr.ensure_checkpoint(str(home), "after fix") is True
+        repaired = _snapshot_paths(store, home)
+        assert "notes.md" in repaired
+        assert not [p for p in repaired if p.startswith("checkpoints/")], repaired
+        assert ".checkpoints.lock" not in repaired
+
+        # Comparing against the old polluted checkpoint must not surface the store either.
+        mgr.record_agent_write(str(home / "notes.md"))
+        diff = mgr.diff(str(home), polluted_commit)
+        assert diff["success"], diff
+        assert "notes.md" in diff["diff"]
+        assert "checkpoints/" not in diff["diff"]
+        plan = mgr._safe_restore_plan(str(home), polluted_commit)
+        assert plan["success"], plan
+        changed = plan.get("restore", []) + plan.get("skipped", [])
+        assert "notes.md" in changed
+        assert not [p for p in changed if p.startswith("checkpoints/")], changed
+
     def test_project_outside_home_unaffected(self, home_as_workdir, tmp_path):
         project = tmp_path / "project"
         project.mkdir()

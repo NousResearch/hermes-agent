@@ -7,7 +7,7 @@ wrapping the actual execution callback. Agent-loop call sites and plugins share 
 from __future__ import annotations
 
 import logging
-from copy import deepcopy
+from copy import copy, deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List
 
@@ -48,58 +48,107 @@ def middleware_payload(**kwargs: Any) -> Dict[str, Any]:
 
 
 def _safe_copy(payload: Any) -> Any:
-    """Deep-copy a request payload, tolerating non-deepcopyable members.
+    """Copy a request graph, tolerating non-deepcopyable members.
 
     An LLM request can carry clients/callbacks/file handles; a hard ``deepcopy`` failure would
-    otherwise abort the whole request-middleware pass.
+    otherwise abort the whole request-middleware pass. The fallback isolates surrounding
+    containers and preserves their aliases and cycles; opaque leaves retain their identity.
     """
     try:
         return deepcopy(payload)
     except Exception as exc:
         logger.debug("deepcopy failed for request payload (%s); retaining opaque leaves", exc)
 
-    # A client or file handle must not make unrelated request lists/dicts shared
-    # between callbacks. Preserve opaque leaves, while still copying containers.
+    # Walk containers without Python recursion: an opaque leaf or a deeply nested
+    # request must not share surrounding containers or bypass the middleware pass. Shallow
+    # copies retain container subclasses (including defaultdict's factory).
     memo: Dict[int, Any] = {}
+    pending: Dict[int, List[Callable[[Any], None]]] = {}
+    tasks: List[Callable[[], None]] = []
+    root: List[Any] = []
 
-    def copy_value(value: Any) -> Any:
+    def copy_state(value: Any, result: Any) -> None:
+        state = getattr(value, "__dict__", None)
+        if state is not None and hasattr(result, "__dict__"):
+            tasks.append(lambda: copy_value(state, lambda copied: setattr(result, "__dict__", copied)))
+
+    def copy_value(value: Any, assign: Callable[[Any], None]) -> None:
         if type(value) in (str, bytes, int, float, bool, complex, type(None)):
-            return value
+            assign(value)
+            return
         identity = id(value)
         if identity in memo:
-            return memo[identity]
+            assign(memo[identity])
+            return
+        if identity in pending:
+            pending[identity].append(assign)
+            return
         result: Any
-        if type(value) is dict:
-            result = {}
-            memo[identity] = result
-            for key, item in value.items():
-                result[copy_value(key)] = copy_value(item)
-        elif type(value) is list:
-            result = []
-            memo[identity] = result
-            result.extend(copy_value(item) for item in value)
-        elif type(value) is set:
-            result = set()
-            memo[identity] = result
-            result.update(copy_value(item) for item in value)
-        elif type(value) is tuple:
-            items = [copy_value(item) for item in value]
-            # Recursion through a mutable child may already have copied this tuple.
-            result = memo.get(identity, tuple(items))
-        else:
-            # A failing __deepcopy__ may leave partial containers in its memo.
-            # Publish that memo only on success, never after an opaque leaf fails.
-            leaf_memo = memo.copy()
+        if isinstance(value, (dict, list, set)):
+            factory = dict if isinstance(value, dict) else list if isinstance(value, list) else set
             try:
-                result = deepcopy(value, leaf_memo)
+                result = copy(value)
+                if result is value or not isinstance(result, factory):
+                    result = factory()
+                result.clear()
             except Exception:
-                result = value
+                result = factory()
+            memo[identity] = result
+            assign(result)
+            copy_state(value, result)
+            if isinstance(result, dict):
+                for key, item in reversed(list(value.items())):
+                    pair: List[Any] = [None, None]
+                    tasks.append(lambda pair=pair, target=result: target.__setitem__(pair[0], pair[1]))
+                    tasks.append(lambda item=item, pair=pair: copy_value(
+                        item, lambda copied: pair.__setitem__(1, copied)))
+                    tasks.append(lambda key=key, pair=pair: copy_value(
+                        key, lambda copied: pair.__setitem__(0, copied)))
+            elif isinstance(result, list):
+                list.extend(result, [None] * len(value))
+                for index, item in reversed(list(enumerate(value))):
+                    tasks.append(lambda index=index, item=item, target=result: copy_value(
+                        item, lambda copied: list.__setitem__(target, index, copied)))
             else:
-                memo.update(leaf_memo)
-        memo[identity] = result
-        return result
+                for item in value:
+                    tasks.append(lambda item=item, target=result: copy_value(
+                        item, lambda copied: set.add(target, copied)))
+            return
+        if isinstance(value, (tuple, frozenset)):
+            pending[identity] = [assign]
+            items: List[Any] = [None] * len(value)
 
-    return copy_value(payload)
+            def finish() -> None:
+                factory = tuple if isinstance(value, tuple) else frozenset
+                result = factory.__new__(type(value), items)
+                memo[identity] = result
+                for setter in pending.pop(identity):
+                    setter(result)
+                copy_state(value, result)
+
+            # Mutable children are allocated before their contents, so tuple/list
+            # cycles can be completed after the tuple itself becomes available.
+            tasks.append(finish)
+            for index, item in reversed(list(enumerate(value))):
+                tasks.append(lambda index=index, item=item: copy_value(
+                    item, lambda copied: items.__setitem__(index, copied)))
+            return
+        # A failing __deepcopy__ may leave partial containers in its memo.
+        # Publish that memo only on success, never after an opaque leaf fails.
+        leaf_memo = memo.copy()
+        try:
+            result = deepcopy(value, leaf_memo)
+        except Exception:
+            result = value
+        else:
+            memo.update(leaf_memo)
+        memo[identity] = result
+        assign(result)
+
+    tasks.append(lambda: copy_value(payload, root.append))
+    while tasks:
+        tasks.pop()()
+    return root[0]
 
 
 def _apply_request_chain(
@@ -209,6 +258,11 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
     if not callbacks:
         return terminal_call(kwargs[payload_key])
 
+    # Execution-only plugins may rewrite the caller's payload in place, so freeze
+    # its original before entering the first frame, then isolate each frame's view.
+    original_key = "original_" + payload_key
+    kwargs[original_key] = _safe_copy(kwargs[original_key])
+
     def call_at(index: int, payload: Any) -> Any:
         if index >= len(callbacks):
             return terminal_call(payload)
@@ -238,6 +292,7 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
 
         call_kwargs = middleware_payload(**kwargs)
         call_kwargs[payload_key] = payload
+        call_kwargs[original_key] = _safe_copy(kwargs[original_key])
         call_kwargs["next_call"] = next_call
         try:
             return callback(**call_kwargs)

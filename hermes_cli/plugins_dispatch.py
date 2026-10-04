@@ -593,18 +593,22 @@ class PluginDispatchMixin:
     ) -> List[Any]:
         """Dispatch middleware; request rewrites compose only after a valid return.
 
-        Execution middleware remains a flat fan-out. Request callbacks receive a
-        copy of the last accepted payload, so a failing/observer callback cannot
-        mutate an earlier accepted rewrite or leak changes into later callbacks.
+        Request callbacks receive a copy of the last accepted payload, so a
+        failing/observer callback cannot mutate an earlier accepted rewrite.
+        Each callback also receives its own pre-middleware snapshot.
         """
         from hermes_cli.middleware import _safe_copy
 
+        copy_keys = {"original_request", "original_args"}
+        if _payload_key is not None:
+            copy_keys.add(_payload_key)
         results: List[Any] = []
         for cb in self._middleware.get(kind, []):
             try:
-                callback_kwargs = kwargs
-                if _payload_key is not None:
-                    callback_kwargs = {**kwargs, _payload_key: _safe_copy(kwargs[_payload_key])}
+                callback_kwargs = {
+                    key: _safe_copy(value) if key in copy_keys else value
+                    for key, value in kwargs.items()
+                }
                 ret = cb(**callback_kwargs)
                 if ret is not None:
                     if (_payload_key is not None and isinstance(ret, dict)

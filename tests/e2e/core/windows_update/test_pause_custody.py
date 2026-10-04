@@ -159,8 +159,13 @@ def _fresh_gateway(machine) -> int:
 
 
 def _paused_gateway(machine) -> int:
-    """A real gateway, then stopped hard: the state a pause left it in. Its (dead) pid."""
+    """A real gateway, stopped the way a pause stops it (a clean ``hermes gateway stop``, not a
+    hard kill whose stale lock state slows the next ``--replace``). Its (now dead) pid."""
     pid = _fresh_gateway(machine)
+    machine.hermes("gateway", "stop", label="pause-stop", timeout=180)
+    deadline = time.monotonic() + 60
+    while psutil.pid_exists(pid) and time.monotonic() < deadline:
+        time.sleep(0.2)
     _clear(machine)
     return pid
 

@@ -192,8 +192,10 @@ read-only. Point it at a project or scratch directory.
 
 With the home directory as the working directory, the existing non-dot
 entries of it are writable and nothing else is: the dot entries are
-read-only or hidden, and no new file or directory can be made at the top
-of the home directory. Create it on the host first, or work in a
+read-only or hidden (except through a dot entry that is a symlink into a
+writable directory, see
+[Dot entries that are symlinks](#dot-entries-that-are-symlinks)), and no
+new file or directory can be made at the top of the home directory. Create it on the host first, or work in a
 subdirectory. A file at the top of the home directory can be written in
 place but not replaced: a program that saves by writing a new file and
 renaming it over the old one fails there. Hermes logs a warning at

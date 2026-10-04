@@ -1409,6 +1409,22 @@ class TestWritableDotLinkWarning:
             BubblewrapEnvironment(cwd=str(cwd), timeout=10, config=BubblewrapConfig(profile=profile)).cleanup()
         assert self._warnings(caplog) == []
 
+    def test_silent_for_a_target_under_a_hidden_path(self, sandbox_root, fake_home, caplog):
+        # The target is hidden in the sandbox, so a command cannot write to it.
+        keys = fake_home / "Documents" / "keys"
+        keys.mkdir(parents=True)
+        (keys / "rc").write_text("x")
+        (fake_home / ".bashrc").unlink()
+        (fake_home / ".bashrc").symlink_to("Documents/keys/rc")
+        (fake_home / ".zshrc").symlink_to("dotfiles/bashrc")
+        config = BubblewrapConfig(hide=("~/Documents/keys",))
+        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
+            BubblewrapEnvironment(cwd=str(fake_home), timeout=10, config=config).cleanup()
+        messages = self._warnings(caplog)
+        assert len(messages) == 1
+        assert ".zshrc" in messages[0]
+        assert ".bashrc" not in messages[0]
+
     def test_backend_has_no_chain_walk_and_no_hold_of_link_targets(self):
         from tools.environments import bubblewrap_home
 

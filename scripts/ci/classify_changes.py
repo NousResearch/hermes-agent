@@ -67,6 +67,9 @@ must never skip one a change could break:
 * ``website/docs/`` and ``website/scripts/`` are python-relevant for the same
   reason: the docs tree generates ``llms.txt``, and
   ``tests/website/test_generate_llms_txt.py`` asserts every page reaches it.
+* A cross-language fixture (``_SHARED_FIXTURE_CONSUMERS``) selects the test
+  lanes of every consumer that reads it: the update-marker corpus runs pytest,
+  cargo, vitest and the Windows hand-off tests, not only ``python``.
 """
 
 from __future__ import annotations
@@ -144,6 +147,27 @@ _DESKTOP_UPDATER_FILES = {
     "tests/conftest.py",
     "pyproject.toml",
 }
+
+# Cross-language fixtures: one data file that tests in several languages read as
+# their shared contract. Editing it is editing every consumer, so it selects each
+# lane that runs one (a path-prefix rule would see only ``tests/`` -> python, and
+# the cargo / vitest / PowerShell readers of the same cases would never run).
+# tests/ci/test_update_ci_routing.py finds the consumers in the tree and fails
+# until every one is listed here.
+_SHARED_FIXTURE_CONSUMERS: dict[str, tuple[str, ...]] = {
+    # A7 rule 7: the update-marker parse / judge / release corpus.
+    "tests/fixtures/update_marker_corpus.json": (
+        "tests/hermes_cli/test_update_marker_corpus.py",  # Python: update_lock
+        "apps/bootstrap-installer/src-tauri/src/marker_tests.rs",  # Rust: cargo test
+        "apps/desktop/electron/update-marker-corpus.test.ts",  # Electron: vitest
+        "tests/scripts/desktop_update/test_desktop_update_posix_marker_corpus.py",  # marker.sh
+        "tests/scripts/desktop_update/test_desktop_update_windows_marker_corpus.py",  # marker.ps1
+    ),
+}
+# What a fixture inherits from its consumers: the lanes that run them as tests.
+# Not the slow suites a consumer's path also matches (an Electron test file under
+# electron/update-* starts the Desktop update E2E, which never reads the corpus).
+_FIXTURE_CONSUMER_LANES = ("python", "rust", "frontend", "desktop_updater")
 
 # Rust crates — currently just the Tauri bootstrap installer (Hermes-Setup).
 # These live under ``apps/``, so before this lane existed a ``.rs`` edit matched
@@ -509,6 +533,11 @@ def classify(files: list[str], run_e2e: bool = False) -> dict[str, bool]:
         "rust": any(_is_rust(f) for f in files),
         **{lane: run_e2e or on for lane, on in _slow_lanes(files).items()},
     }
+    consumers = [c for f in files for c in _SHARED_FIXTURE_CONSUMERS.get(f, ())]
+    if consumers:
+        inherited = classify(consumers)
+        for lane in _FIXTURE_CONSUMER_LANES:
+            ret[lane] = ret[lane] or inherited[lane]
     if not files or any(f.startswith(".github/") for f in files):
         ret["python"] = True
         ret["python_prod"] = True

@@ -257,6 +257,64 @@ def test_every_detect_output_a_lane_sets_is_consumed_by_some_job():
     assert unread == []
 
 
+# -- shared cross-language fixtures (review D14) --------------------------------------------
+
+# The job (path from ci.yaml down) that runs each lane's consumers of a shared fixture.
+_FIXTURE_LANE_JOBS: dict[str, tuple[str, ...]] = {
+    "python": ("tests", "test"),  # pytest on Linux (marker.sh corpus included)
+    "rust": ("rust-tests", "bootstrap-installer"),  # cargo test of the Tauri crate
+    "frontend": ("js-tests", "check"),  # apps/desktop `check` -> vitest --project electron
+}
+_CORPUS = "tests/fixtures/update_marker_corpus.json"
+_TEST_FILE = re.compile(r"(^tests/(?!ci/).*\.py$)|(_tests?\.rs$)|(\.test\.[cm]?[jt]sx?$)")
+
+
+def _fixture_lanes_reached(fixture: str) -> dict[str, bool]:
+    classified = _real_classifier([fixture])
+    run = _ci_run(classified)
+    reached = {lane: classified[lane] and _reached(run, *job) is not None
+               for lane, job in _FIXTURE_LANE_JOBS.items()}
+    reached["desktop_updater"] = classified["desktop_updater"] and _windows_desktop_updater_tests_selected(run)
+    return reached
+
+
+def test_marker_corpus_change_runs_every_language_that_reads_it():
+    """The corpus is A7 rule 7's single source of truth for four readers. Classified by
+    path alone it selected ``python`` only: cargo (marker_tests.rs), vitest
+    (update-marker-corpus.test.ts) and the PowerShell corpus test (desktop_updater on
+    the Windows lane) never ran on the PR that edited their expected answers."""
+    reached = _fixture_lanes_reached(_CORPUS)
+    assert all(reached.values()), f"{_CORPUS}: a corpus consumer's lane never runs: {reached}"
+
+
+def _tracked_mentions(name: str) -> list[str]:
+    try:
+        out = subprocess.run(["git", "-C", str(_REPO), "grep", "-l", "-F", name, "--", "."],
+                             capture_output=True, text=True, timeout=60)
+    except OSError:
+        pytest.skip("git unavailable: cannot list the fixture's consumers")
+    if out.returncode not in (0, 1):
+        pytest.skip(f"not a git checkout: {out.stderr.strip()[:200]}")
+    return out.stdout.split()
+
+
+def test_every_test_that_reads_a_shared_fixture_is_routed_by_it():
+    """Derived, not remembered: every test file in the tree that names a shared fixture is
+    a listed consumer, and the fixture selects each test lane that consumer's own edit would."""
+    assert _CORPUS in cc._SHARED_FIXTURE_CONSUMERS
+    for fixture, listed in cc._SHARED_FIXTURE_CONSUMERS.items():
+        readers = {p for p in _tracked_mentions(Path(fixture).name) if _TEST_FILE.search(p)}
+        assert readers <= set(listed), f"{fixture}: unlisted consumer(s) {sorted(readers - set(listed))}"
+        if (_REPO / fixture).is_file():  # the fixture's own PRs land it with its consumers
+            missing = [c for c in listed if not (_REPO / c).is_file()]
+            assert not missing, f"{fixture}: listed consumer(s) left the tree: {missing}"
+        on = cc.classify([fixture])
+        for consumer in listed:
+            own = cc.classify([consumer])
+            lost = [lane for lane in cc._FIXTURE_CONSUMER_LANES if own[lane] and not on[lane]]
+            assert not lost, f"{fixture}: editing it skips {lost}, which run {consumer}"
+
+
 # -- ownership: the update entry points' real imports ---------------------------------------
 
 _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", ".worktrees", "tests", "website", "__pycache__"}

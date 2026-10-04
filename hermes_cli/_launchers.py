@@ -85,8 +85,8 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
         # the install that committed the venv (the checkout), not this
         # workspace copy, so the launcher and any root-bound form die with
         # "no dependency environment is committed" (#125375). Resolve the
-        # entry point from the environment that actually owns it — the
-        # recorded owner first, then this root's own generation sibling.
+        # owning checkout from this generation's recorded project root, with
+        # the default facts owner only as a fallback for older layouts.
         # The owner/sibling entries are useful for resolving activation, but
         # they live inside a generation and may be collected immediately after
         # this command is persisted. Resolve the command from a stable install
@@ -108,19 +108,23 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
 
 def _stable_runtime_root(root: Path) -> Path:
     """Find the non-generation project root that owns a PM generation."""
-    owner = _facts_owner_root(root)
-    if _recorded_venv_for_root(owner) is not None:
-        return owner.resolve()
     workspace = Path(root).resolve()
     if workspace.name == "workspace":
         marker = workspace.parent.parent.parent / "inputs" / ".project-root"
         try:
-            candidate = Path(marker.read_text(encoding="utf-8").strip()).resolve()
+            value = marker.read_text(encoding="utf-8").strip()
+            candidate = Path(value).resolve() if value else None
         except (FileNotFoundError, OSError, ValueError):
             pass
         else:
-            if candidate.is_dir():
+            # The generation's recorded source owns this workspace even when
+            # another checkout under the same home also has committed facts.
+            if candidate is not None and candidate.is_dir():
                 return candidate
+    # Older layouts without a valid marker retain the default-owner fallback.
+    owner = _facts_owner_root(root)
+    if _recorded_venv_for_root(owner) is not None:
+        return owner.resolve()
     return workspace
 
 

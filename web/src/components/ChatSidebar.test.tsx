@@ -24,7 +24,7 @@ const gatewayMocks = vi.hoisted(() => {
       handlers.set(event, handler)
       return () => handlers.delete(event)
     }),
-    onState: vi.fn((handler: (state: string) => void) => {
+    onState: vi.fn((handler: (state: string) => void): (() => void) => {
       handler('open')
       return () => undefined
     }),

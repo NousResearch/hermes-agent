@@ -414,47 +414,61 @@ class TestLayout:
 
 
 class TestLinkProtection:
-    """What must be read-only so the content behind an allowed dot symlink cannot change."""
+    """The parts of the chain behind an allowed dot symlink: the directory of
+    each middle link and the real target. The backend decides what to do
+    with each; this only finds them."""
+
+    @staticmethod
+    def _paths(home, allowlist):
+        return [path for _unit, path in link_protection(home, allowlist)]
 
     def test_link_plain_entry_needs_nothing(self, home):
         _touch(home, ".bashrc")
         assert link_protection(home, (".bashrc",)) == ()
 
-    def test_link_target_file_is_protected(self, home):
+    def test_link_target_file_is_a_part(self, home):
         target = _touch(home, "dotfiles/bash/bashrc")
         os.symlink("dotfiles/bash/bashrc", os.path.join(home, ".bashrc"))
-        assert link_protection(home, (".bashrc", ".gitconfig")) == (target,)
+        assert link_protection(home, (".bashrc", ".gitconfig")) == ((".bashrc", target),)
 
-    def test_link_chain_protects_the_directory_of_each_middle_link_and_the_last_target(self, home):
-        real = _touch(home, "dotfiles/real")
-        os.symlink("real", os.path.join(home, "dotfiles", "bashrc"))
+    def test_link_chain_gives_the_directory_of_each_middle_link_and_the_last_target(self, home):
+        real = _touch(home, "dotfiles/sub/bashrc")
+        os.symlink("sub/bashrc", os.path.join(home, "dotfiles", "bashrc"))
         os.symlink("dotfiles/bashrc", os.path.join(home, ".bashrc"))
-        protected = link_protection(home, (".bashrc",))
-        assert os.path.join(home, "dotfiles") in protected
-        # The target lies inside the protected directory, so it is covered.
-        assert real not in protected
+        # Both are kept: a command may be able to write to one and not the other.
+        assert self._paths(home, (".bashrc",)) == [os.path.join(home, "dotfiles"), real]
 
-    def test_link_through_a_symlinked_directory_protects_the_directory_that_holds_that_link(self, home):
+    def test_link_through_a_symlinked_directory_gives_the_directory_that_holds_that_link(self, home):
         _touch(home, "store/rc/bashrc")
         os.makedirs(os.path.join(home, "dotfiles"))
         os.symlink("../store/rc", os.path.join(home, "dotfiles", "rc"))
         os.symlink("dotfiles/rc/bashrc", os.path.join(home, ".bashrc"))
-        protected = link_protection(home, (".bashrc",))
-        assert os.path.join(home, "dotfiles") in protected
-        assert os.path.join(home, "store", "rc", "bashrc") in protected
+        paths = self._paths(home, (".bashrc",))
+        assert os.path.join(home, "dotfiles") in paths
+        assert os.path.join(home, "store", "rc", "bashrc") in paths
 
     def test_link_hop_at_the_top_of_home_adds_no_directory(self, home):
         target = _touch(home, "bashrc.real")
         os.symlink("bashrc.real", os.path.join(home, "bashrc.link"))
         os.symlink("bashrc.link", os.path.join(home, ".bashrc"))
-        assert link_protection(home, (".bashrc",)) == (target,)
+        assert self._paths(home, (".bashrc",)) == [target]
 
-    def test_link_target_outside_home_is_protected(self, home, tmp_path):
+    def test_link_middle_hop_above_home_is_kept(self, home):
+        base = os.path.dirname(home)
+        real = os.path.join(base, "proj", "real")
+        os.makedirs(os.path.dirname(real))
+        with open(real, "w", encoding="utf-8") as handle:
+            handle.write("x")
+        os.symlink("proj/real", os.path.join(base, "mid"))
+        os.symlink("../mid", os.path.join(home, ".bashrc"))
+        assert self._paths(home, (".bashrc",)) == [base, real]
+
+    def test_link_target_outside_home_is_a_part(self, home, tmp_path):
         target = tmp_path / "proj" / "gitconfig"
         target.parent.mkdir()
         target.write_text("x")
         os.symlink(str(target), os.path.join(home, ".gitconfig"))
-        assert link_protection(home, (".gitconfig",)) == (str(target),)
+        assert link_protection(home, (".gitconfig",)) == ((".gitconfig", str(target)),)
 
     def test_link_dangling_or_looping_entry_gives_nothing(self, home):
         os.symlink("nowhere", os.path.join(home, ".bashrc"))
@@ -467,7 +481,7 @@ class TestLinkProtection:
         target.mkdir()
         os.makedirs(os.path.join(home, ".config"))
         os.symlink(str(target), os.path.join(home, ".config", "git"))
-        assert link_protection(home, (".config/git",)) == (str(target),)
+        assert link_protection(home, (".config/git",)) == ((".config/git", str(target)),)
 
     def test_link_protection_is_empty_without_a_home_root(self):
         assert link_protection(None, (".bashrc",)) == ()

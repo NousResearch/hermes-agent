@@ -322,6 +322,11 @@ def scratch_mask(scratch_dir: str | None, empty_file: str) -> list[tuple[str, ..
     return masks
 
 
+def home_replaced_by_bind(home_root: str, binds: Iterable[BindMount]) -> bool:
+    """True when an operator bind puts another directory over HOME or over a parent of it."""
+    return any(_is_within(home_root, bind.dest) and not _same_host_path(bind.src, bind.dest) for bind in binds)
+
+
 def staged_data_roots() -> tuple[str, ...]:
     """Real host paths of the staged data directories under the active HERMES_HOME.
 
@@ -680,10 +685,10 @@ def build_bwrap_args(
     which suits tests of the pure builder only. *scratch_dir* is the Hermes
     scratch directory, bound back on top of the HERMES_HOME overlay; None
     binds nothing. *staged_roots* are the staged data directories under
-    HERMES_HOME, bound back read-only. *readonly_paths* are the paths
-    behind the allowed dot symlinks (bubblewrap_home.link_protection): each
-    one that lies in a writable part of the sandbox is bound read-only and
-    its parents are pinned. The listing of the top of
+    HERMES_HOME, bound back read-only. *readonly_paths* are the parts of
+    the chains behind the allowed dot symlinks that a command could write
+    to: each is bound read-only at its own path and its parents are
+    pinned. The listing of the top of
     HOME is the one input read from the host at each call, so a directory
     made on the host later shows in the next spawn.
     """
@@ -739,9 +744,7 @@ def build_bwrap_args(
     # A bind that puts another directory over HOME (or over a parent of it)
     # replaces HOME on purpose. The layout would put the host entries back
     # on top of it, so it stands down and the plain overlays apply.
-    if home_root is not None and any(
-        _is_within(home_root, dest) and not _same_host_path(src, dest) for _flag, src, dest in mounts
-    ):
+    if home_root is not None and home_replaced_by_bind(home_root, binds):
         home_root = None
 
     # The state dir holds the shell snapshot and the cwd file between
@@ -780,23 +783,10 @@ def build_bwrap_args(
             late.append(("--bind", profile_home, profile_home))
     late.append(("--bind", state_dir, state_dir))
 
-    # What lies behind an allowed dot symlink stays read-only. Only a path
-    # a command could write to needs a mount, and one under a hidden path
-    # must never get one: the bind would show it.
-    def writable_here(path: str) -> bool:
-        if any(_is_within(path, root) for root in hidden_paths):
-            return False
-        for _src, dest in writable:
-            if not _is_within(path, dest):
-                continue
-            if home_root is None or not _is_within(home_root, dest) or not _is_within(path, home_root):
-                return True
-            # Under a bind that covers HOME only a non-dot entry is writable.
-            if not os.path.relpath(path, home_root).split(os.sep)[0].startswith("."):
-                return True
-        return False
-
-    held = [path for path in readonly_paths if writable_here(path)]
+    # What lies behind an allowed dot symlink stays read-only. The caller
+    # names the paths: the ones a command can write to at their own host
+    # path (BubblewrapEnvironment refuses the rest at construction).
+    held = list(readonly_paths)
 
     if home_root is None:
         for mount in mounts:
@@ -1167,15 +1157,15 @@ class BubblewrapEnvironment(LocalEnvironment):
         # the directory; pruning stays with the process that owns the home.
         self._scratch_dir = os.path.realpath(str(get_scratch_dir(self._hermes_home, prune=False)))
         self._staged_roots = staged_data_roots()
-        # The chain of each allowed dot symlink, resolved once: a link
-        # swapped later moves no mount.
-        self._link_readonly = bubblewrap_home.link_protection(self._home_root, self._home_allow)
         self._check_profile_home()
         # The mount paths are fixed here; only --chdir follows the tracked cwd.
         self._initial_cwd = os.path.realpath(_resolve_local_initial_cwd(cwd))
         self._check_initial_cwd()
         self._check_bind_sources()
         self._check_absent_denied_paths()
+        # The chain of each allowed dot symlink, resolved once: a link
+        # swapped later moves no mount.
+        self._link_readonly = self._resolve_link_holds()
         sandbox_root = os.path.realpath(get_sandbox_dir())
         self._check_sandbox_root(sandbox_root)
         # BaseEnvironment.__init__ derives the snapshot and cwd file paths
@@ -1269,14 +1259,6 @@ class BubblewrapEnvironment(LocalEnvironment):
                         "HERMES_HOME and the hidden dotfiles (a checkout under ~/.hermes "
                         "needs to be launched from elsewhere or moved)."
                     )
-        for held in self._link_readonly:
-            if os.path.isdir(held) and _is_within(cwd, held) and resolve_profile(self._config.profile).writable_cwd:
-                logger.warning(
-                    "bubblewrap cwd %s is read-only inside the sandbox: an allowed dot entry of the "
-                    "home directory links through %s, and a command that could write there could "
-                    "change what that entry points at.",
-                    self._initial_cwd, held,
-                )
         home = os.path.abspath(self._home).rstrip(os.sep) or os.sep
         if cwd == home or _is_within(home, cwd):
             logger.warning(
@@ -1286,6 +1268,103 @@ class BubblewrapEnvironment(LocalEnvironment):
                 "terminal.cwd to a project or scratch directory for a smaller writable set.",
                 self._initial_cwd,
             )
+
+    def _resolve_link_holds(self) -> tuple[str, ...]:
+        """The chain parts of the dot symlinks of HOME to bind read-only; refuse what cannot be held.
+
+        The entries are the allowlist units and every dot symlink at the
+        top of HOME. A part of a chain (bubblewrap_home.link_protection)
+        matters when a command can write to it. That is decided from the host paths the
+        sandbox mounts read-write, by their source: the cwd under a
+        writable profile, each read-write operator bind, the scratch dir,
+        and the profile home under home_mode=profile.
+
+        A part reached through the cwd or through an operator bind at its
+        own path is held: bound read-only there, with its parents pinned,
+        so a command can neither write to it nor move it aside. Under a
+        bind that covers HOME only the non-dot entries are writable, and a
+        part under a hidden path is not reachable at all, so neither needs
+        anything.
+
+        A part the backend cannot hold makes construction fail: one that
+        contains HOME (a read-only bind there would cover HOME itself),
+        one in the scratch dir or the profile home (bound on top of
+        everything else), one behind a bind whose destination differs
+        from its source (the same file then shows at a second path), and
+        any writable part while a bind replaces HOME (the layout that
+        carries the holds stands down).
+        """
+        root = self._home_root
+        if root is None:
+            return ()
+        # Every dot symlink at the top of HOME counts, shown in the sandbox
+        # or not: the host reads ~/.xprofile whether or not a command can
+        # see it. The shipped names are included even when the denylist
+        # took one off the allowlist because its target is hidden; the
+        # scratch dir and the profile home are bound on top of a hidden
+        # path.
+        try:
+            top_links = sorted(
+                name for name in os.listdir(root)
+                if name.startswith(".") and os.path.islink(os.path.join(root, name))
+            )
+        except OSError:
+            top_links = []
+        names = list(dict.fromkeys([*self._home_allow, *bubblewrap_home.ALLOWED_HOME_ENTRIES, *top_links]))
+        parts = bubblewrap_home.link_protection(root, names)
+        if not parts:
+            return ()
+        writable_profile = resolve_profile(self._config.profile).writable_cwd
+        # (what makes it writable, host source, whether a part under it can be held)
+        sources: list[tuple[str, str, bool]] = []
+        if writable_profile:
+            sources.append(("terminal.cwd", self._initial_cwd, True))
+        for bind in self._config.binds:
+            if not bind.readonly:
+                sources.append((
+                    f"the terminal.bubblewrap_binds entry {bind.src}",
+                    os.path.realpath(bind.src), _same_host_path(bind.src, bind.dest),
+                ))
+        if writable_profile and self._scratch_dir:
+            sources.append(("the Hermes scratch dir", self._scratch_dir, False))
+        profile_home = os.path.realpath(os.path.join(self._hermes_home, "home"))
+        if self._config.home_mode in PROFILE_HOME_MODES and os.path.isdir(profile_home):
+            sources.append(("the profile home", profile_home, False))
+        replaced = home_replaced_by_bind(root, self._config.binds)
+
+        held: list[str] = []
+        for unit, path in parts:
+            for label, source, at_own_path in sources:
+                if not _is_within(path, source):
+                    continue
+                if at_own_path:
+                    if any(_is_within(path, hidden) for hidden in self._hidden_paths):
+                        continue
+                    if not replaced and _is_within(root, source) and path != root and _is_within(path, root):
+                        top = os.path.relpath(path, root).split(os.sep)[0]
+                        if top.startswith(".") or not os.path.lexists(os.path.join(root, top)):
+                            continue
+                if not at_own_path or replaced or _is_within(root, path):
+                    raise ValueError(
+                        f"The dot entry {unit} of the home directory is a symlink, and its chain "
+                        f"passes through {path}, which {label} makes writable inside the bubblewrap "
+                        "sandbox in a way the backend cannot hold read-only: a command could change "
+                        "what that entry points at. Use a project directory as terminal.cwd, bind "
+                        "that directory at its own path (dest equal to src), or keep the target of "
+                        "the entry outside every writable directory."
+                    )
+                if path not in held:
+                    held.append(path)
+        cwd = self._initial_cwd
+        for path in held:
+            if writable_profile and os.path.isdir(path) and _is_within(cwd, path):
+                logger.warning(
+                    "bubblewrap cwd %s is read-only inside the sandbox: an allowed dot entry of the "
+                    "home directory links through %s, and a command that could write there could "
+                    "change what that entry points at.",
+                    cwd, path,
+                )
+        return tuple(held)
 
     def _check_absent_denied_paths(self) -> None:
         """Refuse a writable bind under which a command could create a credential path.

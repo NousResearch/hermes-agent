@@ -72,9 +72,15 @@ def cookie_origin_is_allowed(request: Request) -> bool:
     from hermes_cli.dashboard_auth.prefix import resolve_public_url
     from hermes_cli.web_server import _is_accepted_host
 
-    bound_host = getattr(request.app.state, "bound_host", None)
-    if bound_host and not _is_accepted_host(
-        request.headers.get("host", ""), bound_host,
+    # Prefer the full bound set (dual-stack / multi-address serve) and fall back
+    # to the legacy primary address, so a request naming ANY listener we bound
+    # passes instead of only the first one.
+    bound = (
+        getattr(request.app.state, "bound_hosts", None)
+        or getattr(request.app.state, "bound_host", None)
+    )
+    if bound and not _is_accepted_host(
+        request.headers.get("host", ""), bound,
         getattr(request.app.state, "trusted_public_hosts", frozenset()),
     ):
         return False

@@ -428,8 +428,20 @@ def _ws_auth_mode() -> str:
     from hermes_cli.web_server import app
     if getattr(app.state, "auth_required", False):
         return "gated"
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
+    # Multi-host aware: ANY non-loopback member makes the bind "insecure".
+    # `bound_hosts` is the collection form set by a multi-`--host` serve; fall
+    # back to the legacy single `bound_host` for callers that still set only one.
+    _bound = (
+        getattr(app.state, "bound_hosts", None)
+        or getattr(app.state, "bound_host", None)
+        or ""
+    )
+    _bound_set = {
+        _b.strip().lower()
+        for _b in ([_bound] if isinstance(_bound, str) else _bound)
+        if _b
+    }
+    if _bound_set and not _bound_set.issubset(_LOOPBACK_HOSTS):
         return "insecure"
     return "loopback"
 

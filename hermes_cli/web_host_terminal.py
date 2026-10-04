@@ -20,7 +20,21 @@ def request_allowed() -> bool:
         return False
     if getattr(app.state, "auth_required", False):
         return True
-    return (getattr(app.state, "bound_host", "") or "").strip().lower() in _LOOPBACK_HOSTS
+    # Loopback-only across the WHOLE bind: a dual-stack loopback bind stays
+    # local, while a bind carrying any public member does not. The gated case
+    # already returned above via ``auth_required``, so this line is the ungated
+    # decision and must not be made from the primary address alone.
+    _bound = (
+        getattr(app.state, "bound_hosts", None)
+        or getattr(app.state, "bound_host", None)
+        or ""
+    )
+    _members = {
+        _b.strip().lower()
+        for _b in ([_bound] if isinstance(_bound, str) else _bound)
+        if _b and _b.strip()
+    }
+    return bool(_members) and _members.issubset(_LOOPBACK_HOSTS)
 
 
 def shell_command(candidate: str) -> Optional[str]:

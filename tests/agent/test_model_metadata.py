@@ -369,6 +369,13 @@ class TestDefaultContextLengths:
                 assert get_model_context_length(
                     "kimi-for-coding-highspeed", provider="kimi-coding", base_url=base_url
                 ) == 262_144
+        # The 256K above must come from the dedicated -highspeed key, not the "kimi"
+        # catch-all (which also yields 256K — assert the winning key, not just the value).
+        from agent.model_metadata import _longest_key_match
+        assert _longest_key_match(DEFAULT_CONTEXT_LENGTHS, "kimi-for-coding-highspeed") == \
+            ("kimi-for-coding-highspeed", 262144)
+        assert _longest_key_match(DEFAULT_CONTEXT_LENGTHS, "kimi-for-coding") == \
+            ("kimi-for-coding", 1_048_576)
 
     @staticmethod
     def _upstage_ctx(model):

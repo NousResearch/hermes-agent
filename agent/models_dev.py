@@ -135,6 +135,14 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
 # Reverse mapping: models.dev id → Hermes ids (built lazily; many-to-one).
 _MODELS_DEV_TO_PROVIDER: Optional[Dict[str, List[str]]] = None
 
+# Retired models.dev slugs → the Hermes ids they used to map to. model_overrides keys written
+# against a retired slug must keep resolving under the either-id-space contract; moonshot is
+# excluded because it now owns the moonshotai catalog (#126224). Kept out of
+# PROVIDER_TO_MODELS_DEV so _models_dev_id() still points at live catalogs only.
+_LEGACY_MODELS_DEV_SLUGS: Dict[str, List[str]] = {
+    "kimi-for-coding": ["kimi", "kimi-coding", "kimi-coding-cn"],
+}
+
 
 def _models_dev_to_hermes_ids(mdev_id: str) -> List[str]:
     """Return the Hermes provider ids that map to *mdev_id* (may be [])."""
@@ -143,6 +151,9 @@ def _models_dev_to_hermes_ids(mdev_id: str) -> List[str]:
         _MODELS_DEV_TO_PROVIDER = {}
         for hermes_id, mapped in PROVIDER_TO_MODELS_DEV.items():
             _MODELS_DEV_TO_PROVIDER.setdefault(mapped, []).append(hermes_id)
+        for legacy, hermes_ids in _LEGACY_MODELS_DEV_SLUGS.items():
+            entries = _MODELS_DEV_TO_PROVIDER.setdefault(legacy, [])
+            entries.extend(hid for hid in hermes_ids if hid not in entries)
     return _MODELS_DEV_TO_PROVIDER.get(mdev_id, [])
 
 
@@ -680,6 +691,9 @@ def _provider_override_section(provider: str, *, config: Optional[Dict[str, Any]
         return None
     # Forward (Hermes → models.dev id) and reverse (caller passed a models.dev id, config keyed by Hermes id) aliases.
     candidates = [provider_key, PROVIDER_TO_MODELS_DEV.get(provider_key), *_models_dev_to_hermes_ids(provider_key)]
+    # A Hermes id may have been re-pointed away from a retired models.dev slug; overrides keyed
+    # by that retired slug must still resolve (silently returning None would drop them).
+    candidates += [slug for slug, ids in _LEGACY_MODELS_DEV_SLUGS.items() if provider_key in ids]
     return next((section for section in (overrides.get(key) if key else None for key in candidates) if isinstance(section, dict)), None)
 
 

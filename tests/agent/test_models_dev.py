@@ -930,6 +930,31 @@ class TestModelOverrides:
         assert result is not None
         assert result["context_window"] == 222222
 
+    def test_override_keyed_by_retired_models_dev_slug_still_resolves(self):
+        """Overrides keyed by a retired models.dev slug (kimi-for-coding, pre-rename) resolve
+        in both id spaces — the rename must not silently drop them (#126224)."""
+        overrides = {
+            "kimi-for-coding": {
+                "kimi-for-coding": {"context_window": 111111},
+            },
+        }
+        with self._setup_overrides(overrides):
+            # Caller passes the Hermes id; config keyed by the retired slug.
+            result = _explicit_model_override("kimi-coding", "kimi-for-coding")
+        assert result is not None
+        assert result["context_window"] == 111111
+
+        overrides = {
+            "kimi": {
+                "kimi-for-coding": {"context_window": 222222},
+            },
+        }
+        with self._setup_overrides(overrides):
+            # Caller passes the retired slug; config keyed by the Hermes id.
+            result = _explicit_model_override("kimi-for-coding", "kimi-for-coding")
+        assert result is not None
+        assert result["context_window"] == 222222
+
     def test_default_fills_gap_for_unknown_model(self):
         """_default applies to models the catalog does not know."""
         overrides = {

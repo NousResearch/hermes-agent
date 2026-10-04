@@ -10,6 +10,7 @@ Windows readers hold them, a real SCM service, real processes and taskkill. Noth
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -198,6 +199,56 @@ def test_a_running_service_owes_its_gateway_until_that_gateway_is_ready(tmp_path
         if pid:
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True, check=False)
         _sc("delete", name)
+
+
+_RECOVERING_LAUNCH = """
+import json, time
+from hermes_cli import update_pause_record as r
+started = time.monotonic()
+r.recover(["status"])
+print(json.dumps({"seconds": time.monotonic() - started,
+                  "owed": [body["token"].get("services") for _src, body in r.orphans()]}))
+"""
+
+
+def test_a_launch_recovering_an_unready_service_keeps_the_debt_without_stalling(tmp_path, monkeypatch, service_wrapper):
+    """Two CLI launches in a row recover an orphaned pause whose SCM service runs but whose gateway
+    never comes up: the debt stays owed, and neither launch waits out the update's full readiness budget."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    bin_dir = tmp_path / "svc"
+    bin_dir.mkdir()
+    exe = bin_dir / "wrapper.exe"
+    exe.write_bytes(service_wrapper.read_bytes())
+    (bin_dir / "child.txt").write_text("\n".join([sys.executable, "-c \"import time; time.sleep(900)\"", str(REPO)]) + "\n",
+                                       encoding="utf-8")
+    name = f"hermes-r9-recover-{os.getpid()}"
+    created = _sc("create", name, "binPath=", f'"{exe}"', "start=", "demand")
+    assert created.returncode == 0, created.stdout + created.stderr
+    # The record a killed update left; the tree gate passes (HEAD and tracked changes as stamped).
+    pause_record.write(pause_record.stamp_tree({
+        "resume_needed": True, "services": [name], "expected_services": [name], "restarted_services": [],
+        "service_profiles": {name: "default"}}), owner=pause_record.UNOWNED)
+    try:
+        launches = []
+        for _ in range(2):
+            done = subprocess.run([sys.executable, "-c", _RECOVERING_LAUNCH], cwd=REPO, capture_output=True,
+                                  text=True, encoding="utf-8", errors="replace", timeout=300,
+                                  env={**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": str(REPO)})
+            assert done.returncode == 0, done.stdout + done.stderr
+            launches.append(json.loads(done.stdout.strip().splitlines()[-1]))
+    finally:
+        pid = 0
+        with suppress(Exception):
+            pid = int(psutil.win_service_get(name).pid() or 0)  # type: ignore[attr-defined]
+        if pid:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True, check=False)
+        _sc("delete", name)
+    assert [launch["owed"] for launch in launches] == [[[name]], [[name]]], f"the unready service's debt was lost: {launches}"
+    first, second = (launch["seconds"] for launch in launches)
+    assert first < 40, f"the first launch stalled {first:.0f}s on the service's readiness"
+    assert second < 20, f"the next launch stalled {second:.0f}s on a service it had just found unready"
 
 
 def _logs(home: Path) -> str:

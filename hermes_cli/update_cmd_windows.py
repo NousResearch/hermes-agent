@@ -1242,9 +1242,15 @@ def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:
 
 
 _SERVICE_READY_TIMEOUT_S = 60.0
+# A launch recovering an orphaned pause (``update_pause_record.recover``, before every command)
+# only probes briefly, and a service whose gateway stays unready is re-probed with backoff; the
+# full wait belongs to ``hermes update`` itself.
+_SERVICE_READY_PROBE_S = 5.0
+_SERVICE_RETRY_BASE_S = 60.0
+_SERVICE_RETRY_MAX_S = 3600.0
 
 
-def _service_gateway_ready(name: str, profile: str | None) -> list[int]:
+def _service_gateway_ready(name: str, profile: str | None, timeout_s: float | None = None) -> list[int]:
     """The stable gateway *name*'s service process supervises (in *profile*'s home when known): SCM
     ``running`` proves only the wrapper started, not that the gateway it hosts came up."""
     from hermes_cli import gateway_windows
@@ -1265,23 +1271,48 @@ def _service_gateway_ready(name: str, profile: str | None) -> list[int]:
 
     home = Path(get_profile_dir(profile)) if profile else None
     return gateway_windows._wait_for_gateway_ready(
-        timeout_s=_SERVICE_READY_TIMEOUT_S, home=home, all_profiles=home is None, pid_filter=under_service)
+        timeout_s=_SERVICE_READY_TIMEOUT_S if timeout_s is None else timeout_s, home=home,
+        all_profiles=home is None, pid_filter=under_service)
+
+
+def _service_running(name: str) -> bool:
+    try:
+        return _win_service(name)[1].status() == "running"
+    except Exception:
+        return False
 
 
 def _resume_windows_services(token: dict) -> None:
     """Restart the SCM services recorded on *token*; one leaves the token only once the gateway it
-    supervises is ready. Failed ones stay on the token so a retry sees them."""
+    supervises is ready. Failed ones stay on the token so a retry sees them.
+
+    A recovering launch (``token["recovery"]``) probes readiness briefly, and a running service
+    whose gateway was not ready is not re-probed before its backoff (``service_retry``) elapses:
+    the debt stays owed without stalling every command."""
     from hermes_cli.update_cmd import _start_windows_gateway_service
     services = list(token.get("services") or [])
     token.setdefault("expected_services", list(services))
     verified_restarts = list(token.get("restarted_services") or [])
+    retry = {name: state for name, state in (token.get("service_retry") or {}).items() if name in services}
+    recovering = bool(token.get("recovery"))
     restarted_services = []
     failed_services = []
     for service_name in map(str, services):
+        backoff = retry.get(service_name) or {}
         try:
+            if recovering and _time.time() < float(backoff.get("next_at") or 0) and _service_running(service_name):
+                failed_services.append(service_name)
+                print(f"  ⚠ Windows gateway service {service_name}: its gateway was not ready; "
+                      f"next check after {int(float(backoff['next_at']) - _time.time())}s")
+                continue
             _start_windows_gateway_service(service_name)
-            if not _service_gateway_ready(service_name, (token.get("service_profiles") or {}).get(service_name)):
+            if not _service_gateway_ready(service_name, (token.get("service_profiles") or {}).get(service_name),
+                                          _SERVICE_READY_PROBE_S if recovering else None):
+                attempts = int(backoff.get("attempts") or 0) + 1
+                retry[service_name] = {"attempts": attempts, "next_at": _time.time() + min(
+                    _SERVICE_RETRY_BASE_S * 2 ** min(attempts - 1, 6), _SERVICE_RETRY_MAX_S)}
                 raise RuntimeError(f"Windows service {service_name} is running but its gateway did not become ready")
+            retry.pop(service_name, None)
             restarted_services.append(service_name)
             if service_name not in verified_restarts:
                 verified_restarts.append(service_name)
@@ -1291,6 +1322,10 @@ def _resume_windows_services(token: dict) -> None:
             failed_services.append(service_name)
     token["restarted_services"] = verified_restarts
     token["services"] = failed_services
+    if retry:
+        token["service_retry"] = retry
+    else:
+        token.pop("service_retry", None)
     if failed_services:
         raise RuntimeError("Could not restart Windows gateway service(s): " + ", ".join(failed_services))
     if restarted_services:

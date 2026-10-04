@@ -896,6 +896,35 @@ class TestClassifyApiError:
         e = MockAPIError("Error code: 400 - {'detail': 'Unsupported content type'}", status_code=400, body=body)
         assert classify_api_error(e, provider=provider, model="gpt-5.5").reason == expected
 
+    def test_proxy_signature_wordings_classify_by_thinking_anchor(self):
+        """The thinking-signature heuristic stays anchored on the word "thinking": the canonical
+        Anthropic wording and the relay paraphrase actually measured in #120723 both carry that
+        word, and both must reach the one-shot strip."""
+        for message in (
+            "Error code: 400 - thinking block signature mismatch: blocks were modified",
+            "Error code: 400 - messages.1.content.0: Invalid signature in thinking block",
+        ):
+            result = classify_api_error(MockAPIError(message, status_code=400), provider="custom", model="claude-sonnet-4")
+            assert result.reason == FailoverReason.thinking_signature
+            assert result.retryable is True and result.should_fallback is False
+
+    def test_non_thinking_invalid_signature_stays_format_error(self):
+        """A 400 with "invalid signature" but no thinking context is a request-auth/HMAC rejection
+        or an unrelated bad request: it must stay format_error instead of winning a thinking-strip
+        retry that strips reasoning_details from a transcript it should never touch. A proxy
+        appending the phrase to overflow / reasoning-effort rejections must not hijack those
+        verdicts either."""
+        cases = [
+            "Error code: 400 - bad request: invalid signature",
+            "Error code: 400 - invalid signature for request authentication",
+            "Error code: 400 - invalid signature: HMAC verification failed",
+            "Error code: 400 - prompt is too long: 250000 tokens > 200000 maximum ... invalid signature",
+            "Error code: 400 - reasoning_effort is not supported on this route ... invalid signature",
+        ]
+        for message in cases:
+            result = classify_api_error(MockAPIError(message, status_code=400), provider="custom", model="claude-sonnet-4")
+            assert result.reason != FailoverReason.thinking_signature, message
+
     def test_thinking_signature_invalid_uses_encrypted_replay_recovery(self):
         """#70595: the OpenAI code contains "thinking" + "signature", so it must beat the Anthropic
         thinking-block heuristic and reach the one-shot encrypted-replay strip (retry, no fallback)."""

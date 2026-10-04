@@ -6,6 +6,7 @@ serialized it as the bare token ``Infinity`` and a strict client dropped the who
 (#132800). The JSON boundary maps such scalars to ``null``: the roster still loads, only the
 unsalvageable value is lost, and the frame stays strict-JSON clean end to end.
 """
+
 from __future__ import annotations
 
 import json
@@ -31,8 +32,11 @@ def home(tmp_path, monkeypatch) -> Path:
     # holds real binaries (node, …) the home_io_guard correctly refuses to open. The alias
     # scan is orthogonal to ui_meta, so serve an empty map instead.
     import hermes_cli.profiles as profiles_mod
+
     monkeypatch.setattr(profiles_mod, "build_alias_map", lambda: {})
-    (tmp_path / "config.yaml").write_text("model:\n  provider: openai\n", encoding="utf-8")
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  provider: openai\n", encoding="utf-8"
+    )
     bob = tmp_path / "profiles" / "bob"
     bob.mkdir(parents=True)
     (bob / "config.yaml").write_text("model:\n  provider: openai\n", encoding="utf-8")
@@ -42,18 +46,23 @@ def home(tmp_path, monkeypatch) -> Path:
 def _write_chat_line(home: Path, chat_line: str) -> None:
     (home / "profiles" / "bob" / "profile.yaml").write_text(
         f"display_name: Bob\nui_meta:\n  hermes-bots:\n    title: Bob\n    {chat_line}\n"
-        "_ui_meta_revisions:\n  hermes-bots: 1\n", encoding="utf-8")
+        "_ui_meta_revisions:\n  hermes-bots: 1\n",
+        encoding="utf-8",
+    )
 
 
 def _envelope() -> dict:
     return srv._methods["profiles.list"](1, {"include_sessions": False})
 
 
-@pytest.mark.parametrize("chat_line", [
-    "chat: 20260101_120000_1e0400",  # the issue's id: YAML 1.1 exponent -> inf
-    "chat: -.inf",                   # YAML 1.1 spells negative infinity
-    "chat: .nan",                    # YAML 1.1 spells NaN
-])
+@pytest.mark.parametrize(
+    "chat_line",
+    [
+        "chat: 20260101_120000_1e0400",  # the issue's id: YAML 1.1 exponent -> inf
+        "chat: -.inf",  # YAML 1.1 spells negative infinity
+        "chat: .nan",  # YAML 1.1 spells NaN
+    ],
+)
 def test_a_non_finite_ui_meta_scalar_becomes_null(home, chat_line):
     """The roster still loads and sibling keys survive; only the unsalvageable scalar is lost."""
     _write_chat_line(home, chat_line)

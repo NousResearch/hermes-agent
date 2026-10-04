@@ -34,8 +34,12 @@ _DEFAULT_LOG_TAIL = 8_192
 _TRANSCRIPT_TEXT_CAP = 20_000
 _TRANSCRIPT_TOOL_CAP = 4_000
 _MAX_LOG_TAIL = 32_768
+# Windows arm: drive or UNC root; separators may be doubled (JSON-escaped), and a directory
+# name may hold spaces — the characters Windows forbids in a name bound it instead.
 _ABSOLUTE_PATH_RE = re.compile(
-    r"(?<![\w:])(?:[A-Za-z]:[\\/](?:[^\s\\/]+[\\/])*[^\s\\/]*|/[^/\s]+(?:/[^/\s]*)*)"
+    r"(?<![\w:])(?:"
+    r"(?:[A-Za-z]:[\\/]+|\\{2,})(?:[^\\/\r\n<>:\"|?*]+[\\/]+)*[^\s\\/]*"
+    r"|/[^/\s]+(?:/[^/\s]*)*)"
 )
 # Match an ``Authorization: Bearer/Basic <token>`` header anywhere in a line,
 # not just at its start — the token can appear mid-line inside a dumped curl

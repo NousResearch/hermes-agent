@@ -1,24 +1,22 @@
-"""A local endpoint's probe-down answer must never exceed `min(catalog, DEFAULT_FALLBACK_CONTEXT)`.
+"""A local probe-down answer is the **largest catalog match at or below the generic default**.
 
 When every endpoint-specific probe fails, `_resolve_custom_endpoint_context_length` falls back to
 `DEFAULT_CONTEXT_LENGTHS` — a table of **cloud API** limits keyed on the model *name*. For a local
 server that value describes nothing: its window is whatever it was launched with (`--ctx-size`,
-`max_model_len`), not what a vendor sells over HTTP.
+`max_model_len`), not what a vendor sells over HTTP. Three things have to hold at once:
 
-Both directions of that have to hold, and declining the catalog outright breaks one of them:
+- **Not the inflated hit.** `qwen3.8-flash` = 1,000,000 against a 131,072-token local model computes
+  a trigger past the hard limit, and the session dies at the endpoint instead of compacting.
+- **Not the default either, when a family entry already has the answer.** `_longest_key_match`
+  consults only the most specific key, so discarding that hit alone falls through to 256,000 with
+  `qwen` = 131,072 — one row away — never read. Hence the *largest match at or below* the default,
+  over every matching key rather than the longest one.
+- **A small specific entry does not win by being specific.** `grok-2-vision` = 8,192 beside
+  `grok-2` = 131,072 is the mirror of the first bug: the cloud value describes a hosted vision API,
+  not a window a local box was launched with.
 
-- **Above the default** — declining a 1,000,000-token catalog hit on a 131,072-token local model is
-  the point of the change. The compression trigger derives from this window, so an inflated value
-  puts compaction past the real limit and the session dies at the endpoint instead of compacting
-  before it.
-- **At or below the default** — declining a 131,072-token hit would *raise* the guess to 256,000 and
-  move the 0.8 trigger from 104,857 to 204,800. That is the same costly direction, and it covers 33
-  of the 124 catalog entries (the `llama`/`qwen`/`gemma-3`/`deepseek`/`nemotron` catch-alls), so
-  refusing the catalog wholesale trades one wrong guess for another.
-
-One rule covers both: keep the catalog value when it is the lower guess, decline it when it is not.
-
-Catalog data is seeded synthetically so these assertions never depend on real catalog entries.
+Catalog data is seeded synthetically — nested keys included — so no assertion depends on real
+catalog entries or on any entry's name surviving a rename.
 """
 
 import pytest
@@ -30,6 +28,9 @@ from agent.model_metadata import (
 )
 
 LOCAL_BASE_URL = "http://127.0.0.1:8080/v1"
+# Contains both synthetic keys below, so `_catalog_key_matches` sees the specific entry and its
+# shorter family at the same time — the shape that makes `_longest_key_match` alone insufficient.
+MODEL = "Fake-Local-Model-Serve"
 
 
 @pytest.fixture
@@ -44,37 +45,46 @@ def probes_down(monkeypatch):
     return warned
 
 
-def _fake_catalog(monkeypatch, value: int) -> str:
-    """Seed a synthetic catalog entry so no assertion depends on real catalog data."""
-    monkeypatch.setitem(mm.DEFAULT_CONTEXT_LENGTHS, "fake-local-model", value)
-    return "Fake-Local-Model"
+def _seed(monkeypatch, values: dict) -> None:
+    for key, value in values.items():
+        monkeypatch.setitem(mm.DEFAULT_CONTEXT_LENGTHS, key, value)
 
 
 class TestLocalEndpointCatalogFallback:
     @pytest.mark.parametrize(
-        "catalog",
-        [1_000_000, 131_072],
-        ids=["catalog-above-default", "catalog-at-or-below-default"],
+        "catalog,expected",
+        [
+            pytest.param({"fake-local-model": 1_000_000}, DEFAULT_FALLBACK_CONTEXT,
+                         id="inflated-hit-only-falls-back-to-default"),
+            pytest.param({"fake-local-model": 1_000_000, "fake-local": 131_072}, 131_072,
+                         id="family-entry-holds-the-answer-beside-the-inflated-hit"),
+            pytest.param({"fake-local-model": 131_072}, 131_072,
+                         id="at-default-is-kept"),
+            pytest.param({"fake-local-model": 8_192, "fake-local": 131_072}, 131_072,
+                         id="small-specific-entry-loses-to-the-larger-family"),
+        ],
     )
-    def test_local_result_never_exceeds_min_catalog_and_default(self, probes_down, monkeypatch, catalog):
-        """The invariant: a local probe-down answer is exactly `min(catalog, default)`."""
-        model = _fake_catalog(monkeypatch, catalog)
+    def test_local_result_is_the_largest_match_at_or_below_default(
+        self, probes_down, monkeypatch, catalog, expected
+    ):
+        """The invariant: a local answer is the largest matching value not exceeding the default."""
+        _seed(monkeypatch, catalog)
 
-        ctx = _resolve_custom_endpoint_context_length(model, LOCAL_BASE_URL, "", "custom")
+        ctx = _resolve_custom_endpoint_context_length(MODEL, LOCAL_BASE_URL, "", "custom")
 
-        assert ctx == min(catalog, DEFAULT_FALLBACK_CONTEXT), (
-            f"local endpoint answered {ctx:,}; a local answer must never exceed "
-            f"min(catalog={catalog:,}, default={DEFAULT_FALLBACK_CONTEXT:,})"
+        assert ctx == expected, (
+            f"local endpoint answered {ctx:,}; expected {expected:,} — a local answer is the "
+            f"largest catalog match at or below {DEFAULT_FALLBACK_CONTEXT:,}"
         )
 
-    def test_declined_local_guess_is_visible(self, probes_down, monkeypatch):
-        """Declining the catalog must not swallow the warning — it is the only sign of a guess."""
-        model = _fake_catalog(monkeypatch, 1_000_000)
+    def test_no_usable_match_is_visible_as_a_guess(self, probes_down, monkeypatch):
+        """Falling through to the default must not swallow the warning — it is the only sign of a guess."""
+        _seed(monkeypatch, {"fake-local-model": 1_000_000})
 
-        ctx = _resolve_custom_endpoint_context_length(model, LOCAL_BASE_URL, "", "custom")
+        ctx = _resolve_custom_endpoint_context_length(MODEL, LOCAL_BASE_URL, "", "custom")
 
         assert ctx == DEFAULT_FALLBACK_CONTEXT
         assert probes_down, (
-            "the catalog branch returned before _warn_context_length_fallback, "
+            "no usable match was found, yet _warn_context_length_fallback never ran, "
             "so the user was never told the window was a guess"
         )

@@ -62,7 +62,8 @@ def _adapter(monkeypatch, bound_id) -> DiscordAdapter:
 async def _typed(adapter, channel):
     await adapter._handle_message(SimpleNamespace(
         id=123, content="what broke?", mentions=[], attachments=[], reference=None,
-        created_at=datetime.now(timezone.utc), channel=channel, author=_USER))
+        created_at=datetime.now(timezone.utc), channel=channel, author=_USER,
+        guild=getattr(channel, "guild", None)))
     return adapter.handle_message.await_args.args[0]
 
 
@@ -93,8 +94,11 @@ def _interaction(channel):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("tools", [False, True], ids=["no-discord-tools", "discord-tools"])
 @pytest.mark.parametrize("case", ["dm", "channel", "thread", "thread-starter"])
-async def test_slash_and_thread_starter_turns_match_a_message_turn(monkeypatch, case):
+async def test_slash_and_thread_starter_turns_match_a_message_turn(monkeypatch, case, tools):
+    # With Discord tools on, the pinned notes list IDs; a slash turn has no triggering message.
+    monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: tools)
     parent = _parent()
     channel = {"dm": _DM(500), "channel": parent}.get(case) or _Thread(800, parent)
     adapter = _adapter(monkeypatch, channel.id)

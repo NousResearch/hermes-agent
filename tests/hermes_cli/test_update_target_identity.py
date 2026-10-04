@@ -126,6 +126,14 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
     def fault(command, *args, **kwargs):
         assert Path(command[0]).name.lower() in {'git', 'git.exe'} or command[0] == sys.executable, command
         assert Path(kwargs['cwd']).resolve() in {t.clone, t.origin}, command
+        if 'refs/remotes/upstream/main' in command:  # the fork sync's local fast-forward
+            result = run(command, *args, **kwargs)
+            if case.startswith('fork-late'):
+                if case.endswith('wrong-branch'):
+                    run(['git', 'checkout', '-qb', 'wrong'], cwd=t.clone, check=True, capture_output=True)
+                if case.endswith('reverted'):
+                    run(['git', 'reset', '--hard', t.base], cwd=t.clone, check=True, capture_output=True)
+            return result
         if 'merge' in command and '--ff-only' in command:
             if case == 'no-move':
                 return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
@@ -136,11 +144,6 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
                 run(['git', 'reset', '--hard', t.base], cwd=t.clone, check=True, capture_output=True)
             return result
         result = run(command, *args, **kwargs)
-        if 'pull' in command and case.startswith('fork-late'):
-            if case.endswith('wrong-branch'):
-                run(['git', 'checkout', '-qb', 'wrong'], cwd=t.clone, check=True, capture_output=True)
-            if case.endswith('reverted'):
-                run(['git', 'reset', '--hard', t.base], cwd=t.clone, check=True, capture_output=True)
         if 'push' in command and 'origin' in command:
             pushes.append(result.returncode)
         return result

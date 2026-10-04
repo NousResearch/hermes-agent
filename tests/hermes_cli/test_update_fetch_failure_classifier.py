@@ -124,7 +124,7 @@ def test_update_network_git_calls_never_prompt_for_credentials():
 
 
 def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch, tmp_path):
-    """Exercise origin fetch and fork fetch/pull/push, not their source spelling."""
+    """Exercise origin fetch and fork fetch/merge/push, not their source spelling."""
     import subprocess
     from hermes_cli import update_cmd_git
 
@@ -146,7 +146,11 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
     monkeypatch.setattr(subprocess, "run", run)
     update_cmd._git_run(["git"], ["fetch", "origin", "main"], cwd=tmp_path, network=True, check=True)
     assert update_cmd_git._sync_with_upstream_if_needed(["git"], tmp_path, assume_yes=True)
-    assert [args[0] for args, _ in calls] == ["fetch", "fetch", "pull", "push"]
+    from hermes_cli.update_custody import git_subcommand
+
+    # The fork's fast-forward is local (`merge --ff-only upstream/main` after the fetch): no
+    # credential helper ever runs under the checkout lock fd a mutator inherits (R2).
+    assert [git_subcommand(args) for args, _ in calls] == ["fetch", "fetch", "merge", "push"]
     for args, kwargs in calls:
         assert kwargs["stdin"] is subprocess.DEVNULL, args
         env = kwargs["env"]

@@ -260,14 +260,13 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     # calls, so layer them instead of passing the keyword twice.
     spawn_kwargs = {"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}
     spawn_kwargs.setdefault("creationflags", windows_hide_flags())
-    from hermes_cli.update_lock import custody_spawn_kwargs
+    from hermes_cli.update_custody import run_git
 
-    # Git (and the hooks it runs) mutates the checkout: it keeps the update's checkout lock fd,
-    # so a killed updater cannot hand the checkout to a contender while git still writes (R2).
-    spawn_kwargs.update(custody_spawn_kwargs())
+    # The one custody policy (R2): local mutators keep the update's checkout lock fd, network
+    # git runs without it and dies with us, no git forks a detached gc/maintenance child.
     try:
-        return subprocess.run(
-            git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
+        return run_git(
+            git_cmd, args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,
             text=True, encoding="utf-8", errors="replace", check=check,
             **spawn_kwargs)
     except subprocess.TimeoutExpired as exc:
@@ -298,8 +297,10 @@ def _heal_stale_shallow_checkout(repo_root: Path, branch: str) -> None:
 def _capture_head_sha(git_cmd, cwd) -> str | None:
     """Return the current HEAD SHA, or None if it can't be resolved."""
     try:
-        result = subprocess.run(
-            git_cmd + ["rev-parse", "HEAD"],
+        from hermes_cli.update_custody import run_git
+
+        result = run_git(
+            git_cmd, ["rev-parse", "HEAD"],
             cwd=cwd,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",

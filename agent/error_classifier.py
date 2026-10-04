@@ -501,6 +501,13 @@ UNSUPPORTED_PARAM_MARKERS = (
     "invalid option: expected one of",
 )
 
+# Markers that count only inside the near-window of a reasoning field token
+# (``is_reasoning_field_rejection``). "unsupported" is nearly exclusive to "this
+# field isn't accepted", so the bare word is safe beside the token; "unexpected"
+# is ordinary English — servers use it for any surprise (content type, token
+# parsing, tool-call ordering), so only the full SGLang wording counts (#129002).
+_NEAR_WINDOW_MARKERS = ("unsupported", "unexpected reasoning effort")
+
 # Reasoning wire-field names (the profile reasoning controls minus ``verbosity``), longest first.
 # Standalone only: never a model-id segment ("The model kimi-k2-thinking is not supported when
 # using this account" is route gating for the provider-fallback rung) nor the adjective in
@@ -544,10 +551,13 @@ def is_reasoning_required_rejection(error_msg: str) -> bool:
 def is_reasoning_field_rejection(error_msg: str) -> bool:
     """Provider 400 rejecting a reasoning wire control by name (``reasoning_effort``, ``reasoning``,
     ``thinking``/``think``): the field token plus either a generic unsupported marker ("Unrecognized
-    request argument supplied: reasoning_effort", #112781) or a standalone "unsupported"/"unexpected"
-    next to the field in either word order ("unsupported reasoning_effort"; "reasoning_effort 'none'
-    unsupported; use minimal|low|medium|high|xhigh", #114460; "Unexpected reasoning effort high.
-    Supported types are ...", #129002). The route default is the right answer for such a
+    request argument supplied: reasoning_effort", #112781) or a marker next to the field in
+    either word order: "unsupported" stands alone ("unsupported reasoning_effort";
+    "reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh", #114460), while
+    "unexpected" only counts as the full SGLang wording ("Unexpected reasoning effort high.
+    Supported types are ...", #129002) — the bare "unexpected" is ordinary English (malformed
+    tool-args 400s say "unexpected character/token ... reasoning") and must keep its own
+    classification. The route default is the right answer for such a
     model, so both the main loop and the auxiliary ladder retry once without the disable. A body
     whose structured ``param``/code names the reasoning field (``'param': 'reasoning.effort'``,
     ``invalid_reasoning_effort``, #100536) is a rejection whatever the message says — even none.
@@ -563,7 +573,7 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
     if token is None:
         return False
     near = msg[max(0, token.start() - 32):token.end() + 32]
-    return "unsupported" in near or "unexpected" in near or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
+    return any(m in near for m in _NEAR_WINDOW_MARKERS) or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
 
 
 def _billing_hints(error_msg: str) -> Verdict:

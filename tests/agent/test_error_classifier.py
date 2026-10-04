@@ -952,6 +952,20 @@ class TestClassifyApiError:
                "later mentions reasoning tokens")
         assert not is_reasoning_field_rejection(far)
 
+    def test_unexpected_beside_reasoning_token_keeps_its_own_classification(self):
+        """Even *next to* the reasoning token the bare "unexpected" is ordinary English
+        (#129002 review): malformed tool-args 400s say "unexpected character/token ...
+        reasoning", and flipping them to reasoning_mandatory would permanently drop the
+        effort for the session (and cost them the _MALFORMED_TOOL_ARGS_PATTERNS verdict,
+        which the reasoning gate shadows). Only the full "unexpected reasoning effort"
+        wording counts; these keep the format_error verdict they have on main."""
+        for msg in (
+            "invalid function_call arguments: unexpected character in reasoning field",
+            "tool_call arguments are invalid: unexpected token near reasoning",
+        ):
+            result = classify_api_error(MockAPIError(msg, status_code=400), provider="custom", model="m")
+            assert result.reason == FailoverReason.format_error, msg
+
     def test_structured_invalid_reasoning_effort_400_never_compresses(self):
         """A custom Responses relay rejects an unsupported ``reasoning.effort`` with a message-less
         structured 400 (``param`` + ``error_code: invalid_reasoning_effort``, #100536). No wording rule

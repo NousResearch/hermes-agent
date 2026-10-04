@@ -313,6 +313,26 @@ class TestPatchSkill:
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "Do the new thing." in content
 
+    def test_patch_explicit_empty_file_path_rejected_fail_closed(self, tmp_path):
+        # file_path="" is falsy, so the old `if file_path:` treated it as "omitted" and patched
+        # SKILL.md; an explicitly invalid target must fail closed instead (#132818).
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill("my-skill", "Do the thing.", "Do the new thing.", file_path="")
+        assert result["success"] is False
+        assert "file_path" in result["error"]
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "Do the new thing." not in content  # the default target was NOT written
+
+    def test_patch_omitted_file_path_still_defaults_to_skill_md(self, tmp_path):
+        # The documented default (file_path omitted/None) keeps patching SKILL.md.
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _patch_skill("my-skill", "Do the thing.", "Do the new thing.", file_path=None)
+        assert result["success"] is True
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        assert "Do the new thing." in content
+
     def test_patch_surfaces_oversized_body_finding_and_stays_quiet_when_clean(self, tmp_path):
         # SKILL.md grows by patches; the write that crosses the body budget carries the advisory
         # finding, a small clean patch attaches no lint keys at all.

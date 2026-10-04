@@ -174,6 +174,10 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
     }
   }
 
+  function handleHideReveal(key: string) {
+    setRevealed(c => withoutKey(c, key))
+  }
+
   async function handleReveal(key: string) {
     if (revealed[key]) {
       setRevealed(c => withoutKey(c, key))
@@ -199,7 +203,8 @@ export function useEnvCredentials(profile?: string): UseEnvCredentials {
       setEdits,
       onSave: handleSave,
       onClear: handleClear,
-      onReveal: handleReveal
+      onReveal: handleReveal,
+      onHideReveal: handleHideReveal
     }
   }
 }

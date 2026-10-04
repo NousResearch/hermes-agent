@@ -12,7 +12,7 @@
 # `PR-description.md`.
 name: prompt-queue
 repo: https://github.com/vectorforge22/prompt-queue
-sha: "4851cd1f9e41d1d7be30c82ae641b7d3fdec055c"   # main, 2026-10-02 (v1.1.0)
+sha: "da41ee7da408afd68e9e26aabb6f157b9fa24481"   # main, 2026-10-03 (v1.1.1, catalog review fixes)
 description: >-
   Kanban-style prompt queue for the desktop: Play drains cards one at a
   time, each into a new (or targeted, existing) sidebar session, gated on
@@ -27,7 +27,7 @@ version: "1.1.0"
 docs_url: https://github.com/vectorforge22/prompt-queue
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/vectorforge22/prompt-queue/4851cd1f9e41d1d7be30c82ae641b7d3fdec055c/docs/screenshots/prompt-queue.png
+  - https://raw.githubusercontent.com/vectorforge22/prompt-queue/da41ee7da408afd68e9e26aabb6f157b9fa24481/docs/screenshots/prompt-queue.png
 capabilities:
   provides_tools: []
   provides_hooks: []

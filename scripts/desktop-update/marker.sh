@@ -31,6 +31,7 @@ MARKER_CT_RE='^ct:([0-9]+(\.[0-9]+)?)$'
 MARKER_DELEGATE_RE='^delegate:([0-9]+) ct:([0-9]+(\.[0-9]+)?)$'
 MARKER_RUN_RE='^run:([A-Za-z0-9._-]{1,128})$'
 MARKER_LOCK_TOOL="${MARKER_LOCK_TOOL:-}"
+MARKER_LOCK_TOOL_FORCED="$MARKER_LOCK_TOOL"  # tests pin a tool; the checkout probe honours it
 MY_PID="${MY_PID:-$$}"
 MY_CT="${MY_CT:-}"
 
@@ -450,12 +451,47 @@ checkout_lock_path() {
 }
 
 checkout_lock_held() { # 0 iff some process holds the checkout kernel lock right now
-  local path rc
+  # The probe takes the REAL lock, so it must never make a concurrent `hermes
+  # update` see it busy: one non-blocking try, given straight back. With perl
+  # (macOS, nearly every Linux) or python3 (the daemon already needs it) the
+  # take and the drop are two consecutive syscalls in one process that opened
+  # the file itself -- no process exit, wait or shell work in between. flock(1)
+  # can only take it on a shell fd, so there the hold spans flock(1)'s exit and
+  # our close. No tool: held (fail closed, the release waits).
+  local path rc tool="$MARKER_LOCK_TOOL_FORCED"
   path="$(checkout_lock_path)"
   [ -f "$path" ] || return 1
-  { exec 8<"$path"; } 2>/dev/null || return 1
-  fd_flock 8 0; rc=$?
-  exec 8<&-  # closing our probe releases it when we did get it
+  if [ -z "$tool" ]; then
+    if command -v perl >/dev/null 2>&1; then tool=perl
+    elif command -v python3 >/dev/null 2>&1; then tool=python3
+    elif command -v flock >/dev/null 2>&1; then tool=flock
+    else tool=none
+    fi
+  fi
+  case "$tool" in
+    perl)
+      perl -MFcntl=:flock -e '
+        open(my $f, "<", $ARGV[0]) or exit 2;
+        flock($f, LOCK_EX | LOCK_NB) or exit 1;
+        flock($f, LOCK_UN); exit 0' "$path"; rc=$? ;;
+    python3)
+      python3 -c '
+import fcntl, os, sys
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY)
+except OSError:
+    sys.exit(2)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError:
+    sys.exit(1)
+fcntl.flock(fd, fcntl.LOCK_UN)' "$path"; rc=$? ;;
+    flock)
+      { exec 8<"$path"; } 2>/dev/null || return 1
+      flock -x -n 8; rc=$?
+      exec 8<&- ;;  # closing our probe fd releases it when we did get it
+    *) rc=1 ;;
+  esac
   [ "$rc" -eq 1 ]
 }
 

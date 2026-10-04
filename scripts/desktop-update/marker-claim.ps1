@@ -190,6 +190,8 @@ function Invoke-MarkerRelease {
     if ($NoMarkerCleanup -or $script:MarkerClaim -notin @('claimed', 'adopted')) { return }
     # R6: never while a survivor of the update still holds the checkout lock --
     # the marker would read free while that process still mutates the checkout.
+    # Line 2 keeps its heartbeat through that wait: an old packaged Desktop would
+    # otherwise age-delete the marker 20 minutes into it.
     $waited = 0
     while (Test-CheckoutLockHeld) {
         if ($waited -eq 0) { Write-HandoffLog "a process still holds the checkout update lock; keeping the update marker until it exits" }
@@ -197,6 +199,7 @@ function Invoke-MarkerRelease {
             Write-HandoffLog "checkout update lock still held after $($waited)s; leaving the update marker"
             return
         }
+        Update-MarkerHeartbeat
         Start-Sleep -Seconds 1
         $waited++
     }

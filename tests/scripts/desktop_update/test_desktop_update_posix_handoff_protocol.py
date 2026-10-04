@@ -235,6 +235,61 @@ def test_release_waits_for_the_survivor_then_removes_the_marker(tmp_path):
     assert not (home / ".hermes-update-in-progress").exists()
 
 
+def test_line_two_stays_young_through_the_r6_release_wait(tmp_path):
+    """An old packaged Desktop deletes a marker whose line 2 is 20 minutes old, live owner or
+    not. The release wait can last hours, so the refresher must outlive `hermes update`."""
+    home, install = _install(tmp_path, legacy=True)
+    marker = home / ".hermes-update-in-progress"
+    completion = tmp_path / "release-completion"
+    env = _env(tmp_path, home, HANDOFF_COMPLETION=str(completion), HANDOFF_CHECKOUT_LOCK=str(install / ".hermes-update.lock"),
+               HERMES_UPDATE_STARTED_AT=str(int(time.time()) - 600))
+    script = subprocess.Popen(["bash", str(POSIX), "--daemonized", "--no-ui", "--install-root", str(install),
+                               "--self-test-refresh-every", "1"], env=env, cwd=tmp_path,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    log = home / "logs" / "desktop-update-handoff.log"
+    try:
+        deadline = time.monotonic() + 60
+        while "keeping the update marker" not in (log.read_text(encoding="utf-8-sig") if log.exists() else ""):
+            assert time.monotonic() < deadline and script.poll() is None, log.read_text(encoding="utf-8-sig")
+            time.sleep(0.05)
+        for _ in range(4):  # several refresh intervals, all inside the wait
+            time.sleep(1.5)
+            pid, started = marker.read_text(encoding="utf-8-sig").splitlines()[:2]
+            assert script.poll() is None and pid == str(script.pid)
+            assert time.time() - int(started) <= 3.5, started
+    finally:
+        completion.touch()
+        if script.poll() is None:
+            assert script.wait(timeout=30) == 0
+    assert not marker.exists()
+
+
+def test_checkout_lock_probe_never_makes_a_concurrent_acquire_fail(tmp_path):
+    """checkout_lock_held takes the REAL lock; a `hermes update` acquiring it non-blocking in a
+    tight loop meanwhile must (practically) never see it busy. A probe that holds it across a
+    process exit and a shell close refused ~7% of such attempts."""
+    lock = tmp_path / ".hermes-update.lock"
+    lock.touch()
+    loop = (f"log() {{ :; }}; MARKER=/dev/null INSTALL_ROOT={shlex.quote(str(tmp_path))}; . {shlex.quote(str(MARKER_SH))}; "
+            "end=$((SECONDS + 4)); n=0; while [ $SECONDS -lt $end ]; do checkout_lock_held && echo held; n=$((n + 1)); done; echo \"probes=$n\"")
+    env = {k: v for k, v in os.environ.items() if k != "MARKER_LOCK_TOOL"}
+    prober = subprocess.Popen(["bash", "-c", loop], env=env, stdout=subprocess.PIPE, text=True, encoding="utf-8")
+    attempts = refused = 0
+    while prober.poll() is None:
+        fd = os.open(lock, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            refused += 1
+        finally:
+            os.close(fd)
+        attempts += 1
+        time.sleep(0.002)
+    out = prober.communicate(timeout=10)[0]
+    assert attempts > 300 and "probes=" in out, (attempts, out)
+    assert refused * 100 <= attempts, f"{refused} of {attempts} acquires refused by the probe alone"
+
+
 # ── pre-publication kill cell ───────────────────────────────────────────────
 
 

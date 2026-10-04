@@ -23,7 +23,8 @@
 #     [--sandbox-fallback]     linux: the caller vouches for a sandbox opt-out
 #                              (ELECTRON_DISABLE_SANDBOX / --no-sandbox launch)
 #     [--no-ui] [--no-marker-cleanup] [--self-test-ui] [--self-test-gate]
-#     [--self-test-marker]
+#     [--self-test-marker] [--self-test-refresh-every <seconds>]  (tests only:
+#                              line-2 refresh cadence, default 300)
 #     [-- <args...>]           linux: filtered launch args to replay
 #
 # The shim (ui.html in a chromeless browser app window) is decoration: it
@@ -51,6 +52,7 @@ NO_GATEWAY=0
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
 SELF_TEST_TCC_HEAL=0
 HANDOFF_DAEMONIZED=0 HANDOFF_RUN="" MARKER_OP=""
+MARKER_REFRESH_EVERY_S=300
 while [ $# -gt 0 ]; do
   case "$1" in
     --install-root) INSTALL_ROOT="$2"; shift 2 ;;
@@ -75,12 +77,14 @@ while [ $# -gt 0 ]; do
     --self-test-tcc-heal) SELF_TEST_TCC_HEAL=1; shift ;;
     --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
     --self-test-marker) SELF_TEST_MARKER=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
+    --self-test-refresh-every) MARKER_REFRESH_EVERY_S="$2"; shift 2 ;;
     --) shift; RELAUNCH_ARGS=("$@"); shift $# ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
 done
 [ "$SELF_TEST_UI" -eq 1 ] || [ -n "$INSTALL_ROOT" ] || { echo "--install-root is required" >&2; exit 64; }
 case "$DESKTOP_PID" in ''|*[!0-9]*) echo "--desktop-pid must be a pid" >&2; exit 64 ;; esac
+case "$MARKER_REFRESH_EVERY_S" in ''|0|*[!0-9]*) echo "--self-test-refresh-every must be a positive number of seconds" >&2; exit 64 ;; esac
 [ -z "$HANDOFF_RUN" ] || [[ "$HANDOFF_RUN" =~ ^[A-Za-z0-9._-]{1,128}$ ]] || { echo "--handoff-run must match [A-Za-z0-9._-]{1,128}" >&2; exit 64; }
 [ "$BRANCH_EXPLICIT" -eq 0 ] || [ -z "$CHANNEL" ] || { echo "--branch and --channel are mutually exclusive" >&2; exit 64; }
 TARGET_ARGS=(--branch "$BRANCH")
@@ -124,20 +128,48 @@ marker_release() { # A7 rule 5, under the lock. Never while a survivor of the
   # that completion still mutates the checkout. Wait it out; past the bound,
   # leave the marker in place -- dead to every reader, and the Desktop's
   # reclaim helper refuses to delete it while the checkout lock is held.
+  # The line-2 refresher keeps running through that wait (an old Desktop
+  # would otherwise age-delete the marker 20 minutes into it) and stops only
+  # once the release is decided.
   local waited=0
-  [ "$MARKER_CLAIMED" -eq 1 ] && [ "$NO_MARKER_CLEANUP" -eq 0 ] || return 0
+  [ "$MARKER_CLAIMED" -eq 1 ] && [ "$NO_MARKER_CLEANUP" -eq 0 ] || { marker_refresher_stop; return 0; }
   while checkout_lock_held; do
     [ "$waited" -gt 0 ] || log "a process still holds the checkout update lock; keeping the update marker until it exits"
     if [ "$waited" -ge "$RELEASE_WAIT_S" ]; then
       log "WARNING: checkout update lock still held after ${waited}s; leaving the update marker"
+      marker_refresher_stop
       return 0
     fi
     sleep 1; waited=$((waited + 1))
   done
+  marker_refresher_stop
   marker_locked marker_release_locked
   MARKER_CLAIMED=0
 }
 RELEASE_WAIT_S=7200
+
+# An older packaged Desktop judges a marker by line 2 alone and deletes it 20
+# minutes in, live owner or not. From the claim until the release is decided
+# (the update, every follow-up step and the R6 wait above), keep line 2 young
+# -- under the A7 lock and only while line 1 is still our exact incarnation
+# (marker_refresh_locked). It dies with us: a dead script refreshes nothing.
+MARKER_REFRESHER=""
+marker_refresher_start() {
+  [ "$MARKER_CLAIMED" -eq 1 ] && [ -z "$MARKER_REFRESHER" ] || return 0
+  ( trap '' HUP INT QUIT TERM
+    while :; do
+      for ((_tick = 0; _tick < MARKER_REFRESH_EVERY_S; _tick++)); do
+        sleep 1; kill -0 "$MY_PID" 2>/dev/null || exit 0
+      done
+      marker_locked marker_refresh_locked
+    done ) </dev/null >/dev/null 2>&1 &
+  MARKER_REFRESHER=$!
+}
+marker_refresher_stop() {
+  [ -n "$MARKER_REFRESHER" ] || return 0
+  kill -KILL "$MARKER_REFRESHER" 2>/dev/null; wait "$MARKER_REFRESHER" 2>/dev/null
+  MARKER_REFRESHER=""
+}
 
 run_bounded() { # seconds cmd... -> cmd's stdout; 124 when it had to be killed
   local secs="$1" out pid i rc
@@ -915,6 +947,7 @@ if [ "$SELF_TEST_MARKER" -eq 1 ]; then
   trap - EXIT
   exit 0
 fi
+marker_refresher_start
 
 # Start-of-run recovery of litter only a dead hand-off can leave (we hold the
 # marker, so no other hand-off is running): an interrupted app swap, a TCC heal
@@ -1047,7 +1080,7 @@ run_update() { # streams straight into the log (a killed run keeps its output);
   # but the marker names neither a live owner nor a live delegate. A
   # HUP/INT/QUIT that lands meanwhile is handled once it exits, exactly like a
   # foreground child.
-  local offset pid sig go="${TMPDIR:-/tmp}/hermes-update-go.$$" refresher
+  local offset pid sig go="${TMPDIR:-/tmp}/hermes-update-go.$$"
   offset="$(wc -c < "$LOG" 2>/dev/null | tr -d '[:space:]')"
   PENDING_SIGNAL=""
   for sig in HUP INT QUIT; do trap "PENDING_SIGNAL=\${PENDING_SIGNAL:-$sig}" "$sig"; done
@@ -1058,19 +1091,11 @@ run_update() { # streams straight into the log (a killed run keeps its output);
   pid=$!
   marker_add_delegate "$pid"
   : > "$go"
-  # An older packaged Desktop judges a marker by line 2 alone and deletes it
-  # 20 minutes in, live owner or not: keep line 2 young while we own it.
-  ( for _ in $(seq 1 100000); do
-      for _ in $(seq 1 60); do sleep 5; kill -0 "$MY_PID" 2>/dev/null || exit 0; done
-      marker_locked marker_refresh_locked
-    done ) >/dev/null 2>&1 &
-  refresher=$!
   while :; do
     wait "$pid"; CODE=$?
     [ "$CODE" -ne 127 ] || break          # not our child any more
     kill -0 "$pid" 2>/dev/null || break   # reaped: CODE is its exit status
   done
-  kill -KILL "$refresher" 2>/dev/null; wait "$refresher" 2>/dev/null
   rm -f "$go" 2>/dev/null
   for sig in HUP INT QUIT; do trap "on_signal $sig" "$sig"; done
   OUT="$(tail -c +"$(( ${offset:-0} + 1 ))" "$LOG" 2>/dev/null)"

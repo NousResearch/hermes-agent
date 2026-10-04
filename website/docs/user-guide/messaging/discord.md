@@ -197,7 +197,7 @@ This method requires **Public Bot** to be set to **ON** in Step 2. If you set Pu
 You can construct the invite URL directly using this format:
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309238025280
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309237763136
 ```
 
 Replace `YOUR_APP_ID` with the Application ID from Step 1.
@@ -222,9 +222,9 @@ These are the minimum permissions your bot needs:
 
 | Level | Permissions Integer | What's Included |
 |-------|-------------------|-----------------|
-| Minimal | `117760` | View Channels, Send Messages, Read Message History, Attach Files |
-| Recommended | `309238025280` | All of the above plus Embed Links, Create Public Threads, Send Messages in Threads, Add Reactions |
-| Full (what `hermes gateway setup` prints) | `309241171008` | Recommended plus Connect and Speak (voice channels) |
+| Minimal | `117760` | View Channels, Send Messages, Embed Links, Attach Files, Read Message History |
+| Recommended | `309237763136` | All of the above plus Create Public Threads, Send Messages in Threads, Add Reactions |
+| Full (what `hermes gateway setup` prints) | `309240908864` | Recommended plus Connect and Speak (voice channels) |
 
 Existing installations do not gain newly requested permissions automatically.
 If you used an older Recommended URL, re-invite the bot with the URL above to

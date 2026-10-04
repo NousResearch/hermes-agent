@@ -28,6 +28,8 @@ export const ASSETS = [
 
 export const PARAMS = new URLSearchParams(location.search);
 export const STILL = PARAMS.has('estatico');     // sem animação ambiente, pra comparar com a foto
+// ?giro=0.3[,aceno] fixa a pose da cabeça (rad): bancada pra ajustar o giro 3D sem depender do mouse
+export const GIRO = PARAMS.has('giro') ? PARAMS.get('giro').split(',').map((v) => Number(v) || 0) : null;
 export const SO_FUNDO = PARAMS.has('sofundo');   // só o cenário vivo, sem o humanoide (base pra encaixar novos assets)
 export const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
 export const COARSE = matchMedia('(pointer: coarse)').matches;

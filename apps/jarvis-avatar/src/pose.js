@@ -1,5 +1,5 @@
 /* Pose da cabeça: o que faz ele parecer vivo (balanço, olhadas, seguir o mouse, reagir aos estados). */
-import { IMG, STILL, REDUCED } from './config.js';
+import { IMG, STILL, REDUCED, GIRO } from './config.js';
 import { clamp, ease, rnd } from './util.js';
 
 // Movimento fluido: cada eixo passa por dois estágios. O alvo é suavizado (filtro de 1ª ordem) e só então
@@ -38,6 +38,11 @@ export function createPose({ clock, mouse, ST, audio }) {
   };
 
   function update(dt) {
+    if (GIRO) {                                         // pose fixa (bancada): sem molas, sem atraso da aura
+      pose.yaw.x = lag.yaw.x = GIRO[0];
+      pose.pitch.x = lag.pitch.x = GIRO[1] || 0;
+      return;
+    }
     if (STILL || REDUCED) return;                       // repouso exato (comparação com a foto) e acessibilidade
     const time = clock.time;
     let ty = 0.04 * wobble(0.23, 0.41, 0.97, 0.0);    // em repouso: balanço lento, nunca parado

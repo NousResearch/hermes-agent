@@ -3,6 +3,7 @@ import logging
 import stat
 import subprocess
 import types
+from pathlib import Path
 
 import pytest
 
@@ -72,20 +73,22 @@ def test_python_filter_spawns_through_cron_resolver_argv(tmp_path, monkeypatch):
 
     captured = {}
 
-    def spy_run(argv, **kwargs):
+    class _FakeProc:
+        returncode = 0
+
+        def communicate(self, input=None, timeout=None):
+            return '{"ok": true}', ""
+
+    def spy_popen(argv, **kwargs):
         captured["argv"] = list(argv)
         captured["env"] = kwargs["env"]
-
-        class _Result:
-            returncode = 0
-            stdout = '{"ok": true}'
-            stderr = ""
-
-        return _Result()
+        return _FakeProc()
 
     monkeypatch.setattr(
-        webhook_filters, "subprocess",
-        types.SimpleNamespace(run=spy_run, TimeoutExpired=subprocess.TimeoutExpired))
+        webhook_filters,
+        "subprocess",
+        types.SimpleNamespace(Popen=spy_popen, PIPE=-1, TimeoutExpired=subprocess.TimeoutExpired),
+    )
 
     filt = _filter_script("pass", name="filter.py")
     accepted, transformed = WebhookRouteProcessor().run_route_script(str(filt), {"a": 1})
@@ -132,3 +135,38 @@ def test_python_filter_vetoes_when_dependency_env_missing(tmp_path, monkeypatch,
 
     assert accepted is False and transformed is None
     assert any("script ignored webhook" in r.getMessage() for r in caplog.records)
+
+
+
+@pytest.mark.platforms("posix")  # POSIX store argv shape; the Windows half is the wine2e receipt
+def test_python_filter_times_out_on_store_bootstrap_path(tmp_path, monkeypatch, caplog):
+    """Store-path argv (interpreter + cron's repo bootstrap): a hung script must hit the run
+    budget and be tree-killed like cron's runner, not outlive the route (#129100 review)."""
+    import sys as _sys
+    import time as _time
+    from cron.scheduler_script import _POSIX_SCRIPT_BOOTSTRAP
+
+    repo = Path(webhook_filters.__file__).resolve().parents[1]
+    filt = _filter_script("import time; time.sleep(30)\n", name="filter.py")
+
+    def fake_script_argv(path):
+        # The exact store shape _posix_cron_script_argv returns: [venv_python, "-c", bootstrap,
+        # repo, script]. sys.executable stands in for the venv python — the bootstrap is stdlib-only.
+        return (
+            [_sys.executable, "-c", _POSIX_SCRIPT_BOOTSTRAP, str(repo), str(path)],
+            {"HERMES_DISABLE_LAZY_INSTALLS": "1"},
+            None,
+        )
+
+    monkeypatch.setattr("cron.scheduler_script._script_argv", fake_script_argv)
+
+    started = _time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="gateway.platforms.webhook_filters"):
+        accepted, transformed = WebhookRouteProcessor(
+            script_timeout_seconds=1
+        ).run_route_script(str(filt), {"a": 1})
+    elapsed = _time.monotonic() - started
+
+    assert accepted is False and transformed is None
+    assert any("script timed out" in r.getMessage() for r in caplog.records)
+    assert elapsed < 15, f"timeout did not tree-kill the hung script (elapsed {elapsed:.1f}s)"

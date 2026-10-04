@@ -195,10 +195,11 @@ class WebhookRouteProcessor:
             # dependencies there — the shape cron fixed for its scripts (#123044). Ride cron's
             # resolver (dependency-venv interpreter + repo bootstrap on a store install) and
             # keep lazy installs off for the script's process tree on every OS (#129100).
-            from cron.scheduler_script import _script_argv
             try:
+                from cron.scheduler_script import _script_argv
+
                 argv, env_overlay, script_error = _script_argv(path)
-            except Exception as exc:  # the resolver reads PM's install records; the route must not crash
+            except Exception as exc:  # the resolver and its import chain must not crash the route
                 logger.warning("[webhook] script ignored webhook: %s", exc)
                 return False, None
             if argv is None:
@@ -210,29 +211,55 @@ class WebhookRouteProcessor:
             env = build_subprocess_env()
             env.update(env_overlay)
             popen_kwargs = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
-            result = subprocess.run(
-                argv, input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=self.script_timeout_seconds, cwd=str(path.parent), env=env, **popen_kwargs,
+            # Popen plus a communicate deadline, matching cron's runner (scheduler_script.py):
+            # subprocess.run(timeout=) only kill()s the one pid, so a hung route script that
+            # spawned children would leave them behind on the store bootstrap path, and the
+            # expiry needs the same tree-kill cron already applies.
+            proc = subprocess.Popen(
+                argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=str(path.parent),
+                env=env,
+                **popen_kwargs,
             )
-        except subprocess.TimeoutExpired:
-            logger.warning("[webhook] script timed out: %s", path)
-            return False, None
+            try:
+                stdout_raw, stderr_raw = proc.communicate(
+                    input=json.dumps(payload), timeout=self.script_timeout_seconds
+                )
+            except subprocess.TimeoutExpired:
+                try:
+                    from cron.scheduler_script import (
+                        _drain_script_pipes,
+                        _terminate_cron_script_tree,
+                    )
+
+                    _terminate_cron_script_tree(proc)
+                    _drain_script_pipes(proc)
+                except Exception:
+                    proc.kill()  # cron's tree-kill helpers unavailable; single-process fallback
+                logger.warning("[webhook] script timed out: %s", path)
+                return False, None
         except Exception as exc:
             logger.warning("[webhook] script execution failed: %s", exc)
             return False, None
-        stdout, stderr = (result.stdout or "").strip(), (result.stderr or "").strip()
+        stdout, stderr = (stdout_raw or "").strip(), (stderr_raw or "").strip()
         try:
             from agent.redact import redact_sensitive_text
             stdout, stderr = redact_sensitive_text(stdout), redact_sensitive_text(stderr)
         except Exception as exc:
             logger.warning("[webhook] Failed to redact script output: %s", exc)
             stdout = stderr = "[REDACTED - redaction failed]"
-        if result.returncode != 0:
+        if proc.returncode != 0:
             # A veto normally says why; rc!=0 with NO output at all is the "interpreter never
             # started" signature (WSL stub, missing shebang target) and must reach errors.log.
             level = logging.WARNING if not stdout and not stderr else logging.INFO
-            logger.log(level, "[webhook] script ignored webhook path=%s code=%s stderr=%s", path.name, result.returncode, stderr[:200])
-        if result.returncode != 0 or not stdout or stdout == "[SILENT]":
+            logger.log(level, "[webhook] script ignored webhook path=%s code=%s stderr=%s", path.name, proc.returncode, stderr[:200])
+        if proc.returncode != 0 or not stdout or stdout == "[SILENT]":
             return False, None
         try:
             transformed = json.loads(stdout)

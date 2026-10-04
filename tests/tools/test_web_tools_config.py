@@ -651,7 +651,7 @@ class TestWebExtractFormat:
         calls = []
 
         class FakeClient:
-            def scrape(self, url, formats):
+            def scrape(self, url, formats, timeout=None):
                 calls.append({"url": url, "formats": formats})
                 return {
                     "summary": "Short AI summary.",
@@ -688,7 +688,7 @@ class TestWebExtractFormat:
         page = {"markdown": "# Full page body", "metadata": {"title": "Scan", "sourceURL": "u"}}
 
         class FakeClient:
-            def scrape(self, url, formats):
+            def scrape(self, url, formats, timeout=None):
                 # Like the SDK: only the formats asked for, and no summary for this page.
                 return {k: v for k, v in page.items() if k in formats or k == "metadata"}
 

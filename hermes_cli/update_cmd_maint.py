@@ -876,6 +876,16 @@ def _refresh_cua_driver_after_update() -> None:
     if pm.installed_package("cua-driver", allow_outdated=True) is None:
         return
     if sys.platform == "win32":
+        # Pinned version already installed: nothing to refresh, stay silent.
+        if pm.installed_package("cua-driver") is not None:
+            return
+        # Without the opt-in autostart task there is nothing to re-register,
+        # so the new pin can be installed without UAC.
+        from hermes_cli.tools_config_cua import _cua_autostart_opt_in
+        if not _cua_autostart_opt_in():
+            print("\n→ Preparing pinned cua-driver (Computer Use)...")
+            pm.ensure("cua-driver", explicit=True)
+            return
         # The scheduled task targets a versioned binary. Selecting a new pin
         # without re-registering leaves it stale; registration requires UAC.
         print("\n→ Windows cua-driver refresh deferred (autostart registration requires UAC).")

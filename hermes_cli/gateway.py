@@ -4076,13 +4076,14 @@ def _wait_for_tcp_port_free(host: str, port: int, *, timeout: float = 10.0) -> b
             # instead of returning ECONNREFUSED.  Binding is the authoritative check
             # because it mirrors the api_server's next operation.
             try:
-                family, socktype, proto, _, address = socket.getaddrinfo(
-                    host, port, type=socket.SOCK_STREAM
-                )[0]
-                with socket.socket(family, socktype, proto) as probe:
-                    if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
-                        probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-                    probe.bind(address)
+                addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+                if not addresses:
+                    raise OSError("No resolved listener addresses")
+                for family, socktype, proto, _, address in addresses:
+                    with socket.socket(family, socktype, proto) as probe:
+                        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                        probe.bind(address)
                 return True
             except OSError:
                 pass  # The listener is still holding the port, or the probe cannot bind yet.

@@ -121,6 +121,32 @@ def test_vertical_fallback_wraps_long_cell_text_with_indent():
         assert wcswidth(line) <= 60
 
 
+def test_header_only_table_preserves_headers_at_narrow_and_wide_widths():
+    headers = ["Available support channels", "Response time expectations"]
+    source = "| " + " | ".join(headers) + " |\n| --- | --- |"
+
+    for width in (40, 100):
+        rendered = realign_markdown_tables(source, available_width=width)
+        assert all(header in rendered for header in headers)
+        assert rendered.index(headers[0]) < rendered.index(headers[1])
+        assert all(wcswidth(line) <= width for line in rendered.splitlines())
+
+
+def test_header_only_fallback_preserves_surrounding_prose_and_other_tables():
+    headers = ["Available support channels", "Response time expectations"]
+    empty_table = "| " + " | ".join(headers) + " |\n| --- | --- |"
+    populated_table = "| Channel | Response |\n| --- | --- |\n| Email | Within a working day |"
+    prefix, middle, suffix = "Available fields:\n\n", "\n\nCurrent entries:\n\n", "\n\nEnd."
+    rendered = realign_markdown_tables(prefix + empty_table + middle + populated_table + suffix, 40)
+
+    assert rendered.startswith(prefix)
+    assert middle in rendered
+    assert rendered.endswith(suffix)
+    assert all(header in rendered for header in headers)
+    assert realign_markdown_tables(populated_table, 40) in rendered
+    assert realign_markdown_tables(prefix + suffix, 40) == prefix + suffix
+
+
 
 
 

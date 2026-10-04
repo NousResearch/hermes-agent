@@ -138,7 +138,8 @@ def _render_vertical(rows: List[List[str]], ncols: int, available_width: int) ->
     separator = "─" * (max(20, min(40, available_width - 2)) if available_width else 30)
     cont_budget = max(10, available_width - 2)  # continuation lines are indented two spaces
     out: List[str] = []
-    for ri, row in enumerate(rows[1:]):
+    # GFM permits a header with no body; keep its labels via the empty-value rendering.
+    for ri, row in enumerate(rows[1:] or [[]]):
         if ri > 0:
             out.append(separator)
         for ci, label in enumerate(labels):

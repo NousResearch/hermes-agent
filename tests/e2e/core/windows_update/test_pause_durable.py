@@ -5,7 +5,10 @@ touches the checkout. Cell (a): the updater is killed (``taskkill /F /T`` — co
 kill) right after the pause; the next plain ``hermes`` command must bring the gateway back.
 Cell (c): a successful update brings the paused gateway back and it outlives the updater (the
 record is discharged). Cell (b): the pull fails half-way (a held file makes git's fast-forward die
-after writing part of the tree); the gateway must NOT be started onto that torn tree.
+after writing part of the tree). Either the tree stays torn (no in-updater restore): the gateway
+must NOT be started onto it and the record keeps the obligation; or the updater puts the
+pre-update tree back verbatim: the paused gateway must come back on that old code and the record is
+discharged. Any other end state (HEAD moved, restore claimed but tree dirty) fails the cell.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from __future__ import annotations
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import psutil
 import pytest
@@ -31,6 +35,8 @@ pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
 _PAUSED = "Paused gateway profile"
 _RECORD = ".hermes-update-paused-gateways.json"
 _EARLY, _HELD = "AGENTS.md", "website/package.json"  # checkout order: the early file is written first
+_PULL_MARKER = "hermes-update-pull"  # hermes_cli._early_recovery.INTERRUPTED_PULL_MARKER, in the git dir
+_RESTORED = "Checkout restored"  # the updater's own in-place restore of git's half-written files
 
 
 def _alive(pid: int) -> bool:
@@ -138,7 +144,12 @@ def journey(tmp_path_factory):
                 out["b_head"] = machine.installed_head()
                 out["b_status"] = harness_git("-C", str(machine.install_dir), "status", "--porcelain",
                                               "--untracked-files=no")
-                out["b_after"] = _running_gateway(machine, old, 60)
+                git_dir = harness_git("-C", str(machine.install_dir), "rev-parse", "--absolute-git-dir")
+                out["b_marker"] = (Path(git_dir) / _PULL_MARKER).exists()
+                after = _running_gateway(machine, old, 60)
+                time.sleep(15 if after else 0)
+                out["b_after"] = after
+                out["b_alive_15s"] = bool(after) and _alive(int(after.get("pid") or 0))
                 out["b_record"] = (machine.hermes_home / _RECORD).is_file()
                 machine.kill_owned()
             yield out
@@ -167,11 +178,26 @@ def test_successful_update_gateway_outlives_the_updater(journey) -> None:
 
 def test_failed_pull_does_not_start_gateway_on_torn_tree(journey) -> None:
     m, run = journey["machine"], journey["b_update"]
-    torn = journey["b_head"] == journey["b_pre"] and _EARLY in journey["b_status"]
-    assert run.returncode != 0 and torn, fail_with(
-        m, f"premise: the held file did not tear the pull (rc={run.returncode}, HEAD={journey['b_head']}, "
-           f"pre={journey['b_pre']}, status={journey['b_status']!r})", run)
-    assert journey["b_after"] is None, fail_with(
-        m, f"the gateway was restarted onto a torn checkout ({journey['b_status']!r}) after the failed update "
-           f"(pid {journey['b_after'].get('pid') if journey['b_after'] else None})", run)
-    assert journey["b_record"], fail_with(m, "the paused set was not kept for recovery after the torn pull", run)
+    out = (run.stdout or "") + (run.stderr or "")
+    head, pre, status = journey["b_head"], journey["b_pre"], journey["b_status"]
+    state = f"rc={run.returncode}, HEAD={head}, pre={pre}, status={status!r}, marker={journey['b_marker']}"
+    # Premise on every base: git's fast-forward really died on the held file.
+    assert run.returncode != 0 and "unable to unlink old" in out and _HELD in out, fail_with(
+        m, f"premise: the held file did not fail the pull ({state})", run)
+    torn = head == pre and _EARLY in status
+    restored = head == pre and not status and not journey["b_marker"] and _RESTORED in out
+    assert torn or restored, fail_with(
+        m, f"the failed pull left neither the torn tree git wrote nor the verbatim pre-update tree ({state})", run)
+    pid = journey["b_after"].get("pid") if journey["b_after"] else None
+    if torn:
+        assert journey["b_after"] is None, fail_with(
+            m, f"the gateway was restarted onto a torn checkout ({status!r}) after the failed update (pid {pid})", run)
+        assert journey["b_record"], fail_with(m, "the paused set was not kept for recovery after the torn pull", run)
+        return
+    # The updater put the pre-update tree back (HEAD, index and every file at ``pre``, no pull marker):
+    # the paused gateway must not be lost to a failed update — it runs again on the old code.
+    assert journey["b_after"] is not None, fail_with(
+        m, f"the updater restored the pre-update tree but left the paused gateway stopped ({state})", run)
+    assert journey["b_alive_15s"], fail_with(
+        m, f"the gateway restarted on the restored tree (pid {pid}) died after `hermes update` exited", run)
+    assert not journey["b_record"], fail_with(m, "a fully resumed pause left its record behind", run)

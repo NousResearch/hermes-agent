@@ -619,6 +619,61 @@ function Invoke-Native([scriptblock]$Command) {
     & $Command
 }
 
+# uv prints the managed-Python path as UTF-8. Windows PowerShell 5.1 decodes
+# captured native stdout with the ambient console code page, which corrupts
+# non-ASCII profile paths. Capture this one machine-readable boundary with an
+# explicit UTF-8 decoder instead of changing the caller's console encoding.
+function Find-UvManagedPython([string]$Uv, [string]$Request, [switch]$NoProject, [switch]$Quiet) {
+    $findArgs = @('python', 'find', '--managed-python')
+    if ($NoProject) { $findArgs += '--no-project' }
+    $findArgs += $Request
+
+    # Dot-sourced installer tests override Get-Uv with a PowerShell function.
+    # Preserve that seam; production Get-Uv returns an Application path and
+    # therefore always takes the explicit UTF-8 ProcessStartInfo path below.
+    $resolvedUv = Get-Command -Name $Uv -ErrorAction SilentlyContinue
+    if ($resolvedUv -and $resolvedUv.CommandType -ne 'Application') {
+        if ($Quiet) {
+            return ((Invoke-Native { & $Uv @findArgs 2>$null }) -join "`n").Trim()
+        }
+        return ((Invoke-Native { & $Uv @findArgs }) -join "`n").Trim()
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = if ($resolvedUv) { $resolvedUv.Source } else { $Uv }
+    # Every argument after FileName is installer-owned ASCII; the Unicode path
+    # is the executable itself, which ProcessStartInfo carries separately.
+    $psi.Arguments = $findArgs -join ' '
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $psi.StandardOutputEncoding = $utf8
+    $psi.StandardErrorEncoding = $utf8
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    try {
+        if (-not $process.Start()) { throw 'could not start uv python find' }
+        # Start both drains before waiting so neither redirected pipe can fill
+        # and block the child, even if a future uv version grows its diagnostics.
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $stdout = $stdoutTask.Result
+        $stderr = $stderrTask.Result
+        $global:LASTEXITCODE = $process.ExitCode
+        if (-not $Quiet -and $stderr) {
+            try { [Console]::Error.Write($stderr) }
+            catch { Write-Verbose $stderr.TrimEnd() }
+        }
+        return $stdout.Trim()
+    } finally {
+        $process.Dispose()
+    }
+}
+
 # Interactive runs collapse child-process output (git, uv, pm, the builds)
 # into one status line. CI, -Verbose and redirected output -- the
 # Hermes-Setup -Json driver, E2E transcripts -- keep the full stream those
@@ -941,11 +996,11 @@ function Get-BootstrapPython {
     # A bare version lets uv pick emulated x86_64 on Windows-on-ARM.
     $pyArch = if ((Get-WindowsArch) -eq 'arm64') { 'aarch64' } else { 'x86_64' }
     $pyRequest = "cpython-$pyVersion-windows-$pyArch-none"
-    $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
+    $bootPy = Find-UvManagedPython $uv $pyRequest -NoProject -Quiet
     if ($LASTEXITCODE -or -not $bootPy) {
         Invoke-Logged "Downloading Python $pyVersion" { & $uv python install --no-bin --no-registry $pyRequest }
         if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
-        $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
+        $bootPy = Find-UvManagedPython $uv $pyRequest -NoProject
     }
     if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" }
     $script:BootstrapPython = $bootPy.Trim()

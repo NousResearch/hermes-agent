@@ -15,6 +15,41 @@
 param([switch]$RuntimeOnly, [string]$TestExtras = '')
 $ErrorActionPreference = 'Stop'
 
+# Keep uv's machine-readable path independent of the caller's console code
+# page. This script is also used from fresh clones, so the small helper stays
+# local rather than depending on scripts/install.ps1.
+function Find-UvManagedPython([string]$Uv, [string]$Request) {
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Uv
+    $psi.Arguments = 'python find --managed-python ' + $Request
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $psi.StandardOutputEncoding = $utf8
+    $psi.StandardErrorEncoding = $utf8
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    try {
+        if (-not $process.Start()) { throw 'could not start uv python find' }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $stdout = $stdoutTask.Result
+        $stderr = $stderrTask.Result
+        $global:LASTEXITCODE = $process.ExitCode
+        if ($stderr) {
+            try { [Console]::Error.Write($stderr) }
+            catch { Write-Verbose $stderr.TrimEnd() }
+        }
+        return $stdout.Trim()
+    } finally {
+        $process.Dispose()
+    }
+}
+
 Write-Host ''
 Write-Host 'Hermes Agent Setup' -ForegroundColor Cyan
 Write-Host ''
@@ -86,7 +121,7 @@ try {
     $pyRequest = "cpython-$pyVersion-windows-$(if ($arch -eq 'arm64') { 'aarch64' } else { 'x86_64' })-none"
     & $uv python install --no-bin --no-registry $pyRequest
     if ($LASTEXITCODE -ne 0) { throw 'bootstrap Python installation failed' }
-    $bootPy = (& $uv python find --managed-python $pyRequest) -join "`n"
+    $bootPy = Find-UvManagedPython $uv $pyRequest
     if ($LASTEXITCODE -ne 0 -or -not $bootPy) { throw 'bootstrap Python lookup failed' }
     & $bootPy.Trim() -m pm.cli install $(if ($RuntimeOnly) { '--trust-recorded' }) "--test-environment=$TestExtras"
     if ($LASTEXITCODE -ne 0) { throw 'pm install failed - see output above.' }

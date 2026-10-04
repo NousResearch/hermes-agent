@@ -63,14 +63,16 @@ _PROPERTIES: Dict[str, Any] = {
     "pid": {
         "type": "integer",
         "description": (
-            "Optional exact process target for action='capture'. Pair with window_id when "
+            "Optional exact process target for action='capture' or 'verify_state'. Verification defaults to the "
+            "captured window; without a capture, provide both pid and window_id. Pair with window_id when "
             "discovery cannot resolve an X11 app."
         ),
     },
     "window_id": {
         "type": "integer",
         "description": (
-            "Optional exact native window target for action='capture'. Pair with pid when an "
+            "Optional exact native window target for action='capture' or 'verify_state'. Verification defaults "
+            "to the captured window. Pair with pid when an "
             "external cua-driver list_windows lookup has already identified the window."
         ),
     },
@@ -177,7 +179,7 @@ _PROPERTIES: Dict[str, Any] = {
             "Default false."
         ),
     },
-    "expect": {"type": "array", "items": {"type": "object"}, "description": "Predicates for action=verify_state; unknown never implies success."},
+    "expect": {"type": "array", "minItems": 1, "items": {"type": "object", "minProperties": 1}, "description": "Required nonempty predicates for action=verify_state; unknown never implies success."},
     "capture_after": {
         "type": "boolean",
         "description": (

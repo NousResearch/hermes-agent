@@ -137,6 +137,35 @@ def test_a_disabled_or_present_plugin_is_left_alone(tmp_path):
     assert lcm.migrate_home(home, install=lambda n: pytest.fail("reinstalled"), say=print) == []
 
 
+def test_a_preinstalled_plugin_gets_the_scope_conversion_once(tmp_path):
+    """A plugin installed before the update (inert while core shipped HA) is not proof the core-era
+    toolset scope was converted; the conversion runs once and never undoes a later user choice."""
+    from hermes_cli.config import read_user_config_raw, save_config
+    from hermes_cli.tools_config import _enabled_plugin_toolsets, _save_platform_tools
+    home = _home(tmp_path, env="HASS_TOKEN=abc\n", config="platform_toolsets:\n  telegram: [web]\n")
+    (home / "plugins" / "homeassistant").mkdir(parents=True)
+    selections = {"telegram": ["web"], "acp": ["hermes-acp"], "webhook": ["hermes-webhook"]}
+
+    def ha_on() -> dict:
+        config = lcm._read_config(home)
+        selections["telegram"] = config["platform_toolsets"]["telegram"]
+        return {p: bool(_enabled_plugin_toolsets(config, p, sel, {"homeassistant"})) for p, sel in selections.items()}
+
+    lcm.migrate_home(home, install=lambda n: pytest.fail("reinstalled"), say=print)
+    assert ha_on() == {"telegram": False, "acp": False, "webhook": False}
+
+    config = read_user_config_raw(home / "config.yaml")
+    _save_platform_tools(config, "telegram", {"web", "homeassistant"})  # the user's later choice
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    token = set_hermes_home_override(home)
+    try:
+        save_config(config)
+    finally:
+        reset_hermes_home_override(token)
+    lcm.migrate_home(home, install=lambda n: pytest.fail("reinstalled"), say=print)
+    assert ha_on() == {"telegram": True, "acp": False, "webhook": False}
+
+
 def test_catalog_miss_is_reported_not_installed(tmp_path, monkeypatch):
     import hermes_cli.memory_provider_migration as mpm
     monkeypatch.setattr(mpm, "catalog_source", lambda name: None)

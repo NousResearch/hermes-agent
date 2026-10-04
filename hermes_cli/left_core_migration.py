@@ -142,18 +142,29 @@ def _core_carried(feature: LeftCoreFeature, selection: list) -> bool:
     return any(carries(str(name)) for name in selection)
 
 
+_SCOPED_KEY = "_left_core_scoped"  # config.yaml: rows whose toolset scope this home already converted
+
+
+def _scope_kept(config: dict, feature: LeftCoreFeature) -> bool:
+    done = config.get(_SCOPED_KEY)
+    return not feature.toolsets or (isinstance(done, list) and feature.plugin in map(str, done))
+
+
 def _keep_toolset_scope(home: Path, feature: LeftCoreFeature) -> None:
     """Record *feature*'s toolsets in ``known_plugin_toolsets[platform]`` (= off) for every platform
     where core had them off: a saved ``platform_toolsets`` list that does not carry them, or no list
-    on an ``off_platforms`` platform. Platforms core resolved them on for are left alone. Runs before
-    any install, automatic or the user's own, so the plugin never turns them on where the user had
-    scoped them out. Idempotent; raises when config.yaml cannot be read or written."""
-    if not feature.toolsets:
-        return
+    on an ``off_platforms`` platform. Platforms core resolved them on for are left alone.
+
+    A one-time conversion per home and row, independent of installation: a plugin installed before
+    the update (it stays inert on a core that still ships the feature) still needs it. Completion is
+    marked under ``_left_core_scoped`` in the same config write, so a later run never undoes a choice
+    the user made since (``hermes tools``). Raises when config.yaml cannot be read or written."""
     from hermes_cli.config import atomic_config_write, read_user_config_raw
     from hermes_cli.toolset_validation import parse_platform_toolsets_value
     path = home / "config.yaml"
     config = read_user_config_raw(path)
+    if _scope_kept(config, feature):
+        return
     saved = config.get("platform_toolsets")
     saved = saved if isinstance(saved, dict) else {}
     selections = {str(p): parse_platform_toolsets_value(v) for p, v in saved.items()}
@@ -161,37 +172,42 @@ def _keep_toolset_scope(home: Path, feature: LeftCoreFeature) -> None:
         selections.setdefault(platform, None)
     known = config.get("known_plugin_toolsets")
     known = known if isinstance(known, dict) else {}
-    changed = False
     for platform, selection in selections.items():
         if selection is None and platform not in feature.off_platforms:
             continue  # no (valid) saved list: core's default composite carried the toolsets
         if selection is not None and _core_carried(feature, selection):
             continue
         current = known.get(platform) if isinstance(known.get(platform), list) else []
-        missing = [ts for ts in feature.toolsets if ts not in current]
-        if missing:
+        if missing := [ts for ts in feature.toolsets if ts not in current]:
             known[platform] = sorted({*map(str, current), *missing})
-            changed = True
-    if changed:
+    if known:
         config["known_plugin_toolsets"] = known
-        atomic_config_write(path, config)
+    done = config.get(_SCOPED_KEY)
+    config[_SCOPED_KEY] = sorted({*(map(str, done) if isinstance(done, list) else ()), feature.plugin})
+    atomic_config_write(path, config)
 
 
 def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = False) -> list[LeftCoreFeature]:
     """Rows *home* uses whose plugin is not installed and that the catalog ships (a catalog miss is
-    reported through *say*). Writes only the toolset scope (:func:`_keep_toolset_scope`); a row whose
-    scope cannot be recorded is reported and skipped, never installed unscoped."""
+    reported through *say*). Converts the toolset scope of every row *home* uses once
+    (:func:`_keep_toolset_scope`), installed or not; a row whose scope cannot be recorded is
+    reported and skipped, never installed unscoped."""
     from hermes_cli.memory_provider_migration import catalog_source
     out = []
     for feature in LEFT_CORE:
-        if plugin_present(feature.plugin, home) or not feature.in_use(home, process_env=process_env):
+        present = plugin_present(feature.plugin, home)
+        if present and _scope_kept(_read_config(home), feature):
+            continue
+        if not feature.in_use(home, process_env=process_env):
             continue
         try:
             _keep_toolset_scope(home, feature)
         except Exception as exc:
-            say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which was not "
-                f"installed: its per-platform toolset selection could not be kept ({exc}). Run "
-                f"`{_install_command(feature.plugin, home)}` and check `hermes tools`.")
+            say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin: its per-platform "
+                f"toolset selection could not be kept ({exc}). Check `hermes tools`"
+                + ("." if present else f" and run `{_install_command(feature.plugin, home)}`."))
+            continue
+        if present:
             continue
         if catalog_source(feature.plugin) is None:
             say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this "

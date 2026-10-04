@@ -416,6 +416,152 @@ def test_shipped_skill_is_not_agent_created_without_manifest(skills_home, monkey
     assert skill_usage.provenance("restored-skill") == "bundled"
 
 
+@pytest.mark.parametrize("customization", ["independent", "support-file"])
+def test_same_named_user_skill_remains_local(skills_home, monkeypatch, tmp_path, customization):
+    from tools import skill_usage
+    from tools.skills_sync_client import is_sync_eligible
+
+    shipped = tmp_path / "shipped"
+    source = _write_skill(shipped, "github")
+    local = _write_skill(skills_home / "skills", "github", category="legacy")
+    (source / "reference.txt").write_text("shipped reference")
+    (local / "reference.txt").write_text("shipped reference")
+    if customization == "independent":
+        (local / "SKILL.md").write_text("---\nname: github\n---\nMy independent skill\n")
+    else:
+        (local / "reference.txt").write_text("customized reference")
+    monkeypatch.setattr(skill_usage, "get_bundled_skills_dir", lambda _default: shipped)
+
+    assert skill_usage.provenance("github") == "agent"
+    assert skill_usage.is_agent_created("github")
+    assert skill_usage.is_curation_eligible("github")
+    assert skill_usage.telemetry_provenance("github") == "local"
+    assert is_sync_eligible("github")
+    assert [r["name"] for r in skill_usage.unmanaged_report()] == ["github"]
+    assert skill_usage.adopt_skill("github")[0]
+    assert "github" in skill_usage.list_agent_created_skill_names()
+    assert skill_usage.archive_skill("github")[0]
+    assert not local.exists()
+    assert (skills_home / "skills" / ".archive" / "github" / "SKILL.md").exists()
+    assert "github" not in skill_usage.read_suppressed_names()
+
+
+def test_restored_package_matches_at_old_path_ignoring_runtime_cache(skills_home, monkeypatch, tmp_path):
+    from tools import skill_usage
+    from tools.skills_sync_client import is_sync_eligible
+
+    shipped = tmp_path / "shipped"
+    source = _write_skill(shipped, "restored", "current")
+    local = _write_skill(skills_home / "skills", "restored", "legacy")
+    for directory in (source, local):
+        (directory / "reference.txt").write_text("same reference")
+    (local / "__pycache__").mkdir()
+    (local / "__pycache__" / "generated.pyc").write_bytes(b"runtime")
+    monkeypatch.setattr(skill_usage, "get_bundled_skills_dir", lambda _default: shipped)
+
+    assert skill_usage.provenance("restored") == "bundled"
+    assert not skill_usage.is_curation_eligible("restored")
+    assert skill_usage.telemetry_provenance("restored") == "installed"
+    assert not is_sync_eligible("restored")
+    assert skill_usage.unmanaged_report() == []
+    assert not skill_usage.adopt_skill("restored")[0]
+    assert not skill_usage.archive_skill("restored")[0]
+    assert local.exists()
+
+
+def test_pristine_fallback_archive_preserves_suppression(skills_home, monkeypatch, tmp_path):
+    from tools import skill_usage
+    from tools import skills_sync
+
+    shipped = tmp_path / "shipped"
+    _write_skill(shipped, "restored")
+    local = _write_skill(skills_home / "skills", "restored", "legacy")
+    monkeypatch.setattr(skill_usage, "get_bundled_skills_dir", lambda _default: shipped)
+    monkeypatch.setattr(skill_usage, "_prune_builtins_enabled", lambda: True)
+    monkeypatch.setattr(skills_sync, "_get_bundled_dir", lambda: shipped)
+    monkeypatch.setattr(skills_sync, "_get_optional_dir", lambda: tmp_path / "absent")
+    monkeypatch.setattr(skills_sync, "_build_external_skill_index", lambda: set())
+
+    assert skill_usage.archive_skill("restored")[0]
+    assert not local.exists()
+    assert "restored" in skill_usage.read_suppressed_names()
+    assert skill_usage.get_record("restored")["state"] == skill_usage.STATE_ARCHIVED
+    assert skills_sync.sync_skills(quiet=True)["suppressed"] == ["restored"]
+    assert not (skills_home / "skills" / "restored").exists()
+    assert skill_usage.restore_skill("restored")[0]
+    assert "restored" not in skill_usage.read_suppressed_names()
+    assert skill_usage.provenance("restored") == "bundled"
+
+
+def test_reports_scan_bundled_tree_once_and_refresh_without_manifest(skills_home, monkeypatch, tmp_path):
+    from tools import skill_usage
+
+    shipped = tmp_path / "shipped"
+    for i in range(30):
+        _write_skill(shipped, f"restored-{i}")
+        _write_skill(skills_home / "skills", f"restored-{i}")
+        _write_skill(skills_home / "skills", f"custom-{i}")
+    monkeypatch.setattr(skill_usage, "get_bundled_skills_dir", lambda _default: shipped)
+    scans = []
+    original = Path.rglob
+
+    def counted(root, pattern):
+        if root == shipped and pattern == "SKILL.md":
+            scans.append(root)
+        return original(root, pattern)
+
+    monkeypatch.setattr(Path, "rglob", counted)
+    rows = skill_usage.usage_report()
+    assert len(rows) == 60
+    assert len(scans) == 1
+    assert sum(r["provenance"] == "bundled" for r in rows) == 30
+    assert len(skill_usage.unmanaged_report()) == 30
+    assert len(scans) == 2
+
+    # In-place support-file edits do not change any manifest or root mtime.
+    local = skills_home / "skills" / "restored-0"
+    support = local / "reference.txt"
+    support.write_text("user addition")
+    assert next(r for r in skill_usage.usage_report() if r["name"] == "restored-0")["provenance"] == "agent"
+    (shipped / "restored-0" / "reference.txt").write_text("user addition")
+    assert skill_usage.provenance("restored-0") == "bundled"
+    support.write_text("user revision")
+    assert skill_usage.provenance("restored-0") == "agent"
+    (skills_home / "skills" / ".bundled_manifest").write_text("restored-0:recorded\n")
+    assert skill_usage.provenance("restored-0") == "bundled"
+    (skills_home / "skills" / ".bundled_manifest").write_text("")
+    assert skill_usage.provenance("restored-0") == "agent"
+    (skills_home / "skills" / ".curator_suppressed").write_text("restored-0\n")
+    assert skill_usage.provenance("restored-0") == "bundled"
+    assert skill_usage._bundled_report_cache.get() is None
+
+
+def test_report_snapshot_profile_isolation_and_exception_cleanup(skills_home, monkeypatch, tmp_path):
+    from tools import skill_usage
+
+    shipped = tmp_path / "shipped"
+    _write_skill(shipped, "shared")
+    _write_skill(skills_home / "skills", "shared")
+    other = tmp_path / "profile-b"
+    local = _write_skill(other / "skills", "shared")
+    (local / "SKILL.md").write_text("---\nname: shared\n---\nIndependent B\n")
+    monkeypatch.setattr(skill_usage, "get_bundled_skills_dir", lambda _default: shipped)
+    for home, expected in [(skills_home, "bundled"), (other, "agent"), (skills_home, "bundled")]:
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        assert skill_usage.usage_report()[0]["provenance"] == expected
+        assert skill_usage._bundled_report_cache.get() is None
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("interrupted report")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(skill_usage, "_report_row", broken)
+        with pytest.raises(RuntimeError, match="interrupted report"):
+            skill_usage.usage_report()
+    assert skill_usage._bundled_report_cache.get() is None
+    assert skill_usage.usage_report()[0]["provenance"] == "bundled"
+
+
 # ---------------------------------------------------------------------------
 # Archive / restore
 # ---------------------------------------------------------------------------

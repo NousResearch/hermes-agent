@@ -473,6 +473,27 @@ class TestSyncSkills:
         assert (restored / "productivity" / "box").exists()
         assert not old_copy.exists()
 
+    @pytest.mark.parametrize("customization", ["skill", "support"])
+    def test_same_named_custom_copy_is_not_backfilled_or_overwritten(self, tmp_path, customization):
+        bundled = tmp_path / "bundled_skills"
+        restored = tmp_path / "user_skills"
+        source = bundled / "github"
+        local = restored / "github"
+        for directory in (source, local):
+            directory.mkdir(parents=True)
+            (directory / "SKILL.md").write_text("---\nname: github\n---\n# shipped\n")
+            (directory / "reference.txt").write_text("shipped reference")
+        changed = local / ("SKILL.md" if customization == "skill" else "reference.txt")
+        changed.write_text("---\nname: github\n---\n# independent\n" if customization == "skill" else "user reference")
+        original = {p.name: p.read_bytes() for p in local.iterdir()}
+        manifest_file = restored / ".bundled_manifest"
+        with self._patches(bundled, restored, manifest_file):
+            result = sync_skills(quiet=True)
+            assert "github" not in _read_manifest()
+        assert result["copied"] == []
+        assert result["updated"] == []
+        assert {p.name: p.read_bytes() for p in local.iterdir()} == original
+
     def test_user_deleted_skill_not_re_added_and_stale_entries_cleaned(self, tmp_path):
         """In manifest but not on disk = user deleted it; don't re-add. And a
         manifest entry no longer present in bundled gets cleaned out."""

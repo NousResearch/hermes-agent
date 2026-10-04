@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Union
 
 from cron.jobs import effective_job_state
+from cron.jobs import _skill_list_items
 
 import hermes_time
 
@@ -232,7 +233,10 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
     elif isinstance(skills, str):
         skills = [skills]
     # `item or ""`: a None entry must drop out, not stringify to "None".
-    return list(dict.fromkeys(_clean_str_list(item or "" for item in skills)))
+    items: list[str] = []
+    for item in skills:
+        items.extend(_skill_list_items(item or ""))
+    return list(dict.fromkeys(items))
 
 
 def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash: bool = False) -> Optional[str]:

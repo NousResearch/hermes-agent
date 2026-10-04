@@ -11,6 +11,7 @@ import {
   activeGatewayConnectionId,
   activeGatewayProfileKey,
   ensureActiveGatewayOpen,
+  gatewayActivationEpoch,
   isActivePrimary
 } from '@/store/gateway'
 import { $gatewayState, setConnection } from '@/store/session'
@@ -84,6 +85,14 @@ export function useGatewayRequest() {
 
       reauthErrorRef.current = null
 
+      // Main resolves the profile-less lookup through the window's CURRENT
+      // route. If another source took the foreground meanwhile, the answer may
+      // describe that source, and either outcome is no longer ours to publish
+      // over the newer descriptor. The boot hook's own-route reconnect loop
+      // still restores the primary socket.
+      const activationEpoch = gatewayActivationEpoch()
+      const ownsForeground = () => isActivePrimary() && gatewayActivationEpoch() === activationEpoch
+
       try {
         // This path recovers only the window primary (requestGateway routes
         // secondaries to ensureActiveGatewayOpen). Call getConnection() with no
@@ -101,6 +110,10 @@ export function useGatewayRequest() {
           RECONNECT_ATTEMPT_TIMEOUT_MS,
           'Timed out reconnecting to Hermes backend'
         )
+
+        if (!ownsForeground()) {
+          return null
+        }
 
         connectionRef.current = conn
         setConnection(conn)
@@ -125,8 +138,10 @@ export function useGatewayRequest() {
           reauthErrorRef.current = error
         }
 
-        connectionRef.current = null
-        setConnection(null)
+        if (ownsForeground()) {
+          connectionRef.current = null
+          setConnection(null)
+        }
 
         return null
       } finally {

@@ -385,6 +385,46 @@ describe('useGatewayRequest', () => {
     expect(desktop.getConnection).toHaveBeenCalledTimes(1)
   })
 
+  it.each(['resolves', 'rejects'] as const)(
+    'keeps the newer foreground descriptor when a stale primary recovery lookup %s',
+    async outcome => {
+      const desktop = installRemoteDesktop()
+      const primary = makePrimaryGateway()
+      const failure = new Error('connection closed')
+      primary.connectionState = 'closed'
+      primary.request.mockRejectedValueOnce(failure)
+      let settleLookup!: () => void
+      const localConnection = await desktop.getConnection()
+      desktop.getConnection.mockClear()
+      desktop.getConnection.mockImplementationOnce(
+        () =>
+          new Promise((resolve, reject) => {
+            settleLookup = () =>
+              outcome === 'resolves' ? resolve(localConnection) : reject(new Error('local backend unavailable'))
+          })
+      )
+      setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+      $gateway.set(primary as unknown as HermesGateway)
+      $gatewayState.set('closed')
+      const { result } = renderHook(() => useGatewayRequest())
+      const pending = result.current.requestGateway('prompt.submit', { text: 'local-only' }).catch(error => error)
+      await vi.waitFor(() => expect(desktop.getConnection).toHaveBeenCalledTimes(1))
+      await act(async () => {
+        await ensureGatewayForAgent('home', 'default')
+      })
+      const foreground = { ...localConnection, baseUrl: 'https://home.example.test', connectionId: 'home' }
+      $connection.set(foreground as never)
+      await act(async () => {
+        settleLookup()
+      })
+
+      expect(await pending).toBe(failure)
+      expect($connection.get()).toBe(foreground)
+      expect(result.current.connectionRef.current).toBeNull()
+      expect(primary.connect).not.toHaveBeenCalled()
+    }
+  )
+
   it('does not reconnect for a non-transport request failure', async () => {
     const { desktop, gateway } = await activateRemoteGateway()
     const failure = Object.assign(new Error('request rejected'), { code: 'EVALIDATION' })

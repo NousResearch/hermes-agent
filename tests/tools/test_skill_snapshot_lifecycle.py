@@ -2,7 +2,9 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tools.credential_files import get_skills_directory_mount
@@ -28,7 +30,7 @@ def mount(home):
         reset_hermes_home_override(token)
 
 
-def test_profile_mounts_survive_alternation_and_skill_updates(tmp_path):
+def test_profile_mounts_survive_alternation_and_skill_updates(tmp_path, monkeypatch):
     a = make_home(tmp_path / 'a', 'A')
     b = make_home(tmp_path / 'b', 'B')
     first = mount(a)
@@ -46,6 +48,25 @@ def test_profile_mounts_survive_alternation_and_skill_updates(tmp_path):
     assert (updated / 'case/SKILL.md').read_text() == 'new A'
     assert (first / 'case/SKILL.md').read_text() == 'A'
     assert updated != first
+    empty = tmp_path / 'empty'
+    (empty / 'skills').mkdir(parents=True)
+    (empty / 'skills/private-link').symlink_to(a / 'private.txt')
+    barrier = Barrier(2)
+    rename = Path.rename
+    published_inodes = []
+
+    def concurrent_publish(staging, target):
+        barrier.wait(timeout=10)
+        result = rename(staging, target)
+        published_inodes.append(target.stat().st_ino)
+        return result
+
+    monkeypatch.setattr(Path, 'rename', concurrent_publish)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        snapshots = list(workers.map(mount, [empty, empty]))
+    assert snapshots[0] == snapshots[1]
+    assert len(published_inodes) == 1
+    assert snapshots[0].stat().st_ino == published_inodes[0]
 
 
 def test_published_mount_survives_creator_exit_and_reuses_on_next_process(tmp_path):

@@ -141,6 +141,33 @@ class TestRender:
         out = md2html.status_postpass("<strong>RED</strong> and <strong>Gray</strong>")
         assert 'class="st-bad"' in out and 'class="st-neutral"' in out
 
+    @pytest.mark.parametrize(
+        ("title", "escaped"),
+        [
+            ("<script>alert(1)</script>", "&lt;script&gt;alert(1)&lt;/script&gt;"),
+            (
+                "</title></head><script>alert(1)</script>",
+                "&lt;/title&gt;&lt;/head&gt;&lt;script&gt;alert(1)&lt;/script&gt;",
+            ),
+            ("<img src=x onerror=alert(1)>", "&lt;img src=x onerror=alert(1)&gt;"),
+            ("<b>Bold</b> & Title", "&lt;b&gt;Bold&lt;/b&gt; &amp; Title"),
+        ],
+    )
+    @pytest.mark.parametrize("from_heading", [True, False])
+    def test_title_is_escaped(self, md2html, title, escaped, from_heading):
+        text = f"# {title}\n" if from_heading else "just text\n"
+        extracted = md2html.extract_title(text, title)
+        page = md2html.render(text, extracted, "", "", "2026-09-30")
+        assert f"<title>{escaped}</title>" in page
+        header = page.split("<header", 1)[1].split("</header>", 1)[0]
+        assert f"<h1>{escaped}</h1>" in header
+        assert "<script>" not in page.split("</head>", 1)[0]
+        assert "<script>" not in header
+
+    def test_raw_html_body_remains_supported(self, md2html):
+        page = md2html.render("<b>Body</b>", "Title", "", "", "2026-09-30")
+        assert "<b>Body</b>" in page
+
 
 class TestCli:
     def test_cli_writes_sibling_html(self, tmp_path, sample):

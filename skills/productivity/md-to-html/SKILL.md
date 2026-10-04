@@ -67,6 +67,7 @@ The default stylesheet lives at `templates/style.css` inside the skill and is **
 - **Do not overwrite hand-made HTML.** If the sibling `.html` already exists and was authored by a human (a designed page, not generated), convert to a fresh output name with `--out`.
 - **`--out` takes exactly one input file.** For batches, let the script pick sibling paths.
 - **Front matter is not parsed.** YAML front matter in the input renders as a code block; strip it first if the page should not show it.
+- **Trusted Markdown only.** Titles are escaped, but python-markdown preserves raw HTML in the body; this renderer is not an HTML sanitizer. Do not open output from untrusted Markdown without separate sanitization.
 - **Title comes from the first `# heading`**, falling back to the filename. Add an H1 if the page needs a proper title.
 
 ## Verification

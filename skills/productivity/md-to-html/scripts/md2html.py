@@ -13,6 +13,7 @@ The default stylesheet ships at templates/style.css beside this script.
 """
 import argparse
 import datetime
+import html
 import re
 import sys
 from pathlib import Path
@@ -66,6 +67,7 @@ def extract_title(md_text: str, fallback: str) -> str:
 def render(md_text: str, title: str, css_text: str, py_css: str, date: str) -> str:
     body = markdown.markdown(md_text, extensions=MD_EXTENSIONS, extension_configs=MD_CONFIG)
     body = status_postpass(body)
+    title = html.escape(title, quote=True)
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>

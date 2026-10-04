@@ -563,7 +563,11 @@ def _parse_file_reference_value(value: str) -> tuple[str, int | None, int | None
     start = m and m.group("start")
     if not start:  # no line range: the whole value is the (possibly quoted) path
         return _strip_reference_wrappers(value), None, None
-    return m.group("qpath") or m.group("path"), int(start), int(m.group("end") or start)
+    path = m.group("qpath") or m.group("path")
+    line_start, line_end = int(start), int(m.group("end") or start)
+    if line_start < 1 or line_end < line_start:
+        return path, None, None
+    return path, line_start, line_end
 
 
 def _is_binary_file(path: Path) -> bool:

@@ -1580,11 +1580,20 @@ def check_respawn_guard(
     quota_flavored_crash = (
         latest_run is not None
         and latest_run["outcome"] == "crashed"
-        and bool(_RESPAWN_QUOTA_CRASH_RE.search(_kb._lossy_text(row["last_failure_error"])))
+        # ``last_failure_error`` is NULL after reassign_task()/unblock_task()
+        # leave the runs untouched — _lossy_text passes None through, and
+        # re.search(None, ...) raises TypeError, killing the whole tick.
+        and bool(_RESPAWN_QUOTA_CRASH_RE.search(_kb._lossy_text(row["last_failure_error"]) or ""))
     )
-    if latest_run is not None and (
-        latest_run["outcome"] == "rate_limited" or quota_flavored_crash
-    ):
+    if quota_flavored_crash and rl_cooldown > 0:
+        ended_at = latest_run["ended_at"]
+        if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
+            return "rate_limit_cooldown"
+        # Elapsed: fall through — segment 2's blocker_auth already excludes
+        # ``crashed`` outcomes, and segments 3/4 (recent success, active_pr)
+        # still apply: a crash is not a handoff, so the worker that opened the
+        # PR must not be re-spawned against it.
+    elif latest_run is not None and latest_run["outcome"] == "rate_limited":
         if rl_cooldown <= 0:
             # Cooldown disabled — respawn immediately, skipping blocker_auth so
             # the stamped rate-limit text doesn't re-trap the task.

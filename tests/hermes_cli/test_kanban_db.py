@@ -520,6 +520,84 @@ def test_respawn_guard_spaces_quota_flavored_crash_within_cooldown(
         assert kbd.check_respawn_guard(conn, quota_id) is None
 
 
+def test_respawn_guard_quota_crash_with_null_error_text_does_not_raise(
+    kanban_home, monkeypatch,
+):
+    """``reassign_task()``/``unblock_task()`` clear ``last_failure_error``
+    without touching ``task_runs``: the latest run can be ``crashed`` while
+    the column is NULL, and the quota probe must not feed None into
+    ``re.search`` (TypeError killed the whole dispatch pass on one card)."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="crash-then-unblock", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='crashed', status='failed', ended_at=? "
+            "WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=NULL WHERE id=?",
+            (tid,),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        # Must not raise; a NULL error text cannot prove a quota flavor, so
+        # the card stays immediately respawnable like any plain crash.
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+
+def test_respawn_guard_quota_crash_past_cooldown_keeps_active_pr(
+    kanban_home, monkeypatch,
+):
+    """The quota-crash cooldown must not swallow segment 4: a crash is not a
+    handoff, so a card whose worker already opened a PR (URL in a recent
+    comment) is still guarded by ``active_pr`` after the cooldown elapses —
+    the cooldown only spaces the probe, it must not re-spawn against the
+    open PR (AI review probe: base ``active_pr``, unfixed head ``None``)."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "300")
+    now = 5_000_000
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="quota-crash-with-pr", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='crashed', status='failed', ended_at=? "
+            "WHERE id=?",
+            (now, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("provider crashed against rate limit (quota wall)", tid),
+        )
+        conn.execute(
+            "INSERT INTO task_comments (id, task_id, author, body, created_at) "
+            "VALUES (NULL, ?, ?, ?, ?)",
+            (tid, "worker",
+             "Opened PR https://github.com/org/repo/pull/12", now - 50),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 100)
+        assert kbd.check_respawn_guard(conn, tid) == "rate_limit_cooldown"
+
+        monkeypatch.setattr(_kb.time, "time", lambda: now + 400)
+        assert kbd.check_respawn_guard(conn, tid) == "active_pr"
+
+
 @pytest.mark.parametrize(
     "error_text, expected",
     [

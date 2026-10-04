@@ -305,9 +305,11 @@ def _memory_section(config: Dict[str, Any]) -> Dict[str, Any]:
     return memory_config
 
 
-def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[str, str]) -> None:
+def _update_memory_provider_config(provider: ProviderConfigSchema, values: Dict[str, str], *, activate: bool = True) -> None:
     writer = _write_provider_honcho if provider.storage == STORAGE_HONCHO_HOST_BLOCK else _write_provider_flat
     writer(provider, values)
+    if not activate:
+        return
     with _CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
         config = load_config()
         memory_config = _memory_section(config)
@@ -516,7 +518,7 @@ async def get_memory_provider_config(name: str, surface: Optional[str] = None, p
             declared = get_provider_config_schema(name)
             if declared is None:
                 return {"name": name, "label": name, "docs_url": "", "fields": []}
-            return _declared_provider_payload(declared)
+            return {**_declared_provider_payload(declared), "supports_save_only": True}
         provider = _load_memory_provider(name)
         if provider is None:
             return {"name": name, "label": name, "fields": [], "setup": _memory_provider_setup_info(name)}
@@ -560,7 +562,8 @@ async def update_memory_provider_config(
             declared = get_provider_config_schema(name)
             if declared is None:
                 raise _unknown_provider(name)
-            _update_memory_provider_config(declared, {k: _stringify_submitted(v) for k, v in values.items()})
+            _update_memory_provider_config(declared, {k: _stringify_submitted(v) for k, v in values.items()},
+                                           activate=body.activate)
             _invalidate_plugins_hub_cache()
             return {"ok": True}
         provider = _load_memory_provider(name)

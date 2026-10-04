@@ -32,6 +32,7 @@ class EnvVarReveal(EnvVarDelete):
 
 class MemoryProviderConfigUpdate(BaseModel):
     values: Dict[str, Any] = {}
+    activate: bool = True
 
 class MemoryProviderSetupRequest(BaseModel):
     values: Dict[str, Any] = {}

@@ -128,8 +128,10 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   const [refreshing, setRefreshing] = useState(false)
   const refreshInFlightRef = useRef(false)
+  const pendingRefreshRef = useRef(false)
+  const latestRefreshRef = useRef<() => Promise<void>>(async () => undefined)
   const ignoreRules = useMemo(() => {
-    const configured = (config?.desktop as { artifacts?: { ignore?: unknown } } | undefined)?.artifacts?.ignore
+    const configured = config?.desktop?.artifacts?.ignore
 
     if (!Array.isArray(configured)) {
       return []
@@ -150,6 +152,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   const refreshArtifacts = useCallback(async () => {
     if (refreshInFlightRef.current) {
+      pendingRefreshRef.current = true
       return
     }
 
@@ -199,8 +202,13 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     } finally {
       refreshInFlightRef.current = false
       setRefreshing(false)
+      if (pendingRefreshRef.current) {
+        pendingRefreshRef.current = false
+        void latestRefreshRef.current()
+      }
     }
   }, [a, ignoreRules])
+  latestRefreshRef.current = refreshArtifacts
 
   useRefreshHotkey(refreshArtifacts)
 

@@ -63,6 +63,9 @@ def _select(description: str, *options: str, **extra: Any) -> Dict[str, Any]:
 
 # Manual overrides for fields that need select options or custom types.
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "desktop.artifacts.ignore": {
+        "type": "list", "description": "Case-insensitive regexes hiding heuristic artifacts; explicit MEDIA deliveries stay visible.",
+    },
     "timezone": _select(
         "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",
         *_timezone_options(), searchable=True, clearable=True,

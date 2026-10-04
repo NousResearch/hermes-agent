@@ -126,8 +126,8 @@ def test_gemini_facade_cap_layers_and_native_final_default(layer):
     exercise_http("gemini_native", kwargs, expected)
 
 
-def identity(family):
-    return FinalAttemptIdentity(COVERED_MAIN, family, "inert", "https://inert.invalid", 1000000, "provenance")
+def identity(family, model="inert"):
+    return FinalAttemptIdentity(COVERED_MAIN, family, model, "https://inert.invalid", 1000000, "provenance")
 
 
 def assert_reservation(body, ident, expected):
@@ -164,7 +164,7 @@ def exercise_http(family, kwargs, expected, replacement=False):
         else:
             sdk = intercepted_openai_class(OpenAI)(api_key="inert", base_url="https://inert.invalid", http_client=http)
             call = (lambda: sdk.responses.create(**kwargs)) if family == "codex_responses" else (lambda: sdk.chat.completions.create(**kwargs))
-        ident = identity(family)
+        ident = identity(family, model=kwargs["model"])
         with bind_attempt_identity(ident):
             call()
         assert len(bodies) == 1

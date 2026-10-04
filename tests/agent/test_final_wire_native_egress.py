@@ -20,8 +20,9 @@ from agent.final_wire_admission import (
 from agent.gemini_native_adapter import GeminiNativeClient
 
 
-def ident(family, window=1000):
-    return FinalAttemptIdentity(COVERED_MAIN, family, "claude-sonnet-4-5", "https://inert.invalid", window, "native")
+def ident(family, window=1000, model=None):
+    model = model or ("gemini-inert" if family == "gemini_native" else "claude-sonnet-4-5")
+    return FinalAttemptIdentity(COVERED_MAIN, family, model, "https://inert.invalid", window, "native")
 
 
 def tools(size):
@@ -157,7 +158,7 @@ def test_actual_converse_cache_points_keep_system_and_history_supported(monkeypa
     kwargs = build_converse_kwargs("inert", [{"role": "system", "content": "system"}, {"role": "user", "content": "first"}, {"role": "assistant", "content": "answer"}, {"role": "user", "content": "last"}], tools=[], max_tokens=1)
     assert "cachePoint" in str(kwargs)
     try:
-        with bind_attempt_identity(ident("bedrock_converse")):
+        with bind_attempt_identity(ident("bedrock_converse", model=kwargs["modelId"])):
             client.converse(**kwargs)
         assert len(delegate.seen) == 1
     finally:
@@ -178,7 +179,7 @@ def test_real_botocore_endpoint_after_last_before_send_event(growth, monkeypatch
     client.meta.events.register_last("before-send.bedrock-runtime.Converse", mutate)
     kwargs = build_converse_kwargs("anthropic.claude-sonnet-4-5-20250929-v1:0", [{"role": "user", "content": "hi"}], tools=tools(10), max_tokens=1)
     try:
-        with bind_attempt_identity(ident("bedrock_converse")):
+        with bind_attempt_identity(ident("bedrock_converse", model=kwargs["modelId"])):
             if growth:
                 with pytest.raises(ProviderBoundRequestOverLimit):
                     client.converse(**kwargs)
@@ -196,7 +197,7 @@ def test_real_botocore_remote_retry_preserved(monkeypatch):
     sleeps = []
     monkeypatch.setattr("botocore.endpoint.time.sleep", lambda delay: sleeps.append(delay))
     try:
-        with bind_attempt_identity(ident("bedrock_converse")):
+        with bind_attempt_identity(ident("bedrock_converse", model="inert")):
             client.converse(**build_converse_kwargs("inert", [{"role": "user", "content": "hi"}], max_tokens=1))
         assert len(delegate.seen) == 2
         assert len(sleeps) == 1

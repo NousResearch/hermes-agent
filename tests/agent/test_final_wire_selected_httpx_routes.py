@@ -42,14 +42,15 @@ def test_actual_selected_default_mount_proxy_factory_route_refuses_before_delega
     else:
         mount = {"http_mount": "http://", "https_mount": "https://", "specific_mount": "all://inert.invalid"}[route]
         client = httpx.Client(mounts={mount: CountingTransport()}, trust_env=False)
-    url = "http://inert.invalid" if route == "http_mount" else "https://inert.invalid"
+    url = ("http://inert.invalid" if route == "http_mount" else "https://inert.invalid") + "/chat/completions"
     assert isinstance(client, httpx.Client)
     selected = client._transport_for_url(httpx.URL(url))
     assert isinstance(selected, CountingTransport)
     wrap_httpx_client_transports(client)
     try:
-        with bind_attempt_identity(identity()), pytest.raises(ProviderBoundRequestOverLimit):
-            client.post(url, json={"messages": [{"role": "user", "content": "x" * 4400}]})
+        ident = FinalAttemptIdentity(COVERED_MAIN, "chat_completions", "inert", url, 1000, "routes")
+        with bind_attempt_identity(ident), pytest.raises(ProviderBoundRequestOverLimit):
+            client.post(url, json={"model": "inert", "messages": [{"role": "user", "content": "x" * 4400}]})
         assert selected.calls == []
     finally:
         client.close()
@@ -61,10 +62,9 @@ def test_actual_post_sdk_auth_hook_growth_refuses_without_sdk_sleep(stage, monke
     def grow(request):
         body = json.loads(request.content)
         body["messages"] = [{"role": "user", "content": "x" * 4400}]
-        request.stream = httpx.ByteStream(json.dumps(body).encode())
-        if hasattr(request, "_content"):
-            del request._content
-        request.read()
+        encoded = json.dumps(body).encode()
+        request.stream = httpx.ByteStream(encoded)
+        request.headers["Content-Length"] = str(len(encoded))
     class GrowingAuth(httpx.Auth):
         def auth_flow(self, request):
             grow(request)
@@ -83,18 +83,17 @@ def test_actual_307_redirect_second_request_hook_growth_refuses():
     calls = []
     def receive(request):
         calls.append(request.url.path)
-        return httpx.Response(307, headers={"location": "/second"})
+        return httpx.Response(307, headers={"location": "/v1/chat/completions"})
     def hook(request):
-        if request.url.path == "/second":
-            request.stream = httpx.ByteStream(json.dumps({"messages": [{"role": "user", "content": "x" * 4400}]}).encode())
-            if hasattr(request, "_content"):
-                del request._content
-            request.read()
+        if request.url.path == "/v1/chat/completions":
+            encoded = json.dumps({"model": "inert", "messages": [{"role": "user", "content": "x" * 4400}]}).encode()
+            request.stream = httpx.ByteStream(encoded)
+            request.headers["Content-Length"] = str(len(encoded))
     with httpx.Client(transport=httpx.MockTransport(receive), follow_redirects=True, event_hooks={"request": [hook]}) as client:
         wrap_httpx_client_transports(client)
         with bind_attempt_identity(identity()), pytest.raises(ProviderBoundRequestOverLimit):
-            client.post("https://inert.invalid/first", json={"messages": [{"role": "user", "content": "hi"}]})
-    assert calls == ["/first"]
+            client.post("https://inert.invalid/chat/completions", json={"model": "inert", "messages": [{"role": "user", "content": "hi"}]})
+    assert calls == ["/chat/completions"]
 
 
 @pytest.mark.parametrize("provider", ["openai", "gemini"])
@@ -114,16 +113,15 @@ def test_auth_challenge_resend_remeasured_after_one_prior_allowed_delegate():
             if response.status_code == 401:
                 body = json.loads(request.content)
                 body["messages"] = [{"role": "user", "content": "x" * 4400}]
-                request.stream = httpx.ByteStream(json.dumps(body).encode())
-                if hasattr(request, "_content"):
-                    del request._content
-                request.read()
+                encoded = json.dumps(body).encode()
+                request.stream = httpx.ByteStream(encoded)
+                request.headers["Content-Length"] = str(len(encoded))
                 yield request
     with httpx.Client(transport=httpx.MockTransport(lambda request: calls.append(request) or httpx.Response(401)), auth=ChallengeAuth()) as client:
         wrap_httpx_client_transports(client)
         with bind_attempt_identity(identity()):
             with pytest.raises(ProviderBoundRequestOverLimit):
-                client.post("https://inert.invalid/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}], "max_tokens": 1})
+                client.post("https://inert.invalid/v1/chat/completions", json={"model": "inert", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1})
     # Refusal is for the resend; never claim zero across a prior allowed send.
     assert len(calls) == 1
 
@@ -134,9 +132,9 @@ async def test_actual_async_client_selected_transport_guard():
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: calls.append(request) or httpx.Response(200))) as client:
         wrap_httpx_client_transports(client)
         with bind_attempt_identity(identity()):
-            await client.post("https://inert.invalid/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}], "max_tokens": 1})
+            await client.post("https://inert.invalid/v1/chat/completions", json={"model": "inert", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1})
             with pytest.raises(ProviderBoundRequestOverLimit):
-                await client.post("https://inert.invalid/v1/chat/completions", json={"messages": [{"role": "user", "content": "x" * 4400}], "max_tokens": 1})
+                await client.post("https://inert.invalid/v1/chat/completions", json={"model": "inert", "messages": [{"role": "user", "content": "x" * 4400}], "max_tokens": 1})
     assert len(calls) == 1
 
 

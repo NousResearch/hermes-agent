@@ -6,6 +6,7 @@ authorize a changed final body.
 """
 from __future__ import annotations
 
+import inspect
 import json
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -422,6 +423,11 @@ def _resolve_reservation(body: Mapping[str, Any], family: str) -> tuple[str, Opt
         return INVALID_RESERVATION, None
     if family == "chat_completions":
         fields = [key for key in ("max_tokens", "max_completion_tokens") if key in body]
+        # Python equality collapses bool/int and integral float/int. Validate
+        # every emitted alias before reconciling duplicates; never choose a
+        # valid first alias while a malformed equal-valued second one escapes.
+        if any(_finite_or_unresolved(body[key], required=True)[0] != KNOWN_R for key in fields):
+            return INVALID_RESERVATION, None
         if len(fields) == 2 and body[fields[0]] != body[fields[1]]:
             return INVALID_RESERVATION, None
         return _finite_or_unresolved(body[fields[0]] if fields else _UNPARSEABLE, required=False)
@@ -514,9 +520,31 @@ def admit_final_json(body: Any, identity: Optional[FinalAttemptIdentity] = None)
     admit_snapshot(project_final_body(body, current))
 
 
+def _freeze_httpx_request(request: httpx.Request) -> httpx.Request:
+    """Freeze the current public stream, never the SDK's cached content.
+
+    Covered SDK JSON is a finite ByteStream in both client modes. Other
+    stream implementations are unprovable here (possibly lazy/infinite or
+    one-shot) and must not be consumed or authorized from a stale cache.
+    A detached request gives delegates that use read()/content the same bytes
+    as ordinary HTTPTransport's stream, without repairing private _content.
+    Headers are preserved verbatim, including post-auth/signing metadata.
+    """
+    if type(request.stream) is not httpx.ByteStream:
+        _raise_local(ProviderBoundUnsupportedAccounting("unsupported final request stream"))
+    try:
+        content = b"".join(request.stream)
+        return httpx.Request(
+            request.method, request.url, headers=request.headers,
+            content=content, extensions=request.extensions,
+        )
+    except Exception:
+        _raise_local(ProviderBoundUnsupportedAccounting("unreadable final request stream"))
+
+
 def _decode_httpx_json(request: httpx.Request) -> Any:
     try:
-        content = request.content
+        content = b"".join(request.stream)
     except Exception:
         return _UNPARSEABLE
     if not content:
@@ -534,7 +562,7 @@ class GuardedHTTPXTransport(httpx.BaseTransport):
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         if self._covered:
-            _admit_httpx_request(request)
+            request = _admit_httpx_request(request)
         return self._inner.handle_request(request)
 
     def close(self) -> None:
@@ -553,7 +581,7 @@ class GuardedAsyncHTTPXTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if self._covered:
-            _admit_httpx_request(request)
+            request = _admit_httpx_request(request)
         return await self._inner.handle_async_request(request)
 
     async def aclose(self) -> None:
@@ -567,16 +595,88 @@ class GuardedAsyncHTTPXTransport(httpx.AsyncBaseTransport):
         return getattr(self._inner, name)
 
 
-def _admit_httpx_request(request: httpx.Request) -> None:
+def _reconcile_final_identity(body: Any, identity: FinalAttemptIdentity, url: Any) -> None:
+    """Validate physical identity without inventing/reusing another model's W.
+
+    The binding may name a base URL or an exact operation URL. Only the
+    existing family operations (and native Gemini facade normalization) are
+    recognized. Query/transport metadata is not model context. Native model
+    IDs are recovered from the decoded URL path after SDK serialization.
+    """
+    family = _FAMILY_ALIASES.get(identity.family, identity.family)
+    if not isinstance(body, dict):
+        _raise_local(ProviderBoundUnsupportedAccounting("unsupported final identity body"))
+    try:
+        bound = httpx.URL(identity.endpoint)
+        final = httpx.URL(url)
+    except Exception:
+        _raise_local(ProviderBoundInvalidAccounting("invalid_final_endpoint_identity"))
+    if (bound.scheme not in {"http", "https"} or not bound.host
+            or (bound.scheme, bound.host, bound.port) != (final.scheme, final.host, final.port)):
+        _raise_local(ProviderBoundInvalidAccounting("final_endpoint_identity_mismatch"))
+    base = bound.path.rstrip("/")
+    if family == "gemini_native" and base.endswith("/openai"):
+        base = base[:-len("/openai")]
+    path = final.path.rstrip("/")
+    if base and path != base and not path.startswith(base + "/"):
+        _raise_local(ProviderBoundInvalidAccounting("final_endpoint_path_mismatch"))
+    # Exact operation bindings are permitted, but still checked against the
+    # family and native model below; a different path is not a prefix match.
+    relative = path[len(base):] if base and path.startswith(base + "/") else path
+    if path == base:
+        relative = path
+    model = body.get("modelId" if family == "bedrock_converse" else "model")
+    if family in {"gemini_native", "anthropic_bedrock", "bedrock_converse"}:
+        marker = "/models/" if family == "gemini_native" else "/model/"
+        head, found, tail = relative.partition(marker)
+        if not found or head not in {"", "/v1", "/v1beta"}:
+            _raise_local(ProviderBoundUnsupportedAccounting("unsupported final native route"))
+        if family == "gemini_native":
+            native_model, separator, operation = tail.rpartition(":")
+            operations = {"generateContent", "streamGenerateContent"}
+        else:
+            native_model, separator, operation = tail.rpartition("/")
+            operations = {"invoke", "invoke-with-response-stream"} if family == "anthropic_bedrock" else {"converse", "converse-stream"}
+        if not separator or operation not in operations or not native_model:
+            _raise_local(ProviderBoundUnsupportedAccounting("unsupported final native operation"))
+        if model is not None and model != native_model:
+            _raise_local(ProviderBoundInvalidAccounting("final_body_url_model_mismatch"))
+        model = native_model
+    else:
+        operations = {
+            "chat_completions": {"/chat/completions", "/v1/chat/completions"},
+            "codex_responses": {"/responses", "/v1/responses"},
+            "anthropic_messages": {"/messages", "/v1/messages"},
+        }.get(family, set())
+        if relative not in operations:
+            _raise_local(ProviderBoundUnsupportedAccounting("unsupported final family route"))
+    expected_models = {identity.model}
+    if family == "gemini_native":
+        from agent.gemini_native_adapter import bare_gemini_model_id
+
+        expected_models = {bare_gemini_model_id(identity.model)}
+    elif family in {"anthropic_messages", "anthropic_bedrock"}:
+        from agent.anthropic_adapter import normalize_model_name
+
+        # Existing adapter spelling conversions, not a model/window lookup.
+        expected_models.update(normalize_model_name(identity.model, preserve_dots=value) for value in (False, True))
+    if not identity.model or type(model) is not str or model not in expected_models:
+        _raise_local(ProviderBoundInvalidAccounting("final_model_identity_mismatch"))
+
+
+def _admit_httpx_request(request: httpx.Request) -> httpx.Request:
     identity = _attempt_identity.get()
     if identity is None or identity.purpose != COVERED_MAIN:
         _raise_local(ProviderBoundUnsupportedAccounting("covered request missing attempt identity"))
+    request = _freeze_httpx_request(request)
     body = _decode_httpx_json(request)
     if body is _UNPARSEABLE:
         _raise_local(ProviderBoundUnsupportedAccounting("unparseable JSON body"))
     if body is None:
         _raise_local(ProviderBoundUnsupportedAccounting("missing JSON body"))
+    _reconcile_final_identity(body, identity, request.url)
     admit_final_json(body, identity)
+    return request
 
 
 def _wrap_one_transport(transport: Any, *, covered: bool, asynchronous: bool = False) -> Any:
@@ -661,6 +761,7 @@ def _admit_botocore_request(request: Any) -> None:
         _raise_local(ProviderBoundUnsupportedAccounting("unparseable Converse JSON body"))
     if body is None:
         _raise_local(ProviderBoundUnsupportedAccounting("missing Converse JSON body"))
+    _reconcile_final_identity(body, identity, getattr(request, "url", None))
     admit_final_json(body, identity)
 
 
@@ -721,6 +822,20 @@ def intercepted_openai_class(base_cls: type) -> type:
 
     HermesOpenAI.__name__ = getattr(base_cls, "__name__", "OpenAI")
     HermesOpenAI.__qualname__ = getattr(base_cls, "__qualname__", HermesOpenAI.__name__)
+    if inspect.iscoroutinefunction(base_cls.request):
+        class HermesAsyncOpenAI(HermesOpenAI):
+            async def request(self, *args: Any, **kwargs: Any) -> Any:
+                try:
+                    return await super().request(*args, **kwargs)
+                except Exception as err:
+                    refusal = unwrap_local_refusal(err)
+                    if refusal is not None:
+                        raise refusal
+                    raise
+
+        HermesAsyncOpenAI.__name__ = HermesOpenAI.__name__
+        HermesAsyncOpenAI.__qualname__ = HermesOpenAI.__qualname__
+        return HermesAsyncOpenAI
     return HermesOpenAI
 
 

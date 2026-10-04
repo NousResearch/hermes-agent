@@ -205,6 +205,7 @@ def test_primary_client_and_credential_rebuild_send_expected_headers(
         _assert_identity(wire[-1], "acct-rotated")
 
         direct_url = "https://api.openai.com/v1"
+        agent.base_url = direct_url
         agent._client_kwargs.update(api_key="test-direct-key", base_url=direct_url)
         agent._apply_client_headers_for_base_url(direct_url)
         assert agent._replace_primary_openai_client(reason="attribution-route-change")

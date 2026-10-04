@@ -100,7 +100,8 @@ def test_safe_botocore_delegate_exactly_once():
     client = SimpleNamespace(_endpoint=SimpleNamespace(http_session=session), meta=SimpleNamespace(events=None))
     wrap_botocore_runtime_client(client)
     request = SimpleNamespace(
-        body=json.dumps({"messages": [{"role": "user", "content": [{"text": "hi"}]}]})
+        body=json.dumps({"messages": [{"role": "user", "content": [{"text": "hi"}]}]}),
+        url="https://inert.invalid/v1/model/test%2Fmodel/converse",
     )
     with bind_attempt_identity(_identity(family="bedrock_converse")):
         client._endpoint.http_session.send(request)
@@ -111,7 +112,7 @@ def test_over_limit_botocore_delegate_zero():
     session = CountingSession()
     client = SimpleNamespace(_endpoint=SimpleNamespace(http_session=session), meta=SimpleNamespace(events=None))
     wrap_botocore_runtime_client(client)
-    request = SimpleNamespace(body=json.dumps({
+    request = SimpleNamespace(url="https://inert.invalid/v1/model/test%2Fmodel/converse", body=json.dumps({
         "messages": [{"role": "user", "content": [{"text": "b" * 4400}]}],
         "inferenceConfig": {"maxTokens": 200},
     }))

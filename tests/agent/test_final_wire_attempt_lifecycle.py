@@ -165,6 +165,7 @@ def test_actual_streaming_gemini_family_and_cleanup(primary_agent, monkeypatch):
     from agent.chat_completion_helpers import interruptible_streaming_api_call
     a = primary_agent
     a.model, a.provider, a.api_mode = "gemini-inert", "gemini", "chat_completions"
+    a.base_url = "https://inert.invalid"
     a.context_compressor.context_length = 100000
     seen = []
     def receive(request):

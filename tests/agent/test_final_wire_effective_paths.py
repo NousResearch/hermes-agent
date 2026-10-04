@@ -19,6 +19,7 @@ def test_unknown_context_field_valid_json_refuses_before_physical_delegate():
         with bind_attempt_identity(identity()):
             with pytest.raises(ProviderBoundUnsupportedAccounting):
                 client.post("https://inert.invalid/chat/completions", json={
+                    "model": "inert-model",
                     "messages": [{"role": "user", "content": "hi"}],
                     "unknown_context": {"prompt": "unclassified"},
                 })

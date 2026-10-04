@@ -1,0 +1,12 @@
+[Unit]
+Description=x11vnc loopback mirror of Xvfb :98
+After=camoufox-server.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/x11vnc -display :98 -forever -shared -nopw -quiet -rfbport 5900 -nossl -listen 127.0.0.1 -localhost
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

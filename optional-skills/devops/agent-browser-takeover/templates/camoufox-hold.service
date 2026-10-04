@@ -1,0 +1,14 @@
+[Unit]
+Description=Hold one headed page so noVNC is not black
+After=camoufox-server.service
+Wants=camoufox-server.service
+
+[Service]
+Type=simple
+ExecStart=%h/.hermes/takeover/venv/bin/python %h/.hermes/takeover/hold_page.py
+Restart=on-failure
+RestartSec=3
+EnvironmentFile=-%h/.hermes/takeover/env
+
+[Install]
+WantedBy=default.target

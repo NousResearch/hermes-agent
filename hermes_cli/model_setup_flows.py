@@ -881,7 +881,12 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     ``models._profile_live_catalog``; generic /models probe for unregistered providers).
     Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
     from hermes_cli.config import get_env_value
-    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models, probe_profile_catalog
+    from hermes_cli.models import (
+        _LIVE_TERMINAL_PICKER_PROVIDERS,
+        _PROVIDER_MODELS,
+        fetch_api_models,
+        probe_profile_catalog,
+    )
     curated = _PROVIDER_MODELS.get(provider_id, [])
     api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
 
@@ -894,8 +899,11 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     if model_list:
         _report_live_models(model_list, "models.dev registry")
         return model_list
-    if curated and len(curated) >= 8:
-        # Substantial curated list — use it directly, skip live probe
+    if curated and len(curated) >= 8 and provider_id not in _LIVE_TERMINAL_PICKER_PROVIDERS:
+        # Substantial curated list — use it directly, skip live probe. Subscription-tier
+        # providers defer to the live probe anyway: a large curated list is exactly the
+        # phantom-row trap there (ids the account's plan can't serve), so setup must offer
+        # the same terminal rows the /model picker will show later (#119481/#126898).
         _show_curated(curated)
         return curated
     from providers import get_provider_profile

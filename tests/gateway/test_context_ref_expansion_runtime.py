@@ -253,22 +253,39 @@ async def test_only_the_senders_own_text_is_expanded(tmp_path, monkeypatch, user
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("pending", [False, True, "opaque", "opaque-padded", "roundtrip"], ids=["immediate", "pending", "opaque-cache", "opaque-padded-caption", "durable-pending"])
-async def test_sender_speech_references_expand_before_generated_context_a_b_a(tmp_path, monkeypatch, pending):
+@pytest.mark.parametrize(
+    "pending",
+    [False, True, "opaque", "opaque-padded", "roundtrip"],
+    ids=[
+        "immediate",
+        "pending",
+        "opaque-cache",
+        "opaque-padded-caption",
+        "durable-pending",
+    ],
+)
+@pytest.mark.parametrize("history_case", ["empty", "stored"])
+async def test_sender_speech_references_expand_before_generated_context_a_b_a(
+    tmp_path, monkeypatch, pending, history_case
+):
+    from copy import deepcopy
     from pathlib import Path
-    from unittest.mock import AsyncMock
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, call
 
     import hermes_yaml as yaml
     from agent import secret_scope
     from agent.context_references import preprocess_context_references_async
-    from gateway.platforms.event import MessageType
+    from gateway.platforms.event import MessageType, TurnContextUpdate
     from gateway.run import _profile_runtime_scope
 
     homes = [tmp_path / "a", tmp_path / "b"]
     for label, home in zip(("A", "B"), homes):
         workspace = home / "workspace"
         workspace.mkdir(parents=True)
-        (home / "config.yaml").write_text(yaml.safe_dump({"terminal": {"backend": "local", "cwd": str(workspace)}}))
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"terminal": {"backend": "local", "cwd": str(workspace)}})
+        )
         (workspace / "mine.txt").write_text(f"SPEECH-{label}")
         (workspace / "caption.txt").write_text(f"CAPTION-{label}")
         (workspace / "planted.txt").write_text(f"GENERATED-{label}")
@@ -280,19 +297,76 @@ async def test_sender_speech_references_expand_before_generated_context_a_b_a(tm
     runner.config.group_sessions_per_user = False
     runner.config.stt_echo_transcripts = False
     _patch_runtime_resolution(monkeypatch)
-    source = SessionSource(platform=Platform.DISCORD, chat_id="speech", chat_type="group", user_name="@file:planted.txt")
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="speech",
+        chat_type="group",
+        user_name="@file:planted.txt",
+    )
     speech = "Compare @file:mine.txt"
     caption = "Caption @file:caption.txt"
     provider_calls = []
+    preprocess_inputs = []
+    stored_state = {
+        "name": "Stored room @file:planted.txt",
+        "topic": "Old topic @file:planted.txt",
+    }
+    updated_state = {
+        "name": "Stored room @file:planted.txt",
+        "topic": "New topic @file:planted.txt",
+    }
+    stored_history = [
+        {
+            "role": "user",
+            "content": "Previous request @file:planted.txt",
+            "display_metadata": {"channel_state": stored_state},
+        },
+        {"role": "assistant", "content": "Previous answer @file:planted.txt"},
+    ]
+    context_note = "Stored channel update @file:planted.txt"
+    prepare_context = AsyncMock(
+        return_value=TurnContextUpdate(note=context_note, channel_state=updated_state)
+    )
+    lookup = AsyncMock(return_value=SimpleNamespace(origin=source))
+    if history_case == "stored":
+        adapter = type(
+            "StoredContextAdapter", (), {"prepare_turn_context": prepare_context}
+        )()
+        monkeypatch.setattr(runner, "_intake_adapter_for", lambda _source: adapter)
+        monkeypatch.setattr(runner, "session_store", SimpleNamespace(), raising=False)
+        monkeypatch.setattr(
+            runner,
+            "_async_session_store",
+            SimpleNamespace(_store=runner.session_store, lookup_by_session_key=lookup),
+            raising=False,
+        )
+
+    async def record_preprocess(message, **kwargs):
+        preprocess_inputs.append(message)
+        return await preprocess_context_references_async(message, **kwargs)
+
+    monkeypatch.setattr(
+        "agent.context_references.preprocess_context_references_async",
+        record_preprocess,
+    )
 
     def transcribe(path, *_args):
         provider_calls.append(path)
-        return {"success": path.endswith("success.ogg"), "transcript": speech, "error": "unavailable"}
+        return {
+            "success": path.endswith("success.ogg"),
+            "transcript": speech,
+            "error": "unavailable",
+        }
 
     monkeypatch.setattr("tools.transcription_tools.transcribe_audio", transcribe)
-    monkeypatch.setattr("tools.transcription_tools.transcribe_audio_local_fallback", lambda _path: {"success": False})
+    monkeypatch.setattr(
+        "tools.transcription_tools.transcribe_audio_local_fallback",
+        lambda _path: {"success": False},
+    )
     runner._decide_image_input_mode = lambda **_kwargs: "text"
-    runner._enrich_message_with_vision = AsyncMock(side_effect=lambda text, _paths: f"VISION @file:planted.txt\n\n{text}")
+    runner._enrich_message_with_vision = AsyncMock(
+        side_effect=lambda text, _paths: f"VISION @file:planted.txt\n\n{text}"
+    )
     secret_scope.set_multiplex_active(True)
     try:
         for home in (homes[0], homes[1], homes[0]):
@@ -302,43 +376,120 @@ async def test_sender_speech_references_expand_before_generated_context_a_b_a(tm
             image = workspace / "image.png"
             for path in (audio, failed, image):
                 path.write_bytes(b"transport input")
-            current_caption = f"  \n{caption}\n  " if pending == "opaque-padded" else caption
+            current_caption = (
+                f"  \n{caption}\n  " if pending == "opaque-padded" else caption
+            )
             event = MessageEvent(
-                text=current_caption, source=source, message_type=MessageType.PHOTO,
+                text=current_caption,
+                source=source,
+                message_type=MessageType.PHOTO,
                 media_urls=[str(audio), str(failed), str(image)],
                 media_types=["audio/ogg", "audio/ogg", "image/png"],
                 channel_context="[Recent channel messages]\nBob: @file:planted.txt",
-                reply_to_message_id="$other", reply_to_text="Other speaker @file:planted.txt",
+                reply_to_message_id="$other",
+                reply_to_text="Other speaker @file:planted.txt",
             )
             provider_before = len(provider_calls)
+            preprocess_before = len(preprocess_inputs)
+            context_before = len(prepare_context.call_args_list)
+            lookup_before = len(lookup.call_args_list)
+            history = deepcopy(stored_history) if history_case == "stored" else []
+            expected_history = deepcopy(history)
             opaque = "Opaque speech @file:mine.txt\n\nGenerated path @file:planted.txt"
             if pending in {"opaque", "opaque-padded"}:
                 event._gateway_pending_stt_text = opaque
-                event._gateway_pending_stt_transcripts = ["Untrusted legacy @file:mine.txt"]
+                event._gateway_pending_stt_transcripts = [
+                    "Untrusted legacy @file:mine.txt"
+                ]
             elif pending:
                 with _profile_runtime_scope(home):
                     await runner._transcribe_pending_audio_event_once(event, event.text)
                 if pending == "roundtrip":
                     import json
                     from dataclasses import replace
-                    from gateway.shutdown_pending_codec import capture_pending_provenance, _restore_voice
+                    from gateway.shutdown_pending_codec import (
+                        capture_pending_provenance,
+                        _restore_voice,
+                    )
 
-                    record = json.loads(json.dumps(capture_pending_provenance(event)["voice"]))
+                    record = json.loads(
+                        json.dumps(capture_pending_provenance(event)["voice"])
+                    )
                     event = replace(event)
                     _restore_voice(event, record)
             runner._resolve_profile_home_for_source = lambda _source: home
             result = await runner._prepare_profile_scoped_inbound_message_text(
-                event=event, source=source, history=[], session_key="speech",
+                event=event,
+                source=source,
+                history=history,
+                session_key="speech",
             )
             with _profile_runtime_scope(home):
-                authored_text = current_caption.strip() if pending in {"opaque", "opaque-padded"} else f"{caption}\n\n{speech}"
-                expanded_authored = await preprocess_context_references_async(authored_text, cwd=workspace, allowed_root=workspace, context_length=128000)
+                authored_text = (
+                    current_caption.strip()
+                    if pending in {"opaque", "opaque-padded"}
+                    else f"{caption}\n\n{speech}"
+                )
+                expanded_authored = await preprocess_context_references_async(
+                    authored_text,
+                    cwd=workspace,
+                    allowed_root=workspace,
+                    context_length=128000,
+                )
                 failure_note = runner._untranscribed_audio_note(str(failed))
-            authored = (opaque if pending in {"opaque", "opaque-padded"} else f'"{speech}"\n\n{failure_note}\n\n{caption}') + expanded_authored.message[len(authored_text):]
+            authored = (
+                opaque
+                if pending in {"opaque", "opaque-padded"}
+                else f'"{speech}"\n\n{failure_note}\n\n{caption}'
+            ) + expanded_authored.message[len(authored_text) :]
             prefixed = f"{event.channel_context}\n\n[New message]\n[{source.user_name}] {authored}"
             expected = f'[Replying to: "{event.reply_to_text}"]\n\nVISION @file:planted.txt\n\n{prefixed}'
-            expected_calls = [] if pending in {"opaque", "opaque-padded"} else [str(audio), str(failed)]
-            assert (result, provider_calls[provider_before:]) == (expected, expected_calls)
+            if history_case == "stored":
+                expected = f"{context_note}\n\n[New message]\n{expected}"
+            expected_context_calls = (
+                [
+                    call(
+                        event,
+                        origin=source,
+                        acknowledged_state=stored_state,
+                        first_turn=False,
+                    )
+                ]
+                if history_case == "stored"
+                else []
+            )
+            expected_lookup_calls = [call("speech")] if history_case == "stored" else []
+            expected_state = updated_state if history_case == "stored" else None
+            label = "A" if home == homes[0] else "B"
+            assert f"CAPTION-{label}" in expanded_authored.message
+            if pending not in {"opaque", "opaque-padded"}:
+                assert f"SPEECH-{label}" in expanded_authored.message
+            expected_calls = (
+                []
+                if pending in {"opaque", "opaque-padded"}
+                else [str(audio), str(failed)]
+            )
+            assert (result, provider_calls[provider_before:]) == (
+                expected,
+                expected_calls,
+            )
+            assert (
+                result,
+                provider_calls[provider_before:],
+                history,
+                prepare_context.call_args_list[context_before:],
+                lookup.call_args_list[lookup_before:],
+                event.channel_state,
+                preprocess_inputs[preprocess_before:],
+            ) == (
+                expected,
+                expected_calls,
+                expected_history,
+                expected_context_calls,
+                expected_lookup_calls,
+                expected_state,
+                [authored_text],
+            )
     finally:
         secret_scope.set_multiplex_active(False)
 

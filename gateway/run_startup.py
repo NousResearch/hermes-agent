@@ -187,7 +187,10 @@ class GatewayStartupMixin:
             {task}, timeout,
             "Turn-machinery warm-up still running after %.0fs; opening inbound gate anyway — the "
             "first turn may see lazily initialized machinery (#99373). Warm-up continues in the background.",
-            "boot turn-machinery warm-up failed after gate release", level=logging.DEBUG,
+            # A late warm-up failure leaves the first turn on lazily initialized
+            # machinery, which has wedged silently before any provider request
+            # (fixes #131145 visibility): log it loudly, not at DEBUG.
+            "boot turn-machinery warm-up failed after gate release", level=logging.WARNING,
         )
 
     async def _wait_bounded_or_release(

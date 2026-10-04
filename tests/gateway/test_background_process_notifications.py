@@ -839,7 +839,7 @@ async def test_raw_output_modes_are_human_facing(monkeypatch, tmp_path):
     ("batch_boundary_first", "all"), ("batch_boundary_last", "all"),
 ])
 async def test_profile_scoped_child_noise_and_handoff_admission(
-    monkeypatch, tmp_path, surface_a, owner, path, mode,
+    monkeypatch, tmp_path, request, surface_a, owner, path, mode,
 ):
     """Recovered A→B→A consumers use real policy and live ownership, not the stale child pin."""
     from typing import cast
@@ -862,6 +862,9 @@ async def test_profile_scoped_child_noise_and_handoff_admission(
     registry = ProcessRegistry()
     monkeypatch.setattr(pr_module, "process_registry", registry)
     runner = GatewayRunner(GatewayConfig(multiplex_profiles=True, sessions_dir=tmp_path / "sessions"))
+    # Match shutdown ordering: async wrappers can borrow the store's profile handles.
+    request.addfinalizer(runner.close_all_session_db_handles)
+    request.addfinalizer(runner.session_store.close_all_db_handles)
     runner._completion_notification_batch_window = 0
     admitted = []
     handed_off = owner in {"handoff", "live_handoff"}

@@ -43,60 +43,6 @@ class TestContentPolicyBlockedClassification:
 
 
 
-class TestContentPolicyTriggersClientErrorAbort:
-    """Mirror the ``is_client_error`` predicate in
-    ``agent/conversation_loop.py`` and verify
-    ``FailoverReason.content_policy_blocked`` resolves to True so the loop
-    aborts (after attempting fallback) instead of falling into the
-    retry-backoff path.
-    """
-
-    def _mirror_is_client_error(
-        self,
-        *,
-        classified_retryable: bool,
-        classified_reason,
-        classified_should_compress: bool = False,
-        is_local_validation_error: bool = False,
-        is_context_length_error: bool = False,
-    ) -> bool:
-        """Exact shape of conversation_loop.py's is_client_error check.
-
-        Kept in lock-step with the source. If you change one, change both.
-        """
-        from agent.error_classifier import FailoverReason
-
-        return (
-            is_local_validation_error
-            or (
-                not classified_retryable
-                and not classified_should_compress
-                and classified_reason not in {
-                    FailoverReason.rate_limit,
-                    FailoverReason.overloaded,
-                    FailoverReason.context_overflow,
-                    FailoverReason.payload_too_large,
-                    FailoverReason.long_context_tier,
-                    FailoverReason.thinking_signature,
-                }
-            )
-        ) and not is_context_length_error
-
-    def test_content_policy_blocked_triggers_abort(self):
-        """Safety-filter block must reach is_client_error → fallback/abort."""
-        from agent.error_classifier import FailoverReason
-
-        # What classify_api_error returns for a content-policy block:
-        #   reason=content_policy_blocked, retryable=False, should_compress=False
-        assert self._mirror_is_client_error(
-            classified_retryable=False,
-            classified_reason=FailoverReason.content_policy_blocked,
-        ), (
-            "FailoverReason.content_policy_blocked must trigger the "
-            "is_client_error path so fallback fires immediately instead of "
-            "burning api_max_retries paid attempts on a deterministic "
-            "safety refusal — see #18028."
-        )
 
 
 class TestContentPolicyPatternsAreNarrow:

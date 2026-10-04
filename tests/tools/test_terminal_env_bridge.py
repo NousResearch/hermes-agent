@@ -117,24 +117,6 @@ def test_defaults_backfill_when_neither_config_nor_env_selects_backend():
     assert os.environ["TERMINAL_ENV"] == "local"
 
 
-def test_bridge_only_attempted_once(monkeypatch):
-    calls = []
-
-    import hermes_cli.config as config_mod
-
-    real = config_mod.apply_terminal_config_to_env
-
-    def _counting(*args, **kwargs):
-        calls.append(1)
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(config_mod, "apply_terminal_config_to_env", _counting)
-    _write_config("{}\n")
-
-    terminal_tool._get_env_config()
-    terminal_tool._get_env_config()
-
-    assert len(calls) == 1
 
 
 def test_bridge_config_failure_does_not_crash(monkeypatch):

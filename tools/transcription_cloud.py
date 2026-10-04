@@ -20,7 +20,7 @@ from utils import is_truthy_value
 from tools.transcription_audio import _transcode_audio_for_stt
 from tools.transcription_common import (
     DEFAULT_GROQ_STT_MODEL, DEFAULT_STT_MODEL, ELEVENLABS_STT_BASE_URL, GROQ_BASE_URL, GROQ_MODELS,
-    OPENAI_BASE_URL, OPENAI_MODELS, XAI_STT_BASE_URL, _error_result, _get_stt_section,
+    OPENAI_BASE_URL, OPENAI_MODELS, STTResponseError, XAI_STT_BASE_URL, _error_result, _get_stt_section,
     _lazy_ensure_quietly, _log_prompt_unsupported, _ok_result)
 
 # Log-record parity with the origin module.
@@ -37,12 +37,23 @@ def _has_xai_stt_credentials() -> bool:
 
 
 def _with_openai_client(api_key: str, base_url: Optional[str], file_path: str, log_label: str, body):
-    """Run ``body(client)`` on a fresh OpenAI SDK client (30s timeout, no retries); always closed.
+    """Run ``body(client)`` on a fresh OpenAI SDK client; always closed. Transport shape comes from
+    ``stt.openai.timeout`` / ``stt.openai.max_retries`` (defaults 60s, 1 retry; #112939) for every
+    rider of this helper — openai, groq and deepinfra — because a self-hosted endpoint's model cold
+    start exceeds the old fixed 30s and lost the voice message at the first attempt.
     Errors map to the shared envelope. APIConnectionError is checked before APITimeoutError (its
     subclass) so timeouts report as connection errors, as they always have."""
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
+        from tools.transcription_common import DEFAULT_STT_TIMEOUT, _config_number
+        from tools.transcription_tools import _load_stt_config
+        openai_config = _get_stt_section(_load_stt_config(), "openai")
+        client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=_config_number(openai_config, "timeout", DEFAULT_STT_TIMEOUT),
+            max_retries=_config_number(openai_config, "max_retries", 1, cast=int),
+        )
         try:
             return body(client)
         finally:
@@ -56,6 +67,9 @@ def _with_openai_client(api_key: str, base_url: Optional[str], file_path: str, l
             APIError = APIConnectionError = APITimeoutError = ()
         if isinstance(exc, PermissionError):
             return _error_result(f"Permission denied: {file_path}")
+        if isinstance(exc, STTResponseError):
+            # The provider's own message already reads as an error; no "Transcription failed:" prefix.
+            return _error_result(str(exc))
         for cls, label in ((APIConnectionError, "Connection error"), (APITimeoutError, "Request timeout"),
                            (APIError, "API error")):
             if isinstance(exc, cls):
@@ -68,6 +82,8 @@ def _cloud_failure(exc: BaseException, file_path: str, label: str, detail: Optio
     """Map a REST/SDK provider exception to the shared envelope (``label`` e.g. ``"xAI STT transcription"``)."""
     if isinstance(exc, PermissionError):
         return _error_result(f"Permission denied: {file_path}")
+    if isinstance(exc, STTResponseError):
+        return _error_result(str(exc))
     logger.error("%s failed: %s", label, exc, exc_info=True)
     return _error_result(f"{label} failed: {exc if detail is None else detail}")
 
@@ -97,7 +113,9 @@ def _transcribe_groq(
             transcription = client.audio.transcriptions.create(file=audio_file, model=model_name,
                                                                response_format="text",
                                                                **_sdk_prompt_kwargs(language, prompt))
-        transcript_text = str(transcription).strip()
+        # Shared normalizer, not ``str(transcription)``: a Groq-compatible endpoint answering with a
+        # structured error object must not have its repr logged and returned as the transcript (#78098).
+        transcript_text = _extract_transcript_text(transcription)
         logger.info("Transcribed %s via Groq API (%s, lang=%s, %d chars)",
                      Path(file_path).name, model_name, language or "auto", len(transcript_text))
         return _ok_result(transcript_text, "groq")
@@ -128,7 +146,7 @@ def _transcribe_openai(
         model_name = DEFAULT_STT_MODEL
 
     def _run(client):
-        from openai import BadRequestError
+        from openai import APIStatusError
 
         def _create_transcription(path: str):
             create_kwargs: Dict[str, Any] = {
@@ -148,12 +166,18 @@ def _transcribe_openai(
         with tempfile.TemporaryDirectory(prefix="hermes-stt-") as work_dir:
             try:
                 transcription = _create_transcription(file_path)
-            except BadRequestError as exc:
-                if not any(k in str(exc).lower() for k in ("unsupported", "corrupted", "invalid file")):
+            except APIStatusError as exc:
+                # 400 + container hint is the documented rejection; some OpenAI-compatible endpoints
+                # reject a container with a bare 5xx instead (#81644). A 5xx is ambiguous, so it earns
+                # the same single transcode retry and, when no transcode is possible, its own error.
+                is_server_error = (exc.status_code or 0) >= 500
+                if not is_server_error and not any(k in str(exc).lower() for k in ("unsupported", "corrupted", "invalid file")):
                     raise
                 # Newer models reject containers whisper-1 accepted (Ogg/Opus voice notes): transcode, retry once.
                 converted_path, transcode_error = _transcode_audio_for_stt(file_path, work_dir)
                 if transcode_error:
+                    if is_server_error:
+                        raise
                     return _error_result(transcode_error)
                 logger.info("Retrying %s STT after transcoding %s to m4a (API rejected the original container)",
                             provider_label, Path(file_path).name)
@@ -174,7 +198,7 @@ def _transcribe_mistral(
     if not api_key:
         return _error_result("MISTRAL_API_KEY not set")
     try:
-        _lazy_ensure_quietly("stt.mistral")
+        _lazy_ensure_quietly("mistral")
         from mistralai.client import Mistral
         with Mistral(api_key=api_key) as client, open(file_path, "rb") as audio_file:
             # Language: hook override > stt.mistral.language > stt.language > env > auto.
@@ -419,10 +443,27 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
 
 
 def _extract_transcript_text(transcription: Any) -> str:
-    """Normalize text / object / dict transcription responses to a plain string."""
-    value = transcription if isinstance(transcription, str) else getattr(transcription, "text", None)
-    if not isinstance(value, str) and isinstance(transcription, dict):
-        value = transcription.get("text")
-    text = (value if isinstance(value, str) else str(transcription)).strip()
+    """Normalize text / object / dict transcription responses to a plain string.
+
+    A *structured* response (SDK object or JSON dict) whose ``text`` is missing or
+    non-string must never reach ``str(transcription)``: that renders the object repr
+    (``Transcription(text=None, logprobs=None, usage=None, error='...')``), which
+    every caller then logged and returned as a successful transcript, and the desktop
+    injected as the user's message (#78098). Such a response raises its provider
+    ``error`` instead, so the callers' existing failure paths report it; a structured
+    response carrying neither text nor error is an error in its own right.
+    Unrecognized scalars keep the legacy stringification."""
+    if isinstance(transcription, str):
+        text = transcription.strip()
+    else:
+        is_mapping = isinstance(transcription, dict)
+        value = transcription.get("text") if is_mapping else getattr(transcription, "text", None)
+        if isinstance(value, str):
+            text = value.strip()
+        elif is_mapping or hasattr(transcription, "text"):
+            error = transcription.get("error") if is_mapping else getattr(transcription, "error", None)
+            raise STTResponseError(str(error) if error else "Transcription response contained no text")
+        else:
+            text = str(transcription).strip()
     match = _ASR_TEXT_RE.match(text)
     return match.group("text").strip() if match else text

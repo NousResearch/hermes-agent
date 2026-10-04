@@ -244,14 +244,19 @@ class GatewayRoomCatalog:
 def catalog_mapping(
     *, installation_id: str, protocol_versions: Iterable[int] = (PROTOCOL_VERSION,),
     link_modes: Iterable[LinkMode] = ("direct", "pull"), persistent_process: bool, text: bool = True,
-    attachments: bool = False, endpoint: Mapping[str, Any] | None = None, target_profile: str | None = None,
+    attachments: bool = False, endpoint: Mapping[str, Any] | None = None, target_profile: str,
     execution_policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Build a canonical catalog mapping with its digest."""
+    """Build a canonical catalog mapping with its digest for the SERVED ``target_profile``.
+
+    The profile is the session's, never the process's: a multiplexed gateway advertises one
+    catalog per served profile, so there is no env (``HERMES_PROFILE``) fallback (#116900)."""
     # A Desktop-managed gateway exits with the app: the caller's flag is only an upper bound.
     persistent_process = bool(persistent_process and os.getenv("HERMES_DESKTOP") != "1")
-    profile = str(target_profile or "").strip() or (os.getenv("HERMES_PROFILE") or "default").strip() or "default"
+    profile = _identifier(target_profile, field="target_profile")
     checked_policy = RoomExecutionPolicy.from_mapping(
         execution_policy or execution_policy_mapping(target_profile=profile))
+    if checked_policy.target_profile != profile:
+        raise HostedRoomPeerError("execution_policy target_profile does not match the catalog target_profile")
     # A RoomLink run is initiated by another installation. Process-wide YOLO mode bypasses the scoped
     # approval ContextVar, so rewriting the advertised policy cannot make it safe: refuse.
     if checked_policy.approval_mode == "off":
@@ -488,57 +493,3 @@ def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, l
         return clock(now) + max(0.0, float(leeway_seconds)) >= expires_at
     except Exception:
         return True
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import time  # noqa: F401,E402
-
-@dataclass(frozen=True)
-class RoomLinkProbe:
-    """One gateway-verified route candidate."""
-
-    mode: LinkMode
-    verified: bool
-    encrypted: bool
-    latency_ms: float
-
-_LINK_PRIORITY = {
-    "direct": 0,
-    "overlay": 1,
-    "relay": 2,
-    "pull": 3,
-    "desktop": 4,
-}
-
-def select_room_link(
-    probes: Iterable[RoomLinkProbe],
-    *,
-    desktop_available: bool,
-) -> RoomLinkProbe | None:
-    """Choose the fastest safe route without weakening encryption."""
-    candidates = [
-        probe
-        for probe in probes
-        if probe.verified
-        and probe.encrypted
-        and probe.mode != "desktop"
-        and math.isfinite(probe.latency_ms)
-        and probe.latency_ms >= 0
-    ]
-    if candidates:
-        return min(
-            candidates,
-            key=lambda item: (_LINK_PRIORITY[item.mode], item.latency_ms),
-        )
-    if desktop_available:
-        return RoomLinkProbe(
-            mode="desktop",
-            verified=True,
-            encrypted=True,
-            latency_ms=0,
-        )
-    return None
-# ---- END PLUGIN-COMPAT ----

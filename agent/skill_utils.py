@@ -2,6 +2,7 @@
 Import-light by design: no tool registry, CLI config, or provider resolution."""
 
 import ast
+import hashlib
 import logging
 import os
 import re
@@ -13,7 +14,6 @@ from hermes_constants import (
     get_config_path,
     get_skills_dir,
     get_subprocess_home,
-    is_termux,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ def read_active_org_id(skills_dir: Path) -> Optional[str]:
     """The org id whose mirror may resolve, or None (no org skills load)."""
     marker = skills_dir / ORG_MIRROR_DIR_NAME / ORG_ACTIVE_MARKER
     try:
-        return (marker.read_text(encoding="utf-8").strip() or None) if marker.exists() else None
+        return (marker.read_text(encoding="utf-8-sig").strip() or None) if marker.exists() else None
     except OSError:
         return None
 
@@ -93,12 +93,11 @@ _yaml_load_fn = None
 
 
 def yaml_load(content: str):
-    """Parse YAML with lazy import and CSafeLoader preference."""
+    """Parse YAML with the shared safe loader, imported lazily."""
     global _yaml_load_fn
     if _yaml_load_fn is None:
-        import functools
-        import yaml
-        _yaml_load_fn = functools.partial(yaml.load, Loader=getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader)
+        from hermes_yaml import safe_load
+        _yaml_load_fn = safe_load
     return _yaml_load_fn(content)
 
 
@@ -129,13 +128,13 @@ def skill_matches_platform_list(platforms: Any) -> bool:
     """Return True when *platforms* is compatible with the current OS."""
     if not platforms:
         return True
-    running_in_termux = is_termux()
-    for platform in platforms if isinstance(platforms, list) else [platforms]:
+    if not isinstance(platforms, list):
+        platforms = [platforms]
+    current = sys.platform
+    for platform in platforms:
         normalized = str(platform).lower().strip()
         mapped = PLATFORM_MAP.get(normalized, normalized)
-        # Termux is a Linux userland on Android: accept linux-tagged skills
-        # whether sys.platform is "linux" (pre-3.13) or "android" (3.13+).
-        if sys.platform.startswith(mapped) or (running_in_termux and mapped in ("linux", "termux", "android")):
+        if current.startswith(mapped):
             return True
     return False
 
@@ -208,6 +207,28 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     return any(_detect_environment(tag) for tag in tags if tag)
 
 
+def skill_matches_apps(frontmatter: Dict[str, Any]) -> bool:
+    """True when every app named in ``requires_apps:`` has a registered declaration this host satisfies.
+
+    Names resolve through ``hermes_platform.declaration`` (registered by whoever owns the server,
+    e.g. the plugin loader); the check is the same ``availability()`` the MCP check_fn uses. An
+    unknown name hides the skill (fail closed). Offer-time filter, like ``environments:``.
+    """
+    names = frontmatter.get("requires_apps")
+    if not names:
+        return True
+    from hermes_platform import declaration
+    from hermes_platform.resolver.availability import availability
+
+    for name in names if isinstance(names, list) else [names]:
+        decl = declaration.lookup(str(name).strip())
+        if decl is None or decl.app is None:
+            return False
+        if not availability(decl).offerable:
+            return False
+    return True
+
+
 _RAW_CONFIG_CACHE: Dict[Tuple[str, int, int, int, int], Dict[str, Any]] = {}
 
 
@@ -235,7 +256,7 @@ def _load_raw_config() -> Dict[str, Any]:
     if cached is not None:
         return cached
     try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+        parsed = yaml_load(config_path.read_text(encoding="utf-8-sig"))
     except Exception as e:
         logger.debug("Could not read skill config %s: %s", config_path, e)
         return {}
@@ -395,15 +416,113 @@ def display_skill_create_dir() -> str:
     return create_dir.as_posix() + "/"
 
 
+# Cross-directory precedence, lowest tier wins: trusted project > local profile > skills.create_dir >
+# skills.external_dirs. Inside ONE tier two different skills sharing a name stay ambiguous — refused,
+# never guessed (59da8ec4e) — while identical copies under one root resolve to the shallowest.
+TIER_PROJECT, TIER_LOCAL, TIER_CREATE_DIR, TIER_EXTERNAL = range(4)
+# Leading words of every same-tier refusal (skill_view error, preload/cron label) — one spelling.
+AMBIGUOUS_SKILL_PREFIX = "Ambiguous skill name "
+# (shadowed path, *sorted higher-tier paths) already judged: the identity check (it hashes both
+# SKILL.md files) and its one-time warning run once per pairing, not on every catalog resolve.
+_SHADOW_CHECKED: Set[Tuple[str, ...]] = set()
+
+
+def get_skill_search_roots(local: Optional[Path] = None, *, include_project: bool = True) -> List[Tuple[int, Path]]:
+    """``(tier, dir)`` for every skill root in precedence order — the ONE ordering the skills list,
+    prompt index, slash commands, skill_view, preload and cron share. *local* overrides the profile
+    skills dir (skills_tool passes its live root); that entry is kept even when missing."""
+    roots = [(TIER_PROJECT, d) for d in get_project_skills_dirs()] if include_project else []
+    roots.append((TIER_LOCAL, Path(local) if local is not None else get_skills_dir()))
+    create_dir = get_skill_create_dir()
+    if create_dir is not None and create_dir.is_dir():
+        roots.append((TIER_CREATE_DIR, create_dir))
+    roots += [(TIER_EXTERNAL, d) for d in get_external_skills_dirs()]
+    seen: Set[Path] = set()
+    return [(t, d) for t, d in roots if not (d in seen or seen.add(d))]
+
+
 def get_all_skills_dirs() -> List[Path]:
     """Skill dirs: local ``~/.hermes/skills/`` first, then create_dir, then external.
     Trusted project dirs are NOT included (higher precedence; see get_project_skills_dirs)."""
-    dirs = [get_skills_dir()]
-    create_dir = get_skill_create_dir()
-    if create_dir is not None and create_dir.is_dir():
-        dirs.append(create_dir)
-    dirs.extend(d for d in get_external_skills_dirs() if d not in dirs)
-    return dirs
+    return [d for _tier, d in get_skill_search_roots(include_project=False)]
+
+
+def provably_same_skill(skill_mds) -> bool:
+    """True only when every path is the SAME skill: one resolved file (symlink view) or byte-identical
+    content (copy). Anything else is two different skills sharing a name, and picking one by depth
+    would let ``<root>/evil`` (``name: github``) shadow the real one."""
+    try:
+        if len({os.path.realpath(p) for p in skill_mds}) == 1:
+            return True
+        return len({hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in skill_mds}) == 1
+    except OSError:
+        return False
+
+
+def skill_candidate_rank(skill_md, root) -> Tuple[bool, int]:
+    """Same-root order of identical copies: a real SKILL.md beats a legacy flat ``<name>.md``,
+    then the shallower path wins (shared by skill_view and :func:`resolve_skill_catalog`)."""
+    skill_md = Path(skill_md)
+    return (skill_md.name != "SKILL.md", len(skill_md.relative_to(root).parts))
+
+
+def pick_skill_candidate(candidates) -> Tuple[Optional[int], List[int]]:
+    """Winner index among one identifier's ``(tier, root, rank, skill_md)`` candidates, plus the
+    winning tier's contender indexes. The lowest tier wins; inside it a lone candidate wins, identical
+    copies under one root resolve to the strictly best ``rank``, anything else is ambiguous (None)."""
+    top = min(c[0] for c in candidates)
+    contenders = [i for i, c in enumerate(candidates) if c[0] == top]
+    if len(contenders) > 1 and len({candidates[i][1] for i in contenders}) == 1 and provably_same_skill(
+            [candidates[i][3] for i in contenders]):
+        ranked = sorted(contenders, key=lambda i: candidates[i][2])
+        if candidates[ranked[0]][2] != candidates[ranked[1]][2]:
+            return ranked[0], contenders
+    return (contenders[0] if len(contenders) == 1 else None), contenders
+
+
+def is_disabled_entry(entry: Dict[str, Any], disabled: Set[str]) -> bool:
+    """``skills.disabled`` matches a resolved catalog entry by its declared name OR its ``load_name`` —
+    the exact path a same-tier duplicate's list/config/web row shows (``a/one``) and saves. A unique
+    copy elsewhere that merely sits at the same relative path is not matched."""
+    return not disabled.isdisjoint({str(entry["name"]), entry.get("load_name")} - {None})
+
+
+def resolve_skill_catalog(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Copies of scanned skills (each with ``name``, ``tier``, ``root`` and ``path`` = its SKILL.md)
+    annotated with what skill_view() resolves, using its aliases (declared name, directory name, path
+    relative to the root) and :func:`pick_skill_candidate`. Adds ``relative_path`` and ``status``:
+    ``unique`` (``load_name`` = name), ``ambiguous`` (``load_name`` = the exact relative path, or None
+    when even that is shared) or ``shadowed`` (a higher tier owns the name: hidden, warned once)."""
+    out = [dict(e) for e in entries]
+    owners: Dict[str, List[int]] = {}
+    for i, e in enumerate(out):
+        skill_dir = Path(e["path"]).parent
+        e["relative_path"] = skill_dir.relative_to(e["root"]).as_posix()
+        for alias in {str(e["name"]), skill_dir.name, e["relative_path"]}:
+            owners.setdefault(alias, []).append(i)
+    winner: Dict[str, Optional[int]] = {}
+    for alias, idxs in owners.items():
+        won, _ = pick_skill_candidate([
+            (out[j]["tier"], str(out[j]["root"]), skill_candidate_rank(out[j]["path"], out[j]["root"]), out[j]["path"])
+            for j in idxs])
+        winner[alias] = None if won is None else idxs[won]
+    for i, e in enumerate(out):
+        name, rel = str(e["name"]), e["relative_path"]
+        higher = [j for j in owners[name] if out[j]["tier"] < e["tier"]]
+        if higher or winner[name] not in (None, i):  # lower tier, or an identical same-root copy
+            e.update(status="shadowed", load_name=None)
+            # A symlink view or byte-identical copy of the winner hides nothing worth a warning.
+            key = (str(e["path"]), *sorted(str(out[j]["path"]) for j in higher))
+            if higher and key not in _SHADOW_CHECKED:
+                _SHADOW_CHECKED.add(key)
+                if not any(provably_same_skill([e["path"], out[j]["path"]]) for j in higher):
+                    logger.warning("Skill '%s' at %s is shadowed by a higher-precedence copy "
+                                   "(project > local > create_dir > external_dirs)", name, e["path"])
+        elif winner[name] == i:
+            e.update(status="unique", load_name=name)
+        else:
+            e.update(status="ambiguous", load_name=rel if winner[rel] == i else None)
+    return out
 
 
 # Project-local skills (<root>/.hermes/skills, <root>/.agents/skills; root = nearest
@@ -419,20 +538,20 @@ _PROJECT_ROOT_MAX_DEPTH = 64  # walk-up bound for pathological cwds
 
 def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     """Nearest ancestor containing ``.git`` (dir or worktree file), or None.
-    Without *start*, the surface's ``TERMINAL_CWD`` wins over process cwd so
-    cron/API surfaces inherit an interactive trust decision by project identity.
-
-    When *start* is not given, the surface's working directory wins over the process cwd: ``TERMINAL_CWD``
-    is the same per-surface workdir the terminal tool and cron jobs use (a cron job sets it from its per-job
-    ``workdir`` without chdir'ing the scheduler process). This is what lets non-interactive surfaces inherit
-    a prior interactive trust decision by project identity — and a surface with no workdir in a trusted repo
-    simply resolves no project and loads nothing (#48975).
+    Without *start*, the surface's effective working directory wins over the process cwd — the same
+    ladder every other cwd consumer reads (``resolve_agent_cwd``: session-bound cwd, then the scope's
+    ``TERMINAL_CWD``, then the process cwd). The session cwd comes first because a multi-session host
+    (TUI/desktop gateway) pins each session's workspace there while its terminal scope resolves a
+    placeholder ``terminal.cwd`` to ``$HOME``; reading only the scope made every project skill invisible
+    on those surfaces (#114359). ``TERMINAL_CWD`` is the per-surface workdir the terminal tool and cron
+    jobs use (a cron job sets it from its per-job ``workdir`` without chdir'ing the scheduler process),
+    which lets non-interactive surfaces inherit a prior interactive trust decision by project identity —
+    and a surface with no workdir in a trusted repo simply resolves no project and loads nothing (#48975).
     """
     try:
         if start is None:
-            from agent.runtime_cwd import scope_terminal_cwd
-            env_cwd = scope_terminal_cwd()
-            start = Path(env_cwd) if env_cwd else Path.cwd()
+            from agent.runtime_cwd import resolve_agent_cwd
+            start = resolve_agent_cwd()
         cur = Path(start).resolve()
     except OSError:
         return None
@@ -676,7 +795,7 @@ def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
             continue
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
             try:
-                frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
+                frontmatter, _ = parse_frontmatter(skill_file.read_text(encoding="utf-8-sig"))
             except Exception:
                 continue
             skill_name = str(frontmatter.get("name") or skill_file.parent.name)
@@ -792,20 +911,3 @@ def parse_qualified_name(name: str) -> Tuple[Optional[str], str]:
 def is_valid_namespace(candidate: Optional[str]) -> bool:
     """Check whether *candidate* is a valid namespace (``[a-zA-Z0-9_-]+``)."""
     return bool(candidate) and bool(_NAMESPACE_RE.match(candidate))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def get_scan_ordered_skills_dirs() -> List[Path]:
-    """All skill dirs in precedence order: project → local → external.
-
-    First-wins name deduplication over this order gives project skills
-    priority over profile-local and external ones.
-    """
-    dirs = list(get_project_skills_dirs())
-    dirs.extend(get_all_skills_dirs())
-    return dirs
-# ---- END PLUGIN-COMPAT ----

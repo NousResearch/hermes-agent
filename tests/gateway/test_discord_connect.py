@@ -704,14 +704,22 @@ async def test_post_connect_initialization_retries_fingerprint_after_timeout(tmp
     sync = AsyncMock(side_effect=[TimeoutError(), summary])
     monkeypatch.setattr(adapter, "_safe_sync_slash_commands", sync)
 
+    # The timeout is retried in-task; capture the persisted entry at the
+    # backoff point, i.e. after the timed-out attempt and before the retry.
+    entries_at_backoff = []
+
+    async def _capture_backoff(_seconds):
+        entries_at_backoff.append(json.loads(state_path.read_text(encoding="utf-8"))["999"])
+
+    monkeypatch.setattr(adapter, "_sleep_for_command_sync_retry", _capture_backoff)
+
     await adapter._run_post_connect_initialization()
 
-    timed_out_entry = json.loads(state_path.read_text(encoding="utf-8"))["999"]
+    assert len(entries_at_backoff) == 1
+    timed_out_entry = entries_at_backoff[0]
     assert timed_out_entry["fingerprint"] == desired_fingerprint
     assert "last_success_at" not in timed_out_entry
     assert "summary" not in timed_out_entry
-
-    await adapter._run_post_connect_initialization()
 
     assert sync.await_count == 2
     recovered_entry = json.loads(state_path.read_text(encoding="utf-8"))["999"]

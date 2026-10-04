@@ -12,6 +12,7 @@ real runner entry points:
 * busy arrival -> queued -> drained through ``_handle_message``: one hook call,
   and the queued event carries the hook's rewrite;
 * a ``skip`` from the hook on the busy path drops the message (nothing queued);
+* an inline diversion (``/approve``) reaches the runner's handler without a second hook call;
 * under multiplex, a secondary profile's busy arrival runs the hook inside that
   profile's runtime scope, and the drain through the same profile's cold
   handler does not run it again.
@@ -168,6 +169,30 @@ async def test_busy_arrival_skipped_by_hook_is_never_queued(monkeypatch):
     assert len(calls) == 1
     assert session_key not in adapter._pending_messages
     busy_handler.assert_not_awaited()  # dropped before steer/interrupt/queue logic
+
+
+@pytest.mark.asyncio
+async def test_busy_approval_dispatched_inline_runs_hook_once(monkeypatch):
+    """An inline diversion (``/approve`` while the agent waits on approval) reaches the runner's
+    handler without re-running the hook it already passed on the busy path."""
+    _clear_auth_env(monkeypatch)
+    calls = _hook_recorder(monkeypatch, lambda event: [{"action": "allow"}])
+
+    runner = _primary_runner()
+    adapter = _busy_adapter(Platform.WHATSAPP, runner, runner._primary_pre_gateway_dispatch_handler())
+    handled = []
+
+    async def _runner_handler(event):
+        # The runner's ``_handle_message`` opens with this gate; record what passes it.
+        handled.append(await runner._hm_pre_gateway_dispatch_once(event, event.source))
+        return None
+
+    adapter.set_message_handler(_runner_handler)
+    session_key = await _arrive_while_busy(adapter, _whatsapp_event("/approve"))
+
+    assert len(calls) == 1
+    assert len(handled) == 1 and handled[0] is not None and handled[0].text == "/approve"
+    assert session_key not in adapter._pending_messages, "a bypass command must not be queued"
 
 
 @pytest.mark.asyncio

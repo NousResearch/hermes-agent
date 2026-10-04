@@ -248,6 +248,12 @@ export function ChatSidebar({
         return;
       }
       if (s === "open") {
+        // A pending redialTimer would bump the version and tear down the
+        // connection that just opened (#129393).
+        if (redialTimer) {
+          clearTimeout(redialTimer);
+          redialTimer = null;
+        }
         if (healthyOpenTimer) {
           clearTimeout(healthyOpenTimer);
         }

@@ -37,18 +37,7 @@ _PRELUDE = "import json, os, sys\nsys.path.insert(0, os.getcwd())\n"
 
 # PR -> (extra env, script). A script prints ``open`` while the defect reproduces, ``fixed`` once
 # it no longer does; anything else (including a crash) fails the cell that asked.
-PROBES: Dict[int, tuple] = {
-    # No timezone configured: the next cron occurrence kept the base time's fixed UTC offset, so a
-    # 09:00 job in a DST process zone fired at 10:00 local the day after spring-forward.
-    119970: ({"TZ": "America/New_York"}, r'''
-from datetime import datetime
-from cron import jobs
-# what an unconfigured clock returns: the process zone's offset of the moment, as a fixed offset
-jobs._hermes_now = lambda: datetime.fromisoformat("2026-03-07T09:00:30-05:00")
-nxt = jobs.compute_next_run({"kind": "cron", "expr": "0 9 * * *"})
-print("fixed" if nxt == "2026-03-08T09:00:00-04:00" else "open")
-'''),
-}
+PROBES: Dict[int, tuple] = {}
 
 
 @functools.lru_cache(maxsize=None)

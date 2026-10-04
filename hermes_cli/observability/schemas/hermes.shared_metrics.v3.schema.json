@@ -699,6 +699,7 @@
         "delegated",
         "gateway_message",
         "interactive",
+        "one_shot",
         "other",
         "python",
         "scheduled_task",

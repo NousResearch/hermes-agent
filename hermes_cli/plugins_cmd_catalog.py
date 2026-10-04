@@ -788,6 +788,12 @@ def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -
                       + (f" [dim]— {detail}[/dim]" if detail else ""))
     for warning in report.warnings:
         console.print(f"[yellow]⚠ {warning}[/yellow]")
+    if report.isolation:
+        from hermes_cli.plugin_isolation_audit import IsolationReport
+        iso = IsolationReport(report.isolation["verdict"], report.isolation["reasons"], report.isolation["notes"])
+        console.print(f"{'[green]◆[/green]' if iso.host_ready else '[dim]◇[/dim]'} Isolation [dim]— {iso.summary()}[/dim]")
+        for note in iso.notes:
+            console.print(f"  [dim]· {note}[/dim]")
     console.print()
     console.print("[green bold]Validation passed.[/green bold]" if report.ok else "[red bold]Validation failed.[/red bold]")
     sys.exit(report.exit_code)

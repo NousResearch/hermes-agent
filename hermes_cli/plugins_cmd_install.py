@@ -11,12 +11,42 @@ import logging
 import os
 import sys
 import tempfile
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from hermes_cli.cli_output import line_input
 
 logger = logging.getLogger(__name__)
+
+# Answers to the dependency questions, reused while one plugin is installed into several profile
+# homes that share one environment (memory-provider migration on ``hermes update``, #125794).
+_shared_answers: ContextVar[Optional[dict]] = ContextVar("plugin_dependency_answers", default=None)
+
+
+@contextmanager
+def shared_dependency_answers():
+    """Inside this block each dependency question is asked once; repeats reuse the first answer."""
+    token = _shared_answers.set({})
+    try:
+        yield
+    finally:
+        _shared_answers.reset(token)
+
+
+def _ask_yes_no(key: tuple, prompt: str, console) -> bool:
+    answers = _shared_answers.get()
+    if answers is not None and key in answers:
+        console.print(f"  [dim]Reusing your answer for the first profile: {'yes' if answers[key] else 'no'}[/dim]")
+        return answers[key]
+    try:
+        accepted = input(prompt).strip().lower() in {"y", "yes"}
+    except (EOFError, KeyboardInterrupt):
+        accepted = False
+    if answers is not None:
+        answers[key] = accepted
+    return accepted
 
 
 def _pc():
@@ -60,16 +90,9 @@ def _install_plugin_python_deps(
     node_reason = None
     if has_package_json:
         console.print(f"\n[bold]{manifest.get('name', 'this plugin')}[/bold] declares Node dependencies (package.json).")
-        if sys.stdin.isatty() and sys.stdout.isatty():
-            try:
-                node_answer = input(
-                    "  Install them into the plugin's own node_modules now? [y/N]: "
-                ).strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                node_answer = ""
-        else:
-            node_answer = ""
-        if node_answer in {"y", "yes"}:
+        node_ok = sys.stdin.isatty() and sys.stdout.isatty() and _ask_yes_no(
+            ("node", manifest.get("name")), "  Install them into the plugin's own node_modules now? [y/N]: ", console)
+        if node_ok:
             from pm.workspace import install_node_sidecar
 
             node_reason = install_node_sidecar(target, explicit=True)
@@ -114,13 +137,7 @@ def _consent_python_deps(
             "Run `hermes plugins enable` when ready to prepare them.[/dim]\n"
         )
         return False, "dependency install skipped (non-interactive)"
-    try:
-        answer = input(
-            "  Prepare these with Hermes through PM now? [y/N]: "
-        ).strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        answer = ""
-    if answer not in {"y", "yes"}:
+    if not _ask_yes_no(("python", plugin_name, deps), "  Prepare these with Hermes through PM now? [y/N]: ", console):
         console.print(
             "[dim]Skipped — run `hermes plugins enable` when ready "
             "to prepare them.[/dim]\n"
@@ -266,6 +283,7 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
     if not (tree / "plugin.json").is_file():
         return
     from hermes_cli.agent_plugins import load_agent_plugin
+    from hermes_platform.declaration import gpu_label
     from hermes_platform.resolver.availability import availability
 
     try:
@@ -277,6 +295,8 @@ def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
         if result.offerable:
             continue
         found = f", found version {result.version}" if result.version else ""
+        if result.state == "unsupported_gpu":
+            found = f", needs {gpu_label(server_decl.declaration.required_gpu)}"
         raise _pc().PluginOperationError(
             f"Plugin '{plugin_name}' server '{server_name}' is unavailable: {result.state}{found}."
         )
@@ -352,6 +372,18 @@ def _install_plugin_core(
         except ValueError as e:
             raise _pc().PluginOperationError(str(e)) from e
         _check_manifest_version(manifest, plugin_name)
+        prior = old_metadata.get(plugin_name)
+        # `install --force --ref` is the documented way to move a pin, so a reinstall of the same
+        # source is an update: it replaces the plugin's code, never the user's state.
+        tracked_edits: list[str] = []
+        if (before_swap is None and force and target.is_dir() and not target.is_symlink()
+                and isinstance(prior, dict) and prior.get("source") == source):
+            from hermes_cli.plugins_cmd_catalog import _carry_user_files, _local_changes
+            local, tracked_edits = _local_changes(target)
+
+            def _carry(_manifest, tree):
+                return _carry_user_files(target, tree, local)
+            before_swap = _carry
         # A callback may merge user-owned state into the candidate tree; run it first so one scan
         # admits the final bytes.
         merged = before_swap(manifest, tmp_target) if before_swap is not None else None
@@ -371,7 +403,6 @@ def _install_plugin_core(
             raise _pc().PluginOperationError(
                 f"Plugin '{plugin_name}' already exists. Use force reinstall "
                 f"or run `hermes plugins update {plugin_name}`.")
-        prior = old_metadata.get(plugin_name)
         if target.exists() and requested_revision is None and isinstance(prior, dict) and prior.get("pinned") is True:
             raise _pc().PluginOperationError(
                 f"Plugin '{plugin_name}' is pinned. Reinstall it with an explicit "
@@ -407,6 +438,14 @@ def _install_plugin_core(
         new_metadata = {**old_metadata, plugin_name: record}
         from hermes_cli.plugins_transaction import publish_plugin
 
+        if tracked_edits:
+            from hermes_cli.plugins_cmd_catalog import _stash_local_files
+            # Outside the plugins dir: the discovery scanners recurse into every subdirectory there.
+            backup = plugins_dir.parent / "plugins-backup" / f"{target.name}-{str(prior.get('revision') or 'old')[:8]}"
+            _stash_local_files(target, tracked_edits, backup)
+            _pc()._console().print(
+                f"[yellow]Local edits to {len(tracked_edits)} tracked file(s) were not carried over; "
+                f"copies are under {backup} (re-apply by hand).[/yellow]")
         try:
             publish_plugin(tmp_target, target, old_metadata, new_metadata, require_consent=True,
                            assume_consent=assume_deps_consent)

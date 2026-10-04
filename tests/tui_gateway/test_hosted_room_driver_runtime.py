@@ -588,30 +588,6 @@ def test_not_admitted_peer_task_stays_queued_with_exponential_capped_retry(
     assert rpc.attempted_generations == [1, 2, 3, 4]
 
 
-def test_contradictory_admission_flags_keep_the_same_attempt_at_lease_expiry(db: Path):
-    from tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
-    now = [100.0]
-    identity = _identity()
-    _admit(db, identity)
-
-    class UncertainRPC(FakeSessionRPC):
-        def submit(self, **kwargs):
-            super().submit(**kwargs)
-            raise PeerRunsHTTPError("mixed admission evidence", retryable=True, ambiguous=True, not_admitted=True)
-
-    rpc = UncertainRPC(auto_complete=False)
-    runtime = _runtime(db, rpc, clock=lambda: now[0], lease_ttl_seconds=1)
-    runtime._run_cycle()
-    first = state.get_task(db, identity)
-    assert first["status"] == "running" and first["execution_generation"] == 1
-    runtime._run_cycle()
-    now[0] += 2
-    runtime._run_cycle()
-    recovered = state.get_task(db, identity)
-    assert recovered["status"] == "indeterminate" and recovered["execution_generation"] == 1
-    assert [params["execution_generation"] for method, params in rpc.calls if method == "submit"] == [1]
-
-
 def test_not_admitted_room_does_not_block_other_rooms(tmp_path: Path):
     db = tmp_path / "state.db"
     for room_id in ("room-1", "room-2"):

@@ -23,6 +23,7 @@ LivenessState = Literal[
     "no_interactive_session",
     "version_too_old",
     "missing_app",
+    "unsupported_gpu",
 ]
 Retry = Literal["after_user_action", "never_here"]
 
@@ -107,7 +108,7 @@ def liveness_for(server_name: str) -> Liveness:
         return Liveness("static")
 
 
-def _action(state: LivenessState, app_name: str) -> tuple[str, Retry]:
+def _action(state: LivenessState, app_name: str, gpu_label: str) -> tuple[str, Retry]:
     actions: dict[LivenessState, tuple[str, Retry]] = {
         "app_not_running": (f"Start {app_name}, then try again.", "after_user_action"),
         "hermes_not_connected": (f"Reconnect {app_name} in Hermes, then try again.", "after_user_action"),
@@ -115,6 +116,7 @@ def _action(state: LivenessState, app_name: str) -> tuple[str, Retry]:
         "no_interactive_session": (f"Open an interactive desktop session and start {app_name}, then try again.", "never_here"),
         "version_too_old": (f"Update {app_name}, then try again.", "after_user_action"),
         "missing_app": (f"Install {app_name}, then try again.", "after_user_action"),
+        "unsupported_gpu": (f"Use {app_name} on a machine with {gpu_label}.", "never_here"),
     }
     return actions[state]
 
@@ -128,6 +130,8 @@ def status(server_name: str) -> Status | None:
     live = liveness_for(server_name)
     if available.state in {"missing_app", "unsupported_os"}:
         state: LivenessState = "missing_app"
+    elif available.state == "unsupported_gpu":
+        state = "unsupported_gpu"
     elif available.state == "version_too_old":
         state = "version_too_old"
     elif live.kind == "interactive_session" and not facts.interactive_session():
@@ -153,7 +157,7 @@ def status(server_name: str) -> Status | None:
         # static / unknown liveness kinds cannot observe the app, so they cannot conclude it
         # is not running; the honest answer is that Hermes is not connected (#119975).
         state = "hermes_not_connected"
-    action, retry = _action(state, decl.name)
+    action, retry = _action(state, decl.name, declaration.gpu_label(decl.required_gpu))
     return Status(state, available, live, action, retry)
 
 
@@ -164,9 +168,12 @@ def describe(decl: declaration.Declaration, available: Availability, liveness_st
     ``display_name`` overrides the declaration's slug when the caller knows the plugin's
     catalog/manifest title — the Plugins tab does, and a raw slug reads like an error code."""
     app_name = display_name or decl.name
-    action, _retry = _action(liveness_state, app_name)
+    gpu = declaration.gpu_label(decl.required_gpu)
+    action, _retry = _action(liveness_state, app_name, gpu)
     if liveness_state == "missing_app":
         reason = f"{app_name} is not installed."
+    elif liveness_state == "unsupported_gpu":
+        reason = f"{app_name} needs {gpu}; none was found on this machine."
     elif liveness_state == "version_too_old":
         found = f" version {available.version}" if available.version else ""
         minimum = f"; version {available.min_version} or newer is required" if available.min_version else ""

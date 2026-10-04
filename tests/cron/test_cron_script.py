@@ -7,6 +7,7 @@ Tests cover:
 - Path resolution (absolute, relative to HERMES_HOME/scripts/)
 """
 
+import contextlib
 import json
 import os
 import re
@@ -956,3 +957,54 @@ class TestScriptTimeoutTreeKill:
         assert signalled == [(12345, 0)], (
             f"a dead group must only ever be probed, got {signalled}")
         assert sleeps == [], "an empty group must not reach the TERM grace sleep"
+
+    @pytest.mark.platforms("posix")
+    def test_exited_parent_group_fallback_escalates_to_kill(self, monkeypatch):
+        """A group that still has members after the TERM grace period is escalated
+        to SIGKILL on the recorded group."""
+        import signal as signal_mod
+
+        from cron import scheduler_script as sched_script
+
+        job_pgid = 424242
+        signalled, sleeps = [], []
+
+        def stubborn_group_killpg(pgid, sig):
+            # Probes and TERM succeed; the group never empties.
+            signalled.append((pgid, sig))
+
+        monkeypatch.setattr(os, "killpg", stubborn_group_killpg)
+        monkeypatch.setattr(sched_script.time, "sleep", sleeps.append)
+        proc = SimpleNamespace(pid=12345, poll=lambda: 0)
+
+        sched_script._terminate_cron_script_tree(
+            cast("subprocess.Popen", proc), job_pgid=job_pgid)
+
+        sigkill = getattr(signal_mod, "SIGKILL", signal_mod.SIGTERM)
+        assert [sig for _, sig in signalled] == [0, signal_mod.SIGTERM, 0, sigkill], (
+            f"expected probe → TERM → probe → KILL on the recorded group, got {signalled}")
+        assert sleeps == [0.5], "exactly one TERM grace sleep before the KILL escalation"
+
+    @pytest.mark.platforms("posix")
+    def test_exited_parent_never_signals_a_non_positive_group(self, monkeypatch):
+        """pgid 0 is the caller's own process group and a negative pgid is not a group
+        this job spawned: both must be kept out of the fallback entirely, and no
+        recorded pgid means the historic leave-alone behavior stands."""
+        from cron import scheduler_script as sched_script
+
+        signalled, sleeps = [], []
+
+        def fail_killpg(pgid, sig):
+            signalled.append((pgid, sig))
+            raise AssertionError(f"killpg reached for pgid={pgid!r}")
+
+        monkeypatch.setattr(os, "killpg", fail_killpg)
+        monkeypatch.setattr(sched_script.time, "sleep", sleeps.append)
+        for job_pgid in (0, -1, None):
+            proc = SimpleNamespace(pid=12345, poll=lambda: 0)
+            sched_script._terminate_cron_script_tree(
+                cast("subprocess.Popen", proc), job_pgid=job_pgid)
+
+        assert signalled == [], (
+            f"a non-positive or missing pgid must never reach killpg, got {signalled}")
+        assert sleeps == []

@@ -252,10 +252,12 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
 
 def _terminate_orphaned_script_group(job_pgid: int) -> None:
     """POSIX: bounded fallback for a job whose direct script process was already reaped
-    (#125780). The spawn-time process group is the only ownership handle left — the reaped
-    leader's pid is unqueryable (``getpgid`` is ESRCH) and must never be signalled directly
-    (it may be recycled) — so TERM/KILL the recorded group after proving it still has members,
-    mirroring ``_terminate_process_group``'s TERM→KILL pacing without a waitable leader."""
+    (#125780). Under ``start_new_session`` the recorded pgid numerically equals the
+    leader's spawn-time pid — the snapshot's value is that it was taken while the leader
+    still existed, because the reaped leader's pid itself is unqueryable afterwards
+    (``getpgid`` is ESRCH) and must never be signalled directly (it may be recycled) — so
+    TERM/KILL the recorded group after proving it still has members, mirroring
+    ``_terminate_process_group``'s TERM→KILL pacing without a waitable leader."""
     try:
         os.killpg(job_pgid, 0)  # ESRCH once the group is empty. windows-footgun: ok — POSIX-only
     except (ProcessLookupError, PermissionError, OSError):

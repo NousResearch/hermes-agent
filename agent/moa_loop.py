@@ -1,9 +1,8 @@
 """Mixture-of-Agents runtime helpers for /moa turns.
 
-The normal agent loop owns tool calling and turn termination; this module gathers
-reference context according to the preset's fan-out cadence. The facade owns the
-synchronous stream contract and its caller closes returned streams on early exit.
-Native async streams retain one owning event loop across creation and cleanup.
+The slash command marks one user turn as MoA-enabled; the normal agent loop still
+owns tool calling and turn termination, while this module gathers reference-model
+context before each model iteration.
 """
 
 from __future__ import annotations
@@ -1187,9 +1186,7 @@ class MoAChatCompletions:
             agg_messages = retry_messages
             agg_response = send(messages=agg_messages)
         if stream:
-            # A native async aggregator client answers with an awaitable (or an async
-            # iterator); this synchronous facade — and the Relay / chat-completions
-            # consumer above it — iterate synchronously, so adapt it here.
+            # Codex's auxiliary fast path can bypass the inner stream adapter.
             agg_response = coerce_sync_stream(agg_response)
         if trace is not None:
             # Trace the exact aggregator INPUT as sent (persisted copy redacted; live input raw).

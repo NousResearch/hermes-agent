@@ -6,9 +6,6 @@ provider (if a supported vision backend) → OpenRouter → Nous → Anthropic �
 ``auxiliary.free_only`` restricts the OpenRouter lane to ``:free`` SKUs. Codex OAuth is
 in neither chain (undocumented, shifting allow-list): main provider or explicit
 ``auxiliary.<task>.provider`` only. HTTP 402 in call_llm() falls through the chain.
-Native protocol selection belongs to client resolution; Relay intercepts the
-chat-shaped client surface instead. Streaming callbacks own async-to-sync
-adaptation until the caller closes the resulting stream; no request is replayed.
 """
 
 import contextlib
@@ -7957,8 +7954,7 @@ def _release_sync_semaphore_after_stream(
             finally:
                 semaphore.release()
 
-    # Closing an unstarted generator skips its finally. Arm cleanup before
-    # handing it to the managed stream owner, without reading a provider chunk.
+    # An unstarted generator skips finally on close; prime only our sentinel.
     wrapped = consume()
     next(wrapped)
     return wrapped

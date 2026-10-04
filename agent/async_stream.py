@@ -1,9 +1,4 @@
-"""Adapt async provider streams to a synchronous, closeable client surface.
-
-The caller owns the returned iterator and must close it on early termination.
-One worker loop owns stream creation, reads, and cleanup; no network request is
-replayed. Only one consumer pulls chunks; close may cancel a blocked pull.
-"""
+"""Keep native stream resources on one loop, even inside a running caller loop."""
 
 from __future__ import annotations
 
@@ -16,15 +11,7 @@ from typing import AsyncIterator, Awaitable, Callable, cast
 
 
 class _SyncFromAsyncIterator:
-    """Own a native async stream and its worker loop until deterministic close.
-
-    Opening and consuming the stream share ONE loop: HTTP clients and async
-    generators can retain loop-bound resources after create() returns. Each
-    submitted operation inherits the caller's contextvars. A single consumer
-    pulls chunks lazily; close awaits a cancelled pull before releasing the
-    source via aclose or sync/async close. The worker, never the caller, finally
-    closes its event loop. The loop alone owns the tracked pull Task.
-    """
+    """One consumer pulls; its owner must close the iterator on early exit."""
 
     def __init__(self, source: object) -> None:
         self._source = source
@@ -57,7 +44,7 @@ class _SyncFromAsyncIterator:
         ready.wait()
 
     def resolve(self) -> object:
-        """Await creation on the same loop that will later read and close it."""
+        """Creation must share the loop used for reads and cleanup."""
 
         async def open_source() -> object:
             if inspect.isawaitable(self._source):
@@ -101,7 +88,6 @@ class _SyncFromAsyncIterator:
             self._pending = None
 
     def close(self) -> None:
-        """Cancel a blocked pull, release the stream and stop its owning loop."""
         if self._closed:
             return
         self._closed = True
@@ -110,9 +96,8 @@ class _SyncFromAsyncIterator:
 
         async def release() -> None:
             try:
-                # Cancelling the concurrent Future wakes its consumer before the
-                # loop-bound Task finishes unwinding an async generator's finally.
-                # Await that actual Task before closing the source; never race aclose.
+                # Future cancellation wakes the consumer before the async task's
+                # finally completes; await it before closing the source.
                 task = self._pull_task
                 if task is not None:
                     with contextlib.suppress(asyncio.CancelledError):
@@ -136,7 +121,7 @@ class _SyncFromAsyncIterator:
 
 
 def coerce_sync_stream(result: object) -> object:
-    """Adapt native async results without re-dispatch or a loop-lifetime split."""
+    """Keep one owning loop without replaying the provider request."""
     if not inspect.isawaitable(result) and not (
         hasattr(result, "__aiter__") and not hasattr(result, "__iter__")
     ):

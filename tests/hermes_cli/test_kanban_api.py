@@ -708,9 +708,9 @@ def test_transcript_is_off_by_default(client: TestClient) -> None:
     assert "transcript" not in caps["observability"]
 
 
-def test_log_tail_never_starts_mid_line(client: TestClient) -> None:
-    """A tail window opening inside a line hands the redactor a credential without the
-    ``Bearer`` prefix it keys on."""
+def test_log_tail_is_cut_after_redaction(client: TestClient) -> None:
+    """A tail window opening inside a secret hands the redactor a credential without the
+    context it keys on: the ``Bearer`` prefix, or a PEM block's ``BEGIN`` line."""
     task_id = _create(client, idempotency_key="log-tail")["task"]["id"]
     log_path = kanban_db.worker_log_path(task_id, board="default")
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -724,6 +724,17 @@ def test_log_tail_never_starts_mid_line(client: TestClient) -> None:
 
 def test_actions_fire_lifecycle_hooks_for_the_requested_board(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
+    key_body = "".join(f"KEYBODY{line:02d}{'A' * 55}\n" for line in range(20))
+    log_path.write_text(
+        "starting\n-----BEGIN PRIVATE KEY-----\n" + key_body + "-----END PRIVATE KEY-----\ndone\n",
+        encoding="utf-8")
+    for tail_bytes in (40, 200, 700, 1300):
+        body = client.get(
+            f"/api/plugins/kanban/v1/tasks/{task_id}/log", params={"tail_bytes": tail_bytes}
+        ).json()
+        assert "KEYBODY" not in body["excerpt"], tail_bytes
+        assert len(body["excerpt"].encode()) <= tail_bytes
+
 ) -> None:
     kanban_db.create_board("ops")
     fired: list[tuple[str, object]] = []

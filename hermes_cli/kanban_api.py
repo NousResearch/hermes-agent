@@ -34,8 +34,12 @@ _DEFAULT_LOG_TAIL = 8_192
 _TRANSCRIPT_TEXT_CAP = 20_000
 _TRANSCRIPT_TOOL_CAP = 4_000
 _MAX_LOG_TAIL = 32_768
-# Windows arm: drive or UNC root; separators may be doubled (JSON-escaped), and a directory
-# name may hold spaces — the characters Windows forbids in a name bound it instead.
+# Read this much before the requested tail so redaction sees where a secret starts (a PEM
+# block's BEGIN line, an auth header's name); the excerpt is cut after redacting.
+_LOG_REDACTION_CONTEXT = 32_768
+# A directory name may hold spaces, so a name runs on past a space while a separator still
+# follows and no character that ends prose (or that Windows forbids in a name) intervenes.
+# Windows arm: drive or UNC root; separators may be doubled (JSON-escaped).
 _ABSOLUTE_PATH_RE = re.compile(
     r"(?<![\w:])(?:"
     r"(?:[A-Za-z]:[\\/]+|\\{2,})(?:[^\\/\r\n<>:\"|?*]+[\\/]+)*[^\s\\/]*"
@@ -634,7 +638,8 @@ def task_log(
     slug = _resolve_board_slug(board)
     with _connection(slug) as conn:
         _require_task(conn, task_id)
-    content = kanban_db.read_worker_log(task_id, tail_bytes=tail_bytes, board=slug, whole_lines=True)
+    content = kanban_db.read_worker_log(
+        task_id, tail_bytes=tail_bytes + _LOG_REDACTION_CONTEXT, board=slug, whole_lines=True)
     size = 0
     log_path = kanban_db.worker_log_path(task_id, board=slug)
     try:
@@ -647,7 +652,7 @@ def task_log(
         "size_bytes": size,
         "tail_bytes": tail_bytes,
         "truncated": size > tail_bytes,
-        "excerpt": _sanitize_log(content or ""),
+        "excerpt": _sanitize_log(content or "").encode()[-tail_bytes:].decode(errors="ignore"),
     }
 
 

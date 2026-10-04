@@ -589,7 +589,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       letterSpacing: 0,
       fontWeight: "400",
       fontWeightBold: "700",
-      macOptionIsMeta: true,
+      // Keep Option as the character-composition modifier (xterm.js default,
+      // matching Terminal.app / iTerm2 / VS Code). Option+L composes "@" on
+      // German QWERTZ; macOptionIsMeta would swallow the composed keypress and
+      // ship an ESC-prefixed sequence instead, so those layouts cannot type
+      // the character at all. The TUI has no alt-composed bindings. See
+      // #132897.
+      macOptionIsMeta: false,
       // Hold Option (Alt on Linux/Windows) to force native text selection
       // even when the inner Hermes TUI has enabled xterm mouse-events
       // mode (CSI ?1000h family). Without this, click-and-drag in the

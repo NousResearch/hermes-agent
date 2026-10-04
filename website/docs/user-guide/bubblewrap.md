@@ -151,8 +151,9 @@ entry your shells or desktop read at startup.
 So the backend does not start in that case. When it starts, it follows
 each dot symlink at the top of the home directory, one step at a time,
 and refuses with an error that names the entry when any link, directory
-or final target on the way lies in the working directory or in a
-read-write bind. A target that does not exist yet counts too, when a
+or final target on the way lies in the working directory, in a
+read-write bind or in the profile home (`HERMES_HOME/home` under
+`terminal.home_mode: profile`). A target that does not exist yet counts too, when a
 command could create it. The error is a configuration error, like an
 unusable bind: fix it by using a project directory as the working
 directory instead of the home directory or the directory that holds
@@ -185,20 +186,25 @@ Four things under `HERMES_HOME` stay reachable, because a command needs
 them:
 
 - the sandbox's own state directory;
-- the scratch path `HERMES_HOME/cache/scratch`, which is `TMPDIR` for
-  every command. On the host that directory is the temp directory of
-  every Hermes process, so the sandbox does not get it: each sandbox
-  environment has a scratch directory of its own, shown at that path. It
-  is writable (read-only in the `restricted` profile), a file written
-  there is still there for the next command, and it is removed with the
-  environment. Nothing that another session or another Hermes component
-  keeps in the shared directory is visible, whenever it is created;
+- a scratch directory. On the host, `HERMES_HOME/cache/scratch` is the
+  temp directory of every Hermes process, so the sandbox does not get
+  it. Each sandbox environment has a directory of its own inside it
+  (`HERMES_HOME/cache/scratch/hermes-bwrap-<id>`), at the same path on
+  the host and in the sandbox, and `TMPDIR`, `TMP` and `TEMP` of a
+  command point at it. It is writable (read-only in the `restricted`
+  profile), a file written there is still there for the next command,
+  and it is removed with the environment. The rest of the scratch path
+  is empty and read-only: nothing that another session or another
+  Hermes component keeps there is visible, whenever it is created, and
+  a write to `HERMES_HOME/cache/scratch/<name>` fails with a read-only
+  error. Use `$TMPDIR`. A `TMPDIR` you set yourself to another place is
+  left as it is;
 - the staged data directories (attachments, cached documents, images,
   audio, video, screenshots, pasted text and the other entries Hermes
   hands the model as file paths), read-only. The archive of oversized
   tool results (`cache/spillover`) is not one of them: it holds the tool
-  output of every session of the profile. An oversized result is written
-  into the sandbox's own state directory instead;
+  output of every session of the profile. A command sees only the
+  archive files that were handed to its own environment;
 - `HERMES_HOME/home` under `terminal.home_mode: profile`, where it is the
   subprocess `HOME`, readable and writable.
 
@@ -367,11 +373,11 @@ detached process could not outlive it.
   kept inside project directories are readable by a command. Keep secrets
   in dot entries, or name them in `bubblewrap_hide`. A dotfiles directory
   with a non-dot name (`~/dotfiles`) is visible as a whole.
-- The scratch directory of a sandbox is not the one the host-side tools
-  see. A file a command writes to `$TMPDIR` is in the sandbox's own
-  scratch directory; `read_file` and the other file tools run on the
-  host and find the shared `HERMES_HOME/cache/scratch` at that path. Use
-  the working directory for a file both sides need.
+- An archived tool result is readable by a command only in the
+  environment that it was handed to. One stored before the first
+  terminal command of a session, or handed to an environment that has
+  since been cleaned up after the idle time, is readable with
+  `read_file` and not with a command.
 - The staged data directories are shared by the sessions of a profile:
   a command can read an attachment or a cached document that another
   session of the same profile staged. Use separate profiles to keep

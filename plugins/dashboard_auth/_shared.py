@@ -69,6 +69,8 @@ def register_provider(
     Returns ``(kwargs, "")`` on success, ``(None, skip_reason)`` when ``settings`` raised
     ``SkipRegistration`` (logged at its level) or construction raised ``ValueError`` /
     ``ProviderError`` (logged as a warning). Callers store the reason in ``LAST_SKIP_REASON``.
+    ``(None, "")`` when ``ctx`` refused the provider (it logs why; e.g. a profile outside the launch
+    scope): the caller must not go on to register process-global routes for it.
     """
     try:
         kwargs = settings()
@@ -80,7 +82,8 @@ def register_provider(
         reason = f"{provider_cls.__name__} construction failed: {exc}"
         logger.warning("%s: %s", tag, reason)
         return None, reason
-    ctx.register_dashboard_auth_provider(provider)
+    if ctx.register_dashboard_auth_provider(provider) is None:
+        return None, ""
     return kwargs, ""
 
 

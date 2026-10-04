@@ -148,6 +148,22 @@ class TestRegister:
         # …while the operator routes beside it stay on the cookie gate.
         assert not token_auth.is_token_route("/api/plugins/kanban/board")
 
+    def test_refused_provider_does_not_rescope_the_route(self, plugin, monkeypatch):
+        """Dashboard auth belongs to the launch profile: the plugin context refuses another
+        profile's provider (no handle), and that profile's config must not then re-scope the
+        process-global route either."""
+        monkeypatch.setenv("HERMES_KANBAN_API_SECRET", _strong_secret())
+        monkeypatch.setattr(plugin, "_load_config_kanban_api_auth_section", lambda: {})
+        plugin.register(MagicMock())
+        route = "/api/plugins/kanban/v1/tasks"
+        launch_scope = token_auth._match_token_route(route)
+
+        monkeypatch.setattr(plugin, "_load_config_kanban_api_auth_section", lambda: {"scope": "drain"})
+        other_profile = MagicMock()
+        other_profile.register_dashboard_auth_provider.return_value = None
+        plugin.register(other_profile)
+        assert token_auth._match_token_route(route) == launch_scope
+
     def test_config_scope_applied(self, plugin, monkeypatch):
         s = _strong_secret()
         monkeypatch.setenv("HERMES_KANBAN_API_SECRET", s)
@@ -185,8 +201,9 @@ class TestRegister:
 class _Ctx:
     """Minimal PluginContext stand-in wired to the real provider registry."""
 
-    def register_dashboard_auth_provider(self, provider) -> None:
+    def register_dashboard_auth_provider(self, provider) -> object:
         register_provider(provider)
+        return object()  # the real context hands back a registration handle, None when it refuses
 
 
 @pytest.fixture

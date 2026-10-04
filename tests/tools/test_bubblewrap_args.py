@@ -730,3 +730,35 @@ class TestScratchDir:
     def test_no_scratch_bind_without_a_scratch_dir(self, paths):
         argv = build(paths=paths)
         assert not any(a.endswith(os.path.join("cache", "scratch")) for a in argv)
+
+
+class TestHideBelowRestoredRoots:
+    def test_hide_overlay_sits_after_the_bind_of_its_root(self, paths, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        scratch = hermes_home / "cache" / "scratch"
+        documents = hermes_home / "cache" / "documents"
+        (scratch / "keep").mkdir(parents=True)
+        documents.mkdir(parents=True)
+        (documents / "secret.txt").write_text("x")
+        hidden = sensitive_paths(paths["home"], str(hermes_home), (str(scratch / "keep"), str(documents / "secret.txt")))
+        assert str(scratch / "keep") in hidden and str(documents / "secret.txt") in hidden
+        argv = build(paths=paths, hermes_home=str(hermes_home), hidden_paths=hidden,
+                     scratch_dir=str(scratch), staged_roots=(str(documents),))
+        last = {token: i for i, token in enumerate(argv)}
+        i_scratch = next(i for i, a in enumerate(argv) if a == "--bind-try" and argv[i + 1] == str(scratch))
+        i_docs = next(i for i, a in enumerate(argv) if a == "--ro-bind-try" and argv[i + 1] == str(documents))
+        assert last[str(scratch / "keep")] > i_scratch and argv[last[str(scratch / "keep")] - 1] == "--tmpfs"
+        assert last[str(documents / "secret.txt")] > i_docs
+        assert argv[last[str(documents / "secret.txt")] - 2] == "--ro-bind"
+        i_state = next(i for i, a in enumerate(argv) if a == "--bind" and argv[i + 1] == paths["state_dir"])
+        assert last[str(documents / "secret.txt")] < i_state
+
+    def test_hide_entry_elsewhere_gets_no_late_overlay(self, paths, tmp_path):
+        hermes_home = tmp_path / "hermes"
+        scratch = hermes_home / "cache" / "scratch"
+        scratch.mkdir(parents=True)
+        other = tmp_path / "other"
+        other.mkdir()
+        hidden = sensitive_paths(paths["home"], str(hermes_home), (str(other),))
+        argv = build(paths=paths, hermes_home=str(hermes_home), hidden_paths=hidden, scratch_dir=str(scratch))
+        assert argv.count(str(other)) == 1

@@ -7,6 +7,7 @@ profiles' live adapters. The cron ticker's live enumerator is covered in ``tests
 """
 import asyncio
 import json
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -131,6 +132,38 @@ async def test_parked_profile_boot_and_reconcile(tmp_path, monkeypatch, caplog):
         marker.touch()
         assert (await runner.reconcile_served_profiles())["removed"] == ["worker"]
         assert _served_record(home) == ["default"]
+
+
+@pytest.mark.asyncio
+async def test_watcher_cycle_scans_profiles_off_the_event_loop(tmp_path, monkeypatch):
+    """The 30 s watcher's profiles/ walk, own-gateway probe and config/.env stats never run on the
+    loop thread: a slow disk there stalled every adapter (#100014)."""
+    import gateway.run as gateway_run
+    import gateway.run_profile_reconcile as reconcile
+
+    runner, home = _runner(tmp_path, monkeypatch)
+    _mkprofile(home, "alpha", "DISCORD_BOT_TOKEN=alpha-token\n")
+    calls = []
+
+    def _recorded(label, fn):
+        def wrapper(*args):
+            calls.append((label, threading.current_thread() is threading.main_thread()))
+            return fn(*args)
+        return wrapper
+
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        _mkprofile(home, "solo")  # still runs its own gateway: probed every cycle, never served
+        monkeypatch.setattr(gateway_run, "_multiplex_profile_homes",
+                            _recorded("walk", gateway_run._multiplex_profile_homes))
+        monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", _recorded("probe", lambda _home: 4242))
+        monkeypatch.setattr(reconcile, "profile_serve_signature",
+                            _recorded("stat", reconcile.profile_serve_signature))
+        result = await runner.reconcile_served_profiles(reason="watcher")
+
+    assert (result["added"], result["removed"], result["rescanned"]) == ([], [], [])
+    assert {label for label, _on_loop in calls} == {"walk", "probe", "stat"}
+    assert [label for label, on_loop in calls if on_loop] == [], calls
 
 
 @pytest.mark.asyncio

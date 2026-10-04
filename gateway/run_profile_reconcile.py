@@ -95,7 +95,6 @@ class GatewayProfileReconcileMixin:
         """Diff ``profiles/`` against the served set: start adapters for new profiles, tear down and
         unroute deleted ones, (re)build adapters for served profiles whose config/.env changed. Other
         profiles' adapters are never touched. Returns ``{"added", "removed", "rescanned", "served_profiles"}``."""
-        from gateway.run import _multiplex_profile_homes
         result: Dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "reason": reason}
         if not self._multiplex_on():
             return {**result, "multiplex": False, "served_profiles": self.served_profile_names()}
@@ -104,28 +103,33 @@ class GatewayProfileReconcileMixin:
             return {**result, "pending": True, "served_profiles": self.served_profile_names()}
         async with self._reconcile_lock():
             active = getattr(self, "_primary_profile_name", None) or "default"
-            current = {str(name): Path(home) for name, home in _multiplex_profile_homes(self.config)}
             known = dict(self._served_profile_homes or {})
-            from gateway.status import live_gateway_pid_for_home
-
-            blocked = set()
+            # The watcher runs this every 30 s: on the loop, a slow disk stalled every adapter (#100014).
+            current, own_gateway, changed = await self._run_in_executor_with_context(
+                self._scan_served_profiles, active, known, dict(self._served_profile_signatures or {}))
             warned = self._profile_own_gateway_warned or set()
-            for name in list(current):
-                if name == active or name in known:
-                    continue
-                if live_gateway_pid_for_home(current[name]) is not None:
-                    blocked.add(name)
-                    if name not in warned:
-                        logger.warning("[MULTIPLEX] Profile '%s' still runs its own gateway; "
-                                       "stop it before the host can serve this profile", name)
-                    del current[name]
-            self._profile_own_gateway_warned = blocked
-            sigs = self._served_profile_signatures or {}
+            for name in own_gateway:
+                if name not in warned:
+                    logger.warning("[MULTIPLEX] Profile '%s' still runs its own gateway; "
+                                   "stop it before the host can serve this profile", name)
+                del current[name]
+            self._profile_own_gateway_warned = set(own_gateway)
             added = [n for n in current if n not in known and n != active]
             removed = [n for n in known if n not in current and n != active]
-            changed = [n for n in current if n in known and n != active and n not in added
-                       and profile_serve_signature(current[n]) != sigs.get(n)]
             return await self._apply_profile_changes(current, added, removed, changed, reason=reason)
+
+    def _scan_served_profiles(self, active: str, known: Dict[str, "Path"], sigs: Dict[str, tuple]) -> tuple:
+        """Blocking half of a reconcile, run off the loop: walk ``profiles/`` (``profiles_to_serve`` resolves
+        paths and reads per-profile markers), probe each unserved profile for its own gateway and stat the
+        served profiles' config/.env. Returns ``(current, own_gateway, changed)``."""
+        from gateway.run import _multiplex_profile_homes
+        from gateway.status import live_gateway_pid_for_home
+        current = {str(name): Path(home) for name, home in _multiplex_profile_homes(self.config)}
+        own_gateway = [n for n in current if n != active and n not in known
+                       and live_gateway_pid_for_home(current[n]) is not None]
+        changed = [n for n in current if n in known and n != active
+                   and profile_serve_signature(current[n]) != sigs.get(n)]
+        return current, own_gateway, changed
 
     async def _apply_profile_changes(self, current, added, removed, changed, *, reason):
         """Apply a selected diff under the reconcile lock, shared by the watcher and control verbs."""
@@ -164,7 +168,8 @@ class GatewayProfileReconcileMixin:
                 result["rescanned"].append(name)
         self._served_profile_signatures = sigs
         # Deletion or parking during an awaited connect must win over publication.
-        live_now = {str(name) for name, _home in _multiplex_profile_homes(self.config)}
+        live_now = {str(name) for name, _home in await self._run_in_executor_with_context(
+            _multiplex_profile_homes, self.config)}
         for name in [n for n in current if n not in live_now and n != active]:
             await self._unserve_profile(name, current.pop(name))
             result["removed"].append(name)

@@ -622,13 +622,20 @@ class ProcessSession:
 
     def mark_exited(self, exit_code, reason: str = "exited", source: str = "") -> None:
         """Record an exit. A kill that raced the observer already recorded its own
-        exit_code/reason; never overwrite it."""
-        self.exited = True
-        if self.completion_reason != "killed":
-            self.exit_code = exit_code
-            self.completion_reason = reason
-            if source:
-                self.termination_source = source
+        exit_code/reason; never overwrite it.
+
+        Holds ``_lock`` so the terminal transition is ordered against heartbeat
+        publication (``_emit_heartbeat``), which takes the same lock. Without it, a due
+        tick selected just before exit can publish after the completion notice. Callers
+        must NOT wrap this in ``session._lock`` — it is a plain Lock, not an RLock.
+        """
+        with self._lock:
+            self.exited = True
+            if self.completion_reason != "killed":
+                self.exit_code = exit_code
+                self.completion_reason = reason
+                if source:
+                    self.termination_source = source
 
 
 # Watcher routing fields, in event-dict key order (``watcher_<key>`` on the session).
@@ -767,29 +774,37 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def _emit_heartbeat(self, session: ProcessSession, now: float) -> None:
         """Queue a heartbeat carrying the output since the last one. A tick with nothing new is
         skipped outright: every queued event costs the owner a full model turn, and "still running,
-        no output" is already visible on the process surfaces (status stack, /agents dock)."""
-        session._heartbeat_last = now
+        no output" is already visible on the process surfaces (status stack, /agents dock).
+
+        Liveness, delta accounting, and publication share ``session._lock`` with the terminal
+        transition, so a heartbeat either reaches the queue before completion or observes
+        ``exited`` and drops itself. Publishing inside the lock is safe: ``Queue.put`` on an
+        unbounded queue never blocks and never re-enters the registry.
+        """
         with session._lock:
+            if session.exited:
+                return
             delta = session.total_output_chars - session._heartbeat_total_at_last
             output = session.output_buffer[-delta:] if delta > 0 else ""
             session._heartbeat_total_at_last = session.total_output_chars
-        if not output:
-            return
-        if len(output) > HEARTBEAT_OUTPUT_CHARS:
-            cut = len(output) - HEARTBEAT_OUTPUT_CHARS
-            output = f"...({cut} earlier characters omitted)\n" + output[-HEARTBEAT_OUTPUT_CHARS:]
-        session._heartbeat_seq += 1
-        notification = {
-            **self._watch_event_base(session),
-            "type": "heartbeat",
-            "seq": session._heartbeat_seq,
-            "interval": session.heartbeat_seconds,
-            "elapsed": int(now - session.started_at) if session.started_at else 0,
-            "output": output,
-            "started_at": session.started_at,
-        }
-        _redact_process_result(notification)
-        self.completion_queue.put(notification)
+            session._heartbeat_last = now
+            if not output:
+                return
+            if len(output) > HEARTBEAT_OUTPUT_CHARS:
+                cut = len(output) - HEARTBEAT_OUTPUT_CHARS
+                output = f"...({cut} earlier characters omitted)\n" + output[-HEARTBEAT_OUTPUT_CHARS:]
+            session._heartbeat_seq += 1
+            notification = {
+                **self._watch_event_base(session),
+                "type": "heartbeat",
+                "seq": session._heartbeat_seq,
+                "interval": session.heartbeat_seconds,
+                "elapsed": int(now - session.started_at) if session.started_at else 0,
+                "output": output,
+                "started_at": session.started_at,
+            }
+            _redact_process_result(notification)
+            self.completion_queue.put(notification)
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
@@ -2140,8 +2155,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # the pipe before the buffered tail is ingested. It wakes within
             # the reader's bounded select interval (or after one final chunk).
             session._reader_finish_requested.set()
-            with session._lock:
-                session.mark_exited(rc)
+            session.mark_exited(rc)
             logger.info(
                 "Reconciled session %s: direct child exited with code %s; "
                 "reader will publish the owned completion after its final drain.",
@@ -2165,8 +2179,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                         fcntl.fcntl(fd, fcntl.F_SETFL, flags)
             except Exception as e:
                 logger.debug("Non-blocking drain failed for %s: %s", session.id, e)
-        with session._lock:
-            session.mark_exited(rc)
+        session.mark_exited(rc)
         logger.info(
             "Reconciled session %s: direct child exited with code %s but reader "
             "was still blocked (orphaned pipe). Flipped to exited.",

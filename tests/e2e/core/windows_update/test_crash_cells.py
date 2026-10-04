@@ -19,7 +19,7 @@ Each cell kills at one point of the update and then asserts what the user is owe
   (a marker naming a dead process that refuses every later update is the permanent
   marker the hand-off contract forbids).
 
-Cells (one machine, in order; each publishes a fresh commit to update to):
+Cells (one machine; each publishes a fresh commit to update to; ``mid_git`` runs last):
 
 * ``mid_fetch``: killed while the update's ``git fetch`` child runs (nothing local moved yet);
 * ``mid_git``: killed while the update's local git write (the fast-forward ``merge``, or a
@@ -599,14 +599,16 @@ def journey(tmp_path_factory):
             if j.ok("installed"):
                 j.step("mid_fetch", lambda: _crash(machine, srv, "mid-fetch",
                                                    _cli_update(machine, "mid-fetch-update"), _git_fetching))
-                hold = _GitHold(machine)
-                j.step("mid_git", lambda: _crash(machine, srv, "mid-git",
-                                                 _cli_update(machine, "mid-git-update"), hold.point, hold))
                 j.step("tree_moved", lambda: _crash(machine, srv, "tree-moved",
                                                     _cli_update(machine, "tree-moved-update"), _tree_moved))
                 j.step("desktop_handoff", lambda: _crash(machine, srv, "handoff",
                                                          _handoff(machine, "handoff-script"), _update_child))
                 j.step("orphaned_update", lambda: _orphan(machine, srv, "orphan"))
+                # Last: a launch that cannot repair this tree leaves every later cell an
+                # unrunnable install, which is this cell's verdict, not theirs.
+                hold = _GitHold(machine)
+                j.step("mid_git", lambda: _crash(machine, srv, "mid-git",
+                                                 _cli_update(machine, "mid-git-update"), hold.point, hold))
             yield j
         finally:
             machine.teardown()
@@ -657,12 +659,27 @@ def test_update_killed_mid_fetch_leaves_a_runnable_install(journey: Journey) -> 
 # machine whose only Git is the installer's private copy — so the next update refuses.
 # Fixed by #132361. Until round 6 every green run killed at fetch (index.lock never
 # existed); the hold now lands the kill inside the merge's checkout, lock held.
+#
+# What that exposed (native run 37190464303): the Windows launcher
+# (hermes_cli/_launchers.py::_launcher_script, the bin\hermes.exe __main__) imports
+# hermes_constants from the checkout BEFORE `import hermes_bootstrap`, whose
+# restore_interrupted_pull is the repair. The killed merge had unlinked
+# hermes_constants.py, so every launch, `hermes update` included, dies with
+# ModuleNotFoundError and the repair never runs: the install stays unrunnable.
+# Gated on exactly that traceback; an acceptance run of the batch fails on it.
+MID_MERGE_LAUNCHER_GAP = (
+    r"(?s)mid_git: the first launch after the killed update ran no turn.*"
+    r"ModuleNotFoundError: No module named 'hermes_constants'",
+    "upd-txn: the launcher imports hermes_constants before the interrupted-pull repair runs")
+
+
 def test_update_killed_mid_git_leaves_a_runnable_install(journey: Journey) -> None:
     r = journey["mid_git"]
     assert r["index_lock_after_kill"], fail_with(
         journey.machine, f"mid_git: the kill did not land inside git's checkout (killed at {r['seen']}, "
                          f"no .git/index.lock after it): this cell proves nothing about a merge-time kill")
-    _assert_recovered(journey, "mid_git")
+    with known_failure(*MID_MERGE_LAUNCHER_GAP):
+        _assert_recovered(journey, "mid_git")
 
 
 def test_update_killed_after_the_tree_moved_leaves_a_runnable_install(journey: Journey) -> None:

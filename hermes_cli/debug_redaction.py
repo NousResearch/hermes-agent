@@ -66,12 +66,13 @@ _KEY = rf"[{_KEY_CHARS}]+(?::[{_KEY_CHARS}]+)*=*{_KEY_END}"
 _NOT_WORD = rf"(?!(?-i:[A-Z]?[a-z]{{1,19}}|[A-Z]{{1,19}}){_KEY_END})"
 # agent.redact masks the scheme of ``x-api-key: Basic <key>`` to ``***`` and
 # keeps the key, so ``***`` is a scheme too and the key is the value when it
-# is key-shaped (not a word; 4+ chars before any colon, or 6+ mixing letters
-# and digits) or a short word ending the header
-# (``Basic short``). Prose after a masked value stays.
+# is 8+ key chars (any case, letters-only included: fail closed), key-shaped
+# (not a word; 4+ chars before any colon, or 6+ mixing letters and digits) or
+# a short word ending the header (``Basic short``). Shorter prose after a
+# masked value stays.
 _SCHEME = (
     r"(?:Bearer|Basic|Digest)\s+|\*\*\*[ \t]+"
-    rf"(?={_NOT_WORD}(?=[^\s:]{{4}}|(?=\S*[A-Za-z])(?=\S*[0-9])\S{{6}}){_KEY}|[A-Za-z]{{4,7}}[ \t]*(?:[\r\n'\",;}}\]]|$))"
+    rf"(?=[{_KEY_CHARS}]{{8,}}=*(?![{_KEY_CHARS}=])|{_NOT_WORD}(?=[^\s:]{{4}}|(?=\S*[A-Za-z])(?=\S*[0-9])\S{{6}}){_KEY}|[A-Za-z]{{4,7}}[ \t]*(?:[\r\n'\",;}}\]]|$))"
     rf"(?!(?:{_HEADER_NAME_PATTERN})\b\s*[:=])"
 )
 _BARE_HEADER_RE = re.compile(

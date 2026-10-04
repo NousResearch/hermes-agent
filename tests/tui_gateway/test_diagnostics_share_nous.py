@@ -193,7 +193,7 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
     # Prose after an already-masked value is not a key: kept, and a fixed point.
     benign = real_redact("x-api-key: *** see docs")
     assert benign.endswith(" see docs") and real_redact(benign) == benign
-    for prose in ("see: documentation", "time: 12:30:45", "configured via env", "undefined"):
+    for prose in ("see: documentation", "time: 12:30:45"):
         kept = real_redact(f"x-api-key: *** {prose}")
         assert kept.endswith(f" {prose}") and real_redact(kept) == kept
     # An RFC 6750 challenge is auth-params, not a token.
@@ -202,6 +202,7 @@ def test_redacted_support_egress_scrubs_structured_values_and_errors(
     for leaky, key in (
         ("x-api-key: Bearer abc1234", "abc1234"),
         ("-H 'x-auth-token: *** s3cr3t'", "s3cr3t"),
+        ("x-api-key: *** qwertyuiopas", "qwertyuiopas"),
         ("--header x-api-key *** abc1234", "abc1234"),
         ("x-api-key: *** " + "q" * 32, "q" * 32),
         ("--header x-api-key *** " + "Q" * 32, "Q" * 32),

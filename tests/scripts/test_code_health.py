@@ -70,6 +70,19 @@ def test_ratchet_blocks_growth_new_and_swapped_violations(tmp_path, capsys):
     assert code == 1 and "fresh" in out  # deleting a violation never pays for an unrelated one
 
 
+def test_enforcement_switch_is_read_from_the_base(tmp_path, capsys):
+    repo, base = _repo(tmp_path)
+    grown = _LEGACY + "    if x == 99:\n        return 99\n\n\n" + _SWALLOW
+    switch = "scripts/code_health/config.py"
+    # A PR cannot relax its own check: the switch it commits is not the one that applies.
+    assert _verdict(repo, base, {"pkg/a.py": grown, switch: 'ENFORCEMENT = "off"\n'}, capsys)[0] == 1
+    for mode, expected in (("advisory", 0), ("off", 0), ("blocking", 1)):
+        main_tip = _commit(repo, {switch: f'ENFORCEMENT = "{mode}"\n'})
+        code, out = _verdict(repo, main_tip, {"pkg/a.py": grown}, capsys)
+        assert code == expected, (mode, out)
+        assert ("CC 23 > 22" in out) == (mode != "off"), (mode, out)
+
+
 def test_moved_code_keeps_its_cap(tmp_path, capsys):
     repo, base = _repo(tmp_path)
     for split in ({"pkg/a.py": _SWALLOW, "pkg/a_legacy.py": _LEGACY},

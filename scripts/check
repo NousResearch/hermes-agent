@@ -4,17 +4,19 @@
     python scripts/check                # everything, against the merge-base with origin/main
     python scripts/check --only health  # just the code-health ratchet
     python scripts/check --staged       # judge the index (the pre-commit hook runs this)
-    python scripts/check --install-hook # run it as the git pre-commit hook
+    python scripts/check --commit REV   # judge one commit (the pre-push hook runs this)
+    python scripts/check --install-hook [pre-commit|pre-push]   # run it automatically
+    python scripts/check --uninstall-hook
 
 CI runs the same command (``.github/workflows/lint.yml``), so a green local run means a green
-lint lane. The pre-commit hook is skippable (``git commit --no-verify``); CI is not.
+lint lane. Hooks are skippable (``--no-verify``); CI is not. The code-health part honours the
+``ENFORCEMENT`` switch in ``scripts/code_health/config.py`` (blocking / advisory / off).
 """
 
 from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,16 +32,28 @@ sys.path.insert(0, str(REPO))
 from scripts.code_health import gitio  # noqa: E402
 from scripts.code_health.ruff_runner import resolve_ruff  # noqa: E402
 
-_HOOK_MARK = "# hermes-agent scripts/check pre-commit hook"
-_HOOK = f"""#!/usr/bin/env bash
-{_HOOK_MARK} (installed by `scripts/check --install-hook`; skip once with --no-verify)
+_HOOK_MARK = "# hermes-agent scripts/check hook"
+_HOOK_HEAD = f"""#!/usr/bin/env bash
+{_HOOK_MARK} (`scripts/check --install-hook`; skip once with --no-verify)
 repo="$(git rev-parse --show-toplevel)"
-# Hooks are shared by every worktree; a branch that predates scripts/check commits unchecked.
+# Hooks are shared by every worktree; a branch that predates scripts/check is not checked.
 [ -f "$repo/scripts/check" ] || exit 0
 py=python3
 command -v python3 >/dev/null 2>&1 || py=python
-exec "$py" "$repo/scripts/check" --staged
 """
+# pre-push reads "<local ref> <local sha> <remote ref> <remote sha>" per pushed ref; an all-zero
+# local sha is a branch deletion. Each pushed commit is judged as CI will judge the PR.
+_HOOKS = {
+    "pre-commit": _HOOK_HEAD + 'exec "$py" "$repo/scripts/check" --staged\n',
+    "pre-push": _HOOK_HEAD + """status=0
+while read -r _ local_sha _ _; do
+  case "$local_sha" in
+    *[!0]*) "$py" "$repo/scripts/check" --commit "$local_sha" </dev/null || status=1 ;;
+  esac
+done
+exit $status
+""",
+}
 
 # name -> argv (relative to the repo root); mirrors the blocking steps in lint.yml.
 _GUARDS = {
@@ -66,25 +80,30 @@ def _run(job: _Job) -> tuple[int, str]:
     return proc.returncode, (proc.stdout + proc.stderr).strip()
 
 
-@contextmanager
-def _index_snapshot() -> Iterator[tuple[Path, dict[str, str]]]:
-    """The staged tree checked out on its own, plus git env that sees exactly that tree.
+def _git_in(env: dict[str, str], *args: str) -> None:
+    proc = subprocess.run(["git", *args], cwd=REPO, env=env, capture_output=True, text=True,
+                          stdin=subprocess.DEVNULL, timeout=300, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
 
-    Unstaged edits stay where they are (no stash, no checkout); the index is read from a copy,
-    so nothing a checker runs can rewrite the user's real index. Always a snapshot, even when
-    the worktree looks clean: ignored files (scratch, build output) are invisible to git status
-    but not to the guards that walk the disk.
+
+@contextmanager
+def _tree_snapshot(tree: str) -> Iterator[tuple[Path, dict[str, str]]]:
+    """``tree`` checked out on its own, plus git env that sees exactly that tree.
+
+    The user's worktree and index are never touched (no stash, no checkout): the tree is read
+    into a private index and written to a temp dir. Always a snapshot, even when the worktree
+    looks clean: ignored files (scratch, build output) are invisible to git status but not to
+    the guards that walk the disk.
     """
-    git_dir = Path(gitio.git(REPO, "rev-parse", "--absolute-git-dir").strip())
-    index = Path(gitio.git(REPO, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
-    with tempfile.TemporaryDirectory(prefix="hermes-check-index-") as tmp:
+    git_dir = gitio.git(REPO, "rev-parse", "--absolute-git-dir").strip()
+    with tempfile.TemporaryDirectory(prefix="hermes-check-tree-") as tmp:
         root = Path(tmp) / "tree"
-        root.mkdir()  # Git for Windows will not create the --prefix directory itself
-        gitio.git(REPO, "checkout-index", "-a", f"--prefix={root}{os.sep}")
-        index_copy = Path(tmp) / "index"
-        shutil.copyfile(index, index_copy)
-        env = {**os.environ, "GIT_DIR": str(git_dir), "GIT_WORK_TREE": str(root),
-               "GIT_INDEX_FILE": str(index_copy)}
+        root.mkdir()
+        env = {**os.environ, "GIT_DIR": git_dir, "GIT_WORK_TREE": str(root),
+               "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        _git_in(env, "read-tree", tree)
+        _git_in(env, "checkout-index", "-a")
         yield root, env
 
 
@@ -108,29 +127,52 @@ def _jobs(only: str | None, base: str | None, head: str | None,
     return jobs
 
 
+def _run_jobs(jobs: dict[str, _Job]) -> dict[str, tuple[int, str]]:
+    with ThreadPoolExecutor(max_workers=len(jobs) or 1) as pool:
+        return dict(zip(jobs, pool.map(_run, jobs.values()), strict=True))
+
+
 def _run_all(args: argparse.Namespace) -> dict[str, tuple[int, str]]:
-    if not args.staged:
-        jobs = _jobs(args.only, args.base, None)
-        with ThreadPoolExecutor(max_workers=len(jobs) or 1) as pool:
-            return dict(zip(jobs, pool.map(_run, jobs.values()), strict=True))
-    # Pre-commit: judge the bytes being committed, not the working tree.
-    tree = gitio.git(REPO, "write-tree").strip()
-    with _index_snapshot() as (root, env):
-        jobs = _jobs(args.only, args.base, tree, root, env)
-        with ThreadPoolExecutor(max_workers=len(jobs) or 1) as pool:
-            return dict(zip(jobs, pool.map(_run, jobs.values()), strict=True))
+    if not (args.staged or args.commit):
+        return _run_jobs(_jobs(args.only, args.base, None))
+    # Hooks judge the bytes being committed or pushed, never the working tree.
+    if args.staged:
+        tree, base = gitio.git(REPO, "write-tree").strip(), args.base
+    else:
+        commit = gitio.resolve_rev(REPO, args.commit)
+        tree, base = gitio.resolve_tree(REPO, commit), args.base or gitio.default_base(REPO, commit)
+    with _tree_snapshot(tree) as (root, env):
+        return _run_jobs(_jobs(args.only, base, tree, root, env))
 
 
-def install_hook() -> int:
-    hooks = Path(gitio.git(REPO, "rev-parse", "--path-format=absolute", "--git-path", "hooks").strip())
-    target = hooks / "pre-commit"
-    if target.exists() and _HOOK_MARK not in target.read_text(encoding="utf-8-sig", errors="replace"):
+def _hooks_dir() -> Path:
+    return Path(gitio.git(REPO, "rev-parse", "--path-format=absolute", "--git-path", "hooks").strip())
+
+
+def _ours(target: Path) -> bool:
+    return _HOOK_MARK in target.read_text(encoding="utf-8-sig", errors="replace")
+
+
+def install_hook(kind: str) -> int:
+    hooks = _hooks_dir()
+    target = hooks / kind
+    if target.exists() and not _ours(target):
         print(f"scripts/check: {target} exists and is not ours; add `python scripts/check` to it")
         return 1
     hooks.mkdir(parents=True, exist_ok=True)
-    target.write_text(_HOOK, encoding="utf-8", newline="\n")
+    target.write_text(_HOOKS[kind], encoding="utf-8", newline="\n")
     os.chmod(target, 0o755)  # windows-footgun: ok — chmod +x is a no-op on Windows, harmless
-    print(f"scripts/check: pre-commit hook installed at {target}")
+    print(f"scripts/check: {kind} hook installed at {target} (every worktree of this clone)")
+    return 0
+
+
+def uninstall_hooks() -> int:
+    removed = [t for t in (_hooks_dir() / k for k in _HOOKS) if t.exists() and _ours(t)]
+    for target in removed:
+        target.unlink()
+        print(f"scripts/check: removed {target}")
+    if not removed:
+        print("scripts/check: no scripts/check hooks installed")
     return 0
 
 
@@ -139,12 +181,18 @@ def main(argv: list[str] | None = None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--only", help=f"comma list of: {', '.join([*_GUARDS, 'ruff', 'health'])}")
     parser.add_argument("--base", help="base revision for the code-health ratchet")
-    parser.add_argument("--staged", action="store_true",
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--staged", action="store_true",
                         help="check the index (what `git commit` records), not the working tree")
-    parser.add_argument("--install-hook", action="store_true")
+    target.add_argument("--commit", metavar="REV", help="check one commit's tree (pre-push)")
+    parser.add_argument("--install-hook", nargs="?", const="pre-commit", choices=sorted(_HOOKS),
+                        help="run on every commit (default) or every push")
+    parser.add_argument("--uninstall-hook", action="store_true", help="remove our git hooks")
     args = parser.parse_args(argv)
     if args.install_hook:
-        return install_hook()
+        return install_hook(args.install_hook)
+    if args.uninstall_hook:
+        return uninstall_hooks()
     try:
         results = _run_all(args)
     except RuntimeError as exc:

@@ -208,7 +208,8 @@ For tests, use the independent test environment in `CONTRIBUTING.md` (or Nix);
 PM activation's `PYTHONPATH` does not survive the test runner's environment scrub.
 `scripts/run_tests.sh` probes `.venv`, then `venv`, then `$HOME/.hermes/hermes-agent/venv`
 (worktrees sharing the main checkout's venv). **`python scripts/check`** runs every blocking lint
-check CI runs, with CI's pinned tools; run it before pushing (`--install-hook` = pre-commit hook).
+check CI runs, with CI's pinned tools; run it before pushing (`--install-hook pre-push` runs it on
+every push).
 
 ## Project Structure
 

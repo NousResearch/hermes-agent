@@ -41,10 +41,10 @@ def resolve_tree(repo: Path, rev: str) -> str:
     return git(repo, "rev-parse", "--verify", f"{rev}^{{tree}}").strip()
 
 
-def default_base(repo: Path) -> str:
-    """Merge-base of HEAD with origin/main (local runs); CI passes ``--base`` explicitly."""
+def default_base(repo: Path, tip: str = "HEAD") -> str:
+    """Merge-base of ``tip`` with origin/main (local runs); CI passes ``--base`` explicitly."""
     for ref in ("origin/main", "main"):
-        out = git(repo, "merge-base", "HEAD", ref, check=False).strip()
+        out = git(repo, "merge-base", tip, ref, check=False).strip()
         if out:
             return out
     raise RuntimeError("no merge-base with origin/main or main; pass --base")

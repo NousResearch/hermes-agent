@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from dataclasses import asdict
@@ -25,7 +26,18 @@ _FOOTER = """
 Each function and file has its own cap: its value on main if it is already over target,
 otherwise the target. New code meets the target; existing code may only go down. Fix the code
 (the `fix:` line is the repo's remedy); a genuine exception takes a reviewed comment on the line,
-`# health: allow <RULE> -- <why>`. Rules and targets: scripts/code_health/config.py."""
+`# health: allow <RULE> -- <why>`. Rules and targets: scripts/code_health/config.py.
+Reproduce locally: python scripts/check --only health (every lint check: python scripts/check;
+on every push: python scripts/check --install-hook pre-push)."""
+
+_SWITCH_FILE = "scripts/code_health/config.py"
+_SWITCH = re.compile(r"^ENFORCEMENT\s*=\s*[\"'](blocking|advisory|off)[\"']", re.MULTILINE)
+
+
+def enforcement(repo: Path, base: str) -> str:
+    """The master switch as committed on the base revision; a base without one is blocking."""
+    found = _SWITCH.search(gitio.read_file(repo, base, _SWITCH_FILE) or "")
+    return found.group(1) if found else "blocking"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -48,6 +60,10 @@ def _report(repo: Path, head: str | None) -> int:
 
 def run(repo: Path, base: str, head: str | None, as_json: bool = False) -> int:
     started = time.monotonic()
+    mode = enforcement(repo, base)
+    if mode == "off":
+        print(f"code health: off (ENFORCEMENT in {_SWITCH_FILE} on {base[:12]})")
+        return 0
     changes = gitio.changed_files(repo, base, head)
     head_paths = sorted({c.new for c in changes if c.new and in_scope(c.new)})
     base_paths = sorted({c.old for c in changes if c.old and in_scope(c.old)})
@@ -63,9 +79,10 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False) -> int:
     findings = compare(base_m, head_m, changes)
     apply_allows(findings, head_m)
     blocking, advisory = verdict(findings)
+    failed = bool(blocking) and mode == "blocking"
     if as_json:
         print(json.dumps([asdict(f) for f in findings], indent=2))
-        return 1 if blocking else 0
+        return 1 if failed else 0
     body = format_findings(findings)
     if body:
         print(body)
@@ -74,7 +91,9 @@ def run(repo: Path, base: str, head: str | None, as_json: bool = False) -> int:
           f"{advisory} advisory ({elapsed:.1f}s)")
     if blocking:
         print(_FOOTER)
-    return 1 if blocking else 0
+    if blocking and not failed:
+        print(f"\nadvisory mode (ENFORCEMENT in {_SWITCH_FILE}): not failing on the above.")
+    return 1 if failed else 0
 
 
 def main(argv: list[str] | None = None) -> int:

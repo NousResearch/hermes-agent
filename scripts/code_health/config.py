@@ -9,6 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fnmatch import fnmatch
 
+# Master switch. Read from the BASE revision, so a PR cannot relax its own check, and honoured
+# everywhere the ratchet runs (CI, `scripts/check`, the git hooks). "blocking": findings fail;
+# "advisory": findings print, the run passes; "off": the ratchet is skipped. Flip it with a
+# one-line commit to main; a single rule can instead be demoted with ``blocking=False`` below.
+ENFORCEMENT = "blocking"
+
 # Per-unit targets. A unit already over its target keeps its own current value as its cap
 # (measured on the base revision) and may only go down; new units must meet the target.
 TARGETS = {

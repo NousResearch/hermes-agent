@@ -10,19 +10,12 @@ from __future__ import annotations
 import sqlite3
 import uuid
 from datetime import datetime
-from typing import Optional
 
 import pytest
 
 from hermes_state import SessionDB
 from hermes_cli.session_recovery import _quoted_columns, _table_columns
-from hermes_cli.session_lost_and_found import (
-    LayoutEvidence,
-    _declared_types,
-    _is_session_id,
-    classify_lost_and_found_row,
-    infer_physical_layouts,
-)
+from hermes_cli.session_lost_and_found import _is_session_id, map_lost_and_found_rows
 
 # Exactly as the minting sites build them (see module docstring for file/line).
 CRON_ID = "cron_0b36145ae5c7_20260626_100059"
@@ -67,20 +60,21 @@ def _sessions_rows(conn: sqlite3.Connection) -> tuple[list[str], list[tuple]]:
     return columns, [tuple(r) for r in conn.execute(f"SELECT {quoted} FROM sessions")]
 
 
-def _infer_like_recovery(conn: sqlite3.Connection, columns: list[str],
-                         rows: list[tuple]) -> tuple[Optional[list], int]:
-    """Run inference the way the salvage lane does: only rows that CLASSIFY as
-    ``sessions`` become layout evidence (session_lost_and_found.py, pass 1)."""
-    evidence = LayoutEvidence("sessions")
-    kept = 0
-    for cells in rows:
-        if classify_lost_and_found_row(len(cells), cells) == "sessions":
-            evidence.add(cells)
-            kept += 1
-    mapping = infer_physical_layouts(
-        evidence, _declared_types(conn, "sessions")
-    ).get(len(columns))
-    return mapping, kept
+def _map_as_salvage(tmp_path, columns: list[str], rows: list[tuple]) -> dict:
+    """Feed the rows to the real salvage mapper as schema-less lost_and_found records."""
+    lf = sqlite3.connect(str(tmp_path / "lost_and_found.db"), isolation_level=None)
+    SessionDB(db_path=tmp_path / "mapped.db").close()
+    dest = sqlite3.connect(str(tmp_path / "mapped.db"), isolation_level=None)
+    try:
+        cells = ", ".join(f"c{i}" for i in range(len(columns)))
+        lf.execute(f"CREATE TABLE lost_and_found (rootpgno INTEGER, pgno INTEGER, nfield INTEGER, id INTEGER, {cells})")
+        lf.executemany(f"INSERT INTO lost_and_found VALUES ({', '.join('?' * (4 + len(columns)))})",
+                       [(2, 5, len(columns), rowid, *row) for rowid, row in enumerate(rows, 1)])
+        dest.execute("PRAGMA foreign_keys=OFF")
+        return map_lost_and_found_rows(lf, dest)
+    finally:
+        lf.close()
+        dest.close()
 
 
 @pytest.fixture
@@ -100,7 +94,7 @@ def store(tmp_path):
         yield add, bulk, lambda: sqlite3.connect(str(tmp_path / "state.db"))
 
 
-def test_layout_inference_survives_every_derived_id_shape(store) -> None:
+def test_layout_inference_survives_every_derived_id_shape(store, tmp_path) -> None:
     """Each derived shape, present as a parent id, must leave inference intact."""
     add, bulk, connect = store
     bulk(20)
@@ -111,8 +105,9 @@ def test_layout_inference_survives_every_derived_id_shape(store) -> None:
     conn = connect()
     try:
         columns, rows = _sessions_rows(conn)
-        mapping, kept = _infer_like_recovery(conn, columns, rows)
-        assert mapping is not None and kept == len(rows)
-        assert all(mapping[i] == columns[i] for i in range(len(columns)))
     finally:
         conn.close()
+    report = _map_as_salvage(tmp_path, columns, rows)
+    assert report["mapped"]["sessions"] == len(rows)
+    assert report["unrecognized_layout_rows"] == 0
+    assert report["inferred_layouts"]["sessions"][str(len(columns))] == columns

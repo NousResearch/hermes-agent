@@ -156,7 +156,16 @@ def _prepare_session_socket_dir(session_name: str) -> str:
 def _agent_browser_command_env(socket_dir: str) -> Dict[str, str]:
     """Credential-scrubbed env for one command: PATH fallbacks, the session socket dir, and
     daemon-side idle self-termination (agent-browser 0.24+) mirroring the Python janitor
-    unless the user set ``AGENT_BROWSER_IDLE_TIMEOUT_MS`` explicitly."""
+    unless the user set ``AGENT_BROWSER_IDLE_TIMEOUT_MS`` explicitly.
+
+    ``AGENT_BROWSER_PROFILE`` stays deliberately UNSET here (#132755). Setting it to one jar for
+    the whole profile is what the screen path does, and it does not transfer: every browser task
+    gets its own agent-browser session, and Chromium's singleton means the first one to start
+    owns the pinned ``--user-data-dir`` while the rest die with "Chrome exited early (exit code
+    21)" — measured, not assumed. Sharing one jar across concurrent sessions is the screen
+    path's job precisely because a human takes the lease there; on a host lane nobody does, so
+    each session keeps agent-browser's own per-daemon dir and no session can lock another out.
+    """
     from pm import env_for
 
     env = _bt._build_browser_env()
@@ -726,9 +735,12 @@ def _spawn_and_collect(
     browser_env = _agent_browser_command_env(task_socket_dir)
 
     # Lightpanda rejects Chromium-only launch flags: strip current and legacy vars;
-    # Chrome commands and fallback use the shared Chromium policy.
+    # Chrome commands and fallback use the shared Chromium policy. The persistent user-data-dir
+    # is one of them — handed to Lightpanda it is at best ignored and at worst a config error,
+    # and the engine has no Chromium jar to keep state in anyway (#132755).
     if engine == "lightpanda":
-        stripped = [browser_env.pop(k, None) for k in ("AGENT_BROWSER_ARGS", "AGENT_BROWSER_CHROME_FLAGS")]
+        stripped = [browser_env.pop(k, None) for k in ("AGENT_BROWSER_ARGS", "AGENT_BROWSER_CHROME_FLAGS",
+                                                        "AGENT_BROWSER_PROFILE")]
         if any(v is not None for v in stripped):
             _bt.logger.debug("browser: stripped Chromium-only AGENT_BROWSER_ARGS/AGENT_BROWSER_CHROME_FLAGS "
                              "for Lightpanda command %s (agent-browser rejects them with --engine lightpanda)",

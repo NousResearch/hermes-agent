@@ -1020,6 +1020,56 @@ class TestScratchDirIntegration:
         finally:
             env.cleanup()
 
+    def test_temp_variables_are_retargeted_with_a_symlinked_hermes_home(self, work_dir, hermes_home, host_dir, monkeypatch):
+        # HERMES_HOME, and with it the temp variables, name the home through a link.
+        link = host_dir / "hermes-link"
+        link.symlink_to(hermes_home)
+        monkeypatch.setenv("HERMES_HOME", str(link))
+        for name in ("TMPDIR", "TMP", "TEMP"):
+            monkeypatch.setenv(name, str(link / "cache" / "scratch"))
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            private = _tmpdir(env)
+            assert private.parent == hermes_home / "cache" / "scratch"
+            made = env.execute("mktemp")
+            assert made["returncode"] == 0, made["output"]
+            assert made["output"].strip().startswith(str(private) + os.sep)
+        finally:
+            env.cleanup()
+
+    def test_scratch_dir_pruned_while_the_environment_is_idle_is_made_again(self, work_dir, hermes_home):
+        from hermes_constants import prune_scratch_dir
+
+        scratch = hermes_home / "cache" / "scratch"
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            private = _tmpdir(env)
+            long_ago = time.time() - 25 * 3600
+            os.utime(private, (long_ago, long_ago))
+            assert prune_scratch_dir(scratch) == 1 and not private.exists()
+            result = env.execute("printf again > $TMPDIR/f && cat $TMPDIR/f")
+            assert result["returncode"] == 0, result["output"]
+            assert result["output"].strip() == "again"
+        finally:
+            env.cleanup()
+
+    def test_a_command_refreshes_the_scratch_dir_so_a_used_environment_is_not_pruned(self, work_dir, hermes_home):
+        from hermes_constants import prune_scratch_dir
+
+        scratch = hermes_home / "cache" / "scratch"
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            private = _tmpdir(env)
+            assert env.execute("printf kept > $TMPDIR/f")["returncode"] == 0
+            long_ago = time.time() - 25 * 3600
+            for path in (private / "f", private):
+                os.utime(path, (long_ago, long_ago))
+            assert env.execute("true")["returncode"] == 0
+            assert prune_scratch_dir(scratch) == 0
+            assert env.execute("cat $TMPDIR/f")["output"].strip() == "kept"
+        finally:
+            env.cleanup()
+
     def test_scratch_is_read_only_under_the_restricted_profile(self, work_dir, hermes_home):
         scratch = hermes_home / "cache" / "scratch"
         env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=BubblewrapConfig(profile="restricted"))

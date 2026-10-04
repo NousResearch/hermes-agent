@@ -47,6 +47,7 @@ from hermes_cli.kanban_owner_recovery import (
 NOW = int(time.time())
 HOST = kb._claimer_id().split(":", 1)[0]
 FINGERPRINT = "6a232414-2dbf-40ab-a534-d9b71db05658:116|4162240"
+_LOCAL_PIDNS = kbd._kbp._pid_namespace_id()
 
 
 def _absent_pid(base: int = 3_500_000) -> int:
@@ -95,9 +96,10 @@ class _Board:
         run = int(run_id)
         self.conn.execute(
             "INSERT INTO tasks (id, title, assignee, status, created_at, claim_lock, claim_expires, "
-            "worker_pid, worker_started_at, last_heartbeat_at, current_run_id, started_at, priority) "
-            "VALUES (?, ?, 'default', 'running', ?, ?, ?, ?, ?, ?, ?, ?, 5)",
+            "claim_pidns, worker_pid, worker_started_at, last_heartbeat_at, current_run_id, started_at, priority) "
+            "VALUES (?, ?, 'default', 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, 5)",
             (tid, tid, NOW - 86400, lock, expires,
+             _LOCAL_PIDNS,
              worker_pid if record_worker_pid else None,
              worker_fingerprint if record_worker_pid else None,
              (NOW - heartbeat_age) if heartbeat_age is not None else None, run, started),

@@ -442,7 +442,7 @@ def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
     *,
-    claim_pidns: Optional[str],
+    claim_pidns: Optional[str] = None,
     signal_fn=None,
     started_at=None,
 ) -> dict[str, Any]:
@@ -536,7 +536,7 @@ def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[s
     One row's failure (signal, /proc probe) is logged and skips only that row.
     Returns the task ids whose worker was terminated."""
     rows = conn.execute(
-        "SELECT id, task_id, worker_pid, worker_started_at, claim_lock FROM task_runs "
+        "SELECT id, task_id, worker_pid, worker_started_at, claim_lock, claim_pidns FROM task_runs "
         "WHERE ended_at IS NOT NULL AND ended_at <= ? "
         "AND worker_pid IS NOT NULL AND worker_started_at IS NOT NULL",
         (int(time.time()) - TERMINAL_WORKER_REAP_GRACE_SECONDS,),
@@ -556,7 +556,12 @@ def reap_terminal_workers(conn: sqlite3.Connection, *, signal_fn=None) -> list[s
 
 def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: list[str]) -> None:
     pid, fingerprint = int(row["worker_pid"]), row["worker_started_at"]
-    if pid == os.getpid() or not str(row["claim_lock"] or "").startswith(host_prefix):
+    claim_lock, claim_pidns = row["claim_lock"], row["claim_pidns"]
+    if pid == os.getpid() or not str(claim_lock or "").startswith(host_prefix):
+        return
+    # A closed run owns its PID evidence. Never probe, clear, or signal it
+    # unless its retained namespace proves this process can interpret it.
+    if not _kbp._claim_pid_checkable(claim_lock, claim_pidns, host_prefix=host_prefix):
         return
     if fingerprint == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
         return  # unproven identity: never signalled; its evidence is cleared once the pid is gone
@@ -564,7 +569,7 @@ def _reap_terminal_worker_row(conn, row, host_prefix: str, signal_fn, reaped: li
     termination = None
     if alive:
         termination = _terminate_reclaimed_worker(
-            pid, row["claim_lock"], signal_fn=signal_fn, started_at=fingerprint)
+            pid, claim_lock, claim_pidns=claim_pidns, signal_fn=signal_fn, started_at=fingerprint)
         if not termination["terminated"]:
             return  # still alive: try again next tick
     with _kb.write_txn(conn):
@@ -897,7 +902,7 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
     now = int(time.time())
     reconciled: list[str] = []
     rows = conn.execute(
-        "SELECT id, claim_lock, claim_expires, worker_pid, worker_started_at FROM tasks "
+        "SELECT id, claim_lock, claim_expires, claim_pidns, worker_pid, worker_started_at FROM tasks "
         "WHERE status = 'running' "
         "  AND (claim_lock IS NULL OR claim_expires IS NULL)"
     ).fetchall()
@@ -2945,8 +2950,8 @@ def run_daemon(
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db_pidns as _kbp  # noqa: E402
-from hermes_cli import kanban_db as _kb  # noqa: E402
-from hermes_cli import kanban_db_connect as _kbc  # noqa: E402
-from hermes_cli import kanban_db_default_assignee as _kbda  # noqa: E402
-from hermes_cli import kanban_db_workspace as _kbw  # noqa: E402
+from hermes_cli import kanban_db_pidns as _kbp
+from hermes_cli import kanban_db as _kb
+from hermes_cli import kanban_db_connect as _kbc
+from hermes_cli import kanban_db_default_assignee as _kbda
+from hermes_cli import kanban_db_workspace as _kbw

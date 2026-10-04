@@ -143,7 +143,9 @@ def test_export_migrates_a_board_this_release_has_not_opened(kanban_root, tmp_pa
     _seed_board()
     kb._INITIALIZED_PATHS.clear()
     # The board as the previous release left it: one additive column short.
+    # Its schema also predates the trigger that guards that column.
     with sqlite3.connect(str(kb.kanban_db_path("alpha"))) as raw:
+        raw.execute("DROP TRIGGER IF EXISTS clear_claim_pidns_when_lock_released")
         raw.execute("ALTER TABLE tasks DROP COLUMN claim_pidns")
 
     archive = kt.export_board("alpha", str(tmp_path / "alpha"))["archive"]

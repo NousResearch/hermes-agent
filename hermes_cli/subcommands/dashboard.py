@@ -16,13 +16,26 @@ def _add_server_runtime_args(parser) -> None:
     """Runtime flags shared by ``dashboard`` and ``serve`` (same ``web_server.start_server``)."""
     parser.add_argument(
         "--port", type=int, default=9119, help="Port (default 9119, 0 for auto-assign by OS)")
-    parser.add_argument("--host", default="127.0.0.1", help="Host (default 127.0.0.1)")
     parser.add_argument(
-        "--insecure", action="store_true",
-        help="DEPRECATED / NO-OP. Formerly bypassed auth on a non-loopback "
+        "--host",
+        action="append",
+        dest="hosts",
+        metavar="HOST",
+        help=(
+            "Host interface to bind (default 127.0.0.1). Repeatable for a "
+            "dual-stack bind, e.g. --host 0.0.0.0 --host :: — each address "
+            "gets its own listener on the same port."
+        ),
+    )
+    parser.add_argument(
+        "--insecure",
+        action="store_true",
+        help=(
+            "DEPRECATED / NO-OP. Formerly bypassed auth on a non-loopback "
             "bind. As of the June 2026 hardening it no longer disables "
             "authentication — a public bind always requires an auth provider "
             "(password or OAuth). Bind 127.0.0.1 + tunnel to keep it local.")
+    )
     parser.add_argument(
         "--skip-build", action="store_true",
         help="Skip the web UI build step and serve the existing dist directly. "

@@ -3087,6 +3087,7 @@ export const deOverrides = {
       linkCopied: 'Link kopiert',
       curator: 'Skill-Curator',
       curatorDesc: 'Hintergrundprüfung, die veraltete, von Agenten erstellte Skills archiviert',
+      curatorDescWithBuiltins: 'Hintergrundprüfung, die veraltete, von Agenten erstellte und mitgelieferte Skills archiviert',
       curatorPaused: 'Pausiert',
       curatorActive: 'Aktiv',
       curatorDisabled: 'Deaktiviert',

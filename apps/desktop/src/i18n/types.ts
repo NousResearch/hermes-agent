@@ -2343,6 +2343,7 @@ export interface Translations extends NoticeTranslations {
       linkCopied: string
       curator: string
       curatorDesc: string
+      curatorDescWithBuiltins: string
       curatorPaused: string
       curatorActive: string
       curatorDisabled: string

@@ -3100,6 +3100,7 @@ export const frOverrides = {
       linkCopied: 'Lien copié',
       curator: 'Curateur de skills',
       curatorDesc: 'Revue en arrière-plan qui archive les skills agent obsolètes',
+      curatorDescWithBuiltins: 'Revue en arrière-plan qui archive les skills obsolètes créés par les agents et les skills intégrés',
       curatorPaused: 'En pause',
       curatorActive: 'Actif',
       curatorDisabled: 'Désactivé',

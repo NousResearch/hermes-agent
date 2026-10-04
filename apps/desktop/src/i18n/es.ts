@@ -3084,6 +3084,7 @@ export const esOverrides = {
       linkCopied: 'Enlace copiado',
       curator: 'Curador de skills',
       curatorDesc: 'Revisión en segundo plano que archiva skills creados por agentes que ya no se usan',
+      curatorDescWithBuiltins: 'Revisión en segundo plano que archiva skills creados por agentes y skills incluidos que ya no se usan',
       curatorPaused: 'En pausa',
       curatorActive: 'Activo',
       curatorDisabled: 'Desactivado',

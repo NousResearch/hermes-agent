@@ -233,3 +233,24 @@ class TestOversizedDataUrlFallback:
         assert "a cat on a keyboard" in content
         assert "What's in this image?" in content
 
+    def test_malformed_data_url_degrades_instead_of_raising(self):
+        """A malformed base64 payload must fail only that image's fallback text,
+        not the whole request build (the materialize call used to sit outside
+        the try: that turns failures into "Image analysis failed: ...")."""
+        agent = _make_agent()
+        bad = {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what is in this screenshot?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}},
+            ],
+        }
+        with patch.object(agent, "_model_supports_vision", return_value=False), \
+             patch("tools.vision_tools.vision_analyze_tool") as vision_call:
+            out = agent._prepare_messages_for_non_vision_model([bad])
+        vision_call.assert_not_called()
+        content = out[0]["content"]
+        assert isinstance(content, str)
+        assert "Image analysis failed" in content
+        assert "what is in this screenshot?" in content
+

@@ -230,8 +230,8 @@ def _collect_billing_exception(repo: str, number: int, sha: str, branch: str,
 
 def _board_acceptance_policy() -> dict | None:
     try:
-        from hermes_cli.kanban_db import read_board_metadata
-        return read_board_metadata().get("pr_acceptance")
+        from hermes_cli.kanban_db import get_current_board, read_board_metadata
+        return read_board_metadata(get_current_board()).get("pr_acceptance")
     except Exception:
         return None
 

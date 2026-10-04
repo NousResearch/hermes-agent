@@ -325,6 +325,20 @@ export function selectRoute(matrices, route) {
   for (const os of /** @type {Os[]} */ (Object.keys(picked))) {
     picked[os].include = matrices[os].include.filter((entry) => keep(os, entry));
   }
+  // The pr subset promises one leg per OS, but its macOS entry needs a tag
+  // start (the release jump). With no sampled baselines (a fork, a fresh tag
+  // line) macOS would keep zero legs and its job would skip green -- the gap
+  // windows avoids by carrying a HEAD -> NEXT leg. Give any OS the subset
+  // would leave empty the tagless HEAD -> NEXT leg rather than dropping it.
+  if (route === 'pr') {
+    for (const os of /** @type {Os[]} */ (Object.keys(picked))) {
+      if (picked[os].include.length > 0) continue;
+      const fallback = matrices[os].include.find((entry) =>
+        entry.install_method === 'installer-script' && entry.update_method === 'hermes-update' &&
+        entry.update_ref === 'NEXT');
+      if (fallback) picked[os].include.push(fallback);
+    }
+  }
   if (!oses && Object.values(picked).every((m) => m.include.length === 0)) {
     throw new Error(`route ${JSON.stringify(route)} is not a preset and matches no leg name`);
   }

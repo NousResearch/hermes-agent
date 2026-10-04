@@ -38,6 +38,12 @@ _ENV_KEYS = {"delivery_mode": "TEAMS_DELIVERY_MODE", "incoming_webhook_url": "TE
              "access_token": "TEAMS_GRAPH_ACCESS_TOKEN", "team_id": "TEAMS_TEAM_ID", "channel_id": "TEAMS_CHANNEL_ID", "chat_id": "TEAMS_CHAT_ID"}
 
 
+class PartialWebhookDeliveryError(RuntimeError):
+    def __init__(self, record):
+        super().__init__("Teams webhook delivery incomplete; retry remaining endpoints.")
+        self.delivery_record = record
+
+
 class _StaticAccessTokenProvider:
     """Minimal token-provider shim so outbound Graph delivery can reuse the shared client."""
 
@@ -64,15 +70,15 @@ class TeamsSummaryWriter:
 
     async def write_summary(self, payload: Any, config: dict[str, Any] | None, existing_record: Optional[dict[str, Any]] = None) -> dict[str, Any]:
         merged = self._resolve_delivery_config(config)
-        if existing_record and not _parse_bool(merged.get("force_resend"), default=False):
+        if existing_record and existing_record.get("delivered", True) and not _parse_bool(merged.get("force_resend"), default=False):
             return dict(existing_record)
         mode = str(merged.get("delivery_mode") or merged.get("mode") or "").strip().lower()
-        if not mode and merged.get("incoming_webhook_url"):
+        if not mode and (merged.get("incoming_webhook_url") or merged.get("incoming_webhook_urls")):
             mode = "incoming_webhook"
         elif not mode and (merged.get("chat_id") or (merged.get("team_id") and merged.get("channel_id"))):
             mode = "graph"
         if mode == "incoming_webhook":
-            return await self._write_summary_via_incoming_webhook(payload, merged)
+            return await self._write_summary_via_incoming_webhook(payload, merged, existing_record)
         if mode == "graph":
             return await self._write_summary_via_graph(payload, merged)
         raise ValueError("Teams delivery_mode must be 'incoming_webhook' or 'graph'.")
@@ -93,7 +99,7 @@ class TeamsSummaryWriter:
                 merged[key] = value
         return merged
 
-    async def _write_summary_via_incoming_webhook(self, payload: Any, config: dict[str, Any]) -> dict[str, Any]:
+    async def _write_summary_via_incoming_webhook(self, payload: Any, config: dict[str, Any], existing_record=None) -> dict[str, Any]:
         urls = config.get("incoming_webhook_urls") or config.get("incoming_webhook_url")
         if isinstance(urls, str):
             urls = [item.strip() for item in urls.replace("\n", ",").split(",") if item.strip()]
@@ -101,11 +107,17 @@ class TeamsSummaryWriter:
         if not urls:
             raise ValueError("TEAMS_INCOMING_WEBHOOK_URL or TEAMS_INCOMING_WEBHOOK_URLS is required for incoming_webhook mode.")
         body = {"text": self._render_summary_markdown(payload)}
-        deliveries = []
+        deliveries = [] if _parse_bool(config.get("force_resend")) else list((existing_record or {}).get("deliveries") or [])
+        completed = {item["webhook_url"] for item in deliveries}
         async with httpx.AsyncClient(timeout=20.0, transport=self._transport) as client:
             for webhook_url in urls:
-                response = await client.post(webhook_url, json=body)
-                response.raise_for_status()
+                if webhook_url in completed:
+                    continue
+                try:
+                    response = await client.post(webhook_url, json=body)
+                    response.raise_for_status()
+                except Exception as exc:
+                    raise PartialWebhookDeliveryError({"delivery_mode": "incoming_webhook", "deliveries": deliveries, "delivered": False}) from exc
                 deliveries.append({"webhook_url": webhook_url, "status_code": response.status_code})
         return {"delivery_mode": "incoming_webhook", "deliveries": deliveries, "delivered": True}
 

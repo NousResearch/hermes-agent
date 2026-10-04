@@ -39,7 +39,7 @@ def build_pipeline_runtime_config(gateway_config: Any) -> dict[str, Any]:
             teams_delivery["mode"] = delivery_mode
         for key in _DELIVERY_KEYS:
             value = teams_extra.get(key)
-            if value not in {None, ""}:
+            if value is not None and value != "":
                 teams_delivery[key] = value
         if teams_delivery:
             teams_delivery["enabled"] = _teams_delivery_is_configured(teams_extra, teams_delivery)

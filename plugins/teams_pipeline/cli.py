@@ -129,8 +129,8 @@ def _cmd_validate(args) -> None:
     if not teams_enabled:
         warnings.append("Teams outbound delivery is disabled.")
     elif teams_mode == "incoming_webhook":
-        if not teams_extra.get("incoming_webhook_url"):
-            issues.append("TEAMS_INCOMING_WEBHOOK_URL is required for incoming_webhook mode.")
+        if not (teams_extra.get("incoming_webhook_url") or teams_extra.get("incoming_webhook_urls")):
+            issues.append("TEAMS_INCOMING_WEBHOOK_URL or TEAMS_INCOMING_WEBHOOK_URLS is required for incoming_webhook mode.")
     elif teams_mode == "graph":
         # Graph delivery can authenticate with either a dedicated delivery token or the app-only creds.
         if not (teams_config.token or teams_extra.get("access_token")) and not all(graph.values()):

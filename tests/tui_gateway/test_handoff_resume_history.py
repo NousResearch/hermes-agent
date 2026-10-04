@@ -24,12 +24,13 @@ def handback(tmp_path, monkeypatch):
     seen = []
     called = threading.Event()
 
-    def run(prompt, conversation_history=None, **_kwargs):
+    def run(prompt, conversation_history=None, persist_user_message=None, **_kwargs):
         called.set()
         admission = admit_durable_turn_lease(
             agent, session_id=key, relay_turn_id="fake-local-turn",
             task_context={"session_id": key, "platform": "tui"},
-            conversation_history=conversation_history)
+            conversation_history=conversation_history,
+            user_message=prompt, persist_user_message=persist_user_message)
         if admission.early_result is not None:
             return admission.early_result
         try:

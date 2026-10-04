@@ -239,6 +239,7 @@ def _durable_session_exists(db, session_id: str) -> Optional[bool]:
 def admit_durable_turn_lease(
     agent, *, session_id: str, relay_turn_id: str, task_context: Dict[str, Any],
     conversation_history: Optional[List[Dict[str, Any]]],
+    user_message: Any = None, persist_user_message: Any = None,
 ) -> TurnLeaseAdmission:
     """Acquire the session turn lease (the row need not exist yet); build (not start) its threads.
 
@@ -330,8 +331,15 @@ def admit_durable_turn_lease(
                 # A submit-time user row (tui_gateway _persist_submit_user_row) is already durable
                 # and staged as this turn's own user dict, which the turn appends itself: keep
                 # the staged row out of the reloaded history so the model never sees it twice.
-                staged = getattr(agent, "_pending_cli_user_message", None)
-                staged_row = staged.get("_row_id") if isinstance(staged, dict) else None
+                # Only the dict this turn adopts counts: a stale staged dict (the prologue clears
+                # it) names a real unanswered row the reloaded history must keep.
+                from agent.context_compressor import _DB_PERSISTED_MARKER
+                from agent.turn_context import adoptable_pending_cli_message
+                staged = adoptable_pending_cli_message(agent, user_message, persist_user_message)
+                staged_row = (
+                    staged.get("_row_id")
+                    if staged is not None and staged.get(_DB_PERSISTED_MARKER) else None
+                )
                 if staged_row is not None:
                     reloaded = [m for m in reloaded if not (isinstance(m, dict) and m.get("_row_id") == staged_row)]
                 # A follow-up that aborted an earlier wait carries that turn's never-persisted

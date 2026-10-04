@@ -653,6 +653,18 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
             scrubber.reset()
 
 
+def adoptable_pending_cli_message(
+    agent: Any, user_message: Any, persist_user_message: Any,
+) -> Optional[Dict[str, Any]]:
+    """The CLI-staged user dict this turn will adopt as its own, or None when it is stale
+    (its clean text differs from this turn's; voice turns compare the clean override)."""
+    pending = getattr(agent, "_pending_cli_user_message", None)
+    expected = persist_user_message if persist_user_message is not None else user_message
+    if isinstance(pending, dict) and pending.get("content") == expected:
+        return pending
+    return None
+
+
 def _stage_turn_user_message(
     agent: Any, user_message: Any, persist_user_message: Any,
     persist_user_timestamp: Optional[float], persist_user_platform_id: Optional[str],
@@ -663,13 +675,7 @@ def _stage_turn_user_message(
     matches this turn (a stale handoff must not replace later input; voice turns
     compare the clean override). Returns ``(user_msg, pending_cli_message)``."""
     pending_cli_message = getattr(agent, "_pending_cli_user_message", None)
-    expected_persist_content = (
-        persist_user_message if persist_user_message is not None else user_message
-    )
-    if (
-        isinstance(pending_cli_message, dict)
-        and pending_cli_message.get("content") == expected_persist_content
-    ):
+    if adoptable_pending_cli_message(agent, user_message, persist_user_message) is not None:
         user_msg = pending_cli_message
         # CLI-staged value is the clean text; restore the API-facing variant (e.g. voice
         # prefix) on the same dict, keeping any close-path durable marker.

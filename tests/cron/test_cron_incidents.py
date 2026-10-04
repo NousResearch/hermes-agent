@@ -185,6 +185,37 @@ def test_failure_type_classification(monkeypatch, tmp_path):
         assert inc._classify_failure_type(error) == expected, (error, expected)
 
 
+def test_credit_budget_errors_share_one_incident_per_job(monkeypatch, tmp_path):
+    """One funding outage is one incident even though every attempt quotes different amounts."""
+    inc = _point_db(monkeypatch, tmp_path)
+
+    id1, new1 = inc.upsert_incident("job-1", "HTTP 402: requested 8192 tokens, can only afford 3073")
+    id2, new2 = inc.upsert_incident("job-1", "HTTP 402: requested 2048 tokens, can only afford 19")
+    id3, new3 = inc.upsert_incident("job-1", "Insufficient credits. Add more at example.invalid/credits")
+    other_job, _ = inc.upsert_incident("job-2", "HTTP 402: requested 8192 tokens, can only afford 3073")
+
+    assert id1 == id2 == id3
+    assert (new1, new2, new3) == (True, False, False)
+    assert other_job != id1, "the shared signature stays scoped to the job"
+    row = inc.get_incident(id1)
+    assert row["failure_type"] == "credit_budget"
+    assert row["error"].startswith("Insufficient credits"), "the latest raw error is kept for diagnosis"
+    assert inc.count_incidents() == 2
+
+
+def test_credit_budget_normalization_leaves_other_failures_distinct(monkeypatch, tmp_path):
+    """Credit normalization must not swallow other failures that merely carry numbers."""
+    inc = _point_db(monkeypatch, tmp_path)
+
+    rate, _ = inc.upsert_incident("job-1", "HTTP 429: rate limit, retry after 30 requests")
+    timeout, _ = inc.upsert_incident("job-1", "provider timeout while reading response")
+    credit, _ = inc.upsert_incident("job-1", "HTTP 402: payment required")
+
+    assert len({rate, timeout, credit}) == 3
+    assert inc.get_incident(rate)["failure_type"] == "rate_limit"
+    assert inc.get_incident(credit)["failure_type"] == "credit_budget"
+
+
 # ── Lifecycle / ack ────────────────────────────────────────────────────────
 
 

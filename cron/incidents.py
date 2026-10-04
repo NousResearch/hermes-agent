@@ -31,6 +31,10 @@ EXECUTIONS_FILE: Optional[Path] = None
 # and wants it silent. Only ``closed`` is terminal; a repeat of a resolved error re-opens it.
 INCIDENT_STATES = ("detected", "alerted", "resolved", "closed")
 _FAILURE_TYPE_ORDER = (
+    ("credit_budget", (
+        r"\b402\b", "insufficient credit", "payment required", "credit balance",
+        "spending limit", "can only afford",
+    )),
     ("rate_limit", (r"\b429\b", "rate limit", "usage limit", "quota")),
     ("timeout", ("timeout", "timed out")),
     ("auth", (r"\b401\b", "unauthorized", "authentication", "auth")),
@@ -130,7 +134,13 @@ def _redact_error(error: str) -> str:
 
 def _error_signature(job_id: str, error: str) -> str:
     """Dedup key: stable for same job + same normalized error prefix."""
-    normalized = _DURATION_RE.sub("#s", _normalize_error(error))[:_MAX_SIGNATURE_ERROR_CHARS]
+    if _classify_failure_type(error) == "credit_budget":
+        # Credit/budget errors quote amounts that change every attempt ("requested 8192 tokens, can
+        # only afford 3073"), so one funding outage would otherwise mint an incident per run. They
+        # share one signature per job; the redacted raw error is still stored for diagnosis.
+        normalized = "credit_budget"
+    else:
+        normalized = _DURATION_RE.sub("#s", _normalize_error(error))[:_MAX_SIGNATURE_ERROR_CHARS]
     return hashlib.sha256(job_id.encode() + normalized.encode()).hexdigest()[:12]
 
 

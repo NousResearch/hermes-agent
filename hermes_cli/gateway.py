@@ -1055,6 +1055,25 @@ def _host_gateway_watcher_env() -> dict[str, str]:
     return env
 
 
+def _pin_host_profile_selector(argv: list[str]) -> list[str]:
+    """Insert ``--profile default`` before the ``gateway`` subcommand when *argv* names no profile.
+
+    A selector-less ``gateway run`` resolves its home from the sticky ``active_profile`` file
+    (#22502) unless a supervisor marker is set, and a detached restart watcher sets none. With
+    ``hermes profile use <named>`` in effect, the respawned host gateway re-homed into that profile
+    and was refused ("Profile '<named>' does not get a gateway of its own"), so every ``hermes
+    update`` left the multiplex host down while reporting the restart as done. Pinning the
+    selector keeps the respawn on the host identity the caller already settled.
+    """
+    if any(part in ("--profile", "-p") or part.startswith("--profile=") for part in argv):
+        return list(argv)
+    try:
+        idx = argv.index("gateway")
+    except ValueError:
+        return list(argv)
+    return [*argv[:idx], "--profile", "default", *argv[idx:]]
+
+
 def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: bool | None = None) -> bool:
     """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits. Watcher and respawn
     both need platform-appropriate detach: POSIX setsid; on Windows ``start_new_session`` does NOT detach
@@ -1163,13 +1182,16 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
                      watcher_timeout_literal=json.dumps(GATEWAY_RESTART_WATCHER_TIMEOUT_S),
                      project_root_literal=json.dumps(str(PROJECT_ROOT)))
 
+    is_host = _restart_argv_is_host_gateway(run_argv) if host is None else host
+    if is_host:
+        # The respawn has no supervisor marker, so a bare ``gateway run`` would follow the sticky
+        # active_profile into a named profile and be refused; name the host explicitly.
+        run_argv = _pin_host_profile_selector(run_argv)
     watcher_argv = [sys.executable, "-c", watcher, str(old_pid), *run_argv]
     devnull = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     # Host respawn must not inherit a named launcher's dotenv. The watcher copies os.environ
     # into the gateway child, so the scrub has to be the watcher's own environ.
-    watcher_env = _host_gateway_watcher_env() if (
-        _restart_argv_is_host_gateway(run_argv) if host is None else host
-    ) else None
+    watcher_env = _host_gateway_watcher_env() if is_host else None
     popen_env = {"env": watcher_env} if watcher_env is not None else {}
     # Same detach for the watcher itself, so closing the terminal doesn't kill it.
     try:

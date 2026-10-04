@@ -19,12 +19,29 @@ export interface SpokenReplyAnchor {
   ordinal: number
   /** User-turn index at mark time. Absent on anchors built before turn identity. */
   turnIndex?: number
+  /** Read-aloud's progress through that turn: its assistant text already
+   *  spoken, bubbles concatenated. Text survives the fold that merges the
+   *  turn's bubbles into one row; a bubble id does not. */
+  turnSpoken?: string
 }
 
 export interface SpokenReplyMessage {
   hidden?: boolean
   id: string
+  pending?: boolean
   role: string
+}
+
+export interface UnspokenTurnPiece {
+  /** The bubble the piece is read from. */
+  id: string
+  pending: boolean
+  /** That bubble's text not yet spoken. */
+  text: string
+  /** The turn's text through the end of that bubble — what marking it records. */
+  through: string
+  /** Where the piece starts in the turn's text. */
+  start: number
 }
 
 const NO_SESSION = '\0'
@@ -127,7 +144,7 @@ export function absorbSpokenReplyRewrite(
       return spoken
     }
 
-    return { id: last.id, ordinal, turnIndex: spoken.turnIndex }
+    return { ...spoken, id: last.id, ordinal }
   }
 
   if (ordinal !== spoken.ordinal) {
@@ -206,15 +223,119 @@ export function resolveSpokenReply(
   return next
 }
 
+/** Index in `text` just past `prefix`, ignoring whitespace; -1 when `text`
+ *  does not start with it. Stored history may space a turn differently. */
+function indexPastPrefix(text: string, prefix: string): number {
+  let index = 0
+
+  for (const char of prefix) {
+    if (/\s/.test(char)) {
+      continue
+    }
+
+    while (index < text.length && /\s/.test(text[index] ?? '')) {
+      index += 1
+    }
+
+    if (text[index] !== char) {
+      return -1
+    }
+
+    index += 1
+  }
+
+  return index
+}
+
+/**
+ * Read-aloud's next piece of the current turn: the first bubble after what was
+ * already spoken, in order. A tool turn streams narration bubbles and then the
+ * answer, and hydration folds them into one row once the turn ends. Reading
+ * only the last bubble skipped a narration sealed behind a newer one, and
+ * migrating the anchor onto the folded row marked the unread answer spoken.
+ * Progress is the turn's spoken text, so it survives the fold. Text that no
+ * longer lines up counts as spoken: never read a turn twice.
+ */
+export function nextUnspokenTurnPiece<M extends SpokenReplyMessage>(
+  sessionId: string | null | undefined,
+  messages: readonly M[],
+  textOf: (message: M) => string
+): UnspokenTurnPiece | null {
+  const lastUser = messages.findLastIndex(message => message.role === 'user')
+  const turnIndex = messages.slice(0, lastUser + 1).filter(message => message.role === 'user').length - 1
+  const bubbles = messages.slice(lastUser + 1).filter(message => message.role === 'assistant' && !message.hidden)
+  const texts = bubbles.map(textOf)
+  const turnText = texts.join('')
+  const spoken = resolveSpokenReply(sessionId, messages)
+  let offset = 0
+
+  if (spoken?.turnSpoken !== undefined && spoken.turnIndex === turnIndex) {
+    const past = indexPastPrefix(turnText, spoken.turnSpoken)
+
+    offset = past < 0 ? turnText.length : past
+  } else if (spoken) {
+    // A whole-bubble mark (opening a chat, conversation mode, the Read Aloud
+    // button) covers the turn through that bubble.
+    const at = bubbles.findIndex(message => message.id === spoken.id)
+
+    if (at >= 0) {
+      offset = texts.slice(0, at + 1).join('').length
+    } else if (spoken.turnIndex === turnIndex) {
+      offset = turnText.length
+    }
+  }
+
+  let start = 0
+
+  for (const [index, bubble] of bubbles.entries()) {
+    const text = texts[index] ?? ''
+    const end = start + text.length
+    const rest = end > offset ? text.slice(Math.max(0, offset - start)).trim() : ''
+
+    if (rest) {
+      return {
+        id: bubble.id,
+        pending: Boolean(bubble.pending),
+        start: Math.max(offset, start),
+        text: rest,
+        through: turnText.slice(0, end)
+      }
+    }
+
+    start = end
+  }
+
+  return null
+}
+
+/** Record read-aloud's progress: the turn is spoken through `through`. */
+export function markTurnSpokenThrough(
+  sessionId: string | null | undefined,
+  messages: readonly SpokenReplyMessage[],
+  id: string,
+  through: string
+): void {
+  const ordinal = assistantReplyOrdinal(messages, id)
+
+  if (ordinal < 0) {
+    return
+  }
+
+  markSpokenReply(sessionId, { id, ordinal, turnIndex: assistantTurnIndex(messages, id), turnSpoken: through })
+}
+
 export function clearSpokenRepliesForTests(): void {
   lastSpokenBySession.clear()
 }
 
 /** A play that never started must not consume the turn. Only clears the anchor
- *  still pointing at the turn we marked — a newer turn's mark stays. */
+ *  still pointing at the turn we marked — a newer turn's mark stays. With
+ *  `previous`, the mark is rolled back to it, so the pieces of the turn already
+ *  spoken stay spoken. */
 export function releaseUnplayedSpokenReply(
   sessionId: string | null | undefined,
-  marked: SpokenReplyAnchor | null
+  marked: SpokenReplyAnchor | null,
+  previous: SpokenReplyAnchor | null = null
 ): void {
   if (!marked) {
     return
@@ -230,6 +351,10 @@ export function releaseUnplayedSpokenReply(
   const sameTurn = marked.turnIndex !== undefined && marked.turnIndex >= 0 && current.turnIndex === marked.turnIndex
 
   if (sameId || sameTurn) {
-    lastSpokenBySession.delete(sessionKey(sessionId))
+    if (previous) {
+      markSpokenReply(sessionId, previous)
+    } else {
+      lastSpokenBySession.delete(sessionKey(sessionId))
+    }
   }
 }

@@ -15,6 +15,7 @@ from typing import Optional
 import pytest
 
 from hermes_state import SessionDB
+from hermes_cli.session_recovery import _quoted_columns, _table_columns
 from hermes_cli.session_lost_and_found import (
     LayoutEvidence,
     _declared_types,
@@ -60,17 +61,13 @@ def test_salvage_recognizes_minted_ids_and_rejects_arbitrary_cells(value: str, e
     assert _is_session_id(value) is expected
 
 
-def _physical_columns(conn: sqlite3.Connection, table: str) -> tuple[str, ...]:
-    return tuple(str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")'))
-
-
-def _sessions_rows(conn: sqlite3.Connection) -> tuple[tuple[str, ...], list[tuple]]:
-    columns = _physical_columns(conn, "sessions")
-    quoted = ", ".join(f'"{c}"' for c in columns)
+def _sessions_rows(conn: sqlite3.Connection) -> tuple[list[str], list[tuple]]:
+    columns = _table_columns(conn, "sessions")
+    quoted = _quoted_columns(columns)[0]
     return columns, [tuple(r) for r in conn.execute(f"SELECT {quoted} FROM sessions")]
 
 
-def _infer_like_recovery(conn: sqlite3.Connection, columns: tuple[str, ...],
+def _infer_like_recovery(conn: sqlite3.Connection, columns: list[str],
                          rows: list[tuple]) -> tuple[Optional[list], int]:
     """Run inference the way the salvage lane does: only rows that CLASSIFY as
     ``sessions`` become layout evidence (session_lost_and_found.py, pass 1)."""

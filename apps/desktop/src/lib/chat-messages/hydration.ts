@@ -31,7 +31,7 @@ const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 // one that types those rows `display_kind=hidden`. It is model scaffolding,
 // not something the user wrote, so it never paints as a bubble.
 const LEGACY_HEARTBEAT_ROW_RE = /^\[Background process \S+ heartbeat #\d+ /
-const TODO_SNAPSHOT_ROW_RE = /(?:^|\n)\[Your active task list was preserved across context compression\][\s\S]*$/
+const TODO_SNAPSHOT_ROW_RE = /(?:^|\n)[ \t]*\[Your active task list was preserved across context compression\]\r?\n- [\s\S]+$/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
 

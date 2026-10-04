@@ -292,6 +292,8 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
     for m in history:
         if not isinstance(m, dict):
             continue
+        from agent.history_todo import project_todo_message
+        m = project_todo_message(m)
         m = project_compaction_message_for_display(m)
         if m is None:
             continue

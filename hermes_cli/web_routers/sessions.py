@@ -609,17 +609,7 @@ def _is_untyped_scaffold_notice(message) -> bool:
         return False
     if content.lstrip().startswith("[System:"):
         return True
-    from tools.todo_tool import TODO_INJECTION_HEADER
-    return content.lstrip().startswith(TODO_INJECTION_HEADER)
-
-
-def _strip_todo_snapshot(content: str) -> str:
-    from tools.todo_tool import TODO_INJECTION_HEADER
-
-    marker = content.find(TODO_INJECTION_HEADER)
-    if marker < 0:
-        return content
-    return content[:marker].rstrip()
+    return False
 
 
 def _project_for_display(messages: list, *, home=None, inline_images: bool = True) -> list:
@@ -656,12 +646,8 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
     projected_messages = []
     for message in messages:
         message = _with_tool_call_labels(message)
-        if message.get("role") == "user" and isinstance(message.get("content"), str):
-            from tools.todo_tool import TODO_INJECTION_HEADER
-            original_content = message["content"]
-            content = _strip_todo_snapshot(original_content)
-            if content != original_content and not original_content.lstrip().startswith(TODO_INJECTION_HEADER):
-                message = {**message, "content": content}
+        from agent.history_todo import project_todo_message
+        message = project_todo_message(message)
         if coerce is not None:
             message = coerce(message)
         # Same read-side typing as session.resume (tui_gateway/session_history.py).

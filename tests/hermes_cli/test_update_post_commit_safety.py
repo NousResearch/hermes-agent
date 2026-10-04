@@ -256,6 +256,97 @@ def test_restart_failure_is_owed_and_never_reported_as_a_failed_update(tmp_path,
     assert summary["marker_final"] == "0"
 
 
+# The NEW tree's completion child after a committed update whose Windows resume the service
+# manager refused (what _finish answers): the run is a success with a windows_resume follow-up,
+# and the token it hands back still owes the restart.
+_REFUSED_RESUME_COMPLETION = textwrap.dedent('''
+    import json, os, sys
+    from pathlib import Path
+    request = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8-sig"))
+    receipts = Path(os.environ["PROBE_RECEIPTS"])
+    receipt = dict(request["receipt"], outcome="success", exit_code=0, finished_at="now", followups=[
+        {"step": "windows_resume", "reason": "Windows gateway recovery failed: refused"}])
+    payload = json.dumps(receipt)
+    (receipts / ("update_probe_" + receipt["update_id"] + ".json")).write_text(payload)
+    (receipts / "latest.json").write_text(payload)
+    (Path(request["home"]) / ".update_exit_code").write_text("0")
+    Path(sys.argv[2]).write_text(json.dumps({
+        "schema": 1, "update_id": receipt["update_id"], "exit_code": 0, "receipt": receipt,
+        "windows_resume": dict(request["windows_resume"], resume_needed=True)}))
+''')
+
+_ZIP_PARENT = textwrap.dedent('''
+    import json, os, sys
+    from pathlib import Path
+    from types import SimpleNamespace
+    root_checkout, cell = sys.argv[1:3]
+    sys.path.insert(0, root_checkout)
+    cell = Path(cell)
+    calls = cell / "parent-resume-calls.jsonl"
+    from hermes_cli import main as hermes_main, update_cmd, update_inventory, update_receipt
+    hermes_main.PROJECT_ROOT = cell / "source"
+    receipts = update_receipt._receipt_dir()
+    receipts.mkdir(parents=True, exist_ok=True)
+    os.environ["PROBE_RECEIPTS"] = str(receipts)
+    # Machine boundaries only: the host's process inventory, backups, terminal/hangup handling,
+    # the Windows service manager, and the ZIP download + swap (a no-.git install).
+    def no_inventory():
+        raise RuntimeError("the host's runtime inventory is not part of this probe")
+    update_inventory.collect_runtime_inventory = no_inventory
+    hermes_main._update_preflight_handled = lambda args: False
+    hermes_main._install_hangup_protection = lambda **kwargs: None
+    hermes_main._finalize_update_output = lambda state: None
+    hermes_main._run_pre_update_backup = lambda args: None
+    token = {"resume_needed": True, "profiles": {}, "unmapped": [], "services": ["HermesGatewayProbe"],
+             "service_profiles": {"HermesGatewayProbe": "probe"}}
+    hermes_main._pause_windows_gateways_for_update = lambda: token
+    def scm(resume_token):
+        with calls.open("a") as handle:
+            handle.write(json.dumps(bool(resume_token and resume_token.get("resume_needed"))) + "\\n")
+        if resume_token and resume_token.get("resume_needed"):
+            raise RuntimeError("Could not restart Windows gateway service(s): HermesGatewayProbe")
+    hermes_main._resume_windows_gateways_after_update = scm
+    update_cmd._prepare_git_command = lambda: (True, None, False)
+    def via_zip(args, *, had_desktop_app_before_update, target_sha=None, completion_request=None, **kwargs):
+        completion_request["expected_sha"] = target_sha
+        completion_request["apply_mode"] = "zip"
+        update_cmd._complete_source_update(completion_request)
+    update_cmd._update_via_zip = via_zip
+    class Args(SimpleNamespace):
+        def __getattr__(self, name):
+            return None
+    hermes_main.cmd_update(Args(gateway=True, branch="main", yes=True))
+''')
+
+
+@pytest.mark.platforms("posix")
+def test_zip_update_never_replays_a_refused_resume_after_the_commit_point(tmp_path):
+    """The child already tried the resume and recorded the follow-up: the parent's finally and its
+    atexit net must not run it again, and a restart error must not become exit 1 / "/update failed"."""
+    cell = tmp_path / "cell"
+    home = cell / "home" / ".hermes"
+    (home / "logs/update_receipts").mkdir(parents=True)
+    completion = cell / "source" / "hermes_cli" / "update_completion.py"
+    completion.parent.mkdir(parents=True)
+    completion.write_text(_REFUSED_RESUME_COMPLETION, encoding="utf-8")
+    env = _child_env(HOME=str(cell / "home"), HERMES_HOME=str(home), HERMES_DISABLE_LAZY_INSTALLS="1",
+                     HERMES_RUNTIME_DIR=str(tmp_path / "store"), PYTHONDONTWRITEBYTECODE="1",
+                     XDG_CONFIG_HOME=str(cell / "home/.config"), XDG_CACHE_HOME=str(cell / "home/.cache"),
+                     XDG_STATE_HOME=str(cell / "home/.local/state"))
+    driver = tmp_path / "zip_parent.py"
+    driver.write_text(_ZIP_PARENT, encoding="utf-8")
+    done = subprocess.run([sys.executable, "-B", str(driver), str(ROOT), str(cell)],
+                          env=env, cwd=tmp_path, capture_output=True, text=True, timeout=240)
+    output = done.stdout + done.stderr
+    assert done.returncode == 0, output
+    assert (home / ".update_exit_code").read_text().strip() == "0", output
+    calls = cell / "parent-resume-calls.jsonl"
+    assert not calls.exists(), calls.read_text() + output
+    latest = json.loads((home / "logs/update_receipts/latest.json").read_text(encoding="utf-8-sig"))
+    assert latest["outcome"] == "success"
+    assert [row["step"] for row in latest["followups"]] == ["windows_resume"]
+
+
 _RECEIPT_CHILD = textwrap.dedent('''
     import json, sys
     root_checkout, action = sys.argv[1:3]

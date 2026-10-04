@@ -168,16 +168,21 @@ def main(context: Path, result: Path) -> int:
             # receipt. Preserve the original handoff, just like preparation.
             update_receipt.begin_update_receipt(previous=request.get("receipt"), correlation_id=request["update_id"])
             begun = update_receipt._current.get() is not None
+        attempted = False
         if resume is not None:
             try:
                 resume(token)
-            except Exception as exc:
-                code = 1
-                print(f"Gateway recovery failed: {exc}", file=sys.stderr, flush=True)
+            except Exception as exc:  # noqa: BLE001 — a restart failure is owed, never the exit status (C3)
+                attempted = True
+                reason = f"Windows gateway recovery failed: {exc}"
+                update_receipt.record_followup("windows_resume", reason)
+                if update_receipt._current.get() is None:  # the run already finalized its receipt
+                    update_receipt.amend_terminal_followup(request["update_id"], "windows_resume", reason)
         handled = cli_started or (begun and update_receipt._current.get() is None)
         written = update_receipt.finalize_pending_update_receipt(code, "historical takeover completion")
         result.write_text(json.dumps({
-            "resume_handled": not token or not token.get("resume_needed"),
+            # An attempt that failed is reported here: the historical parent must not replay it.
+            "resume_handled": attempted or not token or not token.get("resume_needed"),
             "receipt_handled": handled or written is not None,
         }), encoding="utf-8")
     return code

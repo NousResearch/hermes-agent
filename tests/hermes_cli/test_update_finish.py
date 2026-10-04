@@ -219,6 +219,14 @@ def completion(tmp_path, monkeypatch):
                         (root / 'resumed-token.json').write_text(json.dumps(token))
                         return merge(outcome, token, gateway_mode)
                     update._resume_windows_gateways_and_merge_outcome = resume
+                    if fault == 'scm':
+                        # The Windows service manager refuses the paused gateway's restart.
+                        from hermes_cli import update_cmd_windows
+                        def scm(token):
+                            if token and token.get('resume_needed'):
+                                raise RuntimeError('Could not restart Windows gateway service(s): HermesGatewayProbe')
+                        module._resume_windows_gateways_after_update = scm
+                        update_cmd_windows._resume_windows_gateways_after_update = scm
                 spec.loader.exec_module = execute
                 return spec
         sys.meta_path.insert(0, CompletionImports())
@@ -268,6 +276,30 @@ def test_failure_preserves_original_receipt_before_build(completion, fault):
     assert (home / ".update_exit_code").read_text().strip() == "1"
     assert context.read_bytes() == before
     assert not (source / "build-environment.json").exists()
+
+
+@pytest.mark.platforms("posix")
+def test_refused_gateway_resume_after_commit_is_a_followup_not_exit_1(completion):
+    """C3 for the historical takeover child: the code is committed, so a Windows gateway resume
+    that the service manager refuses is an owed ``windows_resume`` follow-up, never exit 1."""
+    source, home, request, context, result, run = completion
+    request["gateway_mode"] = True
+    # A real start time names the run's archive file, so the running and terminal records share one
+    # file (the fixture's placeholder falls back to the clock and can split them across a second).
+    request["receipt"]["started_at"] = "2026-10-04T12:00:00+00:00"
+    request["windows_resume"] = {"resume_needed": True, "profiles": {}, "unmapped": [],
+                                 "services": ["HermesGatewayProbe"],
+                                 "service_profiles": {"HermesGatewayProbe": "default"}}
+    context.write_text(json.dumps(request), encoding="utf-8")
+    child = run("scm")
+    assert child.returncode == 0, child.stdout + child.stderr
+    receipt = json.loads((home / "logs/update_receipts/latest.json").read_text())
+    assert receipt["update_id"] == request["update_id"]
+    assert receipt["outcome"] == "success"
+    assert "windows_resume" in [row["step"] for row in receipt["followups"]], child.stdout + child.stderr
+    assert (home / ".update_exit_code").read_text().strip() == "0"
+    # The attempt is reported: the historical parent must not replay it at its own exit.
+    assert json.loads(result.read_text())["resume_handled"] is True
 
 
 @pytest.mark.platforms("posix")

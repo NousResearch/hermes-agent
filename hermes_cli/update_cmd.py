@@ -721,6 +721,41 @@ def _source_completion_request(opts, plan, snapshot_id, windows_resume, desktop,
     }
 
 
+def _settle_windows_resume(request: dict) -> None:
+    """This run's post-commit resume attempt is over (the completion child's, or the A6 branch's).
+
+    A failure is already the ``windows_resume`` follow-up, so neither the command's ``finally``
+    nor the atexit net may replay it: a replay waits again and its error would fail a committed
+    update (C3).
+    """
+    import atexit
+
+    from hermes_cli import update_cmd_windows
+
+    atexit.unregister(_m()._resume_windows_gateways_after_update)
+    atexit.unregister(update_cmd_windows._resume_windows_gateways_after_update)
+    request["windows_resume_settled"] = True
+
+
+def _resume_paused_gateways_at_exit(token: dict | None, request: dict | None) -> None:
+    """The command's last resume of gateways it paused; a failure is reported, never raised.
+
+    Raising here would replace the run's own exit (a committed update's 0, or the original
+    failure) with the restart's error. Skipped when the post-commit attempt already ran.
+    """
+    if not token or not token.get("resume_needed") or (request or {}).get("windows_resume_settled"):
+        return
+    try:
+        _m()._resume_windows_gateways_after_update(token)
+    except Exception as exc:  # noqa: BLE001 — a restart failure is owed, not the update's status
+        from hermes_cli.update_receipt import _current, amend_terminal_followup, record_followup
+
+        reason = f"Windows gateway recovery failed: {exc}"
+        record_followup("windows_resume", reason)
+        if _current.get() is None and request:  # the run already finalized its receipt
+            amend_terminal_followup(request["receipt"]["update_id"], "windows_resume", reason)
+
+
 def _complete_source_update(request: dict | None) -> None:
     # Never "Update complete!" while this run's local patches sit unrestored in the stash (#122557).
     unrestored = _unrestored_autostash_notice()
@@ -751,6 +786,7 @@ def _complete_source_update(request: dict | None) -> None:
         resumed = dict(result["windows_resume"])
         token.clear()
         token.update(resumed)
+        _settle_windows_resume(request)
     elif token and token.get("resume_needed") and not result["exit_code"]:
         # Dependencies owed (A6): the bootstrap child cannot resume paused gateways; this process can.
         try:
@@ -761,6 +797,7 @@ def _complete_source_update(request: dict | None) -> None:
             reason = f"Windows gateway recovery failed: {exc}"
             record_followup("windows_resume", reason)
             amend_terminal_followup(request["receipt"]["update_id"], "windows_resume", reason)
+        _settle_windows_resume(request)
     if result.get("receipt") is not None:
         current = _completion_receipt._current.get()
         if current is not None:
@@ -1535,8 +1572,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 target_sha=release_sha, completion_request=completion_request,
                 **({"target_repository": target_repository} if target_repository else {}))
         finally:
-            if _windows_gateway_resume and _windows_gateway_resume.get("resume_needed"):
-                _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            _resume_paused_gateways_at_exit(_windows_gateway_resume, completion_request)
 
         return
 
@@ -1630,5 +1666,4 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 e, args, gateway_mode, had_desktop_app_before_update, target_sha=release_sha,
                 target_repository=target_repository, completion_request=completion_request)
         finally:
-            if _windows_gateway_resume and _windows_gateway_resume.get("resume_needed"):
-                _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+            _resume_paused_gateways_at_exit(_windows_gateway_resume, completion_request)

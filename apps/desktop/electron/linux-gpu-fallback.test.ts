@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -385,5 +387,52 @@ describe('shouldEngageSilentGpuRetryFallback', () => {
     expect(shouldEngageSilentGpuRetryFallback({ platform: 'darwin', gpuChildPresent: false, graceElapsed: true })).toBe(
       false
     )
+  })
+})
+
+describe('silent-retry marker and grace window in main.ts', () => {
+  const mainSource = readFileSync(new URL('./main.ts', import.meta.url), 'utf8')
+
+  it('passes the launch build identity to the silent-retry marker', () => {
+    // A source install reports version 0.0.0 forever, so only the build identity
+    // can tell a marker this build wrote from one an earlier build wrote. Without
+    // it `launchMarkerNeedsReprobe` answers true for every launch, and the
+    // once-per-build re-probe this PR adds never happens on a source install.
+    expect(mainSource).toContain(
+      "linuxGpuFallbackMarker('gpu-launch-failure', app.getVersion(), LAUNCH_BUILD_IDENTITY)"
+    )
+
+    // One level of nesting: `app.getVersion()` closes before the call does.
+    const callSites = mainSource.match(/linuxGpuFallbackMarker\((?:[^()]|\([^()]*\))*\)/g) ?? []
+    expect(callSites).toHaveLength(2)
+
+    for (const call of callSites) {
+      expect(call).toContain('LAUNCH_BUILD_IDENTITY')
+    }
+  })
+
+  it('waits the documented grace window, not 30 milliseconds', () => {
+    expect(mainSource).toContain('setTimeout(checkSilentGpuRetry, LINUX_GPU_SILENT_RETRY_GRACE_S * 1000)')
+    expect(mainSource).not.toMatch(/setTimeout\(checkSilentGpuRetry, LINUX_GPU_SILENT_RETRY_GRACE_S\)/)
+  })
+
+  it('keeps the silent-retry marker sticky within one source build', () => {
+    const sourceInstall = '0.0.0'
+    const build = `0.0.0+g0e34eb817214@2026-10-04T06:51:49.148Z`
+    const written = linuxGpuFallbackMarker('gpu-launch-failure', sourceInstall, build)
+
+    const sameBuild = decideLinuxGpuLaunch({ ...LINUX, appVersion: sourceInstall, buildIdentity: build, marker: written })
+    expect(sameBuild.enable).toBe(true)
+    expect(sameBuild.reason).toContain('sticky')
+
+    const nextBuild = decideLinuxGpuLaunch({
+      ...LINUX,
+      appVersion: sourceInstall,
+      buildIdentity: `0.0.0+g0e34eb817214@2026-10-05T06:51:49.148Z`,
+      marker: written
+    })
+
+    expect(nextBuild.enable).toBe(false)
+    expect(nextBuild.nextMarker.reprobe).toBe(true)
   })
 })

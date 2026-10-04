@@ -15370,7 +15370,7 @@ function createWindow() {
               try {
                 writeLinuxGpuMarker(
                   app.getPath('userData'),
-                  linuxGpuFallbackMarker('gpu-launch-failure', app.getVersion())
+                  linuxGpuFallbackMarker('gpu-launch-failure', app.getVersion(), LAUNCH_BUILD_IDENTITY)
                 )
               } catch {
                 void 0
@@ -15382,7 +15382,7 @@ function createWindow() {
             }
           }
 
-          setTimeout(checkSilentGpuRetry, LINUX_GPU_SILENT_RETRY_GRACE_S).unref()
+          setTimeout(checkSilentGpuRetry, LINUX_GPU_SILENT_RETRY_GRACE_S * 1000).unref()
         }
       }
     }

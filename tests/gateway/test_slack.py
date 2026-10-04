@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import importlib
 from importlib.machinery import PathFinder
+import logging
 import os
 import socket
 import sys
@@ -5653,9 +5654,12 @@ class TestSlackAuthoredTextDeduplication:
 class TestAgentSessionsApiRouting:
     """slack-sdk 3.44.0 Agent Sessions API (assistant_view deprecation Feb 2027).
 
-    When the installed slack-sdk ships agents.sessions.* typed methods, status
-    and title calls route through them; older SDKs keep using the legacy
-    assistant.threads.* methods (compat bridge on Slack's side).
+    ``agents.sessions.setStatus`` accepts only its enum (``active`` /
+    ``processing`` / ``suspended`` / ``closed``), so free-text statuses and the
+    empty clear stay on the legacy ``assistant.threads.setStatus`` (#132594);
+    when the SDK ships the new API it is driven alongside with ``processing``
+    while a turn runs and ``active`` on clear. Titles rename via
+    ``agents.sessions.rename`` (free text) either way.
     """
 
     def _adapter(self):
@@ -5666,35 +5670,94 @@ class TestAgentSessionsApiRouting:
         return a
 
     @pytest.mark.asyncio
-    async def test_typing_uses_agent_sessions_when_supported(self):
+    async def test_free_text_status_rides_legacy_even_with_agent_sessions(self):
+        """#132594: free text on agents.sessions.setStatus draws
+        invalid_arguments, so the visible status line must ride the legacy API."""
         _slack_mod._AGENT_SESSIONS_SUPPORTED = True
         a = self._adapter()
         a._app.client.agents_sessions_setStatus = AsyncMock()
         a._app.client.assistant_threads_setStatus = AsyncMock()
         await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
-        a._app.client.agents_sessions_setStatus.assert_called_once_with(
+        a._app.client.assistant_threads_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
             status="is thinking...",
         )
-        a._app.client.assistant_threads_setStatus.assert_not_called()
-
+        a._app.client.agents_sessions_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="processing",
+        )
 
     @pytest.mark.asyncio
-    async def test_stop_typing_clears_via_agent_sessions(self):
+    async def test_stop_typing_clears_legacy_and_reactivates_session(self):
         _slack_mod._AGENT_SESSIONS_SUPPORTED = True
         a = self._adapter()
         a._app.client.agents_sessions_setStatus = AsyncMock()
         a._app.client.assistant_threads_setStatus = AsyncMock()
-        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
-        a._app.client.agents_sessions_setStatus.reset_mock()
         await a.stop_typing("C123", metadata={"thread_id": "parent_ts"})
-        a._app.client.agents_sessions_setStatus.assert_called_once_with(
+        a._app.client.assistant_threads_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
             status="",
         )
-        a._app.client.assistant_threads_setStatus.assert_not_called()
+        a._app.client.agents_sessions_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="active",
+        )
+
+    @pytest.mark.asyncio
+    async def test_status_calls_skip_agent_sessions_without_sdk_support(self):
+        """Older SDKs (or CI stubs) never touch agents.sessions.setStatus."""
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = False
+        a = self._adapter()
+        a._app.client.agents_sessions_setStatus = AsyncMock()
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.assistant_threads_setStatus.reset_mock()
+        await a.stop_typing("C123", metadata={"thread_id": "parent_ts"})
+        a._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="",
+        )
+        a._app.client.agents_sessions_setStatus.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_status_failure_warns_once_per_workspace(self, caplog):
+        """#132594: the first status API failure per workspace is a WARNING
+        (so Slack-side API changes surface); repeats drop back to DEBUG."""
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = False
+        a = self._adapter()
+        a._app.client.assistant_threads_setStatus = AsyncMock(
+            side_effect=_StreamExpiredError(
+                "invalid_arguments", {"error": "invalid_arguments"})
+        )
+        with caplog.at_level(logging.DEBUG, logger="plugins.platforms.slack.adapter"):
+            await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+            await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert len(warnings) == 1
+        assert "assistant.threads.setStatus" in warnings[0].getMessage()
+        assert len(debugs) == 1  # the second failure on the same workspace
+
+    @pytest.mark.asyncio
+    async def test_status_failure_warning_is_per_workspace(self, caplog):
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = False
+        a = self._adapter()
+        a._app.client.assistant_threads_setStatus = AsyncMock(
+            side_effect=_StreamExpiredError(
+                "invalid_arguments", {"error": "invalid_arguments"})
+        )
+        with caplog.at_level(logging.DEBUG, logger="plugins.platforms.slack.adapter"):
+            await a.send_typing(
+                "C123", metadata={"thread_id": "parent_ts", "slack_team_id": "T_ONE"})
+            await a.send_typing(
+                "C456", metadata={"thread_id": "parent_ts", "slack_team_id": "T_TWO"})
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 2  # one per workspace
 
     @pytest.mark.asyncio
     async def test_thread_title_uses_agents_sessions_rename(self):

@@ -285,15 +285,6 @@ def _sdk_supports_agent_sessions() -> bool:
     return _AGENT_SESSIONS_SUPPORTED
 
 
-def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
-    if _sdk_supports_agent_sessions():
-        method = getattr(client, "agents_sessions_setStatus", None)
-        if method is not None:
-            return method
-    return client.assistant_threads_setStatus
-
-
 def _session_title_method(client: Any):
     """Return the title setter: ``agents.sessions.rename`` when available, else legacy."""
     if _sdk_supports_agent_sessions():
@@ -1111,6 +1102,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Active Assistant statuses by (team_id, channel_id, thread_ts) so cleanup
         # can't clear an overlapping Slack Connect workspace; evicted oldest-thread-first.
         self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+        # Workspaces that already saw one thread-status API failure logged at WARNING;
+        # later failures on the same workspace drop back to DEBUG (#132594).
+        self._status_failure_warned: set = set()
         # Native progress streams; each owns a lock so concurrent start/append/stop
         # can't create duplicates or append after finalization.
         self._native_task_card_streams: Dict[Tuple[str, str, str], _NativeTaskCardStream] = {}
@@ -2759,12 +2753,41 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+        """Set the visible thread status; free text and the empty clear ride legacy.
+
+        ``agents.sessions.setStatus`` accepts only the ``active``/``processing``/
+        ``suspended``/``closed`` enums — free text draws ``invalid_arguments``
+        (#132594), so free text and the ``""`` clear stay on
+        ``assistant.threads.setStatus`` until Slack retires it (February 2027).
+        When the installed SDK ships the new API it is driven alongside with its
+        enum: ``processing`` while a turn runs, ``active`` again on clear."""
+        client = self._get_client(chat_id, team_id=team_id)
         try:
-            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
-            await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
+            await client.assistant_threads_setStatus(
+                channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
-            logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
+            self._log_status_failure(
+                team_id, "assistant.threads.setStatus", fail_label, e)
+        if not _sdk_supports_agent_sessions():
+            return
+        try:
+            await client.agents_sessions_setStatus(
+                channel_id=chat_id, thread_ts=thread_ts,
+                status="processing" if status else "active")
+        except Exception as e:
+            self._log_status_failure(
+                team_id, "agents.sessions.setStatus", fail_label, e)
+
+    def _log_status_failure(
+        self, team_id: str, method: str, fail_label: str, e: Exception) -> None:
+        """First failure per workspace is a WARNING (surfacing Slack-side API
+        changes like #132594); the rest stay DEBUG like the old single-line log."""
+        workspace = team_id or ""
+        if workspace not in self._status_failure_warned:
+            self._status_failure_warned.add(workspace)
+            logger.warning("[Slack] %s %s: %s", method, fail_label, e)
+        else:
+            logger.debug("[Slack] %s %s: %s", method, fail_label, e)
 
     @staticmethod
     def _default_status_text(started: Optional[float]) -> str:

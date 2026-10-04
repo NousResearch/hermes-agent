@@ -7,6 +7,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 
 def test_launcher_delegates_to_argparse_entrypoint(monkeypatch):
     """`./hermes` should use `hermes_cli.main`, not the legacy Fire wrapper."""
@@ -258,3 +260,60 @@ def test_persisted_workspace_command_survives_generation_gc(monkeypatch, tmp_pat
     assert removed == [generations / "A"]
     assert not (generations / "A").exists()
     assert Path(persisted[0]).is_file() and os.access(persisted[0], os.X_OK)
+
+
+@pytest.mark.parametrize("marker_kind", ["custom", "missing", "empty", "nonexistent", "file"])
+@pytest.mark.parametrize("published", [True, False])
+def test_workspace_project_root_precedes_default_checkout(
+    monkeypatch, tmp_path, marker_kind, published
+):
+    """Two installs share a home; a valid PM marker owns persisted argv."""
+    from hermes_cli import _launchers
+    from pm.environments import install_state_dir, runtime_facts_path
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    default = home / "hermes-agent"
+    custom = tmp_path / "custom-source"
+    launchers = {}
+    for checkout in (default, custom):
+        checkout.mkdir(parents=True)
+        state = install_state_dir(checkout)
+        venv = state / "environments" / "A" / "venv"
+        venv.mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("version = 3.11\n", encoding="utf-8")
+        runtime_facts_path(checkout).write_text(json.dumps({"packages": {"venv": {
+            "environment": str(venv)}}}), encoding="utf-8")
+        if published:
+            shim = checkout / ".hermes" / "bin" / "hermes"
+            shim.parent.mkdir(parents=True)
+            shim.write_text("#!/bin/sh\n", encoding="utf-8")
+            shim.chmod(0o755)
+            launchers[checkout] = shim
+
+    state = install_state_dir(custom)
+    workspace = state / "environments" / "A" / "workspace"
+    workspace.mkdir()
+    marker = state / "inputs" / ".project-root"
+    marker.parent.mkdir()
+    if marker_kind != "missing":
+        not_a_directory = tmp_path / "not-a-directory"
+        not_a_directory.write_text("not a checkout", encoding="utf-8")
+        value = {"custom": str(custom), "empty": "", "nonexistent": str(tmp_path / "absent"),
+                 "file": str(not_a_directory)}[marker_kind]
+        marker.write_text(value, encoding="utf-8")
+
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: Path("/usr/bin/python3"))
+    expected = custom if marker_kind == "custom" else default
+    # Exercise real home/facts lookup rather than replacing _facts_owner_root.
+    assert _launchers._facts_owner_root(workspace) == default
+    for module, args in (("hermes_cli.main", ["gateway", "run"]),
+                         ("gateway.cgroup_cleanup", []),
+                         ("hermes_cli.stderr_timestamp", ["--error-log", "errors.log"])):
+        command = _launchers.installation_command(workspace, args, module=module)
+        if published:
+            prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
+            assert command == [str(launchers[expected]), *prefix, *args]
+        else:
+            assert command == _launchers.runtime_command(expected, args, module=module)
+        assert str(state / "environments" / "A" / "venv") not in command

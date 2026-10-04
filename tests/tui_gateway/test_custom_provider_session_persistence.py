@@ -960,3 +960,81 @@ class TestRuntimeModelConfigDropsStaleKeys:
         assert config == {"model": "deepseek/deepseek-v4-flash-0731", "provider": "nous"}
 
 
+
+
+# --- Regression: EMPTY provider on a resumed row (GH #132648) --------------
+#
+# A row can persist a model with NO provider at all (no gateway_runtime /
+# billing_provider recorded for it). Before the fix, _resolve_agent_model_runtime
+# only healed bare "custom", so requested_provider stayed None and the model fell
+# through to the config MAIN SLOT, which does not serve it — the TUI reattach
+# rebuilt the session on the main-slot provider and every turn 404ed.
+
+class TestEmptyProviderHealsFromModel:
+    """A resumed model with an empty provider must recover the owning custom
+    entry from the model itself, not fall through to the config main slot."""
+
+    def test_empty_provider_heals_from_model(self, monkeypatch):
+        # With no provider AND no base_url the only way back to the entry is the
+        # model name, and find_custom_provider_identity_by_model only matches an
+        # entry that declares the model (``model``/``default_model``/``models``).
+        # LEGACY_LIST_CONFIG's entry declares none — it stands for pre-fix rows
+        # where the *base_url* is the recovery key — so this case needs an entry
+        # that names the model it serves.
+        config = {
+            "custom_providers": [
+                {
+                    "name": "mimo-v2.5-pro",
+                    "base_url": MIMO_URL,
+                    "api_key": MIMO_KEY,
+                    "api_mode": "chat_completions",
+                    "models": {"mimo-v2.5-pro": {}},
+                }
+            ]
+        }
+        override = {
+            "model": "mimo-v2.5-pro",
+            "provider": None,
+            "base_url": None,
+            "api_mode": None,
+        }
+
+        kwargs = _make_agent_with_override(override, monkeypatch, config)
+
+        assert kwargs["base_url"] == MIMO_URL
+        assert kwargs["api_key"] == MIMO_KEY
+
+    def test_empty_provider_pins_owning_entry_not_main_slot(self, monkeypatch):
+        # The #132648 shape: the main slot is entry-a, but the resumed row names
+        # entry-b's model with an empty provider. Pre-fix the model fell through
+        # to the main slot (entry-a), which does not serve it — every turn 404ed.
+        config = {
+            "model": {"default": "model-a", "provider": "custom:entry-a"},
+            "custom_providers": [
+                {
+                    "name": "entry-a",
+                    "base_url": "https://a.example/v1",
+                    "api_key": "sk-entry-a",
+                    "api_mode": "chat_completions",
+                    "models": {"model-a": {}},
+                },
+                {
+                    "name": "entry-b",
+                    "base_url": "https://b.example/v1",
+                    "api_key": "sk-entry-b",
+                    "api_mode": "chat_completions",
+                    "models": {"model-b": {}},
+                },
+            ],
+        }
+        override = {
+            "model": "model-b",
+            "provider": None,
+            "base_url": None,
+            "api_mode": None,
+        }
+
+        kwargs = _make_agent_with_override(override, monkeypatch, config)
+
+        assert kwargs["base_url"] == "https://b.example/v1"
+        assert kwargs["api_key"] == "sk-entry-b"

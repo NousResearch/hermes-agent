@@ -16,10 +16,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from hermes_cli.session_schema_history import SCHEMA_HISTORY, reachable_physical_layouts
 
-from hermes_state_ids import (  # timestamp prefix + derived shapes: sentinel for schema-less rows
-    SESSION_ID_PATTERN,  # noqa: F401  -- re-export; test_hermes_state_ids pins the identity
-    is_known_session_id,
-)
+from hermes_state_ids import is_known_session_id  # every minted id shape: sentinel for schema-less rows
 from hermes_cli.session_recovery import (
     _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _DANGLING_TOOL_PIN, _count_rows,
     _immediate_transaction, _placeholder_titles, _quoted_columns, _table_columns,

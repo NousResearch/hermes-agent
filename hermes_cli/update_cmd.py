@@ -919,6 +919,11 @@ def _pull_updates(
         pull_marker.write_text(
             f"pid={os.getpid()}\npre={pre_pull_sha}\ntarget={target_sha}\nstash={auto_stash_ref or ''}\n",
             encoding="utf-8")
+    # Name this step in the Desktop hand-off window. On a treeless (tree:0) install the merge
+    # below lazy-fetches the new tree and then the changed files from origin, one round trip
+    # each, and can take minutes under the shim's generic "Updating code and dependencies".
+    from hermes_cli.update_stage import publish_stage
+    publish_stage("Applying code changes")
     try:
         try:
             # merge --ff-only the already-fetched ref instead of `git pull`, which would do a

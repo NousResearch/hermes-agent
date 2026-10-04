@@ -247,6 +247,34 @@ def test_update_owner_change_dispatches_its_suites_end_to_end(path, lanes):
         assert all(reached.values()), f"{path}: {lane}=true never reaches {reached}"
 
 
+# Review R6 m11: update-path files whose suites the classifier left off. Some land in a sibling
+# PR of the update stack (update-marker-gate.ts), so the table routes paths, not files on disk.
+_R6_CASES = {
+    # The Desktop gate's marker reader: the hand-off script's contract (desktop_updater) and the
+    # Desktop update E2E that drives the gate.
+    "apps/desktop/electron/update-marker-gate.ts": ("desktop_updater", "e2e_desktop_update"),
+    # Stops the backend before a remote update: typecheck/vitest and the hand-off script tests.
+    "apps/desktop/electron/remote-lifecycle.ts": ("frontend", "desktop_updater"),
+    # The Tauri updater's marker claim: cargo and the real-update suites it gates.
+    "apps/bootstrap-installer/src-tauri/src/marker.rs": ("rust", "e2e_upgrade", "e2e_desktop_update"),
+    # The launchers reach the launch repair: the Desktop update relaunches through them too.
+    "hermes_cli/_launchers.py": ("e2e_upgrade", "e2e_desktop_update"),
+}
+
+
+@pytest.mark.parametrize("path,lanes", list(_R6_CASES.items()))
+def test_update_path_change_selects_every_suite_that_exercises_it(path, lanes):
+    classified = _real_classifier([path])
+    run = _ci_run(classified)
+    for lane in lanes:
+        assert classified[lane], f"{path}: classifier leaves {lane} off"
+        if lane.startswith("e2e"):
+            reached = _consumers_reached(run, lane)
+            assert all(reached.values()), f"{path}: {lane}=true never reaches {reached}"
+        if lane == "desktop_updater":
+            assert _windows_desktop_updater_tests_selected(run), f"{path}: desktop_updater never reaches its tests"
+
+
 def test_every_detect_output_a_lane_sets_is_consumed_by_some_job():
     """A lane output nothing reads is a lane that can never run anything."""
     ci = _yaml(".github/workflows/ci.yaml")

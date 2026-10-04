@@ -140,7 +140,10 @@ _DESKTOP_UPDATER_FILES = {
     "apps/desktop/electron/managed-ssh-update.ts",
     # The other half of the marker / result contract the script implements.
     "apps/desktop/electron/update-marker.ts",
+    "apps/desktop/electron/update-marker-gate.ts",  # the gate's live-marker probe
     "apps/desktop/electron/handoff-result.ts",
+    # Stops a remote backend for the update the hand-off script then runs.
+    "apps/desktop/electron/remote-lifecycle.ts",
     # Python the script runs: the post-update verify and the staged app swap.
     "hermes_cli/desktop_update_verify.py",
     "hermes_cli/main_desktop.py",
@@ -204,6 +207,9 @@ _DESKTOP_E2E_SHARED = (
     "apps/desktop/e2e/fix-electron-tracing",
     "apps/desktop/e2e/run-tmp",
 )
+# The Tauri updater's claim on the update marker (the same A7 contract every updater honours,
+# and the held-checkout rule the real-update suites kill-test).
+_TAURI_UPDATE_MARKER = ("apps/bootstrap-installer/src-tauri/src/marker.rs",)
 # What `hermes update` runs outside the update_* module family: the steps of the
 # pipeline (entry, lock, early recovery, completion tail, launchers, fleet
 # restart/verify, Windows pause/resume) and the lock / marker / recovery state
@@ -242,6 +248,7 @@ _UPDATE_PIPELINE = (
     "gateway/shutdown_forensics.py",
     "gateway/restart.py",
     "scripts/desktop-update/",  # the hand-off scripts run `hermes update`
+    *_TAURI_UPDATE_MARKER,
 )
 # Selectors are owned by the import graph, not remembered. The update
 # transaction's own modules (what `hermes update` and the launch-time completion
@@ -415,6 +422,9 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         # Imported by the Desktop build's scripts (scripts/build/desktop.mjs closure).
         "apps/desktop/product-identity.cjs",
         "scripts/msix-shared.mjs",
+        # The launchers the Desktop relaunches through reach the launch-time repair first.
+        "hermes_cli/_launchers.py",
+        *_TAURI_UPDATE_MARKER,
     ),
 }
 # The upgrade journeys are their own lane; editing one does not start ``e2e``.

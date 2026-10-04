@@ -77,6 +77,21 @@ class TestSplitCapabilityRowsAreActive:
         assert _is_provider_active(_row("tavily"), config) is True
         assert _is_provider_active(_row("firecrawl"), config) is True
 
+    def test_shared_key_shadowed_by_both_overrides(self):
+        """An override shadows the shared key for its own capability only — when both
+        capabilities are overridden, the shared vendor serves neither and must not be
+        highlighted."""
+        config = {
+            "web": {
+                "search_backend": "searxng",
+                "extract_backend": "tavily",
+                "backend": "firecrawl",
+            }
+        }
+        assert _is_provider_active(_row("searxng"), config) is True
+        assert _is_provider_active(_row("tavily"), config) is True
+        assert _is_provider_active(_row("firecrawl"), config) is False
+
     def test_empty_capability_keys_fall_back_to_shared(self):
         """Blank overrides are what a cleared selection leaves behind."""
         config = {"web": {"search_backend": "", "extract_backend": None, "backend": "searxng"}}

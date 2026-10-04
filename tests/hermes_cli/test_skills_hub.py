@@ -653,6 +653,6 @@ def test_do_install_restores_matching_archive_before_fetch(monkeypatch):
     monkeypatch.setattr(hub_cli, "_finish_change", lambda *args: calls.append("cache"))
     monkeypatch.setattr(hub_cli, "_install_skill", lambda *args: pytest.fail("remote fetch should not run"))
 
-    do_install("official/archived-skill", invalidate_cache=True)
+    do_install("archived-skill", invalidate_cache=True)
 
     assert calls == [("archived-skill", True), "cache"]

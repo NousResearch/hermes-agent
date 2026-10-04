@@ -1,9 +1,11 @@
-"""Desktop-only directory plugins (a manifest plus ``desktop/plugin.js``, no Python half) load
-cleanly instead of warning "Failed to load plugin ... No __init__.py" on every start (#132741).
+"""Directory plugins with no Python half (a manifest plus ``desktop/plugin.js`` or a
+``dashboard/`` payload, no root ``.py`` files) load cleanly instead of warning
+"Failed to load plugin ... No __init__.py" on every start (#132741, #132762).
 Real temp home, real plugin directory, real discovery path — no loader mocks."""
 
 from __future__ import annotations
 
+import json
 import logging
 
 import hermes_yaml as yaml
@@ -94,3 +96,34 @@ def test_directory_plugin_with_root_py_still_requires_init(home, caplog):
     loaded = manager._plugins["half-broken"]
     assert not loaded.enabled
     assert loaded.error and "No __init__.py" in loaded.error
+
+
+def test_dashboard_only_plugin_with_subdir_backend_loads_clean(home, caplog):
+    # home-dashboard (#132762): the Python backend lives at dashboard/plugin_api.py, inside a
+    # subdirectory the web server imports itself — the plugin root still has no Python half.
+    plugin = home / "plugins" / "home-dashboard"
+    (plugin / "dashboard").mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text(
+        yaml.safe_dump({
+            "name": "home-dashboard",
+            "version": "1.5.0",
+            "description": "home widgets",
+        }),
+        encoding="utf-8",
+    )
+    (plugin / "dashboard" / "manifest.json").write_text(
+        json.dumps({"name": "home-dashboard", "label": "Home", "api": "plugin_api.py"}),
+        encoding="utf-8",
+    )
+    (plugin / "dashboard" / "plugin_api.py").write_text(
+        "router = None  # FastAPI APIRouter in the real plugin\n", encoding="utf-8"
+    )
+    (home / "config.yaml").write_text(
+        yaml.safe_dump({"plugins": {"enabled": ["home-dashboard"]}}), encoding="utf-8"
+    )
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+        manager = _load(home)
+    loaded = manager._plugins["home-dashboard"]
+    assert loaded.enabled
+    assert loaded.error is None
+    assert [r for r in caplog.records if "home-dashboard" in r.getMessage()] == []

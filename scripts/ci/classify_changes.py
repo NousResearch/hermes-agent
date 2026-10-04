@@ -209,6 +209,9 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "apps/shared/src/",
         "apps/desktop/src/store/session",
         "apps/desktop/src/store/transcript",
+        # fleet-condensed-default.spec.ts: the profile rail's doors per gateway.
+        "apps/desktop/src/app/chat/sidebar/profile-switcher",
+        "apps/desktop/src/app/chat/sidebar/fleet-",
     ),
     "e2e_desktop_update": (
         *_DESKTOP_E2E_SHARED,

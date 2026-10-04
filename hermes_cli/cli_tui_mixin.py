@@ -84,6 +84,91 @@ def _term_rows() -> int:
     return shutil.get_terminal_size((100, 24)).lines
 
 
+def _clip_rows(rows, keep, marker, style):
+    """Keep at most ``keep`` rows, replacing the tail with ``marker`` when cut."""
+    if keep <= 0 or not rows:
+        return []
+    if len(rows) <= keep:
+        return list(rows)
+    if keep == 1:
+        return [(style, marker)]
+    return list(rows[: keep - 1]) + [(style, marker)]
+
+
+def _fit_clarify_batch_body(before, active_question, choices, after, budget, marker):
+    """Fit a batch clarify body into ``budget`` rows, choices first.
+
+    The panel is an unsized Window, so the layout clips whatever hangs off the
+    bottom — and the choices are the last rows of the active question. When the
+    full body fits it is returned unchanged. Otherwise each other question keeps
+    its first line, the active question takes what remains, and leftover rows
+    expand the other questions nearest the active one back toward full text.
+    """
+    full = [row for group in before for row in group]
+    full.extend(active_question)
+    full.extend(choices)
+    full.extend(row for group in after for row in group)
+    if budget <= 0 or len(full) <= budget:
+        return full
+
+    if len(choices) >= budget:
+        return _clip_rows(choices, budget, marker, "class:clarify-choice")
+
+    rest = budget - len(choices)
+    shown_before = [list(group[:1]) for group in before]
+    shown_after = [list(group[:1]) for group in after]
+    min_cost = sum(len(group) for group in shown_before) + sum(len(group) for group in shown_after)
+    if min_cost >= rest:
+        slots = []
+        before_i, after_i = len(shown_before) - 1, 0
+        while len(slots) < rest and (before_i >= 0 or after_i < len(shown_after)):
+            if before_i >= 0:
+                slots.append(("b", before_i))
+                before_i -= 1
+            if after_i < len(shown_after) and len(slots) < rest:
+                slots.append(("a", after_i))
+                after_i += 1
+        keep_before = {i for kind, i in slots if kind == "b"}
+        keep_after = {i for kind, i in slots if kind == "a"}
+        body = []
+        for i, group in enumerate(shown_before):
+            if i in keep_before:
+                body.extend(group)
+        body.extend(choices)
+        for i, group in enumerate(shown_after):
+            if i in keep_after:
+                body.extend(group)
+        return body
+
+    active_shown = _clip_rows(
+        active_question, rest - min_cost, marker, "class:clarify-question")
+    leftover = rest - min_cost - len(active_shown)
+    if leftover:
+        order = []
+        before_i, after_i = len(before) - 1, 0
+        while before_i >= 0 or after_i < len(after):
+            if before_i >= 0:
+                order.append(("b", before_i))
+                before_i -= 1
+            if after_i < len(after):
+                order.append(("a", after_i))
+                after_i += 1
+        for kind, i in order:
+            if leftover <= 0:
+                break
+            source = before[i] if kind == "b" else after[i]
+            dest = shown_before[i] if kind == "b" else shown_after[i]
+            extra = source[len(dest): len(dest) + leftover]
+            dest.extend(extra)
+            leftover -= len(extra)
+
+    body = [row for group in shown_before for row in group]
+    body.extend(active_shown)
+    body.extend(choices)
+    body.extend(row for group in shown_after for row in group)
+    return body
+
+
 class _Panel:
     """Fragment accumulator for one bordered overlay panel (``(style, text)`` tuples)."""
 
@@ -477,29 +562,42 @@ class CLITuiMixin:
         title = t("cli.tui.clarify_title", agent_name=_agent_name())
         header = _tn("cli.tui.clarify_question_count", len(questions_list))
 
-        def _status_rows(width):
-            rows = []
+        def _sections(width):
+            before, after = [], []
+            active_q, choice_rows = [], []
             for idx, entry in enumerate(questions_list):
                 answered = entry["qid"] in answers
                 marker = "✓" if answered else ("▸" if idx == active else "·")
                 row_style = 'class:clarify-selected' if idx == active else 'class:clarify-choice'
-                for wrapped in _wrap_panel_text(f"{marker} {entry['question']}", width, subsequent_indent="  "):
-                    rows.append((row_style, wrapped))
+                q_rows = [
+                    (row_style, wrapped)
+                    for wrapped in _wrap_panel_text(
+                        f"{marker} {entry['question']}", width, subsequent_indent="  ")
+                ]
                 if answered:
                     # Locked answer on its own line/color so it stays readable while Tab-walking.
                     locked = answers[entry['qid']]
                     answer = f"    {'—' if locked is None else locked}"
-                    for wrapped in _wrap_panel_text(answer, width, subsequent_indent="    "):
-                        rows.append(('class:clarify-answer', wrapped))
-                if idx != active:
+                    q_rows.extend(
+                        ('class:clarify-answer', wrapped)
+                        for wrapped in _wrap_panel_text(answer, width, subsequent_indent="    ")
+                    )
+                if idx < active:
+                    before.append(q_rows)
                     continue
+                if idx > active:
+                    after.append(q_rows)
+                    continue
+                active_q = q_rows
                 for i, choice in enumerate(choices):
                     cursor = "❯" if i == selected and not freetext else " "
                     cb = ("[x] " if i in selected_indices else "[ ] ") if multi_select else ""
                     style = 'class:clarify-selected' if i == selected and not freetext else 'class:clarify-choice'
                     label = f"  {cursor} {cb}{_num_prefix(i)}. {choice}"
-                    for wrapped in _wrap_panel_text(label, width, subsequent_indent="      "):
-                        rows.append((style, wrapped))
+                    choice_rows.extend(
+                        (style, wrapped)
+                        for wrapped in _wrap_panel_text(label, width, subsequent_indent="      ")
+                    )
                 if choices:
                     other_idx = len(choices)
                     mid = _num_prefix(other_idx)
@@ -518,17 +616,34 @@ class CLITuiMixin:
                     else:
                         other_label = f"    {mid}. " + (other_suffix or t("cli.tui.clarify_other_type_answer"))
                         other_style = 'class:clarify-choice'
-                    for wrapped in _wrap_panel_text(other_label, width, subsequent_indent="      "):
-                        rows.append((other_style, wrapped))
+                    choice_rows.extend(
+                        (other_style, wrapped)
+                        for wrapped in _wrap_panel_text(other_label, width, subsequent_indent="      ")
+                    )
                 elif freetext:
                     guidance = "  " + t("cli.tui.clarify_guidance")
-                    for wrapped in _wrap_panel_text(guidance, width):
-                        rows.append(('class:clarify-active-other', wrapped))
-            return rows
+                    choice_rows.extend(
+                        ('class:clarify-active-other', wrapped)
+                        for wrapped in _wrap_panel_text(guidance, width)
+                    )
+            return before, active_q, choice_rows, after
 
-        preview_rows = _status_rows(60)
+        def _flatten(sections):
+            before, active_q, choice_rows, after = sections
+            return [row for group in before for row in group] + active_q + choice_rows + [
+                row for group in after for row in group]
+
+        # Width still comes from a 60-column preview (see #126970). Only the
+        # row budget below is new: the panel must stay inside the viewport.
+        preview_rows = _flatten(_sections(60))
         box_width = _panel_box_width(title, [header] + [text for _, text in preview_rows])
-        rows = _status_rows(max(8, box_width - 2))
+        before, active_q, choice_rows, after = _sections(max(8, box_width - 2))
+        # Top rule, the "N questions" header, and the bottom rule. The composer
+        # and status bar are the shared _PANEL_RESERVED_BELOW, same as approval.
+        available = max(0, _term_rows() - _PANEL_RESERVED_BELOW)
+        rows = _fit_clarify_batch_body(
+            before, active_q, choice_rows, after,
+            max(1, available - 3), t("cli.tui.detail_truncated"))
 
         panel = _Panel('class:clarify-border', box_width, title, 'class:clarify-title')
         panel.row('class:clarify-question', header)

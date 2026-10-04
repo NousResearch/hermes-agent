@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 import uuid
 from contextlib import suppress
 from pathlib import Path
@@ -202,3 +203,35 @@ def test_a_running_service_owes_its_gateway_until_that_gateway_is_ready(tmp_path
 def _logs(home: Path) -> str:
     return "\n".join(f"--- {p}\n{p.read_text(encoding='utf-8-sig', errors='replace')[-3000:]}"
                      for p in sorted((home / "logs").glob("*.log")))
+
+
+# --- force-kill identity ------------------------------------------------------------------------
+
+@pytest.mark.parametrize("discovered", ["this process", "an earlier process at this pid"])
+def test_a_pause_force_kills_only_the_process_it_discovered(tmp_path, monkeypatch, discovered):
+    from hermes_cli import update_cmd_windows as w
+    from hermes_cli.gateway import ProfileGatewayProcess
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_RESTART_DRAIN_TIMEOUT", "1")
+    # Never answers its pause, so it survives the drain and reaches the force-kill.
+    victim = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"], stdin=subprocess.DEVNULL)
+    try:
+        born = psutil.Process(victim.pid).create_time()
+        # The gateway discovered at this PID: this very process, or one born earlier that exited
+        # during the drain while Windows handed its PID to the process running now.
+        seen = born if discovered == "this process" else born - 5.0
+        found = ProfileGatewayProcess(profile="r8kill", path=home, pid=victim.pid, create_time=seen)
+        w._stop_windows_gateways([victim.pid], {victim.pid: found}, set(), [], [])
+        deadline = time.monotonic() + 15
+        while victim.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if discovered == "this process":
+            assert victim.poll() is not None, "the discovered gateway survived its force-kill"
+        else:
+            assert victim.poll() is None, "force-kill took a process born after discovery (a reused PID)"
+    finally:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(victim.pid)], capture_output=True, check=False)
+        victim.wait(timeout=30)

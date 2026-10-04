@@ -954,6 +954,8 @@ def _pause_windows_gateways_for_update() -> dict | None:
                                             "Could not capture argv for unmapped gateway %s: %s", int(pid))}
         for pid in unmapped_pids
     ]
+    from gateway.status import get_process_start_time
+    born = {int(pid): get_process_start_time(int(pid)) for pid in running_pids}  # the processes discovered
     intended = {
         "resume_needed": True, "unmapped_pids": unmapped_pids, "unmapped": unmapped,
         "profiles": {str(profile_processes[pid].profile): int(pid) for pid in running_pids
@@ -972,7 +974,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
         pause_record.mark_stop_requested(
             intended, running_pids, markers=_planned_stop_markers(running_pids, profile_processes, service_gateway_pids))
     profiles = _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids, unmapped_pids, unmapped,
-                                      on_request=lambda pid: pause_record.mark_stop_sent(intended, pid))
+                                      on_request=lambda pid: pause_record.mark_stop_sent(intended, pid), born=born)
     token = {"resume_needed": True, "profiles": profiles, "unmapped_pids": unmapped_pids, "unmapped": unmapped}
     # Every profile with ANY live gateway at discovery counts as running: service-supervised ones skip the
     # socket pause (absent from ``profiles``) but the SCM restart brings them back, not a cold-start.
@@ -1004,25 +1006,34 @@ def _cold_start_pause_token(adopted: dict | None, claims: list) -> dict | None:
 
 
 def _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids, unmapped_pids, unmapped,
-                           on_request=None) -> dict:
+                           on_request=None, born=None) -> dict:
     """Socket-pause the mapped gateways, drain, then tree-kill survivors; the paused ``profiles``.
-    A force-killed process needs no stop record: dead, it is owed; alive, it was never stopped."""
+    A force-killed process needs no stop record: dead, it is owed; alive, it was never stopped.
+
+    The kill is authorized by each process's birth as discovered (*born*, a mapped gateway's
+    strict PID-file identity first), never re-read after the drain: a PID that exited and was
+    reused meanwhile reads its replacement's own birth. No discovered birth refuses the kill."""
     from gateway.status import get_process_start_time, terminate_pid
     from hermes_cli.update_cmd import _m
+    mapped = [int(p) for p in running_pids if int(p) not in service_gateway_pids and int(p) in profile_processes]
+    born = {**{int(k): v for k, v in (born or {}).items()},
+            **{p: int(round(float(profile_processes[p].create_time) * 100)) for p in mapped
+               if float(getattr(profile_processes[p], "create_time", 0) or 0) > 0}}
+    # Resolve venv-side launchers before any request: the launcher keeps ``.pyd`` mapped and would trip the
+    # venv-holder guard, so it is killed with the survivors, under the identity it has now.
+    launcher_pids = _m()._venv_launcher_ancestors(mapped)
+    born.update({int(p): get_process_start_time(int(p)) for p in launcher_pids if int(p) not in born})
     profiles, mapped_pids, socket_acks = _request_socket_pauses(
         running_pids, profile_processes, service_gateway_pids, on_request=on_request)
-    # Resolve venv-side launchers BEFORE draining: a dead worker's parent cannot be recovered (NoSuchProcess).
-    # The launcher keeps ``.pyd`` mapped and would trip the venv-holder guard; it is killed with the survivors.
-    launcher_pids = _m()._venv_launcher_ancestors(mapped_pids)
     print("→ Stopping Windows gateway process(es) before updating Hermes...")
     drain_timeout = _gateway_drain_timeout(socket_acks)
     survivors = _m()._wait_for_windows_update_gateway_exit(mapped_pids, timeout=drain_timeout)
-    # Tree-kill survivors, unmapped gateways, and pre-drain launchers; a launcher
-    # already gone with its worker raises ProcessLookupError and is skipped.
+    # Tree-kill survivors, unmapped gateways, and pre-request launchers; one already gone raises
+    # ProcessLookupError, one whose birth differs (or was never read) is refused, and both are skipped.
     force_killed = []
     for pid in sorted(set(survivors).union(unmapped_pids).union(launcher_pids)):
         with suppress(ProcessLookupError, PermissionError, OSError):
-            terminate_pid(int(pid), force=True, expected_start_time=get_process_start_time(int(pid)))
+            terminate_pid(int(pid), force=True, expected_start_time=born.get(int(pid)))
             force_killed.append(int(pid))
     if profiles:
         print(f"  ✓ Paused gateway profile(s): {', '.join(sorted(profiles))}")

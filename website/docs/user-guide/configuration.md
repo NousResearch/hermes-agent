@@ -330,8 +330,12 @@ Two consequences worth knowing:
 
 The scope name carries the gateway's PID. On a graceful exit the gateway stops its own
 scopes; if it is SIGKILLed (OOM victim, `TimeoutStopSec` escalation, a crash) the
-`ExecStopPost` reaper (`gateway/cgroup_cleanup.py`) stops the scopes of the PID that just
-died, so a command cannot outlive the gateway through the restart either.
+`ExecStopPost` reaper (`gateway/cgroup_cleanup.py`) stops `hermes-fg-<pid>-*.scope` for the
+PID recorded in the gateway's own PID file — and only when that PID is no longer alive, so
+a live gateway's commands are never matched. Treat it as a best-effort backstop rather than
+a guarantee: it needs the record to still be readable at that moment (a graceful stop
+unlinks it, and a concurrent status read can clean a stale one) and it enqueues the stop
+instead of waiting for it.
 
 #### `terminal.home_mode`
 

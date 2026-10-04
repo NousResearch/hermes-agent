@@ -114,12 +114,15 @@ def reap_cgroup(cgroup_path: str | None = None) -> int | None:
 def _dead_gateway_pid() -> int | None:
     """PID of the gateway that just exited, from its own record, or None.
 
-    ExecStopPost has no ``$MAINPID``: ``man systemd.service`` states it is unset if
-    the main process exited by the time the stop commands are called, and this hook
-    only ever runs after that (verified on systemd 255 — the variable is empty).
-    The record is the substitute. A *graceful* stop unlinks it before exiting
-    (``gateway.status.remove_pid_file``), so a record still present here means the
-    gateway died without running its own teardown — the case this sweep is for.
+    ExecStopPost has no ``$MAINPID``: ``man systemd.service`` states it is unset if the
+    main process exited by the time the stop commands are called, and this hook only ever
+    runs after that — measured on systemd 255, including a stop that hit the
+    ``TimeoutStopSec`` escalation (``Result=timeout``, ``ExecMainStatus=9``; the hook ran
+    and still saw an empty ``$MAINPID``). The record is the handle that still names the
+    dead gateway — a handle, not proof of *how* it died: a graceful stop unlinks it
+    (``gateway.status.remove_pid_file``), but a concurrent status read with
+    ``cleanup_stale=True`` can unlink a stale record before this hook reads it, and a
+    ``--replace`` unlink no-ops when the record already names the new process.
     """
     try:
         from gateway.status import _pid_from_record, _read_pid_record
@@ -132,20 +135,35 @@ def _dead_gateway_pid() -> int | None:
     return None
 
 
+def _pid_is_alive(pid: int) -> bool:
+    """True when the recorded PID still exists — a live gateway owns its own scopes.
+
+    Fails closed: if liveness cannot be determined, refuse the sweep (a stale unit
+    outliving a restart is the lesser harm than stopping a live gateway's commands).
+    """
+    try:
+        from gateway.status import _pid_exists
+    except Exception:
+        return True
+    with contextlib.suppress(Exception):
+        return bool(_pid_exists(pid))
+    return True
+
+
 def reap_foreground_scopes(pid: int | None = None) -> bool:
     """Stop the foreground scopes a dead gateway left behind. True if a sweep was issued.
 
     A foreground ``terminal`` command runs in ``hermes-fg-<gateway pid>-*.scope``
     (see #70716), which neither this unit's ``KillMode=`` nor the cgroup reap above
-    reaches. The gateway stops its own scopes on the graceful path; if it is
-    SIGKILLed (OOM victim, ``TimeoutStopSec`` escalation, a crash), only this hook
-    runs, and the next gateway has a new PID — so without the sweep the command and
-    its unit outlive every restart. The glob keeps the dead PID, so another profile's
-    live gateway in the same user manager is never touched.
+    reaches: the gateway's own funnel only runs while it is alive to run it, and the next
+    gateway has a new PID. Best effort by construction — it needs a PID that is still
+    readable *and* no longer alive; a live PID is never swept, and a record that a
+    concurrent cleanup already removed means no sweep at all. Enqueuing the stop is not
+    proof that the scope is gone before ``Restart=`` starts the next gateway.
     """
     if pid is None:
         pid = _dead_gateway_pid()
-    if pid is None:
+    if pid is None or _pid_is_alive(pid):
         return False
     try:
         from tools.environments.local import stop_foreground_scopes

@@ -281,12 +281,7 @@ def parse_apply_indices(spec: str, total: int) -> list[int]:
 def apply_proposals(proposals: list[Proposal], indices: list[int]) -> set:
     """Merge chosen proposal patterns into command_allowlist and persist."""
     import tools.approval as approval_module
-    merged = set(approval_module.load_permanent_allowlist()) | {proposals[idx].pattern for idx in indices}
-    approval_module.save_permanent_allowlist(merged)
-    # Keep the in-process allowlist consistent so a long-lived process sees the new entries
-    # immediately (mirrors the interactive 'always' path).
-    approval_module.load_permanent(merged)
-    return merged
+    return approval_module.add_permanent_allowlist({proposals[idx].pattern for idx in indices})
 
 
 def _render_text(proposals: list[Proposal], days: int) -> None:

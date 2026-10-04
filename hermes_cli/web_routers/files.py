@@ -506,25 +506,28 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
 
 @router.get("/api/files")
 async def list_managed_files(request: Request, path: Optional[str] = None):
-    policy, target, display_path = _resolve_managed_path(path, request)
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="Path not found")
-    if not target.is_dir():
-        raise HTTPException(status_code=400, detail="Path is not a directory")
+    def _run():
+        policy, target, display_path = _resolve_managed_path(path, request)
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="Path not found")
+        if not target.is_dir():
+            raise HTTPException(status_code=400, detail="Path is not a directory")
 
-    with _io_errors("Directory is not readable", "Could not read directory"), os.scandir(target) as scan:
-        entries = [
-            _managed_file_entry(policy, Path(entry.path))
-            for entry in scan
-            if not _is_sensitive_path(Path(entry.path))
-        ]
+        with _io_errors("Directory is not readable", "Could not read directory"), os.scandir(target) as scan:
+            entries = [
+                _managed_file_entry(policy, Path(entry.path))
+                for entry in scan
+                if not _is_sensitive_path(Path(entry.path))
+            ]
 
-    entries.sort(key=lambda item: (not item["is_directory"], str(item["name"]).lower()))
-    locked_root = policy.locked_root
-    parent = None
-    if target.parent != target and (locked_root is None or target != locked_root):
-        parent = str(target.parent)
-    return {"path": display_path, "parent": parent, "entries": entries, **_managed_response_meta(policy)}
+        entries.sort(key=lambda item: (not item["is_directory"], str(item["name"]).lower()))
+        locked_root = policy.locked_root
+        parent = None
+        if target.parent != target and (locked_root is None or target != locked_root):
+            parent = str(target.parent)
+        return {"path": display_path, "parent": parent, "entries": entries, **_managed_response_meta(policy)}
+
+    return await asyncio.to_thread(_run)
 
 
 def _managed_readable_file(request: Request, path: str) -> tuple[Any, Path, str, int, str]:

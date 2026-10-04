@@ -28,6 +28,17 @@ with open(os.environ['HANDOFF_CAPTURE'], 'a', encoding='utf-8') as f:
     f.write(' '.join(sys.argv[1:]) + '\\n')
 if sys.argv[1:2] == ['desktop']:
     sys.exit(1)
+completion = os.environ.get('HANDOFF_COMPLETION')
+if completion and sys.argv[1:2] == ['update']:  # a survivor that keeps the checkout lock past our exit
+    import subprocess
+    subprocess.Popen([sys.executable, '-c', (
+        'import fcntl, os, sys, time; from pathlib import Path; '
+        'fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o644); fcntl.flock(fd, fcntl.LOCK_EX); '
+        'Path(sys.argv[2] + ".ready").write_text(str(os.getpid())); '
+        'exec("while not Path(sys.argv[2]).exists(): time.sleep(0.05)")'),
+        os.environ['HANDOFF_CHECKOUT_LOCK'], completion], start_new_session=True)
+    while not Path(completion + '.ready').exists():
+        __import__('time').sleep(0.02)
 hold = os.environ.get('HANDOFF_HOLD')
 if hold:  # an update still running: report the pid, then wait to be released
     Path(hold + '.pid').write_text(str(os.getpid()), encoding='utf-8')

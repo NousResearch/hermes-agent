@@ -131,6 +131,9 @@ export interface ClarifyReq {
 }
 
 export interface Msg {
+  rowId?: number
+  messageUid?: string
+  clientMessageId?: string
   info?: SessionInfo
   kind?: 'diff' | 'event' | 'intro' | 'panel' | 'slash' | 'trail'
   panelData?: PanelData

@@ -508,7 +508,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
       truncateMessageId?: string,
       truncateRowId?: number,
       sourceText?: string,
-      rebindRowIds?: readonly number[]
+      rebindRowIds?: readonly number[],
+      clientMessageId?: string
     ) =>
       runRewindSubmit(
         requestSessionGateway,
@@ -523,7 +524,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         },
         truncateRowId,
         sourceText,
-        rebindRowIds
+        rebindRowIds,
+        clientMessageId
       ),
     [bindRecoveredRuntime, requestSessionGateway]
   )
@@ -574,7 +576,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            messages[plan.userIndex]?.id
           )
         )
       } catch (err) {
@@ -620,7 +623,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            messages[plan.sourceIndex]?.id
           )
         )
       } catch (err) {
@@ -655,7 +659,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
                   retryPlan.truncateMessageId,
                   retryPlan.truncateRowId,
                   retryPlan.sourceText,
-                  durableRowIdsForRebind(freshMessages)
+                  durableRowIdsForRebind(freshMessages),
+                  freshMessages[retryPlan.sourceIndex]?.id
                 )
               )
 
@@ -712,7 +717,8 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
             plan.truncateMessageId,
             plan.truncateRowId,
             plan.sourceText,
-            durableRowIdsForRebind(messages)
+            durableRowIdsForRebind(messages),
+            messages[plan.sourceIndex]?.id
           )
         )
       } catch (err) {

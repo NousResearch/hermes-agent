@@ -679,6 +679,7 @@ export interface MessageReaction {
 }
 
 export interface SessionMessage {
+  message_uid?: string
   /**
    * Full tool arguments for a gateway-projected tool row (`role: 'tool'`).
    * `context` is an 80-char display preview. The expanded tool row rebuilds

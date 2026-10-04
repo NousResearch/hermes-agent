@@ -332,13 +332,17 @@ def _persist_queued_user_row(session: dict, envelope: dict, display_kind: str | 
                 envelope.pop("_submit_user_row", None)
                 return
             staged["_row_id"], staged["content"] = live_id, envelope["text"]
+        if envelope.get("_client_message_ids"):
+            staged.setdefault("display_metadata", {})["client_message_ids"] = envelope["_client_message_ids"]
         return
     # ``display_metadata`` marker: ``reopen_session`` retires still-marked rows after a restart
     # discarded the in-memory queue (#125577); the drain's replacement row is unmarked.
     from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
     staged = _write_submit_user_row(
         session, envelope.get("text"), display_kind,
-        accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
+        accept_metadata={QUEUED_PROMPT_METADATA_KEY: True,
+                         **({"client_message_ids": envelope["_client_message_ids"]}
+                            if envelope.get("_client_message_ids") else {})})
     if staged is not None:
         envelope["_submit_user_row"] = staged
         if display_kind:
@@ -364,12 +368,12 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
     # The DISPATCHING envelope's replacement carries no marker (its turn adopts the row immediately);
     # still-queued envelopes keep the never-drained marker (#125577) so a restart between drains
     # retires the row rather than gluing the never-run prompt into the previous turn.
+    metadata = {**(early.get("display_metadata") or {})}
+    from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
     if is_dispatching:
-        _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"))
-    else:
-        from hermes_state_common import QUEUED_PROMPT_METADATA_KEY
-        _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"),
-                                 accept_metadata={QUEUED_PROMPT_METADATA_KEY: True})
+        metadata.pop(QUEUED_PROMPT_METADATA_KEY, None)
+    _persist_submit_user_row(session, queued.get("text"), queued.get("_queued_display_kind"),
+                             accept_metadata=metadata, message_uid=early.get("message_uid"))
     fresh = session.get("_submit_user_row")
     if not (isinstance(fresh, dict) and isinstance(fresh.get("_row_id"), int)):
         return None  # re-append wrote nothing: keep the accept-time row active
@@ -396,7 +400,8 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
 
 
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
-                        turn_author: dict | None = None, display_kind: str | None = None) -> dict | None:
+                        turn_author: dict | None = None, display_kind: str | None = None,
+                        client_message_id: str | None = None) -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
     and drop sends): ``interrupt`` (default) → redirect, falling back to hard interrupt + queue; ``queue`` → queue only;
     ``steer`` → inject after the current atomic action. ``queued=True`` (client queue drain) forces queue mode: a "run
@@ -436,6 +441,10 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
         # Durable AT ACCEPT (not when the turn runs): a cold resume sees the queued message and a
         # backend restart cannot lose it. Lives on the envelope, never the shared session slot.
         if envelope is not None:
+            if client_message_id:
+                envelope.setdefault("_client_message_ids", []).append(client_message_id)
+            if display_kind:
+                envelope["_queued_display_kind"] = display_kind
             _persist_queued_user_row(session, envelope, display_kind)
         session["last_active"] = time.time()
     # Attachments need their own model invocation: queue without cancelling so the user gets both results in order.
@@ -477,6 +486,10 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             session["running"] = False
             return True
     kwargs: dict = {"queued_prompt_generation": queue_generation}
+    if queued.get("_queued_display_kind"):
+        kwargs["display_kind"] = queued["_queued_display_kind"]
+    if queued.get("_client_message_ids"):
+        kwargs["display_metadata"] = {"client_message_ids": queued["_client_message_ids"]}
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
     # Re-place the accept-time rows (if any) at the transcript END before the turn's rows follow
@@ -497,6 +510,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             session["_submit_user_row"] = dispatch_row
         else:
             session.pop("_submit_user_row", None)
+    _emit_submit_user_row(sid, session)
     # The compute-host frame has no author field, so only the inline runner receives it.
     author_kwargs = {"turn_author": queued["turn_author"]} if queued.get("turn_author") else {}
     dispatch_failed = False

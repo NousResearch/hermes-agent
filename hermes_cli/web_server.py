@@ -1001,6 +1001,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     skills as _skills_routes,
     tools as _tools_routes,
     analytics as _analytics_routes,
+    session_attach as _session_attach_routes,
     chat_ws as _chat_ws_routes,
     chat_workspaces as _chat_workspaces_routes,
     dashboard_ui as _dashboard_ui_routes,
@@ -1034,6 +1035,7 @@ app.include_router(_profiles_routes.router)
 app.include_router(_skills_routes.router)
 app.include_router(_tools_routes.router)
 app.include_router(_analytics_routes.router)
+app.include_router(_session_attach_routes.router)
 app.include_router(_chat_ws_routes.router)
 app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
@@ -1377,6 +1379,10 @@ def _on_server_started(
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port
+    # Advertise THIS backend on every session lease, including Desktop pool children
+    # that are not the most recently published host-role record.
+    attach_host = {"0.0.0.0": "127.0.0.1", "localhost": "127.0.0.1", "::": "[::1]", "::1": "[::1]"}.get(host, host)
+    app.state.session_attach_origin = f"http://{attach_host}:{actual_port}"
     # Published by /api/host/identity: an attaching `hermes dashboard` must never be routed to a
     # headless backend (a URL with no UI behind it).
     app.state.serves_spa = not headless

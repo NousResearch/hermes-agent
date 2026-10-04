@@ -1,3 +1,4 @@
+import type { MessageUserPayload } from '@hermes/shared/gateway-events'
 import { LONG_MSG } from '../config/limits.js'
 import { t } from '../i18n/runtime.js'
 import { buildToolTrailLine } from '../lib/text.js'
@@ -102,7 +103,13 @@ export const toTranscriptMessages = (rows: unknown): Msg[] => {
       out.push({ role, text, ...(createdAt !== undefined && { createdAt }), ...(pending.length && { tools: pending }) })
       pending = []
     } else if (role === 'user' || role === 'system') {
-      out.push({ role, text, ...(createdAt !== undefined && { createdAt }) })
+      out.push({
+        role,
+        text,
+        rowId: (row as TranscriptRow).row_id,
+        messageUid: (row as TranscriptRow).message_uid,
+        ...(createdAt !== undefined && { createdAt })
+      })
       pending = []
     }
   }
@@ -120,6 +127,8 @@ export const fmtDuration = (ms: number) => {
 }
 
 interface TranscriptRow {
+  row_id?: number
+  message_uid?: string
   context?: string
   display_kind?: string
   display_metadata?: { task_count?: number; [key: string]: unknown }
@@ -127,4 +136,33 @@ interface TranscriptRow {
   role?: string
   text?: string
   timestamp?: number
+}
+
+/** Reconcile a dispatched canonical row with hydration or this client's optimistic send. */
+export function projectUserTurn(messages: Msg[], payload: MessageUserPayload): Msg[] {
+  const row = payload.message
+  const matches = messages.filter(
+    m =>
+      m.role === 'user' &&
+      ((row.row_id != null && m.rowId === row.row_id) ||
+        (row.message_uid != null && m.messageUid === row.message_uid) ||
+        (m.clientMessageId != null && payload.client_message_ids?.includes(m.clientMessageId)))
+  )
+  if (
+    matches.length === 1 &&
+    (matches[0].rowId ?? 0) >= (row.row_id ?? 0) &&
+    matches[0].messageUid === row.message_uid
+  ) {
+    return messages
+  }
+  const local = matches.length === 1 ? matches[0] : undefined
+  const user: Msg = {
+    ...local,
+    role: 'user',
+    text: local?.clientMessageId ? local.text : (row.text ?? ''),
+    rowId: row.row_id ?? undefined,
+    messageUid: row.message_uid ?? undefined,
+    createdAt: row.timestamp ?? undefined
+  }
+  return [...messages.filter(m => !matches.includes(m)), user]
 }

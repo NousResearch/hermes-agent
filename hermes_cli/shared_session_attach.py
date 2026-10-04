@@ -33,8 +33,9 @@ def discover_attach_url(session_id: str, *, registry_home: str | Path | None = N
     """Return a fenced authenticated URL, None for no owner, or refuse safely.
 
     This deliberately does not scan ports or read another profile. The runtime
-    must advertise ``metadata.shared_runtime_url`` and implement the local
-    ``/api/session-attach`` handshake. Unsupported owners keep their lease.
+    advertises ``metadata.shared_runtime_url`` with the local ``/api/session-attach``
+    handshake, or is proven by the existing serve host rendezvous. Unsupported
+    owners keep their lease.
     """
     home = Path(registry_home if registry_home is not None else get_hermes_home()).resolve()
     owners = [entry for entry in active_session_registry_snapshot(home, strict=True)
@@ -46,6 +47,16 @@ def discover_attach_url(session_id: str, *, registry_home: str | Path | None = N
     owner = owners[0]
     endpoint = (owner.get("metadata") or {}).get("shared_runtime_url")
     if not isinstance(endpoint, str) or not endpoint:
+        from gateway import host_rendezvous as hr
+        for role in (hr.ROLE_SERVE, hr.ROLE_DESKTOP_SERVE):
+            record = hr.read_record(role)
+            if record is None or record.pid != owner["pid"] or not hr.record_token_is_consistent(record):
+                continue
+            host = hr.dial_host(record)
+            _local_origin(f"http://{host}:{record.port}", "http")
+            if hr.probe_owner(record) is not None:
+                token = hr.read_token(role)
+                return f"ws://{host}:{record.port}/api/ws?{urlencode({'token': token})}"
         raise ValueError("This chat is open in another Hermes window/terminal, and attaching "
                          "this terminal to it is not available in this build. Close the chat "
                          "there and run hermes --resume " + session_id + " here to take it over.\n"

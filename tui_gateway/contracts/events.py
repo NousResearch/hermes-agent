@@ -18,7 +18,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
-from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
+from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, TranscriptMessage, Usage
 from .config_free_tier_control import SessionControlSnapshot
 from .registry import event
 
@@ -103,6 +103,17 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 
 
 # ── turn stream ───────────────────────────────────────────────────────────────────────────────
+
+
+class MessageUserPayload(Payload):
+    """Canonical submitted user row at dispatch, shared by all attached clients."""
+
+    message: TranscriptMessage
+    client_message_ids: list[str] = Field(default_factory=list)
+
+
+event("message.user", MessageUserPayload,
+      doc="Project a canonical user turn before streaming; dedupe by message uid / row id / client correlation.")
 
 
 event("message.start", None, doc="A turn began streaming; no payload.")

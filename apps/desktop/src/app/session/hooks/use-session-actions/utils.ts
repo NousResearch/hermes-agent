@@ -152,15 +152,17 @@ function replyAfterLastTool(message: ChatMessage): string {
  */
 function carryRowIdentity(next: ChatMessage, previous: ChatMessage): ChatMessage {
   const rowId = next.rowId === undefined ? previous.rowId : undefined
+  const messageUid = next.messageUid === undefined ? previous.messageUid : undefined
   const reactions = next.reactions === undefined && previous.reactions?.length ? previous.reactions : undefined
 
-  if (rowId === undefined && !reactions) {
+  if (rowId === undefined && messageUid === undefined && !reactions) {
     return next
   }
 
   return {
     ...next,
     ...(rowId !== undefined ? { rowId } : {}),
+    ...(messageUid !== undefined ? { messageUid } : {}),
     ...(reactions ? { reactions: [...reactions] } : {})
   }
 }
@@ -236,6 +238,7 @@ const _chatMessageFieldsExhaustive: {
 
 const COMPARED_FIELDS = [
   'rowId',
+  'messageUid',
   'persistedTurn',
   'durableComplete',
   'recovered',

@@ -63,7 +63,11 @@ _AUTOMATIC_SESSION_END_REASONS = frozenset({"ws_orphan_reap", "ws_disconnect", "
 def _lease_metadata(live_session_id: str) -> dict:
     """Writer identity for a lease: ``live_session_id`` is half of ``_is_same_writer``; the delivery flag is
     what Bot Chat gates live delivery on (session_notifications)."""
-    return {"live_session_id": live_session_id, "bot_live_delivery_consumer": True}
+    from tui_gateway.shared_runtime import attach_origin
+    metadata = {"live_session_id": live_session_id, "bot_live_delivery_consumer": True}
+    if origin := attach_origin():
+        metadata["shared_runtime_url"] = origin
+    return metadata
 
 
 def _claim_active_session_slot(

@@ -746,6 +746,8 @@ def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
             return _emit(event, "", payload)
         logger.debug("global-event broadcast dropped (no connected client) type=%s", event)
         return None
+    if _stdio_is_rpc_channel and _stdio_transport not in targets:
+        targets.append(_stdio_transport)
     frame = _event_frame(event, "", payload)
     for transport in targets:
         try:

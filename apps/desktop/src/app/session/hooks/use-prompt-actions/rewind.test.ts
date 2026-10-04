@@ -539,11 +539,14 @@ describe('runRewindSubmit durable-address discipline (#87059)', () => {
       false,
       undefined,
       undefined,
-      'typo prompt'
+      'typo prompt',
+      undefined,
+      'optimistic-rewind'
     )
 
     const submit = calls.find(call => call.method === 'prompt.submit')
 
+    expect(submit?.params?.client_message_id).toBe('optimistic-rewind')
     expect(submit?.params?.truncate_before_row_id).toBe(13)
     expect(submit?.params?.truncate_before_user_ordinal).toBeUndefined()
     expect(submit?.params?.confirm_truncate).toBe(true)

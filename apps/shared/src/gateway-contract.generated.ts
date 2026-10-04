@@ -2613,6 +2613,7 @@ export interface PromptSubmitParams {
   session_id: string
   profile?: string | null
   text?: unknown
+  client_message_id?: string | null
   display_kind?: string | null
   interrupted?: boolean | null
   queued?: boolean | null
@@ -2976,6 +2977,7 @@ export interface TranscriptMessage {
   tool_call_id?: string | null
   timestamp?: number | null
   row_id?: number | null
+  message_uid?: string | null
   display_kind?: string | null
   display_metadata?: unknown | null
   name?: string | null
@@ -4543,6 +4545,11 @@ export interface ErrorPayload {
 export interface NoticePayload {
   message: string
 }
+/** Canonical submitted user row at dispatch, shared by all attached clients. */
+export interface MessageUserPayload {
+  message: TranscriptMessage
+  client_message_ids?: string[]
+}
 /** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. */
 export interface StreamDeltaPayload {
   text: string
@@ -5735,6 +5742,8 @@ export interface BackendGatewayEventMap {
   'message.reaction': MessageReactionPayload
   /** A turn began streaming; no payload. */
   'message.start': Record<string, never>
+  /** Project a canonical user turn before streaming; dedupe by message uid / row id / client correlation. */
+  'message.user': MessageUserPayload
   /** The MoA aggregator started. */
   'moa.aggregating': MoaAggregatingPayload
   /** MoA phase transition (currently only ``aggregator``). */
@@ -5864,6 +5873,7 @@ export const GATEWAY_EVENT_TYPES = [
   'message.interim',
   'message.reaction',
   'message.start',
+  'message.user',
   'moa.aggregating',
   'moa.phase',
   'moa.progress',

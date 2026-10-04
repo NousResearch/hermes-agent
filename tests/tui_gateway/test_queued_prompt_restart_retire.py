@@ -43,7 +43,7 @@ def _accept_busy_prompt_a_concludes(db, sid, key, queued_text="queued prompt B R
     server._ensure_session_db_row(session)
     db.append_message(key, "user", content="prompt A")
     _busy(session)
-    resp = server._handle_busy_submit("r1", sid, session, queued_text, "ws-1", queued=True, display_kind=None)
+    resp = server._handle_busy_submit("r1", sid, session, queued_text, None, queued=True, display_kind=None)
     assert resp["result"]["status"] == "queued"
     db.append_message(key, "assistant", content="reply A")  # turn A concludes; the drain never runs
 
@@ -109,10 +109,10 @@ def test_restart_between_drains_retires_only_the_later_prompt(monkeypatch, tmp_p
         db.append_message(key, "user", content="prompt A")
         _busy(session)
         session["attached_images"] = ["/tmp/b.png"]  # non-mergeable: two separate envelopes
-        assert server._handle_busy_submit("r1", sid, session, "prompt B DRAIN-RESTART-B", "ws-1",
+        assert server._handle_busy_submit("r1", sid, session, "prompt B DRAIN-RESTART-B", None,
                                           queued=True, display_kind=None)["result"]["status"] == "queued"
         session["attached_images"] = ["/tmp/c.png"]
-        assert server._handle_busy_submit("r2", sid, session, "prompt C DRAIN-RESTART-C", "ws-1",
+        assert server._handle_busy_submit("r2", sid, session, "prompt C DRAIN-RESTART-C", None,
                                           queued=True, display_kind=None)["result"]["status"] == "queued"
         db.append_message(key, "assistant", content="reply A")
         with session["history_lock"]:

@@ -23,6 +23,7 @@ describe('gateway event routing', () => {
 
   it('drops only unscoped subagent events (genuinely background work)', () => {
     expect(gatewayEventRequiresSessionId('subagent.progress')).toBe(true)
+    expect(gatewayEventRequiresSessionId('message.user')).toBe(true)
     expect(gatewayEventRequiresSessionId('subagent.start')).toBe(true)
   })
 

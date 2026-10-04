@@ -1,8 +1,9 @@
-import type { BillingBlock } from '@hermes/shared'
+import type { BillingBlock, GatewayEvent } from '@hermes/shared'
 
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { reportFirstBuildTurnComplete } from '@/components/onboarding-chat/first-build'
 import { translateNow } from '@/i18n'
+import { textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -82,6 +83,42 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     sessionStateByRuntimeIdRef,
     updateSessionState
   } = deps
+
+  if (event.type === 'message.user') {
+    const accepted = (event as GatewayEvent<'message.user'>).payload
+    if (!sessionId || !accepted) {
+      return true
+    }
+    const row = accepted.message
+    updateSessionState(sessionId, state => {
+      const matches = state.messages.filter(
+        m =>
+          m.role === 'user' &&
+          ((row.row_id != null && m.rowId === row.row_id) ||
+            (row.message_uid != null && m.messageUid === row.message_uid) ||
+            accepted.client_message_ids?.includes(m.id))
+      )
+      if (
+        matches.length === 1 &&
+        (matches[0].rowId ?? 0) >= (row.row_id ?? 0) &&
+        matches[0].messageUid === row.message_uid
+      ) {
+        return state
+      }
+      const local = matches.length === 1 ? matches[0] : undefined
+      const user = {
+        ...local,
+        id: local?.id ?? `user-row-${row.row_id}`,
+        role: 'user' as const,
+        parts: local && accepted.client_message_ids?.includes(local.id) ? local.parts : [textPart(row.text ?? '')],
+        rowId: row.row_id ?? undefined,
+        messageUid: row.message_uid ?? undefined,
+        timestamp: row.timestamp ?? undefined
+      }
+      return { ...state, messages: [...state.messages.filter(m => !matches.includes(m)), user] }
+    })
+    return true
+  }
 
   if (event.type === 'message.start') {
     if (!sessionId) {

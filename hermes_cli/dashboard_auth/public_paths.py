@@ -10,6 +10,9 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Minimal process liveness probe for desktop/backend boot handshakes; avoids
     # gateway config, platform discovery, MCP setup and cold plugin imports.
     "/api/health",
+    # Native local attachment only: the handler requires the live lease nonce,
+    # owning profile, loopback peer/Host and no browser Origin before returning a token.
+    "/api/session-attach",
     # Portal wildcard liveness probe (``docs/agent-dashboard-public-url-contract.md``,
     # NAS side): version, gateway state, session count, auth-gate shape. No secrets.
     "/api/status",

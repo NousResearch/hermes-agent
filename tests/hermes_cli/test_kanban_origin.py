@@ -120,6 +120,27 @@ def test_index_and_reader_stay_inside_the_owning_profile(homes):
     assert seen("b") == {task_b}
 
 
+def test_a_tip_only_request_exposes_only_its_own_resolved_chain(homes):
+    default, named = homes
+    seed_compression(default, "root-1", "tip-1")
+    seed_compression(default, "other-root", "other-tip")  # an unrelated chain in the same store
+    seed_sessions(named, "tip-1")  # the same literal tip id in another profile, with no lineage
+    with scoped_current_session_id("root-1"):
+        task = create()  # ordered under the ROOT
+
+    # After a reload the client may hold only the tip; the backend resolves the rest itself.
+    result = origin_tasks(["tip-1", "ghost"])
+
+    assert result["lineage"] == {"tip-1": ["root-1", "tip-1"]}  # unknown seeds are absent, not guessed
+    assert result["unknown_sessions"] == ["ghost"]
+    assert [(r["origin_session_id"], r["task_id"]) for r in result["refs"]] == [("root-1", task)]
+
+    other_profile = in_profile(named, lambda: origin_tasks(["tip-1"]))
+
+    assert other_profile["lineage"] == {"tip-1": ["tip-1"]}  # its own store's answer, not default's chain
+    assert other_profile["refs"] == []
+
+
 def test_a_read_never_creates_a_profiles_store(homes):
     default, named = homes  # profile b exists but has never held a session
 

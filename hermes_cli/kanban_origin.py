@@ -312,8 +312,12 @@ def origin_tasks(session_ids: Iterable[str], *, now: Optional[int] = None) -> di
     seeds = list(dict.fromkeys(s.strip() for s in session_ids if isinstance(s, str) and s.strip()))
     truncated = {"sessions": len(seeds) > MAX_SEED_SESSIONS, "lineage": False, "refs": False, "total_refs": 0}
     seeds = seeds[:MAX_SEED_SESSIONS]
+    # ``lineage``: each KNOWN requested seed -> its compression chain as THIS profile's store resolved it
+    # (root first). The caller's own ids may be a lone tip (e.g. after a reload); this is how it learns
+    # which ids its conversation answers to. Unknown seeds are absent, never mapped to a guess.
     result: dict[str, Any] = {
-        "profile": profile, "now": now, "refs": [], "unknown_sessions": [], "truncated": truncated}
+        "profile": profile, "now": now, "refs": [], "unknown_sessions": [], "lineage": {},
+        "truncated": truncated}
 
     state_db = get_hermes_home() / "state.db"
     if not state_db.exists():
@@ -330,7 +334,9 @@ def origin_tasks(session_ids: Iterable[str], *, now: Optional[int] = None) -> di
             if db.get_session(seed) is None:
                 result["unknown_sessions"].append(seed)
                 continue
-            chain = frozenset(db.get_compression_lineage(seed) or [seed]) | {seed}
+            ordered_chain = list(dict.fromkeys([*(db.get_compression_lineage(seed) or []), seed]))
+            result["lineage"][seed] = ordered_chain
+            chain = frozenset(ordered_chain)
             for sid in chain:
                 chains[sid] = chain
         if len(chains) > MAX_LINEAGE_IDS:

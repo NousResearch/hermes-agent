@@ -92,6 +92,50 @@ describe('origin view reduction', () => {
     }
   })
 
+  it('keeps a root-linked task for a route that only holds the tip after a reload', () => {
+    // After a reload the row/route carries just the live tip, but the task was ordered under the
+    // compression ROOT. The answering profile's own store resolved that lineage and says so through the
+    // canonical response field `lineage` (requested seed -> its resolved chain).
+    const response: OriginTasksResponse = {
+      ...answer({
+        refs: [
+          ref('t_root', 'background', { origin_session_id: 'root-1' }),
+          // Unrelated conversations stay out: a different id, and a root that belongs to ANOTHER seed's chain.
+          ref('t_other', 'background', { origin_session_id: 'someone-else' }),
+          ref('t_stranger', 'background', { origin_session_id: 'stranger-root' })
+        ]
+      }),
+      lineage: { 'stranger-tip': ['stranger-root', 'stranger-tip'], 'tip-1': ['root-1', 'tip-1'] }
+    }
+
+    const view = deriveOriginView(true, ['tip-1'], success(response))
+
+    expect(view.kind).toBe('ready')
+
+    if (view.kind === 'ready') {
+      expect(view.refs.map(r => r.task_id)).toEqual(['t_root'])
+      // Its nonterminal activity is counted, not lost with the dropped ref.
+      expect(summarizeOrigin(view.refs)).toEqual({ live: 1, state: 'background' })
+    }
+  })
+
+  it('trusts only the ids it sent when the answer carries no lineage metadata', () => {
+    const view = deriveOriginView(
+      true,
+      ['tip-1'],
+      success(
+        answer({
+          refs: [
+            ref('t_tip', 'queued', { origin_session_id: 'tip-1' }),
+            ref('t_root', 'queued', { origin_session_id: 'root-1' })
+          ]
+        })
+      )
+    )
+
+    expect(view.kind === 'ready' && view.refs.map(r => r.task_id)).toEqual(['t_tip'])
+  })
+
   it('lists completed work without lighting a badge, but an unconfirmed ref does', () => {
     const finished = [ref('t_done', 'done'), ref('t_old', 'archived')]
     const gap = ref('t_gone', 'queued', { evidence: 'task_missing', task: null })

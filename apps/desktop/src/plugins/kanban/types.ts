@@ -267,6 +267,9 @@ export interface OriginTasksResponse {
   refs: OriginRef[]
   /** Requested ids this profile's store does not know — never reported as "no tasks". */
   unknown_sessions: string[]
+  /** Each known requested id → the compression chain the answering profile's own store resolved for it
+   *  (root first). Absent on older backends; the client then trusts only the ids it sent. */
+  lineage?: Record<string, string[]>
   truncated: { lineage: boolean; refs: boolean; sessions: boolean; total_refs: number }
 }
 

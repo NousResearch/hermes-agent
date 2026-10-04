@@ -105,7 +105,16 @@ export function deriveOriginView(ambient: boolean, ids: readonly string[], query
     return { kind: 'unavailable', reason: 'unknown-session' }
   }
 
+  // The ids this conversation answers to: what the route holds (a lone tip after a reload) plus the chain
+  // the answering profile resolved for exactly those requested ids. Another seed's chain never joins.
   const mine = new Set(ids)
+
+  for (const id of ids) {
+    for (const resolved of data.lineage?.[id] ?? []) {
+      mine.add(resolved)
+    }
+  }
+
   const refs = sortOriginRefs(data.refs.filter(ref => mine.has(ref.origin_session_id)))
   const incomplete = data.truncated.refs || data.truncated.lineage || data.truncated.sessions
 

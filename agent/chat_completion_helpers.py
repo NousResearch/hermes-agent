@@ -999,7 +999,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     compressor = getattr(agent, "context_compressor", None)
     family = {
         "codex_responses": "codex_responses",
-        "anthropic_messages": "anthropic_messages",
+        "anthropic_messages": "anthropic_bedrock" if getattr(agent, "provider", "") == "bedrock" else "anthropic_messages",
         "bedrock_converse": "bedrock_converse",
     }.get(getattr(agent, "api_mode", ""), "chat_completions")
     if getattr(agent, "provider", "") == "gemini":
@@ -2984,6 +2984,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
 
 
 def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
+    """Summary calls use the same main-client physical admission contract."""
+    from agent.final_wire_admission import bind_attempt_identity
+
+    with bind_attempt_identity(_main_attempt_identity(agent)):
+        return _handle_max_iterations_bound(agent, messages, api_call_count)
+
+
+def _handle_max_iterations_bound(agent, messages: list, api_call_count: int) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
     if getattr(agent, "suppress_status_output", False):
@@ -3422,7 +3430,36 @@ def _build_partial_stream_stub(
     )
 
 
+def _main_attempt_identity(agent):
+    """Resolve immutable identity for main stream and terminal-summary calls."""
+    from agent.final_wire_admission import COVERED_MAIN, FinalAttemptIdentity
+
+    mode = getattr(agent, "api_mode", "chat_completions")
+    family = {
+        "codex_responses": "codex_responses",
+        "bedrock_converse": "bedrock_converse",
+        "anthropic_messages": "anthropic_bedrock" if getattr(agent, "provider", "") == "bedrock" else "anthropic_messages",
+    }.get(mode, "gemini_native" if getattr(agent, "provider", "") == "gemini" else "chat_completions")
+    identity = FinalAttemptIdentity(
+        COVERED_MAIN, family, str(getattr(agent, "model", "")),
+        str(getattr(agent, "base_url", "") or ""),
+        getattr(getattr(agent, "context_compressor", None), "context_length", 0),
+        str(getattr(agent, "session_id", "") or id(agent)),
+    )
+    return identity
+
+
 def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=None):
+    """Carry main-attempt identity into native/background streaming workers."""
+    from agent.final_wire_admission import bind_attempt_identity
+
+    # _context_thread_target copies this request-scoped context; no mutable
+    # model/window is stored on shared HTTP or regional Bedrock clients.
+    with bind_attempt_identity(_main_attempt_identity(agent)):
+        return _interruptible_streaming_api_call_bound(agent, api_kwargs, on_first_delta=on_first_delta)
+
+
+def _interruptible_streaming_api_call_bound(agent, api_kwargs: dict, *, on_first_delta=None):
     """Streaming variant of _interruptible_api_call for real-time token delivery.
 
     Handles all three api_modes:

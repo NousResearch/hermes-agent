@@ -2677,6 +2677,10 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         client_kwargs["http_client"] = wrap_httpx_client_transports(
             keepalive_http, covered=True
         )
+    # Explicit supplied clients are main clients too (including recovery from
+    # an auxiliary resolver); constructor injection must not bypass admission.
+    from agent.final_wire_admission import wrap_httpx_client_transports
+    client_kwargs["http_client"] = wrap_httpx_client_transports(client_kwargs["http_client"], covered=True)
     # Delegate all rate-limit / 5xx retry to hermes's outer conversation loop,
     # which honors Retry-After and applies adaptive/jittered backoff. The OpenAI
     # SDK default (max_retries=2) uses its own 1-2s backoff that ignores

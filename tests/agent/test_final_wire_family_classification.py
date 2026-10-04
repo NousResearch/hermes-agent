@@ -63,3 +63,40 @@ def test_recognized_native_image_keeps_heuristic_and_estimated_coverage(family, 
     snap = project_final_body(body, identity(family))
     assert snap.coverage == "ESTIMATED_MULTIMODAL"
     assert snap.estimated_input >= 1500
+
+
+@pytest.mark.parametrize("profile_name", ["openai", "openrouter"])
+def test_actual_chat_profile_reasoning_final_fields_are_classified(profile_name):
+    from providers import get_provider_profile
+    from agent.transports.chat_completions import ChatCompletionsTransport
+    kwargs = ChatCompletionsTransport().build_kwargs(
+        "gpt-5", [{"role": "user", "content": "hi"}],
+        provider_profile=get_provider_profile(profile_name),
+        reasoning_config={"enabled": True, "effort": "high"}, supports_reasoning=True,
+    )
+    body = {**kwargs, **kwargs.get("extra_body", {})}
+    body.pop("extra_body", None)
+    assert "reasoning" in body or "reasoning_effort" in body
+    snap = project_final_body(body, identity("chat_completions"))
+    assert snap.coverage == "COMPLETE_LOCAL"
+    assert snap.estimated_input > project_final_body({"messages": body["messages"]}, identity("chat_completions")).estimated_input
+
+
+@pytest.mark.parametrize("body", [
+    {"input": [{"type": "reasoning", "encrypted_content": "inert-encrypted", "summary": []}]},
+    {"input": [{"type": "compaction", "encrypted_content": "inert-compaction"}]},
+    {"input": [{"type": "item_reference", "id": "inert-reference"}]},
+])
+def test_responses_replayed_encrypted_and_reference_items_are_opaque(body):
+    snap = project_final_body(body, identity("codex_responses"))
+    assert snap.coverage == "OPAQUE"
+    assert snap.estimated_input > 0
+    assert "inert-" not in snap.coverage_reason
+
+
+def test_converse_provider_managed_prompt_identity_is_opaque():
+    ident = FinalAttemptIdentity(COVERED_MAIN, "bedrock_converse", "arn:aws:bedrock:us-east-1:000000000000:prompt/INERT:1", "https://inert.invalid", 100000, "opaque")
+    snap = project_final_body({"messages": [{"role": "user", "content": [{"text": "hi"}]}]}, ident)
+    assert snap.coverage == "OPAQUE"
+    assert snap.estimated_input > 0
+    assert "INERT" not in snap.coverage_reason

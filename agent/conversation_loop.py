@@ -4567,12 +4567,10 @@ def run_conversation(
                     thinking_spinner = None
                 if agent.thinking_callback:
                     agent.thinking_callback("")
-                logger.error(
-                    "Final provider-bound request ~%s tokens at or over "
-                    "context=%s; refusing to send over-limit input",
-                    f"{over_limit.pressure:,}",
-                    f"{over_limit.limit:,}",
-                )
+                from agent.final_wire_admission import local_refusal_diagnostic
+
+                _turn_exit_reason, final_response = local_refusal_diagnostic(over_limit)
+                logger.error("%s: final request refused locally", _turn_exit_reason)
                 agent._emit_status(
                     over_limit_local_stop_status(
                         transcript_rewritten=_transcript_rewritten_this_turn,
@@ -4585,14 +4583,7 @@ def run_conversation(
                     agent.iteration_budget.refund()
                 except Exception:
                     pass
-                final_response = (
-                    "Context compression failed while the request is over "
-                    "the model context window. The over-limit request was "
-                    "not sent. Run /compress to retry or /new for a clean "
-                    "session."
-                )
                 failed = True
-                _turn_exit_reason = "compression_timeout_over_limit"
                 break
 
             except Exception as api_error:
@@ -4605,12 +4596,10 @@ def run_conversation(
                         thinking_spinner = None
                     if agent.thinking_callback:
                         agent.thinking_callback("")
-                    logger.error(
-                        "Final provider-bound request ~%s tokens at or over "
-                        "context=%s; refusing to send over-limit input",
-                        f"{over_limit.pressure:,}",
-                        f"{over_limit.limit:,}",
-                    )
+                    from agent.final_wire_admission import local_refusal_diagnostic
+
+                    _turn_exit_reason, final_response = local_refusal_diagnostic(over_limit)
+                    logger.error("%s: final request refused locally", _turn_exit_reason)
                     agent._emit_status(
                         over_limit_local_stop_status(
                             transcript_rewritten=_transcript_rewritten_this_turn,
@@ -4623,14 +4612,7 @@ def run_conversation(
                         agent.iteration_budget.refund()
                     except Exception:
                         pass
-                    final_response = (
-                        "Context compression failed while the request is over "
-                        "the model context window. The over-limit request was "
-                        "not sent. Run /compress to retry or /new for a clean "
-                        "session."
-                    )
                     failed = True
-                    _turn_exit_reason = "compression_timeout_over_limit"
                     break
                 # Stop spinner silently — retry status is buffered and
                 # only flushed when every retry+fallback is exhausted.
@@ -6933,8 +6915,11 @@ def run_conversation(
         # (e.g. repeated context-length errors that exhausted retry_count),
         # the `response` variable is still None. Break out cleanly.
         if response is None:
-            _turn_exit_reason = "all_retries_exhausted_no_response"
-            print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
+            # Local typed admission already supplied a truthful stop result;
+            # absence of a delegate response is not remote retry exhaustion.
+            if not _turn_exit_reason.startswith("local_accounting_"):
+                _turn_exit_reason = "all_retries_exhausted_no_response"
+                print(f"{agent.log_prefix}❌ All API retries exhausted with no successful response.")
             agent._persist_session(messages, conversation_history)
             break
 

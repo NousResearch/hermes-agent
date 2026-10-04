@@ -17,7 +17,20 @@ import httpx
 from agent.conversation_compression import ProviderBoundRequestOverLimit
 from agent.model_metadata import estimate_messages_tokens_rough, estimate_tokens_rough
 
-ACCOUNTING_VERSION = "final-wire-2"
+
+def local_refusal_diagnostic(error: ProviderBoundRequestOverLimit) -> tuple[str, str]:
+    """Expose only a fixed typed category, never raw bodies/headers/schemas."""
+    if isinstance(error, ProviderBoundInvalidAccounting):
+        return "local_accounting_invalid", "Invalid final request accounting; the request was not sent."
+    if isinstance(error, ProviderBoundUnsupportedAccounting):
+        return "local_accounting_unsupported", "Unsupported final request accounting; the request was not sent."
+    return (
+        "local_accounting_pressure",
+        "Final request context pressure exceeds the model window; the request was not sent. Run /compress or /new to retry.",
+    )
+
+
+ACCOUNTING_VERSION = "final-wire-3"
 ESTIMATOR_VERSION = "rough-1"
 
 COVERED_MAIN = "covered_main"
@@ -74,7 +87,7 @@ _FAMILY_METADATA = {
     "gemini_native": {"safetySettings", "labels"},
 }
 _FAMILY_CONTEXT = {
-    "chat_completions": {"messages", "tools", "functions", "response_format", "tool_choice", "function_call", "stop"},
+    "chat_completions": {"messages", "tools", "functions", "response_format", "tool_choice", "function_call", "stop", "reasoning", "reasoning_effort"},
     "codex_responses": {"input", "instructions", "tools", "text", "reasoning", "tool_choice", "context_management", "previous_response_id", "conversation"},
     "anthropic_messages": {"messages", "system", "tools", "tool_choice", "thinking", "output_config", "stop_sequences", "context_management", "output_format"},
     "anthropic_bedrock": {"messages", "system", "tools", "tool_choice", "thinking", "output_config", "stop_sequences", "context_management", "output_format"},
@@ -443,6 +456,12 @@ def project_final_body(
     try:
         body = json.loads(_canonical_json(body))
         _, coverage, reason, excluded, buckets = _classified_pressure(body, identity.family)
+        # Converse serializes modelId into the URL, not necessarily JSON. A
+        # managed prompt ARN therefore remains an opaque dependency in the
+        # immutable attempt identity even after that protocol conversion.
+        if identity.family in {"bedrock_converse", "converse"} and identity.model.startswith("arn:") and ":prompt/" in identity.model:
+            coverage = "OPAQUE"
+            reason = "; ".join(filter(None, (reason, "provider-managed prompt reference")))
         estimated = estimate_final_body_pressure(body, family=identity.family)
     except (ProviderBoundUnsupportedAccounting, TypeError, ValueError, RecursionError) as exc:
         estimated = 0
@@ -564,7 +583,11 @@ def _wrap_one_transport(transport: Any, *, covered: bool, asynchronous: bool = F
     if transport is None:
         return None
     if isinstance(transport, (GuardedHTTPXTransport, GuardedAsyncHTTPXTransport)):
-        return transport
+        if transport._covered or not covered:
+            return transport
+        # Promotion into a main-client route strengthens designation; never
+        # downgrade a previously covered route or stack admission wrappers.
+        transport = transport._inner
     # Mock/custom transports may implement both interfaces: client mode,
     # not transport inheritance, determines the physical entry point.
     if asynchronous:

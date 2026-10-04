@@ -711,8 +711,10 @@ def deny_home(host_dir, monkeypatch):
         _write(home / rel)
     for rel in ALLOWED_SAMPLES:
         _write(home / rel, VISIBLE)
-    _write(home / "dotfiles" / "bashrc", f"# {VISIBLE}")
-    (home / ".bashrc").symlink_to("dotfiles/bashrc")
+    # The target is a dot entry of HOME: read-only inside the sandbox even
+    # with the cwd at HOME, so the link does not stop construction.
+    _write(home / ".cargo" / "bin" / "bashrc", f"# {VISIBLE}")
+    (home / ".bashrc").symlink_to(".cargo/bin/bashrc")
     (home / ".config" / "pip").symlink_to("git")
     _write(home / "proj" / "inside.txt", VISIBLE)
     _write(home / "sibling" / "data.txt", VISIBLE)
@@ -855,15 +857,17 @@ class TestHomeDefaultDenyIntegration:
         assert (deny_home / ".gitconfig").read_text() == VISIBLE + "\n"
         assert not (deny_home / ".cache" / "y").exists()
 
-    def test_linked_dot_entry_cannot_be_replaced_but_its_target_is_as_writable_as_its_directory(self, env_at_home, deny_home):
-        # .bashrc links into dotfiles/, which the cwd at HOME makes writable.
-        # The link is in the read-only top of HOME; nothing holds the target.
-        result = env_at_home.execute(f"rm {deny_home}/.bashrc")
-        assert result["returncode"] != 0
+    def test_linked_dot_entry_and_its_target_cannot_be_changed(self, env_at_home, deny_home):
+        for command in (
+            f"rm {deny_home}/.bashrc",
+            f"ln -sf /dev/null {deny_home}/.bashrc",
+            f"echo changed >> {deny_home}/.bashrc",
+            f"echo changed >> {deny_home}/.cargo/bin/bashrc",
+        ):
+            assert env_at_home.execute(command)["returncode"] != 0, command
         assert (deny_home / ".bashrc").is_symlink()
-        result = env_at_home.execute(f"echo changed >> {deny_home}/dotfiles/bashrc")
-        assert result["returncode"] == 0, result["output"]
-        assert "changed" in (deny_home / "dotfiles" / "bashrc").read_text()
+        assert VISIBLE in env_at_home.execute(f"cat {deny_home}/.bashrc")["output"]
+        assert "changed" not in (deny_home / ".cargo" / "bin" / "bashrc").read_text()
 
     def test_every_home_path_of_the_file_safety_policy_is_hidden(self, sandbox_root, deny_home):
         from agent.file_safety import build_write_denied_paths, build_write_denied_prefixes

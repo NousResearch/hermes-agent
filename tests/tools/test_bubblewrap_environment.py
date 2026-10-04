@@ -1362,72 +1362,152 @@ class TestStagedRoots:
             env.cleanup()
 
 
-class TestWritableDotLinkWarning:
-    """The backend holds nothing at the target of a dot symlink. It names the
-    entries whose target a command can write to, once, at construction."""
+class TestWritableDotLinkGuard:
+    """A dot symlink of HOME that a command could redirect or rewrite stops
+    construction: the host reads what it leads to after the sandbox is gone."""
 
     @pytest.fixture
     def fake_home(self, tmp_path, monkeypatch):
         home = tmp_path / "homes" / "home"
         (home / "dotfiles").mkdir(parents=True)
-        (home / "dotfiles" / "bashrc").write_text("x")
-        (home / ".bashrc").symlink_to("dotfiles/bashrc")
+        (home / "dotfiles" / "rc").write_text("x")
         (home / ".zz-real").mkdir()
         (home / ".zz-link").symlink_to(".zz-real")
         monkeypatch.setenv("HOME", str(home))
         return home
 
+    @pytest.fixture
+    def outside(self, tmp_path):
+        """A directory outside HOME and outside every writable root."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "rc").write_text("x")
+        return outside
+
     @staticmethod
-    def _warnings(caplog):
-        return [r.getMessage() for r in caplog.records if "does not protect a link target" in r.getMessage()]
+    def _construct(cwd, config=None):
+        with _no_session():
+            BubblewrapEnvironment(cwd=str(cwd), timeout=10, config=config).cleanup()
 
-    def test_warns_once_and_names_the_entry_when_the_cwd_covers_the_target(self, sandbox_root, fake_home, caplog):
-        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
-            BubblewrapEnvironment(cwd=str(fake_home), timeout=10).cleanup()
-        messages = self._warnings(caplog)
-        assert len(messages) == 1
-        assert ".bashrc" in messages[0]
+    @pytest.mark.parametrize("name", [".bashrc", ".profile", ".gitconfig", ".zz-anything"])
+    def test_target_in_the_writable_cwd_is_refused_and_named(self, sandbox_root, fake_home, name):
+        (fake_home / name).symlink_to("dotfiles/rc")
+        with pytest.raises(ValueError, match="redirect or rewrite") as exc:
+            self._construct(fake_home)
+        assert name in str(exc.value)
         # A link to a dot entry of HOME is not writable through a cwd at HOME.
-        assert ".zz-link" not in messages[0]
+        assert ".zz-link" not in str(exc.value)
+        assert "terminal.cwd" in str(exc.value)
 
-    def test_warns_for_a_target_in_a_read_write_bind(self, sandbox_root, work_dir, fake_home, caplog):
+    def test_target_in_a_project_cwd_is_refused(self, sandbox_root, fake_home, work_dir):
+        (work_dir / "rc").write_text("x")
+        (fake_home / ".bashrc").symlink_to(work_dir / "rc")
+        with pytest.raises(ValueError, match=r"\.bashrc"):
+            self._construct(work_dir)
+
+    def test_target_in_a_read_write_bind_is_refused(self, sandbox_root, work_dir, fake_home):
+        (fake_home / ".bashrc").symlink_to("dotfiles/rc")
         dotfiles = fake_home / "dotfiles"
         config = BubblewrapConfig(binds=(BindMount(src=str(dotfiles), dest=str(dotfiles), readonly=False),))
-        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
-            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=config).cleanup()
-        assert len(self._warnings(caplog)) == 1
+        with pytest.raises(ValueError, match=r"\.bashrc"):
+            self._construct(work_dir, config)
 
-    @pytest.mark.parametrize("profile", ["restricted", "network"])
-    def test_silent_when_no_target_is_writable(self, sandbox_root, work_dir, fake_home, caplog, profile):
-        cwd = fake_home if profile == "restricted" else work_dir
-        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
-            BubblewrapEnvironment(cwd=str(cwd), timeout=10, config=BubblewrapConfig(profile=profile)).cleanup()
-        assert self._warnings(caplog) == []
+    def test_directory_link_that_ends_at_a_read_write_bind_is_refused(self, sandbox_root, work_dir, fake_home):
+        (fake_home / ".zz-conf").symlink_to("dotfiles")
+        dotfiles = fake_home / "dotfiles"
+        config = BubblewrapConfig(binds=(BindMount(src=str(dotfiles), dest=str(dotfiles), readonly=False),))
+        with pytest.raises(ValueError, match=r"\.zz-conf"):
+            self._construct(work_dir, config)
 
-    def test_silent_for_a_target_under_a_hidden_path(self, sandbox_root, fake_home, caplog):
-        # The target is hidden in the sandbox, so a command cannot write to it.
+    def test_middle_link_in_the_writable_cwd_is_refused(self, sandbox_root, fake_home, work_dir, outside):
+        # The final target is out of reach, but a command can point the
+        # middle link somewhere else.
+        (work_dir / "hop").symlink_to(outside / "rc")
+        (fake_home / ".bashrc").symlink_to(work_dir / "hop")
+        assert os.path.realpath(fake_home / ".bashrc") == str(outside / "rc")
+        with pytest.raises(ValueError, match=r"\.bashrc"):
+            self._construct(work_dir)
+
+    def test_directory_link_in_the_writable_cwd_is_refused(self, sandbox_root, fake_home, work_dir, outside):
+        # The chain passes through a directory symlink a command can replace.
+        (work_dir / "dir").symlink_to(outside)
+        (fake_home / ".bashrc").symlink_to(work_dir / "dir" / "rc")
+        assert os.path.realpath(fake_home / ".bashrc") == str(outside / "rc")
+        with pytest.raises(ValueError, match=r"\.bashrc"):
+            self._construct(work_dir)
+
+    def test_absent_target_in_the_writable_cwd_is_refused(self, sandbox_root, fake_home, work_dir):
+        # A command can make the missing file; the host then reads it.
+        (fake_home / ".bashrc").symlink_to(work_dir / "not-there-yet")
+        with pytest.raises(ValueError, match=r"\.bashrc"):
+            self._construct(work_dir)
+
+    def test_refusal_names_every_entry(self, sandbox_root, fake_home):
+        (fake_home / ".bashrc").symlink_to("dotfiles/rc")
+        (fake_home / ".zshrc").symlink_to("dotfiles/rc")
+        with pytest.raises(ValueError, match=r"\.bashrc, \.zshrc .* are symlinks"):
+            self._construct(fake_home)
+
+    def test_target_outside_every_writable_root_constructs(self, sandbox_root, fake_home, work_dir, outside):
+        (fake_home / ".bashrc").symlink_to(outside / "rc")
+        (fake_home / ".profile").symlink_to("dotfiles/rc")
+        self._construct(work_dir)
+
+    def test_target_under_a_hidden_path_constructs(self, sandbox_root, fake_home):
+        # The target is hidden in the sandbox, and the directories on the
+        # way to it are pinned, so a command cannot reach or move it.
         keys = fake_home / "Documents" / "keys"
         keys.mkdir(parents=True)
         (keys / "rc").write_text("x")
-        (fake_home / ".bashrc").unlink()
         (fake_home / ".bashrc").symlink_to("Documents/keys/rc")
-        (fake_home / ".zshrc").symlink_to("dotfiles/bashrc")
-        config = BubblewrapConfig(hide=("~/Documents/keys",))
-        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"), _no_session():
-            BubblewrapEnvironment(cwd=str(fake_home), timeout=10, config=config).cleanup()
-        messages = self._warnings(caplog)
-        assert len(messages) == 1
-        assert ".zshrc" in messages[0]
-        assert ".bashrc" not in messages[0]
+        self._construct(fake_home, BubblewrapConfig(hide=("~/Documents/keys",)))
 
-    def test_backend_has_no_chain_walk_and_no_hold_of_link_targets(self):
-        from tools.environments import bubblewrap_home
+    def test_target_in_a_read_only_bind_constructs(self, sandbox_root, work_dir, fake_home):
+        (fake_home / ".bashrc").symlink_to("dotfiles/rc")
+        dotfiles = fake_home / "dotfiles"
+        config = BubblewrapConfig(binds=(BindMount(src=str(dotfiles), dest=str(dotfiles), readonly=True),))
+        self._construct(work_dir, config)
 
-        for module in (bubblewrap, bubblewrap_home):
-            source = inspect.getsource(module)
-            assert "readonly_paths" not in source
-            assert "link_protection" not in source
-            assert "_link_chain" not in source
+    def test_restricted_profile_constructs(self, sandbox_root, fake_home):
+        (fake_home / ".bashrc").symlink_to("dotfiles/rc")
+        self._construct(fake_home, BubblewrapConfig(profile="restricted"))
+
+    def test_chain_inside_the_dot_entries_of_home_constructs_with_cwd_at_home(self, sandbox_root, fake_home):
+        (fake_home / ".zz-real" / "rc").write_text("x")
+        (fake_home / ".zz-hop").symlink_to(".zz-real/rc")
+        (fake_home / ".bashrc").symlink_to(".zz-hop")
+        self._construct(fake_home)
+
+    def test_a_link_loop_constructs(self, sandbox_root, fake_home, outside):
+        (outside / "a").symlink_to(outside / "b")
+        (outside / "b").symlink_to(outside / "a")
+        (fake_home / ".bashrc").symlink_to(outside / "a")
+        self._construct(fake_home)
+
+
+class TestDotLinkEntries:
+    def test_walk_lists_every_entry_on_the_way(self, tmp_path):
+        home, far = tmp_path / "home", tmp_path / "far"
+        (home / "a").mkdir(parents=True)
+        far.mkdir()
+        (far / "rc").write_text("x")
+        (home / "a" / "dir").symlink_to(far)
+        (home / ".bashrc").symlink_to("a/../a/dir/rc")
+        entries = bubblewrap.dot_link_entries(str(home), ".bashrc")
+        assert str(home / "a") in entries and str(home / "a" / "dir") in entries
+        assert entries[-1] == str(far / "rc")
+        assert str(home / ".bashrc") not in entries
+
+    def test_walk_stops_at_the_first_absent_entry_and_at_a_loop(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".absent").symlink_to("nowhere/deeper/rc")
+        assert bubblewrap.dot_link_entries(str(home), ".absent") == [str(home / "nowhere")]
+        (home / "x").symlink_to("y")
+        (home / "y").symlink_to("x")
+        (home / ".loop").symlink_to("x")
+        assert len(bubblewrap.dot_link_entries(str(home), ".loop")) <= bubblewrap.DOT_LINK_MAX_HOPS
+        assert bubblewrap.dot_link_entries(str(home), ".not-a-link") == []
 
 
 class TestMaskedCwdRecovery:

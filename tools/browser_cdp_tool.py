@@ -399,6 +399,49 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
 }
 
 
+def _guard_registry_cdp_args(args: Dict[str, Any], task_id: Optional[str]) -> Dict[str, Any]:
+    """Apply the guarded-evaluation policy BEFORE extension-controller selection.
+
+    The routed (extension-controller) lane is authoritative once a controller is
+    selected: the legacy fallback below never runs, so the registry handler must
+    hand the controller the same guarded parameters the fallback would enforce —
+    ``Runtime.evaluate``/``Runtime.callFunctionOn``/``Debugger.evaluateOnCallFrame``
+    gain ``throwOnSideEffect``, and persistent/async entry points are rejected here
+    instead of reaching the controller. Non-guarded deployments (opt-out, local
+    backends) pass the original ``args`` through unchanged.
+    """
+    method = str(args.get("method") or "")
+    params = args.get("params")
+    if not isinstance(params, dict) or not method:
+        return args
+    # _guard_runtime_evaluate never mutates its input: guarded evaluation
+    # returns a new params dict, everything else returns the input object.
+    # Persistent/async entry points raise ValueError (rendered as a blocked
+    # tool-error by the registry handler before any controller dispatch).
+    guarded = _guard_runtime_evaluate(task_id or "default", method, params)
+    if guarded is params:
+        return args
+    return {**args, "params": guarded}
+
+
+def _browser_cdp_routed_handler(args: Dict[str, Any], **kw) -> str:
+    """Registry handler: enforce the eval policy, then offer the request to the
+    extension-controller lane with the already-guarded arguments."""
+    method = str(args.get("method") or "")
+    try:
+        routed_args = _guard_registry_cdp_args(args, kw.get("task_id"))
+    except ValueError as exc:
+        return _blocked(str(exc), method)
+    return routed_browser_handler(
+        "browser_cdp", routed_args,
+        fallback=lambda: browser_cdp(
+            method=args.get("method", ""), params=args.get("params"), target_id=args.get("target_id"),
+            frame_id=args.get("frame_id"), timeout=args.get("timeout", 30.0), task_id=kw.get("task_id"),
+        ),
+        task_id=kw.get("task_id"), session_id=kw.get("session_id"),
+    )
+
+
 def _browser_cdp_check() -> bool:
     """Availability check: offered only when a static CDP URL is set (Camofox is REST-only;
     the default local agent-browser hides its CDP port; cloud per-session ``cdp_url`` isn't
@@ -417,14 +460,7 @@ registry.register(
     name="browser_cdp",
     toolset="browser-cdp",
     schema=BROWSER_CDP_SCHEMA,
-    handler=lambda args, **kw: routed_browser_handler(
-        "browser_cdp", args,
-        fallback=lambda: browser_cdp(
-            method=args.get("method", ""), params=args.get("params"), target_id=args.get("target_id"),
-            frame_id=args.get("frame_id"), timeout=args.get("timeout", 30.0), task_id=kw.get("task_id"),
-        ),
-        task_id=kw.get("task_id"), session_id=kw.get("session_id"),
-    ),
+    handler=_browser_cdp_routed_handler,
     check_fn=_browser_cdp_check,
     emoji="🧪",
 )

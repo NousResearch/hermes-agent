@@ -1323,6 +1323,7 @@ def refuse_over_limit_provider_dispatch(agent: Any, api_kwargs: Any) -> None:
         COVERED_MAIN,
         FinalAttemptIdentity,
         admit_final_json,
+        bind_attempt_identity,
     )
 
     compressor = getattr(agent, "context_compressor", None)
@@ -1331,23 +1332,60 @@ def refuse_over_limit_provider_dispatch(agent: Any, api_kwargs: Any) -> None:
         "anthropic_messages": "anthropic_messages",
         "bedrock_converse": "bedrock_converse",
     }.get(getattr(agent, "api_mode", ""), "chat_completions")
-    if getattr(agent, "provider", "") == "gemini":
+    # Gemini's facade kwargs are still Chat-shaped here. Only physical
+    # egress sees the converted native cap and context representation.
+    if getattr(agent, "provider", "") == "gemini" and "contents" in api_kwargs:
         family = "gemini_native"
     identity = FinalAttemptIdentity(
         purpose=COVERED_MAIN,
         family=family,
         model=str(getattr(agent, "model", "") or ""),
         endpoint=str(getattr(agent, "base_url", "") or ""),
-        window=int(getattr(compressor, "context_length", 0) or 0),
+        window=getattr(compressor, "context_length", 0),
         correlation_id=str(getattr(agent, "session_id", "") or id(agent)),
     )
-    admit_final_json(api_kwargs, identity)
+    # SDK effective overrides are formed later; do not guess their merge or
+    # reject a replaced source field here. Physical egress remains mandatory.
+    overrides = api_kwargs.get("extra_body")
+    if isinstance(overrides, dict) and set(overrides) & {
+        "messages", "input", "instructions", "system", "contents", "systemInstruction",
+        "tools", "functions", "toolConfig", "generationConfig", "inferenceConfig",
+        "max_tokens", "max_completion_tokens", "max_output_tokens",
+    }:
+        return
+    early_body = {key: value for key, value in api_kwargs.items() if key not in {
+        "timeout", "max_retries", "extra_headers", "extra_query", "extra_body",
+        "__bedrock_region__", "__bedrock_converse__",
+    }}
+    with bind_attempt_identity(identity):
+        admit_final_json(early_body, identity)
 
 
-def over_limit_local_stop_status(*, transcript_rewritten: bool) -> str:
+def capture_compaction_state(messages: Any, system_prompt: Any) -> Optional[str]:
+    """Detached semantic before-state; inability to snapshot is unknown."""
+    try:
+        return json.dumps([messages, system_prompt], ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError, RecursionError):
+        return None
+
+
+def compaction_mutation_outcome(before: Optional[str], messages: Any, system_prompt: Any) -> str:
+    after = capture_compaction_state(messages, system_prompt)
+    if before is None or after is None:
+        return "unknown"
+    return "no_change" if before == after else "rewrite"
+
+
+def over_limit_local_stop_status(*, transcript_rewritten: bool, mutation_outcome: str = "no_change") -> str:
     """Bounded local diagnostic. Do not claim the transcript is unchanged
     when compaction actually rewrote or shortened it.
     """
+    if mutation_outcome == "unknown":
+        return (
+            "❌ The final request was refused locally and was not sent. "
+            "The compaction mutation outcome is unknown; transcript preservation "
+            "cannot be confirmed. Run /compress to retry or /new for a clean session."
+        )
     if transcript_rewritten:
         return (
             "❌ Context compression did not bring the request under the model "
@@ -1357,9 +1395,8 @@ def over_limit_local_stop_status(*, transcript_rewritten: bool) -> str:
             "auxiliary.compression."
         )
     return (
-        "❌ Context compression timed out or failed while the request is still "
-        "over the model window. No messages were dropped, and the over-limit "
-        "request was not sent. Run /compress to retry, /new for a clean "
+        "❌ The final request was refused locally and was not sent. "
+        "No messages were dropped. Run /compress to retry, /new for a clean "
         "session, or check auxiliary.compression."
     )
 

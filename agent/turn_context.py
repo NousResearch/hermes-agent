@@ -35,6 +35,8 @@ from agent.conversation_compression import (
     IDLE_COMPACTION_STATUS_TEMPLATE,
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
     compression_skipped_due_to_lock,
+    capture_compaction_state,
+    compaction_mutation_outcome,
     conversation_history_after_compression,
     recover_rotated_compression_session,
 )
@@ -1059,13 +1061,15 @@ def build_turn_context(
                 _orig_tokens = _preflight_tokens
                 _preflight_input = messages
                 _preflight_system = active_system_prompt
+                _before_compaction = capture_compaction_state(messages, active_system_prompt)
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
                     task_id=effective_task_id,
                 )
-                if messages is not _preflight_input or active_system_prompt != _preflight_system:
+                _outcome = compaction_mutation_outcome(_before_compaction, messages, active_system_prompt)
+                if _outcome != "no_change":
                     _preflight_transcript_rewritten = True
-                    _preflight_mutation_outcome = "rewrite"
+                    _preflight_mutation_outcome = _outcome
                 if (
                     messages is _preflight_input
                     and compression_skipped_due_to_lock(agent)

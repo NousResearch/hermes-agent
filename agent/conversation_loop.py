@@ -28,6 +28,8 @@ from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import (
+    capture_compaction_state,
+    compaction_mutation_outcome,
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
     COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
@@ -1962,6 +1964,24 @@ def run_conversation(
     compression_attempts = 0
     _transcript_rewritten_this_turn = bool(getattr(_ctx, "preflight_transcript_rewritten", False))
     _mutation_outcome_this_turn = getattr(_ctx, "preflight_mutation_outcome", "no_change") or "no_change"
+
+    def _compress_tracked(rows, *args, **kwargs):
+        nonlocal _transcript_rewritten_this_turn, _mutation_outcome_this_turn
+        before = capture_compaction_state(rows, active_system_prompt)
+        try:
+            compacted, prompt = agent._compress_context(rows, *args, **kwargs)
+        except BaseException:
+            # A failed call may have partially mutated state before raising.
+            _transcript_rewritten_this_turn = True
+            _mutation_outcome_this_turn = "unknown"
+            raise
+        outcome = compaction_mutation_outcome(before, compacted, prompt)
+        if outcome != "no_change":
+            _transcript_rewritten_this_turn = True
+            if _mutation_outcome_this_turn != "unknown":
+                _mutation_outcome_this_turn = outcome
+        return compacted, prompt
+
     # One resolved per-turn compression attempt cap, shared by every site that
     # consumes ``compression_attempts``: the pre-API pressure gate, the
     # overflow/413 retry handlers, and the post-tool compaction gate. The
@@ -2732,17 +2752,12 @@ def run_conversation(
             _last_preflight_pressure = request_pressure_tokens
             _pre_api_input = messages
             _pre_api_system = active_system_prompt
-            messages, active_system_prompt = agent._compress_context(
+            messages, active_system_prompt = _compress_tracked(
                 messages,
                 system_message,
                 approx_tokens=request_pressure_tokens,
                 task_id=effective_task_id,
             )
-            if messages is not _pre_api_input or active_system_prompt != _pre_api_system or (
-                len(messages) != len(_pre_api_input) or messages != _pre_api_input
-            ):
-                _transcript_rewritten_this_turn = True
-                _mutation_outcome_this_turn = "rewrite"
             # Remaining pressure, not list identity, decides whether the
             # compacted (or no-op) transcript is safe to send. Re-measure
             # from the post-compress messages so a new list that did not
@@ -2783,7 +2798,8 @@ def run_conversation(
                 )
                 agent._emit_status(
                     over_limit_local_stop_status(
-                        transcript_rewritten=_transcript_rewritten_this_turn
+                        transcript_rewritten=_transcript_rewritten_this_turn,
+                        mutation_outcome=_mutation_outcome_this_turn
                     )
                 )
                 api_call_count -= 1
@@ -2922,7 +2938,8 @@ def run_conversation(
                 )
                 agent._emit_status(
                     over_limit_local_stop_status(
-                        transcript_rewritten=_transcript_rewritten_this_turn
+                        transcript_rewritten=_transcript_rewritten_this_turn,
+                        mutation_outcome=_mutation_outcome_this_turn
                     )
                 )
                 api_call_count -= 1
@@ -4558,7 +4575,8 @@ def run_conversation(
                 )
                 agent._emit_status(
                     over_limit_local_stop_status(
-                        transcript_rewritten=_transcript_rewritten_this_turn
+                        transcript_rewritten=_transcript_rewritten_this_turn,
+                        mutation_outcome=_mutation_outcome_this_turn
                     )
                 )
                 api_call_count -= 1
@@ -4595,7 +4613,8 @@ def run_conversation(
                     )
                     agent._emit_status(
                         over_limit_local_stop_status(
-                            transcript_rewritten=_transcript_rewritten_this_turn
+                            transcript_rewritten=_transcript_rewritten_this_turn,
+                        mutation_outcome=_mutation_outcome_this_turn
                         )
                     )
                     api_call_count -= 1
@@ -5562,7 +5581,7 @@ def run_conversation(
                         original_len = len(messages)
                         # Option A (LCM issue 441): overhead-aware request size so recovery arms on
                         # the true request (msgs + tools + system), not the tool-blind message count.
-                        messages, active_system_prompt = agent._compress_context(
+                        messages, active_system_prompt = _compress_tracked(
                             messages, system_message,
                             approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
                             task_id=effective_task_id,
@@ -5846,7 +5865,7 @@ def run_conversation(
                     _overflow_input = messages
                     # Option A (LCM issue 441): overhead-aware request size so recovery arms on the
                     # true request (msgs + tools + system), not the tool-blind message count.
-                    messages, active_system_prompt = agent._compress_context(
+                    messages, active_system_prompt = _compress_tracked(
                         messages, system_message,
                         approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
                         task_id=effective_task_id,
@@ -5998,7 +6017,7 @@ def run_conversation(
                             original_len = len(messages)
                             original_tokens = estimate_messages_tokens_rough(messages)
                             _overflow_input = messages
-                            messages, active_system_prompt = agent._compress_context(
+                            messages, active_system_prompt = _compress_tracked(
                                 messages, system_message,
                                 approx_tokens=request_input_estimate,
                                 task_id=effective_task_id,
@@ -6152,7 +6171,7 @@ def run_conversation(
                     # schemas + system), not the tool-blind message count, so LCM forced-overflow
                     # recovery arms on the TRUE request that overflowed. See hermes-lcm engine
                     # _should_force_overflow_recovery. (approx_tokens stays for the status display.)
-                    messages, active_system_prompt = agent._compress_context(
+                    messages, active_system_prompt = _compress_tracked(
                         messages, system_message,
                         approx_tokens=estimate_request_tokens_rough(api_messages, tools=agent.tools or None),
                         task_id=effective_task_id,
@@ -7723,7 +7742,7 @@ def run_conversation(
                     # Route the overhead-aware _real_tokens (computed above) into compression, not
                     # the bare last_prompt_tokens — which is 0 in the no-usage fallback, hiding the
                     # true request size from the engine's overflow guard (upstream PR #77169 review).
-                    messages, active_system_prompt = agent._compress_context(
+                    messages, active_system_prompt = _compress_tracked(
                         messages, system_message,
                         approx_tokens=_real_tokens,
                         task_id=effective_task_id,

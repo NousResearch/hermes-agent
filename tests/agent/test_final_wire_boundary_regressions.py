@@ -180,7 +180,7 @@ def test_omitted_optional_cap_is_unresolved_not_zero():
     payload = {"model": "test/model", "input": [{"role": "user", "content": "hi"}]}
     snap = project_final_body(payload, _identity(family="codex_responses"))
     assert snap.reservation_state == PROVIDER_DEFAULT_UNRESOLVED
-    assert snap.resolved_r == 0
+    assert snap.resolved_r is None
     agent = SimpleNamespace(api_mode="codex_responses", provider="openai-codex", model="gpt-5.5",
                             context_compressor=SimpleNamespace(context_length=1000), session_id="s")
     refuse_over_limit_provider_dispatch(agent, payload)

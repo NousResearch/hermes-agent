@@ -1180,7 +1180,11 @@ class GeminiNativeClient:
 
         model = bare_gemini_model_id(model)
         if stream:
-            return self._stream_completion(model=model, request=request, timeout=timeout)
+            from agent.final_wire_admission import AttemptBoundIterator, current_attempt_identity
+
+            iterator = self._stream_completion(model=model, request=request, timeout=timeout)
+            identity = current_attempt_identity()
+            return AttemptBoundIterator(iterator, identity) if identity is not None else iterator
 
         url = f"{self.base_url}/models/{model}:generateContent"
         response = self._http.post(url, json=request, headers=self._headers(), timeout=timeout)

@@ -45,13 +45,25 @@ class TestIsOAuthToken:
 
 
 
+def _recording_sdk_class():
+    """Class-shaped constructor spy: final-wire interception subclasses SDKs."""
+    class RecordingSDK:
+        constructor = MagicMock()
+
+        def __init__(self, *args, **kwargs):
+            self.constructor(*args, **kwargs)
+
+    return RecordingSDK
+
+
 class TestBuildAnthropicClient:
 
 
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.Anthropic = _recording_sdk_class()
             build_anthropic_client("sk-ant-api03-something")
-            kwargs = mock_sdk.Anthropic.call_args[1]
+            kwargs = mock_sdk.Anthropic.constructor.call_args[1]
             assert kwargs["api_key"] == "sk-ant-api03-something"
             assert "auth_token" not in kwargs
             # API key auth should still get common betas
@@ -74,11 +86,12 @@ class TestBuildAnthropicClient:
         client here and must merge the same set.
         """
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.Anthropic = _recording_sdk_class()
             build_anthropic_client(
                 "sk-opencode-secret",
                 base_url="https://opencode.ai/zen/go/v1",
             )
-            kwargs = mock_sdk.Anthropic.call_args[1]
+            kwargs = mock_sdk.Anthropic.constructor.call_args[1]
             headers = kwargs["default_headers"]
             assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
             assert headers["X-Title"] == "Hermes Agent"
@@ -89,11 +102,12 @@ class TestBuildAnthropicClient:
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.Anthropic = _recording_sdk_class()
             build_anthropic_client(
                 "minimax-secret-123",
                 base_url="https://api.minimax.io/anthropic",
             )
-            kwargs = mock_sdk.Anthropic.call_args[1]
+            kwargs = mock_sdk.Anthropic.constructor.call_args[1]
             assert kwargs["auth_token"] == "minimax-secret-123"
             assert "api_key" not in kwargs
             assert kwargs["default_headers"] == {
@@ -109,11 +123,12 @@ class TestBuildAnthropicClient:
         1M-context beta even though it now matches `_requires_bearer_auth`.
         """
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.Anthropic = _recording_sdk_class()
             build_anthropic_client(
                 "azure-foundry-secret-123",
                 base_url="https://my-resource.openai.azure.com/anthropic",
             )
-            kwargs = mock_sdk.Anthropic.call_args[1]
+            kwargs = mock_sdk.Anthropic.constructor.call_args[1]
             assert kwargs["auth_token"] == "azure-foundry-secret-123"
             assert "api_key" not in kwargs
             # Azure endpoints still get the api-version query param plumbing.
@@ -130,11 +145,12 @@ class TestBuildAnthropicClient:
         rejects x-api-key with 401 — the SDK must be built with auth_token.
         """
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.Anthropic = _recording_sdk_class()
             build_anthropic_client(
                 "foundry-secret-123",
                 base_url="https://acme.palantirfoundry.com/api/v2/llm/proxy/anthropic",
             )
-            kwargs = mock_sdk.Anthropic.call_args[1]
+            kwargs = mock_sdk.Anthropic.constructor.call_args[1]
             assert kwargs["auth_token"] == "foundry-secret-123"
             assert "api_key" not in kwargs
 
@@ -144,8 +160,9 @@ class TestBuildAnthropicClient:
         double-retries inside hermes's outer loop. We delegate retry entirely
         to the outer loop, so the client must be built with max_retries=0."""
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.Anthropic = _recording_sdk_class()
             build_anthropic_client("sk-ant-api03-something")
-            kwargs = mock_sdk.Anthropic.call_args[1]
+            kwargs = mock_sdk.Anthropic.constructor.call_args[1]
             assert kwargs["max_retries"] == 0
 
 

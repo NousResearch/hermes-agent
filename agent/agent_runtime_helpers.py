@@ -2618,7 +2618,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
                 k: v for k, v in client_kwargs.items()
                 if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
             }
-            if "http_client" not in safe_kwargs:
+            if safe_kwargs.get("http_client") is None:
                 from agent.final_wire_admission import (
                     ProviderBoundUnsupportedAccounting,
                     wrap_httpx_client_transports,
@@ -2634,6 +2634,8 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
                 safe_kwargs["http_client"] = wrap_httpx_client_transports(
                     keepalive_http, covered=True
                 )
+            from agent.final_wire_admission import wrap_httpx_client_transports
+            safe_kwargs["http_client"] = wrap_httpx_client_transports(safe_kwargs["http_client"], covered=True)
             client = GeminiNativeClient(**safe_kwargs)
             _ra().logger.info(
                 "Gemini native client created (%s, shared=%s) %s",
@@ -2659,7 +2661,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # constructs a fresh one — no stale closed transport can be reused.
     # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
     # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
-    if "http_client" not in client_kwargs:
+    if client_kwargs.get("http_client") is None:
         from agent.final_wire_admission import (
             ProviderBoundUnsupportedAccounting,
             wrap_httpx_client_transports,

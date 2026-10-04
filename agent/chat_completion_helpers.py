@@ -1009,7 +1009,7 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
         family=family,
         model=str(getattr(agent, "model", "") or ""),
         endpoint=str(getattr(agent, "base_url", "") or ""),
-        window=int(getattr(compressor, "context_length", 0) or 0),
+        window=getattr(compressor, "context_length", 0),
         correlation_id=str(getattr(agent, "session_id", "") or id(agent)),
     )
     with bind_attempt_identity(identity):
@@ -2862,6 +2862,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 "base_url": fb_base_url,
                 **({"default_headers": dict(fb_headers)} if fb_headers else {}),
             }
+            # Router clients are auxiliary/non-covered. Adoption into the main
+            # route must pass the covered primary factory even without a timeout.
+            agent.client = agent._create_openai_client(
+                agent._client_kwargs, reason="fallback_adoption", shared=True,
+            )
             if _fb_timeout is not None:
                 agent._client_kwargs["timeout"] = _fb_timeout
                 # Rebuild the shared OpenAI client so the configured
@@ -4080,10 +4085,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             compressor = getattr(agent, "context_compressor", None)
             identity = FinalAttemptIdentity(
                 purpose=COVERED_MAIN,
-                family="chat_completions",
+                family="gemini_native" if agent.provider == "gemini" else "chat_completions",
                 model=str(getattr(agent, "model", "") or ""),
                 endpoint=str(getattr(agent, "base_url", "") or ""),
-                window=int(getattr(compressor, "context_length", 0) or 0),
+                window=getattr(compressor, "context_length", 0),
                 correlation_id=str(getattr(agent, "session_id", "") or id(agent)),
             )
             with bind_attempt_identity(identity):

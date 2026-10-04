@@ -3380,7 +3380,7 @@ _POST_WORK_NARRATION_RE = re.compile(
     r"[^.!?\n]{0,120}"
     r"(compiling|writing|generating|creating|building|preparing|assembling|putting together"
     r"|finalizing|finalising|summarizing|summarising|drafting|composing)"
-    r"[^.!?\n]{0,80}[.!:…]?\s*\Z",
+    r"[^.!?\n]{0,80}[.!:\u2026]?\s*\Z",
     re.IGNORECASE,
 )
 

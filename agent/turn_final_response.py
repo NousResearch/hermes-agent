@@ -167,7 +167,6 @@ def finish_text_response(
     from agent.agent_runtime_helpers import (
         intent_ack_continuation_mode, looks_like_degenerate_final, post_work_narration_intent,
         promoted_reasoning_announces_action, tool_results_this_turn, trailing_continue_intent,
-        tool_results_this_turn, trailing_continue_intent,
     )
 
     _ack_mode = intent_ack_continuation_mode(agent)

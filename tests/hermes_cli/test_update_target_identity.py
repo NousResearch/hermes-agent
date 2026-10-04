@@ -123,10 +123,16 @@ def test_branch_update_uses_real_refs_and_completion_request(update_tree, monkey
     run = subprocess.run
     pushes = []
 
+    def _upstream_sha():
+        # The fork sync merges the commit it resolved from refs/remotes/upstream/main (m2).
+        found = run(['git', 'rev-parse', '-q', '--verify', 'refs/remotes/upstream/main'], cwd=t.clone,
+                    capture_output=True, text=True, encoding='utf-8')
+        return found.stdout.strip() or '<no upstream>'
+
     def fault(command, *args, **kwargs):
         assert Path(command[0]).name.lower() in {'git', 'git.exe'} or command[0] == sys.executable, command
         assert Path(kwargs['cwd']).resolve() in {t.clone, t.origin}, command
-        if 'refs/remotes/upstream/main' in command:  # the fork sync's local fast-forward
+        if 'merge' in command and _upstream_sha() in command:  # the fork sync's local fast-forward
             result = run(command, *args, **kwargs)
             if case.startswith('fork-late'):
                 if case.endswith('wrong-branch'):

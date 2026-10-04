@@ -135,13 +135,14 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "credential.helper")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "fixture-helper")
     monkeypatch.setattr(update_cmd, "_has_upstream_remote", lambda *a: True)
+    upstream = "c" * 40
     monkeypatch.setattr(update_cmd, "_count_commits_between",
-                        lambda git, cwd, base, head: 2 if head == "upstream/main" else 0)
+                        lambda git, cwd, base, head: 2 if head == upstream else 0)
     calls = []
 
     def run(cmd, **kwargs):
         calls.append((cmd[1:], kwargs))
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+        return subprocess.CompletedProcess(cmd, 0, upstream if "rev-parse" in cmd else "", "")
 
     monkeypatch.setattr(subprocess, "run", run)
     update_cmd._git_run(["git"], ["fetch", "origin", "main"], cwd=tmp_path, network=True, check=True)
@@ -150,8 +151,10 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
 
     # The fork's fast-forward is local (`merge --ff-only upstream/main` after the fetch): no
     # credential helper ever runs under the checkout lock fd a mutator inherits (R2).
-    assert [git_subcommand(args) for args, _ in calls] == ["fetch", "fetch", "merge", "push"]
-    for args, kwargs in calls:
+    network = [(args, kwargs) for args, kwargs in calls if git_subcommand(args) != "rev-parse"]
+    assert [git_subcommand(args) for args, _ in network] == ["fetch", "fetch", "merge", "push"]
+    assert network[2][0][-1] == upstream  # the counted commit, not a name a local branch can shadow
+    for args, kwargs in network:
         assert kwargs["stdin"] is subprocess.DEVNULL, args
         env = kwargs["env"]
         assert env["GIT_TERMINAL_PROMPT"] == "0", args

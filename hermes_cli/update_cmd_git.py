@@ -385,8 +385,11 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
     except subprocess.CalledProcessError:
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
         return False
-    origin_ahead = _count_commits_between(git_cmd, cwd, "upstream/main", "origin/main")
-    upstream_ahead = _count_commits_between(git_cmd, cwd, "origin/main", "upstream/main")
+    # One commit for the whole sync (m2): the short `upstream/main` also names a local branch of
+    # that name, so the count and the merge could each see a different commit.
+    upstream = _git_stdout(git_cmd, ["rev-parse", "-q", "--verify", "refs/remotes/upstream/main^{commit}"], cwd)
+    origin_ahead = _count_commits_between(git_cmd, cwd, upstream, "refs/remotes/origin/main") if upstream else -1
+    upstream_ahead = _count_commits_between(git_cmd, cwd, "refs/remotes/origin/main", upstream) if upstream else -1
     if origin_ahead < 0 or upstream_ahead < 0:
         print("  ✗ Could not compare branches. Skipping upstream sync.")
         return False
@@ -403,9 +406,9 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
     print(f"\n→ Fork is {upstream_ahead} commit(s) behind upstream\n→ Pulling from upstream...")
     try:
         # The fetch above already brought upstream/main: a local fast-forward (no network, so no
-        # credential helper is started under the checkout lock fd a mutator inherits).
-        run_git(git_cmd, ["merge", "--ff-only", "refs/remotes/upstream/main"], cwd=cwd, check=True,
-                **_no_prompt_git_kwargs())
+        # credential helper is started under the checkout lock fd a mutator inherits) to the
+        # very commit counted above.
+        run_git(git_cmd, ["merge", "--ff-only", upstream], cwd=cwd, check=True, **_no_prompt_git_kwargs())
     except subprocess.CalledProcessError:
         print("  ✗ Failed to pull from upstream. You may need to resolve conflicts manually.")
         return False

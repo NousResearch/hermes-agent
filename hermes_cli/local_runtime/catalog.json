@@ -170,6 +170,44 @@
       },
       "quality": 85,
       "decode_fraction": 0.1
+    },
+    {
+      "id": "tiel-coder-35b-a3b",
+      "display_name": "Tiel-Coder 35B-A3B",
+      "description": "Mixture-of-experts coding model fine-tune of Qwen3.6-35B-A3B; sees images, 256K trained context",
+      "repo": "unsloth/Tiel-Coder-35B-A3B-GGUF",
+      "n_ctx_train": 262144,
+      "full_layers": 10,
+      "recurrent_layers": 30,
+      "per_layer_f16": 2048,
+      "moe": true,
+      "mtp": false,
+      "n_vocab": 248320,
+      "mmproj": {
+        "path": "mmproj-BF16.gguf",
+        "size_bytes": 902822016,
+        "local": "mmproj-Tiel-Coder-35B-A3B-BF16.gguf"
+      },
+      "sampling": {
+        "temp": "1.0",
+        "top-p": "0.95",
+        "top-k": "20",
+        "min-p": "0.0"
+      },
+      "quality": 85,
+      "decode_fraction": 0.15,
+      "variants": [
+        {
+          "quant": "UD-Q4_K_XL",
+          "files": [
+            {
+              "path": "Tiel-Coder-35B-A3B-UD-Q4_K_XL.gguf",
+              "size_bytes": 22360478080
+            }
+          ],
+          "validated": true
+        }
+      ]
     }
   ]
 }

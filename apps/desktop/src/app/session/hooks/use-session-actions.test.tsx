@@ -21,6 +21,7 @@ import {
   type SessionResumeResult,
   setSessionArchived
 } from '@/hermes'
+import { toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
@@ -3041,6 +3042,7 @@ function BranchHarness({
 
 describe('branchStoredSession desktop source tagging', () => {
   afterEach(() => {
+    vi.mocked(getAllSessionMessages).mockReset()
     cleanup()
     setSessions([])
     $sessionTiles.set([])
@@ -3345,56 +3347,91 @@ describe('branchStoredSession desktop source tagging', () => {
     expect(requestGatewayForAgent).not.toHaveBeenCalled()
   })
 
-  it('branches an open live chat via session.branch with a trimmed message count (bug #1/#3 fix)', async () => {
-    let branchParams: Record<string, unknown> | undefined
+  it.each(['current', 'tile'].flatMap(surface => ['folded', 'windowed'].map(view => ({ surface, view }))))(
+    'branches a $surface chat at the final stored row of the clicked $view bubble',
+    async ({ surface, view }) => {
+      const rows = [
+        { id: 10, role: 'user' as const, content: 'first question', timestamp: 1 },
+        { id: 20, role: 'assistant' as const, content: 'The revised report is ready.', timestamp: 2 },
+        { id: 30, role: 'user' as const, content: 'process finished', display_kind: 'process_complete', timestamp: 3 },
+        { id: 40, role: 'user' as const, content: 'revise the report', timestamp: 4 },
+        {
+          id: 50,
+          role: 'assistant' as const,
+          content: 'I will revise it.',
+          timestamp: 5,
+          tool_calls: [{ id: 'edit', type: 'function', function: { name: 'write_file', arguments: '{}' } }]
+        },
+        { id: 60, role: 'tool' as const, content: 'saved', tool_call_id: 'edit', timestamp: 6 },
+        { id: 70, role: 'assistant' as const, content: 'The revised report is ready.', timestamp: 7 },
+        { id: 80, role: 'user' as const, content: 'later question', timestamp: 8 }
+      ]
 
-    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
-      if (method === 'session.branch') {
-        branchParams = params
+      // A live/windowed reply can have a different bubble id from its REST fold.
+      // The earlier identical answer must never steal the selected row's identity.
+      const messages = toChatMessages(view === 'windowed' ? rows.slice(6) : rows)
+      const target = messages.find(message => message.rowId === (view === 'windowed' ? 70 : 50))!
+      expect(target.parts).toContainEqual(expect.objectContaining({ type: 'text', sourceRowId: 70 }))
 
-        return {
-          session_id: 'branch-runtime',
-          stored_session_id: 'branch-stored',
-          title: 'Branch',
-          message_count: 2,
-          messages: [],
-          info: {}
-        } as never
-      }
+      const requestGateway = vi.fn(async (method: string) =>
+        method === 'session.branch'
+          ? ({ session_id: 'branch-runtime', stored_session_id: 'branch-stored', messages: [], info: {} } as never)
+          : ({} as never)
+      )
 
-      return {} as never
-    })
+      setSessions([storedSession({ id: 'stored-parent', message_count: rows.length })])
+      setMessages(messages)
+      vi.mocked(getAllSessionMessages).mockResolvedValue({ messages: rows, session_id: 'stored-parent' } as never)
+      let current: ((messageId?: string) => Promise<boolean>) | undefined
+      let loaded: ReturnType<typeof useSessionActions>['branchLoadedSession'] | undefined
+      render(
+        <BranchHarness
+          activeSessionId="live-parent"
+          onCurrentReady={branch => (current = branch)}
+          onLoadedReady={branch => (loaded = branch)}
+          onReady={() => undefined}
+          requestGateway={requestGateway}
+          selectedStoredSessionId="stored-parent"
+        />
+      )
+      await waitFor(() => expect(current).toBeDefined())
+      await act(async () => {
+        const result =
+          surface === 'current'
+            ? current!(target.id)
+            : loaded!({
+                busy: false,
+                messageId: target.id,
+                messages,
+                runtimeId: 'live-parent',
+                storedSessionId: 'stored-parent'
+              })
 
-    setMessages([
-      { id: 'q1', role: 'user', parts: [{ type: 'text', text: 'question one' }] },
-      { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'answer one' }] },
-      { id: 'q2', role: 'user', parts: [{ type: 'text', text: 'question two' }] },
-      { id: 'a2', role: 'assistant', parts: [{ type: 'text', text: 'answer two' }] }
-    ])
+        await expect(result).resolves.toBe(true)
+      })
+      expect(requestGateway).toHaveBeenCalledWith('session.branch', {
+        session_id: 'live-parent',
+        through_row_id: 70,
+        idempotency_key: expect.any(String)
+      })
+    }
+  )
 
-    let branchCurrentSession: ((messageId?: string) => Promise<boolean>) | null = null
+  it.each(['missing', 'unpersisted'])('does not create a branch for a %s cutoff', async kind => {
+    const requestGateway = vi.fn(async () => ({ session_id: 'child', stored_session_id: 'child-stored' }) as never)
+    setMessages([{ id: 'local', role: 'assistant', parts: [{ type: 'text', text: 'reply' }] }])
+    let branch: ((messageId?: string) => Promise<boolean>) | undefined
     render(
       <BranchHarness
         activeSessionId="live-parent"
-        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onCurrentReady={value => (branch = value)}
         onReady={() => undefined}
         requestGateway={requestGateway}
       />
     )
-    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
-
-    // Branch from the FIRST assistant reply ("a1"), not the last message �
-    // this is exactly the scenario that used to drop the question (bug #1):
-    // only the clicked message survived instead of everything up to it.
-    await expect(branchCurrentSession!('a1')).resolves.toBe(true)
-
-    expect(requestGateway).toHaveBeenCalledWith('session.branch', {
-      session_id: 'live-parent',
-      count: 2,
-      // Stable per-attempt key (#65410): present but opaque to this test.
-      idempotency_key: expect.any(String)
-    })
-    expect(branchParams).toMatchObject({ session_id: 'live-parent', count: 2, idempotency_key: expect.any(String) })
+    await waitFor(() => expect(branch).toBeDefined())
+    await expect(branch!(kind === 'missing' ? 'gone' : 'local')).resolves.toBe(false)
+    expect(requestGateway).not.toHaveBeenCalled()
   })
 
   it('branches a compacted live chat without hydrating its transcript in the renderer', async () => {
@@ -3487,7 +3524,7 @@ describe('branchStoredSession desktop source tagging', () => {
 
     const messages = [
       { id: 'q1', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question one' }] },
-      { id: 'a1', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer one' }] },
+      { id: 'a1', rowId: 22, role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer one' }] },
       { id: 'q2', role: 'user' as const, parts: [{ type: 'text' as const, text: 'question two' }] },
       { id: 'a2', role: 'assistant' as const, parts: [{ type: 'text' as const, text: 'answer two' }] }
     ]
@@ -3516,7 +3553,7 @@ describe('branchStoredSession desktop source tagging', () => {
 
     expect(requestGateway).toHaveBeenCalledWith('session.branch', {
       session_id: 'tile-runtime',
-      count: 2,
+      through_row_id: 22,
       idempotency_key: expect.any(String)
     })
   })

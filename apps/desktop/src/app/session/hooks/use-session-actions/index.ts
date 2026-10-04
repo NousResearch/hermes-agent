@@ -163,6 +163,7 @@ import type { ClientSessionState, SidebarNavItem } from '../../../types'
 import { pinStoredSessionForOwner, releaseStoredSessionPins, sessionContextDrift } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
+import { branchCutoffRowId } from './branch-cutoff'
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
@@ -253,7 +254,7 @@ const branchMessagesFingerprint = (messages: BranchMessage[]): string =>
 // flight instead of minting a second child. The OWNER is part of the identity:
 // the same parent id served by two connections is two different sessions.
 function branchCreateKey({
-  branchCount,
+  throughRowId,
   branchMessages,
   cwd,
   ownerRoute,
@@ -261,7 +262,7 @@ function branchCreateKey({
   profile,
   sourceSessionId
 }: {
-  branchCount?: number
+  throughRowId?: number
   branchMessages: BranchMessage[]
   cwd?: string
   ownerRoute?: SessionOwnerRoute
@@ -270,7 +271,7 @@ function branchCreateKey({
   sourceSessionId: null | string
 }): string {
   return JSON.stringify({
-    branchCount: branchCount ?? null,
+    throughRowId: throughRowId ?? null,
     connectionId: ownerRoute?.connectionId || null,
     cwd: cwd?.trim() || null,
     messages: sourceSessionId ? null : branchMessagesFingerprint(branchMessages),
@@ -2750,7 +2751,7 @@ export function useSessionActions({
       parentStoredId: null | string,
       cwd?: string,
       profile?: null | string,
-      branchCount?: number,
+      throughRowId?: number,
       ownerRoute?: SessionOwnerRoute,
       idempotencyKey?: string
     ): Promise<boolean> => {
@@ -2795,7 +2796,7 @@ export function useSessionActions({
         // connections is two different sessions, so a route-blind key would
         // coalesce them onto one create.
         const createKey = branchCreateKey({
-          branchCount,
+          throughRowId,
           branchMessages,
           cwd,
           ownerRoute,
@@ -2813,7 +2814,7 @@ export function useSessionActions({
             // Stable per-attempt key: a lost-response retry of session.branch /
             // session.branch_whole returns the SAME child (#65410).
             idempotency_key: key,
-            ...(branchCount !== undefined ? { count: branchCount } : {})
+            ...(throughRowId !== undefined ? { through_row_id: throughRowId } : {})
           }
 
           const createParams = {
@@ -2830,7 +2831,7 @@ export function useSessionActions({
           createFlight = (
             sourceSessionId
               ? requestBranchGateway<SessionCreateResponse>(
-                  branchCount === undefined ? 'session.branch_whole' : 'session.branch',
+                  throughRowId === undefined ? 'session.branch_whole' : 'session.branch',
                   branchParams
                 ).catch(err => {
                   if (!isMissingRpcMethod(err)) {
@@ -2989,7 +2990,7 @@ export function useSessionActions({
                 parentStoredId,
                 cwd,
                 profile,
-                branchCount,
+                throughRowId,
                 ownerRoute,
                 key
               )
@@ -3086,17 +3087,25 @@ export function useSessionActions({
         return false
       }
 
+      const clickedMessage = messageId ? messages.find(message => message.id === messageId) : undefined
+
+      // A live reply can fold into a REST bubble with a different starting row.
+      // Its own durable identity outranks text matching against that projection.
+      const throughRowId = messageId
+        ? (branchCutoffRowId(clickedMessage) ?? branchCutoffRowId(branchMessages.at(-1)?.source))
+        : undefined
+
+      // Never substitute a bubble count (or a whole-chat branch) for a missing
+      // durable boundary. The server and renderer count different projections.
+      if (messageId && (!clickedMessage || throughRowId === undefined)) {
+        notify({ kind: 'error', title: copy.branchFailed, message: copy.editTurnUnavailable })
+
+        return false
+      }
+
       clearNotifications()
 
-      return forkBranch(
-        branchMessages,
-        runtimeId,
-        storedSessionId,
-        cwd?.trim(),
-        profile,
-        messageId ? branchMessages.length : undefined,
-        ownerRoute
-      )
+      return forkBranch(branchMessages, runtimeId, storedSessionId, cwd?.trim(), profile, throughRowId, ownerRoute)
     },
     [copy, forkBranch]
   )

@@ -3175,6 +3175,42 @@ def looks_like_codex_intermediate_ack(
     )
 
 
+# Post-work progress narration (#74604): after real tool work the model announces it is
+# assembling the deliverable ("I am now compiling the complete answer.") and stops with
+# ``finish_reason=stop`` — a silent abandonment the trailing-continue-intent detector
+# cannot see (the "now" markers target a FUTURE action; this shape claims one in
+# progress). First-person-present marker + an output-production gerund over the WHOLE
+# (short) message: a narration that then delivers the answer exceeds the length cap and
+# stays terminal.
+_POST_WORK_NARRATION_RE = re.compile(
+    r"\A(?:\bi(?:['’])?m (?:now|currently)\b|\bi am (?:now|currently)\b)"
+    r"[^.!?\n]{0,120}"
+    r"(compiling|writing|generating|creating|building|preparing|assembling|putting together"
+    r"|finalizing|finalising|summarizing|summarising|drafting|composing)"
+    r"[^.!?\n]{0,80}[.!:\u2026]?\s*\Z",
+    re.IGNORECASE,
+)
+
+# Narrations longer than this are substantive replies, not dangling progress notes.
+_POST_WORK_NARRATION_MAX_CHARS = 240
+
+
+def post_work_narration_intent(text: str) -> bool:
+    """Whether ``text`` reads as a mid-delivery progress note that ends the turn after tool work (#74604).
+
+    Fires on the issue's reported shape — "~35 tool calls, then 'I am now compiling the
+    complete answer.', then stop" — and its sibling "I'm currently generating the report."
+    variant. Guardrails: short (a substantive reply is an answer regardless of first-person
+    verbs; the whole message must be the narration, not a long reply ending on one) and
+    requires BOTH the present-progressive first-person marker and an output-production
+    action, so terse real answers and reasoning-style planning monologue stay terminal.
+    """
+    t = (text or "").strip()
+    if not t or len(t) > _POST_WORK_NARRATION_MAX_CHARS:
+        return False
+    return bool(_POST_WORK_NARRATION_RE.search(t))
+
+
 # Degenerate-final detector (#103483): after real tool work a text stop whose ENTIRE answer is a
 # fragment — a stray wrong-script word ("пар" in an English conversation), a token starting
 # mid-punctuation ("?warming up") — is a provider-side collapse, not an answer, yet the loop

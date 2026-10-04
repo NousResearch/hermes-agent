@@ -155,8 +155,8 @@ def finish_text_response(
     # delivery channel (gateway status message / CLI print). NEVER appended to messages/api_messages:
     # conversation context and the cached prompt prefix stay byte-identical.
     from agent.agent_runtime_helpers import (
-        intent_ack_continuation_mode, looks_like_degenerate_final, promoted_reasoning_announces_action,
-        tool_results_this_turn, trailing_continue_intent,
+        intent_ack_continuation_mode, looks_like_degenerate_final, post_work_narration_intent,
+        promoted_reasoning_announces_action, tool_results_this_turn, trailing_continue_intent,
     )
 
     _ack_mode = intent_ack_continuation_mode(agent)
@@ -187,11 +187,30 @@ def finish_text_response(
         and _tool_rows > 0
         and looks_like_degenerate_final(_stall_text, user_message=user_message)
     )
-    # Precedence: an announced next action outranks the fragment shape; the codex ack is last.
+    # Post-work progress narration (#74604): the turn did real tool work, then the model
+    # announced mid-delivery progress ("I am now compiling the complete answer.") and stopped
+    # with finish_reason=stop — the reported incident's shape. The trailing-continue-intent
+    # stall guard above cannot see it (its markers are all FUTURE actions; this shape claims
+    # one IN PROGRESS), and the ack detector below is silent on it too: its no-prior-tool-row
+    # gate is false here by construction. The sibling of the degenerate guard: same scope knob
+    # (_ack_mode), same _tool_rows window, SAME bounded counter; a second narration ends the
+    # turn as the answer, because the nudge row closes the tool-work window just like the
+    # degenerate path.
+    _post_work_narration = (
+        bool(getattr(agent, "_stall_guards", True))
+        and _ack_mode != "off"
+        and codex_ack_continuations < 2
+        and _tool_rows > 0
+        and post_work_narration_intent(_stall_text)
+    )
+    # Precedence: an announced next action outranks a mid-delivery narration and the fragment
+    # shape; the codex ack is last.
     if _stall_continue_intent:
         _continuation_kind = "stall"
     elif _degenerate_final:
         _continuation_kind = "degenerate"
+    elif _post_work_narration:
+        _continuation_kind = "narration"
     elif (
         _ack_mode != "off"
         and agent.valid_tool_names
@@ -216,6 +235,12 @@ def finish_text_response(
                 "Degenerate final: %d-char fragment %r ended the turn after %d tool result(s) — "
                 "re-prompting (%d/2)", len(_stall_text), _stall_text[:40], _tool_rows,
                 codex_ack_continuations + 1,
+            )
+        elif _continuation_kind == "narration":
+            logger.warning(
+                "Post-work narration: %d-char progress note %r ended the turn after %d tool "
+                "result(s) — re-prompting (%d/2)", len(_stall_text), _stall_text[:40],
+                _tool_rows, codex_ack_continuations + 1,
             )
         codex_ack_continuations += 1
         interim_msg = agent._build_assistant_message(assistant_message, "incomplete")

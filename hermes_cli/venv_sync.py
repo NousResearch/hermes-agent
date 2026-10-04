@@ -376,7 +376,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
 
     import pm
     from hermes_cli._launchers import resolve_store_python
-    from hermes_cli.update_lock import UpdateLock, read_live_update, update_in_progress
+    from hermes_cli.update_lock import UpdateLock, read_live_update
 
     current = pm.venv_is_current(project_root=root)
     from pm.environments import owning_home_root
@@ -401,12 +401,8 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         # noise (the record's age tracks the wait), leaving the marker armed.
         pass
     elif not owed_to_cli and (not current or pending.is_file()):
-        # Read before claiming: our own claim would answer for us. A free marker over a held
-        # checkout lock is a killed update whose tree (its completion child) still runs.
-        busy = update_in_progress(root)
         lock = UpdateLock()
-        if not lock.acquire() or (lock.acquired and busy):
-            lock.release()
+        if not lock.acquire():
             raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
         try:
             # Under the launching update's own claim (its pid is our ancestor) a process it
@@ -422,6 +418,11 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
                     # Relaunching would land back here and sync again, forever.
                     raise RuntimeError("dependency sync left this install out of date")
             else:
+                # The tail mutates the checkout: ACQUIRE its lock (R2), never sample it. A free
+                # marker over a held checkout lock is a killed update whose tree (its completion
+                # child) still runs.
+                if not lock.acquire_checkout(root):
+                    raise RuntimeError("an update is still running; wait for it to exit, then relaunch Hermes")
                 _finish_source_update(root, current=current, pending=pending)
         finally:
             lock.release()
@@ -520,12 +521,18 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
     # The tail's progress lines go to stderr: this is an automatic repair in
     # front of whatever command the user ran, and that command may be
     # emitting machine-readable stdout (a JSON probe, a piped query).
+    from hermes_cli.update_lock import checkout_lock_fds
+
+    # The completion child stays in this launch's checkout custody (POSIX: it inherits the
+    # lock fd), so a contender never sees the checkout free while it builds.
+    fds = checkout_lock_fds(root)
     code = subprocess.call(
         [sys.executable, "-I", "-B", "-u",
          str(root / "hermes_cli/source_completion.py"),
          "--source", str(root), "--finish-update",
          *(("--desktop",) if desktop else ())],
         cwd=root, env=activation_environment(root), stdout=sys.__stderr__,
+        **({"pass_fds": fds} if fds else {}),
     )
     if code != 0:
         _record_completion_attempt(root, failed=True)

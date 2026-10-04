@@ -48,13 +48,17 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False) ->
 
 def run_source_script(project_root: Path, script: str, *args: str, env: dict, label: str) -> None:
     from pm.progress import run_contained
+    from hermes_cli.update_lock import checkout_lock_fds
 
+    # The build writes the checkout: node (and npm/esbuild under it) inherits the update's
+    # checkout lock fd, so the checkout is never handed to a contender while it still writes.
+    fds = checkout_lock_fds(project_root)
     # npm's deprecation warnings are the loudest lines and never actionable
     # here; they still land in the failure tail.
     run_contained(
         [shutil.which("node", path=env["PATH"]), str(project_root / script), *args],
         label, hide=lambda line: line.lower().startswith("npm warn"), indent="  ",
-        cwd=project_root, env=env,
+        cwd=project_root, env=env, **({"pass_fds": fds} if fds else {}),
     )
 
 

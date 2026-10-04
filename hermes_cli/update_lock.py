@@ -28,8 +28,9 @@ import re
 import secrets
 import subprocess
 import sys
+import threading
 import time
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -223,23 +224,92 @@ def process_create_time(pid: int | None = None) -> float | None:
         return _stdlib_create_time(target)
 
 
-def _identity_live(pid: int, create_time: float | None, age: float) -> bool:
-    """C1 rule 3 + A1 for one (pid, ct) identity of a marker ``age`` seconds old.
+def _own_create_time() -> float | None:
+    """This process's creation time (cached per pid: a forked child is another process)."""
+    pid = os.getpid()
+    if _OWN_CT.get("pid") != pid:
+        _OWN_CT.update(pid=pid, ct=process_create_time(pid))
+    return _OWN_CT.get("ct")
+
+
+_OWN_CT: dict = {}
+
+
+def _as_ct(recorded) -> float | None:
+    """A recorded creation time as a float: a number, ``"ct:<s>"`` / ``"<s>"`` text, or None."""
+    if recorded is None or isinstance(recorded, (int, float)):
+        return None if recorded is None else float(recorded)
+    match = _CT_VALUE.fullmatch(str(recorded).strip().removeprefix("ct:"))
+    return float(match.group(0)) if match else None
+
+
+def incarnation_live(pid: int, recorded_ct=None) -> bool | None:
+    """THE one incarnation rule (A7 rule 4) for every Python identity reader (marker, pause record).
+
+    An identity is (pid, creation time). ``True``: that process is running. ``False``: no such
+    process, a different incarnation of the pid, or a claim naming OUR pid that is not us — our
+    own pid is ours only within :data:`_OWN_CREATE_TIME_EPSILON` of our creation time, and a
+    claim without a creation time naming our pid is a previous incarnation (a fresh pid
+    namespace hands a killed update's pid to the next launch). ``None``: alive but unprovable —
+    no creation time recorded, or the live one unreadable (Windows denies elevated/other-user
+    pids); each caller applies its own bound (the marker: the v1 age ceiling).
+
+    ``recorded_ct`` is a float or the marker spelling ``"ct:<seconds>"``.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0 or not _pid_alive(pid):
+        return False
+    recorded = _as_ct(recorded_ct)
+    if pid == os.getpid():
+        own = _own_create_time()
+        if own is None:
+            return None  # degraded: we cannot tell our incarnations apart
+        return recorded is not None and abs(own - recorded) <= _OWN_CREATE_TIME_EPSILON
+    if recorded is None:
+        return None
+    actual = process_create_time(pid)
+    return None if actual is None else abs(actual - recorded) <= CREATE_TIME_TOLERANCE_SECONDS
+
+
+@dataclass(frozen=True)
+class _World:
+    """What a marker verdict depends on besides the bytes: us, the clock, the process table.
+    Production uses :func:`_real_world`; the shared corpus injects a table."""
+
+    pid: int
+    ct: float | None
+    now: float
+    alive: object  # Callable[[int], bool]
+    ct_of: object  # Callable[[int], float | None]
+
+
+def _real_world() -> _World:
+    return _World(os.getpid(), _own_create_time(), time.time(), _pid_alive, process_create_time)
+
+
+def _identity_live(pid: int, create_time: float | None, age: float, world: _World | None = None) -> bool:
+    """C1 rule 3 + A1 + A7 rule 4 for one (pid, ct) identity of a marker ``age`` seconds old.
 
     Alive (not a zombie) and, when a creation time was recorded, the same process: a matching
     creation time is live however old the marker is. Without that proof — a v1 marker, or a
-    creation time we cannot read (Windows denies it for elevated/other-user pids) — the pid may
-    be a reused one, so only the legacy age ceiling bounds it.
+    creation time we cannot read — the pid may be a reused one, so only the legacy age ceiling
+    bounds it. Our own pid follows :func:`incarnation_live` (exact creation time, no-ct = dead).
     """
-    if not _pid_alive(pid):
+    w = world or _real_world()
+    if pid <= 0 or not w.alive(pid):
         return False
-    actual = None if create_time is None else process_create_time(pid)
+    if pid == w.pid:
+        if w.ct is None:
+            # Degraded: our own creation time is unreadable, so our claims are v1 too.
+            return create_time is None
+        return create_time is not None and abs(w.ct - create_time) <= _OWN_CREATE_TIME_EPSILON
+    actual = None if create_time is None else w.ct_of(pid)
     if actual is None:
         return age <= UPDATE_MARKER_MAX_AGE_SECONDS
-    # Our own pid is us only at our exact creation time: a fresh pid namespace (container, bwrap)
-    # hands a killed update's pid to the next launch well inside the cross-writer skew window.
-    tolerance = _OWN_CREATE_TIME_EPSILON if pid == os.getpid() else CREATE_TIME_TOLERANCE_SECONDS
-    return abs(actual - create_time) <= tolerance
+    return abs(actual - create_time) <= CREATE_TIME_TOLERANCE_SECONDS
 
 
 def _identity_line(pid: int | None = None) -> str:
@@ -424,6 +494,14 @@ class UpdateHolder:
     reason: str | None = None
 
 
+_U32_MAX = 0xFFFFFFFF
+_INT_LINE = re.compile(r"[0-9]+", re.ASCII)
+_CT_VALUE = re.compile(r"[0-9]+(?:\.[0-9]+)?", re.ASCII)
+_CT_LINE = re.compile(r"ct:([0-9]+(?:\.[0-9]+)?)", re.ASCII)
+_DELEGATE_LINE = re.compile(r"delegate:([0-9]+) ct:([0-9]+(?:\.[0-9]+)?)", re.ASCII)
+_RUN_LINE = re.compile(r"run:([A-Za-z0-9._-]{1,128})", re.ASCII)
+
+
 @dataclass(frozen=True)
 class _Marker:
     raw: bytes
@@ -433,53 +511,110 @@ class _Marker:
     delegate_pid: int | None
     delegate_create_time: float | None
     in_flight: bool = False  # an empty marker younger than EMPTY_MARKER_GRACE_SECONDS
+    ct_text: str | None = None
+    delegate_ct_text: str | None = None
+    runs: tuple[str, ...] = ()
 
     @property
     def base(self) -> bytes:
         """Lines 1–3 exactly as written (what a delegate keeps byte-identical)."""
         return b"".join(self.raw.splitlines(keepends=True)[:3])
 
-    def age(self) -> float:
-        return time.time() - self.started_at if self.started_at is not None else float("inf")
+    @property
+    def run(self) -> str | None:
+        return self.runs[0] if self.runs else None
 
-    def owner_live(self) -> bool:
-        return self.started_at is not None and _identity_live(self.pid, self.create_time, self.age())
+    def age(self, world: _World | None = None) -> float:
+        now = time.time() if world is None else world.now
+        return now - self.started_at if self.started_at is not None else float("inf")
 
-    def delegate_live(self) -> bool:
+    def owner_live(self, world: _World | None = None) -> bool:
+        return self.started_at is not None \
+            and _identity_live(self.pid, self.create_time, self.age(world), world)
+
+    def delegate_live(self, world: _World | None = None) -> bool:
         return self.delegate_pid is not None and self.started_at is not None \
-            and _identity_live(self.delegate_pid, self.delegate_create_time, self.age())
+            and _identity_live(self.delegate_pid, self.delegate_create_time, self.age(world), world)
 
-    def live_pid(self) -> int | None:
+    def live_pid(self, world: _World | None = None) -> int | None:
         if self.in_flight:
             return 0
-        if self.owner_live():
+        if self.owner_live(world):
             return self.pid
-        return self.delegate_pid if self.delegate_live() else None
+        return self.delegate_pid if self.delegate_live(world) else None
 
-
-_INT_LINE = re.compile(r"[0-9]+", re.ASCII)
-_CT_LINE = re.compile(r"ct:([0-9]+(?:\.[0-9]+)?)", re.ASCII)
-_DELEGATE_LINE = re.compile(r"delegate:([0-9]+) ct:([0-9]+(?:\.[0-9]+)?)", re.ASCII)
+    def canonical(self, pid: int, ct_text: str | None) -> bytes:
+        """A rewritten claim (A7 rule 5): ``pid`` owns it from ``started_at`` on; run lines kept."""
+        body = f"{pid}\n{self.started_at}\n" + (f"ct:{ct_text}\n" if ct_text else "")
+        return (body + "".join(f"run:{run}\n" for run in self.runs)).encode()
 
 
 def _parse_marker(raw: bytes, *, mtime: float | None = None) -> _Marker:
-    """Contract A2, positional and identical in every reader (Rust ``marker.rs``, Electron,
-    the hand-off scripts): BOM and CRLF tolerated; line 1 pid and line 2 started_at are
-    integers or the marker is MALFORMED (dead: ``started_at`` None); a bad line 3 makes it v1;
-    a bad line 4 is ignored."""
+    """Contract A2 + A7 rule 7, identical in every reader (Rust ``marker.rs``, Electron, the
+    hand-off scripts; ``tests/fixtures/update_marker_corpus.json``): BOM, CRLF and surrounding
+    spaces/tabs tolerated; line 1 pid (u32) and line 2 started_at are integers or the marker is
+    MALFORMED (dead: ``started_at`` None); a bad line 3 makes it v1; lines 4+ are tagged — the
+    first well-formed ``delegate:<pid> ct:<ct>`` and every ``run:<id>`` — anything else ignored."""
     text = raw.decode("utf-8", errors="replace").removeprefix("\ufeff")
     lines = [line.removesuffix("\r").strip(" \t") for line in text.split("\n")]
-    lines += [""] * (4 - len(lines))
+    lines += [""] * (3 - len(lines))
     pid = int(lines[0]) if _INT_LINE.fullmatch(lines[0]) else -1
+    if pid > _U32_MAX:
+        pid = -1
     started_at = int(lines[1]) if pid >= 0 and _INT_LINE.fullmatch(lines[1]) else None
     ct = _CT_LINE.fullmatch(lines[2])
-    delegate = _DELEGATE_LINE.fullmatch(lines[3])
+    delegate = next((m for m in map(_DELEGATE_LINE.fullmatch, lines[3:])
+                     if m and int(m.group(1)) <= _U32_MAX), None)
+    runs = tuple(m.group(1) for m in map(_RUN_LINE.fullmatch, lines[3:]) if m)
     in_flight = not raw and mtime is not None and time.time() - mtime < EMPTY_MARKER_GRACE_SECONDS
     return _Marker(
         raw=raw, pid=pid, started_at=started_at, create_time=float(ct.group(1)) if ct else None,
         delegate_pid=int(delegate.group(1)) if delegate else None,
         delegate_create_time=float(delegate.group(2)) if delegate else None, in_flight=in_flight,
+        ct_text=ct.group(1) if ct else None, delegate_ct_text=delegate.group(2) if delegate else None,
+        runs=runs,
     )
+
+
+def judge_marker(raw: bytes, world: _World | None = None) -> tuple[str, int | None, str | None]:
+    """``(verdict, owner, run)`` of marker bytes — the shared corpus' judge contract.
+
+    verdict: ``malformed`` | ``dead`` | ``ours`` (a live identity is this incarnation) | ``live``;
+    owner: the owner identity if live, else the delegate if live, else None.
+    """
+    w = world or _real_world()
+    marker = _parse_marker(raw)
+    if marker.started_at is None:
+        return "malformed", None, None
+    owner = marker.live_pid(w)
+    if owner is None:
+        return "dead", None, marker.run
+    ours = (marker.pid == w.pid and marker.owner_live(w)) \
+        or (marker.delegate_pid == w.pid and marker.delegate_live(w))
+    return ("ours" if ours else "live"), owner, marker.run
+
+
+def _release_decision(raw: bytes, world: _World | None = None) -> tuple[str, bytes | None]:
+    """A7 rule 5: what releasing ``world``'s claim does to marker bytes ``raw``.
+
+    ``("delete", None)`` | ``("rewrite", new bytes)`` | ``("keep", None)``. The owner (line 1–3
+    identity is our incarnation) deletes — regardless of delegate lines — unless a live delegate
+    other than us exists: then that delegate becomes the owner. A delegate (us) drops its line
+    while the owner lives, else deletes. Anything not naming us is kept.
+    """
+    w = world or _real_world()
+    marker = _parse_marker(raw)
+    if marker.started_at is None:
+        return "keep", None
+    if marker.pid == w.pid and marker.owner_live(w):
+        if marker.delegate_pid not in (None, w.pid) and marker.delegate_live(w):
+            return "rewrite", marker.canonical(marker.delegate_pid, marker.delegate_ct_text)
+        return "delete", None
+    if marker.delegate_pid == w.pid and marker.delegate_live(w):
+        if marker.owner_live(w):
+            return "rewrite", marker.canonical(marker.pid, marker.ct_text)
+        return "delete", None
+    return "keep", None
 
 
 def _read_bytes(path: Path) -> bytes | None:
@@ -519,49 +654,153 @@ def _sweep_dead_tmp_siblings(path: Path) -> None:
                     entry.unlink()
 
 
+# --- the marker mutex (A7 rule 1) -------------------------------------------------------------
+
+MUTEX_SUFFIX = ".lock"
+# Bounded wait for the sidecar: holders never run git/builds/network inside it.
+MUTEX_WAIT_SECONDS = 10.0
+
+
+class MarkerBusy(OSError):
+    """The marker mutex stayed held past :data:`MUTEX_WAIT_SECONDS`: report busy."""
+
+
+_MUTEX_HELD = threading.local()
+
+
+def marker_mutex_path(path: Path) -> Path:
+    """``<marker>.lock``: the sidecar every marker MUTATION holds a kernel lock on. Never deleted
+    (deleting it would split the lock across two inodes)."""
+    return path.with_name(path.name + MUTEX_SUFFIX)
+
+
+def _windows_open_exclusive(path: Path):
+    """The Windows sidecar mutex: the file opened with NO sharing (``FileShare.None`` in the
+    PowerShell scripts, ``share_mode(0)`` in marker.rs). ``None`` = someone else has it open."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                     wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    invalid = ctypes.c_void_p(-1).value
+    for access, disposition in ((0xC0000000, 4), (0x80000000, 3)):  # RW OPEN_ALWAYS; R OPEN_EXISTING
+        handle = kernel32.CreateFileW(str(path), access, 0, None, disposition, 0x80, None)
+        if handle and handle != invalid:
+            return handle
+        error = ctypes.get_last_error()
+        if error == 32:  # ERROR_SHARING_VIOLATION: held
+            return None
+        if error != 5:  # anything but access denied: no read-only retry helps
+            break
+    raise ctypes.WinError(error)
+
+
+def _windows_close(handle) -> None:
+    import ctypes
+
+    ctypes.WinDLL("kernel32").CloseHandle(handle)
+
+
+def _mutex_acquire(path: Path, wait: float):
+    deadline = time.monotonic() + wait
+    if sys.platform == "win32":
+        while True:
+            handle = _windows_open_exclusive(path)
+            if handle is not None:
+                return handle
+            if time.monotonic() >= deadline:
+                raise MarkerBusy(f"{path} is held by another update")
+            time.sleep(0.02)
+    import fcntl
+
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    except PermissionError:
+        fd = os.open(path, os.O_RDONLY)  # flock works on a read-only fd (root-owned sidecar)
+    try:
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fd
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise MarkerBusy(f"{path} is held by another update") from None
+                time.sleep(0.02)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+@contextmanager
+def marker_mutex(path: Path, *, wait: float = MUTEX_WAIT_SECONDS):
+    """Hold the kernel lock on ``<marker>.lock`` (A7 rule 1): read → judge → mutate of the marker
+    at ``path`` happens entirely inside. Re-entrant per thread; the kernel releases it if we die.
+    Raises :class:`MarkerBusy` after ``wait`` seconds, ``OSError`` when it cannot be opened."""
+    key = str(marker_mutex_path(path))
+    held = getattr(_MUTEX_HELD, "keys", None)
+    if held is None:
+        held = _MUTEX_HELD.keys = {}
+    if held.get(key):
+        held[key] += 1
+        try:
+            yield
+        finally:
+            held[key] -= 1
+        return
+    handle = _mutex_acquire(Path(key), wait)
+    held[key] = 1
+    try:
+        yield
+    finally:
+        held.pop(key, None)
+        if sys.platform == "win32":
+            _windows_close(handle)
+        else:
+            os.close(handle)  # closing the only fd of this open file description drops the flock
+
+
 def _compare_and_delete(path: Path, expected: bytes) -> bool:
-    """Delete ``path`` only while it still holds exactly ``expected`` (C1 rule 5)."""
-    if _read_bytes(path) != expected:
-        return False
-    with suppress(FileNotFoundError):
-        path.unlink()
-    return True
+    """Delete ``path`` only while it still holds exactly ``expected`` — compared and unlinked under
+    the marker mutex, so no claim can be published in between (A7; C1 rule 5 was not CAS)."""
+    with marker_mutex(path):
+        if _read_bytes(path) != expected:
+            return False
+        with suppress(FileNotFoundError):
+            path.unlink()
+        return True
 
 
 def _compare_and_swap(path: Path, expected: bytes, new: bytes) -> bool:
-    """Atomically replace ``path`` (tmp + ``os.replace``) only while it still holds ``expected``."""
-    if _read_bytes(path) != expected:
-        return False
-    tmp = _tmp_sibling(path)
-    try:
-        with open(tmp, "wb") as fh:
-            fh.write(new)
-            fh.flush()
-            os.fsync(fh.fileno())
+    """Atomically replace ``path`` (tmp + ``os.replace``) only while it still holds ``expected``,
+    under the marker mutex."""
+    with marker_mutex(path):
         if _read_bytes(path) != expected:
             return False
-        os.replace(tmp, path)
-        return True
-    except OSError as exc:
-        logger.debug("Could not rewrite update marker %s: %s", path, exc)
-        return False
-    finally:
-        with suppress(OSError):
-            tmp.unlink()
+        tmp = _tmp_sibling(path)
+        try:
+            with open(tmp, "wb") as fh:
+                fh.write(new)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, path)
+            return True
+        except OSError as exc:
+            logger.debug("Could not rewrite update marker %s: %s", path, exc)
+            return False
+        finally:
+            with suppress(OSError):
+                tmp.unlink()
 
 
 def _live_partners(marker: _Marker) -> list[int]:
     """Live identities behind a marker: the owner, then the delegate (``[0]`` for a claim
-    still being written).
-
-    A v1 marker naming our own pid is a killed update's claim whose pid this run inherited
-    (containers restart pid numbering), not ours: without a creation time it cannot be told
-    apart, and nothing pre-writes a v1 marker for this process.
-    """
+    still being written). A claim naming our own pid counts only at our exact incarnation."""
     if marker.in_flight:
         return [0]
     partners = []
-    if marker.owner_live() and not (marker.pid == os.getpid() and marker.create_time is None):
+    if marker.owner_live():
         partners.append(marker.pid)
     if marker.delegate_live():
         partners.append(marker.delegate_pid)
@@ -571,9 +810,9 @@ def _live_partners(marker: _Marker) -> list[int]:
 def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
     """Return the live update holding the marker, or ``None``.
 
-    Mirrors ``readLiveUpdateMarker`` in ``electron/update-marker.ts``: absent, unreadable,
-    malformed and dead-owner all mean "no live update", and a dead marker is removed with
-    compare-and-delete so it can't strand future runs. Never raises.
+    Absent, unreadable, malformed and dead-owner all mean "no live update". A dead marker is
+    reclaimed — judged again and removed inside the marker mutex, so a claim published after
+    our first read is never the one deleted. Never raises.
     """
     marker = path or update_marker_path()
     parsed = _read_marker(marker)
@@ -581,9 +820,41 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
         return None
     live = parsed.live_pid()
     if live is None:
-        _compare_and_delete(marker, parsed.raw)
+        _reclaim_dead(marker)
         return None
     return UpdateHolder(pid=live, age_seconds=parsed.age() if parsed.started_at is not None else 0.0)
+
+
+def _reclaim_dead(path: Path) -> None:
+    try:
+        with marker_mutex(path):
+            current = _read_marker(path)
+            if current is not None and current.live_pid() is None:
+                with suppress(FileNotFoundError):
+                    path.unlink()
+    except OSError as exc:  # MarkerBusy included: someone else is deciding right now
+        logger.debug("Left update marker %s for its current mutator: %s", path, exc)
+
+
+def legacy_profile_claims(root: Path | None = None) -> list[UpdateHolder]:
+    """Live claims in pre-root-marker ``<root>/profiles/<p>/.hermes-update-in-progress`` files (R11).
+
+    Before the marker moved to the profile-tree root, an update under a named profile claimed
+    its PROFILE home and never took the checkout lock. During the transition such an update can
+    still be running: honor it (v1 rules: pid alive, within the legacy age ceiling, never our own
+    previous incarnation). Read-only: an old updater reclaims its own dead markers.
+    """
+    root = update_marker_path().parent if root is None else root
+    claims = []
+    with suppress(OSError):
+        for profile in (root / "profiles").iterdir():
+            marker = _read_marker(profile / MARKER_NAME)
+            if marker is None or marker.in_flight:
+                continue
+            live = marker.live_pid()
+            if live:
+                claims.append(UpdateHolder(pid=live, age_seconds=marker.age()))
+    return claims
 
 
 def describe_holder(holder: UpdateHolder | None) -> str:
@@ -710,6 +981,11 @@ def _acquire_checkout(install_root: Path) -> UpdateHolder | None:
     try:
         if not _try_lock(fd):
             os.close(fd)
+            if _held_by_our_windows_ancestor(path):
+                # Windows has no fd inheritance: the update tree's children run in the lock
+                # owner's kill-on-close job (bind_child_to_update_tree) and die with it.
+                _HELD = {"path": str(path), "fd": None, "owned": False, "depth": 1}
+                return None
             return _lock_holder(path)
         if writable is True:
             record = f"{os.getpid()}\n{int(time.time())}\n{_identity_line()}\n".encode()
@@ -722,6 +998,17 @@ def _acquire_checkout(install_root: Path) -> UpdateHolder | None:
         return UpdateHolder(pid=0, age_seconds=0.0, reason=f"{path} could not be locked ({exc})")
     _HELD = {"path": str(path), "fd": fd, "owned": True, "depth": 1}
     return None
+
+
+def _held_by_our_windows_ancestor(path: Path) -> bool:
+    """Windows: the checkout lock's holder record names a LIVE incarnation of one of our
+    ancestors (the ``hermes update`` whose completion/build children we are)."""
+    if sys.platform != "win32":
+        return False
+    record = _parse_marker(_read_bytes(path) or b"")
+    if record.started_at is None or record.pid == os.getpid():
+        return False
+    return incarnation_live(record.pid, record.create_time) is True and _is_ancestor_pid(record.pid)
 
 
 def _release_checkout() -> None:
@@ -746,9 +1033,19 @@ def checkout_lock_fds(install_root: Path | str | None = None) -> tuple[int, ...]
     if sys.platform == "win32":
         return ()
     if _HELD is not None:
-        return (_HELD["fd"],)
+        return () if _HELD["fd"] is None else (_HELD["fd"],)
     fd = _inherited_lock_fd(checkout_lock_path(install_root))
     return () if fd is None else (fd,)
+
+
+def custody_spawn_kwargs() -> dict:
+    """``subprocess`` kwargs that keep a checkout MUTATOR (git, the Node source build) in the
+    update tree's custody (R2): POSIX children inherit the held lock fd, so the checkout stays
+    locked until the last of them exits even if this process is killed. ``{}`` when this process
+    holds no checkout lock, and on Windows (bind the Popen with bind_child_to_update_tree)."""
+    if sys.platform == "win32" or _HELD is None or _HELD["fd"] is None:
+        return {}
+    return {"pass_fds": (_HELD["fd"],)}
 
 
 def bind_child_to_update_tree(proc: subprocess.Popen) -> bool:
@@ -867,6 +1164,11 @@ def _publish_exclusive(path: Path, body: bytes) -> bool:
     return True
 
 
+# Per-process claim depth for each marker path: nested UpdateLocks (an update's completion run
+# in-process, venv_sync finishing a tail) share one claim, released by the outermost.
+_CLAIMS: dict[str, int] = {}
+
+
 class UpdateLock:
     """Context manager owning the shared update marker (and, with ``install_root``, the
     checkout lock) for this process.
@@ -882,17 +1184,12 @@ class UpdateLock:
         self.install_root = None if install_root is None else Path(install_root)
         self.acquired = False
         self.holder: UpdateHolder | None = None
-        self._written: bytes | None = None
-        self._delegate_base: bytes | None = None
+        self._claimed = False
         self._checkout = False
 
     def acquire(self) -> bool:
-        if self.install_root is not None:
-            refused = _acquire_checkout(self.install_root)
-            if refused is not None:
-                self.holder = refused
-                return False
-            self._checkout = True
+        if self.install_root is not None and not self.acquire_checkout(self.install_root):
+            return False
         try:
             ok = self._claim_marker()
         except BaseException:
@@ -900,7 +1197,23 @@ class UpdateLock:
             raise
         if not ok:
             self._drop_checkout()
-        return ok
+            return False
+        key = str(self.path)
+        _CLAIMS[key] = _CLAIMS.get(key, 0) + 1
+        self._claimed = True
+        return True
+
+    def acquire_checkout(self, install_root: Path | str) -> bool:
+        """Take (or join) the checkout lock — ACQUIRE custody, never sample it (R2): a caller
+        that will mutate the checkout under a marker it adopted or claimed calls this first."""
+        if self._checkout:
+            return True
+        refused = _acquire_checkout(Path(install_root))
+        if refused is not None:
+            self.holder = refused
+            return False
+        self._checkout = True
+        return True
 
     def _claim_marker(self) -> bool:
         try:
@@ -909,45 +1222,60 @@ class UpdateLock:
             self.holder = UpdateHolder(pid=0, age_seconds=0.0, reason=f"{self.path.parent} is not writable ({exc})")
             return False
         _sweep_dead_tmp_siblings(self.path)
-        body = f"{os.getpid()}\n{int(time.time())}\n{_identity_line()}\n".encode()
-        for attempt in range(2):
-            try:
-                published = _publish_exclusive(self.path, body)
-            except OSError as exc:
-                self.holder = UpdateHolder(pid=0, age_seconds=0.0, reason=f"{self.path} is not writable ({exc})")
+        if _CLAIMS.get(str(self.path)) is None:
+            legacy = [claim for claim in legacy_profile_claims(self.path.parent)
+                      if not self._is_partner(claim.pid)]
+            if legacy:
+                self.holder = legacy[0]
                 return False
-            if published:
-                self._written = body
-                self.acquired = True
-                return True
-            existing = _read_marker(self.path)
-            if existing is None:
-                continue  # vanished between publish and read: retry
-            if _live_partners(existing):
-                return self._adopt_or_refuse(existing)
-            if attempt == 0 and _compare_and_delete(self.path, existing.raw):
-                continue
-            self.holder = UpdateHolder(pid=max(existing.pid, 0), age_seconds=0.0)
+        body = f"{os.getpid()}\n{int(time.time())}\n{_identity_line()}\n".encode()
+        try:
+            for _attempt in range(3):
+                # A7 rule 2: an exclusive create needs no mutex — it only succeeds on no marker.
+                if _publish_exclusive(self.path, body):
+                    self.acquired = True
+                    return True
+                with marker_mutex(self.path):
+                    existing = _read_marker(self.path)
+                    if existing is None:
+                        continue  # vanished between publish and read: retry
+                    if _live_partners(existing):
+                        return self._adopt_or_refuse(existing)
+                    # Dead or malformed, judged under the mutex: reclaim and claim in one hold.
+                    with suppress(FileNotFoundError):
+                        self.path.unlink()
+                    if _publish_exclusive(self.path, body):
+                        self.acquired = True
+                        return True
+        except MarkerBusy:
+            self.holder = UpdateHolder(pid=0, age_seconds=0.0)
+            return False
+        except OSError as exc:
+            self.holder = UpdateHolder(pid=0, age_seconds=0.0, reason=f"{self.path} is not writable ({exc})")
             return False
         self.holder = read_live_update(path=self.path) or UpdateHolder(pid=0, age_seconds=0.0)
         return False
 
+    @staticmethod
+    def _is_partner(pid: int) -> bool:
+        return pid == os.getpid() or (pid and (pid == _handoff_pid() or _is_ancestor_pid(pid)))
+
     def _adopt_or_refuse(self, existing: _Marker) -> bool:
-        """C1 rule 4: a LIVE claim by us, an ancestor or the hand-off partner is run under."""
+        """C1 rule 4: a LIVE claim by us, an ancestor or the hand-off partner is run under.
+        Called inside the marker mutex."""
         partners = _live_partners(existing)
-        if os.getpid() not in partners and not any(
-                p and (p == _handoff_pid() or _is_ancestor_pid(p)) for p in partners):
+        if not any(self._is_partner(p) for p in partners):
             self.holder = UpdateHolder(pid=partners[0], age_seconds=existing.age() if existing.started_at else 0.0)
             return False
         own = _identity_line()
         if os.getpid() not in partners and existing.delegate_pid not in partners \
                 and existing.create_time is not None and own:
-            # Rule 6: name ourselves as the delegate so the claim stays visible if the partner
-            # (a hand-off script, the Tauri updater) dies while this update still runs.
+            # Rule 6: name ourselves as the delegate (line 4) so the claim stays visible if the
+            # partner (a hand-off script, the Tauri updater) dies while this update still runs.
             base = existing.base if existing.base.endswith(b"\n") else existing.base + b"\n"
-            delegated = base + f"delegate:{os.getpid()} {own}\n".encode()
-            if _compare_and_swap(self.path, existing.raw, delegated):
-                self._written, self._delegate_base = delegated, existing.base
+            delegated = base + f"delegate:{os.getpid()} {own}\n".encode() \
+                + "".join(f"run:{run}\n" for run in existing.runs).encode()
+            _compare_and_swap(self.path, existing.raw, delegated)
         return True
 
     def _drop_checkout(self) -> None:
@@ -956,28 +1284,22 @@ class UpdateLock:
             _release_checkout()
 
     def release(self) -> None:
-        """Give back what we wrote (compare-and-delete / compare-and-swap). Never raises."""
+        """Give back our part of the claim (A7 rule 5), decided under the marker mutex by
+        identity, not by the bytes we once wrote: whatever names this incarnation — as owner, or
+        as a delegate someone else wrote in (the hand-off script names its child) — is released;
+        a live delegate inherits an owner's claim. Only the outermost claim of a process
+        releases. Never raises."""
         try:
-            if self._written is not None:
-                current = _read_bytes(self.path)
-                if current is None:
-                    pass
-                elif self.acquired:
-                    if current == self._written:
-                        _compare_and_delete(self.path, current)
-                    elif current.startswith(self._written) \
-                            and not _parse_marker(current).delegate_live():
-                        _compare_and_delete(self.path, current)  # our claim + a dead delegate
-                elif current == self._written and self._delegate_base is not None:
-                    if _parse_marker(self._delegate_base).owner_live():
-                        _compare_and_swap(self.path, current, self._delegate_base)
-                    else:
-                        _compare_and_delete(self.path, current)
+            if self._claimed:
+                key = str(self.path)
+                _CLAIMS[key] = _CLAIMS.get(key, 1) - 1
+                if _CLAIMS[key] <= 0:
+                    _CLAIMS.pop(key, None)
+                    _release_marker(self.path)
         except OSError as exc:
             logger.debug("Could not release update marker %s: %s", self.path, exc)
         finally:
-            self.acquired = False
-            self._written = self._delegate_base = None
+            self.acquired = self._claimed = False
             self._drop_checkout()
 
     def __enter__(self) -> "UpdateLock":
@@ -986,3 +1308,16 @@ class UpdateLock:
 
     def __exit__(self, *_exc) -> None:
         self.release()
+
+
+def _release_marker(path: Path) -> None:
+    with marker_mutex(path):
+        raw = _read_bytes(path)
+        if raw is None:
+            return
+        action, new = _release_decision(raw)
+        if action == "delete":
+            with suppress(FileNotFoundError):
+                path.unlink()
+        elif action == "rewrite":
+            _compare_and_swap(path, raw, new)

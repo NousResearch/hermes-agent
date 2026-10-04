@@ -55,8 +55,10 @@ def complete_source_checkout(
     # Claim the shared update lock so stacked completions serialize. A tail whose
     # orchestrator already holds the lock (venv_sync's interrupted-update finish,
     # the updater's completion child) runs under its parent's claim, exactly as
-    # `hermes update` does under the desktop handoff pid.
-    lock = UpdateLock()
+    # `hermes update` does under the desktop handoff pid. The CHECKOUT lock is acquired, not
+    # sampled (R2): a completion from another home must not build a checkout an update owns;
+    # one inside the update's tree joins the lock it inherited.
+    lock = UpdateLock(install_root=root)
     if not lock.acquire():
         raise RuntimeError(
             f"an update is still running ({describe_holder(lock.holder)}); "
@@ -202,7 +204,13 @@ def main(argv: list[str] | None = None) -> int:
     passthrough = (["--desktop"] if args.desktop else []) + \
                   (["--finish-update"] if args.finish_update else [])
     command = _bootstrap_command(root, passthrough)
-    return subprocess.call(command, cwd=root, env=activation_environment(root))
+    from hermes_cli.update_lock import checkout_lock_fds
+
+    # Called inside an update tree (venv_sync's interrupted-update finish), the prepared child
+    # keeps the checkout lock this bootstrap inherited.
+    fds = checkout_lock_fds(root)
+    return subprocess.call(command, cwd=root, env=activation_environment(root),
+                           **({"pass_fds": fds} if fds else {}))
 
 
 if __name__ == "__main__":

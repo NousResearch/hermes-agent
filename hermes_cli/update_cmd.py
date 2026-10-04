@@ -260,6 +260,11 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     # calls, so layer them instead of passing the keyword twice.
     spawn_kwargs = {"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}
     spawn_kwargs.setdefault("creationflags", windows_hide_flags())
+    from hermes_cli.update_lock import custody_spawn_kwargs
+
+    # Git (and the hooks it runs) mutates the checkout: it keeps the update's checkout lock fd,
+    # so a killed updater cannot hand the checkout to a contender while git still writes (R2).
+    spawn_kwargs.update(custody_spawn_kwargs())
     try:
         return subprocess.run(
             git_cmd + args, cwd=_m().PROJECT_ROOT if cwd is None else cwd, capture_output=True,

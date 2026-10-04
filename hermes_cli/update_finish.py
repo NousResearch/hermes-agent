@@ -122,7 +122,7 @@ def main(context: Path, result: Path) -> int:
             cli.main()
         else:
             plan = _restore_plan(request.get("plan"))
-            with UpdateLock() as lock:
+            with UpdateLock(install_root=root) as lock:
                 if not lock.acquired and lock.holder is not None:
                     print(describe_holder(lock.holder), file=sys.stderr)
                     code = 2

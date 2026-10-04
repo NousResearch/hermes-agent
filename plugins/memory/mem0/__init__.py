@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider, spawn_context_thread
-from agent.secret_scope import get_secret
+from agent.secret_scope import UnscopedSecretError, get_secret
 from tools.registry import tool_error
 from utils import atomic_json_write, read_json_or_empty
 
@@ -100,6 +100,20 @@ def _load_config() -> dict:
     return config
 
 
+def _form_mode() -> str:
+    """``mode`` for describing the config form (whether ``api_key`` is required). The
+    dashboard builds provider schemas at boot with no profile scope — a legal state,
+    unlike a mis-spawned turn — so under multiplex the scoped env read raises and the
+    form falls back to the file config and the platform default instead of logging a
+    traceback on every gateway-unit boot (#132775). Credential loads keep failing loud."""
+    try:
+        return str(_load_config().get("mode") or "platform")
+    except UnscopedSecretError:
+        from hermes_constants import get_hermes_home
+        file_cfg = read_json_or_empty(get_hermes_home() / "mem0.json")
+        return str(file_cfg.get("mode") or "platform")
+
+
 def _schema(name: str, description: str, properties: dict[str, tuple[str, str]], required: list[str]) -> dict:
     props = {k: {"type": t, "description": d} for k, (t, d) in properties.items()}
     return {"name": name, "description": description, "parameters": {"type": "object", "properties": props, "required": required}}
@@ -152,7 +166,7 @@ class Mem0MemoryProvider(MemoryProvider):
         atomic_json_write(config_path, {**read_json_or_empty(config_path), **values}, mode=0o600)
 
     def get_config_schema(self):
-        api_key_required = _load_config().get("mode", "platform") != "oss"
+        api_key_required = _form_mode() != "oss"
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": api_key_required, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
             {"key": "host", "description": "Self-hosted Mem0 server URL (leave blank for cloud)", "required": False, "env_var": "MEM0_HOST"},

@@ -357,6 +357,44 @@ class TestMem0ModeSwitch:
             secret_scope.set_multiplex_active(False)
             secret_scope.reset_secret_scope(token)
 
+    def test_get_config_schema_scopeless_multiplex_uses_file_mode(
+        self, monkeypatch, tmp_path
+    ):
+        """The dashboard describes the config form at boot with no profile scope — a legal
+        state, unlike a mis-spawned turn — so the schema falls back to mem0.json instead of
+        raising UnscopedSecretError into errors.log on every gateway-unit boot (#132775)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "mem0.json").write_text(json.dumps({"mode": "oss"}))
+
+        token = secret_scope.set_secret_scope(None)
+        secret_scope.set_multiplex_active(True)
+        try:
+            schema = Mem0MemoryProvider().get_config_schema()
+        finally:
+            secret_scope.set_multiplex_active(False)
+            secret_scope.reset_secret_scope(token)
+
+        api_key_field = next(field for field in schema if field["key"] == "api_key")
+        assert api_key_field["required"] is False
+
+    def test_get_config_schema_scopeless_multiplex_defaults_platform(
+        self, monkeypatch, tmp_path
+    ):
+        """No file mode to fall back on: the form keeps the conservative platform default
+        (api_key required) rather than raising under a scope-less multiplex boot."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        token = secret_scope.set_secret_scope(None)
+        secret_scope.set_multiplex_active(True)
+        try:
+            schema = Mem0MemoryProvider().get_config_schema()
+        finally:
+            secret_scope.set_multiplex_active(False)
+            secret_scope.reset_secret_scope(token)
+
+        api_key_field = next(field for field in schema if field["key"] == "api_key")
+        assert api_key_field["required"] is True
+
     def test_file_api_key_still_overrides_environment(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("MEM0_API_KEY", "env-key")

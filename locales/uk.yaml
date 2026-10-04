@@ -48,6 +48,12 @@ gateway:
   no_active_goal: "Немає активної цілі."
   config_read_failed: "⚠️ Не вдалося прочитати config.yaml: {error}"
   config_save_failed: "⚠️ Не вдалося зберегти конфігурацію: {error}"
+
+  secure_input:
+    received: "Код підтвердження отримано."
+    cancelled: "Запит коду підтвердження скасовано."
+    expired: "Цей запит застарів або належить іншому користувачеві. Попроси Hermes спробувати ще раз."
+    delivery_failed: "Не вдалося відкрити форму коду підтвердження."
   model:
     error_prefix: "Помилка: {error}"
     switched: "Модель змінено на `{model}`"
@@ -1268,6 +1274,16 @@ platform:
     user_fallback: "Користувач"
     install_hint: "Виконайте `hermes setup`, щоб установити підтримку Telegram."
   slack:
+
+    secure_input:
+      prompt: "🔐 *{site} потрібен код підтвердження.* Відкрий приватну форму нижче. Ніколи не вставляй код у чат."
+      fallback: "Запитано безпечний код підтвердження для {site}"
+      open_button: "Ввести код приватно"
+      modal_title: "Код підтвердження"
+      input_label: "Код для {site}"
+      submit: "Надіслати"
+      cancel: "Скасувати"
+      expired: "Цей запит застарів або належить іншому користувачеві. Попроси Hermes спробувати ще раз."
     approval:
       fallback_text: "⚠️ Потрібне схвалення команди: {command}"
       resolved_once: "✅ Схвалено один раз: {user}"

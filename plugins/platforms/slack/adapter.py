@@ -90,6 +90,11 @@ _MODEL_PICKER_ACTION_IDS = (
     _MODEL_PICKER_CANCEL_ACTION,
 )
 
+_SECURE_INPUT_OPEN_ACTION = "hermes_vault_code_open"
+_SECURE_INPUT_VIEW_CALLBACK = "hermes_vault_code_submit"
+_SECURE_INPUT_BLOCK_ID = "hermes_vault_code_block"
+_SECURE_INPUT_VALUE_ACTION = "hermes_vault_code_value"
+
 
 def _slack_unfurl_kwargs(extra: Optional[Dict[str, Any]]) -> Dict[str, bool]:
     """Explicitly configured link-preview controls (omitted key = Slack default). String bools are
@@ -1026,7 +1031,7 @@ class SlackAdapter(BasePlatformAdapter):
     _REACTING_MESSAGE_IDS_MAX = _TITLED_ASSISTANT_THREADS_MAX = 5000
     _CHANNEL_TEAM_MAX = 10000
     _APPROVAL_RESOLVED_MAX = _CLARIFY_RESOLVED_MAX = _ACTIVE_STATUS_THREADS_MAX = 1000
-    _CLARIFY_MESSAGE_MAX = 1000
+    _CLARIFY_MESSAGE_MAX = _SECURE_INPUT_MESSAGE_MAX = 1000
     # Tighter cap than the approval/clarify dicts: each entry holds the
     # full provider list, and a picker is only live for minutes.
     _MODEL_PICKER_STATE_MAX = 100
@@ -1078,6 +1083,9 @@ class SlackAdapter(BasePlatformAdapter):
         # clarify_id → (channel_id, message_ts, rendered_question) so the gateway can retire a
         # card whose clarify ended without a click (timeout, reset, superseding prose).
         self._clarify_messages: Dict[str, Tuple[str, str, str]] = {}
+        # Opaque secure-input request id → (channel, message ts, prompt text, team id). The submitted
+        # value never enters this map; it goes straight from the modal handler to the broker.
+        self._secure_input_messages: Dict[str, Tuple[str, str, str, str]] = {}
         # Model picker state keyed by workspace message marker (team_id, ts) →
         # picker context (providers, session_key, on_model_selected, stage).
         # Mirrors _approval_resolved / _clarify_resolved: bounded, and the
@@ -1689,6 +1697,9 @@ class SlackAdapter(BasePlatformAdapter):
         # (provider/model static_select + Back/Cancel buttons).
         for _action_id in _MODEL_PICKER_ACTION_IDS:
             self._app.action(_action_id)(self._handle_model_picker_action)
+        self._app.action(_SECURE_INPUT_OPEN_ACTION)(self._handle_secure_input_open_action)
+        self._app.view(_SECURE_INPUT_VIEW_CALLBACK)(self._handle_secure_input_submission)
+        self._app.view_closed(_SECURE_INPUT_VIEW_CALLBACK)(self._handle_secure_input_closed)
         self._register_plugin_action_handlers()
         # ctx.register_platform_handler("slack", ...) factories get the full
         # AsyncApp surface (event/action/command), wired before Socket Mode starts.
@@ -3601,21 +3612,38 @@ class SlackAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
-        """Resolve a workspace ID from the event plus Bolt's outer payload.
-        Bolt passes only the inner ``event``; Slack puts ``team_id`` on the outer payload."""
-        for payload in (event, body or {}):
+        """Resolve the installed workspace using Slack Bolt's interaction semantics.
+
+        Enterprise Grid interactivity may set top-level ``team`` to ``null``. Modal payloads then
+        bind the installation through ``view.app_installed_team_id``, ``user.team_id``, or
+        ``view.team_id`` (in that order), matching ``slack_bolt.request.internals.extract_team_id``.
+        """
+        def extract(payload: Any) -> str:
             if not isinstance(payload, dict):
-                continue
-            team = payload.get("team_id") or payload.get("team")
+                return ""
+            view = payload.get("view")
+            if isinstance(view, dict) and view.get("app_installed_team_id"):
+                return str(view["app_installed_team_id"])
+            team = payload.get("team")
             if isinstance(team, str) and team:
                 return team
             if isinstance(team, dict) and team.get("id"):
                 return str(team["id"])
-        authorizations = (body or {}).get("authorizations") if isinstance(body, dict) else None
-        for authorization in authorizations or []:
-            if isinstance(authorization, dict) and authorization.get("team_id"):
-                return str(authorization["team_id"])
-        return ""
+            for authorization in payload.get("authorizations") or []:
+                if team_id := extract(authorization):
+                    return team_id
+            if payload.get("team_id"):
+                return str(payload["team_id"])
+            if team_id := extract(payload.get("event")):
+                return team_id
+            user = payload.get("user")
+            if isinstance(user, dict) and user.get("team_id"):
+                return str(user["team_id"])
+            if isinstance(view, dict) and view.get("team_id"):
+                return str(view["team_id"])
+            return ""
+
+        return extract(body or {}) or extract(event)
 
     @staticmethod
     def _context_channel_id(context: Any) -> str:
@@ -5454,6 +5482,158 @@ class SlackAdapter(BasePlatformAdapter):
             self._clarify_messages[clarify_id] = (response_channel, result.message_id, question_text)
             self._trim_oldest_dict_entries(self._clarify_messages, self._CLARIFY_MESSAGE_MAX)
         return result
+
+    async def send_secure_input(
+        self, chat_id: str, request_id: str, site: str, expected_user_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Post an opaque button that opens a user-bound verification-code modal."""
+        site_label = str(site or t("platform.shared.unknown"))[:200]
+        prompt_text = t("platform.slack.secure_input.prompt", site=site_label)
+
+        def _build() -> Tuple[str, list]:
+            blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": prompt_text[:3000]}},
+                {"type": "actions", "elements": [self._button(
+                    t("platform.slack.secure_input.open_button")[:75],
+                    _SECURE_INPUT_OPEN_ACTION,
+                    request_id,
+                    style="primary",
+                )]},
+            ]
+            return t("platform.slack.secure_input.fallback", site=site_label), blocks
+
+        result = await self._send_interactive_prompt(
+            chat_id, metadata, _build, "send_secure_input", sanitize=False)
+        if result.success and result.message_id:
+            response_channel = str((result.raw_response or {}).get("channel") or chat_id)
+            team_id = str(self._metadata_team_id(metadata) or "")
+            messages = self._lazy_attr("_secure_input_messages", dict)
+            messages[request_id] = (response_channel, result.message_id, prompt_text, team_id)
+            self._trim_oldest_dict_entries(messages, self._SECURE_INPUT_MESSAGE_MAX)
+        return result
+
+    async def retire_secure_input(self, request_id: str, notice: str) -> None:
+        """Drop the code button after consumption, timeout, or turn teardown."""
+        messages = self._lazy_attr("_secure_input_messages", dict)
+        target = messages.pop(request_id, None)
+        if target is None:
+            return
+        channel_id, message_ts, prompt_text, team_id = target
+        await self._finalize_interactive_message(
+            channel_id,
+            message_ts,
+            prompt_text,
+            notice,
+            "Verification code request",
+            "secure input",
+            team_id or None,
+            sanitize=False,
+        )
+
+    async def _handle_secure_input_open_action(self, ack, body, action) -> None:
+        """Authorize the click and open Slack's private modal for the original requester."""
+        started = await self._begin_interaction(ack, body, action, "secure input")
+        if started is None:
+            return
+        team_id, _action_id, request_id, _message, _msg_ts, channel_id, _name, user_id = started
+        from gateway import secure_input
+
+        request = secure_input.claim(
+            request_id,
+            user_id=user_id,
+            chat_id=channel_id,
+            scope_id=team_id,
+        )
+        if request is None:
+            return
+        trigger_id = str(body.get("trigger_id") or "")
+        if not trigger_id:
+            secure_input.cancel(request)
+            return
+        from gateway.run import _async_profile_runtime_scope
+
+        async with _async_profile_runtime_scope(_Path(request.profile_home)):
+            view = {
+                "type": "modal",
+                "callback_id": _SECURE_INPUT_VIEW_CALLBACK,
+                "notify_on_close": True,
+                "private_metadata": request_id,
+                "title": {"type": "plain_text", "text": t("platform.slack.secure_input.modal_title")[:24]},
+                "submit": {"type": "plain_text", "text": t("platform.slack.secure_input.submit")[:24]},
+                "close": {"type": "plain_text", "text": t("platform.slack.secure_input.cancel")[:24]},
+                "blocks": [{
+                    "type": "input",
+                    "block_id": _SECURE_INPUT_BLOCK_ID,
+                    "label": {"type": "plain_text", "text": t(
+                        "platform.slack.secure_input.input_label", site=request.site)[:2000]},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": _SECURE_INPUT_VALUE_ACTION,
+                        "max_length": 128,
+                    },
+                }],
+            }
+            try:
+                await self._get_client(channel_id, team_id=team_id).views_open(
+                    trigger_id=trigger_id, view=view)
+            except Exception:
+                secure_input.cancel(request)
+                await self.retire_secure_input(
+                    request_id, t("gateway.secure_input.delivery_failed"))
+                logger.warning("[Slack] Could not open secure-input modal", exc_info=True)
+
+    async def _handle_secure_input_submission(self, ack, body, view) -> None:
+        """Deposit the modal value directly into the broker, bypassing inbound chat."""
+        from gateway import secure_input
+
+        request_id = str((view or {}).get("private_metadata") or "")
+        state = ((view or {}).get("state") or {}).get("values") or {}
+        code = str(
+            (((state.get(_SECURE_INPUT_BLOCK_ID) or {}).get(_SECURE_INPUT_VALUE_ACTION) or {}).get("value"))
+            or ""
+        ).strip()
+        user_id = str(((body or {}).get("user") or {}).get("id") or "")
+        team_id = self._event_team_id({}, body or {})
+        request = secure_input.resolve(
+            request_id,
+            code,
+            user_id=user_id,
+            scope_id=team_id,
+        )
+        code = ""
+        if request is None:
+            await ack(
+                response_action="errors",
+                errors={_SECURE_INPUT_BLOCK_ID: t("platform.slack.secure_input.expired")},
+            )
+            return
+        await ack()
+        from gateway.run import _async_profile_runtime_scope
+
+        async with _async_profile_runtime_scope(_Path(request.profile_home)):
+            await self.retire_secure_input(
+                request_id, t("gateway.secure_input.received"))
+
+    async def _handle_secure_input_closed(self, ack, body, view) -> None:
+        """Release the blocked tool when the requester closes the private modal."""
+        from gateway import secure_input
+
+        await ack()
+        request_id = str((view or {}).get("private_metadata") or "")
+        user_id = str(((body or {}).get("user") or {}).get("id") or "")
+        team_id = self._event_team_id({}, body or {})
+        request = secure_input.cancel_claimed(
+            request_id,
+            user_id=user_id,
+            scope_id=team_id,
+        )
+        if request is not None:
+            from gateway.run import _async_profile_runtime_scope
+
+            async with _async_profile_runtime_scope(_Path(request.profile_home)):
+                await self.retire_secure_input(
+                    request_id, t("gateway.secure_input.cancelled"))
 
     def _is_interactive_user_authorized(
         self, user_id: str, *, channel_id: str = "", user_name: Optional[str] = None,

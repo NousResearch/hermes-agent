@@ -48,6 +48,12 @@ gateway:
   no_active_goal: "Aktif hedef yok."
   config_read_failed: "⚠️ config.yaml okunamadı: {error}"
   config_save_failed: "⚠️ Yapılandırma kaydedilemedi: {error}"
+
+  secure_input:
+    received: "Doğrulama kodu alındı."
+    cancelled: "Doğrulama kodu isteği iptal edildi."
+    expired: "Bu istek süresi doldu veya başka bir kullanıcıya ait. Hermes'ten tekrar denemesini iste."
+    delivery_failed: "Doğrulama kodu formu açılamadı."
   model:
     error_prefix: "Hata: {error}"
     switched: "Model `{model}` olarak değiştirildi"
@@ -1268,6 +1274,16 @@ platform:
     user_fallback: "Kullanıcı"
     install_hint: "Telegram desteğini kurmak için `hermes setup` komutunu çalıştırın."
   slack:
+
+    secure_input:
+      prompt: "🔐 *{site} bir doğrulama koduna ihtiyaç duyuyor.* Aşağıdaki gizli formu aç. Kodu asla sohbete yapıştırma."
+      fallback: "{site} için güvenli doğrulama kodu istendi"
+      open_button: "Kodu gizlice gir"
+      modal_title: "Doğrulama kodu"
+      input_label: "{site} için kod"
+      submit: "Gönder"
+      cancel: "İptal"
+      expired: "Bu istek süresi doldu veya başka bir kullanıcıya ait. Hermes'ten tekrar denemesini iste."
     approval:
       fallback_text: "⚠️ Komut onayı gerekli: {command}"
       resolved_once: "✅ {user} tarafından bir kez onaylandı"

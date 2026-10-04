@@ -48,6 +48,12 @@ gateway:
   no_active_goal: "활성 목표가 없습니다."
   config_read_failed: "⚠️ config.yaml을 읽을 수 없습니다: {error}"
   config_save_failed: "⚠️ 설정을 저장할 수 없습니다: {error}"
+
+  secure_input:
+    received: "인증번호를 받았습니다."
+    cancelled: "인증번호 요청이 취소되었습니다."
+    expired: "이 요청은 만료되었거나 다른 사용자의 것입니다. Hermes에 다시 시도해 달라고 요청하세요."
+    delivery_failed: "인증번호 양식을 열 수 없습니다."
   model:
     error_prefix: "오류: {error}"
     switched: "모델이 `{model}`(으)로 전환되었습니다"
@@ -1268,6 +1274,16 @@ platform:
     user_fallback: "사용자"
     install_hint: "`hermes setup`을 실행해 Telegram 지원을 설치하세요."
   slack:
+
+    secure_input:
+      prompt: "🔐 *{site}에 인증번호가 필요합니다.* 아래 비공개 양식을 엽니다. 인증번호를 채팅에 붙여넣지 마세요."
+      fallback: "{site}용 보안 인증번호를 요청했습니다"
+      open_button: "코드 비공개로 입력"
+      modal_title: "인증번호"
+      input_label: "{site} 코드"
+      submit: "제출"
+      cancel: "취소"
+      expired: "이 요청은 만료되었거나 다른 사용자의 것입니다. Hermes에 다시 시도해 달라고 요청하세요."
     approval:
       fallback_text: "⚠️ 명령 승인 필요: {command}"
       resolved_once: "✅ {user}이(가) 한 번 승인했어요"

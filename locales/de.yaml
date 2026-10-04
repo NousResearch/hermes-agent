@@ -48,6 +48,12 @@ gateway:
   no_active_goal: "Kein aktives Ziel."
   config_read_failed: "⚠️ config.yaml konnte nicht gelesen werden: {error}"
   config_save_failed: "⚠️ Konfiguration konnte nicht gespeichert werden: {error}"
+
+  secure_input:
+    received: "Bestätigungscode erhalten."
+    cancelled: "Anfrage nach Bestätigungscode abgebrochen."
+    expired: "Diese Anfrage ist abgelaufen oder gehört einem anderen Benutzer. Bitte lass Hermes es erneut versuchen."
+    delivery_failed: "Formular für den Bestätigungscode konnte nicht geöffnet werden."
   model:
     error_prefix: "Fehler: {error}"
     switched: "Modell gewechselt zu `{model}`"
@@ -1268,6 +1274,16 @@ platform:
     user_fallback: "Benutzer"
     install_hint: "Führen Sie `hermes setup` aus, um die Telegram-Unterstützung zu installieren."
   slack:
+
+    secure_input:
+      prompt: "🔐 *{site} benötigt einen Bestätigungscode.* Öffne das private Formular unten. Füge den Code niemals in den Chat ein."
+      fallback: "Sicherer Bestätigungscode für {site} angefordert"
+      open_button: "Code privat eingeben"
+      modal_title: "Bestätigungscode"
+      input_label: "Code für {site}"
+      submit: "Senden"
+      cancel: "Abbrechen"
+      expired: "Diese Anfrage ist abgelaufen oder gehört einem anderen Benutzer. Bitte lass Hermes es erneut versuchen."
     approval:
       fallback_text: "⚠️ Befehlsgenehmigung erforderlich: {command}"
       resolved_once: "✅ Einmalig genehmigt von {user}"

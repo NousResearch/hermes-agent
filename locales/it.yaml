@@ -48,6 +48,12 @@ gateway:
   no_active_goal: "Nessun obiettivo attivo."
   config_read_failed: "⚠️ Impossibile leggere config.yaml: {error}"
   config_save_failed: "⚠️ Impossibile salvare la configurazione: {error}"
+
+  secure_input:
+    received: "Codice di verifica ricevuto."
+    cancelled: "Richiesta di codice di verifica annullata."
+    expired: "Questa richiesta è scaduta o appartiene a un altro utente. Chiedi a Hermes di riprovare."
+    delivery_failed: "Impossibile aprire il modulo del codice di verifica."
   model:
     error_prefix: "Errore: {error}"
     switched: "Modello cambiato a `{model}`"
@@ -1268,6 +1274,16 @@ platform:
     user_fallback: "Utente"
     install_hint: "Esegui `hermes setup` per installare il supporto Telegram."
   slack:
+
+    secure_input:
+      prompt: "🔐 *{site} richiede un codice di verifica.* Apri il modulo privato qui sotto. Non incollare mai il codice nella chat."
+      fallback: "Richiesto codice di verifica sicuro per {site}"
+      open_button: "Inserisci il codice in privato"
+      modal_title: "Codice di verifica"
+      input_label: "Codice per {site}"
+      submit: "Invia"
+      cancel: "Annulla"
+      expired: "Questa richiesta è scaduta o appartiene a un altro utente. Chiedi a Hermes di riprovare."
     approval:
       fallback_text: "⚠️ Richiesta approvazione del comando: {command}"
       resolved_once: "✅ Approvato una volta da {user}"

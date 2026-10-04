@@ -48,6 +48,12 @@ gateway:
   no_active_goal: "アクティブな目標はありません。"
   config_read_failed: "⚠️ config.yaml を読み込めませんでした: {error}"
   config_save_failed: "⚠️ 設定を保存できませんでした: {error}"
+
+  secure_input:
+    received: "認証コードを受け取りました。"
+    cancelled: "認証コードのリクエストをキャンセルしました。"
+    expired: "このリクエストは期限切れか、別のユーザーに属します。Hermes にもう一度試すよう依頼してください。"
+    delivery_failed: "認証コードのフォームを開けませんでした。"
   model:
     error_prefix: "エラー: {error}"
     switched: "モデルを `{model}` に切り替えました"
@@ -1268,6 +1274,16 @@ platform:
     user_fallback: "ユーザー"
     install_hint: "`hermes setup` を実行して Telegram サポートをインストールしてください。"
   slack:
+
+    secure_input:
+      prompt: "🔐 *{site} に認証コードが必要です。* 下の非公開フォームに入力してください。チャットには貼り付けないでください。"
+      fallback: "{site} 用の安全な認証コードをリクエストしました"
+      open_button: "コードを非公開で入力"
+      modal_title: "認証コード"
+      input_label: "{site} のコード"
+      submit: "送信"
+      cancel: "キャンセル"
+      expired: "このリクエストは期限切れか、別のユーザーに属します。Hermes にもう一度試すよう依頼してください。"
     approval:
       fallback_text: "⚠️ コマンドの承認が必要です: {command}"
       resolved_once: "✅ {user} が一度だけ承認"

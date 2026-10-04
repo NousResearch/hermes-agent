@@ -39,6 +39,7 @@ logger = logging.getLogger("gateway.run")
 # Consecutive turns a session's persisted transcript may lag its live cached history before
 # _load_turn_history escalates the lag line from WARNING to ERROR (#114266: 11 days of WARNING).
 _TRANSCRIPT_LAG_ESCALATION_TURNS = 3
+_SECURE_INPUT_SEND_ACK_SECONDS = 15
 
 # Exact refusals retained for older adapters/connectors without destination preflight.
 # Substring matching would also silence transient thread-resolution errors.
@@ -1452,6 +1453,120 @@ class TurnRunner:
                 logger.debug("resume_typing_for_chat after clarify answer failed", exc_info=True)
         return response, answered
 
+    def _vault_code_callback_sync(self, site: str, hint: str = "") -> str:
+        """Collect a verification code through the gateway's private input surface.
+
+        The adapter sees only an opaque request id until its private submission handler deposits the
+        value into ``gateway.secure_input``. The waiting agent thread receives the value directly;
+        no MessageEvent or model-visible tool result is created.
+        """
+        from concurrent.futures import TimeoutError as FutureTimeout
+
+        from gateway import secure_input
+        from hermes_constants import get_hermes_home
+
+        ctx = self._ctx
+        adapter = ctx._status_adapter
+        if adapter is None or not type(adapter).supports_secure_input():
+            return ""
+        user_id = str(getattr(ctx.source, "user_id", "") or "")
+        chat_id = str(ctx._status_chat_id or "")
+        scope_id = str(getattr(ctx.source, "scope_id", "") or "")
+        if not scope_id:
+            with suppress(Exception):
+                scope_id = str(adapter.scope_id_for_chat(chat_id) or "")
+        try:
+            request = secure_input.register(
+                session_key=str(ctx.session_key or ""),
+                session_id=str(ctx.session_id or ""),
+                run_generation=int(ctx.run_generation or 0),
+                task_id=str(ctx.process_task_id or ""),
+                expected_user_id=user_id,
+                chat_id=chat_id,
+                scope_id=scope_id,
+                site=site,
+                profile_home=str(get_hermes_home()),
+            )
+        except (TypeError, ValueError, RuntimeError):
+            return ""
+
+        self._close_native_stream_boundary("Verification code")
+        paused = False
+        try:
+            adapter.pause_typing_for_chat(chat_id)
+            paused = True
+        except Exception:
+            logger.debug("pause typing for secure input failed", exc_info=True)
+        flush = getattr(self._stream_consumer(), "flush_pending_sync", None)
+        with suppress(Exception):
+            if callable(flush):
+                flush(timeout=3.0)
+
+        def _settle_send(future) -> None:
+            try:
+                result = future.result()
+                sent = bool(getattr(result, "success", False))
+            except Exception:
+                sent = False
+            if not sent:
+                secure_input.cancel(request)
+                return
+            # A send that completed after cancellation/expiry must not leave an actionable dead card.
+            if not secure_input.is_pending(request):
+                async def _retire_late_prompt() -> None:
+                    from pathlib import Path
+
+                    from gateway.run import _async_profile_runtime_scope
+
+                    async with _async_profile_runtime_scope(Path(request.profile_home)):
+                        await adapter.retire_secure_input(
+                            request.request_id, t("gateway.secure_input.expired"))
+
+                self._schedule(
+                    _retire_late_prompt(),
+                    "Late secure input prompt retire failed to schedule",
+                )
+
+        try:
+            future = self._schedule(
+                adapter.send_secure_input(
+                    chat_id=chat_id,
+                    request_id=request.request_id,
+                    site=site,
+                    expected_user_id=user_id,
+                    metadata=ctx._status_thread_metadata,
+                ),
+                "Secure input prompt failed to schedule",
+            )
+            if future is None:
+                return ""
+            future.add_done_callback(_settle_send)
+            try:
+                future.result(timeout=_SECURE_INPUT_SEND_ACK_SECONDS)
+            except FutureTimeout:
+                # Ambiguous: the post may complete later. Keep the bounded broker request armed;
+                # _settle_send handles definitive failure and late-success cleanup.
+                logger.warning("Secure input prompt send timed out; waiting for bounded resolution")
+            except Exception:
+                pass  # _settle_send cancels the request and wakes this waiter.
+            value = secure_input.wait(request)
+            if value and not ctx._run_still_current():
+                value = ""
+            notice = t("gateway.secure_input.received") if value else t("gateway.secure_input.expired")
+            retire = self._schedule(
+                adapter.retire_secure_input(request.request_id, notice),
+                "Secure input prompt retire failed to schedule",
+            )
+            if retire is not None:
+                with suppress(Exception):
+                    retire.result(timeout=5)
+            return value
+        finally:
+            secure_input.cancel(request)
+            if paused:
+                with suppress(Exception):
+                    adapter.resume_typing_for_chat(chat_id)
+
     def _approval_notify_sync(self, approval_data: dict) -> None:
         """Send the approval request from the agent thread: the adapter's interactive button
         approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
@@ -1687,11 +1802,21 @@ class TurnRunner:
         """Run the turn with the per-session gateway approval callback registered: dangerous-command
         approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
         from gateway.run import _wrap_current_message_with_observed_context
+        from agent.vault_backends.unlock import get_code_prompt_callback, set_code_prompt_callback
+        from gateway.secure_input import clear_run as clear_secure_input_run
         from tools.approval import register_gateway_notify, unregister_gateway_notify
         from tools.approval_context import reset_current_session_key, set_current_session_key
         ctx = self._ctx
         session_key = ctx.session_key or ""
         token = set_current_session_key(session_key)
+        previous_code_prompt = get_code_prompt_callback()
+        adapter = ctx._status_adapter
+        code_prompt = (
+            self._vault_code_callback_sync
+            if adapter is not None and type(adapter).supports_secure_input()
+            else None
+        )
+        set_code_prompt_callback(code_prompt)
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
@@ -1725,6 +1850,8 @@ class TurnRunner:
                 return agent.run_conversation(api_message, **kwargs)
         finally:
             unregister_gateway_notify(session_key)
+            clear_secure_input_run(session_key, int(ctx.run_generation or 0))
+            set_code_prompt_callback(previous_code_prompt)
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
             # run (interrupt, completion, gateway shutdown). Idempotent.
             with suppress(Exception):

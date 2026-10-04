@@ -389,7 +389,9 @@ class GatewayAgentCacheMixin:
             state.persistent.approvals = None
             state.persistent.update_prompt_pending = False
         for mod, attr, what in (
-            ("tools.slash_confirm", "clear", "slash-confirm"), ("tools.approval", "clear_session", "approval"),
+            ("tools.slash_confirm", "clear", "slash-confirm"),
+            ("tools.approval", "clear_session", "approval"),
+            ("gateway.secure_input", "clear_session", "secure-input"),
         ):
             try:
                 clear = getattr(importlib.import_module(mod), attr)
@@ -465,7 +467,22 @@ class GatewayAgentCacheMixin:
         # task_id is session-scoped, so a replacement turn spawning before the reap runs bumps it
         # again and the closure sees a stale generation and skips — the replacement's own baseline
         # covers its cleanup, so nothing stays unreaped.
+        # The invalidator returns the post-bump generation. Its predecessor identifies the displaced
+        # run without requiring every lightweight mixin consumer to implement the read helper.
         _generation_at_interrupt = self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
+        try:
+            _displaced_generation = max(0, int(_generation_at_interrupt) - 1)
+        except (TypeError, ValueError):
+            # Minimal mixin consumers may stub invalidation without returning a generation. They cannot
+            # own a TurnRunner secure-input request, so there is no broker generation to fence.
+            _displaced_generation = None
+        if _displaced_generation is not None:
+            try:
+                from gateway.secure_input import clear_run as _clear_secure_input_run
+
+                _clear_secure_input_run(session_key, _displaced_generation)
+            except Exception:
+                logger.debug("Failed to clear secure input for interrupted turn", exc_info=True)
         if _process_task_id and _process_baseline is not None:
             threading.Thread(
                 target=copy_context().run,

@@ -48,6 +48,12 @@ gateway:
   no_active_goal: "目前沒有作用中的目標。"
   config_read_failed: "⚠️ 無法讀取 config.yaml：{error}"
   config_save_failed: "⚠️ 無法儲存設定：{error}"
+
+  secure_input:
+    received: "已收到驗證碼。"
+    cancelled: "驗證碼請求已取消。"
+    expired: "此請求已過期或屬於其他使用者。請讓 Hermes 重試。"
+    delivery_failed: "無法開啟驗證碼表單。"
   model:
     error_prefix: "錯誤：{error}"
     switched: "已切換模型為 `{model}`"
@@ -1268,6 +1274,16 @@ platform:
     user_fallback: "使用者"
     install_hint: "執行 `hermes setup` 以安裝 Telegram 支援。"
   slack:
+
+    secure_input:
+      prompt: "🔐 *{site} 需要驗證碼。* 請在下方的私密表單中輸入。切勿在聊天中貼上驗證碼。"
+      fallback: "已為 {site} 發起安全驗證碼請求"
+      open_button: "私密輸入驗證碼"
+      modal_title: "驗證碼"
+      input_label: "{site} 的驗證碼"
+      submit: "提交"
+      cancel: "取消"
+      expired: "此請求已過期或屬於其他使用者。請讓 Hermes 重試。"
     approval:
       fallback_text: "⚠️ 需要批准指令：{command}"
       resolved_once: "✅ {user} 已批准一次"

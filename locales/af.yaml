@@ -48,6 +48,12 @@ gateway:
   no_active_goal: "Geen aktiewe doelwit nie."
   config_read_failed: "⚠️ Kon nie config.yaml lees nie: {error}"
   config_save_failed: "⚠️ Kon nie konfigurasie stoor nie: {error}"
+
+  secure_input:
+    received: "Verifikasiekode ontvang."
+    cancelled: "Verifikasiekode-aanvraag gekanselleer."
+    expired: "Hierdie aanvraag het verloop of behoort aan 'n ander gebruiker. Vra Hermes om weer te probeer."
+    delivery_failed: "Verifikasiekodevorm kon nie geopen word nie."
   model:
     error_prefix: "Fout: {error}"
     switched: "Model verander na `{model}`"
@@ -1268,6 +1274,16 @@ platform:
     user_fallback: "Gebruiker"
     install_hint: "Voer `hermes setup` uit om Telegram-ondersteuning te installeer."
   slack:
+
+    secure_input:
+      prompt: "🔐 *{site} benodig 'n verifikasiekode.* Open die privaat vorm hieronder. Plak die kode nooit in die klet nie."
+      fallback: "Veilige verifikasiekode vir {site} aangevra"
+      open_button: "Voer die kode privaat in"
+      modal_title: "Verifikasiekode"
+      input_label: "Kode vir {site}"
+      submit: "Stuur"
+      cancel: "Kanselleer"
+      expired: "Hierdie aanvraag het verloop of behoort aan 'n ander gebruiker. Vra Hermes om weer te probeer."
     approval:
       fallback_text: "⚠️ Opdraggoedkeuring vereis: {command}"
       resolved_once: "✅ Eenmalig goedgekeur deur {user}"

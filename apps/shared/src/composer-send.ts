@@ -157,54 +157,98 @@ function normalizeGraceReasons(record: Record<string, unknown>): readonly SendGr
 }
 
 
-export function clampDoubleEnterMs(value: unknown): number {
+/** Keys already reported, so a config refresh does not repeat the same line. */
+const reportedClampKeys = new Set<string>()
+
+/** Clear the once-per-key bookkeeping. For tests. */
+export function resetClampWarnings(): void {
+  reportedClampKeys.clear()
+}
+
+function reportClampedWindow(key: string, detail: string): void {
+  if (reportedClampKeys.has(key)) {
+    return
+  }
+
+  reportedClampKeys.add(key)
+  // Error level on purpose. electron/renderer-log.ts forwards renderer console
+  // output to ~/.hermes/logs/desktop.log at error level only, so a warning would
+  // be visible in DevTools and nowhere else — which is the silence this ends.
+  console.error(
+    `[composer-send] desktop.composer.${key} ${detail}. Edit it in config.yaml, or use the Settings slider.`
+  )
+}
+
+/** Clamp one window to the range its slider covers, and say so when a stored
+ *  value sat outside that range. The field and the slider are the same control,
+ *  so the value is corrected rather than rejected — but a silent correction
+ *  leaves a hand-edited config disagreeing with what the app does. Absent is not
+ *  an error, so a missing key stays quiet. */
+function clampWindowMs(key: string, value: unknown, min: number, max: number, fallback: number): number {
+  if (value === undefined || value === null) {
+    return fallback
+  }
+
   const parsed = Number(value)
 
   if (!Number.isFinite(parsed)) {
-    return DOUBLE_ENTER_DEFAULT_MS
+    reportClampedWindow(key, `is not a number (${JSON.stringify(value)}); using ${fallback} ms`)
+
+    return fallback
   }
 
-  return Math.min(DOUBLE_ENTER_MAX_MS, Math.max(DOUBLE_ENTER_MIN_MS, Math.round(parsed)))
+  const rounded = Math.round(parsed)
+  const clamped = Math.min(max, Math.max(min, rounded))
+
+  if (clamped !== rounded) {
+    reportClampedWindow(key, `is ${rounded} ms, outside ${min}-${max} ms; using ${clamped} ms`)
+  }
+
+  return clamped
+}
+
+export function clampDoubleEnterMs(value: unknown): number {
+  return clampWindowMs(
+    'double_enter_ms',
+    value,
+    DOUBLE_ENTER_MIN_MS,
+    DOUBLE_ENTER_MAX_MS,
+    DOUBLE_ENTER_DEFAULT_MS
+  )
 }
 
 export function clampHoldMs(value: unknown): number {
-  const parsed = Number(value)
-
-  if (!Number.isFinite(parsed)) {
-    return HOLD_DEFAULT_MS
-  }
-
-  return Math.min(HOLD_MAX_MS, Math.max(HOLD_MIN_MS, Math.round(parsed)))
+  return clampWindowMs('hold_ms', value, HOLD_MIN_MS, HOLD_MAX_MS, HOLD_DEFAULT_MS)
 }
 
 export function clampTypingIdleMs(value: unknown): number {
-  const parsed = Number(value)
-
-  if (!Number.isFinite(parsed)) {
-    return TYPING_IDLE_DEFAULT_MS
-  }
-
-  return Math.min(TYPING_IDLE_MAX_MS, Math.max(TYPING_IDLE_MIN_MS, Math.round(parsed)))
+  return clampWindowMs(
+    'typing_idle_ms',
+    value,
+    TYPING_IDLE_MIN_MS,
+    TYPING_IDLE_MAX_MS,
+    TYPING_IDLE_DEFAULT_MS
+  )
 }
 
 export function clampIdleSendMs(value: unknown): number {
-  const parsed = Number(value)
-
-  if (!Number.isFinite(parsed)) {
-    return IDLE_SEND_DEFAULT_MS
-  }
-
-  return Math.min(IDLE_SEND_MAX_MS, Math.max(IDLE_SEND_MIN_MS, Math.round(parsed)))
+  return clampWindowMs(
+    'idle_send_ms',
+    value,
+    IDLE_SEND_MIN_MS,
+    IDLE_SEND_MAX_MS,
+    IDLE_SEND_DEFAULT_MS
+  )
 }
 
 export function clampSendGraceMs(value: unknown): number {
-  const parsed = Number(value)
-
-  if (!Number.isFinite(parsed)) {
-    return SEND_GRACE_DEFAULT_MS
-  }
-
-  return Math.min(SEND_GRACE_MAX_MS, Math.max(SEND_GRACE_MIN_MS, Math.round(parsed)))
+  return clampWindowMs(
+    'send_grace_ms',
+    value,
+    SEND_GRACE_MIN_MS,
+    SEND_GRACE_MAX_MS,
+    SEND_GRACE_DEFAULT_MS
+  )
 }
 
 /** Coerce anything read out of storage into valid prefs. An out-of-range

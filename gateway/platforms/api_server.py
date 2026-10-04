@@ -69,7 +69,8 @@ _STATIC_FEATURE_FLAGS = {
     "run_status": True, "run_events_sse": True, "run_stop": True, "run_steer": True,
     "run_approval_response": True, "tool_progress_events": True, "approval_events": True,
     "session_resources": True, "model_options": True, "session_chat": True,
-    "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
+    "session_chat_streaming": True, "session_fork": True, "session_rewind": True,
+    "session_model_lock": True,
     "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
     "skills_api": True, "audio_api": False, "realtime_voice": False,
@@ -93,6 +94,7 @@ _CAPABILITY_ENDPOINTS = (
     ("session_delete", ("DELETE", "/api/sessions/{session_id}")),
     ("session_messages", ("GET", "/api/sessions/{session_id}/messages")),
     ("session_fork", ("POST", "/api/sessions/{session_id}/fork")),
+    ("session_rewind", ("POST", "/api/sessions/{session_id}/rewind")),
     ("session_chat", ("POST", "/api/sessions/{session_id}/chat")),
     ("session_chat_stream", ("POST", "/api/sessions/{session_id}/chat/stream")),
     ("session_model_lock", ("POST", "/api/sessions/{session_id}/model")),
@@ -1767,6 +1769,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("DELETE", "/api/sessions/{session_id}", self._handle_delete_session),
             ("GET", "/api/sessions/{session_id}/messages", self._handle_session_messages),
             ("POST", "/api/sessions/{session_id}/fork", self._handle_fork_session),
+            ("POST", "/api/sessions/{session_id}/rewind", self._handle_rewind_session),
             ("POST", "/api/sessions/{session_id}/chat", self._handle_session_chat),
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
             ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
@@ -3368,6 +3371,33 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return _error_response(str(exc), 400, code="invalid_title")
         fork = await asyncio.to_thread(db.get_session, fork_id) or {"id": fork_id, "parent_session_id": source_id}
         return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
+
+    @_require_auth
+    async def _handle_rewind_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/rewind — soft-delete from a user message onward."""
+        session_id = request.match_info["session_id"]
+        _, err = await self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        message_id = body.get("message_id")
+        if type(message_id) is not int:
+            return _error_response("message_id must be an integer", 400, code="invalid_rewind_target")
+        db = await self._ensure_session_db_async()
+        if db is None:
+            return self._session_db_unavailable()
+        try:
+            result = await asyncio.to_thread(db.rewind_to_message, session_id, message_id)
+        except ValueError as exc:
+            return _error_response(str(exc), 400, code="invalid_rewind_target")
+        except RuntimeError as exc:
+            return _error_response(str(exc), 409, code="session_busy")
+        response = {"object": "hermes.session.rewind", "session_id": session_id, **result}
+        if isinstance(response.get("target_message"), dict):
+            response["target_message"] = self._message_response(response["target_message"])
+        return web.json_response(response)
 
     async def _prepare_session_chat(self, request: "web.Request") -> tuple:
         """Shared prelude for /api/sessions/{id}/chat[/stream]: header/body validation, then

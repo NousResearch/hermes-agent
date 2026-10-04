@@ -49,6 +49,7 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
     app.router.add_get("/api/sessions/{session_id}/messages", adapter._handle_session_messages)
     app.router.add_post("/api/sessions/{session_id}/fork", adapter._handle_fork_session)
+    app.router.add_post("/api/sessions/{session_id}/rewind", adapter._handle_rewind_session)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
     return app
@@ -67,11 +68,16 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
+    assert features["session_rewind"] is True
     assert features["run_steer"] is True
     assert data["endpoints"]["sessions"] == {"method": "GET", "path": "/api/sessions"}
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
+    }
+    assert data["endpoints"]["session_rewind"] == {
+        "method": "POST",
+        "path": "/api/sessions/{session_id}/rewind",
     }
     assert data["endpoints"]["run_steer"] == {
         "method": "POST",
@@ -282,6 +288,80 @@ async def test_fork_session_writes_branched_from_marker(adapter, session_db):
     if isinstance(cfg, str):
         cfg = json.loads(cfg)
     assert cfg["_branched_from"] == source_id
+
+
+@pytest.mark.asyncio
+async def test_rewind_session_soft_deletes_target_and_later_messages(adapter, session_db):
+    session_id = session_db.create_session("rewind-session", "api_server")
+    session_db.replace_messages(
+        session_id,
+        [
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "edited question"},
+            {"role": "assistant", "content": "old answer"},
+        ],
+    )
+    before = session_db.get_messages(session_id)
+    target_id = before[2]["id"]
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(
+            f"/api/sessions/{session_id}/rewind", json={"message_id": target_id})
+        assert resp.status == 200, await resp.text()
+        payload = await resp.json()
+        messages_resp = await cli.get(f"/api/sessions/{session_id}/messages")
+        assert messages_resp.status == 200
+        messages = (await messages_resp.json())["data"]
+
+    assert payload["object"] == "hermes.session.rewind"
+    assert payload["session_id"] == session_id
+    assert payload["rewound_count"] == 2
+    assert payload["target_message"]["id"] == target_id
+    assert payload["new_head_id"] == before[1]["id"]
+    assert [message["content"] for message in messages] == ["first question", "first answer"]
+
+
+@pytest.mark.asyncio
+async def test_rewind_session_rejects_assistant_message(adapter, session_db):
+    session_id = session_db.create_session("rewind-assistant-target", "api_server")
+    session_db.replace_messages(
+        session_id,
+        [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "answer"},
+        ],
+    )
+    assistant_id = session_db.get_messages(session_id)[1]["id"]
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(
+            f"/api/sessions/{session_id}/rewind", json={"message_id": assistant_id})
+        assert resp.status == 400
+        assert (await resp.json())["error"]["code"] == "invalid_rewind_target"
+
+
+@pytest.mark.asyncio
+async def test_rewind_session_requires_integer_message_id(adapter, session_db):
+    session_id = session_db.create_session("rewind-invalid-target", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        for body in ({}, {"message_id": "1"}, {"message_id": True}):
+            resp = await cli.post(f"/api/sessions/{session_id}/rewind", json=body)
+            assert resp.status == 400
+            assert (await resp.json())["error"]["code"] == "invalid_rewind_target"
+
+
+@pytest.mark.asyncio
+async def test_rewind_session_returns_404_for_unknown_session(adapter):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post("/api/sessions/does-not-exist/rewind", json={"message_id": 1})
+        assert resp.status == 404
+        assert (await resp.json())["error"]["code"] == "session_not_found"
 
 @pytest.mark.asyncio
 async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeypatch):

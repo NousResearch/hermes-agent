@@ -298,7 +298,7 @@ class TestSetupLogging:
         by_name = {}
         for h in hermes_logging._queued_file_handlers:
             if isinstance(h, RotatingFileHandler) and getattr(h, "baseFilename", None):
-                base = h.baseFilename.rsplit("/", 1)[-1]
+                base = Path(h.baseFilename).name
                 if base not in by_name:
                     by_name[base] = h
         assert set(by_name) == {"agent.log", "errors.log"}, sorted(by_name)
@@ -320,7 +320,7 @@ class TestSetupLogging:
         by_name = {}
         for h in hermes_logging._queued_file_handlers:
             if isinstance(h, RotatingFileHandler) and getattr(h, "baseFilename", None):
-                base = h.baseFilename.rsplit("/", 1)[-1]
+                base = Path(h.baseFilename).name
                 if base not in by_name:
                     by_name[base] = h
         assert set(by_name) == {"agent.log", "errors.log"}, sorted(by_name)

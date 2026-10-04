@@ -41,10 +41,22 @@ class FileMeasure:
     # 1-based line -> text of the real comment tokens on it (allow directives live only here,
     # so a string literal that happens to say "health: allow" waives nothing).
     comments: dict[int, str] = field(default_factory=dict)
+    # Why this file could not be measured (unparseable, measurer failure): a measurement gap
+    # must fail the check, never read as "no findings".
+    error: str | None = None
+
+    def code_line(self, line_no: int) -> str:
+        """The line's code with its comment removed and whitespace normalised: the identity of
+        a violation, so editing or dropping a comment (an allow included) never makes old debt
+        look new."""
+        line = self.source_line(line_no)
+        comment = self.comments.get(line_no)
+        if comment and comment in line:
+            line = line[: line.rindex(comment)]
+        return " ".join(line.split())
 
     def add_hit(self, rule: str, scope: str, line_no: int) -> None:
-        text = " ".join(self.source_line(line_no).split())
-        hit = Hit(rule, scope, text)
+        hit = Hit(rule, scope, self.code_line(line_no))
         self.hits[hit] += 1
         self.hit_lines.setdefault(hit, []).append(line_no)
 

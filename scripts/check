@@ -20,7 +20,7 @@ import sys
 import tempfile
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,23 +66,20 @@ def _run(job: _Job) -> tuple[int, str]:
     return proc.returncode, (proc.stdout + proc.stderr).strip()
 
 
-def _worktree_matches_index() -> bool:
-    unstaged = gitio.git(REPO, "diff", "--name-only", "-z").strip("\0")
-    untracked = gitio.git(REPO, "ls-files", "--others", "--exclude-standard", "-z").strip("\0")
-    return not unstaged and not untracked
-
-
 @contextmanager
 def _index_snapshot() -> Iterator[tuple[Path, dict[str, str]]]:
     """The staged tree checked out on its own, plus git env that sees exactly that tree.
 
     Unstaged edits stay where they are (no stash, no checkout); the index is read from a copy,
-    so nothing a checker runs can rewrite the user's real index.
+    so nothing a checker runs can rewrite the user's real index. Always a snapshot, even when
+    the worktree looks clean: ignored files (scratch, build output) are invisible to git status
+    but not to the guards that walk the disk.
     """
     git_dir = Path(gitio.git(REPO, "rev-parse", "--absolute-git-dir").strip())
     index = Path(gitio.git(REPO, "rev-parse", "--path-format=absolute", "--git-path", "index").strip())
     with tempfile.TemporaryDirectory(prefix="hermes-check-index-") as tmp:
         root = Path(tmp) / "tree"
+        root.mkdir()  # Git for Windows will not create the --prefix directory itself
         gitio.git(REPO, "checkout-index", "-a", f"--prefix={root}{os.sep}")
         index_copy = Path(tmp) / "index"
         shutil.copyfile(index, index_copy)
@@ -93,15 +90,21 @@ def _index_snapshot() -> Iterator[tuple[Path, dict[str, str]]]:
 
 def _jobs(only: str | None, base: str | None, head: str | None,
           root: Path = REPO, env: dict[str, str] | None = None) -> dict[str, _Job]:
-    jobs = {name: _Job([sys.executable, *argv], root, env) for name, argv in _GUARDS.items()}
-    jobs["ruff"] = _Job([*resolve_ruff(REPO), "check", "."], root, env)
-    # The ratchet reads both sides from git, so it runs in the real repo against the head tree.
-    health = [sys.executable, "-m", "scripts.code_health"]
-    health += ["--base", base] if base else []
-    health += ["--head", head] if head else []
-    jobs["health"] = _Job(health)
+    names = [*_GUARDS, "ruff", "health"]
     if only:
-        return {name: job for name, job in jobs.items() if name in only.split(",")}
+        names = [n for n in names if n in only.split(",")]
+    jobs: dict[str, _Job] = {}
+    for name in names:  # built only when selected: `--only shebangs` needs no ruff
+        if name in _GUARDS:
+            jobs[name] = _Job([sys.executable, *_GUARDS[name]], root, env)
+        elif name == "ruff":
+            jobs[name] = _Job([*resolve_ruff(REPO), "check", "."], root, env)
+        else:
+            # The ratchet reads both sides from git: real repo, judged against the head tree.
+            health = [sys.executable, "-m", "scripts.code_health"]
+            health += ["--base", base] if base else []
+            health += ["--head", head] if head else []
+            jobs[name] = _Job(health)
     return jobs
 
 
@@ -112,10 +115,7 @@ def _run_all(args: argparse.Namespace) -> dict[str, tuple[int, str]]:
             return dict(zip(jobs, pool.map(_run, jobs.values()), strict=True))
     # Pre-commit: judge the bytes being committed, not the working tree.
     tree = gitio.git(REPO, "write-tree").strip()
-    with ExitStack() as stack:
-        root, env = REPO, None
-        if not _worktree_matches_index():
-            root, env = stack.enter_context(_index_snapshot())
+    with _index_snapshot() as (root, env):
         jobs = _jobs(args.only, args.base, tree, root, env)
         with ThreadPoolExecutor(max_workers=len(jobs) or 1) as pool:
             return dict(zip(jobs, pool.map(_run, jobs.values()), strict=True))

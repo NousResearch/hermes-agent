@@ -39,6 +39,50 @@ class Ctx:
     known_env: set[str] = field(default_factory=set)
 
 
+def canonical_tree(tree: ast.Module) -> ast.Module:
+    """``tree`` with every import-bound name spelled out: ``sp.run`` -> ``subprocess.run``,
+    ``execute`` (``from subprocess import run as execute``) -> ``subprocess.run``.
+
+    Rules then match canonical API names, so an alias neither hides a call nor lets a local
+    helper that merely shares a leaf name (``def wait_for``) pass as the real API. A name the
+    module also rebinds (def, class, assignment, parameter) is left alone: it is ambiguous.
+    """
+    bound: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    bound[alias.asname] = alias.name
+                else:
+                    top = alias.name.split(".")[0]
+                    bound[top] = top
+        elif isinstance(node, ast.ImportFrom):
+            # A relative import keeps its module path minus the dots: rules match the leaf.
+            for alias in node.names:
+                if alias.name != "*":
+                    target = f"{node.module}.{alias.name}" if node.module else alias.name
+                    bound[alias.asname or alias.name] = target
+    rebound = {
+        n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and not isinstance(n.ctx, ast.Load)
+    } | {n.arg for n in ast.walk(tree) if isinstance(n, ast.arg)} | {
+        n.name for n in ast.walk(tree) if isinstance(n, (*_FUNCS, ast.ClassDef))
+    }
+    names = {k: v for k, v in bound.items() if k not in rebound and k != v}
+
+    class _Spell(ast.NodeTransformer):
+        def visit_Name(self, node: ast.Name) -> ast.AST:
+            target = names.get(node.id)
+            if target is None or not isinstance(node.ctx, ast.Load):
+                return node
+            parts = target.split(".")
+            expr: ast.expr = ast.Name(parts[0], ast.Load())
+            for part in parts[1:]:
+                expr = ast.Attribute(expr, part, ast.Load())
+            return ast.copy_location(expr, node)
+
+    return ast.fix_missing_locations(_Spell().visit(tree)) if names else tree
+
+
 def _dotted(node: ast.AST) -> str:
     """``os.environ.get`` for an Attribute chain, ``""`` for anything else."""
     parts: list[str] = []
@@ -84,6 +128,28 @@ def _env_read_name(node: ast.AST) -> str | None:
                 if isinstance(left, ast.Constant) and isinstance(left.value, str):
                     return left.value
     return None
+
+
+def _env_write_names(node: ast.AST) -> list[str]:
+    """Env var names a node SETS: ``os.environ["X"] = ...``, ``setdefault``, ``update``, ``putenv``."""
+    if isinstance(node, ast.Subscript) and not isinstance(node.ctx, ast.Load):
+        key = node.slice
+        if _dotted(node.value) == "os.environ" and isinstance(key, ast.Constant) and isinstance(key.value, str):
+            return [key.value]
+        return []
+    if not isinstance(node, ast.Call):
+        return []
+    name = _call_name(node)
+    if name in ("os.environ.setdefault", "os.putenv"):
+        key = _str_arg(node)
+        return [key] if key else []
+    if name == "os.environ.update":
+        keys = [kw.arg for kw in node.keywords if kw.arg]
+        for arg in node.args:
+            if isinstance(arg, ast.Dict):
+                keys += [k.value for k in arg.keys if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+        return keys
+    return []
 
 
 def _deferred_parts(node: ast.AST) -> list[ast.AST] | None:
@@ -136,9 +202,11 @@ def hardcoded_home(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
 
 
 def new_env_var(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
+    # Setting a variable introduces it as surely as reading one does.
     for node in ast.walk(tree):
-        name = _env_read_name(node)
-        if name and name.startswith("HERMES_") and name not in ctx.known_env:
+        read = _env_read_name(node)
+        names = [read] if read else _env_write_names(node)
+        if any(n.startswith("HERMES_") and n not in ctx.known_env for n in names):
             yield getattr(node, "lineno", 0)
 
 
@@ -249,9 +317,23 @@ def import_time_capture(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
             yield from _capture_lines(expr)
 
 
+_INFINITE = {"inf", "+inf", "infinity", "+infinity"}
+
+
 def _finite(node: ast.AST | None) -> bool:
-    """A deadline expression that is present and not a literal ``None``."""
-    return node is not None and not (isinstance(node, ast.Constant) and node.value is None)
+    """A deadline that is present and not statically disabled: ``None``, ``math.inf``,
+    ``float("inf")`` and an overflowing literal all wait forever. An unknown expression is
+    trusted (it is usually a configured value)."""
+    if node is None:
+        return False
+    if isinstance(node, ast.Constant):
+        return node.value is not None and node.value != float("inf")
+    if _dotted(node).rpartition(".")[2] == "inf":
+        return False
+    if isinstance(node, ast.Call) and _call_name(node) == "float":
+        arg = _str_arg(node)
+        return arg is None or arg.strip().lower() not in _INFINITE
+    return True
 
 
 def _deadline(call: ast.Call, name: str = "timeout", position: int | None = None) -> bool:
@@ -279,12 +361,28 @@ def _awaited_calls(body: list[ast.stmt]) -> Iterator[ast.Call]:
                 yield node.value
 
 
+_WAIT_FOR = {"asyncio.wait_for"}
+# deadline context manager -> its deadline parameter (positional slot 0)
+_TIMEOUT_CMS = {
+    "asyncio.timeout": "delay",
+    "asyncio.timeout_at": "when",
+    "async_timeout.timeout": "delay",
+    "async_timeout.timeout_at": "deadline",
+}
+_SPAWNS = {
+    "subprocess.Popen": "sync",
+    "asyncio.create_subprocess_exec": "async",
+    "asyncio.create_subprocess_shell": "async",
+}
+
+
 def _bounded_calls(tree: ast.Module) -> set[int]:
-    """ids of calls an asyncio deadline bounds: the awaitable passed to ``wait_for(x, <finite>)``
-    and every call awaited directly inside ``async with asyncio.timeout(<finite>):``."""
+    """ids of calls an asyncio deadline bounds: the awaitable passed to ``asyncio.wait_for(x,
+    <finite>)`` and every call awaited directly inside ``async with asyncio.timeout(<finite>):``.
+    Only the real APIs count (names are canonical); a same-named local helper bounds nothing."""
     bounded: set[int] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and _call_name(node).rpartition(".")[2] == "wait_for":
+        if isinstance(node, ast.Call) and _call_name(node) in _WAIT_FOR:
             awaitable = node.args[0] if node.args else next(
                 (kw.value for kw in node.keywords if kw.arg in ("fut", "aw")), None)
             if awaitable is not None and _deadline(node, "timeout", 1):
@@ -294,15 +392,44 @@ def _bounded_calls(tree: ast.Module) -> set[int]:
                 ctx_call = item.context_expr
                 if not isinstance(ctx_call, ast.Call):
                     continue
-                leaf = _call_name(ctx_call).rpartition(".")[2]
-                slot = {"timeout": "delay", "timeout_at": "when"}.get(leaf)
+                slot = _TIMEOUT_CMS.get(_call_name(ctx_call))
                 if slot and _deadline(ctx_call, slot, 0):
                     bounded.update(id(call) for call in _awaited_calls(node.body))
     return bounded
 
 
+def _spawn_kind(value: ast.AST | None) -> str | None:
+    if isinstance(value, ast.Await):
+        value = value.value
+    return _SPAWNS.get(_call_name(value)) if isinstance(value, ast.Call) else None
+
+
+def _process_handles(tree: ast.Module) -> dict[str, str]:
+    """Dotted names that hold a child process (``proc``, ``self._proc``) -> ``sync``/``async``."""
+    handles: dict[str, str] = {}
+    for node in ast.walk(tree):
+        pairs: list[tuple[ast.AST, ast.AST | None]] = []
+        if isinstance(node, ast.Assign):
+            pairs = [(t, node.value) for t in node.targets]
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
+            pairs = [(node.target, node.value)]
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            pairs = [(i.optional_vars, i.context_expr) for i in node.items if i.optional_vars]
+        for target, value in pairs:
+            kind = _spawn_kind(value)
+            if kind and _dotted(target):
+                handles[_dotted(target)] = kind
+    return handles
+
+
+# Process methods that wait for the child, with the slot of their ``timeout`` (sync Popen);
+# the asyncio Process versions take no timeout and must be bounded by asyncio.
+_PROCESS_WAITS = {"communicate": 1, "wait": 0}
+
+
 def missing_timeout(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     bounded = _bounded_calls(tree)
+    handles = _process_handles(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or id(node) in bounded:
             continue
@@ -311,8 +438,9 @@ def missing_timeout(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
             yield node.lineno
         elif leaf == "urlopen" and not _deadline(node, "timeout", 2):
             yield node.lineno
-        elif leaf == "communicate" and head and not _deadline(node, "timeout", 1):
-            yield node.lineno
+        elif leaf in _PROCESS_WAITS and head in handles:
+            if handles[head] == "async" or not _deadline(node, "timeout", _PROCESS_WAITS[leaf]):
+                yield node.lineno
 
 
 def sync_config_in_async(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
@@ -332,33 +460,72 @@ def get_event_loop(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
             yield node.lineno
 
 
-def _gathers_exceptions(func: ast.AST) -> bool:
-    for node in ast.walk(func):
-        if isinstance(node, ast.Call) and _call_name(node).endswith("gather"):
-            for kw in node.keywords:
-                if kw.arg == "return_exceptions" and getattr(kw.value, "value", False) is True:
-                    return True
+def _is_exc_gather(node: ast.AST | None) -> bool:
+    if isinstance(node, ast.Await):
+        node = node.value
+    if not (isinstance(node, ast.Call) and _call_name(node) == "asyncio.gather"):
+        return False
+    return any(kw.arg == "return_exceptions" and getattr(kw.value, "value", False) is True
+               for kw in node.keywords)
+
+
+def _names(target: ast.AST) -> set[str]:
+    return {n.id for n in ast.walk(target) if isinstance(n, ast.Name)}
+
+
+def _from_results(node: ast.AST | None, results: set[str]) -> bool:
+    """``node`` is a gather-with-exceptions call, a results name, or built from one
+    (``results[i]``, ``zip(xs, results)``, ``enumerate(results)``)."""
+    if node is None:
+        return False
+    if _is_exc_gather(node):
+        return True
+    if isinstance(node, ast.Name):
+        return node.id in results
+    if isinstance(node, ast.Subscript):
+        return _from_results(node.value, results)
+    if isinstance(node, ast.Call) and _call_name(node) in ("zip", "enumerate", "list", "reversed"):
+        return any(_from_results(arg, results) for arg in node.args)
     return False
+
+
+def _result_names(func: ast.AST) -> set[str]:
+    """Names bound to gather(return_exceptions=True) results in ``func``'s own body."""
+    results: set[str] = set()
+    nodes = [n for stmt in func.body for n in _eager(stmt)]
+    for _ in range(3):  # results -> loop vars -> unpacked loop vars
+        for node in nodes:
+            if isinstance(node, ast.Assign) and _from_results(node.value, results):
+                results |= set().union(*(_names(t) for t in node.targets))
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)) and _from_results(node.iter, results):
+                results |= _names(node.target)
+    return results
 
 
 def gather_exception_check(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     for func in ast.walk(tree):
-        if not isinstance(func, _FUNCS) or not _gathers_exceptions(func):
+        if not isinstance(func, _FUNCS):
             continue
-        for node in ast.walk(func):
-            if (
-                isinstance(node, ast.Call)
-                and _call_name(node) == "isinstance"
-                and len(node.args) == 2
-                and _dotted(node.args[1]) == "Exception"
-            ):
-                yield node.lineno
+        results = _result_names(func)
+        if not results:
+            continue
+        for stmt in func.body:
+            for node in _eager(stmt):
+                if (
+                    isinstance(node, ast.Call)
+                    and _call_name(node) == "isinstance"
+                    and len(node.args) == 2
+                    and _dotted(node.args[1]) == "Exception"
+                    and _from_results(node.args[0], results)
+                ):
+                    yield node.lineno
 
 
 def bool_of_env(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and _call_name(node) == "bool" and len(node.args) == 1:
-            if isinstance(node.args[0], ast.Call) and _env_read_name(node.args[0]):
+            arg = node.args[0]
+            if isinstance(arg, (ast.Call, ast.Subscript)) and _env_read_name(arg):
                 yield node.lineno
 
 
@@ -391,7 +558,7 @@ def elif_ladder(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
 
 def raw_thread(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and _call_name(node) in ("threading.Thread", "Thread"):
+        if isinstance(node, ast.Call) and _call_name(node) == "threading.Thread":
             yield node.lineno
 
 

@@ -271,7 +271,7 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   (blind repointing to defining modules broke 130+ tests).
 - **Size and complexity are ratcheted per unit** (`scripts/code_health/config.py`): new
   functions CC ≤ 20, ≤ 300 lines, nesting ≤ 6; files ≤ 2,000 lines; units already over may only
-  go down (growing a file already past 2,000 is a warning for now). Split along `<stem>_<topic>` first, in its own commit; behaviour goes in a sibling,
+  go down (a file already past 2,000 lines may not grow). Split along `<stem>_<topic>` first, in its own commit; behaviour goes in a sibling,
   never a facade; name ladders become a dict → handler (`_SLASH_DISPATCH`).
 - **No re-export shims for internal moves** ("keep the old name importable"). Internal paths
   are not API: plugins build on `ctx` and the documented ABCs. The one-time Sep 2026

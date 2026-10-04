@@ -12,10 +12,13 @@ _ALLOW = re.compile(r"health:\s*allow\s+([A-Za-z0-9_,\- ]+?)\s*(?:--|—|:)\s*(\
 _ALLOW_BARE = re.compile(r"health:\s*allow\b")
 
 
-def _allow_lines(finding: Finding) -> list[int]:
+def _allow_lines(finding: Finding, fm: FileMeasure) -> list[int]:
+    """Where an allow for this finding may sit: its own line, or a comment-only line right
+    above it. A trailing allow on the previous statement waives only that statement."""
     if finding.rule == "FILE_LINES":
         return list(range(1, 6))
-    return [finding.line, finding.line - 1]
+    above = finding.line - 1
+    return [finding.line, above] if not fm.code_line(above) else [finding.line]
 
 
 def apply_allows(findings: list[Finding], head: dict[str, FileMeasure]) -> None:
@@ -27,7 +30,7 @@ def apply_allows(findings: list[Finding], head: dict[str, FileMeasure]) -> None:
         fm = head.get(finding.path)
         if fm is None:
             continue
-        for line_no in _allow_lines(finding):
+        for line_no in _allow_lines(finding, fm):
             text = fm.comments.get(line_no, "")
             match = _ALLOW.search(text)
             if match and finding.rule in {r.strip() for r in match.group(1).split(",")}:

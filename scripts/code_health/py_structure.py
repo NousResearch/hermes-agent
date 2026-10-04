@@ -55,11 +55,26 @@ def nesting_depth(stmts: list[ast.stmt], depth: int = 0) -> int:
 
 
 def body_hash(node: ast.AST) -> str:
-    """Name-independent hash, so a function moved or renamed unchanged keeps its cap."""
-    dumped = ast.dump(node, annotate_fields=False)
+    """Name-independent hash, so a function moved or renamed unchanged keeps its cap.
+
+    The declared name is dropped, and so are the body's references to it (``name(...)``,
+    ``self.name(...)``, ``cls.name(...)``), unless the body rebinds that name itself: a
+    recursive function renamed together with its self-call is still the same code.
+    """
     name = getattr(node, "name", "")
-    dumped = dumped.replace(repr(name), "''", 1)
+    dumped = ast.dump(node, annotate_fields=False).replace(repr(name), "''", 1)
+    if name and f"Name({name!r}, Store())" not in dumped and f"arg({name!r}" not in dumped:
+        dumped = dumped.replace(f"Name({name!r}, Load())", "Name('', Load())")
+        for receiver in ("self", "cls"):
+            dumped = dumped.replace(f"Attribute(Name({receiver!r}, Load()), {name!r}, Load())",
+                                    f"Attribute(Name({receiver!r}, Load()), '', Load())")
     return hashlib.sha1(dumped.encode("utf-8")).hexdigest()[:16]
+
+
+def _first_line(node: ast.AST) -> int:
+    """A def/class starts at its first decorator: decorator code belongs to it (and moves
+    with it), not to the module."""
+    return min([node.lineno, *(d.lineno for d in getattr(node, "decorator_list", []))])
 
 
 class _UnitCollector(ast.NodeVisitor):
@@ -84,7 +99,11 @@ class _UnitCollector(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         qual = self._qualname(node.name)
-        self.spans.append(Span(node.lineno, node.end_lineno or node.lineno, qual))
+        # A class has no size metrics of its own, but it is a unit so that a renamed or moved
+        # class keeps the violations in its body (decorators, attributes) one-to-one.
+        self.units[qual] = Unit(qualname=qual, line=node.lineno, metrics={},
+                                body_hash=body_hash(node), parent=self.funcs[-1] if self.funcs else None)
+        self.spans.append(Span(_first_line(node), node.end_lineno or node.lineno, qual))
         self.stack.append(qual.rsplit(".", 1)[-1])
         self.generic_visit(node)
         self.stack.pop()
@@ -92,7 +111,7 @@ class _UnitCollector(ast.NodeVisitor):
     def _visit_func(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         qual = self._qualname(node.name)
         end = node.end_lineno or node.lineno
-        first = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+        first = _first_line(node)
         self.total_lines[qual] = end - first + 1
         self.units[qual] = Unit(
             qualname=qual,
@@ -101,7 +120,7 @@ class _UnitCollector(ast.NodeVisitor):
             body_hash=body_hash(node),
             parent=self.funcs[-1] if self.funcs else None,
         )
-        self.spans.append(Span(node.lineno, end, qual))
+        self.spans.append(Span(first, end, qual))
         self.stack.append(qual.rsplit(".", 1)[-1])
         self.funcs.append(qual)
         self.generic_visit(node)
@@ -136,7 +155,7 @@ def measure_structure(fm: FileMeasure, tree: ast.Module) -> ScopeIndex:
     # FUNC_LINES is a function's OWN lines: a nested def is its own unit, so editing a closure
     # never counts against the function that encloses it.
     for unit in collector.units.values():
-        if unit.parent is not None:
+        if unit.parent is not None and unit.qualname in collector.total_lines:
             parent = collector.units[unit.parent]
             parent.metrics["FUNC_LINES"] -= collector.total_lines[unit.qualname]
     fm.units = collector.units

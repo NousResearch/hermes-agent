@@ -91,6 +91,37 @@ function ownName(node) {
   return bindingName(node)
 }
 
+// The body's text with its own references to `name` removed (`name(...)`, `this.name(...)`),
+// unless the body rebinds that name: renaming a recursive function together with its
+// self-call is still the same code. Strings and other objects' `.name` members are untouched.
+function bodyWithoutSelf(node, sf, name) {
+  if (!node.body) return ''
+  const start = node.body.getStart(sf)
+  let text = node.body.getText(sf)
+  if (!name) return text
+  const cuts = []
+  let rebound = node.parameters.some(p => ts.isIdentifier(p.name) && p.name.text === name)
+  const visit = n => {
+    const declares = ts.isVariableDeclaration(n) || ts.isParameter(n) ||
+      ts.isFunctionDeclaration(n) || ts.isClassDeclaration(n)
+    if (declares && n.name && ts.isIdentifier(n.name) && n.name.text === name) rebound = true
+    if (ts.isIdentifier(n) && n.text === name) {
+      const p = n.parent
+      const member = p && ts.isPropertyAccessExpression(p) && p.name === n
+      const key = p && (ts.isPropertyAssignment(p) || ts.isMethodDeclaration(p) ||
+        ts.isPropertyDeclaration(p)) && p.name === n
+      if ((!member && !key) || (member && p.expression.kind === K.ThisKeyword)) {
+        cuts.push(n.getStart(sf) - start)
+      }
+    }
+    ts.forEachChild(n, visit)
+  }
+  visit(node.body)
+  if (rebound) return text
+  for (const at of cuts.sort((a, b) => b - a)) text = text.slice(0, at) + text.slice(at + name.length)
+  return text
+}
+
 // Comment trivia (not string or template text) that carries a `health: allow` directive.
 function allowComments(sf, text) {
   const found = new Map()
@@ -138,7 +169,8 @@ function measureFile(path) {
       const end = sf.getLineAndCharacterOfPosition(node.getEnd()).line + 1
       // Name-independent: parameters + body only, so a rename (or a move) keeps the cap.
       const params = node.parameters.map(p => p.getText(sf)).join(',')
-      const body = (params + '=>' + (node.body ? node.body.getText(sf) : '')).replace(/\s+/g, ' ')
+      const selfName = propertyName(node.name) ?? bindingName(node)
+      const body = (params + '=>' + bodyWithoutSelf(node, sf, selfName)).replace(/\s+/g, ' ')
       const unit = {
         q: qual, line: start, cc: complexity(node), nesting: nesting(node),
         hash: createHash('sha1').update(body).digest('hex').slice(0, 16)

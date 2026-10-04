@@ -153,6 +153,7 @@ jobs:
     uses: ./.github/workflows/lint.yml
     with:
       event_name: ${{ needs.detect.outputs.event_name }}
+      python: ${{ needs.detect.outputs.python == 'true' }}
 
   js-tests:
     name: JS & TS checks

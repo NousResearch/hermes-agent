@@ -18,11 +18,6 @@ TARGETS = {
     "FILE_LINES": 2000,
 }
 
-# Growth of a unit ALREADY over target is advisory for these metrics; crossing the target still
-# blocks. Replay of 300 merged PRs: a blocking FILE_LINES ratchet would have stopped 46 of them
-# for +2..+70 lines on one of the 119 files already over 2,000, before those files are split.
-ADVISORY_GROWTH = {"FILE_LINES"}
-
 METRIC_FIX = {
     "CC": "split it: extract phases into a topical sibling (`<stem>_<topic>.py`), or replace a"
     " branch ladder with a dict/table -> handler",
@@ -30,6 +25,8 @@ METRIC_FIX = {
     "NESTING": "return early, or extract the inner block into a helper",
     "FILE_LINES": "split along `<stem>_<topic>` (facade + siblings, see root AGENTS.md); new"
     " behaviour goes in a new or topical sibling, never appended to a facade",
+    "MEASURE": "the file must parse and measure (a file that cannot be measured cannot be"
+    " judged); fix the syntax, or report the measurer bug",
 }
 
 PY_EXCLUDE = ("website/*", "*/node_modules/*", "node_modules/*")

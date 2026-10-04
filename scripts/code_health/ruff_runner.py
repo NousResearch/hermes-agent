@@ -25,6 +25,8 @@ _CHUNK = 400
 class RuffFile:
     cc_by_line: dict[int, int] = field(default_factory=dict)
     hits: list[tuple[str, int]] = field(default_factory=list)
+    # Ruff could not parse the file (code-less diagnostics): its CC and hits are missing.
+    errors: list[str] = field(default_factory=list)
 
 
 def pinned_version(repo: Path) -> str:
@@ -99,3 +101,5 @@ def _record(results: dict[str, RuffFile], root: Path, diag: dict) -> None:
             entry.cc_by_line[row] = int(match.group(1))
     elif code:
         entry.hits.append((code, row))
+    else:
+        entry.errors.append(f"line {row}: {diag.get('message', 'syntax error')}")

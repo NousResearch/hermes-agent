@@ -88,8 +88,9 @@ class Measurer:
         ruff_out = run_ruff(self.ruff, root, py) if py else {}
         for path in py:
             self._python(result[path], contents[path], ruff_out.get(path))
-        for path, data in measure_ts(self.repo, root, ts).items():
-            self._typescript(result[path], data)
+        ts_out = measure_ts(self.repo, root, ts) if ts else {}
+        for path in ts:
+            self._typescript(result[path], ts_out.get(path))
         return result
 
     def _python(self, fm: FileMeasure, text: str, ruff_file) -> None:
@@ -99,17 +100,21 @@ class Measurer:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", SyntaxWarning)
                 tree = ast.parse(text)
-        except SyntaxError:
+                rules_tree = py_rules.canonical_tree(ast.parse(text))
+        except SyntaxError as exc:
+            fm.error = f"does not parse: {exc.msg} (line {exc.lineno})"
             return
         scopes = py_structure.measure_structure(fm, tree)
-        if ruff_file is not None:
+        if ruff_file is None or ruff_file.errors:
+            fm.error = "ruff could not measure it: " + "; ".join((ruff_file.errors if ruff_file else ["no result"])[:3])
+        else:
             _own_complexity(fm, ruff_file.cc_by_line)
             for code, row in ruff_file.hits:
                 if code in RULES_BY_ID and rule_applies(RULES_BY_ID[code], fm.path):
                     fm.add_hit(code, scopes.scope(row), row)
         for rule_id, checker in py_rules.CHECKERS.items():
             if rule_applies(RULES_BY_ID[rule_id], fm.path):
-                for row in sorted(set(checker(tree, self.ctx))):
+                for row in sorted(set(checker(rules_tree, self.ctx))):
                     fm.add_hit(rule_id, scopes.scope(row), row)
         self._regex(fm, scopes)
 
@@ -124,8 +129,11 @@ class Measurer:
                     fm.add_hit(rule_id, scopes.scope(index), index)
 
     @staticmethod
-    def _typescript(fm: FileMeasure, data: dict) -> None:
+    def _typescript(fm: FileMeasure, data: dict | None) -> None:
         fm.metrics["FILE_LINES"] = len(fm.lines)
+        if data is None or "error" in data:
+            fm.error = (data or {}).get("error", "the TypeScript measurer returned nothing for it")
+            return
         fm.comments = {line: text for line, text in data.get("comments", [])}
         for unit in data.get("units", []):
             fm.units[unit["q"]] = Unit(

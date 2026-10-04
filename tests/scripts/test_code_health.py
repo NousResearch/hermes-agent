@@ -82,7 +82,8 @@ def test_moved_code_keeps_its_cap(tmp_path, capsys):
 
 
 _RUN = "import subprocess\n\n\ndef f(cmd):\n    return subprocess.run(cmd{})\n"
-_PROC = "import asyncio\n\n\nasync def f(proc):\n{}\n"
+_PROC = "import asyncio\n\n\nasync def f(cmd):\n    proc = await asyncio.create_subprocess_exec(*cmd)\n{}\n"
+_TWO_RUNS = "import subprocess\n\n\ndef f(a, b):\n    subprocess.run(a){}\n    subprocess.run(b){}\n"
 _ENV = "import os\n\n{}\n"
 _EXCEPT = "    try:\n        pass\n    except Exception:\n        pass\n"
 
@@ -115,6 +116,32 @@ _STUB = {"pkg/b.py": "def legacy(x):\n    return x\n"}
     ({}, {"pkg/p.py": _PROC.format("    return await asyncio.wait_for(fut=proc.communicate(), timeout=1)")}, False),
     # a BOM reads the same from git and from disk, so a new BOM file's debt is still measured
     ({}, {"pkg/bom.py": "\ufeff" + _LEGACY}, True),
+    # rules see through import aliases and require the real asyncio deadline API
+    ({}, {"pkg/c.py": "from subprocess import run as execute\n\n\ndef f(c):\n    return execute(c)\n"}, True),
+    ({}, {"pkg/c.py": "def run(c):\n    return c\n\n\ndef f(c):\n    return run(c)\n"}, False),
+    ({}, {"pkg/p.py": "async def wait_for(aw, t):\n    return await aw\n\n\n"
+          + _PROC.format("    return await wait_for(proc.communicate(), 1)")}, True),
+    ({}, {"pkg/c.py": "def f(client):\n    return client.communicate()\n"}, False),
+    ({}, {"pkg/p.py": _PROC.format("    return await asyncio.wait_for(proc.wait(), float('inf'))")}, True),
+    # writes introduce a HERMES_* name too; bool() of a raw env string is HX010
+    ({}, {"pkg/c.py": _ENV.format("os.environ['HERMES_BRAND_NEW'] = '1'")}, True),
+    ({}, {"pkg/c.py": _ENV.format("FLAG = bool(os.environ['PATH'])")}, True),
+    # an inline allow covers its own line only; removing an allow keeps the debt existing
+    ({}, {"pkg/p.py": _TWO_RUNS.format("  # health: allow HX006 -- x", "")}, True),
+    ({"pkg/p.py": _TWO_RUNS.format("  # health: allow HX006 -- x", "  # health: allow HX006 -- y")},
+     {"pkg/p.py": _TWO_RUNS.format("", "")}, False),
+    # an identical violation moved past unrelated code is a new occurrence
+    ({"pkg/a.py": _LEGACY + "\n\n" + _SWALLOW.replace("pass\n    except", "a()\n    except")
+      + "    b()\n    c()\n    d()\n"},
+     {"pkg/a.py": _LEGACY + "\n\n" + "def other():\n    a()\n    b()\n    c()\n    d()\n"
+      "    try:\n        pass\n    except Exception:\n        pass\n"}, True),
+    # a recursive function renamed with its self-calls keeps its cap
+    ({}, {"pkg/a.py": (_LEGACY + "    return legacy(x - 1)\n").replace("legacy", "walk") + "\n\n" + _SWALLOW}, True),
+    ({"pkg/a.py": _LEGACY + "    return legacy(x - 1)\n\n\n" + _SWALLOW},
+     {"pkg/a.py": (_LEGACY + "    return legacy(x - 1)\n").replace("legacy", "walk") + "\n\n" + _SWALLOW}, False),
+    # an over-cap file may not grow, and an unparseable file never passes
+    ({"pkg/big.py": "V = 0\n" * 2001}, {"pkg/big.py": "V = 0\n" * 2002}, True),
+    ({}, {"pkg/c.py": "def f(:\n    pass\n"}, True),
 ])
 def test_verdicts_follow_ownership_deadlines_and_import_execution(tmp_path, capsys, extra_base, files, blocks):
     repo, base = _repo(tmp_path)

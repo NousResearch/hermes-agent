@@ -105,3 +105,67 @@ class TestFetchIsRateLimited:
     def test_non_rate_limit_is_false(self):
         assert not update_cmd._fetch_is_rate_limited(DNS_FAILURE)
         assert not update_cmd._fetch_is_rate_limited("")
+
+
+class TestShallowPreHealRateLimitRetry:
+    """The stale-shallow pre-heal runs before the main fetch on its own network transaction; a
+    transient 429 there must replay the whole heal attempt (after its partial-clone settlement)
+    instead of warning and leaving the depth-1 history for the bounded fetch to choke on."""
+
+    @staticmethod
+    def _shallow_clone(tmp_path):
+        def git(cwd, *args):
+            return subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+                                  cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        git(origin, "init", "-q", "-b", "main")
+        git(origin, "config", "uploadpack.allowFilter", "true")
+        for i in range(3):
+            (origin / "f.txt").write_text(f"{i}\n", encoding="utf-8")
+            git(origin, "add", "f.txt")
+            git(origin, "commit", "-qm", f"c{i}")
+        clone = tmp_path / "clone"
+        git(tmp_path, "clone", "-q", "--depth", "1", f"file://{origin}", str(clone))
+        return clone, git
+
+    def _throttle_fetches(self, monkeypatch, stderrs):
+        """Make the next len(stderrs) real ``git fetch`` calls in gitlock fail with these stderrs."""
+        from hermes_cli import gitlock
+
+        real_run, queued, fetches = gitlock.subprocess.run, list(stderrs), []
+
+        def run(cmd, *args, **kwargs):
+            if cmd[:2] == ["git", "fetch"]:
+                fetches.append(cmd)
+                if queued:
+                    raise subprocess.CalledProcessError(128, cmd, output="", stderr=queued.pop(0))
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(gitlock.subprocess, "run", run)
+        return fetches
+
+    def test_transient_429_replays_the_heal_until_the_checkout_is_unshallowed(self, tmp_path, monkeypatch, capsys):
+        clone, git = self._shallow_clone(tmp_path)
+        fetches = self._throttle_fetches(monkeypatch, [RATE_LIMIT])
+        slept = []
+
+        update_cmd._heal_stale_shallow_checkout(clone, "main", sleep=slept.append)
+
+        assert len(fetches) == 2 and slept == [5]
+        assert git(clone, "rev-parse", "--is-shallow-repository").stdout.strip() == "false"
+        packs = list((clone / ".git" / "objects" / "pack").glob("pack-*.pack"))
+        assert packs and all(p.with_suffix(".promisor").exists() for p in packs)
+        assert "Fetched the commit history" in capsys.readouterr().out
+
+    def test_non_429_failure_warns_after_a_single_attempt(self, tmp_path, monkeypatch, capsys):
+        clone, git = self._shallow_clone(tmp_path)
+        fetches = self._throttle_fetches(monkeypatch, [DNS_FAILURE])
+        slept = []
+
+        update_cmd._heal_stale_shallow_checkout(clone, "main", sleep=slept.append)
+
+        assert len(fetches) == 1 and slept == []
+        assert git(clone, "rev-parse", "--is-shallow-repository").stdout.strip() == "true"
+        assert "Could not resolve host" in capsys.readouterr().out

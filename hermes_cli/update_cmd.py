@@ -291,17 +291,36 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
         return result
 
 
-def _heal_stale_shallow_checkout(repo_root: Path, branch: str) -> None:
+def _heal_stale_shallow_checkout(repo_root: Path, branch: str, *, sleep=None) -> None:
     """Unshallow a shallow checkout before the bounded fetch (#123254). Non-fatal: on failure the
-    update proceeds with the fetch it always ran."""
+    update proceeds with the fetch it always ran.
+
+    A transient repo-scoped HTTP 429 replays the WHOLE heal attempt under the same bounded policy
+    as the main fetch (#105857). The replay wraps ``heal_shallow_history`` rather than the fetch
+    inside it, so each attempt starts after that transaction's ``finally`` has settled any
+    partial-clone conversion; non-429 failures still fall through after one attempt."""
     from hermes_cli.gitlock import heal_shallow_history
 
-    try:
-        if heal_shallow_history(repo_root, branch, **_no_prompt_git_kwargs()):
+    healed = []
+
+    def attempt() -> subprocess.CompletedProcess:
+        try:
+            healed.append(heal_shallow_history(repo_root, branch, **_no_prompt_git_kwargs()))
+            return subprocess.CompletedProcess(["git", "fetch"], 0, stdout="", stderr="")
+        except (OSError, subprocess.SubprocessError) as exc:
+            stderr = getattr(exc, "stderr", None)
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode("utf-8", "replace")
+            return subprocess.CompletedProcess(
+                ["git", "fetch"], 1, stdout="", stderr=(stderr or str(exc) or type(exc).__name__))
+
+    result = _retry_on_rate_limit(attempt, sleep=sleep)
+    if result.returncode == 0:
+        if healed[-1]:
             print("  ✓ Fetched the commit history this shallow checkout was missing")
-    except (OSError, subprocess.SubprocessError) as exc:
-        detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
-        print(f"  ⚠ Could not fetch the missing commit history ({detail[0]}); a very stale install may time out")
+        return
+    detail = result.stderr.strip().splitlines()[-1:] or ["unknown error"]
+    print(f"  ⚠ Could not fetch the missing commit history ({detail[0]}); a very stale install may time out")
 
 
 # Degrade past a *transient* repo-scoped HTTP 429 on the existing-install update fetch (#105857).

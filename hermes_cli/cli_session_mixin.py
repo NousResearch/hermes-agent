@@ -1207,7 +1207,15 @@ class CLISessionMixin:
         apart between them again.
         """
         from cli import _run_cleanup
-        self._print_exit_summary()
-        _run_cleanup()
-        if release_session:
-            self._release_active_session()
+        # The print step runs in a try/finally around cleanup: printing FIRST
+        # must not come at the cost of cleanup (and the watchdog arm inside
+        # it) becoming conditional on the print succeeding. ``print()`` can
+        # raise on a broken stdout pipe (BrokenPipeError piping to e.g.
+        # ``head``); skipping cleanup then would trade the original
+        # swallowed-summary bug for a worse never-cleaned-up one.
+        try:
+            self._print_exit_summary()
+        finally:
+            _run_cleanup()
+            if release_session:
+                self._release_active_session()

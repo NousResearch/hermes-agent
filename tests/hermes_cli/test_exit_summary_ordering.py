@@ -142,3 +142,49 @@ def test_finish_interactive_exit_helper_prints_summary_first(monkeypatch):
     calls.clear()
     cli.HermesCLI._finish_interactive_exit(fake)
     assert calls == ["summary", "cleanup"]
+
+
+def test_cleanup_still_runs_when_print_exit_summary_raises(monkeypatch):
+    """A bare ``print()`` inside ``_print_exit_summary()`` can raise on a broken
+    stdout pipe (``BrokenPipeError`` piping to e.g. ``head``). ``_run_cleanup()``
+    -- and the watchdog arm inside it -- must still run even then; skipping
+    cleanup because the print failed would trade the original swallowed-summary
+    bug for a worse never-cleaned-up one."""
+    calls = []
+    _install_spies(monkeypatch, calls)
+    monkeypatch.setattr(
+        cli.HermesCLI,
+        "_print_exit_summary",
+        lambda self, *a, **k: (_ for _ in ()).throw(BrokenPipeError("broken stdout")),
+    )
+
+    fake = _bare_cli()
+    with pytest.raises(BrokenPipeError):
+        cli.HermesCLI._finish_interactive_exit(fake)
+
+    assert calls == ["cleanup"], (
+        "_run_cleanup must run even when _print_exit_summary raises -- it is in "
+        "the finally block precisely so a broken stdout pipe cannot skip cleanup "
+        "and leave the watchdog unarmed; got: %r" % (calls,)
+    )
+
+
+def test_release_session_still_runs_when_print_exit_summary_raises(monkeypatch):
+    """Session release follows cleanup in the finally block, so it too must run
+    when the summary print raises."""
+    calls = []
+    _install_spies(monkeypatch, calls)
+    monkeypatch.setattr(
+        cli.HermesCLI,
+        "_print_exit_summary",
+        lambda self, *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    fake = _bare_cli()
+    with pytest.raises(RuntimeError):
+        cli.HermesCLI._finish_interactive_exit(fake, release_session=True)
+
+    assert calls == ["cleanup", "release"], (
+        "cleanup and the lease release must both run when the print raises; got: %r"
+        % (calls,)
+    )

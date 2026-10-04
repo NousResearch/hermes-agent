@@ -24,6 +24,38 @@ logger = logging.getLogger(__name__)
 _LARGE_FILE_BYTES = 500 * 1024 * 1024
 
 
+def _hermes_home() -> Optional[Path]:
+    """HERMES_HOME as it appears on disk (junctions/symlinks resolved), or ``None``.
+
+    Every containment test in this module resolves its *candidate* path first
+    (``path.resolve()``), so the home must be resolved too: against a junctioned
+    home (``%LOCALAPPDATA%\\hermes`` -> another drive, a common Windows layout)
+    a resolved candidate compared against the unresolved home matches for some
+    call sites and not others, so ``is_safe_path``/``guess_category``/
+    ``_is_protected_dir`` silently stopped recognising files under home — nothing
+    was ever tracked while ``status`` reported "(nothing tracked yet)".
+
+    ``None`` means the home could not be resolved to a real directory (it does
+    not exist yet, or resolution raised). Callers that gate destructive work
+    must treat ``None`` as *unsafe*: a home that is not on disk cannot be
+    resolved, so a candidate "under" it via string prefix is not really under it
+    — that is the fail-closed contract ``is_safe_path`` documents.
+
+    Never cached: HERMES_HOME is read per call so a mid-process profile switch
+    (``set_hermes_home_override``) is honoured.
+    """
+    home = get_hermes_home()
+    try:
+        resolved = home.resolve()
+    except (OSError, RuntimeError):
+        return None
+    # resolve() is lenient about missing paths: it returns the normalized literal
+    # path without expanding any junction/symlink component. That would compare
+    # equal to a likewise-unresolved candidate and read as "safe" while nothing
+    # on disk actually matched. Require a real directory.
+    return resolved if resolved.is_dir() else None
+
+
 def _state_file(name: str) -> Path:
     """``$HERMES_HOME/disk-cleanup/<name>`` — deliberately outside ``$HERMES_HOME/logs/``."""
     return get_hermes_home() / "disk-cleanup" / name
@@ -34,7 +66,10 @@ def is_safe_path(path: Path) -> bool:
 
     Rejects Windows mounts (``/mnt/c`` etc.) and any system directory.
     """
-    hermes_home = get_hermes_home()
+    hermes_home = _hermes_home()
+    if hermes_home is None:
+        # Home is not a real directory: nothing can be "under" it. Fail closed.
+        return False
     try:
         resolved = path.resolve()
     except (OSError, RuntimeError):
@@ -138,8 +173,13 @@ def _is_protected_dir(p: Path) -> bool:
     (``cache/terminal`` holds terminal snapshots) is never rmtree'd; only its files age out."""
     if not p.is_dir():
         return False
+    home = _hermes_home()
+    if home is None:
+        # Can't tell where home ends: treat the directory as protected rather than
+        # rmtree something whose containment we could not establish.
+        return True
     with contextlib.suppress(ValueError, OSError):
-        rel = p.resolve().relative_to(get_hermes_home())
+        rel = p.resolve().relative_to(home)
         return not rel.parts or rel.parts[0] in _EMPTY_DIR_PROTECTED_TOP_LEVEL
     return False
 
@@ -156,7 +196,14 @@ def _protected_cron_paths(home: Path) -> frozenset:
 # Paths under $HERMES_HOME that must NEVER be deleted by quick(), regardless of what the stored category
 # says. This is a defense-in-depth guard against stale tracked.json entries from before #34840.
 def _is_protected_cron_path(p: Path) -> bool:
-    return str(p.resolve()) in _protected_cron_paths(get_hermes_home())
+    # _hermes_home(), not get_hermes_home(): the cache keys must be built from the same
+    # resolved form the tracked paths carry, or a junctioned home matches nothing.
+    home = _hermes_home()
+    if home is None:
+        # Unresolvable home: this guard exists to stop quick() wiping the scheduler
+        # registry, so fail SAFE (report protected) rather than fail open.
+        return True
+    return str(p.resolve()) in _protected_cron_paths(home)
 
 
 def fmt_size(n: float) -> str:
@@ -297,7 +344,8 @@ def quick() -> Dict[str, Any]:
         else:
             errors.append(err)
             new_tracked.append(item)
-    empty_removed = _sweep_empty_dirs(get_hermes_home())
+    home = _hermes_home()
+    empty_removed = _sweep_empty_dirs(home) if home is not None else 0
     save_tracked(new_tracked)
     _log(f"QUICK_SUMMARY: {deleted} files, {empty_removed} dirs, {fmt_size(freed)}")
     return {"deleted": deleted, "empty_dirs": empty_removed, "freed": freed, "errors": errors}
@@ -398,8 +446,13 @@ def _inside_git_worktree(path: Path) -> bool:
     resolved = path.resolve()
     parents = list(resolved.parents)
     above: List[Path] = []
+    home = _hermes_home()
+    if home is None:
+        # No resolvable home: we cannot tell which side of it the path sits on, so
+        # report "not git-owned" (the caller then applies its normal name rules).
+        return False
     with contextlib.suppress(ValueError):
-        i = parents.index(get_hermes_home())
+        i = parents.index(home)
         parents, above = parents[:i], parents[i:]
     if any((parent / ".git").exists() for parent in parents):
         return True
@@ -410,8 +463,11 @@ def guess_category(path: Path) -> Optional[str]:
     """Category label for *path*, or None if we shouldn't track it (``post_tool_call`` hook)."""
     if not is_safe_path(path):
         return None
+    home = _hermes_home()
+    if home is None:  # unreachable while is_safe_path is fail-closed above; belt and braces
+        return None
     with contextlib.suppress(ValueError):  # not under HERMES_HOME (/tmp/hermes-*) — name rules only
-        rel = path.resolve().relative_to(get_hermes_home())
+        rel = path.resolve().relative_to(home)
         top = rel.parts[0] if rel.parts else ""
         if top in _NEVER_TRACK_TOP_LEVEL or _is_protected_dir(path):
             return None

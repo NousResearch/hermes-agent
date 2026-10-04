@@ -104,7 +104,7 @@ def _running_beta_pause_fixture(monkeypatch, tmp_path):
     monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
     beta = SimpleNamespace(pid=777, profile="beta")
     monkeypatch.setattr(update_cmd_windows, "_discover_windows_gateways", lambda: ({777: beta}, [], set(), [777]))
-    monkeypatch.setattr(update_cmd_windows, "_request_socket_pauses", lambda *a: ({"beta": 777}, [777], []))
+    monkeypatch.setattr(update_cmd_windows, "_request_socket_pauses", lambda *a, **k: ({"beta": 777}, [777], []))
     monkeypatch.setattr(cli_main, "_venv_launcher_ancestors", lambda pids: [])
     monkeypatch.setattr(cli_main, "_wait_for_windows_update_gateway_exit", lambda pids, timeout: set())
     monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "default")
@@ -194,7 +194,7 @@ def test_service_supervised_running_profile_is_not_cold_started(monkeypatch, tmp
     service = SimpleNamespace(name="HermesGw-beta", profile="beta", service_pid=800, gateway_pid=900,
                               descendant_identities=(), service_create_time=1.0, gateway_create_time=2.0)
     monkeypatch.setattr(update_cmd_windows, "_discover_windows_gateways", lambda: ({900: svc_proc}, [service], {900}, [900]))
-    monkeypatch.setattr(update_cmd_windows, "_request_socket_pauses", lambda *a: ({}, [], []))
+    monkeypatch.setattr(update_cmd_windows, "_request_socket_pauses", lambda *a, **k: ({}, [], []))
     monkeypatch.setattr(update_cmd, "_stop_windows_gateway_service", lambda *a, **k: None)
     gateway_windows._write_start_attestation([900], "direct spawn (PID 900)", home=homes["beta"])
 

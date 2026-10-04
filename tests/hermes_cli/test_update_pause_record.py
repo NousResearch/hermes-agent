@@ -323,6 +323,7 @@ def test_a_gateway_draining_after_the_stop_request_keeps_its_restart_debt(tmp_pa
     token = r.record_pause({"resume_needed": True, "profiles": {"default": pid},
                             "identities": {str(pid): r.identity(pid)["ct"]}}, None, [])
     r.mark_stop_requested(token, [pid])
+    r.mark_stop_sent(token, pid)
     os.kill(pid, 15)
     print("asked", flush=True)
     time.sleep(120)
@@ -363,6 +364,62 @@ def test_a_gateway_never_asked_to_stop_is_not_restarted(tmp_path):
     finally:
         gateway.kill()
         gateway.wait(timeout=10)
+
+
+@pytest.mark.live_system_guard_bypass
+def test_a_stop_intended_but_never_issued_leaves_a_serving_gateway_alone_and_a_later_user_stop_final(tmp_path):
+    """The updater recorded its intent, then died before the request (N1): the gateway was never
+    asked, keeps serving and owes nothing; when the user stops it later, no launch restarts it."""
+    gateway = _child(_DRAINING, str(tmp_path / "unused"), env={"HERMES_HOME": str(tmp_path)})
+    assert gateway.stdout.readline().strip() == "up"
+    updater = _child(_AT_LINE + """
+    pid = int(sys.argv[1])
+    token = r.record_pause({"resume_needed": True, "profiles": {"default": pid},
+                            "identities": {str(pid): r.identity(pid)["ct"]}}, None, [])
+    r.mark_stop_requested(token, [pid])
+    print("intended", flush=True)
+    time.sleep(120)
+    """, str(gateway.pid), env={"HERMES_HOME": str(tmp_path)})
+    try:
+        assert updater.stdout.readline().strip() == "intended"
+        updater.send_signal(signal.SIGKILL)  # windows-footgun: ok — killed between the intent and the request
+        updater.wait(timeout=10)
+        assert _launches(tmp_path, 1) == [[]]
+        assert _record_files(tmp_path) == [], "a gateway never asked to stop is held as draining"
+    finally:
+        gateway.kill()  # the user's stop, after the update's obligation was retired
+        gateway.wait(timeout=10)
+    assert _launches(tmp_path, 1) == [[]], "a gateway the user stopped was restarted for an update that never stopped it"
+
+
+@pytest.mark.live_system_guard_bypass
+def test_a_request_on_disk_is_owed_even_before_it_is_recorded_sent(tmp_path):
+    """Killed after writing the planned-stop marker (the request), before recording it sent: the
+    gateway acts on it, so it is owed; a marker the USER's stop wrote is no evidence."""
+    marker = tmp_path / "profile" / ".gateway-planned-stop.json"
+    marker.parent.mkdir()
+    gateway = _child(_DRAINING, str(tmp_path / "unused"), env={"HERMES_HOME": str(tmp_path)})
+    assert gateway.stdout.readline().strip() == "up"
+    updater = _child(_AT_LINE + """
+    pid, marker = int(sys.argv[1]), Path(sys.argv[2])
+    token = r.record_pause({"resume_needed": True, "profiles": {"default": pid},
+                            "identities": {str(pid): r.identity(pid)["ct"]}}, None, [])
+    r.mark_stop_requested(token, [pid], markers={pid: marker})
+    marker.write_text(json.dumps({"target_pid": pid, "stopper_pid": os.getpid()}), encoding="utf-8")
+    print("requested", flush=True)
+    time.sleep(120)
+    """, str(gateway.pid), str(marker), env={"HERMES_HOME": str(tmp_path)})
+    try:
+        assert updater.stdout.readline().strip() == "requested"
+        updater.send_signal(signal.SIGKILL)  # windows-footgun: ok — killed before mark_stop_sent
+        updater.wait(timeout=10)
+        assert _launches(tmp_path, 1) == [[]] and len(_record_files(tmp_path)) == 1, "an issued request lost its debt"
+        marker.write_text(json.dumps({"target_pid": gateway.pid, "stopper_pid": 1}), encoding="utf-8")  # a user's stop replaced it
+        assert _launches(tmp_path, 1) == [[]] and len(_record_files(tmp_path)) == 1, "resolved evidence was re-judged"
+    finally:
+        gateway.kill()
+        gateway.wait(timeout=10)
+    assert _launches(tmp_path, 2) == [["resume ['default']"], []]
 
 
 # --- R13: a checkout sharing the home never takes another checkout's paused set --------------

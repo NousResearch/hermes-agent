@@ -238,11 +238,27 @@ def write(token: dict, *, owner: dict | None = None, path: Path | None = None) -
         _atomic_write(path, {"schema": 1, "owner": owner, "install_root": str(install_root()), "token": token})
 
 
-def mark_stop_requested(token: dict, pids) -> None:
-    """Persist, BEFORE the first stop request, that these processes are being asked to stop: one
-    that acknowledged and is still draining keeps its restart obligation after a crash."""
+def mark_stop_requested(token: dict, pids, markers: dict | None = None) -> None:
+    """Persist, BEFORE the first stop request, the stops this update intends and where each mapped
+    gateway's request (its planned-stop marker) will be written. Intent is not a request: a live
+    process counts as asked only once :func:`mark_stop_sent` recorded it, or while the request this
+    update wrote is still on disk (:func:`_asked`)."""
     token["stop_requested"] = sorted({*map(str, token.get("stop_requested") or []), *(str(int(p)) for p in pids)})
+    token["stop_sent"] = sorted(map(str, token.get("stop_sent") or []))
+    token["stopper_pid"] = os.getpid()
+    token["stop_markers"] = {**(token.get("stop_markers") or {}), **{str(int(p)): str(m) for p, m in (markers or {}).items()}}
     write(token, owner=identity())
+
+
+def mark_stop_sent(token: dict, pid) -> None:
+    """Persist that *pid*'s stop request was issued (its planned-stop marker is on disk): from here a
+    live *pid* is draining and keeps its restart debt until it exits. Best effort: the marker itself
+    is the evidence until this lands, and the token carries it to the next record write."""
+    token["stop_sent"] = sorted({*map(str, token.get("stop_sent") or []), str(int(pid))})
+    try:
+        write(token, owner=identity())
+    except OSError as exc:
+        print(f"  ⚠ Could not record the stop request for gateway {pid}: {exc}")
 
 
 def discharge(token: dict, path: Path | None = None) -> None:
@@ -411,7 +427,8 @@ def record_pause(token: dict, adopted: dict | None, claims: list[Path]) -> dict:
     return token
 
 
-_CARRIED = ("pause_id", "pre_sha", "dirty_at_pause", "identities", "stop_requested", "absorbed")
+_CARRIED = ("pause_id", "pre_sha", "dirty_at_pause", "identities", "stop_requested", "stop_sent", "stopper_pid",
+            "stop_markers", "absorbed")
 
 
 def finish_pause(token: dict, intended: dict, adopted: dict | None) -> dict:
@@ -444,13 +461,38 @@ def _without(token: dict, pids: set[str]) -> dict:
     return token
 
 
+def _request_on_disk(token: dict, pid: str) -> bool:
+    """The planned-stop marker this update's stopper wrote for *pid* is still on disk (the gateway's
+    watcher has not consumed it yet): the request was issued even if the updater died before
+    :func:`mark_stop_sent`. A marker naming another stopper (a user's ``hermes gateway stop``) is not."""
+    path = (token.get("stop_markers") or {}).get(str(pid))
+    if not path:
+        return False
+    try:
+        marker = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        return int(marker["target_pid"]) == int(pid) and int(marker["stopper_pid"]) == int(token["stopper_pid"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
+def _asked(token: dict) -> set[str]:
+    """Pids this update actually asked to stop: recorded as sent, or whose request is still on disk."""
+    sent = {str(p) for p in token.get("stop_sent") or []}
+    return sent | {str(p) for p in token.get("stop_requested") or [] if str(p) not in sent and _request_on_disk(token, str(p))}
+
+
 def drop_never_stopped(token: dict) -> dict:
-    """Drop entries whose recorded process is the same live incarnation AND was never asked to stop
-    (the update died before its first stop request). One it asked to stop may be draining: it keeps
-    its restart debt (:func:`split_draining`). No stop record at all: nothing can be told apart."""
+    """Drop entries whose recorded process is the same live incarnation AND was never actually asked
+    to stop (the update died before issuing its request, even with the intent on disk): it is still
+    serving, and a later exit — a user's ``hermes gateway stop`` included — is not this update's to
+    undo. One it asked may be draining: it keeps its restart debt (:func:`split_draining`). The
+    evidence is resolved here, once, into ``stop_sent`` (a merge carries it under another stopper).
+    No stop record at all (a set from before stop tracking): nothing can be told apart."""
     if token.get("stop_requested") is None:
         return token
-    return _without(token, _live_pids(token) - {str(p) for p in token["stop_requested"]})
+    asked = _asked(token)
+    token["stop_sent"] = sorted(asked)
+    return _without(token, _live_pids(token) - asked)
 
 
 def split_draining(token: dict) -> dict:
@@ -479,10 +521,11 @@ def merge_into(token: dict | None, adopted: dict) -> dict:
     for pid, ct in (adopted.get("identities") or {}).items():
         identities.setdefault(pid, ct)
     if "stop_requested" in adopted or "stop_requested" in token:
-        requested = adopted.get("stop_requested")
+        requested, sent = adopted.get("stop_requested"), adopted.get("stop_sent")
         if requested is None:  # a set with no stop record keeps every live entry: all count as asked
-            requested = list(adopted.get("identities") or {})
+            requested = sent = list(adopted.get("identities") or {})
         token["stop_requested"] = sorted({*map(str, token.get("stop_requested") or []), *map(str, requested)})
+        token["stop_sent"] = sorted({*map(str, token.get("stop_sent") or []), *map(str, sent or [])})
     services = token.setdefault("services", [])
     services.extend(s for s in adopted.get("services") or [] if s not in services)
     if services:

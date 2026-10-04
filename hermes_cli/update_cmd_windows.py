@@ -40,13 +40,17 @@ def _abort_on_error(prefix: str):
         raise RuntimeError(f"{prefix}: {exc}") from exc
 
 
+def _planned_stop_marker_path(profile_path: Path) -> Path:
+    return Path(profile_path) / ".gateway-planned-stop.json"
+
+
 def _write_update_planned_stop_marker(profile_path: Path, pid: int) -> bool:
     """Write a planned-stop marker into a specific profile home."""
     try:
         from gateway.status import _get_process_start_time
         from utils import atomic_json_write
         atomic_json_write(
-            Path(profile_path) / ".gateway-planned-stop.json",
+            _planned_stop_marker_path(profile_path),
             {"target_pid": pid, "target_start_time": _get_process_start_time(pid), "stopper_pid": os.getpid(),
              "written_at": datetime.now(timezone.utc).isoformat()},
             indent=None, separators=(",", ":"),
@@ -863,11 +867,13 @@ def _discover_windows_gateways():
     return profile_processes, service_gateways, service_gateway_pids, running_pids
 
 
-def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids):
+def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids, on_request=None):
     """Marker + socket-first pause for every profile-mapped gateway; ``(profiles, mapped_pids, socket_acks)``.
 
     Socket ACK = the gateway drains and exits by its own graceful path. No answer (older
-    gateway) -> the marker poll / force-kill ladder in the caller."""
+    gateway) -> the marker poll / force-kill ladder in the caller. ``on_request(pid)`` runs once the
+    request is issued (marker on disk, else a positive socket ACK) and before the socket call: from
+    then on a crash leaves that gateway owed while it drains, never before."""
     profiles: dict[str, int] = {}
     mapped_pids = []
     socket_acks: list[dict] = []
@@ -877,7 +883,9 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
             continue
         profiles[str(proc.profile)] = int(pid)
         mapped_pids.append(int(pid))
-        _write_update_planned_stop_marker(Path(proc.path), int(pid))
+        requested = _write_update_planned_stop_marker(Path(proc.path), int(pid))
+        if requested and on_request is not None:
+            on_request(int(pid))
         try:
             # Socket-first pause (#92091 step 2): ask the gateway to drain and exit itself instead of
             # relying on the marker poll + force-kill ladder. A positive ACK means the gateway is running
@@ -888,6 +896,8 @@ def _request_socket_pauses(running_pids, profile_processes, service_gateway_pids
             ack = pause_gateway_for_update(Path(proc.path))
             if ack and (ack.get("pausing") or ack.get("already_stopping")):
                 socket_acks.append(ack)
+                if not requested and on_request is not None:
+                    on_request(int(pid))
         except Exception as exc:
             logger.debug("Socket pause unavailable for gateway %s: %s", pid, exc)
     return profiles, mapped_pids, socket_acks
@@ -946,10 +956,14 @@ def _pause_windows_gateways_for_update() -> dict | None:
                         service_profiles={str(s.name): str(s.profile) for s in service_gateways})
     with _abort_on_error("Could not record the gateways this update pauses"):
         pause_record.record_pause(intended, adopted, claims)
-        # A second write, right before the first request: a crash before it leaves every live entry
-        # "never asked" (still serving, dropped); after it, a live one is draining and stays owed.
-        pause_record.mark_stop_requested(intended, running_pids)
-    profiles = _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids, unmapped_pids, unmapped)
+        # The intent (and where each request goes), right before the first request. A live entry is owed
+        # only once its request was issued (mark_stop_sent, or this update's marker still on disk): a
+        # crash before that leaves it "never asked" (still serving, dropped), after it, draining (owed).
+        pause_record.mark_stop_requested(intended, running_pids, markers={
+            pid: _planned_stop_marker_path(Path(profile_processes[pid].path)) for pid in running_pids
+            if pid in profile_processes and pid not in service_gateway_pids})
+    profiles = _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids, unmapped_pids, unmapped,
+                                      on_request=lambda pid: pause_record.mark_stop_sent(intended, pid))
     token = {"resume_needed": True, "profiles": profiles, "unmapped_pids": unmapped_pids, "unmapped": unmapped}
     # Every profile with ANY live gateway at discovery counts as running: service-supervised ones skip the
     # socket pause (absent from ``profiles``) but the SCM restart brings them back, not a cold-start.
@@ -980,11 +994,14 @@ def _cold_start_pause_token(adopted: dict | None, claims: list) -> dict | None:
         return pause_record.record_pause(token, adopted, claims)
 
 
-def _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids, unmapped_pids, unmapped) -> dict:
-    """Socket-pause the mapped gateways, drain, then tree-kill survivors; the paused ``profiles``."""
+def _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids, unmapped_pids, unmapped,
+                           on_request=None) -> dict:
+    """Socket-pause the mapped gateways, drain, then tree-kill survivors; the paused ``profiles``.
+    A force-killed process needs no stop record: dead, it is owed; alive, it was never stopped."""
     from gateway.status import get_process_start_time, terminate_pid
     from hermes_cli.update_cmd import _m
-    profiles, mapped_pids, socket_acks = _request_socket_pauses(running_pids, profile_processes, service_gateway_pids)
+    profiles, mapped_pids, socket_acks = _request_socket_pauses(
+        running_pids, profile_processes, service_gateway_pids, on_request=on_request)
     # Resolve venv-side launchers BEFORE draining: a dead worker's parent cannot be recovered (NoSuchProcess).
     # The launcher keeps ``.pyd`` mapped and would trip the venv-holder guard; it is killed with the survivors.
     launcher_pids = _m()._venv_launcher_ancestors(mapped_pids)

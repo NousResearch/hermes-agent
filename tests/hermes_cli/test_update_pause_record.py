@@ -391,3 +391,13 @@ def test_another_checkouts_writer_never_imports_or_relabels_this_checkouts_debt(
     assert seen == 1 and sorted(theirs["token"]["profiles"]) == ["beta"], f"imported this checkout's set: {theirs}"
     ours = pause_record.read()
     assert ours["install_root"] == str(REPO) and sorted(ours["token"]["profiles"]) == ["alpha"], ours
+
+
+# --- R12: the pause reader judges incarnations by the update marker's rule ---------------------
+def test_our_own_pid_is_ours_only_at_our_exact_creation_time():
+    """A record left by a killed update whose pid this launch now has (fresh pid namespace) is dead."""
+    me = pause_record.identity()
+    assert me["ct"].startswith("ct:") and pause_record.identity_is_live(me)
+    created = float(me["ct"][3:])
+    reused = {"pid": os.getpid(), "ct": f"ct:{created - 0.5:.3f}"}  # inside the cross-writer skew
+    assert not pause_record.identity_is_live(reused), "a killed update's record became ours by pid reuse"

@@ -1448,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent in arresto"
     standalone_quit: "consegnato"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Approva una volta"
     confirm_always_approve: "Approva sempre"
@@ -2721,6 +2719,7 @@ cli:
       restored: "Stato ripristinato da: {snapshot_id}"
       restart_recommended: "Riavvio consigliato per i processi gateway/dashboard affinché rilevino le modifiche a state.db."
       not_found: "Snapshot non trovato: {snapshot_id}"
+      restore_incomplete: "Lo snapshot {snapshot_id} non è stato ripristinato completamente; alcuni file sono stati rifiutati (vedi i log)"
       usage_prune: "Uso: /snapshot prune [keep-count]"
       pruned: "Eliminati {deleted} snapshot vecchi (conservati: {keep})."
     export:

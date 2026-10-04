@@ -253,6 +253,7 @@ _UPDATE_DEPENDENCIES = (
     "hermes_cli/_subprocess_compat.py",  # update git env, process-tree kill, PM git exposure
     "hermes_cli/desktop_build_lock.py",
     "hermes_cli/memory_provider_migration.py",
+    "hermes_cli/left_core_migration.py",  # source_build migrates plugins that left core
     "hermes_cli/desktop_console.py",
     "hermes_cli/bundled_app.py",
     "hermes_cli/gui_uninstall.py",

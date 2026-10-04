@@ -21,7 +21,15 @@ Each cell kills at one point of the update and then asserts what the user is owe
 
 Cells (one machine, in order; each publishes a fresh commit to update to):
 
-* ``mid_git``: killed while the update's git child (fetch / merge / reset) is alive;
+* ``mid_fetch``: killed while the update's ``git fetch`` child runs (nothing local moved yet);
+* ``mid_git``: killed while the update's local git write (the fast-forward ``merge``, or a
+  ``reset`` / ``checkout``) is inside the checkout with ``.git/index.lock`` held. The kill is
+  deterministic: a smudge filter the harness names in the install's own ``.git/config`` and
+  ``.git/info/attributes`` (git's filter hook, nothing in the product) holds git while it
+  writes ``hermes_constants.py``, the last changed path in index order. At that moment git
+  has written the cell's new file and ``hermes_cli/main.py`` and unlinked
+  ``hermes_constants.py``: the torn tree, stale ``index.lock`` and missing startup module
+  a mid-merge kill leaves;
 * ``tree_moved``: killed right after the checkout moved to the target, before the
   update finished (dependency sync, launcher refresh, completion stamp);
 * ``desktop_handoff``: the Desktop hand-off script's whole tree killed while its
@@ -33,7 +41,8 @@ Cells (one machine, in order; each publishes a fresh commit to update to):
   C1: the owner or its line-4 delegate is alive) and be gone once it exits.
 
 Kill points are observed states, never timings: a git child of the update in the
-process tree, HEAD read straight from the ref files, the hand-off's ``hermes update``
+process tree (by its argv), the held filter plus ``index.lock``, HEAD read straight from
+the ref files, the hand-off's ``hermes update``
 child past its lock acquisition (its banner in update.log) plus the claimed marker. Each waits with a bounded timeout and an update that
 exits before its kill point is a harness verdict, never a pass.
 
@@ -43,8 +52,13 @@ website/docs/developer-guide/source-update-completion.md.
 
 from __future__ import annotations
 
+import contextlib
+import shlex
+import shutil
 import subprocess
+import sys
 import time
+from pathlib import Path
 
 import psutil
 import pytest
@@ -71,13 +85,12 @@ pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration,
               pytest.mark.live_system_guard_bypass, REQUIRES_OPT_IN]
 
 MARKER = ".hermes-update-in-progress"
-GIT_OPS = ("fetch", "merge", "reset", "checkout", "pull")
 # Imported by every `hermes` launch: each crash target appends one statement to both.
 RUNTIME_FILES = ("hermes_constants.py", "hermes_cli/main.py")
 
 
-def _git_child(proc, machine, target) -> str | None:
-    """The git operation the update tree is running right now, if any."""
+def _git_op(proc, ops: tuple[str, ...]) -> tuple[str, int] | None:
+    """The first git child of the update tree whose argv names one of ``ops``: (op, pid)."""
     for child in descendants(proc):
         try:
             if "git" not in child.name().lower():
@@ -85,10 +98,114 @@ def _git_child(proc, machine, target) -> str | None:
             argv = [a.lower() for a in child.cmdline()]
         except Exception:  # raced its exit
             continue
-        op = next((a for a in argv[1:] if a in GIT_OPS), None)
+        op = next((a for a in argv[1:] if a in ops), None)
         if op:
-            return op
+            return op, child.pid
     return None
+
+
+def _git_fetching(proc, machine, target) -> str | None:
+    """The update's ``git fetch`` is running: the network half, before anything local moves."""
+    seen = _git_op(proc, ("fetch",))
+    return f"git fetch (pid {seen[1]})" if seen else None
+
+
+# -- mid_git: the local write, held by git's own filter hook --------------------------------
+
+# The update's git commands that write the checkout and its index.
+LOCAL_GIT_OPS = ("merge", "reset", "checkout")
+HOLD_FILTER = "hermes-e2e-hold"
+# The last changed path in index order (".hermes-e2e-*" < "hermes_cli/main.py" <
+# "hermes_constants.py"): when git reaches it, the other two are already written at the target.
+HELD_PATH = "hermes_constants.py"
+# The smudge filter. Git runs it while it checks out HELD_PATH, inside unpack_trees with
+# .git/index.lock held and the old file already unlinked. One shot: the first run marks
+# `held` and waits (the kill lands here); any later checkout passes the bytes through.
+HOLD_SCRIPT = """\
+import os, shutil, sys, time
+from pathlib import Path
+
+flags, budget = Path(sys.argv[1]), float(sys.argv[2])
+try:
+    fd = os.open(flags / "held", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+except FileExistsError:
+    pass
+else:
+    os.write(fd, str(os.getpid()).encode())
+    os.close(fd)
+    deadline = time.monotonic() + budget
+    while time.monotonic() < deadline and not (flags / "release").exists():
+        time.sleep(0.05)
+shutil.copyfileobj(sys.stdin.buffer, sys.stdout.buffer)
+"""
+
+
+class _GitHold:
+    """Arms the hold in the install's own git config (never the product), disarms after the kill.
+
+    Git runs a filter command through the sh of the Git that runs it (PortableGit's, for
+    the installer's Git); the command is the driver's own interpreter by absolute path.
+    """
+
+    def __init__(self, machine) -> None:
+        self.machine = machine
+        self.flags = machine.root / "git-hold"
+        self.attributes = machine.install_dir / ".git" / "info" / "attributes"
+        self._saved_attributes: str | None = None
+        self._held_since: float | None = None
+
+    @property
+    def held(self) -> bool:
+        return (self.flags / "held").is_file()
+
+    def arm(self) -> None:
+        shutil.rmtree(self.flags, ignore_errors=True)
+        self.flags.mkdir(parents=True)
+        script = self.flags / "hold.py"
+        script.write_text(HOLD_SCRIPT, encoding="utf-8")
+        command = " ".join(shlex.quote(p) for p in (
+            Path(sys.executable).as_posix(), script.as_posix(), self.flags.as_posix(), str(int(UPDATE_TIMEOUT))))
+        harness_git("-C", str(self.machine.install_dir), "config", f"filter.{HOLD_FILTER}.smudge", command)
+        if self.attributes.is_file():
+            self._saved_attributes = self.attributes.read_text(encoding="utf-8-sig")
+        self.attributes.parent.mkdir(parents=True, exist_ok=True)
+        self.attributes.write_text((self._saved_attributes or "") + f"/{HELD_PATH} filter={HOLD_FILTER}\n",
+                                   encoding="utf-8")
+
+    def disarm(self) -> None:
+        (self.flags / "release").touch()
+        if self._saved_attributes is None:
+            self.attributes.unlink(missing_ok=True)
+        else:
+            self.attributes.write_text(self._saved_attributes, encoding="utf-8")
+        with contextlib.suppress(RuntimeError):  # never armed: nothing to remove
+            harness_git("-C", str(self.machine.install_dir), "config", "--remove-section", f"filter.{HOLD_FILTER}")
+
+    def point(self, proc, machine, target) -> str | None:
+        """Git is inside the checkout: the filter holds it, a local write op is alive, index.lock is held."""
+        if not self.held:
+            return None
+        seen = _git_op(proc, LOCAL_GIT_OPS)
+        lock = machine.install_dir / ".git" / "index.lock"
+        if seen is None or not lock.is_file():
+            # Held by a git this cell does not model (or a lock-free write): name it, never
+            # wait out the whole update budget on a kill point that cannot come.
+            self._held_since = self._held_since or time.monotonic()
+            if time.monotonic() - self._held_since > HOLD_SETTLE_SECONDS:
+                gits = []
+                for child in descendants(proc):
+                    with contextlib.suppress(Exception):
+                        if "git" in child.name().lower():
+                            gits.append(" ".join(child.cmdline()[1:6]))
+                raise AssertionError(fail_with(
+                    machine, f"mid_git: the hold filter ran but no {'/'.join(LOCAL_GIT_OPS)} with "
+                             f".git/index.lock held appeared in {HOLD_SETTLE_SECONDS:.0f}s "
+                             f"(index.lock={lock.is_file()}, git children: {gits or 'none'})"))
+            return None
+        return f"git {seen[0]} (pid {seen[1]}) held writing {HELD_PATH}, .git/index.lock held"
+
+
+HOLD_SETTLE_SECONDS = 30.0
 
 
 def _head(machine) -> str:
@@ -151,7 +268,11 @@ def _kill_when(machine, proc, label: str, point, target: str) -> str:
     reached its kill point, which is a harness verdict, never a pass."""
     deadline = time.monotonic() + UPDATE_TIMEOUT
     while time.monotonic() < deadline:
-        seen = point(proc, machine, target)
+        try:
+            seen = point(proc, machine, target)
+        except BaseException:  # the point's own harness verdict: never leave the update running
+            taskkill_tree(proc.pid)
+            raise
         if seen:
             taskkill_tree(proc.pid)
             proc.wait(timeout=60)
@@ -166,9 +287,12 @@ def _kill_when(machine, proc, label: str, point, target: str) -> str:
     raise AssertionError(fail_with(machine, f"{label}: kill point not reached within {UPDATE_TIMEOUT:.0f}s"))
 
 
-def _crash(machine, srv, label: str, start, point) -> dict:
+def _crash(machine, srv, label: str, start, point, hold: _GitHold | None = None) -> dict:
     """Publish a new commit, start the update, kill it at ``point``, then the next
-    launch and the follow-up update. Returns everything the cell asserts on."""
+    launch and the follow-up update. Returns everything the cell asserts on.
+
+    ``hold`` is armed just before the update starts and disarmed right after the kill,
+    before anything inspects the tree: the next launch and the follow-up run plain git."""
     # Cells share one machine. A git lock an earlier cell's kill left behind is that
     # cell's verdict, not this one's: remove it the way the refused update tells the
     # user to ("remove the file manually to continue"), and say so in the evidence.
@@ -180,8 +304,15 @@ def _crash(machine, srv, label: str, start, point) -> dict:
     target = machine.mint(pre, label, RUNTIME_FILES)
     machine.publish(target)
     with machine.gateway_phase():
-        proc = start()
-        seen = _kill_when(machine, proc, label, point, target)
+        if hold is not None:
+            hold.arm()
+        try:
+            proc = start()
+            seen = _kill_when(machine, proc, label, point, target)
+        finally:
+            if hold is not None:
+                hold.disarm()
+        index_lock_after_kill = leftover.is_file()
         tree_after_kill = _tree(machine, label)
         turn = one_shot_turn(machine, srv, f"{label}-next-launch")
         tree_after_launch = _tree(machine, label)
@@ -189,7 +320,7 @@ def _crash(machine, srv, label: str, start, point) -> dict:
         follow_up = machine.hermes("update", "--yes", label=f"{label}-follow-up-update", timeout=UPDATE_TIMEOUT)
     tree_final = _tree(machine, label)
     return {"label": label, "pre": pre, "target": target, "seen": seen, "tree_after_kill": tree_after_kill,
-            "turn": turn, "tree_after_launch": tree_after_launch, "marker_after_launch": marker_after_launch,
+            "index_lock_after_kill": index_lock_after_kill, "turn": turn, "tree_after_launch": tree_after_launch, "marker_after_launch": marker_after_launch,
             "follow_up": follow_up, "tree_final": tree_final,
             "marker_final": (machine.hermes_home / MARKER).is_file()}
 
@@ -466,8 +597,11 @@ def journey(tmp_path_factory):
             j.step("installed", lambda: j.require(
                 "install", j["install"].returncode == 0, "install.ps1 failed", j["install"]))
             if j.ok("installed"):
+                j.step("mid_fetch", lambda: _crash(machine, srv, "mid-fetch",
+                                                   _cli_update(machine, "mid-fetch-update"), _git_fetching))
+                hold = _GitHold(machine)
                 j.step("mid_git", lambda: _crash(machine, srv, "mid-git",
-                                                 _cli_update(machine, "mid-git-update"), _git_child))
+                                                 _cli_update(machine, "mid-git-update"), hold.point, hold))
                 j.step("tree_moved", lambda: _crash(machine, srv, "tree-moved",
                                                     _cli_update(machine, "tree-moved-update"), _tree_moved))
                 j.step("desktop_handoff", lambda: _crash(machine, srv, "handoff",
@@ -496,7 +630,8 @@ def _assert_recovered(journey: Journey, cell: str) -> None:
     assert turn.ok, fail_with(
         m, f"{cell}: the first launch after the killed update ran no turn "
            f"(killed at {r['seen']}; reply printed={turn.reply_id in turn.run.stdout}, "
-           f"prompt reached provider={turn.reached_wire}; tree after the kill: {_tree_text(r['tree_after_kill'])})",
+           f"prompt reached provider={turn.reached_wire}; tree after the kill: {_tree_text(r['tree_after_kill'])}, "
+           f".git/index.lock after the kill={r['index_lock_after_kill']})",
         turn.run)
     _assert_tree_is(m, cell, "after the killed update and the next launch",
                     r["tree_after_launch"], {"pre-update commit": r["pre"], "target": r["target"]},
@@ -512,12 +647,21 @@ def _assert_recovered(journey: Journey, cell: str) -> None:
            f"{_marker_text(m)}", follow)
 
 
+def test_update_killed_mid_fetch_leaves_a_runnable_install(journey: Journey) -> None:
+    _assert_recovered(journey, "mid_fetch")
+
+
 # Red on main (wine2e run 37139409703): the killed git leaves .git/index.lock, which
 # hermes_cli/gitlock.py only sweeps once it is 10 minutes old, and the launch-time
 # interrupted-pull repair (hermes_cli/_early_recovery.py) dies with WinError 2 on a
 # machine whose only Git is the installer's private copy — so the next update refuses.
-# Fixed by #132361 (this branch is stacked on it).
+# Fixed by #132361. Until round 6 every green run killed at fetch (index.lock never
+# existed); the hold now lands the kill inside the merge's checkout, lock held.
 def test_update_killed_mid_git_leaves_a_runnable_install(journey: Journey) -> None:
+    r = journey["mid_git"]
+    assert r["index_lock_after_kill"], fail_with(
+        journey.machine, f"mid_git: the kill did not land inside git's checkout (killed at {r['seen']}, "
+                         f"no .git/index.lock after it): this cell proves nothing about a merge-time kill")
     _assert_recovered(journey, "mid_git")
 
 

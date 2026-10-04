@@ -204,12 +204,13 @@ once the fix lands, whichever merges first. An acceptance run of an integrated b
 refuses that allowance: `HERMES_E2E_STRICT_ACCEPTANCE=<owner>` (the `strict_acceptance`
 dispatch input of `ci.yaml` and `windows-install-update-e2e.yml`, e.g.
 `gh workflow run windows-install-update-e2e.yml --ref <branch> -f strict_acceptance=upd-txn`)
-turns every gap whose reason starts with `<owner>:` into a failure (`1`: every gap). Kill points are observed states (a git child in the process tree, HEAD read
-from the ref files, the hand-off's update child plus its marker), never sleeps.
+turns every gap whose reason starts with `<owner>:` into a failure (`1`: every gap). Kill points are observed states (a git child in the process tree by its argv, git held
+inside its checkout by a filter with `index.lock` present, HEAD read from the ref files, the hand-off's update child plus its marker), never sleeps.
 
 | Cell | Kill point | Test | Fixing lane |
 |---|---|---|---|
-| Windows `mid_git` | `taskkill /T /F` while the update's git child (fetch / merge / reset) runs | `tests/e2e/core/windows_update/test_crash_cells.py::test_update_killed_mid_git_leaves_a_runnable_install` | #132361 (stale `.git/index.lock`; launch-time interrupted-pull repair ran a bare `git` a machine with only the installer's Git does not have) |
+| Windows `mid_fetch` | `taskkill /T /F` while the update's `git fetch` child runs | `tests/e2e/core/windows_update/test_crash_cells.py::test_update_killed_mid_fetch_leaves_a_runnable_install` | green |
+| Windows `mid_git` | `taskkill /T /F` inside the fast-forward's checkout: a smudge filter the harness sets in the install's `.git/config` + `.git/info/attributes` holds `git merge` while it writes `hermes_constants.py` (index.lock held, two files already at the target, that one unlinked) | `tests/e2e/core/windows_update/test_crash_cells.py::test_update_killed_mid_git_leaves_a_runnable_install` | #132361 (stale `.git/index.lock`; launch-time interrupted-pull repair ran a bare `git` a machine with only the installer's Git does not have) |
 | Windows `tree_moved` | right after the checkout reached the target, before the update finished | `tests/e2e/core/windows_update/test_crash_cells.py::test_update_killed_after_the_tree_moved_leaves_a_runnable_install` | green on main |
 | Windows `desktop_handoff` | `scripts/desktop-update/windows.ps1` and its whole tree while its `hermes update` child runs | `tests/e2e/core/windows_update/test_crash_cells.py::test_desktop_handoff_killed_mid_run_leaves_a_runnable_install` | green on main |
 | Windows `orphaned_update` | only `windows.ps1` (no `/T`); its `hermes update` keeps running and must finish with the marker LIVE until it exits, then gone | `tests/e2e/core/windows_update/test_crash_cells.py::test_desktop_handoff_script_killed_alone_keeps_the_marker_live_until_its_update_ends` | #132354 + #132365 (line-4 delegate) |

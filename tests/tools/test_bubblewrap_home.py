@@ -404,6 +404,14 @@ class TestLayout:
         assert ("--remount-ro", config) not in mounts
         assert ("--remount-ro", home) in mounts
 
+    def test_layout_does_not_seal_a_directory_covered_by_a_bind_above_it(self, home):
+        _touch(home, ".local/share/pnpm/x")
+        local = os.path.join(home, ".local")
+        for flag in ("--ro-bind", "--bind", "--ro-bind-try"):
+            mounts = _mounts(_layout(home, binds=((flag, local, local),)))
+            sealed = [dest for f, dest in mounts if f == "--remount-ro"]
+            assert sealed == [home], (flag, sealed)
+
 
 class TestLinkProtection:
     """What must be read-only so the content behind an allowed dot symlink cannot change."""

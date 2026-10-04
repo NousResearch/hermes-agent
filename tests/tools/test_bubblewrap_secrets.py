@@ -1128,3 +1128,52 @@ class TestLinkedDotEntryIntegration:
             assert str(elsewhere / "gitconfig") not in {m[-1] for m in _mounts(env._wrap_popen_args(["bash"]))}
         finally:
             env.cleanup()
+
+
+@needs_bwrap
+class TestCoveredDefaultDenyDirIntegration:
+    """A bind on ~/.local covers the tmpfs of ~/.local/share below it: the
+    layout must not remount a path that is no longer a mount point."""
+
+    @pytest.fixture
+    def local_home(self, host_dir, monkeypatch):
+        home = host_dir / "home"
+        _write(home / ".local" / "share" / "app" / "x", VISIBLE)
+        _write(home / ".local" / "bin" / "t", VISIBLE)
+        for rel in SENSITIVE_HOME_PATHS:
+            if rel.startswith(".local/"):
+                (home / rel).mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        return home
+
+    def test_covered_by_a_read_only_operator_bind_runs(self, sandbox_root, work_dir, local_home):
+        local = local_home / ".local"
+        config = BubblewrapConfig(binds=(BindMount(src=str(local), dest=str(local), readonly=True),))
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=config)
+        try:
+            result = env.execute(f"cat {local}/share/app/x")
+            assert result["returncode"] == 0, result["output"]
+            assert result["output"].strip() == VISIBLE
+            assert env.execute(f"ls -A {local}/share/keyrings")["output"].strip() == ""
+        finally:
+            env.cleanup()
+
+    def test_covered_by_a_restricted_cwd_runs(self, sandbox_root, local_home):
+        env = BubblewrapEnvironment(cwd=str(local_home / ".local"), timeout=30, config=BubblewrapConfig(profile="restricted"))
+        try:
+            result = env.execute("echo hello")
+            assert result["returncode"] == 0, result["output"]
+            assert result["output"].strip() == "hello"
+        finally:
+            env.cleanup()
+
+    def test_covered_by_a_read_write_operator_bind_is_writable(self, sandbox_root, work_dir, local_home):
+        local = local_home / ".local"
+        config = BubblewrapConfig(binds=(BindMount(src=str(local), dest=str(local), readonly=False),))
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=config)
+        try:
+            result = env.execute(f"printf ok > {local}/share/app/new")
+            assert result["returncode"] == 0, result["output"]
+        finally:
+            env.cleanup()
+        assert (local / "share" / "app" / "new").read_text() == "ok"

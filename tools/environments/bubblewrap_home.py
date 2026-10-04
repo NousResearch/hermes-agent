@@ -481,12 +481,14 @@ def home_layout_args(
             argv += ["--ro-bind", empty_file, path]
 
     argv += list(late_args)
-    # A caller's bind that lands exactly on a default-deny directory
-    # replaces its tmpfs; a remount there would act on that bind and take
-    # away the access the operator gave.
-    replaced = {dest for _flag, _src, dest in binds}
+    # A caller's bind at or above a default-deny directory covers its
+    # tmpfs. A remount of that path would then act on the bind and take
+    # away the access the operator gave, or, for a directory below the
+    # bind, name a path that is no longer a mount point, which makes bwrap
+    # fail the whole spawn.
+    covering = [dest for _flag, _src, dest in binds]
     for path in reversed(sealed):
-        if path not in replaced:
+        if not any(_is_within(path, dest) for dest in covering):
             argv += ["--remount-ro", path]
     argv += ["--remount-ro", home]
     return argv

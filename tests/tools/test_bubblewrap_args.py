@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from tools.environments.bubblewrap import (
+    scratch_src_path,
     BindMount,
     BubblewrapConfig,
     PROFILE_NAMES,
@@ -699,55 +700,73 @@ class TestPinTargetInsideTheBind:
 
 
 class TestScratchDir:
-    """The scratch dir is bound back on top of the HERMES_HOME overlay."""
+    """A directory of the environment is bound over the scratch path, on top of the HERMES_HOME overlay."""
 
-    def test_scratch_bind_follows_the_profile(self, paths, tmp_path):
+    @pytest.fixture
+    def scratch(self, tmp_path):
         scratch = tmp_path / "hermes" / "cache" / "scratch"
         scratch.mkdir(parents=True)
-        hermes_home = str(tmp_path / "hermes")
-        for profile, flag in (("restricted", "--ro-bind-try"), ("workspace", "--bind-try"), ("network", "--bind-try")):
-            argv = build(BubblewrapConfig(profile=profile), paths=paths, hermes_home=hermes_home, scratch_dir=str(scratch))
-            assert (str(scratch), str(scratch)) in triples(argv, flag)
+        (scratch / "hermes-relay-dm-1.txt").write_text("x")
+        (scratch / "agent-browser-s1").mkdir()
+        return scratch
 
-    def test_scratch_bind_sits_after_the_overlay_and_before_the_state_dir(self, paths, tmp_path):
-        hermes_home = tmp_path / "hermes"
-        scratch = hermes_home / "cache" / "scratch"
-        scratch.mkdir(parents=True)
-        argv = build(paths=paths, hermes_home=str(hermes_home), scratch_dir=str(scratch))
+    def test_scratch_bind_follows_the_profile(self, paths, scratch):
+        src = scratch_src_path(paths["state_dir"])
+        hermes_home = str(scratch.parent.parent)
+        for profile, flag in (("restricted", "--ro-bind"), ("workspace", "--bind"), ("network", "--bind")):
+            argv = build(BubblewrapConfig(profile=profile), paths=paths, hermes_home=hermes_home,
+                         scratch_dir=str(scratch), scratch_src=src)
+            assert (src, str(scratch)) in triples(argv, flag)
+
+    def test_scratch_bind_sits_after_the_overlay_and_before_the_state_dir(self, paths, scratch):
+        hermes_home = scratch.parent.parent
+        src = scratch_src_path(paths["state_dir"])
+        argv = build(paths=paths, hermes_home=str(hermes_home), scratch_dir=str(scratch), scratch_src=src)
         i_overlay = next(i for i, a in enumerate(argv) if a == "--tmpfs" and argv[i + 1] == str(hermes_home))
-        i_scratch = next(i for i, a in enumerate(argv) if a == "--bind-try" and argv[i + 1] == str(scratch))
+        i_scratch = next(i for i, a in enumerate(argv) if a == "--bind" and argv[i + 1] == src)
         i_state = next(i for i, a in enumerate(argv) if a == "--bind" and argv[i + 1] == paths["state_dir"])
         assert i_overlay < i_scratch < i_state
 
     def test_scratch_under_home_is_bound_before_home_is_sealed(self, paths):
         scratch = Path(paths["hermes_home"]) / "cache" / "scratch"
         scratch.mkdir(parents=True)
-        argv = build(paths=paths, scratch_dir=str(scratch))
-        i_scratch = next(i for i, a in enumerate(argv) if a == "--bind-try" and argv[i + 1] == str(scratch))
+        src = scratch_src_path(paths["state_dir"])
+        argv = build(paths=paths, scratch_dir=str(scratch), scratch_src=src)
+        i_scratch = next(i for i, a in enumerate(argv) if a == "--bind" and argv[i + 1] == src)
         i_seal = next(i for i, a in enumerate(argv) if a == "--remount-ro" and argv[i + 1] == paths["home"])
         assert i_scratch < i_seal
 
-    def test_no_scratch_bind_without_a_scratch_dir(self, paths):
-        argv = build(paths=paths)
-        assert not any(a.endswith(os.path.join("cache", "scratch")) for a in argv)
+    def test_host_scratch_dir_is_never_a_mount_source(self, paths, scratch):
+        src = scratch_src_path(paths["state_dir"])
+        argv = build(paths=paths, hermes_home=str(scratch.parent.parent), scratch_dir=str(scratch), scratch_src=src)
+        # The scratch path shows once, as the destination of the one bind;
+        # no entry of the host directory is named at all.
+        assert argv.count(str(scratch)) == 1
+        assert argv[argv.index(str(scratch)) - 1] == src
+        assert not any(a.startswith(str(scratch) + os.sep) for a in argv)
+
+    def test_no_scratch_bind_without_both_paths(self, paths, scratch):
+        for kwargs in ({}, {"scratch_dir": str(scratch)}, {"scratch_src": scratch_src_path(paths["state_dir"])}):
+            argv = build(paths=paths, hermes_home=str(scratch.parent.parent), **kwargs)
+            assert not any(a.endswith(os.path.join("cache", "scratch")) for a in argv)
+
+    def test_scratch_source_sits_beside_the_state_dir(self, paths):
+        src = scratch_src_path(paths["state_dir"])
+        assert os.path.dirname(src) == os.path.dirname(paths["state_dir"])
+        assert not src.startswith(paths["state_dir"] + os.sep)
 
 
 class TestHideBelowRestoredRoots:
     def test_hide_overlay_sits_after_the_bind_of_its_root(self, paths, tmp_path):
         hermes_home = tmp_path / "hermes"
-        scratch = hermes_home / "cache" / "scratch"
         documents = hermes_home / "cache" / "documents"
-        (scratch / "keep").mkdir(parents=True)
         documents.mkdir(parents=True)
         (documents / "secret.txt").write_text("x")
-        hidden = sensitive_paths(paths["home"], str(hermes_home), (str(scratch / "keep"), str(documents / "secret.txt")))
-        assert str(scratch / "keep") in hidden and str(documents / "secret.txt") in hidden
-        argv = build(paths=paths, hermes_home=str(hermes_home), hidden_paths=hidden,
-                     scratch_dir=str(scratch), staged_roots=(str(documents),))
+        hidden = sensitive_paths(paths["home"], str(hermes_home), (str(documents / "secret.txt"),))
+        assert str(documents / "secret.txt") in hidden
+        argv = build(paths=paths, hermes_home=str(hermes_home), hidden_paths=hidden, staged_roots=(str(documents),))
         last = {token: i for i, token in enumerate(argv)}
-        i_scratch = next(i for i, a in enumerate(argv) if a == "--bind-try" and argv[i + 1] == str(scratch))
         i_docs = next(i for i, a in enumerate(argv) if a == "--ro-bind-try" and argv[i + 1] == str(documents))
-        assert last[str(scratch / "keep")] > i_scratch and argv[last[str(scratch / "keep")] - 1] == "--tmpfs"
         assert last[str(documents / "secret.txt")] > i_docs
         assert argv[last[str(documents / "secret.txt")] - 2] == "--ro-bind"
         i_state = next(i for i, a in enumerate(argv) if a == "--bind" and argv[i + 1] == paths["state_dir"])
@@ -762,93 +781,3 @@ class TestHideBelowRestoredRoots:
         hidden = sensitive_paths(paths["home"], str(hermes_home), (str(other),))
         argv = build(paths=paths, hermes_home=str(hermes_home), hidden_paths=hidden, scratch_dir=str(scratch))
         assert argv.count(str(other)) == 1
-
-
-def _listen(path):
-    """A listening unix socket at *path*; bound by a relative name, since a test path is too long for one."""
-    import socket
-
-    sock = socket.socket(socket.AF_UNIX)
-    here = os.getcwd()
-    os.chdir(os.path.dirname(path))
-    try:
-        sock.bind(os.path.basename(path))
-    finally:
-        os.chdir(here)
-    sock.listen(1)
-    return sock
-
-
-class TestScratchMask:
-    """Other Hermes components keep sockets and DM payloads in the scratch
-    dir; they are masked inside the bind the sandbox gets."""
-
-    @pytest.fixture
-    def scratch(self, tmp_path):
-        scratch = tmp_path / "hermes" / "cache" / "scratch"
-        (scratch / "agent-browser-s1").mkdir(parents=True)
-        (scratch / "hermes-dm-1000").mkdir()
-        (scratch / "hermes-results").mkdir()
-        (scratch / "hermes-dm-legacy.txt").write_text("x")
-        (scratch / "hermes-relay-dm-1.txt").write_text("x")
-        (scratch / "agent-browser-s1" / "info.txt").write_text("x")
-        (scratch / "own.txt").write_text("x")
-        return scratch
-
-    def _argv(self, paths, scratch, **kwargs):
-        return build(paths=paths, hermes_home=str(scratch.parent.parent), scratch_dir=str(scratch), **kwargs)
-
-    def test_mask_covers_sockets_and_dm_entries_after_the_scratch_bind(self, paths, scratch):
-        socks = [_listen(str(scratch / "top.sock")), _listen(str(scratch / "agent-browser-s1" / "ctl.sock"))]
-        try:
-            argv = self._argv(paths, scratch)
-        finally:
-            for sock in socks:
-                sock.close()
-        empty = empty_file_path(paths["state_dir"])
-        ro = triples(argv, "--ro-bind")
-        for rel in ("top.sock", "agent-browser-s1/ctl.sock", "hermes-dm-legacy.txt", "hermes-relay-dm-1.txt"):
-            assert (empty, str(scratch / rel)) in ro, rel
-        assert str(scratch / "hermes-dm-1000") in singles(argv, "--tmpfs")
-        i_scratch = next(i for i, a in enumerate(argv) if a == "--bind-try" and argv[i + 1] == str(scratch))
-        assert all(argv.index(str(scratch / rel)) > i_scratch for rel in ("top.sock", "hermes-dm-1000"))
-        for rel in ("own.txt", "hermes-results", "agent-browser-s1/info.txt", "agent-browser-s1"):
-            assert argv.count(str(scratch / rel)) == 0, rel
-
-    def test_mask_skips_a_symlink_and_a_socket_two_levels_down(self, paths, scratch):
-        (scratch / "a" / "b").mkdir(parents=True)
-        socks = [_listen(str(scratch / "a" / "b" / "deep.sock")), _listen(str(scratch / "real.sock"))]
-        (scratch / "link.sock").symlink_to("real.sock")
-        (scratch / "hermes-dm-link").symlink_to("own.txt")
-        try:
-            argv = self._argv(paths, scratch)
-        finally:
-            for sock in socks:
-                sock.close()
-        assert str(scratch / "link.sock") not in argv
-        assert str(scratch / "hermes-dm-link") not in argv
-        assert str(scratch / "a" / "b" / "deep.sock") not in argv
-        assert str(scratch / "real.sock") in argv
-
-    def test_mask_is_empty_without_a_scratch_dir_or_when_it_cannot_be_listed(self, paths, tmp_path):
-        missing = tmp_path / "hermes" / "cache" / "scratch"
-        argv = build(paths=paths, hermes_home=str(tmp_path / "hermes"), scratch_dir=str(missing))
-        assert argv.count(str(missing)) == 2  # the bind-try alone: source and destination
-        from tools.environments.bubblewrap import scratch_mask
-
-        assert scratch_mask(None, "/nonexistent") == []
-        assert scratch_mask(str(missing), "/nonexistent") == []
-
-    def test_mask_comes_after_every_pin_inside_the_scratch_dir(self, paths, scratch):
-        (scratch / "a" / "b").mkdir(parents=True)
-        (scratch / "a" / "b" / "s.txt").write_text("x")
-        sock = _listen(str(scratch / "a" / "ctl.sock"))
-        try:
-            hidden = sensitive_paths(paths["home"], str(scratch.parent.parent), (str(scratch / "a" / "b" / "s.txt"),))
-            argv = self._argv(paths, scratch, hidden_paths=hidden)
-        finally:
-            sock.close()
-        i_pin = next(i for i, a in enumerate(argv) if a == "--bind" and argv[i + 1] == str(scratch / "a"))
-        i_mask = argv.index(str(scratch / "a" / "ctl.sock"))
-        i_overlay = max(i for i, a in enumerate(argv) if a == str(scratch / "a" / "b" / "s.txt"))
-        assert i_pin < i_mask < i_overlay

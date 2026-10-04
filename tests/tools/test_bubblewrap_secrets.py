@@ -17,6 +17,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -948,8 +949,9 @@ class TestHomeDefaultDenyIntegration:
 
 @needs_bwrap
 class TestScratchDirIntegration:
-    """TMPDIR points at HERMES_HOME/cache/scratch, which the overlay would hide:
-    a write there must be on disk for the next command."""
+    """TMPDIR points at HERMES_HOME/cache/scratch, which the overlay would hide
+    and which every Hermes process shares: the sandbox gets a directory of
+    its own at that path, kept from one command to the next."""
 
     def test_scratch_file_written_in_one_command_is_read_in_the_next(self, work_dir, hermes_home):
         scratch = hermes_home / "cache" / "scratch"
@@ -963,9 +965,10 @@ class TestScratchDirIntegration:
             made = env.execute(f"TMPDIR={scratch} mktemp")["output"].strip()
             assert made.startswith(str(scratch) + os.sep)
             assert env.execute(f"test -f {made}")["returncode"] == 0
+            # Nothing lands in the directory the other Hermes processes use.
+            assert list(scratch.iterdir()) == []
         finally:
             env.cleanup()
-        assert (scratch / "scratch-probe").read_text() == "kept"
 
     def test_scratch_is_read_only_under_the_restricted_profile(self, work_dir, hermes_home):
         scratch = hermes_home / "cache" / "scratch"
@@ -974,6 +977,7 @@ class TestScratchDirIntegration:
             result = env.execute(f"printf no > {scratch}/scratch-probe")
             assert result["returncode"] != 0
             assert "Read-only file system" in result["output"]
+            assert env.execute(f"ls -A {scratch}")["output"].strip() == ""
         finally:
             env.cleanup()
         assert not (scratch / "scratch-probe").exists()
@@ -987,9 +991,96 @@ class TestScratchDirIntegration:
             scratch = hermes_home / "cache" / "scratch"
             assert env.execute(f"printf kept > {scratch}/scratch-probe")["returncode"] == 0
             assert env.execute(f"cat {scratch}/scratch-probe")["output"].strip() == "kept"
+            assert not (scratch / "scratch-probe").exists()
         finally:
             env.cleanup()
-        assert (hermes_home / "cache" / "scratch" / "scratch-probe").read_text() == "kept"
+
+    def test_two_environments_do_not_share_scratch(self, work_dir, hermes_home):
+        scratch = hermes_home / "cache" / "scratch"
+        first = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        second = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        try:
+            assert first.execute(f"printf {MARKER} > {scratch}/from-first")["returncode"] == 0
+            out = second.execute(f"ls -A {scratch}; cat {scratch}/from-first 2>&1")["output"]
+            assert MARKER not in out and "from-first" not in out.replace("from-first: No such file", "")
+            assert first.execute(f"cat {scratch}/from-first")["output"].strip() == MARKER
+        finally:
+            first.cleanup()
+            second.cleanup()
+
+    def test_scratch_directory_is_removed_with_the_environment(self, work_dir, hermes_home):
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30)
+        sandboxes = Path(env.get_temp_dir()).parent
+        try:
+            assert env.execute(f"printf x > {hermes_home}/cache/scratch/f")["returncode"] == 0
+        finally:
+            env.cleanup()
+        assert list(sandboxes.iterdir()) == []
+
+
+def _listen(path: Path):
+    """A listening unix socket at *path*, bound by a relative name (test paths are too long for one)."""
+    import socket
+
+    sock = socket.socket(socket.AF_UNIX)
+    here = os.getcwd()
+    os.chdir(path.parent)
+    try:
+        sock.bind(path.name)
+    finally:
+        os.chdir(here)
+    sock.listen(1)
+    return sock
+
+
+@needs_bwrap
+class TestSharedScratchIsNotInViewIntegration:
+    """The host scratch dir is TMPDIR of every Hermes process: it holds
+    control sockets and the message payloads of other sessions, and a new
+    one can appear at any time. None of it shows in a sandbox."""
+
+    @pytest.mark.parametrize("profile", ["network", "restricted"])
+    def test_entries_made_before_and_during_a_command_are_not_visible(self, work_dir, hermes_home, profile):
+        import threading
+
+        scratch = hermes_home / "cache" / "scratch"
+        _write(scratch / "hermes-dm-1000" / "msg.txt")
+        _write(scratch / "hermes-relay-dm-early.txt")
+        _write(scratch / "agent-browser-s1" / "info.txt")
+        sock = _listen(scratch / "top.sock")
+        # Both sides signal through a directory bound read-write under every profile.
+        signal = work_dir.parent / "signal"
+        signal.mkdir()
+        started, go = signal / "started", signal / "go"
+        config = BubblewrapConfig(profile=profile, binds=(BindMount(str(signal), str(signal), False),))
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=60, config=config)
+        result: dict = {}
+        command = (
+            f"touch {started}; while [ ! -e {go} ]; do sleep 0.05; done; "
+            f"ls -AR {scratch}; cat {scratch}/* {scratch}/*/* 2>&1"
+        )
+        worker = threading.Thread(target=lambda: result.update(env.execute(command)))
+        try:
+            worker.start()
+            deadline = time.monotonic() + 30
+            while not started.exists():
+                assert time.monotonic() < deadline, "the command did not start"
+                time.sleep(0.05)
+            # Made while the command runs, after every mount of its sandbox is in place.
+            _write(scratch / "hermes-relay-dm-late.txt")
+            go.touch()
+            worker.join(60)
+            assert not worker.is_alive()
+        finally:
+            go.touch()
+            worker.join(60)
+            env.cleanup()
+            sock.close()
+        out = result["output"]
+        assert MARKER not in out
+        for name in ("hermes-dm-1000", "hermes-relay-dm-early.txt", "hermes-relay-dm-late.txt", "agent-browser-s1", "top.sock"):
+            assert name not in out, (name, out)
+        assert (scratch / "hermes-relay-dm-late.txt").read_text().startswith(MARKER)
 
 
 @needs_bwrap
@@ -1082,20 +1173,17 @@ class TestCoveredDefaultDenyDirIntegration:
 
 @needs_bwrap
 class TestHideBelowRestoredRootsIntegration:
-    """A hide entry under the scratch dir or a staged data root stays hidden
-    although its root is bound back on top of the HERMES_HOME overlay."""
+    """A hide entry under a staged data root stays hidden although its root
+    is bound back on top of the HERMES_HOME overlay."""
 
     @staticmethod
     def _check(hermes_home, cwd):
         secret = _write(hermes_home / "cache" / "documents" / "secret.txt")
-        keep = hermes_home / "cache" / "scratch" / "keep"
-        _write(keep / "inner")
         _write(hermes_home / "cache" / "documents" / "open.txt", VISIBLE)
-        config = BubblewrapConfig(hide=(str(secret), str(keep)))
+        config = BubblewrapConfig(hide=(str(secret),))
         env = BubblewrapEnvironment(cwd=str(cwd), timeout=30, config=config)
         try:
             assert MARKER not in env.execute(f"cat {secret} 2>&1")["output"]
-            assert env.execute(f"ls -A {keep}")["output"].strip() == ""
             assert env.execute(f"cat {hermes_home}/cache/documents/open.txt")["output"].strip() == VISIBLE
             assert env.execute(f"printf ok > {hermes_home}/cache/scratch/probe")["returncode"] == 0
         finally:
@@ -1110,20 +1198,6 @@ class TestHideBelowRestoredRootsIntegration:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         self._check(hermes_home, work_dir)
 
-    def test_hide_entry_deep_below_the_scratch_dir_cannot_be_moved_into_view(self, work_dir, hermes_home):
-        scratch = hermes_home / "cache" / "scratch"
-        deep = _write(scratch / "a" / "b" / "deep.txt")
-        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=BubblewrapConfig(hide=(str(deep),)))
-        try:
-            assert env.execute(f"mv {scratch}/a {scratch}/z")["returncode"] != 0
-            assert env.execute(f"mv {scratch}/a/b {scratch}/a/y")["returncode"] != 0
-            out = env.execute(f"cat {scratch}/z/b/deep.txt {scratch}/a/y/deep.txt {deep} 2>&1")["output"]
-            assert MARKER not in out
-        finally:
-            env.cleanup()
-        assert (scratch / "a" / "b" / "deep.txt").is_file()
-        assert not (scratch / "z").exists()
-
     def test_hide_entry_equal_to_a_staged_root_keeps_that_root_hidden(self, work_dir, hermes_home):
         documents = hermes_home / "cache" / "documents"
         _write(documents / "secret.txt")
@@ -1135,19 +1209,16 @@ class TestHideBelowRestoredRootsIntegration:
         finally:
             env.cleanup()
 
-    def test_hide_entry_equal_to_the_scratch_dir_keeps_it_hidden_and_warns_once(self, work_dir, hermes_home, caplog):
-        import logging
-
+    def test_hide_entry_equal_to_the_scratch_dir_leaves_the_sandbox_its_own_scratch(self, work_dir, hermes_home):
         scratch = hermes_home / "cache" / "scratch"
         _write(scratch / "secret.txt")
-        with caplog.at_level(logging.WARNING, logger="tools.environments.bubblewrap"):
-            env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=BubblewrapConfig(hide=(str(scratch),)))
+        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=BubblewrapConfig(hide=(str(scratch),)))
         try:
             assert MARKER not in env.execute(f"cat {scratch}/secret.txt 2>&1")["output"]
-            assert env.execute("true")["returncode"] == 0
+            assert env.execute(f"printf kept > {scratch}/probe")["returncode"] == 0
+            assert env.execute(f"cat {scratch}/probe")["output"].strip() == "kept"
         finally:
             env.cleanup()
-        assert len([r for r in caplog.records if "scratch" in r.getMessage() and "bubblewrap_hide" in r.getMessage()]) == 1
 
     def test_hide_entry_inside_the_profile_home_is_refused(self, work_dir, hermes_home):
         # The profile home is bound read-write on top of the overlay, so a
@@ -1157,91 +1228,3 @@ class TestHideBelowRestoredRootsIntegration:
         config = BubblewrapConfig(home_mode="profile", hide=(str(keys),))
         with pytest.raises(ValueError, match="terminal.home_mode"):
             BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=config)
-
-
-CONNECT = (
-    "python3 -c 'import socket,sys\n"
-    "s=socket.socket(socket.AF_UNIX)\n"
-    "try:\n s.connect(sys.argv[1]); print(\"CONNECTED\")\n"
-    "except OSError as e:\n print(\"blocked\")' "
-)
-
-
-def _listen(path: Path):
-    """A listening unix socket at *path*, bound by a relative name (test paths are too long for one)."""
-    import socket
-
-    sock = socket.socket(socket.AF_UNIX)
-    here = os.getcwd()
-    os.chdir(path.parent)
-    try:
-        sock.bind(path.name)
-    finally:
-        os.chdir(here)
-    sock.listen(1)
-    return sock
-
-
-@needs_bwrap
-class TestScratchMaskIntegration:
-    """The scratch dir is shared with every Hermes process. Its sockets and
-    the DM payload entries are masked inside the sandbox."""
-
-    @pytest.mark.parametrize("profile", ["network", "restricted"])
-    def test_scratch_mask_blocks_sockets_and_dm_payloads_and_leaves_the_rest(self, work_dir, hermes_home, profile):
-        scratch = hermes_home / "cache" / "scratch"
-        _write(scratch / "agent-browser-s1" / "info.txt", VISIBLE)
-        _write(scratch / "hermes-dm-1000" / "msg.txt")
-        _write(scratch / "hermes-dm-legacy.txt")
-        _write(scratch / "hermes-results" / "r.txt", VISIBLE)
-        socks = [_listen(scratch / "top.sock"), _listen(scratch / "agent-browser-s1" / "ctl.sock")]
-        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=BubblewrapConfig(profile=profile))
-        try:
-            for directory, name in ((scratch, "top.sock"), (scratch / "agent-browser-s1", "ctl.sock")):
-                out = env.execute(f"cd {directory} && {CONNECT} {name}")["output"]
-                assert "blocked" in out and "CONNECTED" not in out, (name, out)
-            out = env.execute(f"cat {scratch}/hermes-dm-1000/msg.txt {scratch}/hermes-dm-legacy.txt 2>&1")["output"]
-            assert MARKER not in out
-            assert env.execute(f"cat {scratch}/hermes-results/r.txt")["output"].strip() == VISIBLE
-            assert env.execute(f"cat {scratch}/agent-browser-s1/info.txt")["output"].strip() == VISIBLE
-            written = env.execute(f"printf ok > {scratch}/own")["returncode"] == 0
-            assert written is (profile != "restricted")
-        finally:
-            env.cleanup()
-            for sock in socks:
-                sock.close()
-        assert (scratch / "hermes-dm-1000" / "msg.txt").read_text().startswith(MARKER)
-
-    def test_scratch_socket_is_reachable_without_the_mask(self, work_dir, hermes_home):
-        # The control for the test above: outside the sandbox the same connect passes.
-        scratch = hermes_home / "cache" / "scratch"
-        scratch.mkdir(parents=True, exist_ok=True)
-        sock = _listen(scratch / "top.sock")
-        try:
-            out = subprocess.run(f"cd {scratch} && {CONNECT} top.sock", shell=True, capture_output=True, text=True).stdout
-        finally:
-            sock.close()
-        assert "CONNECTED" in out
-
-
-@needs_bwrap
-class TestScratchMaskUnderPinsIntegration:
-    """A pin inside the scratch dir rebinds a host directory. The mask must
-    land on top of it, or the pin shows what the mask hid."""
-
-    def test_mask_holds_beside_a_hide_entry_that_needs_a_pin(self, work_dir, hermes_home):
-        scratch = hermes_home / "cache" / "scratch"
-        hidden = _write(scratch / "a" / "b" / "s.txt")
-        dm_hidden = _write(scratch / "hermes-dm-1" / "sub" / "h.txt")
-        _write(scratch / "hermes-dm-1" / "sub" / "keep.txt")
-        sock = _listen(scratch / "a" / "ctl.sock")
-        config = BubblewrapConfig(hide=(str(hidden), str(dm_hidden)))
-        env = BubblewrapEnvironment(cwd=str(work_dir), timeout=30, config=config)
-        try:
-            out = env.execute(f"cd {scratch}/a && {CONNECT} ctl.sock")["output"]
-            assert "blocked" in out and "CONNECTED" not in out, out
-            out = env.execute(f"cat {scratch}/hermes-dm-1/sub/keep.txt {dm_hidden} {hidden} 2>&1")["output"]
-            assert MARKER not in out
-        finally:
-            env.cleanup()
-            sock.close()

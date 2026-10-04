@@ -350,7 +350,7 @@ class TestConstructionTimeMounts:
         # construction as well.
         assert params == [
             "config", "initial_cwd", "state_dir", "home", "hermes_home", "tracked_cwd", "bwrap_path", "hidden_paths",
-            "home_root", "home_allow", "scratch_dir", "staged_roots",
+            "home_root", "home_allow", "scratch_dir", "scratch_src", "staged_roots",
         ]
 
     def test_chdir_follows_tracked_cwd_with_fixed_mounts(self, sandbox_root, work_dir):
@@ -825,10 +825,10 @@ class TestSandboxDirGuard:
         assert not root.exists() or not any(root.iterdir())
 
     @pytest.mark.parametrize("rel", ["sb", "", "deep/er"])
-    @pytest.mark.parametrize("profile", ["workspace", "network"])
+    @pytest.mark.parametrize("profile", ["workspace", "network", "restricted"])
     def test_sandbox_dir_inside_the_scratch_dir_is_refused(self, tmp_path, work_dir, monkeypatch, rel, profile):
-        # The scratch dir is bound read-write on top of the HERMES_HOME
-        # overlay, so the overlay no longer shields a sandbox dir there.
+        # A directory of the environment is bound over the scratch path, so
+        # a state dir under that path could not be bound at its own path.
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         scratch = hermes_home / "cache" / "scratch"
@@ -838,14 +838,6 @@ class TestSandboxDirGuard:
             BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(profile=profile))
         assert str(scratch) in str(exc.value)
         assert "scratch" in str(exc.value)
-
-    def test_sandbox_dir_inside_the_scratch_dir_constructs_when_scratch_is_read_only(self, tmp_path, work_dir, monkeypatch):
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(hermes_home / "cache" / "scratch" / "sb"))
-        with _no_session():
-            BubblewrapEnvironment(cwd=str(work_dir), timeout=10, config=BubblewrapConfig(profile="restricted")).cleanup()
 
     @pytest.mark.parametrize("mode", ["profile", "auto", "real"])
     def test_default_sandbox_dir_constructs_under_every_home_mode(self, tmp_path, work_dir, monkeypatch, mode):

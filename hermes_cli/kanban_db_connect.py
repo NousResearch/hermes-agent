@@ -1217,6 +1217,7 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
                 conn.execute(f"RELEASE {savepoint}")
             raise
         else:
+            # No event-hook drain: RELEASE is not durable; the outer COMMIT drains.
             conn.execute(f"RELEASE {savepoint}")
         return
 
@@ -1228,6 +1229,7 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
         # don't let this secondary failure shadow the real one.
         with contextlib.suppress(sqlite3.OperationalError):
             conn.execute("ROLLBACK")
+        _kb._discard_pending_event_hooks(conn)
         raise
     else:
         try:
@@ -1237,9 +1239,13 @@ def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
             # connection isn't poisoned for the next BEGIN IMMEDIATE.
             with contextlib.suppress(sqlite3.OperationalError):
                 conn.execute("ROLLBACK")
+            _kb._discard_pending_event_hooks(conn)
             raise
         # Post-commit torn-extend check — raise now rather than silently corrupt.
         _check_file_length_invariant(conn)
+        # Rows are durable: fire staged on_kanban_event_appended hooks (never
+        # under the write lock; best-effort, never raises).
+        _kb._drain_pending_event_hooks(conn)
 
 
 # Late-bound origin namespace (see module docstring); imported LAST so this

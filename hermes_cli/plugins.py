@@ -176,6 +176,13 @@ VALID_HOOKS: Set[str] = {
     #   (privacy: task ids, assignees, workspace paths).
     "on_kanban_worker_spawned", "on_kanban_worker_exited", "on_kanban_worker_stale_claim",
     "on_kanban_task_updated", "on_kanban_dispatch_tick",
+    # event_appended (every ``task_events`` INSERT — created/commented/linked/assigned/archived/
+    # and the dispatcher/tick kinds — including CLI-originated writes no lifecycle hook covers;
+    # fired post-commit, once per row in ``id`` order for batched appends; returns ignored).
+    # Kwargs: event_id, task_id, run_id, kind, payload (the stored JSON text, may be None),
+    # created_at, board, profile_name, origin ("cli"|"tool"|"dispatcher"|"api"). Privacy: payload
+    # may carry task text, like task_updated/dispatch_tick.
+    "on_kanban_event_appended",
     # gateway_platform_event: normalized envelopes only, never raw SDK objects or adapter handles.
     # Kwargs: platform, event_type, payload (event_type-local; see hooks.md). New event types land
     # only together with real fire-sites.

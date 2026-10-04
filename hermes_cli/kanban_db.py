@@ -27,7 +27,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from toolsets import get_toolset_names
 
@@ -189,6 +189,68 @@ def _kanban_observer_consumed(event: str) -> bool:
         return has_hook(event)
     except Exception:  # pragma: no cover - defensive
         return False
+
+
+# Staged ``on_kanban_event_appended`` notifications, keyed by ``id(conn)``.
+# ``sqlite3.Connection`` supports neither attribute assignment nor weak
+# references, so the queue lives here; ``write_txn`` drains it after the
+# outermost COMMIT (in ``id`` order) and discards it on rollback, so entries
+# never outlive their transaction (no ``id()``-reuse hazard).
+# Tuple: (event_id, task_id, run_id, kind, payload_text, created_at).
+_PENDING_EVENT_HOOKS: Dict[int, List[Tuple[int, str, Optional[int], str, Optional[str], int]]] = {}
+
+
+def _queue_pending_event_hook(
+    conn: sqlite3.Connection, event_id: int, task_id: str, run_id: Optional[int],
+    kind: str, payload_text: Optional[str], created_at: int,
+) -> None:
+    """Stage one ``on_kanban_event_appended`` notification for post-commit fire."""
+    if not _kanban_observer_consumed("on_kanban_event_appended"):
+        return
+    _PENDING_EVENT_HOOKS.setdefault(id(conn), []).append(
+        (event_id, task_id, run_id, kind, payload_text, created_at)
+    )
+    if not conn.in_transaction:
+        # No enclosing write_txn (autocommit): the row is already durable,
+        # so drain inline rather than leak a queue nothing will drain.
+        _drain_pending_event_hooks(conn)
+
+
+def _drain_pending_event_hooks(conn: sqlite3.Connection) -> None:
+    """Fire staged ``on_kanban_event_appended`` hooks post-commit, in ``id`` order.
+
+    Called by ``write_txn`` after the outermost COMMIT (never under the
+    SQLite write lock). Best-effort throughout: never raises, returns ignored.
+    """
+    pending = _PENDING_EVENT_HOOKS.pop(id(conn), None)
+    if not pending:
+        return
+    try:
+        if not _kanban_observer_consumed("on_kanban_event_appended"):
+            return
+        try:
+            board = get_current_board()
+        except Exception:
+            board = DEFAULT_BOARD
+        origin = _kanban_event_origin()
+        for event_id, task_id, run_id, kind, payload_text, created_at in sorted(pending):
+            try:
+                # profile_name is injected by _fire_kanban_lifecycle_hook; passing it
+                # here too would collide (TypeError, swallowed as a hook failure).
+                _fire_kanban_lifecycle_hook(
+                    "on_kanban_event_appended", task_id, board=board,
+                    event_id=event_id, run_id=run_id, kind=kind, payload=payload_text,
+                    created_at=created_at, origin=origin,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                _log.debug("kanban event appended hook failed: %s", exc)
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("kanban event appended drain failed: %s", exc)
+
+
+def _discard_pending_event_hooks(conn: sqlite3.Connection) -> None:
+    """Drop staged notifications after a rollback; the rows never became durable."""
+    _PENDING_EVENT_HOOKS.pop(id(conn), None)
 
 
 def _fire_worker_spawned_hook(
@@ -394,6 +456,34 @@ def scoped_current_board(slug: str):
         yield
     finally:
         _CURRENT_BOARD_OVERRIDE.reset(token)
+
+
+# Entry layer attributing ``on_kanban_event_appended`` rows (``'cli' | 'tool' |
+# 'dispatcher' | 'api'``). Set at the narrow choke points (``kanban_command``,
+# the kanban tool wrapper, ``dispatch_once``, the dashboard connection scope);
+# the default covers agent-side writers without an explicit scope (tool calls,
+# dispatcher-spawned workers driving this module directly).
+_KANBAN_EVENT_ORIGIN: ContextVar[Optional[str]] = ContextVar(
+    "hermes_kanban_event_origin", default=None,
+)
+
+
+@contextlib.contextmanager
+def scoped_kanban_event_origin(origin: str):
+    """Pin the event-append origin for the current context only (mirrors ``scoped_current_board``)."""
+    token: Token[Optional[str]] = _KANBAN_EVENT_ORIGIN.set(origin)
+    try:
+        yield
+    finally:
+        _KANBAN_EVENT_ORIGIN.reset(token)
+
+
+def _kanban_event_origin() -> str:
+    """Origin for ``on_kanban_event_appended`` payloads; ``'tool'`` when unset."""
+    override = (_KANBAN_EVENT_ORIGIN.get() or "").strip().lower()
+    if override in ("cli", "tool", "dispatcher", "api"):
+        return override
+    return "tool"
 
 
 # Slug = directory name: strict enough to stop traversal / separators, loose
@@ -2017,11 +2107,18 @@ def _append_event(
     conn: sqlite3.Connection, task_id: str, kind: str, payload: Optional[dict] = None, *,
     run_id: Optional[int] = None,
 ) -> None:
-    """Insert an event row inside the caller's txn; ``run_id`` groups it by attempt (NULL = task-scoped)."""
-    conn.execute(
+    """Insert an event row inside the caller's txn; ``run_id`` groups it by attempt (NULL = task-scoped).
+
+    Stages an ``on_kanban_event_appended`` notification, fired by ``write_txn``
+    after the outermost commit (discarded on rollback); see #127497.
+    """
+    now = int(time.time())
+    payload_text = _json_or_null(payload)
+    event_id = conn.execute(
         "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
-        "VALUES (?, ?, ?, ?, ?)", (task_id, run_id, kind, _json_or_null(payload), int(time.time())),
-    )
+        "VALUES (?, ?, ?, ?, ?)", (task_id, run_id, kind, payload_text, now),
+    ).lastrowid
+    _queue_pending_event_hook(conn, int(event_id or 0), task_id, run_id, kind, payload_text, now)
 
 
 def _end_run(

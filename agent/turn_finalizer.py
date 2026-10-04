@@ -471,6 +471,8 @@ def _apply_output_hooks(
             conversation_history=list(messages),
             model=agent.model,
             platform=platform,
+            execution_kind=getattr(agent, "_execution_kind", "live"),
+            execution_id=getattr(agent, "_execution_id", None),
         )
     return final_response, transformed, pre_transform
 
@@ -509,6 +511,8 @@ def apply_llm_output_transform(
         model=agent.model,
         platform=platform,
         turn_id=turn_id,  # per-turn identity for the hook callback gate
+        execution_kind=getattr(agent, "_execution_kind", "live"),
+        execution_id=getattr(agent, "_execution_id", None),
     ):
         if isinstance(_hook_result, str) and _hook_result:
             pre_transform, final_response, transformed = final_response, _hook_result, True
@@ -790,6 +794,8 @@ def finalize_turn(
             turn_exit_reason=_turn_exit_reason,
             model=agent.model,
             platform=_platform,
+            execution_kind=getattr(agent, "_execution_kind", "live"),
+            execution_id=getattr(agent, "_execution_id", None),
         )
 
     agent._turn_preflight_display_snapshot = None

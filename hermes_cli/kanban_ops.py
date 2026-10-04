@@ -17,6 +17,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli.kanban_output import _err, _fmt_ts, _print_json
+from hermes_cli.model_policy import route_kind
 
 
 def _kanban_config() -> dict:
@@ -97,7 +98,12 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                for k in ("reclaimed", "crashed", "timed_out", "stale", "auto_blocked", "promoted",
                          "reaped_terminal_workers")},
             "spawned": [
-                {"task_id": tid, "assignee": who, "workspace": ws} for (tid, who, ws) in res.spawned
+                {
+                    "task_id": tid, "assignee": who, "workspace": ws,
+                    "route": res.spawn_routes.get(tid, "unknown/unknown"),
+                    "kind": route_kind(res.spawn_routes.get(tid)),
+                }
+                for (tid, who, ws) in res.spawned
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
@@ -131,7 +137,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Spawned:      {len(res.spawned)}")
     tag = " (dry)" if args.dry_run else ""
     for tid, who, ws in res.spawned:
-        print(f"  - {tid}  ->  {who}  @ {ws or '-'}{tag}")
+        route = res.spawn_routes.get(tid, "unknown/unknown")
+        print(
+            f"  - {tid}  ->  {who}  @ {ws or '-'}{tag} "
+            f"route={route} kind={route_kind(route)}"
+        )
     if res.auto_assigned_default:
         print(
             f"Auto-assigned to kanban.default_assignee={default_assignee!r}: "

@@ -1024,6 +1024,11 @@ class GatewaySlashCommandsMixin(
         from gateway.run import _load_gateway_config, _resolve_gateway_model
         from gateway.runtime_footer import format_runtime_footer, resolve_footer_config
         config_path, platform_key = self._display_config_target(event)
+        # Same bug class as /platform (fixed in this PR): the old code read
+        # ``event.message`` — a field MessageEvent doesn't have — so every
+        # argument was silently swallowed and bare ``/footer`` always toggled
+        # the global setting, even when the user asked for ``/footer status``.
+
         arg = event.get_command_args().strip().lower()
         try:
             user_config: dict = _load_gateway_config()

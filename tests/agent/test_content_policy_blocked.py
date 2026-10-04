@@ -86,3 +86,37 @@ class TestContentPolicyPatternsAreNarrow:
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-opus")
         assert result.reason == FailoverReason.provider_policy_blocked
         assert result.reason != FailoverReason.content_policy_blocked
+
+    def test_openrouter_guardrail_403_is_content_policy_blocked(self):
+        """#132504: OpenRouter's gateway classifier rejects a request with a bare
+        ``<tool>`` placeholder in bundled skill prose and answers
+
+            HTTP 403: Request blocked: prompt injection patterns detected
+            metadata: {'patterns': ['role_tag_injection']}
+
+        This is a deterministic per-prompt guardrail verdict, not a WAF/CDN
+        block: retrying it across every upstream provider (the
+        ``upstream_blocked`` fallback path) just replays the same refusal ~17
+        times, and the firewall/User-Agent hint misleads. It must classify as
+        ``content_policy_blocked`` — terminal for this prompt, with the
+        rephrase/other-model guidance.
+        """
+        from agent.error_classifier import classify_api_error, FailoverReason
+
+        class _Err(Exception):
+            def __init__(self, msg, status_code):
+                super().__init__(msg)
+                self.status_code = status_code
+
+        e = _Err(
+            'Error code: 403 - {"error":{"message":"Request blocked: prompt '
+            'injection patterns detected","metadata":'
+            '{"patterns":["role_tag_injection"],"provider":null}}}',
+            status_code=403,
+        )
+        result = classify_api_error(e, provider="openrouter", model="anthropic/claude-opus")
+        assert result.reason == FailoverReason.content_policy_blocked
+        assert result.reason != FailoverReason.upstream_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True
+        assert result.should_rotate_credential is False

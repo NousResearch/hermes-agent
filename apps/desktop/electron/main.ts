@@ -593,11 +593,12 @@ import {
 import { waitForUpdateClearance } from './update-gate'
 import {
   cachedCreateTimeProbe,
+  describeSkippedPrewrite,
   markerPath,
-  readLiveUpdateMarker,
   updateHandoffConflict,
   writeUpdateMarker
 } from './update-marker'
+import { liveMarkerProbe } from './update-marker-gate'
 import { updateConnectionsBeforeLocal } from './update-order'
 import {
   resolveUpdaterMechanism,
@@ -625,6 +626,7 @@ import { readSourceUpdate, type SourceUpdate } from './updater/checkout-source'
 import { ExternalStrategy } from './updater/external'
 import { readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './updater/feed-config'
 import { createChannelMacStrategy, createMacStrategy } from './updater/mac-client'
+import { handoffScriptPath, readHandoffProtocol, runMarkerHelper } from './updater/marker-helper'
 import { UpdateOperation } from './updater/operation'
 import {
   type ConsumedRelaunch,
@@ -3004,15 +3006,24 @@ function updateGateDeps(onLiveMarker?: (marker: { startedAt: number | null }) =>
     // Owner liveness (pid + creation time) only: a failed receipt never
     // outranks a live marker — `latest.json` is written at finalize, so a retry
     // after a failed update still reads "failed" while the new one runs (V2).
-    hasLiveMarker: async () => {
-      const marker = await readLiveUpdateMarker(HERMES_HOME, { createTime })
+    // A dead marker is never deleted here (A7 rule 3); the checkout script's
+    // helper decides under its lock whether a completion still holds the
+    // checkout (R6) — see update-marker-gate.ts.
+    hasLiveMarker: liveMarkerProbe({
+      hermesHome: HERMES_HOME,
+      createTime,
+      onLiveMarker,
+      log: rememberLog,
+      reclaim: async () => {
+        const updateRoot = resolveUpdateRoot()
 
-      if (marker) {
-        onLiveMarker?.(marker)
+        if (readHandoffProtocol(handoffScriptPath(updateRoot, IS_WINDOWS)) < 2) {
+          return { kind: 'unsupported' }
+        }
+
+        return runMarkerHelper('reclaim', { updateRoot, hermesHome: HERMES_HOME, isWindows: IS_WINDOWS })
       }
-
-      return Boolean(marker)
-    },
+    }),
     isUpdateInFlight: () => updateInFlight,
     isHandoffActive: () => isQuittingForHandoff
   }
@@ -4937,8 +4948,15 @@ async function handOffWindowsBootstrapRecovery(reason) {
   // before the updater writes its own marker, and the same stale-updater
   // exclusion: a pre-#74782 binary would refuse its own pre-written claim and
   // strand the very recovery meant to heal the install.
+  //
+  // Exclusive create only (A7 rule 3): over any existing marker the pre-write
+  // is skipped — the staged updater claims (and reclaims) for itself.
   if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
-    await writeUpdateMarker(HERMES_HOME, child.pid)
+    const prewrite = await writeUpdateMarker(HERMES_HOME, child.pid)
+
+    if (!prewrite.ok) {
+      rememberLog(`[bootstrap] skipping marker pre-write: ${describeSkippedPrewrite(prewrite)}`)
+    }
   } else if (Number.isInteger(child.pid)) {
     rememberLog(
       `[bootstrap] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`

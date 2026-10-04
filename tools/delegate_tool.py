@@ -4414,6 +4414,24 @@ def _resolve_child_credential_pool(
     return None
 
 
+def _resolve_max_output_tokens(runtime: dict, cfg: dict) -> int | None:
+    """Resolve max_output_tokens with proper sentinel handling.
+
+    Priority: runtime > cfg > legacy max_tokens. Explicit 0 = uncapped.
+    Returns None when no cap is configured.
+    """
+    v = runtime.get("max_output_tokens")
+    if v is not None:
+        return max(0, int(v))
+    v = cfg.get("max_output_tokens")
+    if v is not None:
+        return max(0, int(v))
+    v = cfg.get("max_tokens")
+    if v is not None:
+        return max(0, int(v))
+    return None
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -4550,7 +4568,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
         "request_overrides": dict(runtime.get("request_overrides") or {}),
-        "max_output_tokens": runtime.get("max_output_tokens") or cfg.get("max_output_tokens") or cfg.get("max_tokens"),
+        "max_output_tokens": _resolve_max_output_tokens(runtime, cfg),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }

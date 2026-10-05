@@ -37,6 +37,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { accountResetMs, formatReset, modelResetMs } from '@/lib/provider-limit'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
@@ -791,6 +792,7 @@ export function ModelCatalogMenu({
                     open={!collapsed}
                     size="0.625rem"
                   />
+                  <ProviderLimitBadge provider={group.provider} />
                 </DropdownMenuItem>
                 {!collapsed &&
                   group.families.map(family => (
@@ -1008,6 +1010,12 @@ function ModelFamilyRow({
   const { name, tag } = modelDisplayParts(family.id)
   const decoration = useModelMenuRowDecoration({ label: name, model: family.id, provider: provider.slug })
   const caps = provider.capabilities?.[family.id]
+  // A limited provider stays pickable: the account-wide case dims every row
+  // (the group heading says why), the per-model case tags only the rows that
+  // are cooling down, so a sibling model reads as the way to keep working.
+  const accountLimited = accountResetMs(provider) !== null
+  const modelReset = modelResetMs(provider, family.id) ?? (family.fastId ? modelResetMs(provider, family.fastId) : null)
+  const modelResetLabel = modelReset === null ? null : formatReset(modelReset)
 
   // Live per-model $/Mtok pricing (Nous Portal and other providers that ship
   // it). A `-fast` sibling shares the base id's price: the collapsed row
@@ -1118,7 +1126,12 @@ function ModelFamilyRow({
             <Codicon name={favorite ? 'star-full' : 'star-empty'} size="0.75rem" />
           </button>
         </Tip>
-        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        <span
+          className={cn(
+            'flex min-w-0 flex-1 items-center gap-1.5',
+            (accountLimited || modelResetLabel) && !isCurrent && 'text-(--ui-text-tertiary)'
+          )}
+        >
           {decoration.icon !== undefined ? <ModelMenuRowIcon icon={decoration.icon} /> : null}
           <span className="min-w-0 truncate">
             <HighlightMatches foldSeparators query={search} text={name} />
@@ -1130,6 +1143,13 @@ function ModelFamilyRow({
             </Badge>
           ) : null}
         </span>
+        {modelResetLabel ? (
+          <Tip label={copy.modelLimitedTip(modelResetLabel)}>
+            <Badge className="shrink-0 tabular-nums" size="xs" variant="warn">
+              {copy.modelResets(modelResetLabel)}
+            </Badge>
+          </Tip>
+        ) : null}
         {loadProgress ? (
           <span className="flex shrink-0 items-center gap-1.5" title={copyPicker.loadingIntoMemory}>
             <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
@@ -1199,6 +1219,28 @@ function ModelChip({ children, setting = false }: { children: ReactNode; setting
     <Badge className="shrink-0 uppercase tracking-wide" size="xs" variant={setting ? 'outline' : 'muted'}>
       {children}
     </Badge>
+  )
+}
+
+/** Trailing tag on a provider heading while its whole login is rate-limited.
+ *  Per-model cooldowns tag their own rows instead. */
+function ProviderLimitBadge({ provider }: { provider: ModelOptionProvider }): null | ReactElement {
+  const { t } = useI18n()
+  const copy = t.shell.modelMenu
+  const resetMs = accountResetMs(provider)
+
+  if (resetMs === null) {
+    return null
+  }
+
+  const time = formatReset(resetMs)
+
+  return (
+    <Tip label={copy.limitedTip(provider.name, time)}>
+      <Badge className="ml-auto mr-0.5 shrink-0 normal-case tracking-normal tabular-nums" size="xs" variant="warn">
+        {time ? copy.limitedUntil(time) : copy.limited}
+      </Badge>
+    </Tip>
   )
 }
 

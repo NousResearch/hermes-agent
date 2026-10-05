@@ -360,7 +360,15 @@ export const arChrome = {
       free: 'مجاني',
       cacheRead: 'قراءة من الذاكرة المؤقتة',
       priceTitle: (input: string, output: string, cache: string) =>
-        `الإدخال ${input}/Mtok · الإخراج ${output}/Mtok` + (cache ? ` · قراءة من الذاكرة المؤقتة ${cache}/Mtok` : '')
+        `الإدخال ${input}/Mtok · الإخراج ${output}/Mtok` + (cache ? ` · قراءة من الذاكرة المؤقتة ${cache}/Mtok` : ''),
+      limited: 'محدود',
+      limitedUntil: (time: string) => `محدود حتى ${time}`,
+      limitedTip: (provider: string, time: null | string) =>
+        time
+          ? `بلغ ${provider} حد الاستخدام. يُعاد ضبطه في ${time}، ويمكنك اختيار نموذج لما بعد ذلك من الآن.`
+          : `بلغ ${provider} حد الاستخدام. يمكنك اختيار نموذج لما بعد إعادة الضبط من الآن.`,
+      modelResets: (time: string) => `يعود ${time}`,
+      modelLimitedTip: (time: string) => `بلغ هذا النموذج حده الخاص ويعود في ${time}. النماذج الأخرى هنا ما زالت تعمل.`
     },
     modelOptions: {
       noOptions: 'لا توجد خيارات لهذا النموذج',

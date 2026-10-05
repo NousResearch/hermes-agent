@@ -9,13 +9,14 @@ real payload builder against a real ``auth.json`` pool in a temp home.
 
 import json
 import time
+from datetime import datetime
 
 import pytest
 
 from hermes_cli.inventory import build_model_options_payload, load_picker_context
 
 
-def _pool_entry(provider: str, cooldown: str) -> dict:
+def _pool_entry(provider: str, cooldown: str, model: str = "some-model") -> dict:
     now = time.time()
     oauth = provider == "anthropic"
     entry = {
@@ -29,8 +30,8 @@ def _pool_entry(provider: str, cooldown: str) -> dict:
     if cooldown == "exhausted":
         entry.update(last_status="exhausted", last_status_at=now, last_error_code=429,
                      last_error_reset_at=now + 3 * 3600)
-    else:
-        entry["model_cooldowns"] = {"some-model": now + 3 * 3600}
+    elif cooldown == "model_cooldown":
+        entry["model_cooldowns"] = {model: now + 3 * 3600}
     return entry
 
 
@@ -43,10 +44,12 @@ def pooled_home(tmp_path, monkeypatch):
     (home / "config.yaml").write_text(
         "model:\n  provider: nous\n  default: test-model\nauth:\n  adopt_external_logins: false\n")
 
-    def write(provider: str, cooldown: str) -> None:
+    def write(provider: str, cooldown: str, model: str = "some-model") -> dict:
+        entry = _pool_entry(provider, cooldown, model)
         (home / "auth.json").write_text(json.dumps({
             "version": 1, "providers": {},
-            "credential_pool": {provider: [_pool_entry(provider, cooldown)]}}))
+            "credential_pool": {provider: [entry]}}))
+        return entry
 
     return write
 
@@ -63,6 +66,29 @@ def test_rate_limited_pool_keeps_its_provider_row(pooled_home, provider, cooldow
     row = next((r for r in rows if r["slug"] == provider), None)
     assert row is not None, f"a {cooldown} {provider} pool dropped the provider from model.options"
     assert row["models"], "the kept row must still offer the provider's models"
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "gemini"])
+def test_kept_row_says_which_limit_and_when_it_resets(pooled_home, provider):
+    """The row names the limit's scope and the pool's own reset time, and a healthy pool says nothing."""
+    ctx = load_picker_context()
+    pooled_home(provider, "ok")
+    healthy = next(r for r in build_model_options_payload(ctx)["providers"] if r["slug"] == provider)
+    assert "limit" not in healthy
+    model, sibling = healthy["models"][0], healthy["models"][1]
+
+    entry = pooled_home(provider, "exhausted")
+    row = next(r for r in build_model_options_payload(ctx)["providers"] if r["slug"] == provider)
+    assert row["limit"]["scope"] == "account"
+    assert datetime.fromisoformat(row["limit"]["resets_at"]).timestamp() == pytest.approx(
+        entry["last_error_reset_at"], abs=1)
+
+    entry = pooled_home(provider, "model_cooldown", model)
+    row = next(r for r in build_model_options_payload(ctx)["providers"] if r["slug"] == provider)
+    assert row["limit"]["scope"] == "models"
+    assert set(row["limit"]["models"]) == {model}, f"{sibling} still works and must not be tagged"
+    assert datetime.fromisoformat(row["limit"]["models"][model]).timestamp() == pytest.approx(
+        entry["model_cooldowns"][model], abs=1)
 
 
 def test_picker_visibility_keeps_the_full_custom_probe_budget(monkeypatch):

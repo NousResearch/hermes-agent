@@ -5077,7 +5077,16 @@ export const frOverrides = {
       free: 'gratuit',
       cacheRead: 'lecture en cache',
       priceTitle: (input: string, output: string, cache: string) =>
-        `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : '')
+        `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : ''),
+      limited: 'Limité',
+      limitedUntil: (time: string) => `Limité jusqu’à ${time}`,
+      limitedTip: (provider: string, time: null | string) =>
+        time
+          ? `${provider} a atteint sa limite d’utilisation. Elle se réinitialise à ${time} ; vous pouvez déjà choisir un modèle pour après.`
+          : `${provider} a atteint sa limite d’utilisation. Vous pouvez déjà choisir un modèle pour après sa réinitialisation.`,
+      modelResets: (time: string) => `de retour à ${time}`,
+      modelLimitedTip: (time: string) =>
+        `Ce modèle a atteint sa propre limite et revient à ${time}. Les autres modèles ici fonctionnent toujours.`
     },
     modelOptions: {
       noOptions: 'Aucune option pour ce modèle',

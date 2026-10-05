@@ -5063,7 +5063,16 @@ export const deOverrides = {
       free: 'kostenlos',
       cacheRead: 'Cache-Lesung',
       priceTitle: (input: string, output: string, cache: string) =>
-        `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : '')
+        `Eingabe ${input}/Mtok · Ausgabe ${output}/Mtok` + (cache ? ` · Cache-Lesung ${cache}/Mtok` : ''),
+      limited: 'Limitiert',
+      limitedUntil: (time: string) => `Limitiert bis ${time}`,
+      limitedTip: (provider: string, time: null | string) =>
+        time
+          ? `${provider} hat sein Nutzungslimit erreicht. Es wird um ${time} zurückgesetzt; du kannst schon jetzt ein Modell für danach wählen.`
+          : `${provider} hat sein Nutzungslimit erreicht. Du kannst schon jetzt ein Modell für die Zeit nach dem Zurücksetzen wählen.`,
+      modelResets: (time: string) => `wieder ab ${time}`,
+      modelLimitedTip: (time: string) =>
+        `Dieses Modell hat sein eigenes Limit erreicht und ist ab ${time} wieder verfügbar. Andere Modelle hier funktionieren weiterhin.`
     },
     modelOptions: {
       noOptions: 'Keine Optionen für dieses Modell',

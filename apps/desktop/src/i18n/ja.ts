@@ -3364,7 +3364,16 @@ export const ja = defineLocale({
       free: '無料',
       cacheRead: 'キャッシュ読み取り',
       priceTitle: (input: string, output: string, cache: string) =>
-        `入力 ${input}/Mtok · 出力 ${output}/Mtok` + (cache ? ` · キャッシュ読み取り ${cache}/Mtok` : '')
+        `入力 ${input}/Mtok · 出力 ${output}/Mtok` + (cache ? ` · キャッシュ読み取り ${cache}/Mtok` : ''),
+      limited: '制限中',
+      limitedUntil: (time: string) => `${time} まで制限中`,
+      limitedTip: (provider: string, time: null | string) =>
+        time
+          ? `${provider} が利用上限に達しました。${time} にリセットされます。リセット後に使うモデルは今のうちに選べます。`
+          : `${provider} が利用上限に達しました。リセット後に使うモデルは今のうちに選べます。`,
+      modelResets: (time: string) => `${time} に再開`,
+      modelLimitedTip: (time: string) =>
+        `このモデルは個別の上限に達しており、${time} に再開します。ここにある他のモデルは引き続き使えます。`
     },
     modelOptions: {
       noOptions: 'このモデルにはオプションがありません',

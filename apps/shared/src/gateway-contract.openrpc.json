@@ -19223,6 +19223,17 @@
             ],
             "default": null,
             "title": "Unavailable Models"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderLimit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -26468,6 +26479,52 @@
         ],
         "title": "PromptSubmitStatus",
         "type": "string"
+      },
+      "ProviderLimit": {
+        "additionalProperties": false,
+        "description": "``hermes_cli/inventory.py::_apply_limits`` \u2014 ``account``: the whole login is rate-limited until\n``resets_at`` (ISO, absent when unknown); ``models``: only these models are, each until its time.",
+        "properties": {
+          "scope": {
+            "enum": [
+              "account",
+              "models"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resets At"
+          },
+          "models": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Models"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "title": "ProviderLimit",
+        "type": "object"
       },
       "QueuedPrompt": {
         "additionalProperties": false,

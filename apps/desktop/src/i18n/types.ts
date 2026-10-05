@@ -3873,6 +3873,11 @@ export interface Translations {
       free: string
       cacheRead: string
       priceTitle: (input: string, output: string, cache: string) => string
+      limited: string
+      limitedUntil: (time: string) => string
+      limitedTip: (provider: string, time: null | string) => string
+      modelResets: (time: string) => string
+      modelLimitedTip: (time: string) => string
     }
     modelOptions: {
       noOptions: string

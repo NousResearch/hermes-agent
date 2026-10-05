@@ -781,6 +781,7 @@ export interface ModelOptionProvider {
   free_tier_pending?: boolean | null
   free_tier_row?: boolean | null
   unavailable_models?: string[] | null
+  limit?: ProviderLimit | null
   [key: string]: unknown
 }
 /** ``hermes_cli/inventory.py::_apply_capabilities``. */
@@ -799,6 +800,12 @@ export interface ModelPricing {
   discount_percent?: number | null
   was_input?: string | null
   was_output?: string | null
+}
+/** ``hermes_cli/inventory.py::_apply_limits`` — ``account``: the whole login is rate-limited until ``resets_at`` (ISO, absent when unknown); ``models``: only these models are, each until its time. */
+export interface ProviderLimit {
+  scope: 'account' | 'models'
+  resets_at?: string | null
+  models?: Record<string, string> | null
 }
 export interface ImageGenerateParams {
   prompt?: string | null

@@ -688,7 +688,7 @@ def _record_skill_install(identifier: str, bundle, outcome: str) -> None:
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
-               source_id: Optional[str] = None) -> None:
+               source_id: Optional[str] = None, bundle=None) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
     cannot resolve to a same-named skill elsewhere.
@@ -699,7 +699,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     fresh = not HubLockFile().get_installed(identifier.rstrip("/").rsplit("/", 1)[-1])
     try:
         bundle, outcome = _install_skill(identifier, category, force, console or _console,
-                                         skip_confirm, invalidate_cache, name_override, source_id)
+                                         skip_confirm, invalidate_cache, name_override, source_id,
+                                         bundle)
     except Exception:
         if fresh:
             _record_skill_install(identifier, None, "failed")
@@ -709,7 +710,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
 
 def _install_skill(identifier: str, category: str, force: bool, c: Console, skip_confirm: bool,
-                   invalidate_cache: bool, name_override: str, source_id: Optional[str]) -> tuple:
+                   invalidate_cache: bool, name_override: str, source_id: Optional[str],
+                   reviewed_bundle=None) -> tuple:
     """``do_install``'s body: ``(bundle, outcome)``, outcome None when this was no new install."""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs, skills_hub_http_session
     from tools.skills_hub_install import install_from_quarantine, quarantine_bundle
@@ -718,13 +720,18 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
     sources = _pinned_sources(c, _sources(), source_id, identifier)
     if sources is None:
         return None, "failed"
-    # One pooled guarded client for the whole resolve + fetch fan-out (tree, SKILL.md, N support files).
-    with skills_hub_http_session():
-        identifier = _full_identifier(identifier, sources, c)
-        if not identifier:
-            return None, "failed"
-        c.print(f"\n[bold]Fetching:[/] {identifier}")
-        meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
+    meta = _matched_source = None
+    bundle = reviewed_bundle
+    if bundle is None:
+        # One pooled guarded client for the whole resolve + fetch fan-out (tree, SKILL.md, N support files).
+        with skills_hub_http_session():
+            identifier = _full_identifier(identifier, sources, c)
+            if not identifier:
+                return None, "failed"
+            c.print(f"\n[bold]Fetching:[/] {identifier}")
+            meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
+    else:
+        c.print(f"\n[bold]Using checked artifact:[/] {identifier}")
     if not bundle:
         _print_fetch_failure(c, sources, identifier, meta=meta, source=_matched_source)
         return None, "failed"
@@ -913,7 +920,7 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
     caller choice, never a rerun default).
     """
     from tools.skills_hub import HubLockFile
-    from tools.skills_hub_install import check_for_skill_updates
+    from tools.skills_hub_install import bundle_content_hash, check_for_skill_updates
     c = console or _console
     lock = HubLockFile()
     updates = [entry for entry in check_for_skill_updates(name=name) if entry.get("status") == "update_available"]
@@ -937,8 +944,18 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None,
         # Pin to the lockfile's source registry: a bare identifier such as "reddit" would
         # otherwise fuzzy-resolve inside do_install to a same-named skill in a DIFFERENT
         # registry, overwriting the user's files and rewriting the lock's `source`.
+        install_kwargs = {}
+        if entry.get("bundle") is not None:
+            # Install the exact artifact whose hash produced this update decision. Refetching here
+            # would let a mutable source substitute different bytes after the check.
+            reviewed_hash = entry.get("reviewed_hash", entry.get("latest_hash", ""))
+            if reviewed_hash and bundle_content_hash(entry["bundle"]) != reviewed_hash:
+                c.print(f"[bold red]Skipping:[/] {entry['name']} — checked artifact changed "
+                        "before installation.")
+                continue
+            install_kwargs["bundle"] = entry["bundle"]
         do_install(entry["identifier"], category=category, force=True, console=c,
-                   source_id=entry.get("source", "") or None)
+                   source_id=entry.get("source", "") or None, **install_kwargs)
 
     if len(updates) > len(skipped_local):
         c.print(f"[bold green]Updated {len(updates) - len(skipped_local)} skill(s).[/]\n")

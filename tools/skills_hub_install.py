@@ -320,6 +320,9 @@ def check_for_skill_updates(
         current_hash, latest_hash = entry.get("content_hash", ""), bundle_content_hash(bundle)
         results.append({
             **row, "status": "up_to_date" if current_hash == latest_hash else "update_available",
-            "current_hash": current_hash, "latest_hash": latest_hash, "bundle": bundle,
+            "current_hash": current_hash, "latest_hash": latest_hash,
+            # Keep the reviewed artifact and its identity together. Update installation consumes
+            # this bundle directly instead of resolving the mutable source a second time.
+            "reviewed_hash": latest_hash, "bundle": bundle,
         })
     return results

@@ -493,9 +493,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
     usage, origin_of = _skill_usage_lookup()
     sc = _tools_mod("agent.skill_commands")
     for k, info in sorted(sc.get_interactive_skill_commands().items()):
-        if k.lower() in cat.canon:
-            continue
-        cat.add(k, str(info.get("description", "Skill")), "Skills")
+        cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
     names = sorted(s["name"] for s in _tools_mod("tools.skills_tool")._find_all_skills())
@@ -611,7 +609,7 @@ def _run_plugin_command(handler, arg: str, session=None) -> str:
 
 @contextlib.contextmanager
 def _session_home_scope(session, cwd: str | None = None, profile: str | None = None):
-    """Bind the session's full runtime profile scope and logical cwd for interactive resolution.
+    """Bind HERMES_HOME and the logical cwd to the session for the block.
 
     Skill/bundle/quick-command resolution is home-keyed (``skills.external_dirs``, ``skill-bundles/``,
     ``quick_commands`` all live in the profile's config/home); nothing upstream of these RPC handlers
@@ -620,21 +618,22 @@ def _session_home_scope(session, cwd: str | None = None, profile: str | None = N
     thread with no session context, where the terminal scope resolves a placeholder ``terminal.cwd`` to
     ``$HOME`` and no project skill ever registers or dispatches (#114359). ``cwd`` overrides the session
     record (a session-less catalog request binds the workspace a new session would be seeded with).
-    ``profile`` scopes a session-less call (a Desktop draft names its rail-selected profile) (#124651).
-    Plugin discovery may execute ``register()`` and read profile secrets or terminal policy, so home
-    alone is insufficient; use the same full scope as a session turn and always reset cwd before it."""
+    ``profile`` scopes a session-less call (a Desktop draft names its rail-selected profile) (#124651)."""
+    hc = _tools_mod("hermes_constants")
     rc = _tools_mod("agent.runtime_cwd")
     profile_home = session.get("profile_home") if session else None
     if not session and profile:
         profile_home = str(_profile_home(profile) or "") or None
     cwd = cwd or (str(session.get("cwd") or "") if session else "")
-    with _session_profile_runtime_scope({"profile_home": str(profile_home) if profile_home else None}):
-        cwd_token = rc.set_session_cwd(cwd) if cwd else None
-        try:
-            yield
-        finally:
-            if cwd_token is not None:
-                rc.reset_session_cwd(cwd_token)
+    token = hc.set_hermes_home_override(profile_home) if profile_home else None
+    cwd_token = rc.set_session_cwd(cwd) if cwd else None
+    try:
+        yield
+    finally:
+        if cwd_token is not None:
+            rc.reset_session_cwd(cwd_token)
+        if token is not None:
+            hc.reset_hermes_home_override(token)
 
 
 def _profile_skill_command(session: dict, base: str) -> bool | None:
@@ -1136,21 +1135,11 @@ def _(rid, params: dict) -> dict:
     if base in _WORKER_BLOCKED_COMMANDS and _is_snapshot_restore(arg):
         return _err(rid, 4018, "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore")
     # Pending-input built-ins route straight to command.dispatch (some clients fail the
-    # error-then-retry fallback).
-    if base in _PENDING_INPUT_COMMANDS:
-        return _methods["command.dispatch"](rid, {"name": base, "arg": arg, "session_id": sid})
-    # Plugin commands have the same precedence as command.dispatch and the CLI;
-    # a same-named skill must not intercept them.
-    with _session_home_scope(session):
-        if plugin_handler := _plugin_command_handler(base) if base else None:
-            try:
-                return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
-            except Exception as e:
-                return _ok(rid, {"output": f"Plugin command error: {e}"})
+    # error-then-retry fallback); bundles go the same way under their resolved key.
     with _session_home_scope(session):  # a secondary-only bundle must route too (#110695)
-        bundle_key = _bundle_key_for(base)
-    if bundle_key is not None:
-        return _methods["command.dispatch"](rid, {"name": bundle_key.lstrip("/"), "arg": arg, "session_id": sid})
+        target = base if base in _PENDING_INPUT_COMMANDS else _bundle_key_for(base)
+    if target is not None:
+        return _methods["command.dispatch"](rid, {"name": target.lstrip("/"), "arg": arg, "session_id": sid})
     # Recognized skills keep the 4018 gate so clients command.dispatch. A scan
     # exception must not fail open into the worker: return the dispatch payload
     # (or a hard error) here, or the loading banner swallows the prompt.
@@ -1163,6 +1152,11 @@ def _(rid, params: dict) -> dict:
         # run it. Anything else might be the skill the scan failed to see.
         if (dispatched.get("result") or {}).get("type") or not _is_registry_command(base):
             return dispatched
+    if plugin_handler := _plugin_command_handler(base) if base else None:
+        try:
+            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
+        except Exception as e:
+            return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")
     if not worker:
         # slash.exec runs on the RPC pool: two concurrent commands could both see slash_worker=None

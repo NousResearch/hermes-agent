@@ -788,6 +788,222 @@ class TestNoBundledSkillsOptOut:
         assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
 
 
+class TestOptOutEssentialTopLevelLink:
+    """An opted-out lane presents the bundled essential as a TOP-LEVEL symlink to the bundled
+    source (ruling on t_232c3d36): the lane surface is top-level only, so the essential lives at
+    ``<skills_dir>/<name>`` as a link -- never as a category-nested real copy and never as a
+    top-level real dir. The non-opted-out path (nested real dirs) is unchanged."""
+
+    def _setup_bundled(self, tmp_path):
+        bundled = tmp_path / "bundled"
+        skill = bundled / "autonomous-ai-agents" / "hermes-agent"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: hermes-agent\n---\nbody\n")
+        (bundled / "autonomous-ai-agents" / "DESCRIPTION.md").write_text("Category desc")
+        return bundled, skill
+
+    def _patches(self, bundled, skills_dir, manifest_file, home):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch("tools.skills_sync.HERMES_HOME", home))
+        stack.enter_context(patch("agent.skill_utils.get_external_skills_dirs", return_value=[]))
+        return stack
+
+    def _opted_out_home(self, tmp_path):
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".no-bundled-skills").write_text("opted out\n")
+        return home
+
+    def test_fresh_optout_seeds_top_level_link_not_nested_copy(self, tmp_path):
+        bundled, skill = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        home = self._opted_out_home(tmp_path)
+
+        with self._patches(bundled, skills_dir, manifest_file, home):
+            result = sync_skills(quiet=True)
+            manifest = _read_manifest()
+
+        link = skills_dir / "hermes-agent"
+        assert result["skipped_opt_out"] is True
+        assert result["copied"] == ["hermes-agent"]
+        assert result["total_bundled"] == 1
+        assert link.is_symlink(), "essential must be a TOP-LEVEL symlink, not a copy"
+        assert Path(os.path.realpath(link)) == Path(os.path.realpath(skill))
+        assert manifest["hermes-agent"] == _dir_hash(skill)
+        # No category dir and no nested copy.
+        assert not (skills_dir / "autonomous-ai-agents").exists()
+
+    def test_optout_link_survives_bundled_change_and_is_never_replaced_by_copy(self, tmp_path):
+        bundled, skill = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        home = self._opted_out_home(tmp_path)
+
+        with self._patches(bundled, skills_dir, manifest_file, home):
+            sync_skills(quiet=True)
+        # Upstream edits the essential: the link already resolves to the new bytes, and the
+        # bundled change must NOT be misread as a user edit or turn the link into a copy.
+        (skill / "SKILL.md").write_text("---\nname: hermes-agent\n---\nCHANGED\n")
+        with self._patches(bundled, skills_dir, manifest_file, home):
+            result = sync_skills(quiet=True)
+            manifest = _read_manifest()
+
+        link = skills_dir / "hermes-agent"
+        assert link.is_symlink(), "a bundled change must never replace the link with a copy"
+        assert Path(os.path.realpath(link)) == Path(os.path.realpath(skill))
+        assert "hermes-agent" not in result["user_modified"]
+        assert manifest["hermes-agent"] == _dir_hash(skill)
+        assert not (skills_dir / "autonomous-ai-agents").exists()
+
+    def test_optout_stale_link_target_is_renewed(self, tmp_path):
+        bundled, skill = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        home = self._opted_out_home(tmp_path)
+
+        with self._patches(bundled, skills_dir, manifest_file, home):
+            sync_skills(quiet=True)
+        link = skills_dir / "hermes-agent"
+        # Simulate a link pointing at the WRONG target (e.g. the bundled tree moved).
+        link.unlink()
+        os.symlink(str(tmp_path / "somewhere-else"), str(link))
+        with self._patches(bundled, skills_dir, manifest_file, home):
+            result = sync_skills(quiet=True)
+
+        assert link.is_symlink()
+        assert Path(os.path.realpath(link)) == Path(os.path.realpath(skill))
+        assert "hermes-agent" in result["updated"]
+
+    def test_optout_existing_real_skill_is_never_overwritten(self, tmp_path):
+        bundled, skill = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        home = self._opted_out_home(tmp_path)
+        user = skills_dir / "hermes-agent"
+        user.mkdir(parents=True)
+        (user / "SKILL.md").write_text("---\nname: hermes-agent\n---\nMINE\n")
+
+        with self._patches(bundled, skills_dir, manifest_file, home):
+            result = sync_skills(quiet=True)
+            manifest = _read_manifest()
+
+        assert not user.is_symlink()
+        assert "MINE" in (user / "SKILL.md").read_text()
+        assert "hermes-agent" not in result["copied"]
+        assert "hermes-agent" not in manifest  # a differing copy is never baselined
+
+    def test_non_opted_out_still_uses_nested_real_copy(self, tmp_path):
+        bundled = tmp_path / "bundled"
+        (bundled / "category" / "new-skill").mkdir(parents=True)
+        (bundled / "category" / "new-skill" / "SKILL.md").write_text(
+            "---\nname: new-skill\n---\nbody\n")
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        home = tmp_path / "home"
+        home.mkdir()  # NO .no-bundled-skills marker
+
+        with self._patches(bundled, skills_dir, manifest_file, home):
+            result = sync_skills(quiet=True)
+
+        dest = skills_dir / "category" / "new-skill"
+        assert dest.is_dir() and not dest.is_symlink()
+        assert "new-skill" in result["copied"]
+        assert result["skipped_opt_out"] is False
+
+
+class TestCategoryDescriptionGuard:
+    """The category-DESCRIPTION.md seed must not materialise a stray category dir for a category
+    none of whose skills was materialised locally (guard landed on t_03fbb3e2). This is the
+    regression test review finding F1 requires: it must FAIL with the guard removed."""
+
+    def _patches(self, bundled, skills_dir, manifest_file, home):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        stack.enter_context(patch("tools.skills_sync.HERMES_HOME", home))
+        stack.enter_context(patch("agent.skill_utils.get_external_skills_dirs", return_value=[]))
+        return stack
+
+    def _setup_essential(self, tmp_path):
+        bundled = tmp_path / "bundled"
+        (bundled / "autonomous-ai-agents" / "hermes-agent").mkdir(parents=True)
+        (bundled / "autonomous-ai-agents" / "hermes-agent" / "SKILL.md").write_text(
+            "---\nname: hermes-agent\n---\nbody\n")
+        (bundled / "autonomous-ai-agents" / "DESCRIPTION.md").write_text("Category desc")
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        return bundled, skills_dir, manifest_file
+
+    def test_optout_no_stray_category_dir_when_essential_resolves_elsewhere(self, tmp_path):
+        # external_dirs provides the essential -> it is deferred, no local member exists, and NO
+        # skills/autonomous-ai-agents/ dir may be created holding only DESCRIPTION.md.
+        bundled, skills_dir, manifest_file = self._setup_essential(tmp_path)
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".no-bundled-skills").write_text("opted out\n")
+        ext = tmp_path / "external_skills"
+        (ext / "autonomous-ai-agents" / "hermes-agent").mkdir(parents=True)
+        (ext / "autonomous-ai-agents" / "hermes-agent" / "SKILL.md").write_text(
+            "---\nname: hermes-agent\n---\next\n")
+
+        with self._patches(bundled, skills_dir, manifest_file, home):
+            with patch("agent.skill_utils.get_external_skills_dirs", return_value=[ext]):
+                result = sync_skills(quiet=True)
+
+        assert "hermes-agent" in result["shadowed_by_external"]
+        assert not (skills_dir / "autonomous-ai-agents").exists(), (
+            "stray category dir materialised for a category whose only skill resolved elsewhere")
+        assert not list(skills_dir.glob("*/DESCRIPTION.md"))
+
+    def test_fresh_optout_essential_leaves_no_category_dir(self, tmp_path):
+        bundled, skills_dir, manifest_file = self._setup_essential(tmp_path)
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".no-bundled-skills").write_text("opted out\n")
+
+        with self._patches(bundled, skills_dir, manifest_file, home):
+            sync_skills(quiet=True)
+
+        assert (skills_dir / "hermes-agent").is_symlink()
+        assert not (skills_dir / "autonomous-ai-agents").exists()
+
+    def test_category_description_reseeded_when_category_holds_a_skill(self, tmp_path):
+        # The control (review's `research-stl`-like case): a category that DOES hold a materialised
+        # skill still gets its DESCRIPTION.md re-seeded after removal -- the guard must not
+        # over-suppress legitimate seeding.
+        bundled = tmp_path / "bundled"
+        (bundled / "category" / "new-skill").mkdir(parents=True)
+        (bundled / "category" / "new-skill" / "SKILL.md").write_text(
+            "---\nname: new-skill\n---\nbody\n")
+        (bundled / "category" / "DESCRIPTION.md").write_text("Category desc")
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        home = tmp_path / "home"
+        home.mkdir()  # NO marker
+
+        with self._patches(bundled, skills_dir, manifest_file, home):
+            sync_skills(quiet=True)
+        seeded = skills_dir / "category" / "DESCRIPTION.md"
+        assert seeded.exists()
+        before = seeded.read_bytes()
+        seeded.unlink()
+
+        with self._patches(bundled, skills_dir, manifest_file, home):
+            sync_skills(quiet=True)
+
+        assert seeded.exists(), "DESCRIPTION.md must be re-seeded for a category with a local skill"
+        assert seeded.read_bytes() == before
+
+
 class TestOptOutToggleAndRemove:
     """`hermes skills opt-out/opt-in` core: marker toggle + safe removal."""
 

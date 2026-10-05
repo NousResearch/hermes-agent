@@ -184,6 +184,38 @@ def _compute_relative_dest(skill_dir: Path, bundled_dir: Path) -> Path:
     return _skills_dir() / skill_dir.relative_to(bundled_dir)
 
 
+def _essential_link_dest(skill_name: str) -> Path:
+    """TOP-LEVEL destination for an opted-out lane's bundled essential (``<skills_dir>/<name>``).
+
+    An opted-out lane's surface is top-level only: every other entry in a lane's skills dir is a
+    top-level symlink and the lane-dir instruments read ``os.listdir`` at depth 1. So the essential
+    is presented at the top level as a LINK to the bundled source -- never as a category-nested
+    real copy (invisible to the surface contract, a second drifting copy of what the shared tree
+    already provides) and never as a top-level real dir.
+    """
+    return _skills_dir() / skill_name
+
+
+def _link_points_at(link: Path, target: Path) -> bool:
+    """True when ``link`` resolves to ``target`` (both fully realpath'd; a broken link's
+    realpath is its raw target, which simply differs)."""
+    return Path(os.path.realpath(str(link))) == Path(os.path.realpath(str(target)))
+
+
+def _link_dir(src: Path, dest: Path) -> None:
+    """Materialise ``dest`` as a symlink to the bundled ``src`` dir.
+
+    A filesystem that refuses symlinks (Windows without the privilege, some network mounts)
+    degrades to a TOP-LEVEL real copy -- never a nested one -- so the essential is still
+    materialised rather than silently missing.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(str(src.resolve()), str(dest))
+    except OSError:
+        _copy_dir(src, dest)
+
+
 def _dir_hash(directory: Path, *, include_runtime_cache: bool = False) -> str:
     """MD5 of package paths/content, excluding generated runtime state.
 
@@ -299,7 +331,17 @@ def _defer_to_external(st: _SyncState, skill_name: str, dest: Path, bundled_hash
     st.shadowed_by_external.append(skill_name)
     st.skipped += 1
     st.say(f"  ⇢ {skill_name} (deferred to external_dirs, not written to local tree)")
-    if dest.exists() and _dir_hash(dest) == bundled_hash:
+    if dest.is_symlink():
+        # A top-level link we placed for an opted-out essential: unlink it (never rmtree --
+        # rmtree refuses a symlink, and its scope guard resolves THROUGH the link to a path
+        # outside the skills root).
+        try:
+            dest.unlink()
+            st.say(f"  ✓ removed stale link of {skill_name}")
+            st.manifest.pop(skill_name, None)
+        except OSError:
+            logger.warning("Could not remove stale link %s", dest, exc_info=True)
+    elif dest.exists() and _dir_hash(dest) == bundled_hash:
         _rmtree_writable(dest)
         st.say(f"  ✓ removed stale shadow of {skill_name}")
         st.manifest.pop(skill_name, None)
@@ -326,6 +368,62 @@ def _install_new_skill(st: _SyncState, skill_name: str, skill_src: Path, dest: P
             st.say(f"  + {skill_name}")
     except OSError as e:
         st.say(f"  ! Failed to copy {skill_name}: {e}")  # not in manifest — next sync retries
+
+
+def _sync_essential_link(st: "_SyncState", skill_name: str, skill_src: Path, dest: Path, bundled_hash: str) -> None:
+    """Opted-out lane: present the bundled essential as a TOP-LEVEL symlink to the source.
+
+    Manifest rule chosen here: the bundled hash is still recorded for the entry, and a SYMLINKED
+    dest is treated as PRISTINE unconditionally. A link owns no bytes of its own, so it can never
+    be user-modified; on a bundled change it is RENEWED in place (unlink + relink), never replaced
+    by a real copy. Hashing through the link instead would read the CURRENT bundled bytes, so a
+    bundled change would look like a user edit and the link would freeze at the old shape.
+    """
+    origin_hash = st.manifest.get(skill_name, "")
+
+    if dest.is_symlink():
+        # A link we (or an earlier sync) placed. Renew only when its target is wrong.
+        if _link_points_at(dest, skill_src):
+            st.skipped += 1
+        else:
+            try:
+                dest.unlink()
+                _link_dir(skill_src, dest)
+            except OSError as e:
+                st.say(f"  ! Failed to renew link {skill_name}: {e}")
+                return
+            st.updated.append(skill_name)
+            st.say(f"  ↑ {skill_name} (link renewed)")
+        st.manifest[skill_name] = bundled_hash
+        return
+
+    if dest.exists():
+        # A REAL dir by this name — the user's own skill. Never overwrite or replace it; baseline
+        # the manifest only when byte-identical (a differing copy reads as user-modified forever).
+        st.skipped += 1
+        if _dir_hash(dest) == bundled_hash:
+            st.manifest[skill_name] = bundled_hash
+        else:
+            st.say(
+                f"  ⚠ {skill_name}: bundled essential shipped but you already have a local skill "
+                f"by this name — yours was kept. Run `hermes skills reset {skill_name}` to replace "
+                f"it with the bundled version.")
+        return
+
+    if origin_hash:
+        # In the manifest with no top-level entry: the user deleted it, or it still lives at the
+        # pre-fix nested path (a lane relink owns that migration). Do not re-add.
+        st.skipped += 1
+        return
+
+    try:
+        _link_dir(skill_src, dest)
+    except OSError as e:
+        st.say(f"  ! Failed to link {skill_name}: {e}")  # not in manifest — next sync retries
+        return
+    st.copied.append(skill_name)
+    st.manifest[skill_name] = bundled_hash
+    st.say(f"  + {skill_name} (linked to bundled source)")
 
 
 def _replace_skill_dir(skill_src: Path, dest: Path) -> None:
@@ -425,14 +523,20 @@ def sync_skills(quiet: bool = False) -> dict:
         if skill_name in suppressed and skill_name not in ESSENTIAL_SKILLS:
             st.suppressed.append(skill_name)
             continue
-        dest = _compute_relative_dest(skill_src, bundled_dir)
+        dest = _essential_link_dest(skill_name) if essential_only else _compute_relative_dest(skill_src, bundled_dir)
         bundled_hash = _dir_hash(skill_src)
         # Recoveries run BEFORE classification so a missing dest isn't misread as user-deleted.
+        # Skipped for the opted-out link shape: rename-recovery MOVES a stale copy to the new
+        # dest, which here would create the top-level REAL dir the ruling forbids; a relink card
+        # owns that migration instead.
         _recover_orphan_backup(dest)
-        if not dest.exists() and skill_name in st.manifest and _recover_renamed_skill(st, skill_name, dest):
+        if (not essential_only and not dest.exists() and skill_name in st.manifest
+                and _recover_renamed_skill(st, skill_name, dest)):
             st.relocated.append(skill_name)
         if skill_name in external_index:
             _defer_to_external(st, skill_name, dest, bundled_hash)
+        elif essential_only:
+            _sync_essential_link(st, skill_name, skill_src, dest, bundled_hash)
         elif skill_name not in st.manifest:
             _install_new_skill(st, skill_name, skill_src, dest, bundled_hash)
         elif dest.exists():

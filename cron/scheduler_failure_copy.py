@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from agent.i18n import t
 from hermes_constants import display_hermes_home
 
 
@@ -51,38 +52,22 @@ def _provider_failure_cause(reason: str) -> Optional[str]:
 
 _TRANSIENT_REASONS = frozenset({"timeout", "rate_limit", "upstream_rate_limit", "overloaded", "server_error"})
 
-# Reason -> what to do. Transient reasons get the backup-provider clause from the scheduler
-# (it knows whether a fallback chain is configured) instead of a fixed sentence.
-_PROVIDER_FAILURE_ACTION: dict[str, str] = {
-    "billing": (
-        "Top up or wait for the limit to reset, or pin another provider with "
-        "`hermes cron edit {job_id} --provider <name>`."
-    ),
-    "auth": (
-        "Sign in again with /login (or `{relogin}` in a terminal), or pin a "
-        "working provider with `hermes cron edit {job_id} --provider <name>`, then "
-        "`hermes cron run {job_id}` to retry."
-    ),
-    "model_not_found": "Pick another model with `hermes cron edit {job_id} --model <name>`.",
-    "upstream_blocked": (
-        "A firewall in front of the provider blocked the request (not your key): set a User-Agent "
-        "via `extra_headers` on the provider's custom_providers entry, or pin another provider with "
-        "`hermes cron edit {job_id} --provider <name>`."
-    ),
-    "context_overflow": "Shorten the job's prompt with `hermes cron edit {job_id} --prompt <text>`.",
+# Reason -> catalog key of what to do, resolved per call so the notice follows the active language.
+# Transient reasons get the backup-provider clause from the scheduler (it knows whether a fallback
+# chain is configured) instead of a fixed sentence.
+_PROVIDER_FAILURE_ACTION_KEY: dict[str, str] = {
+    "billing": "gateway.cron.failure.action_billing",
+    "billing_unverified": "gateway.cron.failure.action_billing",
+    "auth": "gateway.cron.failure.action_auth",
+    "auth_permanent": "gateway.cron.failure.action_auth",
+    "model_not_found": "gateway.cron.failure.action_model_not_found",
+    "upstream_blocked": "gateway.cron.failure.action_upstream_blocked",
+    "context_overflow": "gateway.cron.failure.action_context_overflow",
+    "payload_too_large": "gateway.cron.failure.action_context_overflow",
+    "content_policy_blocked": "gateway.cron.failure.action_content_policy",
+    "provider_policy_blocked": "gateway.cron.failure.action_provider_policy",
 }
-_PROVIDER_FAILURE_ACTION["auth_permanent"] = _PROVIDER_FAILURE_ACTION["auth"]
-_PROVIDER_FAILURE_ACTION["billing_unverified"] = _PROVIDER_FAILURE_ACTION["billing"]
-_PROVIDER_FAILURE_ACTION["payload_too_large"] = _PROVIDER_FAILURE_ACTION["context_overflow"]
-_PROVIDER_FAILURE_ACTION["content_policy_blocked"] = (
-    "Reword the job's prompt with `hermes cron edit {job_id} --prompt <text>`, or pick another "
-    "model with `hermes cron edit {job_id} --model <name>`."
-)
-_PROVIDER_FAILURE_ACTION["provider_policy_blocked"] = (
-    "Retrying won't help: check the account's status and data/privacy settings with the provider, "
-    "or pin another model with `hermes cron edit {job_id} --model <name>`."
-)
-_DEFAULT_FAILURE_ACTION = "Run it again with `hermes cron run {job_id}`, or edit it with `hermes cron edit {job_id}`."
+_DEFAULT_FAILURE_ACTION_KEY = "gateway.cron.failure.action_default"
 
 
 def provider_failure_notice(
@@ -94,46 +79,29 @@ def provider_failure_notice(
     if cause is None:
         return None
     if reason in _TRANSIENT_REASONS:
-        action = (
-            f"{backup_provider_phrase} It will run again at its next scheduled time; "
-            f"`hermes cron run {job_id}` tries now."
-        )
+        action = t("gateway.cron.failure.action_transient", backup_phrase=backup_provider_phrase, job_id=job_id)
     else:
         from agent.turn_failure_copy import relogin_command_hint
 
-        action = _PROVIDER_FAILURE_ACTION.get(reason, _DEFAULT_FAILURE_ACTION).format(
-            job_id=job_id, relogin=relogin_command_hint(provider))
-    return (
-        f"⚠️ Cron '{job_name}' failed: {cause}. {action} "
-        f"Run log: `hermes cron runs {job_id}`."
-    )
+        action = t(_PROVIDER_FAILURE_ACTION_KEY.get(reason, _DEFAULT_FAILURE_ACTION_KEY),
+                   job_id=job_id, relogin=relogin_command_hint(provider))
+    return t("gateway.cron.failure.provider", job_name=job_name, cause=cause, action=action, job_id=job_id)
 
 
 def generic_failure_notice(job_name: str, job_id: str, cleaned_error: str) -> str:
     """Unclassified failure: the cleaned error text plus where to look and what to do."""
-    return (
-        f"⚠️ Cron '{job_name}' failed: {cleaned_error}. "
-        f"See the full run with `hermes cron runs {job_id}` (output saved under "
-        f"{cron_output_dir_display(job_id)}); run it again with `hermes cron run {job_id}`, "
-        f"edit it with `hermes cron edit {job_id}`, or pause it with `hermes cron pause {job_id}`."
-    )
+    return t("gateway.cron.failure.generic", job_name=job_name, error=cleaned_error, job_id=job_id,
+             output_dir=cron_output_dir_display(job_id))
 
 
 def script_timeout_notice(job_name: str, job_id: str) -> str:
-    return (
-        f"⚠️ Cron '{job_name}' failed: its script timed out. No model was invoked. "
-        f"Check the script's output under {cron_output_dir_display(job_id)} or `hermes cron runs {job_id}`, "
-        f"then run it again with `hermes cron run {job_id}`."
-    )
+    return t("gateway.cron.failure.script_timeout", job_name=job_name, job_id=job_id,
+             output_dir=cron_output_dir_display(job_id))
 
 
 def inactivity_notice(job_name: str, job_id: str) -> str:
-    return (
-        f"⚠️ Cron '{job_name}' failed: the job stalled — it stopped doing anything for too long "
-        f"and was cut off. Check what it was doing in the saved output under "
-        f"{cron_output_dir_display(job_id)} (`hermes cron runs {job_id}`), then run it again with "
-        f"`hermes cron run {job_id}`."
-    )
+    return t("gateway.cron.failure.inactivity", job_name=job_name, job_id=job_id,
+             output_dir=cron_output_dir_display(job_id))
 
 
 def blocked_config_notice(job_name: str, reason: str) -> str:
@@ -141,8 +109,4 @@ def blocked_config_notice(job_name: str, reason: str) -> str:
     reason = reason.rstrip()
     if reason and reason[-1] not in ".!?":
         reason += "."
-    return (
-        f"⛔ Cron '{job_name}' did not run: {reason} Nothing was charged. Hermes will try again at "
-        "the next scheduled time and will not repeat this alert; check with "
-        "`hermes cron doctor`."
-    )
+    return t("gateway.cron.failure.blocked_config", job_name=job_name, reason=reason)

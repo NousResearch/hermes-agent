@@ -118,6 +118,38 @@ def test_programmatic_reads_keep_content_without_advancing_direct_dedup(tmp_path
     assert "second line" in direct_first["content"]
 
 
+def test_default_dispatch_reads_stay_programmatic(tmp_path):
+    """The per-call RPC dispatch (_default_dispatch) wraps read_file too: a repeated read keeps its
+    content, and reads made through it do not count as content shown in the conversation."""
+    from model_tools import handle_function_call
+    from tools.code_execution_rpc import _default_dispatch
+    from tools.file_tools_read_tracking import _read_tracker
+
+    _read_tracker.clear()
+    task_id = "default-dispatch-read-contract"
+    seen_path = tmp_path / "seen.txt"
+    cell_only_path = tmp_path / "cell_only.txt"
+    seen_path.write_text("seen line\n", encoding="utf-8")
+    cell_only_path.write_text("cell only line\n", encoding="utf-8")
+
+    # A file already read in the conversation is still whole when a cell reads it again.
+    first_direct = json.loads(handle_function_call("read_file", {"path": str(seen_path)}, task_id=task_id))
+    assert "seen line" in first_direct["content"]
+    dispatch = _default_dispatch(task_id)
+    for _ in range(3):
+        result = json.loads(dispatch("read_file", {"path": str(seen_path)}))
+        assert "seen line" in result["content"], result
+        assert result.get("status") != "unchanged"
+
+    # Reads that only a cell made leave the conversation's own first read of that file whole.
+    for _ in range(2):
+        result = json.loads(dispatch("read_file", {"path": str(cell_only_path)}))
+        assert "cell only line" in result["content"], result
+    direct_first = json.loads(handle_function_call("read_file", {"path": str(cell_only_path)}, task_id=task_id))
+    assert "cell only line" in direct_first["content"]
+    assert direct_first.get("status") != "unchanged"
+
+
 def test_overlapping_reads_are_whole_across_the_cell_boundary(tmp_path):
     """Lines seen in the conversation are not withheld from a cell, and lines only a
     cell read are not withheld from the conversation."""

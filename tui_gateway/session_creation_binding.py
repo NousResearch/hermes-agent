@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from uuid import uuid4
+from pathlib import Path
+import threading
 
 
 @dataclass(frozen=True)
@@ -41,3 +43,46 @@ class CreationBinding:
             "runtime_incarnation": self.runtime_incarnation,
             "profile_store_scope": self.profile_store_scope,
         }}
+
+
+@dataclass(frozen=True)
+class EngineCreationBinding:
+    """Original local engine and store witness; never refreshed by attachment retries."""
+    engine: object = field(repr=False)
+    database: object = field(repr=False)
+    revision: int
+
+    @classmethod
+    def capture(cls, origin: CreationBinding, agent) -> EngineCreationBinding | None:
+        from run_agent import AIAgent
+        from hermes_state import SessionDB
+        from agent.session_identity import SessionIdentityMixin
+
+        if (not isinstance(agent, AIAgent)
+                or type(agent).session_id is not SessionIdentityMixin.session_id
+                or type(agent).session_identity_guard is not SessionIdentityMixin.session_identity_guard
+                or type(agent).session_identity_revision is not SessionIdentityMixin.session_identity_revision
+                or not isinstance(getattr(agent, "_hard_interrupt_requested", None), threading.Event)):
+            return None
+        guard = agent.session_identity_guard()
+        if not guard.acquire(blocking=False):
+            return None
+        try:
+            db = getattr(agent, "_session_db", None)
+            if (not isinstance(db, SessionDB) or str(Path(db.db_path).resolve()) != origin.store_path
+                    or agent.session_id != origin.stored_session_id):
+                return None
+            return cls(agent, db, agent.session_identity_revision)
+        finally:
+            guard.release()
+
+    def matches(self, origin: CreationBinding, *, running: bool) -> bool:
+        agent = self.engine
+        holder = getattr(agent, "_active_session_turn_lease_holder", None)
+        return (agent.session_identity_revision == self.revision
+                and agent.session_id == origin.stored_session_id
+                and agent._session_db is self.database
+                and str(Path(self.database.db_path).resolve()) == origin.store_path
+                and (not running or (isinstance(holder, str) and bool(holder)))
+                and not getattr(agent, "_persist_disabled", False)
+                and not agent._interrupt_requested and not agent._hard_interrupt_requested.is_set())

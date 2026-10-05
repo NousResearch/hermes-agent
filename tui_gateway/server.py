@@ -1084,26 +1084,6 @@ def _await_resume_history(sid: str, current: dict) -> bool:
         return _sessions.get(sid) is current
 
 
-def _attach_built_agent(sid: str, current: dict, agent) -> bool:
-    """Attach a freshly built agent to its live record (session DB row deferred to first run_conversation()).
-    False when ``session.close`` popped this record mid-build: teardown saw ``agent=None`` and closed
-    nothing, so the caller owns closing the orphan (#49852)."""
-    # Bot Mode gate hint: the DB title lands post-first-turn but the system prompt builds at turn START.
-    if _title_hint := str(current.get("pending_title") or "").strip():
-        agent._session_title_hint = _title_hint
-    # Under the same lock session.close takes to pop the record: no window between "still live" and "attached".
-    with _sessions_lock:
-        if _sessions.get(sid) is not current:
-            return False
-        current["agent"] = agent
-    # A workspace move can land while construction is still in flight.
-    _register_session_cwd(current)
-    _session_todo_state(current)
-    # Baseline for the per-turn config sync (profile home override still active).
-    current["config_model_seen"] = _config_model_target()
-    return True
-
-
 def _announce_built_agent(sid: str, key: str, current: dict, agent) -> None:
     """Post-wiring tail of a build: credits seed, session services, session.info, late MCP catch-up."""
     # Credits notices at session OPEN (notice_callback already wired) so depletion warnings show at "ready".

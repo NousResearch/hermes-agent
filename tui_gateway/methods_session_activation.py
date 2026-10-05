@@ -1,10 +1,63 @@
 """Authenticated conditional subscription; legacy activation remains independent."""
 from __future__ import annotations
 
+import contextlib
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
 method = _registry.method
+
+
+def _attach_built_agent(sid: str, current: dict, agent) -> bool:
+    """Attach a freshly built agent to its live record (session DB row deferred to first run_conversation()).
+    False when ``session.close`` popped this record mid-build: teardown saw ``agent=None`` and closed
+    nothing, so the caller owns closing the orphan (#49852)."""
+    # Bot Mode gate hint: the DB title lands post-first-turn but the system prompt builds at turn START.
+    if _title_hint := str(current.get("pending_title") or "").strip():
+        agent._session_title_hint = _title_hint
+    # Under the same lock session.close takes to pop the record: no window between "still live" and "attached".
+    with _sessions_lock:
+        if _sessions.get(sid) is not current:
+            return False
+        current["agent"] = agent
+        if current.get("creation_binding") is not None and "creation_engine" not in current:
+            from .session_creation_binding import EngineCreationBinding
+            current["creation_engine"] = EngineCreationBinding.capture(current["creation_binding"], agent)
+    # A workspace move can land while construction is still in flight.
+    _register_session_cwd(current)
+    _session_todo_state(current)
+    # Baseline for the per-turn config sync (profile home override still active).
+    current["config_model_seen"] = _config_model_target()
+    return True
+
+
+@contextlib.contextmanager
+def _activation_engine_guard(session: dict):
+    from .session_creation_binding import EngineCreationBinding
+
+    agent = session.get("agent")
+    if agent is None:
+        yield "creation_engine" not in session and not session.get("running") and not session.get("inflight_turn")
+        return
+    ready = session.get("agent_ready")
+    if ready is None or not ready.is_set():
+        yield False
+        return
+    witness = session.get("creation_engine")
+    if not isinstance(witness, EngineCreationBinding) or witness.engine is not agent:
+        yield False
+        return
+    # Engine callbacks may need gateway parent locks. Never wait here while
+    # holding those locks; a busy publication/adoption is settling, not healthy.
+    guard = agent.session_identity_guard()
+    if not guard.acquire(blocking=False):
+        yield False
+        return
+    try:
+        yield witness.matches(session["creation_binding"], running=bool(session.get("running")))
+    finally:
+        guard.release()
 
 
 def _creation_binding_fields(session: dict, profile_home) -> dict:
@@ -39,12 +92,11 @@ def _creation_retry_result(rid, sid: str, session: dict, profile, profile_home, 
 def _bound_activation_receipt(session: dict, sid: str, owner: str, store_path: str, expected: dict) -> dict | None:
     from .session_creation_binding import CreationBinding
 
-    # Built engines rotate agent.session_id independently of gateway history_lock.
-    # Host children likewise publish identity asynchronously. They are unproven
-    # until their identity writers participate in this boundary; refuse them.
-    if session.get("agent") is not None or any(session.get(flag) for flag in (
-        "running", "_compute_host_active", "_compute_host_turn_id", "inflight_turn",
-    )):
+    if session.get("_compute_host_active") or session.get("_compute_host_turn_id"):
+        return None
+    turn = session.get("inflight_turn")
+    if turn is not None and (not isinstance(turn, dict) or turn.get("error")
+                             or turn.get("status") not in (None, "running", "streaming")):
         return None
     origin = session.get("creation_binding")
     if not isinstance(origin, CreationBinding) or origin.runtime_record is not session:
@@ -90,16 +142,20 @@ def _(rid, params: dict) -> dict:
     # Resume serializes grace expiry/interrupt; history serializes compression and
     # host adoption; registry excludes replacement; transport is the leaf lock.
     with _session_resume_lock, session["history_lock"], _sessions_lock, _session_transport_lock:
-        receipt = _bound_activation_receipt(session, sid, owner, store_path, params["expected_binding"])
-        if _sessions.get(sid) is not session or receipt is None or not _transport_is_live_peer(peer):
-            return _err(rid, 4007, "Conditional activation refused")
-        if not _attach_session_transport(session, peer):
-            return _err(rid, 4007, "Conditional activation refused")
-        session.setdefault("viewers", {})[peer] = time.time()
-        _cancel_ws_orphan_reap(sid)
-        # Receipt was captured inside the comparison/subscription cut. Never turn
-        # a post-lock mutable snapshot into accepted identity or recovery evidence.
-        return _ok(rid, {"attached": True, "accepted_binding": receipt})
+        with _activation_engine_guard(session) as proven:
+            if not proven:
+                return _err(rid, 4007, "Conditional activation refused")
+            receipt = _bound_activation_receipt(session, sid, owner, store_path, params["expected_binding"])
+            if _sessions.get(sid) is not session or receipt is None or not _transport_is_live_peer(peer):
+                return _err(rid, 4007, "Conditional activation refused")
+            if not _attach_session_transport(session, peer):
+                return _err(rid, 4007, "Conditional activation refused")
+            session.setdefault("viewers", {})[peer] = time.time()
+            _cancel_ws_orphan_reap(sid)
+            # Receipt was captured inside the comparison/subscription cut. Never turn
+            # a post-lock mutable snapshot into accepted identity or recovery evidence.
+            return _ok(rid, {"attached": True, "accepted_binding": receipt})
+
 
 
 def register(server) -> None:

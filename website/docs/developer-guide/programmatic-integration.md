@@ -137,30 +137,37 @@ well-formed mismatch, anonymous/foreign/dead peer, unavailable record, or unprov
 runtime fails with `4007`, without a session snapshot or fallback. An unavailable
 named profile retains the normal `4064` profile error.
 
-This bounded prerequisite currently supports **unbuilt idle creation records**
-only. Materialized agents, running/inflight sessions and compute-host-owned
-records are refused: engine-side compression/persistence can rotate identity
-before the gateway receives its new key. The local engine primitive below is
-implemented, but gateway comparison/subscription has not yet been qualified
-against it. Do not treat this method's presence as support for reconnecting to a
-healthy running session.
+This bounded contract supports **unbuilt idle creation records and their original
+healthy ready local engines**, including an ongoing turn with an active local engine
+lease holder. The first engine attachment captures an immutable engine object,
+store object and identity revision for that creation record. Attachment retries
+cannot refresh this witness. A removed/replaced engine, changed revision (even
+if the segment ID changes back), changed engine/store scope, failed/interrupted
+turn or unready/unproven engine refuses. Compute-host-owned records remain unsupported.
+An accepted prompt still waiting for its engine turn lease is not certified as a
+healthy running engine.
 
-`AIAgent` now inherits the local boundary in `agent/session_identity.py` through
-its persistence mixin. Segment assignments take `session_identity_guard()` and
-advance `session_identity_revision` only when the ID changes; changing away and
-back cannot rewind that revision. Existing `session_id` attribute storage and
-ordinary reads are preserved. Compression child publication, compression-child
-adoption and persistence-tip adoption hold the same reentrant guard over their
-DB operation and engine state update, including failure cleanup. Duck-typed
-non-engine callers keep legacy behavior and provide no proof of this guard.
+`AIAgent` inherits the local boundary in `agent/session_identity.py` through its
+persistence mixin. Segment assignments take `session_identity_guard()` and
+advance `session_identity_revision` only when the ID changes. Compression child
+publication/adoption and persistence-tip adoption hold the same reentrant guard
+over DB work and engine state updates. Post-lease-admission reload now also
+holds this guard over presence checks, tip resolution, adoption and transcript
+loading; the potentially long lease acquisition wait stays outside it. Ordinary
+reads retain their historical behavior. Duck-typed non-engine callers retain
+legacy behavior and provide no proof of this boundary.
 
-This is a local engine primitive, not a cross-process DB or gateway fence. A
-certifying reader must hold the guard across comparison and subscription, capture
-the original engine object/revision, and compare engine and gateway segment IDs.
-It must try the guard without waiting while holding gateway locks needed by engine
-callbacks; a settling transition must refuse. Gateway qualification, full lease
-reload/adoption ordering, host identity and subsequent-operation fencing remain
-separate gates. The RPC's supported scope remains unbuilt idle creation records.
+Conditional activation tries that guard without waiting while holding the gateway
+guards, then compares the original engine/store/revision and both engine and
+gateway segment IDs before subscription. It retains the engine guard through
+receipt capture. A busy engine transition refuses instead of waiting on callbacks
+that might need gateway locks. A healthy turn continues on its existing worker
+and lease, with existing subscribers retained; activation starts no execution.
+
+This is local runtime membership qualification. Actual WebSocket authentication,
+compute-host identity, cross-process store/lease proof, later-operation fencing
+and complete recovery remain separate gates. Method presence or a receipt alone
+must not be interpreted as writable recovery support.
 
 For a supported record, registry object membership, creator, requested and current
 resolved store, original exact stored segment, incarnation and scope are compared

@@ -4706,11 +4706,12 @@ class FeishuAdapter(BasePlatformAdapter):
                     reply_to=reply_to,
                     metadata=metadata,
                 )
-                # Audio messages may fail with 99992402 when using thread_id routing.
+                # 99992402 (field validation) can hit ANY msg_type when thread_id
+                # routing is used in a chat where the bot can't resolve the thread
+                # (originally observed on audio; file/media also affected).
                 # Try replying to the last message in the thread, then fall back to chat_id.
                 if (not self._response_succeeded(message_response)
                         and getattr(message_response, "code", None) == 99992402
-                        and resolved_message_type == "audio"
                         and (metadata or {}).get("thread_id")):
                     # Try reply API with thread_id as reply anchor
                     thread_msg_id = (metadata or {}).get("reply_to_message_id")
@@ -4719,7 +4720,7 @@ class FeishuAdapter(BasePlatformAdapter):
                             (metadata or {}).get("thread_id")
                         )
                     if thread_msg_id:
-                        logger.info("[Feishu] Audio: retrying via reply API in thread")
+                        logger.info("[Feishu] %s: retrying via reply API in thread", resolved_message_type)
                         message_response = await self._feishu_send_with_retry(
                             chat_id=chat_id,
                             msg_type=resolved_message_type,
@@ -4728,7 +4729,7 @@ class FeishuAdapter(BasePlatformAdapter):
                             metadata=metadata,
                         )
                     if not self._response_succeeded(message_response):
-                        logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
+                        logger.warning("[Feishu] %s send failed in thread, retrying with chat_id", resolved_message_type)
                         message_response = await self._feishu_send_with_retry(
                             chat_id=chat_id,
                             msg_type=resolved_message_type,

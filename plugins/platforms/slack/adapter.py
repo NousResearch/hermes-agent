@@ -3876,6 +3876,11 @@ class SlackAdapter(BasePlatformAdapter):
         triggers = self._slack_reaction_triggers()
         if triggers is None:
             return
+        # Gate on the REACTED-TO channel, as for a typed message there: a handoff target replaces
+        # the synthetic event's channel, so the message path would only ever judge the target.
+        if self._slash_channel_gated(channel_id):
+            logger.debug("[Slack] Ignoring reaction trigger in gated channel %s", channel_id)
+            return
         explicit_allowlist = bool(triggers)
         if explicit_allowlist and reaction_name.strip(":") not in triggers:
             return

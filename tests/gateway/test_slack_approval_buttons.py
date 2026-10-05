@@ -729,6 +729,41 @@ class TestSlackReactionForwarding:
         assert "_hermes_no_thread_response" not in forwarded[0]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("extra, source, routed", [
+        ({"ignored_channels": ["C1"]}, "C1", False),
+        ({"allowed_channels": ["C_TRAIN"]}, "C1", False),
+        ({"allowed_channels": ["C_TRAIN"]}, "D1", True),
+        ({"allowed_channels": ["C1", "C_TRAIN"]}, "C1", True),
+    ])
+    async def test_target_handoff_obeys_source_channel_gates(self, extra, source, routed):
+        """The handoff target replaces the event's channel, so the reacted-to channel is gated
+        up front: a reaction routes only from where a typed message would be considered."""
+        adapter = _make_adapter()
+        self._enable_triggers(adapter, ["task"])
+        adapter.config.extra.update({"reaction_trigger_target": "C_TRAIN", **extra})
+        mock_client = adapter._team_clients["T1"]
+        mock_client.conversations_replies = AsyncMock(return_value={
+            "messages": [{"ts": "1000.0", "user": "U_OTHER", "text": "Handoff me"}]
+        })
+        forwarded: list[dict] = []
+
+        async def _capture(event):
+            forwarded.append(event)
+
+        with patch.object(adapter, "_handle_slack_message", new=_capture):
+            await adapter._handle_slack_reaction({
+                "type": "reaction_added",
+                "user": "U1",
+                "reaction": "task",
+                "item": {"type": "message", "channel": source, "ts": "1000.0"},
+                "item_user": "U_OTHER",
+                "event_ts": "3000.0",
+            })
+
+        assert [e["channel"] for e in forwarded] == (["C_TRAIN"] if routed else [])
+        assert mock_client.conversations_replies.await_count == (1 if routed else 0)
+
+    @pytest.mark.asyncio
     async def test_hook_fires_even_when_routing_disabled(self):
         """The gateway reaction handler fires for every human reaction on a
         message item, independent of the reaction_triggers opt-in."""

@@ -555,6 +555,18 @@ DEFAULT_CONFIG = {
     # 12-15K tokens). max_lines: max `limit` one read_file call may request before clamping.
     # max_line_length: per-line cap in read_file's line-numbered view (chars).
     "tool_output": {"max_bytes": 50000, "max_lines": 2000, "max_line_length": 2000},
+    # `hermes wall` — one message, every registered agent. chunk_max_chars/max_chunks are the
+    # PRODUCER budget: the peer transport itself caps nothing, but a long body handed over a
+    # shell argv or a tool argument comes back clipped, so wall splits above chunk_max_chars
+    # and refuses a body needing more than max_chunks parts. peer_timeout_seconds=0 means no
+    # local cap (the peer transport's own --wait budget governs).
+    "wall": {
+        "chunk_max_chars": 1000,
+        "max_chunks": 5,
+        "max_workers": 8,
+        "retry_delay_seconds": 10.0,
+        "peer_timeout_seconds": 0,
+    },
     # Tool loop guardrails nudge models that repeat failed/non-progressing tool calls. Soft warnings
     # are always on; hard stops are opt-in so interactive sessions keep flowing.
     "tool_loop_guardrails": {

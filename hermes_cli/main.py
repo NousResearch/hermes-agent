@@ -3498,6 +3498,9 @@ def _build_cli_parser():
     from hermes_cli.subcommands.peer import build_peer_parser
     build_peer_parser(subparsers)
 
+    from hermes_cli.subcommands.wall import build_wall_parser
+    build_wall_parser(subparsers)
+
     from hermes_cli.portal_cli import add_parser as _add_portal_parser
     _add_portal_parser(subparsers)
 

@@ -1,4 +1,5 @@
-"""Matrix startup grace (#133265): offline-backlog drops are logged once per connect."""
+"""Matrix startup grace (#133265): offline-backlog drops are logged once per connect (plus once for
+E2EE backlog that is decrypted after the initial sync)."""
 
 import logging
 import time
@@ -50,8 +51,13 @@ async def test_cold_boot_grace_drop_logs_one_summary(caplog, tmp_path, monkeypat
     now = time.time()
     with caplog.at_level(logging.WARNING, logger=_LOGGER):
         await _connect(adapter, [_event("$a", now - 1200), _event("$b", now - 360)])
-    adapter._handle_text_message.assert_not_called()  # default cold-boot behaviour preserved
-    summaries = [r for r in caplog.records if r.name == _LOGGER and "initial sync skipped" in r.getMessage()]
-    assert len(summaries) == 1 and summaries[0].levelname == "WARNING"
-    assert "skipped 2 message(s)" in summaries[0].getMessage()
+        adapter._handle_text_message.assert_not_called()  # default cold-boot behaviour preserved
+        # E2EE: mautrix decrypts in background tasks, so decrypted backlog lands after the initial summary.
+        await adapter._on_room_message(_event("$enc", now - 600))
+        for fresh in ("$live1", "$live2"):  # the first message past the gate closes the backlog window
+            await adapter._on_room_message(_event(fresh, time.time()))
+    assert adapter._handle_text_message.await_count == 2
+    summaries = [r.getMessage() for r in caplog.records if r.name == _LOGGER and "skipped" in r.getMessage()]
+    assert [m.split(" skipped ")[0] for m in summaries] == ["Matrix: initial sync", "Matrix: decrypted backlog"]
+    assert "skipped 2 message(s)" in summaries[0] and "skipped 1 message(s)" in summaries[1]
     await adapter.disconnect()

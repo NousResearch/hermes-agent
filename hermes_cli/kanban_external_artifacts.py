@@ -453,9 +453,15 @@ def publish_external_artifacts(
     published: list[CapturedExternalArtifact] = []
     used: set[Path] = set()
     try:
+        # R5-07: durability anchor — the board attachments root. Its parent
+        # (the kanban dir) pre-exists and is durable, so anything below it is
+        # fair game for the full-chain sync the publish must promise.
+        anchors: dict[Optional[str], Path] = {}
         for cap in captured:
             dest_dir = _kb.task_attachments_dir(task_id, board=cap.board)
-            _ensure_dir_durable(dest_dir)
+            if cap.board not in anchors:
+                anchors[cap.board] = _kb.attachments_root(board=cap.board)
+            _ensure_dir_durable(dest_dir, anchor=anchors[cap.board])
             try:
                 safe_name = _kb._safe_attachment_name(Path(cap.origin).name)
             except ValueError:
@@ -557,17 +563,19 @@ def _stat_identity(path: Path) -> tuple[Optional[int], Optional[int], Optional[i
     return st.st_ino, st.st_dev, st.st_ctime_ns
 
 
-def _ensure_dir_durable(directory: Path) -> None:
-    """Create *directory* (and missing parents) then fsync the directory AND its
-    entry in the parent, so a crash cannot lose the directory itself or the
-    rename that follows.
+def _ensure_dir_durable(directory: Path, anchor: Optional[Path] = None) -> None:
+    """Create *directory* (and missing parents) then fsync the directory AND the
+    FULL entry chain from *anchor* down to it, so a crash cannot lose any
+    directory, any entry, or the rename that follows.
 
-    Round-3 MEDIUM #4: the parent link is fsync'd UNCONDITIONALLY (idempotent),
-    not only for directories this call found absent. If a prior attempt created
-    the tree but a parent fsync then failed (the typed refusal), the tree
-    survives; on retry ``to_create`` is empty, yet the directory<->parent entry
-    that never got persisted must still be re-synced before a COMMIT may claim
-    durability."""
+    R5-07 (review 5, 2026-10-05): the sync chain used to cover only the newly
+    created dirs plus the immediate parent — a RETRY after a failed ancestor
+    fsync (``to_create`` empty) and a tree created by ANOTHER writer (a normal
+    upload's bare mkdir) left ancestors unsynced. With *anchor* (the deepest
+    known-durable ancestor — e.g. the board attachments root), EVERY ancestor
+    from the anchor to the directory's own parent is fsync'd, pre-existing or
+    not, ours or not. Without *anchor* the behaviour degrades to the
+    round-3 MEDIUM #4 semantics (immediate parent, idempotent)."""
     to_create: list[Path] = []
     probe = directory
     while not probe.exists() and probe != probe.parent:
@@ -584,9 +592,32 @@ def _ensure_dir_durable(directory: Path) -> None:
     # Persist each newly created directory's entry in its own parent...
     for created in reversed(to_create):
         _fsync_dir(created.parent)
-    # ...AND always the directory's own link in its parent (idempotent): the
-    # retry-after-error path above has an empty ``to_create`` but still needs
-    # this entry to have been fsync'd before COMMIT.
+    # ...and the FULL chain from the anchor down: R5-07. The anchor's own
+    # parent is assumed durable (it holds the kanban dir); everything BELOW it
+    # — new or pre-existing, ours or another writer's — must have its entry
+    # fsync'd before COMMIT claims durability. Idempotent by construction.
+    if anchor is not None:
+        try:
+            chain_start = directory
+            chain: list[Path] = []
+            walk = chain_start
+            while walk != walk.parent:
+                chain.append(walk)
+                walk = walk.parent
+            if not walk.is_relative_to(anchor) and walk != anchor:
+                # Anchor is not an ancestor of directory (e.g. a relocated
+                # walk): fall back to syncing the whole walk chain we have.
+                pass
+            for node in chain:
+                if node == walk or (node.parent == walk and walk == anchor):
+                    _fsync_dir(node)  # the top of the chain: its entry lives in the anchor
+                    continue
+                _fsync_dir(node.parent)
+            _fsync_dir(directory)
+        except ValueError:
+            pass
+        return
+    # No anchor: round-3 semantics — always sync the parent link (idempotent).
     if directory.parent != directory:
         _fsync_dir(directory.parent)
     _fsync_dir(directory)
@@ -707,6 +738,23 @@ def bind_external_artifacts(
             raise ExternalArtifactPreservationError(
                 f"preserved external artifact disappeared before binding "
                 f"(refusing to bind a broken reference): {dest}"
+            )
+        # R5-09 (review 5, 2026-10-05): EXISTENCE is not OWNERSHIP. Re-stat
+        # INSIDE the txn and require the file to still be the exact one THIS
+        # attempt published — a concurrent removal+replacement (or a stale
+        # discard of another attempt landing on the freed name) must refuse,
+        # never bind a name whose bytes no longer hold the digest. The
+        # sub-transactional race window (a mutation between this stat and the
+        # COMMIT) is outside userland reach without a shared lock, but the
+        # weakest pre-lock reuse attack is closed.
+        ino, dev, ctime_ns = _stat_identity(dest)
+        if (ino, dev, ctime_ns) != (
+            cap.published_ino, cap.published_dev, cap.published_ctime_ns,
+        ):
+            raise ExternalArtifactPreservationError(
+                f"preserved external artifact was replaced at the managed "
+                f"destination before binding (refusing to bind bytes this "
+                f"attempt did not publish): {dest}"
             )
         stored = str(dest.resolve())
         _kb._insert_completion_attachment(

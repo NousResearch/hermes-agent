@@ -177,7 +177,13 @@ class GatewayVoiceMixin:
         if not success:
             adapter._voice_input_callback = None
             return t("gateway.voice.channel_join_permissions")
-        adapter._voice_text_channels[guild_id] = int(event.source.chat_id)
+        text_channel_id = int(event.source.chat_id)
+        # Moving to another text channel drops speech buffered for the old one (a same-channel rejoin
+        # keeps it); nothing awaits between this and the binding write, so no poll sees the gap.
+        previous = adapter._voice_text_channels.get(guild_id)
+        if previous is not None and previous != text_channel_id and hasattr(adapter, "discard_pending_voice_input"):
+            adapter.discard_pending_voice_input(guild_id)
+        adapter._voice_text_channels[guild_id] = text_channel_id
         if hasattr(adapter, "_voice_sources"):
             adapter._voice_sources[guild_id] = event.source.to_dict()
         self._apply_voice_mode(adapter, self._voice_key_for_source(event.source),

@@ -206,6 +206,52 @@ def _serialise_value(value: Any) -> Optional[dict]:
     return {"text": str(value)}
 
 
+class MissingSessionError(Exception):
+    """The payload's home session has no row in the store the replay targets.
+
+    ``messages.session_id`` carries a foreign key to ``sessions.id``, so replaying a message whose
+    session row is gone (state.db rebuilt from a backup, session pruned or archived out, profile
+    store retired) can only ever fail. Raising this named condition instead of letting the append
+    reject keeps the two things the operator needs: the session id, and the payload itself.
+    """
+
+    def __init__(self, session_id: str):
+        super().__init__(f"session {session_id} has no row in the target store")
+        self.session_id = session_id
+
+
+def _store_holds_session(db, session_id: str) -> bool:
+    """True when *db* holds a row for *session_id*; a store that cannot be probed counts as holding it.
+
+    ``SessionDB.get_session`` is the exact-row probe. Duck-typed stores (test doubles, alternative
+    backends) may not expose it: an unprobeable store is not proof of absence, so the append is left
+    to speak for itself — and a rejection is then translated by :func:`_append_or_name_the_condition`.
+    """
+    probe = getattr(db, "get_session", None)
+    if probe is None:
+        return True
+    try:
+        return probe(session_id) is not None
+    except Exception as exc:
+        logger.debug("Cannot probe the store for session %s: %s", session_id, exc)
+        return True
+
+
+def _append_or_name_the_condition(db, *, session_id: str, **kwargs) -> None:
+    """Append one recovered message, or raise :class:`MissingSessionError` for a foreign-key rejection.
+
+    The probe above catches the payloads already known to be stranded; a rejection here is the race
+    between probe and append (the session row disappearing mid-pass). It must reach the caller as the
+    same named condition rather than as the raw ``FOREIGN KEY constraint failed`` the driver emits.
+    """
+    try:
+        db.append_message(session_id=session_id, **kwargs)
+    except Exception as exc:
+        if "FOREIGN KEY" in str(exc).upper():
+            raise MissingSessionError(session_id) from exc
+        raise
+
+
 def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
     """Replay flush-dir ``*.json`` files via ``SessionDB.append_message``, deleting each on success.
 
@@ -215,8 +261,13 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
     ``MessageEvent`` objects carry no ``session_id``, so without it every recovery lands in the skip
     branch. A returned ``db`` routes the append to the profile store owning the key (multiplexed
     gateways); ``None`` falls back to ``session_db``. Returns the number of messages recovered.
+
+    A payload whose home session has no row in the store it targets cannot be replayed at all
+    (``messages.session_id`` foreign-keys ``sessions.id``): it is preserved on disk and reported as
+    that condition, one line per pass, in place of the raw rejection the append would raise.
     """
-    flush_files = sorted(_get_flush_dir().glob("*.json"))
+    flush_dir = _get_flush_dir()
+    flush_files = sorted(flush_dir.glob("*.json"))
     if not flush_files:
         return 0
     own_db = session_db is None
@@ -224,6 +275,7 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
         from hermes_state_registry import acquire
         session_db = acquire()
     recovered = 0
+    stranded: list = []  # (file name, session id) of payloads whose session row is gone
     try:
         for path in flush_files:
             # One unparseable payload or rejected append must only skip THIS file: the file is
@@ -240,6 +292,13 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
                                         session_resolver=session_resolver):
                     recovered += 1
                     path.unlink(missing_ok=True)
+            except MissingSessionError as exc:
+                # The session row is gone (state.db rebuilt, session pruned, store retired): no
+                # append can ever succeed for this payload, so the condition is named and the file
+                # — the only surviving copy — is kept. The raw foreign-key text is never echoed:
+                # it names the symptom, while the operator needs to know WHICH session is gone.
+                stranded.append((path.name, exc.session_id))
+                logger.debug("Preserved pending message %s: %s", path.name, exc)
             except Exception as exc:
                 logger.warning("Failed to recover pending message from %s: %s", path, exc)
     finally:
@@ -247,6 +306,14 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
             with contextlib.suppress(Exception):
                 from hermes_state_registry import release_or_close
                 release_or_close(session_db)
+    if stranded:
+        logger.warning(
+            "Preserved %d pending message(s) whose session is absent from the store they target: "
+            "%s — kept in %s for operator recovery (no message was dropped).",
+            len(stranded),
+            ", ".join(f"{name} (session {sid})" for name, sid in stranded),
+            flush_dir,
+        )
     if recovered:
         logger.info("Recovered %d pending message(s) from shutdown flush", recovered)
     return recovered
@@ -265,9 +332,12 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
             logger.warning("Cannot recover structurally invalid transcript spool "
                            "file %s; preserved for manual inspection", path)
             return False
-        session_db.append_message(session_id=spooled_sid, role=message.get("role", "unknown"),
-                                  content=message.get("content") or "",
-                                  timestamp=message.get("timestamp") or payload.get("ts"))
+        if not _store_holds_session(session_db, spooled_sid):
+            raise MissingSessionError(spooled_sid)
+        _append_or_name_the_condition(session_db, session_id=spooled_sid,
+                                      role=message.get("role", "unknown"),
+                                      content=message.get("content") or "",
+                                      timestamp=message.get("timestamp") or payload.get("ts"))
         return True
     session_key, data = payload.get("session_key", ""), payload.get("data", {})
     text = data.get("text", "")
@@ -294,8 +364,10 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
                        "session_key-to-id resolution failed. "
                        "The message text is preserved in %s", session_key, path)
         return False
-    target_db.append_message(session_id=session_id, role="user", content=text,
-                             timestamp=payload.get("ts", int(time.time())))
+    if not _store_holds_session(target_db, session_id):
+        raise MissingSessionError(session_id)
+    _append_or_name_the_condition(target_db, session_id=session_id, role="user", content=text,
+                                  timestamp=payload.get("ts", int(time.time())))
     return True
 
 

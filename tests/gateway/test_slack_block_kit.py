@@ -120,6 +120,14 @@ class TestSlackMentions:
             "everyone",
         ]
 
+    def test_usergroup_mention_becomes_usergroup_element(self):
+        blocks = render_blocks("- notify <!subteam^S0123ABC|@marketing> and <!subteam^S987XYZ>")
+        assert blocks is not None
+        els = self._item_elements(blocks)
+        assert {"type": "usergroup", "usergroup_id": "S0123ABC"} in els
+        assert {"type": "usergroup", "usergroup_id": "S987XYZ"} in els
+        assert not any("marketing" in (e.get("text") or "") for e in els)
+
     def test_mention_in_quote_becomes_mention_element(self):
         blocks = render_blocks("> ping <@U123> now")
         assert blocks is not None

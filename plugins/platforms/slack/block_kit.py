@@ -80,11 +80,12 @@ _SLACK_LINK_RE = re.compile(
     r"<([a-zA-Z][a-zA-Z0-9+.\-]*:[^>|]+)(?:\|([^>]+))?>"
 )
 # Slack mention tokens carry no scheme: <@U…> (user), <#C…> (channel, with an
-# optional |name label) and <!here|!channel|!everyone> (broadcast). rich_text
-# does not interpret mrkdwn, so these must become user/channel/broadcast
-# elements — as plain text Slack renders the token literally.
+# optional |name label), <!subteam^S…> (usergroup) and <!here|!channel|!everyone>
+# (broadcast). rich_text does not interpret mrkdwn, so these must become
+# user/channel/broadcast/usergroup elements — as plain text Slack renders the
+# token literally.
 _SLACK_MENTION_RE = re.compile(
-    r"<(@[A-Z0-9]+|#[A-Z0-9]+|!(?:here|channel|everyone))(?:\|[^>]*)?>"
+    r"<(@[A-Z0-9]+|#[A-Z0-9]+|!subteam\^[A-Z0-9]+|!(?:here|channel|everyone))(?:\|[^>]*)?>"
 )
 _BOLD_RE = re.compile(r"(?:\*\*|__)(.+?)(?:\*\*|__)")
 _ITALIC_RE = re.compile(r"(?<![\*_])(?:\*|_)(?![\*_\s])(.+?)(?<![\*_\s])(?:\*|_)(?![\*_])")
@@ -94,12 +95,15 @@ _STRIKE_RE = re.compile(r"~~(.+?)~~")
 def _mention_element(body: str) -> Optional[Dict[str, Any]]:
     """Map a Slack mention token body (without the angle brackets) to a rich_text element.
 
-    ``@U…`` -> user, ``#C…`` -> channel, ``!here``/``!channel``/``!everyone`` -> broadcast.
+    ``@U…`` -> user, ``#C…`` -> channel, ``!subteam^S…`` -> usergroup,
+    ``!here``/``!channel``/``!everyone`` -> broadcast.
     Returns None for anything else, so the caller can emit the raw token as text."""
     if body.startswith("@"):
         return {"type": "user", "user_id": body[1:]}
     if body.startswith("#"):
         return {"type": "channel", "channel_id": body[1:]}
+    if body.startswith("!subteam^"):
+        return {"type": "usergroup", "usergroup_id": body[len("!subteam^"):]}
     if body.startswith("!"):
         return {"type": "broadcast", "range": body[1:]}
     return None

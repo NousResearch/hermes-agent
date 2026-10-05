@@ -18,8 +18,11 @@ Implementation note — why a raw Client-Server API call and NOT
   new room through its normal sync path. This mirrors the proven
   ``_send_matrix_via_adapter`` raw-HTTP pattern in tools/send_message_tool.py.
 """
-import os
+import asyncio
+import json
+from urllib.parse import quote
 
+from agent.secret_scope import get_secret_str
 from gateway.session_context import get_session_env
 from tools.registry import registry, tool_error, tool_result
 
@@ -56,20 +59,46 @@ MATRIX_CREATE_ROOM_SCHEMA = {
 }
 
 
+def _flag(name: str) -> bool:
+    """An operator on/off switch, read through the active profile's secret scope."""
+    return get_secret_str(name).strip().lower() in ("true", "1", "yes")
+
+
 def _check_matrix_create_room() -> bool:
-    return os.getenv("MATRIX_TOOLS_ALLOW_ROOM_CREATE", "").lower() in ("true", "1", "yes")
+    return _flag("MATRIX_TOOLS_ALLOW_ROOM_CREATE")
+
+
+class MatrixRoomRequestError(Exception):
+    """The Client-Server API request could not be made or did not complete."""
+
+
+async def _matrix_post(homeserver, token, path, body):
+    """POST *body* to ``{homeserver}/_matrix/client/v3{path}`` on a fresh aiohttp
+    session (agent loop, see the module docstring). Returns (status, text);
+    transport failures raise MatrixRoomRequestError."""
+    try:
+        import aiohttp
+    except ImportError as exc:
+        raise MatrixRoomRequestError("aiohttp not installed. Run: pip install aiohttp") from exc
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.post(f"{homeserver}/_matrix/client/v3{path}", headers=headers, json=body) as resp:
+                return resp.status, await resp.text()
+    except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        raise MatrixRoomRequestError(str(exc) or type(exc).__name__) from exc
 
 
 def _live_matrix_adapter():
     """The running gateway's MatrixAdapter, or None (CLI, gateway not up)."""
     try:
         from gateway.run import _gateway_runner_ref
-        from gateway.config import Platform
-
-        runner = _gateway_runner_ref()
-        return runner.adapters.get(Platform.MATRIX) if runner is not None else None
-    except Exception:
+    except ImportError:  # gateway extras not installed: no live adapter to consult
         return None
+    from gateway.config import Platform
+
+    runner = _gateway_runner_ref()
+    return runner.adapters.get(Platform.MATRIX) if runner is not None else None
 
 
 def _matrix_creds():
@@ -82,17 +111,12 @@ def _matrix_creds():
     if adapter is not None:
         homeserver = getattr(adapter, "_homeserver", "") or ""
         token = getattr(adapter, "_access_token", "") or ""
-    homeserver = (homeserver or os.getenv("MATRIX_HOMESERVER", "")).rstrip("/")
-    token = token or os.getenv("MATRIX_ACCESS_TOKEN", "")
+    homeserver = (homeserver or get_secret_str("MATRIX_HOMESERVER")).rstrip("/")
+    token = token or get_secret_str("MATRIX_ACCESS_TOKEN")
     return homeserver, token
 
 
 async def _handle_matrix_create_room(args, **kwargs):
-    try:
-        import aiohttp
-    except ImportError:
-        return tool_error("aiohttp not installed. Run: pip install aiohttp")
-
     homeserver, token = _matrix_creds()
     if not homeserver or not token:
         return tool_error(
@@ -100,11 +124,7 @@ async def _handle_matrix_create_room(args, **kwargs):
         )
 
     preset = args.get("preset", "private_chat") or "private_chat"
-    if preset == "public_chat" and os.getenv("MATRIX_ALLOW_PUBLIC_ROOMS", "").lower() not in (
-        "true",
-        "1",
-        "yes",
-    ):
+    if preset == "public_chat" and not _flag("MATRIX_ALLOW_PUBLIC_ROOMS"):
         return tool_error("Refusing to create a public room without MATRIX_ALLOW_PUBLIC_ROOMS=true.")
 
     body = {"preset": preset}
@@ -129,20 +149,18 @@ async def _handle_matrix_create_room(args, **kwargs):
             }
         ]
 
-    url = f"{homeserver}/_matrix/client/v3/createRoom"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.post(url, headers=headers, json=body) as resp:
-                text = await resp.text()
-                if resp.status not in {200, 201}:
-                    return tool_error(f"Matrix createRoom error ({resp.status}): {text[:300]}")
-                data = await resp.json()
-    except Exception as exc:
+        status, text = await _matrix_post(homeserver, token, "/createRoom", body)
+    except MatrixRoomRequestError as exc:
         return tool_error(f"matrix_create_room request failed: {exc}")
+    if status not in {200, 201}:
+        return tool_error(f"Matrix createRoom error ({status}): {text[:300]}")
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return tool_error(f"createRoom returned invalid JSON: {text[:200]}")
 
-    room_id = data.get("room_id")
+    room_id = data.get("room_id") if isinstance(data, dict) else None
     if not room_id:
         return tool_error(f"createRoom returned no room_id: {str(data)[:200]}")
     return tool_result(
@@ -234,20 +252,12 @@ def _check_matrix_room_admin() -> bool:
     """Gate for leave/delete. Reuses the room-create capability flag: if the
     operator allows the agent to create Matrix rooms, it may also leave/forget
     them. One 'room admin' capability, no extra env wiring."""
-    return os.getenv("MATRIX_TOOLS_ALLOW_ROOM_CREATE", "").lower() in ("true", "1", "yes")
+    return _flag("MATRIX_TOOLS_ALLOW_ROOM_CREATE")
 
 
 async def _matrix_room_action(homeserver, token, room_id, action, body=None):
-    """POST /_matrix/client/v3/rooms/{room_id}/{action} (action = leave|forget)
-    via a fresh aiohttp session on the agent loop. Returns (status, text)."""
-    import aiohttp
-    from urllib.parse import quote
-
-    url = f"{homeserver}/_matrix/client/v3/rooms/{quote(room_id, safe='')}/{action}"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-        async with session.post(url, headers=headers, json=body or {}) as resp:
-            return resp.status, await resp.text()
+    """POST /rooms/{room_id}/{action} (action = leave|forget). Returns (status, text)."""
+    return await _matrix_post(homeserver, token, f"/rooms/{quote(room_id, safe='')}/{action}", body or {})
 
 
 def _current_matrix_room() -> str:
@@ -263,7 +273,7 @@ def _current_matrix_room() -> str:
 def _cross_room_allowed() -> bool:
     """Operator opt-in for acting on a room other than the current one (and for
     leave/delete outside a Matrix session, e.g. from the CLI). Off by default."""
-    return os.getenv("MATRIX_TOOLS_ALLOW_CROSS_ROOM", "").lower() in ("true", "1", "yes")
+    return _flag("MATRIX_TOOLS_ALLOW_CROSS_ROOM")
 
 
 def _require_room(args):
@@ -315,7 +325,7 @@ async def _handle_matrix_leave_room(args, **kwargs):
     body = {"reason": str(args["reason"])} if args.get("reason") else {}
     try:
         status, text = await _matrix_room_action(homeserver, token, room_id, "leave", body)
-    except Exception as exc:
+    except MatrixRoomRequestError as exc:
         return tool_error(f"matrix_leave_room request failed: {exc}")
     if status != 200:
         return tool_error(f"Matrix leave error ({status}): {text[:300]}")
@@ -333,7 +343,7 @@ async def _handle_matrix_delete_room(args, **kwargs):
     # 1) leave — tolerate "already not a member" (M_FORBIDDEN) as effectively-left
     try:
         lstatus, ltext = await _matrix_room_action(homeserver, token, room_id, "leave", body)
-    except Exception as exc:
+    except MatrixRoomRequestError as exc:
         return tool_error(f"matrix_delete_room leave failed: {exc}")
     already_gone = lstatus == 403 and "M_FORBIDDEN" in ltext
     if lstatus != 200 and not already_gone:
@@ -344,7 +354,7 @@ async def _handle_matrix_delete_room(args, **kwargs):
     # 2) forget — removes the room from this account's room list (requires having left)
     try:
         fstatus, ftext = await _matrix_room_action(homeserver, token, room_id, "forget", {})
-    except Exception as exc:
+    except MatrixRoomRequestError as exc:
         return tool_error(f"matrix_delete_room forget failed: {exc}")
     if fstatus != 200:
         return tool_error(f"Matrix forget error ({fstatus}): {ftext[:300]}")

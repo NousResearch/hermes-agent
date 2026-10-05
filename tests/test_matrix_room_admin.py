@@ -175,6 +175,17 @@ class TestCreateRoom:
         out = _parse(_run(m._handle_matrix_create_room({})))
         assert "Matrix createRoom error (403)" in out["error"]
 
+    @pytest.mark.parametrize("payload", ["<html>proxy error</html>", "not json"])
+    def test_create_invalid_json(self, creds, monkeypatch, payload):
+        _fake_client_session(monkeypatch, 200, payload)
+        out = _parse(_run(m._handle_matrix_create_room({})))
+        assert "createRoom returned invalid JSON" in out["error"]
+
+    def test_create_json_that_is_not_an_object(self, creds, monkeypatch):
+        _fake_client_session(monkeypatch, 200, "[1, 2]")
+        out = _parse(_run(m._handle_matrix_create_room({})))
+        assert "createRoom returned no room_id" in out["error"]
+
     def test_create_no_room_id_in_response(self, creds, monkeypatch):
         _fake_client_session(monkeypatch, 200, {"oops": True})
         out = _parse(_run(m._handle_matrix_create_room({})))
@@ -182,7 +193,7 @@ class TestCreateRoom:
 
     def test_create_api_exception(self, creds, monkeypatch):
         def boom(**_kwargs):
-            raise RuntimeError("conn reset")
+            raise aiohttp.ClientConnectionError("conn reset")
 
         monkeypatch.setattr(aiohttp, "ClientSession", boom)
         out = _parse(_run(m._handle_matrix_create_room({})))
@@ -275,7 +286,7 @@ def _raising(*fail_on):
     """_matrix_room_action stand-in that raises for the given actions, 200s otherwise."""
     async def fake(homeserver, token, room_id, action, body=None):
         if action in fail_on:
-            raise aiohttp.ClientError(f"{action} unreachable")
+            raise m.MatrixRoomRequestError(f"{action} unreachable")
         return 200, "{}"
     return fake
 
@@ -310,6 +321,32 @@ class TestTransport:
         calls = _fake_client_session(monkeypatch, 200, {})
         _run(m._matrix_room_action("https://hs", "tok", "!a:b", "forget"))
         assert calls[0]["body"] == {}
+
+    @pytest.mark.parametrize("exc,expected", [
+        (aiohttp.ClientConnectionError("refused"), "refused"),
+        (asyncio.TimeoutError(), "TimeoutError"),  # empty message -> type name, never a blank error
+    ])
+    def test_room_action_wraps_transport_errors(self, monkeypatch, exc, expected):
+        def boom(**_kwargs):
+            raise exc
+
+        monkeypatch.setattr(aiohttp, "ClientSession", boom)
+        with pytest.raises(m.MatrixRoomRequestError, match=expected):
+            _run(m._matrix_room_action("https://hs", "tok", "!a:b", "leave"))
+
+    def test_room_action_without_aiohttp(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "aiohttp", None)
+        with pytest.raises(m.MatrixRoomRequestError, match="aiohttp not installed"):
+            _run(m._matrix_room_action("https://hs", "tok", "!a:b", "leave"))
+
+    def test_room_action_unexpected_errors_propagate(self, monkeypatch):
+        # Only transport failures are converted; a programming error must surface, not become a tool error.
+        def boom(**_kwargs):
+            raise TypeError("bug")
+
+        monkeypatch.setattr(aiohttp, "ClientSession", boom)
+        with pytest.raises(TypeError):
+            _run(m._matrix_room_action("https://hs", "tok", "!a:b", "leave"))
 
     def test_create_without_aiohttp(self, creds, monkeypatch):
         monkeypatch.setitem(sys.modules, "aiohttp", None)  # makes `import aiohttp` raise ImportError
@@ -456,11 +493,8 @@ class TestLiveAdapter:
         self._runner_ref(monkeypatch, lambda: None)
         assert m._live_matrix_adapter() is None
 
-    def test_lookup_error_is_swallowed(self, monkeypatch):
-        def boom():
-            raise RuntimeError("gateway half torn down")
-
-        self._runner_ref(monkeypatch, boom)
+    def test_gateway_not_importable(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "gateway.run", None)  # `from gateway.run import ...` -> ImportError
         assert m._live_matrix_adapter() is None
 
     def test_creds_prefer_live_adapter(self, monkeypatch):
@@ -484,7 +518,7 @@ class TestLiveAdapter:
 # --------------------------------------------------------------------------
 class TestGate:
     @pytest.mark.parametrize("val,expected", [
-        ("true", True), ("1", True), ("yes", True), ("TRUE", True),
+        ("true", True), ("1", True), ("yes", True), ("TRUE", True), (" yes ", True),
         ("", False), ("false", False), ("no", False),
     ])
     def test_room_admin_gate(self, monkeypatch, val, expected):

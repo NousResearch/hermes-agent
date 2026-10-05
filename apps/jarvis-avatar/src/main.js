@@ -10,7 +10,7 @@
   Parâmetros de URL: ?estatico · ?sofundo · ?fps · ?q=0.4..1
   Atalhos: H esconde a interface · F tela cheia · M microfone · P pensar · espaço fala · 1–4 formas · D mostra FPS
 */
-import { CFG, IMG, ASSETS, PARAMS, STILL, SO_FUNDO, REDUCED, COARSE, MOBILE, FONT } from './config.js';
+import { CFG, IMG, NECK_Y, HEAD3D, ASSETS, PARAMS, STILL, SO_FUNDO, REDUCED, COARSE, MOBILE, FONT } from './config.js';
 import { clamp, mix, ease, rnd, $, toast } from './util.js';
 import { QUAD_VS, BG_FS, BODY_FS, PART_VS, PART_FS } from './shaders.js';
 import { createAudio } from './audio.js';
@@ -52,7 +52,7 @@ function start(imgs) {
   const bctx = bloomCv.getContext('2d');
 
   /* ---------- programas ---------- */
-  const ATTR = { aPos: 0, aHome: 0, aCol: 1, aInfo: 2, aFrom: 3, aTo: 4, aSil: 5 };
+  const ATTR = { aPos: 0, aHome: 0, aCol: 1, aInfo: 2, aFrom: 3, aTo: 4, aSil: 5, aPhi: 6 };
   function makeProgram(name, vsrc, fsrc) {
     const prog = gl.createProgram();
     for (const [src, type] of [[vsrc, gl.VERTEX_SHADER], [fsrc, gl.FRAGMENT_SHADER]]) {
@@ -153,7 +153,7 @@ function start(imgs) {
   let total = 0;
   for (let i = 2; i < inf.length; i += 4) if (inf[i] > 0) total++;
   if (!total) throw new Error('as camadas de partículas vieram vazias');
-  const cap = CFG.maxParticles || (MOBILE ? 90000 : 400000);
+  const cap = CFG.maxParticles || (MOBILE ? 50000 : 400000);   // a lateral/nuca soma quase outro tanto
   const keep = Math.min(1, cap / total);                 // celular: amostra e compensa o brilho (uGain)
   const silA = new Float32Array(total * 2);
   const homeA = new Float32Array(total * 2), colA = new Uint8Array(total * 4), infoA = new Uint8Array(total * 4);
@@ -171,7 +171,69 @@ function start(imgs) {
     }
   }
   const gain = 1 / keep;
-  const SHAPES = buildShapes(N, homeA);
+
+  // lateral e nuca: a foto só mostra a frente. Partículas extras na superfície das fatias do crânio (o mesmo modelo
+  // de sliceOf no shader). A textura é a do miolo do rosto na MESMA linha, ladrilhada em volta da cabeça: cada
+  // partícula do miolo vira cópias a cada 1,2*wi px de arco, então lateral e nuca têm o mesmo desenho e a mesma
+  // densidade da frente. Ficam apagadas com giro 0 (a soma continua sendo a foto) e aparecem quando aquele lado vira.
+  const extra = [];
+  {
+    const rowStart = new Int32Array(IMG.h + 1).fill(-1);
+    for (let i = N - 1; i >= 0; i--) rowStart[Math.floor(homeA[i * 2 + 1])] = i;
+    rowStart[IMG.h] = N;
+    for (let y = IMG.h - 1; y >= 0; y--) if (rowStart[y] < 0) rowStart[y] = rowStart[y + 1];
+    const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+    const PHI0 = HEAD3D.EXTRA_FROM, STEPS = 96, BAND = 0.6;
+    for (let y = Math.max(0, IMG.headTop - 10); y < NECK_Y; y++) {
+      if (1 - smooth(IMG.chinY, NECK_Y, y + 0.5) < 0.05) continue;
+      const m = 0.5 * (sil[y * 2] + sil[y * 2 + 1]), w = Math.max(0.5 * (sil[y * 2 + 1] - sil[y * 2]), 0.001);
+      const wi = w - Math.min(HEAD3D.RIM, 0.35 * w), d = HEAD3D.K * wi, tile = 2 * BAND * wi;
+      if (wi < 8) continue;
+      // comprimento de arco acumulado de PHI0 até a nuca (pi), pra converter "px de arco" em ângulo
+      const phis = new Float32Array(STEPS + 1), arcs = new Float32Array(STEPS + 1);
+      for (let k = 0; k <= STEPS; k++) {
+        phis[k] = PHI0 + (Math.PI - PHI0) * k / STEPS;
+        if (k) { const f = 0.5 * (phis[k] + phis[k - 1]); arcs[k] = arcs[k - 1] + Math.hypot(wi * Math.cos(f), d * Math.sin(f)) * (phis[k] - phis[k - 1]); }
+      }
+      const L = arcs[STEPS];
+      const phiAt = (sArc) => {
+        let k = 1;
+        while (k < STEPS && arcs[k] < sArc) k++;
+        return phis[k - 1] + (phis[k] - phis[k - 1]) * (sArc - arcs[k - 1]) / (arcs[k] - arcs[k - 1]);
+      };
+      for (let i = rowStart[y]; i < rowStart[y + 1]; i++) {
+        const dx = homeA[i * 2] - m;
+        if (Math.abs(dx) >= BAND * wi || infoA[i * 4 + 2] || infoA[i * 4 + 1] >= 90) continue;
+        const o = dx + BAND * wi;
+        for (const side of [-1, 1]) {
+          const o2 = side < 0 ? tile - o : o;          // espelhado do lado esquerdo: os dois lados se encontram na nuca
+          for (let sArc = o2; sArc < L; sArc += tile) {
+            const f = side * phiAt(sArc);
+            extra.push(y, f, i, m + wi * Math.sin(f));
+          }
+        }
+      }
+    }
+  }
+  const NX = extra.length / 4, NT = N + NX;
+  const grow = (A, k) => { const out = new A.constructor(NT * k); out.set(A.subarray(0, N * k)); return out; };
+  const homeT = grow(homeA, 2), silT = grow(silA, 2), colT = grow(colA, 4), infoT = grow(infoA, 4);
+  const phiT = new Float32Array(NT).fill(9);
+  for (let j = 0, i = N; j < NX; j++, i++) {
+    const [y, f, src, x] = extra.slice(j * 4, j * 4 + 4);
+    homeT[i * 2] = x; homeT[i * 2 + 1] = y + rnd();                   // altura sorteada na linha: sem listras
+    silT[i * 2] = sil[y * 2]; silT[i * 2 + 1] = sil[y * 2 + 1];
+    const r = colA[src * 4], g = colA[src * 4 + 1], b = colA[src * 4 + 2];
+    if (r > b * 0.8) {                                   // brilho dourado da boca: só na frente; na lateral vira azul
+      const l = 0.3 * r + 0.5 * g + 0.2 * b;
+      colT[i * 4] = Math.min(255, l * 0.35); colT[i * 4 + 1] = Math.min(255, l * 0.75); colT[i * 4 + 2] = Math.min(255, l * 1.3);
+    } else { colT[i * 4] = r; colT[i * 4 + 1] = g; colT[i * 4 + 2] = b; }
+    infoT[i * 4] = infoA[src * 4]; infoT[i * 4 + 3] = (rnd() * 255) | 0;
+    phiT[i] = f;
+  }
+  const shapeK = N / NT;                                 // nas outras formas todas aparecem: brilho total igual ao de antes
+  N = NT;
+  const SHAPES = buildShapes(N, homeT);
 
   /* ---------- buffers ---------- */
   function buffer(data) {
@@ -182,7 +244,7 @@ function start(imgs) {
   }
   const B = {
     tri: buffer(new Float32Array([-1, -1, 3, -1, -1, 3])),
-    home: buffer(homeA.subarray(0, N * 2)), sil: buffer(silA.subarray(0, N * 2)), col: buffer(colA.subarray(0, N * 4)), info: buffer(infoA.subarray(0, N * 4)),
+    home: buffer(homeT), sil: buffer(silT), col: buffer(colT), info: buffer(infoT), phi: buffer(phiT),
     shape: { head: buffer(SHAPES.head), sphere: buffer(SHAPES.sphere), galaxy: buffer(SHAPES.galaxy), text: null },
   };
 
@@ -288,7 +350,7 @@ function start(imgs) {
 
   /* ---------- desenho ---------- */
   function quad() {
-    for (let loc = 1; loc < 6; loc++) gl.disableVertexAttribArray(loc);
+    for (let loc = 1; loc < 7; loc++) gl.disableVertexAttribArray(loc);
     gl.bindBuffer(gl.ARRAY_BUFFER, B.tri);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
@@ -358,6 +420,7 @@ function start(imgs) {
       gl.uniform1f(u.uThink, ST.think);
       gl.uniform1f(u.uListen, ST.listen);
       gl.uniform1f(u.uGain, gain);
+      gl.uniform1f(u.uShapeK, shapeK);
       gl.uniform1f(u.uHeadness, ST.head);
       gl.uniform1f(u.uAxisX, IMG.axisX);
       gl.uniform1f(u.uHeadCY, IMG.headCY);
@@ -370,6 +433,7 @@ function start(imgs) {
       attr(3, B.shape[fromShape] || B.shape.head, 3, gl.FLOAT, false, 0);
       attr(4, B.shape[toShape] || B.shape.head, 3, gl.FLOAT, false, 0);
       attr(5, B.sil, 2, gl.FLOAT, false, 0);
+      attr(6, B.phi, 1, gl.FLOAT, false, 0);
       gl.drawArrays(gl.POINTS, 0, N);
     }
 

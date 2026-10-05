@@ -5,6 +5,12 @@ Avatar do Jarvis em WebGL: a imagem de referência é separada em camadas (fundo
 ondas, voz e estados (ouvindo / pensando / falando) deslocam partículas e corpo pela mesma
 função na GPU, então tudo se move junto.
 
+A cabeça é 3D: cada linha da foto é uma fatia elíptica de um crânio com a largura da silhueta
+real, girando em torno do pescoço (até ~72°). A frente vem da foto; lateral e nuca são ~200 mil
+partículas extras com a textura do miolo do rosto ladrilhada em volta, que só aparecem quando
+aquele lado vira para a câmera. A luz de borda segue a silhueta nova e as orelhas são placas
+que abrem ou somem atrás do crânio. Giro 0 continua idêntico à foto.
+
 ## Rodar
 
 Os módulos ES e as imagens soltas precisam de um servidor http (em `file://` o navegador bloqueia):
@@ -31,11 +37,11 @@ python3 build.py                 # gera dist/jarvis.html (~5,4 MB, tudo embutido
 | `index.html` | marcação da interface (status, dock, controles) |
 | `src/styles.css` | visual + `@font-face` da Sora |
 | `src/config.js` | `CFG` (ajustes), geometria da foto (`IMG`), lista de camadas, parâmetros de URL |
-| `src/shaders.js` | GLSL: campo do mouse/ondas, pose 2,5D, fundo, corpo e partículas |
+| `src/shaders.js` | GLSL: campo do mouse/ondas, pose, cabeça 3D (fatias), fundo, corpo e partículas |
 | `src/audio.js` | microfone, `<audio>` externo, voz do navegador → volume + 8 bandas |
 | `src/pose.js` | balanço, olhadas, seguir o mouse, reação aos estados (molas amortecidas) |
 | `src/shapes.js` | formas: cabeça, esfera, galáxia, texto |
-| `src/main.js` | WebGL, partículas, render, entrada, API pública, loop |
+| `src/main.js` | WebGL, partículas (foto + lateral/nuca), render, entrada, API pública, loop |
 | `assets/img/` | camadas da foto (1672×941): `fundo`, `mascaras`, `corpo-rgb`, `corpo-alfa`, `emissao`, `info` |
 | `assets/fonts/` | Sora 300/600/700 (SIL Open Font License 1.1) |
 | `build.py` | empacota tudo em `dist/jarvis.html` (só biblioteca padrão) |
@@ -66,5 +72,6 @@ addEventListener('jarvis:ready', ({ detail: jarvis }) => {
 
 - `?estatico` — sem animação ambiente (comparar com a foto) · `?sofundo` — só o cenário, sem o humanoide
 - `?fps` — mostra FPS · `?q=0.4..1` — resolução fixa (sem o ajuste automático para GPU fraca)
+- `?giro=0.6` ou `?giro=0.6,0.1` — fixa o giro (e o aceno) em radianos: bancada para ajustar a cabeça 3D
 - Teclas: **H** esconde a interface · **F** tela cheia · **M** microfone · **P** pensar · **espaço** fala ·
   **1–4** formas · **D** FPS

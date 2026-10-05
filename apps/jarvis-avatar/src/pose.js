@@ -7,8 +7,8 @@ import { clamp, ease, rnd } from './util.js';
 // saída (a aceleração cresce aos poucos) e sem passar do ponto na chegada.
 const axis = (filt, w) => ({ x: 0, v: 0, t: 0, filt, w });
 const POSE_STEP = 1 / 120;                                    // passo fixo: o mesmo movimento a 30, 60 ou 120 fps
-const POSE_LIM = { yaw: 0.46, pitch: 0.26, roll: 0.06 };      // giro 3D até ~26°; acima disso a lateral da cabeça,
-                                                              // que a foto de frente quase não mostra, fica artificial
+const POSE_LIM = { yaw: 1.25, pitch: 0.26, roll: 0.06 };      // giro 3D até ~72° (a lateral e a nuca são partículas
+                                                              // extras); o aceno segue 2,5D, então fica pequeno
 function drive(s, target, dt) {
   for (let left = dt; left > 1e-6; left -= POSE_STEP) {
     const h = Math.min(POSE_STEP, left);
@@ -52,7 +52,7 @@ export function createPose({ clock, mouse, ST, audio }) {
     // olhadas: de tempos em tempos olha pra um lado e volta, só quando ninguém mexe nele
     if (mouse.active) pose.glanceAt = Math.max(pose.glanceAt, time + 3);
     else if (time > pose.glanceAt) {
-      pose.gYaw = (rnd() < 0.5 ? -1 : 1) * (0.15 + rnd() * 0.15);
+      pose.gYaw = (rnd() < 0.5 ? -1 : 1) * (0.2 + rnd() * 0.35);
       pose.gPitch = (rnd() - 0.5) * 0.06;
       pose.glanceUntil = time + 1.2 + rnd() * 1.6;
       pose.glanceAt = pose.glanceUntil + 4 + rnd() * 6;
@@ -60,7 +60,7 @@ export function createPose({ clock, mouse, ST, audio }) {
     if (time < pose.glanceUntil) { ty += pose.gYaw; tp += pose.gPitch; }
     if (mouse.active) {                                 // segue o ponteiro com a cabeça (posição suavizada: sem tranco)
       const mx = mouse.seen ? mouse.fx : mouse.ix, my = mouse.seen ? mouse.fy : mouse.iy;
-      ty = ty * 0.4 + clamp((mx - IMG.axisX) / 620, -1, 1) * 0.46;   // vira a cabeça na direção do mouse (giro 3D)
+      ty = ty * 0.4 + clamp((mx - IMG.axisX) / 620, -1, 1) * 1.1;    // vira a cabeça na direção do mouse (até ~63°)
       const dyN = clamp((my - IMG.headCY) / 520, -1, 1);
       tp = tp * 0.4 + dyN * (dyN > 0 ? 0.16 : 0.24);
       tr *= 0.4;

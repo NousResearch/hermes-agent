@@ -12,6 +12,9 @@ export const CFG = {
 // geometria medida na imagem de referência (pixels da imagem 1672×941)
 export const IMG = { w: 1672, h: 941, horizon: 587, axisX: 832, headTop: 122, chinY: 632, headCY: 377, mouth: [831, 552],
                       ears: [354, 492] };   // linhas onde as orelhas saem do crânio
+// crânio 3D (shaders.js sliceOf + lateral/nuca em main.js): profundidade/largura e faixa da luz de borda (px)
+// EXTRA_FROM: menor ângulo (rad) em que nascem partículas da lateral; STRETCH: onde a foto estica demais e a lateral assume
+export const HEAD3D = { K: 1.15, RIM: 38, EXTRA_FROM: 0.7, STRETCH: [1.3, 2.6] };
 export const HEAD_RX = 182, HEAD_RY = (IMG.chinY - IMG.headTop) / 2;   // semi-eixos do crânio
 export const NECK_Y = IMG.chinY + 110;                                  // base do pescoço: pivô da cabeça
 

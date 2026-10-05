@@ -1,5 +1,5 @@
 /* Shaders GLSL (WebGL 1). Coordenadas em pixels da imagem de referência (IMG). */
-import { IMG, HEAD_RX, HEAD_RY, NECK_Y } from './config.js';
+import { IMG, HEAD_RX, HEAD_RY, NECK_Y, HEAD3D } from './config.js';
 
 // Deslocamento (dx, dy em px da imagem; dz = "pra frente") causado pelo rastro do mouse e pelas ondas.
 // É a mesma função nas partículas e no corpo: os dois se movem juntos.
@@ -29,9 +29,8 @@ vec3 field(vec2 p) {
   return acc;
 }`;
 
-// Pose da figura (px da imagem). A foto é frontal, então o "giro" é 2,5D: o crânio vira uma elipse
-// com relevo analítico; pontos no meio do rosto andam mais que a borda, o que lê como a cabeça virando.
-// Amplitudes pequenas de propósito: giro grande revelaria que a foto é plana.
+// Pose da figura (px da imagem): aceno, inclinação, respiração e avanço. São 2,5D (o crânio do aceno é uma elipse com
+// relevo analítico), com amplitudes pequenas de propósito. O giro (yaw) é 3D de verdade: ver "Cabeça 3D" abaixo.
 export const POSE = `
 uniform vec4 uPose;    // x: giro (rad) · y: aceno (rad, + = olhar pra baixo) · z: inclinação (rad) · w: respiração (-1..1)
 uniform vec4 uPoseLag; // a mesma pose, atrasada por uma mola mole: a aura vem atrás da cabeça e balança
@@ -64,62 +63,49 @@ vec2 poseOf(vec2 p, vec4 P, vec3 L, float cx) {
   return roll + turn + breath + lean;
 }
 vec2 pose(vec2 p) { return poseOf(p, uPose, uLean, YAW_PIV * sin(uYaw.x)); }
-// Giro 3D da cabeça (yaw). Cada linha da foto é um corte do crânio: uma elipse com a largura REAL da silhueta
-// naquela linha (lida do alfa do corpo; nas orelhas, a do crânio) e profundidade YAW_K vezes a largura, girando em torno
-// do pescoço (YAW_PIV px atrás do centro). Do modelo físico vêm: a silhueta nova (anda e alarga), e o quanto o
-// miolo do rosto anda. A luz de borda da foto não é superfície, é silhueta: perto da borda a superfície "desliza"
-// até a borda da foto cair exatamente na borda nova. O mapa por linha é contínuo e monotônico, então
-// não dobra, não duplica contorno e não abre buraco; corpo (inversa) e partículas (direta) usam a MESMA função.
-const float YAW_K = 1.15;                         // profundidade / largura do crânio (mais fundo que largo)
+// Cabeça 3D. Cada linha da foto é uma fatia de um crânio sólido: uma elipse com a largura REAL da silhueta naquela
+// linha (lida do alfa do corpo; nas orelhas, a do crânio) e profundidade YAW_K vezes essa largura. O giro (yaw) é
+// uma rotação 3D de verdade em torno de um eixo vertical no pescoço, YAW_PIV px atrás do rosto; o pescoço torce
+// aos poucos (headW) e os ombros não giram. Projeção ortográfica: giro 0 cai exatamente na foto.
+//   miolo  (|dx| < wi): ponto da superfície; a frente vem da foto, a lateral e a nuca de partículas extras (aPhi)
+//   faixa  (wi..w): a luz de borda da foto não é superfície, é silhueta: anda colada à borda NOVA, sem esticar
+//   fora   (> w): orelha = placa que se estende pra trás (abre ao vir pra frente, some atrás do crânio);
+//                 aura = translação junto com a borda
+const float YAW_K = ${HEAD3D.K.toFixed(3)};                          // profundidade / largura do crânio (mais fundo que largo)
+const float YAW_RIM = ${HEAD3D.RIM.toFixed(1)};                        // px: faixa da luz de borda
+const float AX = ${IMG.axisX.toFixed(1)};
 float headW(vec2 p) { return 1.0 - smoothstep(${IMG.chinY.toFixed(1)}, ${NECK_Y.toFixed(1)}, p.y); }
-// constantes do giro: (meia-largura nova / antiga, quanto o miolo roda no corte, quanto a cabeça anda em px, cos)
-vec4 yawParams(float c, float sn) {
-  return vec4(sqrt(c * c + YAW_K * YAW_K * sn * sn), atan(YAW_K * sn, c), YAW_PIV * sn, c);
-}
-// peso das orelhas na linha y: 1 em toda a orelha (IMG.ears), a rampa fica FORA dela (acima/abaixo só há aura
-// colada ao crânio); rampa dentro da orelha cisalhava o topo dela em diagonal
+// peso das orelhas na linha y (a rampa fica FORA da orelha: dentro, cisalhava o topo dela)
 float earW(float y) { return smoothstep(${(IMG.ears[0] - 24).toFixed(1)}, ${IMG.ears[0].toFixed(1)}, y) * (1.0 - smoothstep(${IMG.ears[1].toFixed(1)}, ${(IMG.ears[1] + 24).toFixed(1)}, y)); }
-// quanto o miolo da linha gira (1) ou só translada com a silhueta (0). No alto do crânio a linha inteira é a luz
-// de borda horizontal da foto (silhueta, não superfície; e a calota olha pra cima, quase não roda): girar
-// esticava essa faixa numa tampa cinza pontilhada. Sobe suave até a testa.
+// quanto o miolo da linha é superfície que gira (1) ou luz de borda que só acompanha a silhueta (0). No alto do
+// crânio a linha inteira é a luz de borda horizontal da foto: girar como superfície virava uma tampa clara.
 float rotW(float y) { return smoothstep(${(IMG.headTop + 20).toFixed(1)}, ${(IMG.headTop + 95).toFixed(1)}, y); }
-const float YAW_RIM = 38.0;                        // px: faixa da luz de borda (só translada com a silhueta, não estica)
-const float EAR_E1 = 30.0, EAR_E2 = 100.0;         // px além do crânio: fim da orelha · fim da volta à translação
-// Fora da silhueta o mapa é linear por trechos, R = L.x * ad + L.y (ad = distância da foto ao meio da linha):
-// 0: placa rígida da orelha que se afasta (encolhe por cos) · 1: volta suave à translação · 2: translação da borda.
-// e = peso da orelha do lado que se afasta (0 no resto: tudo é translação). Linear por trechos = inversa exata no corpo.
-vec2 outLin(float piece, float w, vec4 Y, float e) {
-  vec2 t = vec2(1.0, w * (Y.x - 1.0));
-  if (piece > 1.5) return t;
-  float a1 = w + EAR_E1, a2 = w + EAR_E2;
-  vec2 q = vec2(Y.w, 0.0);
-  if (piece > 0.5) { float al = (a2 + t.y - a1 * Y.w) / (a2 - a1); q = vec2(al, a1 * Y.w - al * a1); }
-  return mix(t, q, e);
+// fatia da linha: (meio, meia-largura com a faixa, meia-largura do miolo, meia-profundidade)
+vec4 sliceOf(vec2 sil) {
+  float m = 0.5 * (sil.x + sil.y), w = max(0.5 * (sil.y - sil.x), 0.001);
+  float wi = w - min(YAW_RIM, 0.35 * w);
+  return vec4(m, w, wi, YAW_K * wi);
 }
-// x da foto -> x na tela, na linha cuja silhueta é sil = (borda esquerda, borda direita) em px
-float yawMapX(float x, vec2 sil, vec4 Y, float hw, vec2 er) {   // er: (earW, rotW) da linha
-  float ear = er.x;
-  float m = 0.5 * (sil.x + sil.y), w0 = 0.5 * (sil.y - sil.x), w = max(w0, 0.001);
-  float B = min(YAW_RIM, 0.35 * w), wi = w - B, Yi = (w * Y.x - B) / wi;
-  float d = x - m, ad = abs(d), sg = d < 0.0 ? -1.0 : 1.0, X;
-  if (ad < wi) {
-    // miolo: giro físico num corte de meia-largura wi que vai parar em w*Y.x - B (a faixa da borda fica de fora)
-    float ph = asin(clamp(d / wi, -1.0, 1.0));       // clamp: alguns compiladores avaliam os dois ramos (NaN fora)
-    float k = (1.0 - smoothstep(0.0, 1.15, abs(ph))) * er.y; // 1 no miolo (giro físico) -> 0 perto da faixa (sem dobra)
-    X = m + Y.z + wi * Yi * sin(ph + Y.y * k);
-  } else {
-    // faixa da borda e fora da silhueta: acompanha a borda nova sem esticar. Orelha do lado que se afasta: placa
-    // rígida (encolhe por cos); o que cai dentro da silhueta nova está atrás do crânio (o corpo nunca o escolhe,
-    // as partículas apagam). Passada a orelha, volta à translação: a aura não cisalha.
-    float e = ad > w && sg * Y.z > 0.0 ? ear : 0.0;
-    vec2 L = outLin(ad < w + EAR_E1 ? 0.0 : (ad < w + EAR_E2 ? 1.0 : 2.0), w, Y, e);
-    X = m + Y.z + sg * (L.x * ad + L.y);
-  }
-  return mix(x, X, hw);
+// fatia girada (c, s = cos, sin do giro): (x do centro na tela, meia-largura projetada do miolo)
+vec2 sliceRot(vec4 S, float c, float s) {
+  return vec2(AX + (S.x - AX) * c + YAW_PIV * s, sqrt(S.z * S.z * c * c + S.w * S.w * s * s));
 }
-// luz do giro: a cena é iluminada por trás (luz de borda). O lado que vem pra frente (a linha estica) passa a
-// encarar a câmera e perde brilho; o que vai pra trás (encolhe) fica mais rasante e ganha um pouco. Parado: 1.
-float yawLight(float stretch) { return clamp(pow(stretch, -0.45), 0.62, 1.25); }
+// ponto da superfície no ângulo phi (0 = de frente) girado: (x na tela, quanto encara a câmera: >0 visível)
+vec2 surfRot(vec4 S, vec2 R, float phi, float c, float s) {
+  float sp = sin(phi), cp = cos(phi);
+  float nz = (S.z * cp * c - S.w * sp * s) / length(vec2(S.w * sp, S.z * cp));
+  return vec2(R.x + S.z * sp * c + S.w * cp * s, nz);
+}
+// quanto a foto estica na tela no ângulo phi da fatia girada. Onde passa de STRETCH a foto (comprimida perto da
+// borda) vira listras; ali a lateral extra e o miolo do corpo assumem. Virado pra trás: "infinito".
+float frontStretch(vec4 S, float phi, float c, float s) {
+  float cp = cos(phi), st = (S.z * cp * c - S.w * sin(phi) * s) / max(S.z * cp, 0.001);
+  return cp < 0.05 || st < 0.0 ? 99.0 : st;
+}
+float takeover(float st) { return smoothstep(${HEAD3D.STRETCH[0].toFixed(2)}, ${HEAD3D.STRETCH[1].toFixed(2)}, st); }
+// luz do giro: a cena é iluminada por trás (luz de borda). O que passa a encarar a câmera perde um pouco de brilho;
+// o que fica rasante ganha. Parado: 1.
+float yawLight(float stretch) { return clamp(pow(max(stretch, 0.01), -0.45), 0.62, 1.25); }
 float turnShade(vec2 p) {                        // quanto o ponto passou a olhar pra câmera (+) ou pra longe (-)
   vec2 e = (p - vec2(${IMG.axisX.toFixed(1)}, ${IMG.headCY.toFixed(1)})) / vec2(${HEAD_RX.toFixed(1)}, ${HEAD_RY.toFixed(1)});
   float z = sqrt(max(0.0, 1.0 - dot(e, e)));
@@ -189,45 +175,47 @@ void main() {
   h = q - pose(h);
   h = q - pose(h);                                // inverte a pose (ponto fixo, 4 passos)
   float shade = 1.0 + 0.35 * turnShade(h);
-  // giro 3D: inversa do mapa das partículas (yawMapX). Fora da silhueta ele é linear por trechos (outLin: inversa
-  // exata do trecho certo); dentro, bisseção entre as bordas da linha (o mapa é monotônico, a raiz é única).
-  float turnLight = 1.0;
+  // giro 3D: de cada pixel da tela de volta à foto, na linha dele. Miolo: o raio da câmera acerta a fatia girada
+  // em phi = asin(u) - theta (a solução que encara a câmera); a cor vem da foto em m + wi*sin(phi), que na nuca
+  // (|phi| > 90°) é o espelho da frente (cabeça lisa). Faixa e fora: a mesma distância até a borda nova.
+  float turnLight = 1.0, genK = 0.0;
+  vec4 genCol = vec4(0.0);
   if (abs(uYaw.x) > 0.0005) {
     float hw = headW(h);
     if (hw > 0.0) {
-      vec4 Y = yawParams(cos(uYaw.x), sin(uYaw.x));
-      vec2 sil = silAt(h.y);
-      float ear = earW(h.y);
-      vec2 er = vec2(ear, rotW(h.y));
-      float m = 0.5 * (sil.x + sil.y), w0 = 0.5 * (sil.y - sil.x);
-      float eL = mix(sil.x, m + Y.z - w0 * Y.x, hw), eR = mix(sil.y, m + Y.z + w0 * Y.x, hw);
-      if (h.x <= eL || h.x >= eR) {
-        float sg = h.x <= eL ? -1.0 : 1.0;
-        float D = sg * (h.x - m - hw * Y.z);            // distância nova ao meio da linha
-        float e = sg * Y.z > 0.0 ? ear : 0.0;           // orelha do lado que se afasta: inversa da placa rígida
-        float w = max(w0, 0.001);
-        // posição nova de ad no trecho L: ad + hw * (R - ad); o trecho é o primeiro cuja ponta passa de D
-        vec2 L0 = outLin(0.0, w, Y, e), L1 = outLin(1.0, w, Y, e), L = outLin(2.0, w, Y, e);
-        float a1 = w + EAR_E1, a2 = w + EAR_E2;
-        if (D < a2 + hw * (L1.x * a2 + L1.y - a2)) L = L1;
-        if (D < a1 + hw * (L0.x * a1 + L0.y - a1)) L = L0;
-        h.x = m + sg * (D - hw * L.y) / (1.0 + hw * (L.x - 1.0));
-      }
-      else {
-        float lo = sil.x, hi = sil.y;
-        for (int i = 0; i < 13; i++) {   // meia-largura <= ~260 px: 13 passos = 0,06 px
-          float mid = 0.5 * (lo + hi);
-          if (yawMapX(mid, sil, Y, hw, er) < h.x) lo = mid; else hi = mid;
+      float a = uYaw.x * hw, c = cos(a), sn = sin(a);
+      vec4 S = sliceOf(silAt(h.y));
+      vec2 R = sliceRot(S, c, sn);
+      float D = h.x - R.x, aD = abs(D), sg = D < 0.0 ? -1.0 : 1.0;
+      if (aD < R.y) {
+        float psi = asin(clamp(D / R.y, -1.0, 1.0));
+        float phi = psi - atan(S.w * sn, S.z * c);
+        float rw = rotW(h.y);
+        // onde a foto esticaria demais (lateral) e na nuca, a base escura não vem da beirada da foto (a luz de borda
+        // esticada lavava a cabeça de branco e fazia listras): é a média do miolo da linha, tingida de azul
+        float g = takeover(frontStretch(S, phi, c, sn)) * rw;
+        float ts = 1.0 - rw;                              // alto do crânio: só acompanha a silhueta
+        h.x = S.x + mix(S.z * sin(phi), D * S.z / R.y, ts);
+        turnLight = mix(1.0, 0.8, smoothstep(1.3, 2.2, abs(phi)) * rw);   // nuca: um pouco mais escura que a frente
+        if (g > 0.0) {
+          vec4 acc = vec4(0.0);
+          for (int i = 0; i < 4; i++) {
+            vec2 uvg = vec2(S.x + S.z * (-0.6 + 0.4 * float(i)), h.y) / uImg;
+            acc += vec4(texture2D(uBodyRGB, uvg).rgb, texture2D(uBodyA, uvg).r);
+          }
+          acc *= 0.25;
+          genCol = vec4(vec3(0.35, 0.75, 1.3) * 0.7 * dot(acc.rgb, vec3(0.3, 0.5, 0.2)), acc.a);
+          genK = g;
         }
-        h.x = 0.5 * (lo + hi);
-        turnLight = yawLight(yawMapX(h.x + 0.5, sil, Y, hw, er) - yawMapX(h.x - 0.5, sil, Y, hw, er));
+      } else {
+        h.x = S.x + sg * (S.z + aD - R.y);              // faixa da luz de borda e fora: colados à borda nova
       }
     }
   }
   vec2 uv = h / uImg;
   if (uVis < 0.002 || uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) discard;
-  float a = texture2D(uBodyA, uv).r;
-  vec3 rgb = texture2D(uBodyRGB, uv).rgb * turnLight;   // já pré-multiplicado
+  float a = mix(texture2D(uBodyA, uv).r, genCol.a, genK);
+  vec3 rgb = mix(texture2D(uBodyRGB, uv).rgb, genCol.rgb, genK) * turnLight;   // já pré-multiplicado
   float vis = uVis * (1.0 - clamp(length(f.xy) / 70.0, 0.0, 0.55));
   gl_FragColor = vec4(rgb * shade, a) * vis;
 }`;
@@ -240,8 +228,9 @@ attribute vec4 aInfo;            // relevo, borda, aura (0/1), semente
 attribute vec3 aFrom;
 attribute vec3 aTo;
 attribute vec2 aSil;             // silhueta (borda esquerda, direita; px) da linha de origem: a mesma que o corpo lê em uSil
+attribute float aPhi;            // > 4: partícula da foto · senão: partícula da lateral/nuca, no ângulo aPhi da fatia
 uniform vec2 uRes, uOffset, uPar, uMouth;
-uniform float uScale, uTime, uStill, uMorphT0, uLevel, uThink, uListen, uGain, uHeadness, uAxisX, uHeadCY, uChinY;
+uniform float uScale, uTime, uStill, uMorphT0, uLevel, uThink, uListen, uGain, uShapeK, uHeadness, uAxisX, uHeadCY, uChinY;
 uniform float uBands[8];
 ` + FIELD + POSE + `
 varying vec3 vCol;
@@ -274,29 +263,54 @@ void main() {
   float wv = 0.5 + 0.5 * sin(p.y * 0.05 - uTime * 6.0 + seed * 6.28);
   p += nrm * (uLevel * 2.5 + bnd * 6.0) * (0.3 + 0.7 * seed) * (0.4 + 0.6 * wv) * hd;
 
-  // giro 3D: o mesmo mapa por linha do corpo (yawMapX), com a silhueta da linha de origem da partícula
+  // giro 3D. Calcula onde o ponto vai parar (X) e onde estava com giro 0 (X0) e aplica a diferença sobre base, então
+  // a troca de forma (base fora de casa) continua funcionando. Mesma fatia e mesma conta da inversa do corpo.
   float yawS = mix(uYaw.x, uYaw.y, aura) * hd;
   vec2 turned = base.xy;
-  float hidden = 0.0;              // 1 = atrás do crânio (orelha que se afasta)
-  float stretch = 1.0;             // quanto a linha estica (>1, lado que vem pra frente) ou encolhe (<1) aqui
+  float vis = 1.0;                 // 0 = virado pra trás / atrás do crânio
+  float stretch = 1.0;             // quanto a superfície estica (>1, vem pra frente) ou encolhe (<1) na tela
+  bool extra = aPhi < 4.0;         // lateral/nuca: não existe na foto
   vMv = 0.0;
   if (abs(yawS) > 0.0005) {
-    vec4 Y = yawParams(cos(yawS), sin(yawS));
-    float hw = headW(base.xy), ear = earW(base.y);
-    vec2 er = vec2(ear, rotW(base.y));
-    turned.x = yawMapX(base.x, aSil, Y, hw, er);
-    stretch = yawMapX(base.x + 0.5, aSil, Y, hw, er) - yawMapX(base.x - 0.5, aSil, Y, hw, er);
-    // orelha que se afasta: o que caiu dentro da silhueta nova está atrás do crânio
-    float m = 0.5 * (aSil.x + aSil.y), sg = base.x < m ? -1.0 : 1.0;
-    if (sg * Y.z > 0.0 && abs(base.x - m) > 0.5 * (aSil.y - aSil.x))
-      hidden = ear * (1.0 - smoothstep(-0.75, 0.75, sg * (turned.x - m - hw * Y.z) - 0.5 * (aSil.y - aSil.x) * mix(1.0, Y.x, hw)));
+    float hw = headW(aHome), a = yawS * hw, c = cos(a), sn = sin(a);
+    vec4 S = sliceOf(aSil);
+    vec2 R = sliceRot(S, c, sn);
+    float dx = aHome.x - S.x, ad = abs(dx), sg = dx < 0.0 ? -1.0 : 1.0;
+    float X0 = aHome.x, X;
+    if (extra) {
+      vec2 q = surfRot(S, R, aPhi, c, sn);
+      X0 = S.x + S.z * sin(aPhi);
+      X = q.x;
+      // só onde a foto esticaria demais ou não existe, e só girando: parado, a soma continua sendo a foto
+      vis = smoothstep(0.0, 0.12, q.y) * takeover(frontStretch(S, aPhi, c, sn)) * smoothstep(0.02, 0.12, abs(a)) * rotW(aHome.y);
+      stretch = 1.0;
+    } else if (ad < S.z) {
+      float phi = asin(clamp(dx / S.z, -1.0, 1.0)), rw = rotW(aHome.y);
+      vec2 q = surfRot(S, R, phi, c, sn);
+      X = mix(R.x + dx * R.y / S.z, q.x, rw);                        // alto do crânio: só acompanha a silhueta
+      stretch = mix(R.y / S.z, (S.z * cos(phi) * c - S.w * sin(phi) * sn) / max(S.z * cos(phi), 0.001), rw);
+      vis = mix(1.0, smoothstep(0.0, 0.12, q.y) * (1.0 - takeover(stretch)), rw);   // muito esticado: a lateral extra assume
+    } else {
+      float aura0 = aHome.x + (R.x - S.x) + sg * (R.y - S.z);      // faixa da luz de borda e aura: coladas à borda nova
+      float u = ad - S.y, e = earW(aHome.y) * step(0.0, u) * (1.0 - smoothstep(30.0, 60.0, u));
+      // orelha: placa presa na lateral do crânio que se estende pra trás (z = -1,4 u). Vista de lado ela abre;
+      // indo pra trás, o que cai dentro da silhueta nova some atrás do crânio.
+      float z = -1.4 * u;
+      float xe = AX + (aHome.x - AX) * c + (z + YAW_PIV) * sn;
+      float ze = -(aHome.x - AX) * sn + (z + YAW_PIV) * c - YAW_PIV;
+      float behind = (1.0 - smoothstep(-2.0, 2.0, abs(xe - R.x) - R.y - (S.y - S.z))) * (1.0 - smoothstep(-6.0, 0.0, ze));
+      X = mix(aura0, xe, e);
+      vis = 1.0 - e * behind;
+    }
+    turned.x = base.x + (X - X0);
     // girando, a partícula cai fora do centro do pixel: em vez do quadrado de pixel (que apaga ou dobra com meio
     // pixel de deslocamento: pontilhado cinza, xadrez), ela vira um retângulo pintado pela área que cobre de cada pixel
     vMv = smoothstep(0.0005, 0.003, abs(yawS));
-  }
-  // onde a linha estica/encolhe s vezes, há 1/s partícula por pixel: o retângulo tem largura s (luz por área = a da
+  } else if (extra) vis = 0.0;
+  if (extra) vis = mix(1.0, vis, hd);                            // nas outras formas (esfera, galáxia) ela aparece
+  // onde a superfície estica s vezes, há 1/s partícula por pixel: o retângulo tem largura s (luz por área = a da
   // foto, sem buracos nem empilhamento). Abaixo de 0,3 só apaga.
-  float wx = clamp(stretch, 0.3, 2.5), dens = stretch / wx;
+  float wx = clamp(stretch, 0.3, 2.5), dens = min(stretch / wx, 1.0);
   p += turned - base.xy;
   float sh = YAW_PIV * sin(yawS);                // o crânio do aceno vai com a cabeça girada (igual ao corpo)
   p += mix(poseOf(turned, uPose, uLean, sh), poseOf(turned, uPoseLag, uLeanLag, sh), aura) * hd;   // a pose vem antes do campo, igual ao corpo
@@ -322,14 +336,14 @@ void main() {
   if (vMv > 0.0) vSpr.x = ceil(2.0 * max(vSpr.z, vSpr.w)) + 1.0;   // cobre todo pixel que o retângulo toca
   gl_PointSize = vSpr.x;
 
-  float b = uGain * mix(2.4, 1.0, hd) * (1.0 + pop * 0.9);
+  float b = uGain * mix(2.4 * uShapeK, 1.0, hd) * (1.0 + pop * 0.9);
   b *= 1.0 + 0.35 * base.z * (1.0 - hd);
   b *= 1.0 + hd * (gold * (uLevel * 1.6 + uThink * 0.6 * (0.5 + 0.5 * sin(uTime * 3.0))) + rim * uListen * 0.5 + uLevel * 0.25);
   b *= 1.0 + uThink * hd * 0.5 * pow(0.5 + 0.5 * sin(p.y * 0.03 + uTime * 4.0), 6.0);
   b *= 1.0 + live * 0.3 * pow(0.5 + 0.5 * sin(uTime * (0.8 + seed * 2.5) + seed * 50.0), 12.0);
   b *= 1.0 + live * hd * outline * 0.3 * pulse;
   b *= max(0.6, 1.0 + 0.35 * turnShade(base.xy) * hd);         // luz do microgiro
-  b *= dens * yawLight(stretch) * (1.0 - hidden);                                 // luz por área constante (ver wx/dens) + luz do giro
+  b *= dens * yawLight(stretch) * vis;                                 // luz por área constante (ver wx/dens) + luz do giro
   if (uScale < 1.0) b *= mix(uScale * uScale, 1.0, vMv);   // tela menor que a foto: conserva o brilho (a cobertura já conserva)
   vCol = aCol * b;
   vRound = clamp(length(f.xy) / 6.0 + pop + fly + (1.0 - hd), 0.0, 1.0);

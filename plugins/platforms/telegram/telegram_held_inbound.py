@@ -35,7 +35,7 @@ class TelegramHeldInboundMixin:
             return
         self._held_inbound_redispatch_task = loop.create_task(self._redispatch_held_inbound(prior=None if prior is current else prior))
 
-    def _hold_inbound_event(self, event: "MessageEvent", *, where: str, schedule: bool = True) -> None:
+    def _hold_inbound_event(self, event: MessageEvent, *, where: str, schedule: bool = True) -> None:
         """Preserve an inbound event that cannot be dispatched now (PTB already acked the update, so dropping is silent loss).
         Capped, identity-deduped; permanent fatal discards. ``schedule=False`` inside a drain avoids poison-event loops.
 
@@ -83,7 +83,7 @@ class TelegramHeldInboundMixin:
             self._adopt_held_event(event, where="adopted", schedule=False)
         self._schedule_held_inbound_redispatch()
 
-    def _adopt_held_event(self, event: "MessageEvent", *, where: str, schedule: bool) -> None:
+    def _adopt_held_event(self, event: MessageEvent, *, where: str, schedule: bool) -> None:
         """Hold a predecessor's event here; only the transport ref moves (profile/authz stay as resolved)."""
         if getattr(event, "source", None) is not None:
             event.source._transport_adapter_ref = weakref.ref(self)

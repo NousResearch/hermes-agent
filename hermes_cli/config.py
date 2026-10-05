@@ -3528,18 +3528,16 @@ def _exit_if_key_managed(key: str, action: str) -> None:
 
 def _guard_section_overwrite(key: str, value: Any, user_config: Dict[str, Any], force: bool) -> str:
     """Refuse (or with ``force`` allow) a single-segment key overwriting a mapping with a scalar.
-    Bare ``model`` is a documented shorthand — redirected to ``model.default`` so siblings survive.
+    Bare ``model`` is a documented shorthand — redirected to ``model.default`` so siblings survive;
+    a list (or a mapping over an existing section) under it is refused without ``force``.
     Returns the (possibly redirected) key."""
     existing = user_config.get(key)
-    # The bare-name shorthand takes a model id. A mapping/list literal under it is a section
-    # write attempt: redirecting it into model.default would store a container in the string
-    # slot every model reader ignores while config get echoed it back (#131435) — the same
-    # silent no-op shape _refuse_container_type_mismatch guards for container slots. A list
-    # has no reader at all, so it is refused even with no mapping section to protect.
+    kind = "mapping" if isinstance(value, dict) else "list"
+    # Containers under the model-id shorthand have no reader slot (#131435).
     if key == "model" and not force and (
             isinstance(value, list) or (isinstance(value, dict) and isinstance(existing, dict))):
         _exit_invalid(
-            f"✗ Cannot set 'model' to a {'mapping' if isinstance(value, dict) else 'list'} — "
+            f"✗ Cannot set 'model' to a {kind} — "
             "the bare 'model' shorthand takes a model id, and a container value has no "
             "slot there.\n"
             "  Set the section's keys individually instead:\n"
@@ -3550,15 +3548,10 @@ def _guard_section_overwrite(key: str, value: Any, user_config: Dict[str, Any], 
     if "." in key or not isinstance(existing, dict):
         return key
     if key == "model":
-        if isinstance(value, (dict, list)):
-            print(
-                f"⚠ Replacing entire 'model' section with the given "
-                f"{'mapping' if isinstance(value, dict) else 'list'} "
-                f"(discarding {len(existing)} existing sub-key(s))")
-            return key
         if force:
+            what = f"the given {kind}" if isinstance(value, (dict, list)) else "a scalar"
             print(
-                f"⚠ Replacing entire 'model' section with a scalar "
+                f"⚠ Replacing entire 'model' section with {what} "
                 f"(discarding {len(existing)} existing sub-key(s))")
             return key
         print(

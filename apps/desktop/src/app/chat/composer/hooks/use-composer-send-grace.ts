@@ -6,6 +6,10 @@ interface Options {
   /** Commit the draft. Called when the hold expires, or immediately when there
    *  is no hold — the caller's own send path either way. */
   onCommit: () => void
+  /** Identifies the session this window belongs to. When it changes the
+   *  composer has swapped sessions, and a window still waiting would resolve
+   *  `onCommit` against the NEW session — so the swap cancels it. */
+  ownerKey: string | null
 }
 
 /**
@@ -16,11 +20,12 @@ interface Options {
  * rather than an undo — nothing has been submitted, cleared, or stashed, and
  * attachments cannot be lost because they never moved.
  *
- * `hold()` reports whether it actually held. A caller with no window to offer
- * (graceMs 0) gets an immediate commit and `false`, so a haptic can fire on the
- * wrong signal otherwise.
+ * `hold()` reports whether it took the commit — `true` whenever `onCommit` has
+ * run or is about to, including the zero-window case where it runs on the spot.
+ * Callers read that answer to decide whether to submit themselves, so a `false`
+ * here would make them send a draft that has already gone.
  */
-export function useComposerSendGrace({ graceMs, onCommit }: Options) {
+export function useComposerSendGrace({ graceMs, onCommit, ownerKey }: Options) {
   const [holding, setHolding] = useState(false)
   const timerRef = useRef<number | undefined>(undefined)
   // Kept fresh without re-creating the timer callbacks mid-hold.
@@ -40,10 +45,14 @@ export function useComposerSendGrace({ graceMs, onCommit }: Options) {
   const hold = useCallback((): boolean => {
     cancel()
 
+    // Nothing to wait for: commit on the spot, but still report that this call
+    // owns the send. A caller reading `false` as "you did not commit" would
+    // submit the same draft a second time, or drain/steer the composer it just
+    // emptied.
     if (graceMs <= 0) {
       commitRef.current()
 
-      return false
+      return true
     }
 
     setHolding(true)
@@ -56,9 +65,12 @@ export function useComposerSendGrace({ graceMs, onCommit }: Options) {
     return true
   }, [cancel, graceMs])
 
-  // A composer that unmounts mid-hold (session swap, pane close) must not fire
-  // into a dead tree.
-  useEffect(() => cancel, [cancel])
+  // A composer that unmounts mid-hold (pane close) must not fire into a dead
+  // tree — and one that swaps to another session while a window is still open
+  // must not fire either: `commitRef` now points at the new session's send, so
+  // a timer armed here would submit the wrong draft. Keying the cleanup on the
+  // owner cancels the window at that handoff, not only at unmount.
+  useEffect(() => cancel, [cancel, ownerKey])
 
   return { cancel, hold, holding }
 }

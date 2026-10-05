@@ -26,7 +26,7 @@ from urllib.parse import quote, unquote, urlencode, urlparse, urlunparse
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from hermes_cli.dashboard_auth import (
@@ -390,7 +390,8 @@ def _reset_password_rate_limit() -> None:
 
 
 class _PasswordLoginBody(BaseModel):
-    provider: str
+    # Providers use short stable IDs, not display names or URLs.
+    provider: str = Field(max_length=128)
     username: str
     password: str
     next: str = ""

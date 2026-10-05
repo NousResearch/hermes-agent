@@ -13,6 +13,7 @@ provider, flip ``app.state.auth_required = True``, drive a ``TestClient``.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -229,6 +230,32 @@ class TestProviderListFlag:
 
 
 class TestPasswordLoginRoute:
+    @pytest.mark.parametrize("rate_limited", [False, True])
+    def test_oversized_provider_rejected_without_audit(
+        self: TestPasswordLoginRoute, gated_app: TestClient,
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rate_limited: bool,
+    ) -> None:
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        if rate_limited:
+            response = None
+            for _ in range(15):
+                response = gated_app.post(
+                    "/auth/password-login",
+                    json={"provider": "testpw", "username": "admin", "password": "WRONG"},
+                )
+            assert response is not None and response.status_code == 429
+        path = tmp_path / "logs" / "dashboard-auth.log"
+        before = path.read_text() if path.exists() else ""
+        provider = "p" * 129
+        response = gated_app.post(
+            "/auth/password-login",
+            json={"provider": provider, "username": "admin", "password": "WRONG"},
+        )
+        after = path.read_text() if path.exists() else ""
+        assert response.status_code == 422
+        assert provider not in after
+        assert after == before
+
     def test_valid_credentials_set_session_cookies_and_return_next(
         self, gated_app
     ):

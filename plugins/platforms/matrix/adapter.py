@@ -1958,8 +1958,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 self._warned_encrypted_drop_rooms.add(room_id)
                 logger.warning(
                     "Matrix: dropping encrypted messages in %s — this process has no E2EE decryptor "
-                    "(E2EE off or unavailable). %s. Without it, messages in encrypted rooms never "
-                    "reach the agent.", room_id, _E2EE_INSTALL_HINT)
+                    "(E2EE off or unavailable). %s, then set MATRIX_E2EE_MODE=optional (or required). "
+                    "Without it, messages in encrypted rooms never reach the agent.",
+                    room_id, _E2EE_INSTALL_HINT)
 
     async def _dispatch_sync(self, sync_data: Dict[str, Any]) -> None:
         """Dispatch a sync response through the mautrix event machinery."""

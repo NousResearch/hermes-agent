@@ -1,0 +1,7 @@
+name: session_continuity
+version: 0.1.0
+description: "Opt-in first-turn continuity: injects a compact summary of the most recent visible previous session into the current user message via pre_llm_call. No system-prompt mutation and no model calls."
+author: NousResearch
+kind: standalone
+hooks:
+  - pre_llm_call

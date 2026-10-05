@@ -804,6 +804,7 @@ def _lock_in_submit_turn(
             if err is not None:
                 return err, {}
         session["running"] = True
+        session["_run_turn"] = session.get("_run_turn", 0) + 1
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         if hosted_task is not None:
@@ -968,6 +969,7 @@ def _(rid, params: dict) -> dict:
             hosted_images),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
+    run_thread._hermes_run_turn = session.get("_run_turn")
     session["_run_thread"] = run_thread
     run_thread.start()
     return _ok(rid, {"status": "streaming", **survivor_fields})

@@ -426,7 +426,6 @@ def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str
     """Chain one follow-up turn (caller set ``running``); on failure run ``on_error``, log,
     release ``running``."""
     try:
-        _emit("message.start", sid)
         _run_prompt_submit(rid, sid, session, prompt)
         if on_done is not None:
             on_done()
@@ -457,6 +456,7 @@ def _run_post_turn_followups(
             if session.get("_turn_cancel_requested"):
                 return  # the user pressed Stop; the goal resumes after their next prompt
             session["running"] = True
+            session["_run_turn"] = session.get("_run_turn", 0) + 1
         _dispatch_followup_turn(rid, sid, session, goal_followup, "goal continuation dispatch")
     # Safety net for completion events that arrived mid-turn.  Ownership is positive-proof
     # and compression-chain aware (same fail-closed gate as the poller): session B must
@@ -1153,11 +1153,10 @@ def _run_prompt_submit(
         sid, session.get("session_key") or "", getattr(agent, "session_id", "") or "",
         display_kind or "user", len(text) if isinstance(text, str) else "-", len(images))
     # The turn's wire identity: _emit stamps its message.* frames from it (stream_segments.py), so the
-    # frames are the same here and in a compute-host child; dropped in run_body's finally.
+    # frames are the same here and in a compute-host child; dropped in run_body's finally. message.start
+    # waits for run(): only an admitted, started worker announces a turn.
     from tui_gateway.stream_segments import SESSION_KEY, TurnSegments  # bound functions run in server's globals
     session[SESSION_KEY] = segments = TurnSegments()
-    if not muted:
-        _emit("message.start", sid)
 
     def run_body():
         # RPC-dispatcher ContextVars do not follow onto this thread: rebind the transport
@@ -1241,6 +1240,12 @@ def _run_prompt_submit(
                 _post_turn_housekeeping(sid, session, st)
         return st.result, goal_followup
     def run():
+        # Only an admitted, started worker announces a turn, before any turn output.
+        if not muted:
+            try:
+                _emit("message.start", sid)
+            except Exception:
+                logger.warning("prompt start emission failed", exc_info=True)
         from agent.notification_presentation import notification_turn
         # _prepare_turn_input owns profile binding for the worker. The context
         # here only gates presentation; do not introduce a second runtime scope.

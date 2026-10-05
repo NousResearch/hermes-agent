@@ -120,7 +120,7 @@ Disabling Xet avoids authentication failures from Xet's separate CAS hosts when 
 
 ## CLI Voice Mode
 
-Voice mode is available in both the **classic CLI** (`hermes chat`) and the **TUI** (`hermes --tui`). Behavior is identical across both — same slash commands, same VAD silence detection, same streaming TTS, same hallucination filter. The TUI additionally forwards crash-forensic logs to `~/.hermes/logs/` so push-to-talk failures on exotic audio backends can be reported with a full stack trace rather than disappearing silently.
+Voice mode is available in both the **classic CLI** (`hermes chat`) and the **TUI** (`hermes --tui`). Both use the same slash commands, VAD silence detection, streaming TTS, and hallucination filter. Their automatic TTS initialisation differs: the classic CLI reads `voice.auto_tts` when `/voice on` starts voice mode, while the TUI uses its runtime `/voice tts` setting. The TUI additionally forwards crash-forensic logs to `~/.hermes/logs/` so push-to-talk failures on exotic audio backends can be reported with a full stack trace rather than disappearing silently.
 
 ### Quick Start
 
@@ -292,11 +292,13 @@ These work in both Telegram and Discord (DMs and text channels):
 
 | Mode | Command | Behavior |
 |------|---------|----------|
-| `off` | `/voice off` | Text only (default) |
+| `off` | `/voice off` | Text only |
 | `voice_only` | `/voice on` | Speaks reply only when you send a voice message |
 | `all` | `/voice tts` | Speaks reply to every message |
 
-Voice mode setting is persisted across gateway restarts.
+Voice mode setting is persisted across gateway restarts. Before a chat has an
+explicit setting, `voice.auto_tts: true` gives it the effective `all` mode;
+otherwise its effective mode is `off`.
 
 ### Platform Delivery
 
@@ -452,11 +454,11 @@ DISCORD_ALLOWED_USERS=284102345871466496
 ### config.yaml
 
 ```yaml
-# Voice recording (CLI)
+# Voice recording and automatic speech
 voice:
   record_key: "ctrl+b"            # Key to start/stop recording
   max_recording_seconds: 120       # Maximum recording length
-  auto_tts: false                  # Auto-enable TTS when voice mode starts
+  auto_tts: false                  # Automatic speech; does not enable microphone mode
   beep_enabled: true               # Play record start/stop beeps
   silence_threshold: 200           # RMS level (0-32767) below which counts as silence
   silence_duration: 3.0            # Seconds of silence before auto-stop
@@ -480,6 +482,12 @@ stt:
 # Text-to-Speech
 tts:
   provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts" | "minimax" | "mistral" | "gemini" | "xai" | "kittentts" | "piper"
+  # The `text_to_speech` tool accepts an optional per-call `instructions`
+  # argument (tone, emotion, pacing, such as "whisper" or "excited") that each
+  # provider renders natively where supported: OpenAI voice design, Gemini
+  # prompt direction, xAI speech tags, ElevenLabs v3 audio tags, MiniMax
+  # emotions. Set a default here or per provider; the tool argument wins.
+  instructions: ""
   edge:
     voice: "en-US-AriaNeural"      # 322 voices, 74 languages
   elevenlabs:
@@ -489,17 +497,25 @@ tts:
     model: "gpt-4o-mini-tts"
     voice: "alloy"                 # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # optional: override for self-hosted or OpenAI-compatible endpoints
-    # The `text_to_speech` tool accepts an optional per-call `instructions`
-    # argument (tone, emotion, pacing, accent, whispering) that is forwarded
-    # to `gpt-4o-mini-tts` and to OpenAI-compatible voice-design servers
-    # (e.g. Qwen3-TTS-VoiceDesign via oMLX). See OpenAI's voice-design guide:
-    # https://platform.openai.com/docs/guides/text-to-speech
+    # instructions: ""             # per-provider default; overrides tts.instructions
   neutts:
     ref_audio: ''
     ref_text: ''
     model: neuphonic/neutts-air-q4-gguf
     device: cpu
 ```
+
+### `voice.auto_tts`
+
+This key is a shared automatic speech preference, not a switch for microphone
+mode. Each surface applies the preference according to its interaction model:
+
+| Surface | Behaviour when `voice.auto_tts` is `true` |
+|---------|--------------------------------------------|
+| Classic CLI | `/voice on` starts voice mode with TTS enabled. The key does not enable voice mode itself. |
+| TUI | No initial effect. Use `/voice tts` to change TTS for the current runtime. |
+| Desktop | **Read Responses Aloud** reads each completed assistant response outside a full voice conversation. A full voice conversation speaks through its own conversation loop. |
+| Gateway | Chats without an explicit voice mode receive spoken replies to every message. `/voice on`, `/voice tts`, and `/voice off` override the default for that chat. |
 
 ### Environment Variables
 
@@ -552,11 +568,19 @@ Provider priority (automatic fallback): **local** > **groq** > **openai**
 
 NeuTTS uses the `tts.neutts` config block above.
 
-For `openai`, the `text_to_speech` tool accepts an optional `instructions`
-argument that unlocks `gpt-4o-mini-tts`'s voice-design capability (tone,
-emotion, pacing, accent, whispering). The same field also routes to
-OpenAI-compatible voice-design servers mounted via `tts.openai.base_url`
-(e.g. Qwen3-TTS-VoiceDesign via oMLX).
+The `text_to_speech` tool accepts an optional `instructions` argument (tone,
+emotion, pacing, accent, such as "whisper", "excited", or "calm and slow") that
+every provider with a native style channel honours: OpenAI renders it through
+`gpt-4o-mini-tts`'s voice design (and OpenAI-compatible voice-design servers
+mounted via `tts.openai.base_url`, e.g. Qwen3-TTS-VoiceDesign via oMLX),
+Gemini follows it as prompt direction, xAI as speech tags, ElevenLabs v3
+models as audio tags, and MiniMax as emotions. Backends without a style
+channel ignore it. Configure a default with `tts.instructions` or
+`tts.<provider>.instructions`; see the
+[TTS feature docs][tts-style] for the full
+rendering table.
+
+[tts-style]: ./tts.md#style-instructions
 
 ---
 

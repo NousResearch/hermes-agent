@@ -34,11 +34,22 @@ class StreamingTTSConsumer:
     def __init__(self, adapter: Any, chat_id: str, tts_config: Dict[str, Any],
                  loop: asyncio.AbstractEventLoop, *, metadata: Optional[Dict[str, Any]] = None,
                  audio_format: Optional[AudioFormat] = None) -> None:
-        from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
+        from tools.tts_streaming import SentenceChunker, resolve_streaming_provider, streaming_text_limit
         self._adapter, self._chat_id, self._loop, self._metadata = adapter, chat_id, loop, metadata
         # Resolved once; None => inactive, gateway falls back to whole-file TTS.
         self._streamer = resolve_streaming_provider(tts_config)
         self._chunker = SentenceChunker.from_config(tts_config)
+        self._text_limit = 0
+        if self._streamer is not None:
+            from tools.tts_tool import _get_provider, _resolve_max_text_length
+
+            provider = _get_provider(tts_config)
+            base_limit = _resolve_max_text_length(provider, tts_config)
+            try:
+                self._text_limit = streaming_text_limit(self._streamer, provider, tts_config, base_limit)
+            except ValueError as exc:
+                logger.warning("Streaming TTS unavailable: %s", exc)
+                self._streamer = None
         # Provisional: refreshed from the streamer when the handle opens on the first PCM chunk,
         # since an OpenAI-compatible endpoint reports its real rate only in the response (#76466).
         self._audio_format = audio_format or AudioFormat() if self._streamer is None else self._streamer_format()
@@ -192,20 +203,26 @@ class StreamingTTSConsumer:
                 self._strip_markdown = lambda t: t  # noqa: E731
         if not (cleaned := self._strip_markdown(clause).strip()):
             return
-        iterator = iter(self._streamer.stream(cleaned))
-        while True:
-            # next() runs in a thread so a blocking provider never stalls the loop.
-            chunk = await asyncio.to_thread(next, iterator, _DONE)
-            if chunk is _DONE or self._aborted or (self._handle is not None and self._handle.aborted):
+        from tools.tts_tool_delivery import _split_text_for_tts
+        for piece in _split_text_for_tts(cleaned, self._text_limit):
+            if self._aborted or (self._handle is not None and self._handle.aborted):
                 return
-            if not chunk:
-                continue
-            if self._handle is None and not await self._open_handle():
-                raise _HandleDeclined()
-            was_audible = self._handle.audible
-            await self._adapter.write_streaming_tts(self._handle, chunk)
-            if not was_audible:
-                self._handle.audible = self._suppress_whole_file = True
+            iterator = iter(self._streamer.stream(piece))
+            while True:
+                # next() runs in a thread so a blocking provider never stalls the loop.
+                chunk = await asyncio.to_thread(next, iterator, _DONE)
+                if self._aborted or (self._handle is not None and self._handle.aborted):
+                    return
+                if chunk is _DONE:
+                    break
+                if not chunk:
+                    continue
+                if self._handle is None and not await self._open_handle():
+                    raise _HandleDeclined()
+                was_audible = self._handle.audible
+                await self._adapter.write_streaming_tts(self._handle, chunk)
+                if not was_audible:
+                    self._handle.audible = self._suppress_whole_file = True
 
     async def _safe_abort(self, reason: str) -> None:
         """Abort the adapter stream, swallowing errors (idempotent)."""

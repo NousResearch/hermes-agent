@@ -49,6 +49,9 @@ from tools.tts_tool_plugins import (
     _dispatch_to_plugin_provider, _plugin_provider_is_available,
     _plugin_provider_is_voice_compatible)
 from tools.tts_tool_openai import _generate_deepinfra_tts, _generate_openai_tts, _has_openai_audio_backend
+from tools.tts_tool_instructions import (
+    _resolve_tts_instructions, _tts_instructions_applied, _tts_text_chunk_limit,
+)
 
 
 _PM_FEATURE_ALIASES = {"tts.edge": "edge-tts", "tts.elevenlabs": "tts-premium", "tts.mistral": "mistral"}
@@ -345,6 +348,8 @@ def _text_to_speech_single(
     Command providers resolve BEFORE built-in dispatch, but built-in names short-circuit so
     ``tts.providers.openai.command`` can't shadow OpenAI. Plugins fire only for names that are
     neither; a None return falls through to built-in dispatch (unknown -> Edge default)."""
+    instructions = _resolve_tts_instructions(provider, tts_config, instructions)
+    tts_config = {**tts_config, "instructions": instructions}
     try:
         if command_provider_config is not None:
             logger.info("Generating speech with command TTS provider '%s'...", provider)
@@ -373,10 +378,13 @@ def _text_to_speech_single(
         file_str, voice_compatible = _finalize_voice_delivery(
             file_str, provider, command_provider_config, want_opus)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{os.path.getsize(file_str):,}", provider)
-        return json.dumps({
+        response_payload = {
             "success": True, "file_path": file_str, "media_tag": _media_tag([file_str], voice_compatible),
             "provider": provider, "voice_compatible": voice_compatible,
-        }, ensure_ascii=False)
+        }
+        if _tts_instructions_applied(provider, instructions, tts_config, command_provider_config):
+            response_payload["instructions_applied"] = True
+        return json.dumps(response_payload, ensure_ascii=False)
     except ValueError as e:
         return _tool_failure("TTS configuration error", provider, e)
     except FileNotFoundError as e:
@@ -438,7 +446,10 @@ def text_to_speech_tool(
         return tool_error("Text is empty after TTS cleanup", success=False)
     tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
-    max_len = _resolve_max_text_length(provider, tts_config)
+    instructions = _resolve_tts_instructions(provider, tts_config, instructions)
+    tts_config = {**tts_config, "instructions": instructions}
+    max_len = _tts_text_chunk_limit(
+        provider, instructions, tts_config, _resolve_max_text_length(provider, tts_config))
     chunks = _split_text_for_tts(text, max_len)
     if not chunks:
         return tool_error("Text is required", success=False)
@@ -464,7 +475,7 @@ def text_to_speech_tool(
             encoded_paths, str(delivery_base), delivery_profile, voice_compatible=voice_compatible)
         for path in final_paths:
             logger.info("TTS audio saved: %s (%s bytes, provider: %s)", path, f"{os.path.getsize(path):,}", provider)
-        return json.dumps({
+        response_payload = {
             "success": True, "file_path": final_paths[0], "file_paths": final_paths,
             "media_tag": _media_tag(final_paths, voice_compatible),
             "provider": chunk_results[0].get("provider", provider), "voice_compatible": voice_compatible,
@@ -473,7 +484,10 @@ def text_to_speech_tool(
             "delivery_profile": {
                 "platform": delivery_profile.platform, "max_file_bytes": delivery_profile.max_file_bytes,
                 "target_file_bytes": delivery_profile.target_file_bytes},
-        }, ensure_ascii=False)
+        }
+        if chunk_results[0].get("instructions_applied"):
+            response_payload["instructions_applied"] = True
+        return json.dumps(response_payload, ensure_ascii=False)
     except _ChunkFailed as exc:
         return tool_error(str(exc), success=False)
     except ValueError as exc:
@@ -624,10 +638,12 @@ TTS_SCHEMA = {
             "instructions": {
                 "type": "string",
                 "description": (
-                    "Optional voice-design guidance: tone, emotion, pacing, accent, "
-                    "whispering, impressions (e.g. 'Speak in a cheerful, excited whisper'). "
-                    "Forwarded to the OpenAI backend (gpt-4o-mini-tts and OpenAI-compatible "
-                    "voice-design servers). Silently ignored by backends that don't support it."
+                    "Optional voice-style guidance (e.g. 'whisper', 'excited', 'calm and slow'). "
+                    "OpenAI-compatible backends receive the instructions field; Gemini uses "
+                    "prompt direction; xAI uses speech tags; ElevenLabs v3 uses audio tags; "
+                    "MiniMax maps supported emotion names. Other providers may ignore it. "
+                    "Defaults to tts.<provider>.instructions or tts.instructions; pass an "
+                    "empty string to suppress the default."
                 )
             },
             "provider": {

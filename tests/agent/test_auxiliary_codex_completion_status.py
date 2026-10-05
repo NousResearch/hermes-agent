@@ -99,6 +99,8 @@ _CODEX_REASONING_ONLY = SimpleNamespace(
                      id="tool-call-like-output-text-beside-commentary"),
         pytest.param("", "incomplete", [_message("PARTIAL")], "max_output_tokens", "PARTIAL", "length", id="token-cap"),
         pytest.param("", "incomplete", [_TOOL_CALL], "max_output_tokens", None, "tool_calls", id="token-cap-after-tool-call"),
+        # Compressor only rejects "length": a content-filtered partial must not be committed as a summary.
+        pytest.param("", "incomplete", [_message("CF")], "content_filter", "CF", "length", id="content-filter"),
         # Commentary + unphased text is incomplete whether or not the unphased text looks like a tool call.
         pytest.param("", "completed", [_message("NOTE", phase="commentary"), _message(_LEAK_LIKE_ANSWER, phase=None)],
                      None, _LEAK_LIKE_ANSWER, "length", id="tool-call-like-beside-commentary"),

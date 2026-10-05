@@ -1155,12 +1155,10 @@ def _parse_codex_final_response(
     )
     # Aux consumers speak Chat Completions: "length" activates their existing
     # partial-summary rejection/fallback, whereas Codex's "incomplete" does not.
-    # A final_answer phase cannot override the provider's incomplete status, but completed
-    # tool calls stay "tool_calls" so dispatchers (e.g. MCP sampling) still run them.
-    status = _lower_or_none(normalized_final.status)
-    reason = str(_field(normalized_final.incomplete_details, "reason", "") or "").strip().lower()
+    # Any provider-incomplete response (token cap or content_filter) is a partial no aux consumer
+    # may commit; completed tool calls stay "tool_calls" so dispatchers (e.g. MCP sampling) still run them.
     if finish_reason != "tool_calls" and (
-        finish_reason == "incomplete" or (status == "incomplete" and reason != "content_filter")
+        finish_reason == "incomplete" or _lower_or_none(normalized_final.status) == "incomplete"
     ):
         finish_reason = "length"
     text_parts = [message.content] if message.content else []

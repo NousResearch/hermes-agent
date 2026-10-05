@@ -27,9 +27,9 @@ from hermes_cli.dashboard_auth.request_utils import (
 
 _log = logging.getLogger(__name__)
 
-# Exact paths and path prefixes, each mapped to an optional required scope.
-_token_routes: dict[str, Optional[str]] = {}
-_token_route_prefixes: dict[str, Optional[str]] = {}
+# Exact paths and path prefixes, each mapped to (optional required scope, optional owning provider).
+_token_routes: dict[str, Tuple[Optional[str], Optional[str]]] = {}
+_token_route_prefixes: dict[str, Tuple[Optional[str], Optional[str]]] = {}
 _lock = threading.Lock()
 
 # Sentinel distinguishing "no registered route matched" from a matched route
@@ -42,15 +42,21 @@ def register_token_route(path: str, *, scope: Optional[str] = None) -> None:
     With ``scope`` set, a verified principal must also carry it in ``TokenPrincipal.scopes`` or
     the request gets 403 — one stacked service credential cannot open every token route."""
     with _lock:
-        _token_routes[path] = scope
+        _token_routes[path] = (scope, None)
 
 
-def register_token_route_prefix(prefix: str, *, scope: Optional[str] = None) -> None:
+def register_token_route_prefix(
+    prefix: str, *, scope: Optional[str] = None, provider: Optional[str] = None) -> None:
     """Mark every path under ``prefix`` as token-authable — for routers with parameterised
     paths (``/tasks/{id}``) that exact matching cannot cover. Otherwise the same semantics as
-    :func:`register_token_route`, including the optional required ``scope``."""
+    :func:`register_token_route`, including the optional required ``scope``.
+
+    ``provider``: the registration only counts while a token provider of that name is
+    registered. For a surface that falls back to session auth without its credential: the
+    provider is unregistered when its plugin is disabled, and a prefix left behind would
+    answer 401 to every request until restart."""
     with _lock:
-        _token_route_prefixes[prefix.rstrip("/") + "/"] = scope
+        _token_route_prefixes[prefix.rstrip("/") + "/"] = (scope, provider)
 
 
 def _match_token_route(path: str):
@@ -59,10 +65,14 @@ def _match_token_route(path: str):
     depends on plugin load order (a broad prefix cannot shadow a narrower scoped one)."""
     with _lock:
         if path in _token_routes:
-            return _token_routes[path]
+            return _token_routes[path][0]
         matches = [p for p in _token_route_prefixes if path.startswith(p)]
-        if matches:
-            return _token_route_prefixes[max(matches, key=len)]
+        owned = {name for _scope, name in map(_token_route_prefixes.get, matches) if name}
+    if owned:
+        live = {p.name for p in list_token_providers()}
+        matches = [p for p in matches if _token_route_prefixes[p][1] in live | {None}]
+    if matches:
+        return _token_route_prefixes[max(matches, key=len)][0]
     return _NO_MATCH
 
 

@@ -65,7 +65,8 @@ def register(ctx) -> None:
     try:
         from hermes_cli.dashboard_auth.token_auth import register_token_route_prefix
 
-        register_token_route_prefix(KANBAN_API_PREFIX, scope=kwargs["scope"])
+        register_token_route_prefix(
+            KANBAN_API_PREFIX, scope=kwargs["scope"], provider=KanbanApiSecretProvider.name)
     except Exception as exc:  # noqa: BLE001 — seam import must not crash plugin load
         logger.warning("%s: could not register token route prefix %s: %s", _TAG, KANBAN_API_PREFIX, exc)
     logger.info(

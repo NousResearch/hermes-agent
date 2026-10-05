@@ -142,11 +142,24 @@ class TestRegister:
         assert isinstance(provider, plugin.KanbanApiSecretProvider)
         assert provider.verify_token(token=s) is not None
         assert plugin.LAST_SKIP_REASON == ""
+
+    def test_route_is_token_authable_only_while_the_provider_is_registered(self, plugin, monkeypatch):
+        from hermes_cli.dashboard_auth.registry import get_provider, unregister_global_provider
+
+        monkeypatch.setenv("HERMES_KANBAN_API_SECRET", _strong_secret())
+        monkeypatch.setattr(plugin, "_load_config_kanban_api_auth_section", lambda: {})
+        plugin.register(_Ctx())
         # The external surface (parameterised paths included) is token-authable…
         assert token_auth.is_token_route("/api/plugins/kanban/v1/tasks")
         assert token_auth.is_token_route("/api/plugins/kanban/v1/tasks/t_abc/complete")
         # …while the operator routes beside it stay on the cookie gate.
         assert not token_auth.is_token_route("/api/plugins/kanban/board")
+
+        # Disabling the plugin unregisters the provider; the surface must fall back to session
+        # auth, not keep answering 401 for a credential nobody can verify any more.
+        name = plugin.KanbanApiSecretProvider.name
+        assert unregister_global_provider(name, get_provider(name))
+        assert not token_auth.is_token_route("/api/plugins/kanban/v1/tasks")
 
     def test_refused_provider_does_not_rescope_the_route(self, plugin, monkeypatch):
         """Dashboard auth belongs to the launch profile: the plugin context refuses another
@@ -154,9 +167,10 @@ class TestRegister:
         process-global route either."""
         monkeypatch.setenv("HERMES_KANBAN_API_SECRET", _strong_secret())
         monkeypatch.setattr(plugin, "_load_config_kanban_api_auth_section", lambda: {})
-        plugin.register(MagicMock())
+        plugin.register(_Ctx())
         route = "/api/plugins/kanban/v1/tasks"
         launch_scope = token_auth._match_token_route(route)
+        assert launch_scope == "kanban"
 
         monkeypatch.setattr(plugin, "_load_config_kanban_api_auth_section", lambda: {"scope": "drain"})
         other_profile = MagicMock()

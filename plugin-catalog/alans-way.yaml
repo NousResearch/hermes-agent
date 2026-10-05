@@ -1,0 +1,20 @@
+name: alans-way
+repo: https://github.com/capthvnsen/alans-way-agents
+sha: 85728409ec160f5ac45c7e629889a2e82f3ad380
+subdir: alans-way
+version: "0.3.0"
+description: Alan's Way agent side — a designated proactive primary (bounded, event-driven
+  opportunities under explicit policy) plus the workspace-operations skill and router scripts
+  that drive the Hermes desktop companion's scoped browser tabs on Mac and VPS.
+maintainer: capthvnsen
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://github.com/capthvnsen/alans-way-agents#readme
+readme: true
+capabilities:
+  provides_tools:
+    - proactive_control
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

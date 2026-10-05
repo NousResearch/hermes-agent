@@ -180,7 +180,8 @@ workspace; absent or empty cwd remains unpinned.
 
 For native `replace` and `remove`, `metadata["previous_content"]` contains the full
 entry selected under the native-store lock. Notifications are emitted only after
-the complete write or batch succeeds. Batch notifications preserve operation order;
+the complete write or batch succeeds. An `add` of an entry the built-in store
+already holds writes nothing and is not mirrored. Batch notifications preserve operation order;
 each operation's previous content reflects earlier operations in that batch.
 `old_text` is the caller's search text, not the identity of the changed entry.
 Older Hermes versions can omit `previous_content`. Providers that require exact

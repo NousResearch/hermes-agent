@@ -790,8 +790,8 @@ class MemoryManager:
         external = [p for p in self._providers if p.name != "builtin"]
         self._each_provider("on_memory_write failed", _notify, providers=external)
 
-    # Actions mirrored to external providers; non-mutating results (errors, staged) are
-    # filtered by ``notify_memory_tool_write`` first.
+    # Actions mirrored to external providers; non-mutating results (errors, staged, adds of an
+    # already-present entry) are filtered by ``notify_memory_tool_write`` first.
     _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove"}
 
     @staticmethod
@@ -810,7 +810,8 @@ class MemoryManager:
         """Mirror a built-in memory tool call to external providers.
 
         Gates on a committed write, expands single-op and batched ``operations`` shapes, keeps only
-        mutating actions, and forwards ``old_text`` plus provenance from ``build_metadata``.
+        mutating actions, skips adds the store reported as already present (``no_change`` /
+        ``skipped_adds``), and forwards ``old_text`` plus provenance from ``build_metadata``.
         ``previous_content`` comes only from the committed store result, never the search
         argument: a partial provider registry cannot safely resolve that argument itself.
         """
@@ -820,10 +821,13 @@ class MemoryManager:
         target = str(tool_args.get("target") or "memory")
         operations = tool_args.get("operations")
         batched = isinstance(operations, list) and bool(operations)
+        skipped_adds = result.get("skipped_adds") or []
         for index, op in enumerate(operations if batched else [tool_args], start=1):
             action = str(op.get("action") or "") if isinstance(op, dict) else ""
             if action not in self._MIRRORED_MEMORY_ACTIONS:
                 continue
+            if action == "add" and (index in skipped_adds if batched else result.get("no_change") is True):
+                continue  # entry was already stored: nothing new landed, so nothing to mirror
             try:
                 metadata = dict(build_metadata() if build_metadata else {})
                 metadata.pop("previous_content", None)

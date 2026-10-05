@@ -173,3 +173,29 @@ def test_previous_content_cannot_come_from_uncommitted_arguments():
         {'success': True}, args, build_metadata=lambda: {'previous_content': 'Uncommitted metadata'}
     )
     assert provider.calls[0]['metadata'] == {'old_text': 'partial'}
+
+
+@pytest.mark.parametrize('args,mirrored', [
+    ({'action': 'add', 'content': 'Prefers tea'}, []),
+    ({'operations': [
+        {'action': 'add', 'content': 'Prefers tea'},
+        {'action': 'add', 'content': 'Uses the blue notebook'},
+        {'action': 'add', 'content': 'Uses the blue notebook'},
+    ]}, ['Uses the blue notebook']),
+])
+def test_adds_of_already_present_entries_are_not_mirrored(tmp_path, monkeypatch, args, mirrored):
+    from tools.memory_tool import MemoryStore, memory_tool
+
+    monkeypatch.setattr('tools.memory_tool.get_memory_dir', lambda: tmp_path)
+    store = MemoryStore()
+    store.load_from_disk()
+    store.add('user', 'Prefers tea')
+    manager, provider = _manager_with_provider()
+    args = {'target': 'user', **args}
+
+    result = memory_tool(store=store, **args)
+    assert json.loads(result)['success'] is True
+    manager.notify_memory_tool_write(result, args)
+
+    assert [call['content'] for call in provider.calls] == mirrored
+    assert store._entries_for('user') == ['Prefers tea', *mirrored]

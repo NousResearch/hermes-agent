@@ -283,7 +283,7 @@ class MemoryStore:
 
         def _add(entries, limit):
             if content in entries:
-                return self._success_response(target, "Entry already exists (no duplicate added).")
+                return self._success_response(target, "Entry already exists (no duplicate added).", no_change=True)
             if len(ENTRY_DELIMITER.join(entries + [content])) > limit:
                 return self._failure_with_entries(target, (
                     f"Memory at {self._char_count(target):,}/{limit:,} chars. Adding this entry "
@@ -421,14 +421,18 @@ class MemoryStore:
         def _apply(entries, limit):
             working = list(entries)  # only committed if the whole batch validates
             matched = []  # per op, the entry a replace/remove selected (None for add)
+            skipped_adds = []  # 1-based numbers of adds whose entry was already present
             for i, op in enumerate(ops):
                 act = op.get("action")
+                size = len(working)
                 msg, previous_content = self._apply_batch_op(
                     working, act, (op.get("content") or op.get("new_text") or "").strip(),
                     (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})",
                     op.get("matched_entry"))
                 if msg:
                     return self._batch_failure(target, msg)
+                if act == "add" and len(working) == size:
+                    skipped_adds.append(i + 1)
                 matched.append(previous_content)
             if entries and not working:
                 # #103419: a consolidation batch that removes the last entry would
@@ -457,6 +461,8 @@ class MemoryStore:
             replaced_fields = {"replaced_entries": replaced} if replaced else {}
             if removed:
                 replaced_fields["removed_entries"] = removed
+            if skipped_adds:
+                replaced_fields["skipped_adds"] = skipped_adds
             return working, f"Applied {len(operations)} operation(s).", replaced_fields
         return self._mutate(target, _apply, skip_drift=not commit)
 

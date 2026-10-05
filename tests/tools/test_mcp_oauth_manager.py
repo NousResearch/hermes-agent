@@ -325,6 +325,37 @@ async def test_manager_provider_token_exchange_includes_dcr_secret(tmp_path, mon
 
 
 @pytest.mark.asyncio
+async def test_manager_provider_sends_basic_auth_when_the_server_lists_only_basic(tmp_path, monkeypatch):
+    """A pre-registered confidential client is stored as client_secret_post; a token endpoint whose
+    metadata lists only client_secret_basic (RFC 6749's mandatory method) must get Basic auth, not
+    an invalid_client on every exchange. Metadata listing post keeps the record as is."""
+    from urllib.parse import parse_qs
+
+    from mcp.shared.auth import OAuthMetadata
+    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+
+    reset_manager_for_tests()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _set_interactive_stdin(monkeypatch)
+
+    mgr = MCPOAuthManager()
+    provider = mgr.get_or_build_provider(
+        "prereg", "https://mcp.example.com/mcp", {"client_id": "client-id", "client_secret": "secret"})
+    provider.context.client_info = await provider.context.storage.get_client_info()  # the pre-registered record
+    assert provider.context.client_info.token_endpoint_auth_method == "client_secret_post"
+    provider.context.oauth_metadata = OAuthMetadata(
+        issuer="https://auth.example.com", authorization_endpoint="https://auth.example.com/authorize",
+        token_endpoint="https://auth.example.com/token", response_types_supported=["code"],
+        token_endpoint_auth_methods_supported=["client_secret_basic"])
+
+    request = await provider._exchange_token_authorization_code("auth-code", "verifier")
+
+    assert request.headers["Authorization"].startswith("Basic ")
+    assert "client_secret" not in parse_qs(request.content.decode())
+    assert provider.context.client_info.token_endpoint_auth_method == "client_secret_basic"
+
+
+@pytest.mark.asyncio
 async def test_manager_malformed_201_token_response_does_not_expose_body(
     tmp_path, monkeypatch
 ):

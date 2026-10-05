@@ -263,6 +263,15 @@ jobs:
     needs: detect
     uses: ./.github/workflows/case-collision-check.yml
 
+  # The official MCP client conformance scenarios, driven through Hermes' real
+  # MCP stack and compared with tests/conformance/mcp_client/baseline.json. Same
+  # `python` lane gate as the tests.
+  mcp-conformance:
+    name: MCP client conformance
+    needs: detect
+    if: needs.detect.outputs.python == 'true'
+    uses: ./.github/workflows/mcp-conformance.yml
+
   lazy-deps-guard:
     name: No production imports of the tools.lazy_deps stub
     needs: detect
@@ -326,6 +335,7 @@ jobs:
       - infographic-check
       - case-collision-check
       - lazy-deps-guard
+      - mcp-conformance
       - lockfile-diff
       - docker-lint
       - profile-artifact-check

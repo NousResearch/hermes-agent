@@ -256,9 +256,21 @@ def _bind_reserved(port: int) -> int | None:
         sock.bind(("127.0.0.1", port))
     except OSError:
         sock.close()
-        if port:
+        if not port:
+            raise
+        # A pinned port whose only occupant is the TIME_WAIT left by an earlier flow's callback
+        # (that socket carries SO_REUSEADDR, see _start_callback_server) is still ours: a bind with
+        # the flag succeeds over it and over nothing else — a sibling's parked socket or listener
+        # keeps refusing. Dropping the flag again once bound makes the parked socket opaque to the
+        # siblings' own probes, so contention stays cooperative.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            sock.close()
             return None
-        raise
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
     bound = sock.getsockname()[1]
     while len(_reserved_sockets) >= _MAX_RESERVED_SOCKETS:
         stale_port = next((p for p in _reserved_sockets if p not in _CIMD_PORTS), None)
@@ -822,6 +834,13 @@ def _start_callback_server(port: int, handler_cls: type) -> HTTPServer:
         if reserved is not None:
             server.socket.close()
             server.socket, server.server_address = reserved, reserved.getsockname()
+            # Linux lets a SO_REUSEADDR bind coexist with a TIME_WAIT socket only when THAT socket
+            # carries the flag too, and accepted connections inherit it from the listener. The parked
+            # socket was bound without it (so siblings cannot share the pin), so the browser's callback
+            # connection left a TIME_WAIT the next flow on the same pinned/cached port — a scope step-up
+            # or SSE-fallback re-auth seconds later — could not bind over: EADDRINUSE. Set after bind,
+            # the flag changes nothing about the reservation and everything about the re-bind.
+            reserved.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         else:
             server.allow_reuse_address = True
             server.server_bind()

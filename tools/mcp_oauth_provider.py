@@ -204,14 +204,25 @@ class HermesProviderMixin:
 
     def _coerce_client_secret_post(self) -> None:
         """Same rule as ``HermesTokenStorage._coerce_secret_auth_method``, applied to the
-        in-memory client info BEFORE the SDK builds a token-endpoint request from it."""
+        in-memory client info BEFORE the SDK builds a token-endpoint request from it — then bent
+        to the server: a ``client_secret_post`` record meets a token endpoint whose metadata lists
+        ``client_secret_basic`` and NOT post (RFC 6749 makes basic the one mandatory method, and a
+        pre-registered ``oauth: {client_id, client_secret}`` is stored as post by default) as
+        ``invalid_client`` on every exchange, so send what the server says it accepts. Metadata
+        that omits the list, or lists post, leaves the record alone (Supabase/Figma need post)."""
         info = self.context.client_info
         if not info:
             return
         from mcp.shared.auth import OAuthClientInformationFull
         from tools.mcp_oauth import HermesTokenStorage
         data = info.model_dump(mode="json", exclude_none=True)
-        if HermesTokenStorage._coerce_secret_auth_method(data):
+        changed = HermesTokenStorage._coerce_secret_auth_method(data)
+        supported = getattr(self.context.oauth_metadata, "token_endpoint_auth_methods_supported", None) or ()
+        if (data.get("client_secret") and data.get("token_endpoint_auth_method") == "client_secret_post"
+                and "client_secret_basic" in supported and "client_secret_post" not in supported):
+            data["token_endpoint_auth_method"] = "client_secret_basic"
+            changed = True
+        if changed:
             self.context.client_info = OAuthClientInformationFull.model_validate(data)
 
     async def _exchange_token_authorization_code(self, *args: Any, **kwargs: Any):

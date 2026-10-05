@@ -820,8 +820,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[Telegram] Discarding inbound under non-retryable fatal (%s, %d chars)", where, len(getattr(event, "text", None) or ""))
             return
         successor = getattr(self, "_held_inbound_successor", None)
-        if successor is not None and successor() is not None:  # retired by a runner rebuild (#132829)
-            successor()._adopt_held_event(event, where=f"{where}-forwarded", schedule=schedule)
+        target = successor() if successor is not None else None
+        if target is not None:  # retired by a runner rebuild (#132829)
+            self._accept_update()  # the claim being dispatched is ours, not the successor's
+            target._adopt_held_event(event, where=f"{where}-forwarded", schedule=schedule)
             return
         held = getattr(self, "_held_inbound_events", None)
         if held is None:

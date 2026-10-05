@@ -250,5 +250,6 @@ conda install -c bioconda samtools bcftools blast minimap2 bedtools fastp kraken
 - bioSkills are reference guides — they show correct parameters and code patterns but aren't executable pipelines.
 - ClawBio skills are executable — many have `--demo` flags and can be run directly.
 - Both repos assume bioinformatics tools are installed. Check prerequisites before running pipelines.
-- Run ClawBio with `uvx clawbio run <skill> --demo` (no install needed), or `pip install clawbio` (Python 3.11+). `clawbio list` shows the skill names it runs.
+- Run ClawBio with no install via `uvx clawbio run <name> --demo` (e.g. `uvx clawbio run pharmgx --demo`), or `pip install clawbio` (Python 3.11+) and drop the `uvx` prefix.
+- The index names above are repo folders, not CLI names (`pharmgx-reporter` runs as `pharmgx`). Take `<name>` from the **Registered Skills** section of `uvx clawbio list`; entries under **Agent-Readable Skills** are SKILL.md-only and cannot be passed to `run`.
 - Genomic data files can be very large. Be mindful of disk space when downloading reference genomes, SRA datasets, or building indices.

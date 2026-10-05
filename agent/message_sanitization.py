@@ -310,7 +310,7 @@ def close_interrupted_tool_sequence(messages: list, final_response: Any = None) 
             "role": "assistant",
             "content": "",
             "display_kind": "hidden",
-            "api_content": stripped or _INTERRUPTED_PLACEHOLDER,
+            "api_content": _INTERRUPTED_PLACEHOLDER,
         })
     else:
         append_message(messages, {"role": "assistant", "content": stripped})

@@ -16,6 +16,7 @@ an empty-content assistant turn. The synthetic row is hidden from the user
 """
 
 
+from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
 from agent.turn_finalizer import finalize_turn
 
 
@@ -159,7 +160,7 @@ def test_interrupt_after_tool_closes_sequence_with_placeholder():
     # hidden; placeholder lives in api_content (LLM sees it via sidecar).
     assert messages[-1]["content"] == ""
     assert messages[-1]["display_kind"] == "hidden"
-    assert messages[-1]["api_content"].strip()
+    assert messages[-1]["api_content"] == _INTERRUPTED_PLACEHOLDER
 
     # The persisted snapshot is alternation-safe: appending a new user
     # message would follow an assistant, not an orphan tool.

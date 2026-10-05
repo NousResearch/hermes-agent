@@ -35,7 +35,7 @@ from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli import kanban_diagnostics as kd
-from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES, _collision_free_path, _safe_attachment_name
+from hermes_cli.kanban_db import KANBAN_ATTACHMENT_MAX_BYTES, _collision_free_path, _id_chunks, _safe_attachment_name
 
 log = logging.getLogger(__name__)
 
@@ -207,7 +207,10 @@ def _compute_task_diagnostics(conn: sqlite3.Connection, task_ids: Optional[list[
         return {}
     diag_config = kd.config_from_runtime_config(load_config())
     if task_ids is not None:
-        rows = conn.execute(f"SELECT * FROM tasks WHERE id IN ({_placeholders(task_ids)})", tuple(task_ids)).fetchall()
+        rows = []
+        for chunk in _id_chunks(task_ids):
+            rows.extend(conn.execute(
+                f"SELECT * FROM tasks WHERE id IN ({_placeholders(chunk)})", tuple(chunk)).fetchall())
     else:
         rows = conn.execute("SELECT * FROM tasks WHERE status != 'archived'").fetchall()
     if not rows:
@@ -216,9 +219,10 @@ def _compute_task_diagnostics(conn: sqlite3.Connection, task_ids: Optional[list[
 
     def _rows_by_task(table: str) -> dict[str, list]:
         by_task: dict[str, list] = {tid: [] for tid in row_ids}
-        for row in conn.execute(
-            f"SELECT * FROM {table} WHERE task_id IN ({_placeholders(row_ids)}) ORDER BY id", tuple(row_ids)):
-            by_task.setdefault(row["task_id"], []).append(row)
+        for chunk in _id_chunks(row_ids):
+            for row in conn.execute(
+                f"SELECT * FROM {table} WHERE task_id IN ({_placeholders(chunk)}) ORDER BY id", tuple(chunk)):
+                by_task.setdefault(row["task_id"], []).append(row)
         return by_task
 
     events_by_task = _rows_by_task("task_events")
@@ -883,8 +887,10 @@ def list_diagnostics(
         if not diags_by_task:
             return {"diagnostics": [], "count": 0}
         ids = list(diags_by_task.keys())
-        rows = {r["id"]: r for r in conn.execute(
-            f"SELECT id, title, status, assignee FROM tasks WHERE id IN ({_placeholders(ids)})", tuple(ids)).fetchall()}
+        rows: dict[str, Any] = {}
+        for chunk in _id_chunks(ids):
+            rows.update({r["id"]: r for r in conn.execute(
+                f"SELECT id, title, status, assignee FROM tasks WHERE id IN ({_placeholders(chunk)})", tuple(chunk)).fetchall()})
         out = []
         for tid, dl in diags_by_task.items():
             r = rows.get(tid) or {"title": None, "status": None, "assignee": None}

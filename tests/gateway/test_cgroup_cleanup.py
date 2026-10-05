@@ -103,6 +103,16 @@ class TestLiveGatewayGuard:
         assert cgroup_cleanup.reap_cgroup(cgroup_path) == 1
         assert killed == [777]
 
+        # The kill set comes from a fresh cgroup.procs read taken after the
+        # (slow) guard: a PID that exited meanwhile is not signalled (it may be
+        # reused outside the cgroup) and an orphan spawned meanwhile is reaped.
+        reads = iter([[777, os.getpid()], [888, os.getpid()]])
+        monkeypatch.setattr(cgroup_cleanup, "_read_cgroup_pids", lambda _p: next(reads))
+        killed.clear()
+        assert cgroup_cleanup.reap_cgroup(cgroup_path) == 1
+        assert killed == [888]
+
+
 class TestForegroundScopeSweep:
     """The ExecStopPost parity for foreground scopes (#70716): a SIGKILLed gateway
     leaves its long-lived command in ``hermes-fg-<pid>-*.scope``, which neither the
@@ -114,13 +124,13 @@ class TestForegroundScopeSweep:
 
     def _units(self, monkeypatch, names: list[str]) -> None:
         monkeypatch.setattr(
-            "tools.process_registry.list_systemd_user_scope_units", lambda pattern: list(names)
+            "tools.process_registry_systemd.list_systemd_user_scope_units", lambda pattern: list(names)
         )
 
     def _stopped(self, monkeypatch) -> list:
         stopped: list = []
         monkeypatch.setattr(
-            "tools.process_registry._stop_systemd_unit",
+            "tools.process_registry_systemd._stop_systemd_unit",
             lambda unit, **kw: stopped.append((unit, kw)) or True,
         )
         return stopped
@@ -184,7 +194,7 @@ class TestForegroundScopeSweep:
 
         monkeypatch.setattr(gateway.status, "_pid_exists", lambda pid: False)
         self._units(monkeypatch, ["hermes-fg-4242-c0ffee07.scope"])
-        monkeypatch.setattr("tools.process_registry._stop_systemd_unit", lambda unit, **kw: False)
+        monkeypatch.setattr("tools.process_registry_systemd._stop_systemd_unit", lambda unit, **kw: False)
 
         assert cgroup_cleanup.reap_foreground_scopes() is False
 

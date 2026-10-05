@@ -303,7 +303,7 @@ class _ToolCallRef:
 
     def emit_cancelled(self, agent, start_time: float) -> str:
         """Synthesize the ``cancelled`` result for a KeyboardInterrupt mid-tool and emit its hook."""
-        message = "Tool execution cancelled by user interrupt"
+        message = f"Tool execution cancelled. {interrupt_skip_wording(agent)}"
         result = json.dumps({"error": message, "status": "cancelled"}, ensure_ascii=False)
         self.emit_post(
             agent, result, duration_ms=int((time.time() - start_time) * 1000),
@@ -337,12 +337,12 @@ def _append_skipped_tool_results(
     append and returns False on the first failed flush when ``stop_on_flush_failure``."""
     for tc in tool_calls:
         name = _tc_name(tc)
-        result = content.format(name=name)
+        result = content.replace("{name}", name)
         messages.append(make_tool_result_message(name, result, _pairing_tool_call_id(tc), effect_disposition="none"))
         if hook_error_type is not None:
             _ToolCallRef(name, {}, effective_task_id, (hook_id or _pairing_tool_call_id)(tc), []).emit_post(
                 agent, result,
-                status="cancelled", error_type=hook_error_type, error_message="Tool execution skipped due to user interrupt",
+                status="cancelled", error_type=hook_error_type, error_message=f"Tool execution skipped. {interrupt_skip_wording(agent)}",
             )
         if flush_stage is not None:
             flushed = _flush_session_db_after_tool_progress(agent, messages, stage=f"{flush_stage} {name}")
@@ -1507,8 +1507,8 @@ def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeou
         outcome = dict(duration_ms=int((timeout_s or 0.0) * 1000), status="timeout", error_type="tool_timeout", error_message=function_result)
         tool_duration, effect_disposition = float(timeout_s or 0.0), "unknown"
     elif agent._interrupt_requested:
-        function_result = f"[Tool execution cancelled — {ref.name} was skipped due to user interrupt]"
-        outcome = dict(status="cancelled", error_type="keyboard_interrupt", error_message="Tool execution cancelled by user interrupt")
+        function_result = f"[Tool execution cancelled — {ref.name} was skipped. {interrupt_skip_wording(agent)}]"
+        outcome = dict(status="cancelled", error_type="keyboard_interrupt", error_message=f"Tool execution cancelled. {interrupt_skip_wording(agent)}")
         tool_duration, effect_disposition = 0.0, None
     else:
         function_result = f"Error executing tool '{ref.name}': thread did not return a result"
@@ -1567,7 +1567,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
         _append_skipped_tool_results(
             agent, messages, tool_calls, effective_task_id,
-            content="[Tool execution cancelled — {name} was skipped due to user interrupt]",
+            content=f"[Tool execution cancelled — {{name}} was skipped. {interrupt_skip_wording(agent)}]",
             hook_error_type="user_interrupt",
             flush_stage="cancelled tool result",
             stop_on_flush_failure=False,
@@ -1764,7 +1764,7 @@ def _run_sequential_call(
             agent.interrupt("keyboard interrupt")
         _append_skipped_tool_results(
             agent, messages, remaining_calls, ref.task_id,
-            content="[Tool execution cancelled — {name} was skipped due to keyboard interrupt]",
+            content=f"[Tool execution cancelled — {{name}} was skipped. {interrupt_skip_wording(agent)}]",
         )
         raise
     except Exception as tool_error:

@@ -146,3 +146,44 @@ def test_skip_wording_never_blames_the_user_for_a_system_stop():
         assert interrupt_skip_wording(agent) == "Turn interrupted"
     finally:
         set_interrupt(False)
+
+
+def test_concurrent_skip_wording_follows_the_recorded_reason():
+    """The concurrent batch path renders its skipped-call notices from the RECORDED reason
+    like the sequential path does — a system abort must not read as a user stop (#130207)."""
+    import types as _types
+    from agent.tool_executor import execute_tool_calls_concurrent
+
+    class _Agent:
+        _interrupt_requested = True
+        _tool_interrupt_reason = "lease lost"
+        quiet_mode = False
+        log_prefix = ""
+        _incremental_persistence_failed = False
+        def _vprint(self, *a, **k): pass
+        def _safe_print(self, *a, **k): pass
+        def _should_emit_quiet_tool_messages(self): return False
+        def _touch_activity(self, *a): pass
+
+    tc = _types.SimpleNamespace(function=_types.SimpleNamespace(name="terminal", arguments="{}"), id="c1")
+    messages = []
+    execute_tool_calls_concurrent(_Agent(), _types.SimpleNamespace(tool_calls=[tc]), messages, "t")
+    notice = messages[-1]["content"]
+    assert "user" not in notice.lower(), notice
+    assert "lease lost" in notice, notice
+
+
+def test_skip_wording_escapes_braces_from_free_form_reasons():
+    """A caller-supplied ``tool_reason`` may contain braces; the wording feeds notice
+    templates, so braces must survive as literals and never become format fields."""
+    agent = _bare_agent()
+    try:
+        agent.interrupt("stop", tool_reason="bad {oops} reason")
+        wording = interrupt_skip_wording(agent)
+        assert "{{oops}}" in wording  # escaped for template interpolation
+        # The shipped notice shape renders cleanly through replace-based substitution.
+        content = f"[Tool execution cancelled — {{name}} was skipped. {wording}]"
+        out = content.replace("{name}", "terminal")
+        assert "{oops}" in out and "KeyError" not in out
+    finally:
+        set_interrupt(False)

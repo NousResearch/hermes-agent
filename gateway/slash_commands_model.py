@@ -723,10 +723,23 @@ class GatewayModelCommandsMixin:
         adapter = self._delivery_adapter_for(event.source)
         if adapter is None or getattr(type(adapter), "send_choice_picker", None) is None:
             return False
+        # The adapter invokes the callback later — a button click, outside the
+        # routed turn that sent the picker — where the ambient profile scope is
+        # the process default. Persisting choices (/reasoning show|hide,
+        # /fast --global) must still land in the profile the picker was shown
+        # to, so capture that profile's home now and re-enter its scope at
+        # click time (the /model picker callback binds its home the same way).
+        profile_home = self._resolve_profile_home_for_source(event.source)
+
+        async def _scoped_on_choice_selected(chat_id: str, value: str) -> str:
+            from gateway.run import _profile_runtime_scope
+            with _profile_runtime_scope(profile_home):
+                return await on_choice_selected(chat_id, value)
+
         try:
             result = await adapter.send_choice_picker(
                 chat_id=event.source.chat_id, title=title, choices=choices, session_key=session_key,
-                on_choice_selected=on_choice_selected, metadata=self._reply_metadata(event),
+                on_choice_selected=_scoped_on_choice_selected, metadata=self._reply_metadata(event),
             )
             return bool(getattr(result, "success", False))
         except Exception as e:
@@ -760,6 +773,7 @@ class GatewayModelCommandsMixin:
         # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
         from agent.reasoning_effort import effort_display_label
         from gateway.run import _load_gateway_config
+        from hermes_cli.codex_runtime_switch import get_current_runtime
         _session_route = ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {})
         _model_cfg = {}
         with contextlib.suppress(Exception):  # fail-open on config read errors, like /model does
@@ -767,6 +781,7 @@ class GatewayModelCommandsMixin:
         _route = (
             _session_route.get("provider") or _model_cfg.get("provider"),
             _session_model or _model_cfg.get("default") or _model_cfg.get("model"),
+            get_current_runtime({"model": _model_cfg}),
         )
         if rc is None:
             level, current_effort = t("gateway.reasoning.level_default"), "medium"

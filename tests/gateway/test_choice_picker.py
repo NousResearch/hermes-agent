@@ -148,3 +148,58 @@ class TestFastChoicePicker:
         assert not (tmp_path / "config.yaml").exists()
 
 
+class TestChoicePickerProfileScope:
+    """A picker tap fires outside the routed turn that sent the picker (ambient
+    scope = the launch/default home); persisting choices must still land in
+    the profile the picker was shown to, as the /model picker already does."""
+
+    def _two_homes(self, tmp_path, monkeypatch):
+        default_home = tmp_path / "default"
+        routed_home = tmp_path / "profiles" / "beta"
+        default_home.mkdir()
+        routed_home.mkdir(parents=True)
+        monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+        return default_home, routed_home
+
+    @pytest.mark.asyncio
+    async def test_reasoning_picker_show_persists_to_picker_profile(self, tmp_path, monkeypatch):
+        import hermes_yaml as yaml
+
+        default_home, routed_home = self._two_homes(tmp_path, monkeypatch)
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+        runner._resolve_profile_home_for_source = lambda source: routed_home
+        event = _make_event("/reasoning")
+
+        await runner._handle_reasoning_command(event)
+        on_choice = adapter.calls[0]["on_choice_selected"]
+        await on_choice(event.source.chat_id, "show")
+
+        routed = yaml.safe_load((routed_home / "config.yaml").read_text())
+        assert routed["display"]["platforms"]["telegram"]["show_reasoning"] is True
+        assert not (default_home / "config.yaml").exists()
+
+    @pytest.mark.asyncio
+    async def test_fast_global_picker_persists_to_picker_profile(self, tmp_path, monkeypatch):
+        import hermes_yaml as yaml
+
+        default_home, routed_home = self._two_homes(tmp_path, monkeypatch)
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda cfg=None: "gpt-5.6")
+        monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {})
+        import hermes_cli.models as models_mod
+        monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda m: True)
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+        runner._resolve_profile_home_for_source = lambda source: routed_home
+        event = _make_event("/fast --global")
+
+        await runner._handle_fast_command(event)
+        on_choice = adapter.calls[0]["on_choice_selected"]
+        await on_choice(event.source.chat_id, "fast")
+
+        routed = yaml.safe_load((routed_home / "config.yaml").read_text())
+        assert routed["agent"]["service_tier"] == "fast"
+        assert not (default_home / "config.yaml").exists()
+
+

@@ -380,6 +380,9 @@ class AgentImporter:
             if not (failed and single_file):
                 self.record(kind, source, destination, "skipped", "No importable entries found")
             return
+        from hermes_cli.agent_import_memory import import_managed_memory
+        if import_managed_memory(self, kind, source, destination, incoming):
+            return
         existing = parse_existing_memory_entries(destination)
         merged, stats = merge_entries(existing, incoming, MEMORY_CHAR_LIMIT)
         details = {"existing_entries": stats["existing"], "added_entries": stats["added"],

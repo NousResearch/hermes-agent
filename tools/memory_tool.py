@@ -2,7 +2,7 @@
 """Memory Tool - persistent curated memory (MEMORY.md = agent notes, USER.md = user
 profile). Both enter the system prompt as a FROZEN snapshot at session start;
 mid-session writes hit disk but never change the prompt (prefix cache intact).
-Single `memory` tool: add/replace/remove or a batch `operations` list."""
+Single `memory` tool: add/replace/remove, opt-in identity enumeration, or an atomic batch."""
 
 import copy
 import json
@@ -70,12 +70,17 @@ def _pin_matched_entries(store: "MemoryStore", payload: Dict[str, Any]) -> Optio
     if payload.get("action") == "batch":
         result = store.resolve_batch_entries(target, payload["operations"])
         if result.get("success"):
-            payload["operations"] = [op if entry is None else {**op, "matched_entry": entry}
-                                     for op, entry in zip(payload["operations"], result["matched_entries"])]
+            from tools.memory_tool_batch import pin_batch_payload
+            pin_batch_payload(store, target, payload, result)
     elif payload.get("action") in _BG_DELETE_ACTIONS:
-        result = store.resolve_entry(target, payload.get("old_text") or "", payload["action"])
+        if payload.get("entry_id") is not None:
+            from tools.memory_identity_store import resolve_entry_id
+            result = resolve_entry_id(store, target, payload["entry_id"], payload.get("scope"),
+                                      expected=payload.get("matched_entry"))
+        else:
+            result = store.resolve_entry(target, payload.get("old_text") or "", payload["action"])
         if result.get("success"):
-            payload["matched_entry"] = result["matched_entry"]
+            payload.update({key: result[key] for key in ("matched_entry", "entry_id", "scope") if key in result})
     else:
         return None
     return None if result.get("success") else json.dumps(result, ensure_ascii=False)
@@ -122,7 +127,8 @@ def _batch_op_line(op: Dict[str, Any]) -> str:
 
 
 def _apply_write_gate(store: "MemoryStore", action: str, target: str, content: Optional[str],
-                      old_text: Optional[str], operations: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+                      old_text: Optional[str], operations: Optional[List[Dict[str, Any]]] = None,
+                      **identity) -> Optional[str]:
     """Gate one mutating op, or (``operations`` set) a whole batch as a single unit."""
     label = "user profile" if target == "user" else "memory"
     if operations is not None:
@@ -130,7 +136,7 @@ def _apply_write_gate(store: "MemoryStore", action: str, target: str, content: O
                               "\n".join(_batch_op_line(op) for op in operations),
                               {"action": "batch", "target": target, "operations": operations})
     return _gate_or_stage(store, *_STORE_ACTIONS[action][1](label, content, old_text),
-                          {"action": action, "target": target, "content": content, "old_text": old_text})
+                          {"action": action, "target": target, "content": content, "old_text": old_text, **identity})
 
 
 def _validate_single_op(store, action, target, content, old_text) -> Optional[str]:
@@ -164,7 +170,7 @@ def destructive_ops(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _background_delete_gate(store, action, operations, target="memory", content=None,
-                            old_text=None) -> Optional[str]:
+                            old_text=None, **identity) -> Optional[str]:
     """Fail-closed operation gate for unattended background-review forks (#105921): ``add``
     stays available (it is all any review prompt asks for), while ``replace``/``remove`` —
     single or inside a batch — are never applied unattended. The op is staged in the pending
@@ -177,7 +183,7 @@ def _background_delete_gate(store, action, operations, target="memory", content=
         return None
     payload = ({"action": "batch", "target": target, "operations": operations}
                if operations is not None else
-               {"action": action, "target": target, "content": content, "old_text": old_text})
+               {"action": action, "target": target, "content": content, "old_text": old_text, **identity})
     if not destructive_ops(payload):
         return None
     detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
@@ -206,14 +212,16 @@ def _background_delete_gate(store, action, operations, target="memory", content=
 
 def memory_tool(action: str = None, target: str = "memory", content: str = None, old_text: str = None,
                 new_text: str = None, operations: Optional[List[Dict[str, Any]]] = None,
-                store: Optional[MemoryStore] = None) -> str:
+                store: Optional[MemoryStore] = None, *, entry_id: str = None, scope: str = None,
+                cursor: str = None, limit: int = None) -> str:
     """Tool entry point; returns a JSON string. Single op (action + content/old_text)
     or batch (``operations``, atomic against the final budget). ``new_text``
     aliases ``content`` -- for 'replace' both mean the COMPLETE new entry (the
     whole matched entry is overwritten; old_text only locates it)."""
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
-    outcome, result = _memory_tool(action, target, content, old_text, new_text, operations, store)
+    outcome, result = _memory_tool(action, target, content, old_text, new_text, operations, store,
+                                   entry_id=entry_id, scope=scope, cursor=cursor, limit=limit)
     from hermes_cli.observability.shared_metrics_loop import record_builtin_memory_call
     record_builtin_memory_call(action, operations, outcome=outcome)
     return result
@@ -223,7 +231,7 @@ def _applied(result: Dict[str, Any]) -> Tuple[str, str]:
     return ("success" if result.get("success") else "failed"), json.dumps(result, ensure_ascii=False)
 
 
-def _memory_tool(action, target, content, old_text, new_text, operations, store) -> Tuple[str, str]:
+def _memory_tool(action, target, content, old_text, new_text, operations, store, **management) -> Tuple[str, str]:
     """``(outcome, result_json)``: ``rejected`` when refused or held before touching the store."""
     if content is None and new_text is not None:
         content = new_text
@@ -232,8 +240,11 @@ def _memory_tool(action, target, content, old_text, new_text, operations, store)
     target_error = _memory_target_error(store, target)
     if target_error is not None:
         return "rejected", json.dumps(target_error)
+    if action == "list" or any(value is not None for value in management.values()):
+        from tools.memory_identity_tool import manage_memory
+        return manage_memory(store, action, target, content, old_text, operations, **management)
     if operations:
-        if not isinstance(operations, list):
+        if not isinstance(operations, list) or any(not isinstance(op, dict) for op in operations):
             return "rejected", tool_error("operations must be a list of {action, content?, old_text?} objects.", success=False)
         denied = _background_delete_gate(store, action, operations, target)
         if denied is not None:
@@ -294,7 +305,7 @@ def check_memory_requirements() -> bool:
 
 def _memory_target_error(store: "MemoryStore", target: str) -> Optional[Dict[str, Any]]:
     """Return a shared validation error for an invalid or disabled target."""
-    if target not in {"memory", "user"}:
+    if not isinstance(target, str) or target not in {"memory", "user"}:
         from tools.registry import _bound_error_text
         return {"success": False,
                 "error": _bound_error_text(f"Invalid memory target '{target}'. Use 'memory' or 'user'.")}
@@ -316,8 +327,14 @@ def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[
     if any(not op.get("matched_entry") for op in destructive_ops(payload)):
         return {"success": False, "error": "This destructive pending write predates entry pinning and cannot be "
                                            "verified; nothing was applied. Reject it and recreate the change."}
+    if payload.get("entry_id") is not None:
+        from tools.memory_identity_store import edit_entry_id
+        return edit_entry_id(store, action, target, payload["entry_id"], content=payload.get("content"),
+                             scope=payload.get("scope"), expected=payload.get("matched_entry"))
+    if action == "add" and payload.get("scope") is not None:
+        return store.add(target, payload.get("content") or "", scope=payload["scope"])
     if action == "batch":
-        return store.apply_batch(target, payload.get("operations") or [])
+        return store.apply_batch(target, payload.get("operations") or [], replay=True)
     if action not in _STORE_ACTIONS:
         return {"success": False, "error": f"Unknown staged action '{action}'."}
     return _STORE_ACTIONS[action][0](store, target, payload.get("content") or "", payload.get("old_text") or "",
@@ -336,6 +353,9 @@ MEMORY_SCHEMA = {
         "reports current/limit chars and confirms completion; one batch call finishes the "
         "update, so don't repeat it. Use the bare action/content/old_text fields only for a "
         "single lone change.\n\n"
+        "MANAGEMENT: after explicit identity migration, 'list' enumerates bounded entry previews "
+        "with persistent UUIDs. Use entry_id and exact scope for replace/remove; omit old_text. "
+        "Legacy substring writes remain supported. List pagination must be restarted if the store changes.\n\n"
         "WHEN: only for facts that apply to EVERY session regardless of task: who the user "
         "is, stable environment facts, standing conventions with no task home. Anything "
         "learned while doing a task (procedures, pitfalls, and the user's preferences and "
@@ -355,7 +375,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "list"],
                 "description": "The action to perform (single-op shape). Omit when using 'operations'."
             },
             "target": {
@@ -369,7 +389,7 @@ MEMORY_SCHEMA = {
             },
             "old_text": {
                 "type": "string",
-                "description": "REQUIRED for 'replace' and 'remove' (single-op shape): a short unique substring IDENTIFYING the existing entry to modify -- it locates the entry, it is not spliced out. Omit only for 'add'."
+                "description": "For legacy 'replace' and 'remove' without entry_id (single-op shape): a short unique substring IDENTIFYING the existing entry to modify -- it locates the entry, it is not spliced out. Omit for add/list or when using entry_id."
             },
             "new_text": {
                 "type": "string",
@@ -398,6 +418,17 @@ MEMORY_SCHEMA = {
     },
 }
 
+
+_IDENTITY_PROPERTIES = {
+    "entry_id": {"type": "string", "description": "Persistent UUIDv4 from add/list. For replace/remove, selects this exact entry; omit old_text."},
+    "scope": {"type": "string", "description": "Exact caller-supplied provenance (1–256 chars). Optional on add; must match for UUID mutation. Omitted scope means unscoped mutation or all scopes on list."},
+}
+MEMORY_SCHEMA["parameters"]["properties"].update(_IDENTITY_PROPERTIES)
+MEMORY_SCHEMA["parameters"]["properties"].update({
+    "cursor": {"type": "string", "description": "Continuation from list.next_cursor, valid only for unchanged target, scope and store. Omit for the first page."},
+    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "List page size (default 50); entry previews are at most 512 characters."},
+})
+MEMORY_SCHEMA["parameters"]["properties"]["operations"]["items"]["properties"].update(_IDENTITY_PROPERTIES)
 
 # Schema text when only one built-in store is enabled: (target description, TARGETS replacement).
 _SINGLE_TARGET_TEXT = {
@@ -432,7 +463,7 @@ registry.register(
     schema=MEMORY_SCHEMA,
     handler=lambda args, **kw: memory_tool(
         action=args.get("action", ""), target=args.get("target", "memory"), store=kw.get("store"),
-        **{k: args.get(k) for k in ("content", "old_text", "new_text", "operations")}),
+        **{k: args.get(k) for k in ("content", "old_text", "new_text", "operations", "entry_id", "scope", "cursor", "limit")}),
     check_fn=check_memory_requirements,
     emoji="🧠",
     dynamic_schema_overrides=_build_memory_schema_overrides)

@@ -1,11 +1,12 @@
 """User-initiated edit/delete for journey nodes (learned skills + memories).
 
 Node ids (from ``agent.learning_graph``): skills → the skill name; memories →
+``memory:<source>:<uuid>`` after explicit identity migration, or legacy
 ``memory:<source>:<index>:<fingerprint>`` (``source`` = ``memory`` for MEMORY.md /
 ``profile`` for USER.md; ``index`` = position in the combined card list, MEMORY.md
 first; ``fingerprint`` = digest of the card's text, so the entry the user clicked is
 still nameable once the list has shifted). Ids from an older graph carry no
-fingerprint and resolve by position alone.
+fingerprint and resolve by position alone only before identity migration.
 Shared by CLI ``hermes journey``, the TUI ``/journey`` overlay and the desktop.
 Deleting a skill *archives* it (``hermes curator restore`` recovers it);
 deleting a memory rewrites its file under the memory tool's lock.
@@ -24,7 +25,7 @@ def parse_node_kind(node_id: str) -> str:
     return "memory" if node_id.startswith("memory:") else "skill"
 
 
-def _parse_memory_id(node_id: str) -> tuple[str, int, str]:
+def _parse_memory_id(node_id: str) -> tuple[str, int | str, str]:
     """``memory:<source>:<index>[:<fingerprint>]`` → (source, global_index, fingerprint).
 
     The fingerprint is empty for an id minted before the graph carried one."""
@@ -32,6 +33,9 @@ def _parse_memory_id(node_id: str) -> tuple[str, int, str]:
     try:
         if len(parts) not in (3, 4) or parts[0] != "memory" or parts[1] not in _MEMORY_FILES:
             raise ValueError
+        if len(parts) == 3 and "-" in parts[2]:
+            from tools.memory_entry_identity import validate_id
+            return parts[1], validate_id(parts[2]), ""
         return parts[1], int(parts[2]), parts[3] if len(parts) == 4 else ""
     except ValueError as exc:
         raise ValueError(f"bad memory node id: {node_id!r}") from exc
@@ -47,7 +51,10 @@ def _resolve_fingerprint(chunks: list[str], fingerprint: str) -> int | None:
     """
     from agent.learning_graph import memory_fingerprint
 
-    return next((i for i, chunk in enumerate(chunks) if memory_fingerprint(chunk) == fingerprint), None)
+    matches = [i for i, chunk in enumerate(chunks) if memory_fingerprint(chunk) == fingerprint]
+    if len({getattr(chunks[i], "entry_id", chunks[i]) for i in matches}) > 1:
+        return None
+    return matches[0] if matches else None
 
 
 def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
@@ -64,6 +71,13 @@ def _locate_memory(node_id: str) -> tuple[Path, list[str], int]:
     if not path.exists():
         raise ValueError(f"{path.name} not found")
     chunks = MemoryStore._read_file(path)
+    if isinstance(gidx, str):
+        matches = [i for i, chunk in enumerate(chunks) if getattr(chunk, "entry_id", None) == gidx]
+        if len(matches) != 1:
+            raise ValueError("memory UUID not found or ambiguous — refresh the graph")
+        return path, chunks, matches[0]
+    if not fingerprint and any(hasattr(chunk, "entry_id") for chunk in chunks):
+        raise ValueError("positional memory id predates identity migration — refresh the graph")
     if fingerprint:
         local = _resolve_fingerprint(chunks, fingerprint)
         if local is None:
@@ -100,11 +114,18 @@ def _mutate_memory(node_id: str, replacement: str | None) -> dict[str, Any]:
         from tools.memory_tool import ENTRY_DELIMITER
 
         _, chunks, local = _locate_memory(node_id)
-        text = chunks[local].strip()
+        selected = chunks[local]
+        text = str(selected)
         if text not in entries:
             return {"success": False, "error": "memory node id is stale — refresh the graph"}
-        idx = entries.index(text)
-        new_entries = entries[:idx] + ([] if replacement is None else [replacement]) + entries[idx + 1:]
+        if hasattr(selected, "entry_id"):
+            from tools.memory_identity_store import _locate
+            idx = _locate(entries, selected.entry_id, selected.scope, text)
+        else:
+            idx = entries.index(text)
+        from tools.memory_entry_identity import inherit_identity
+        updated = [] if replacement is None else [inherit_identity(replacement, entries[idx])]
+        new_entries = entries[:idx] + updated + entries[idx + 1:]
         # Same cap the memory tool enforces on replace (never on remove: deleting is how a file
         # already over its total gets back under it). An over-limit entry reads as external drift
         # to every later mutation, so the tool's own remove/replace refuse until hand-fixed.

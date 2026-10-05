@@ -176,3 +176,13 @@ is "inside the Hermes desktop app". The pattern:
 
 Test: if the capability still makes sense with the client on another machine, it is
 session-scoped. Assert the GUI session gets the tool **with the env var absent**.
+
+
+## Built-in memory identities
+
+`memory_entry_identity.py` owns opt-in, versioned UUID/scope comments; `memory_store_io.py`
+keeps metadata out of prompt prose and budgets. Preserve identity when replacing an entry,
+including batch, Journey and import paths. UUID selection and approval replay run through the
+store lock with exact scope and reviewed-content validation; never fall back to substring
+matching after an ID failure. `hermes memory migrate-identities` is explicit and backup-first;
+normal reads/writes never migrate legacy files. The session prompt snapshot stays frozen.

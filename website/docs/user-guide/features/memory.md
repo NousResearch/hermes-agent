@@ -215,6 +215,59 @@ The memory system automatically rejects exact duplicate entries. If you try to a
 
 Memory entries are scanned for injection and exfiltration patterns before being accepted, since they're injected into the system prompt. Content matching threat patterns (prompt injection, credential exfiltration, SSH backdoors) or containing invisible Unicode characters is blocked.
 
+
+### Stable entry identities (opt-in)
+
+Applications can enumerate the complete built-in store and address entries by persistent UUIDv4.
+Legacy files continue to work with substring-based `old_text` writes until you explicitly migrate:
+
+```bash
+hermes memory migrate-identities --target all --dry-run
+hermes memory migrate-identities --target all --yes
+```
+
+The command previews by default. Applying it first saves byte-preserving, owner-only backups in
+`memories/.identity-backups/`, then atomically rewrites each selected file under its existing lock.
+`--target memory` and `--target user` select one file; the two-file `all` operation reports each
+target separately. Re-running an already completed target does not change UUIDs or create another
+backup. Migration does not infer scopes. To undo migration, stop writers and restore the reported
+backup to its original file. Old UUIDs are unavailable after restoring a legacy backup.
+
+After migration the existing `memory` tool accepts:
+
+```json
+{"action":"list","target":"user","limit":50}
+{"action":"add","target":"user","content":"Prefers concise explanations.","scope":"settings"}
+{"action":"replace","target":"user","entry_id":"<UUID returned by add/list>","scope":"settings","content":"Prefers concise examples."}
+{"action":"remove","target":"user","entry_id":"<UUID returned by add/list>","scope":"settings"}
+```
+
+An add returns `entry_id` and `scope`. Exact duplicate text in the same scope remains idempotent;
+different scopes retain different identities. List returns `entries`, `total`, `truncated` and
+`next_cursor`; previews are limited to 512 characters and each page to 100 entries (default 50).
+Follow `next_cursor` until it is null. A cursor is bound to the current file, target and requested
+scope; if any changes between pages, restart enumeration. Omitted list scope includes all scopes.
+UUID mutation requires the exact creation scope; omit it only for an unscoped entry. Scope records
+caller-owned provenance; it is not an authorization mechanism or a semantic category.
+
+Batch operations also accept `entry_id` and `scope` per operation and return their UUID metadata in
+`entry_ids`, keyed by the 1-based operation number. The existing final-budget and all-or-nothing
+rules still apply. Substring replacement preserves an entry's UUID; ambiguous equal-text entries
+with different UUIDs require identifier selection. Journey cards use the same UUID after migration,
+so edits, reordering and unrelated deletions do not renumber a surviving card. Memory imports
+retain existing UUIDs and scopes, re-merge under the same file lock, and back up before writing.
+
+Versioned HTML comments in each file hold the UUID, target and scope. They are excluded from
+ordinary system-prompt prose and character budgets. Memory writes keep the current conversation's
+prompt snapshot frozen. Identifier selection, target/scope validation and persistence happen under
+one file lock. Approval records also pin UUID and full reviewed content: deleting/recreating an
+entry, changing its content or changing its scope makes the old proposal fail without applying it.
+
+Malformed, duplicate, incomplete or unsupported metadata refuses management and writes. Removing
+all metadata makes the file appear unmigrated, so UUID management refuses it; it never assigns
+replacement identities automatically. Restore a profile backup containing the metadata to retain
+the previous UUIDs. An explicit migration of a legacy restoration creates new identities.
+
 ## Session Search
 
 Beyond MEMORY.md and USER.md, the agent can search its past conversations using the `session_search` tool:

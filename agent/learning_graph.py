@@ -154,7 +154,9 @@ def memory_fingerprint(entry: str) -> str:
 
 
 def memory_node_id(card: dict[str, Any], index: int) -> str:
-    """``memory:<source>:<index>:<fingerprint>`` — position for the occurrence, text for identity."""
+    """Persistent UUID after migration; legacy cards retain position plus content fingerprint."""
+    if card.get("entry_id"):
+        return f"memory:{card['source']}:{card['entry_id']}"
     return f"memory:{card['source']}:{index}:{card['fingerprint']}"
 
 
@@ -181,6 +183,7 @@ def _memory_cards() -> list[dict[str, Any]]:
                 "title": (first[:80] + "…") if len(first) > 80 else first, "body": chunk[:1200],
                 # Digest the WHOLE chunk, not the truncated ``body`` a long memory renders with.
                 "fingerprint": memory_fingerprint(chunk),
+                **({"entry_id": chunk.entry_id} if hasattr(chunk, "entry_id") else {}),
             })
     return cards
 

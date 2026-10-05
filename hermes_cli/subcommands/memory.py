@@ -10,7 +10,7 @@ from hermes_cli.subcommands._shared import add_yes_flag
 def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
     """Attach the ``memory`` subcommand to ``subparsers``."""
     memory_parser = subparsers.add_parser(
-        "memory", help="Configure external memory provider",
+        "memory", help="Manage built-in memory and external providers",
         description="Set up and manage external memory provider plugins.\n\n"
             "Bundled providers: openviking, mem0, holographic, retaindb,\n"
             "byterover. Catalog providers (e.g. honcho, hindsight,\n"
@@ -18,6 +18,8 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
             "Only one external provider can be active at a time.\n"
             "Built-in memory (MEMORY.md/USER.md) is always active.")
     memory_sub = memory_parser.add_subparsers(dest="memory_command")
+    from hermes_cli.memory_identities import add_identity_migration_parser
+    add_identity_migration_parser(memory_sub)
     _setup_parser = memory_sub.add_parser(
         "setup", help="Interactive provider selection and configuration")
     _setup_parser.add_argument(

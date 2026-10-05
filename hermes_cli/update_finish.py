@@ -11,17 +11,19 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
                   plan, windows_resume, followups=None) -> None:
     """Finish the selected checkout; never fetch, switch branches or restore a stash.
 
-    Same contract as the current completion (C3): the code is committed, so a failed build or
-    maintenance step is owed work, never a failed update. ``followups`` carries the steps that
-    already failed (the product build); while any is owed the install stamp is withheld, the
-    source-update tail stays pending for the next launch, and the gateway topology is left
-    alone. An unsafe SQLite runtime is reported by maintenance and vetoes migration only.
+    Same contract as the current completion (C3): the code is committed, so a failed build,
+    maintenance step or fleet restart/verification is owed work, never a failed update.
+    ``followups`` carries the steps that already failed (the product build); while any is owed
+    the install stamp is withheld, the source-update tail stays pending for the next launch, and
+    the gateway topology is left alone. An unsafe SQLite runtime is reported by maintenance and
+    vetoes migration only.
     """
     from hermes_cli.update_cmd import (
         _run_post_update_maintenance,
         _restart_gateway_fleet_after_update, _verify_fleet_after_update,
         _write_gateway_update_exit_code, _resume_windows_gateways_and_merge_outcome,
     )
+    from hermes_cli import update_receipt
     from hermes_cli.update_receipt import TAIL_FOLLOWUPS, record_build_stage, record_followup
 
     owed = followups if followups is not None else []
@@ -53,10 +55,18 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
     # committed, so the watcher sees success; owed work is on the receipt.
     if gateway_mode:
         _write_gateway_update_exit_code(True)
-    restarted = _restart_gateway_fleet_after_update(plan, gateway_mode)
-    _resume_windows_gateways_and_merge_outcome(restarted, windows_resume, gateway_mode)
-    _verify_fleet_after_update(restarted, _pre_update_plan=plan, _windows_gateway_resume=windows_resume,
-                              update_complete=bool(runtime_safe) and not tail_owed)
+    run = update_receipt._current.get()
+    update_id = run.data.get("update_id") if run is not None else None
+    try:
+        restarted = _restart_gateway_fleet_after_update(plan, gateway_mode)
+        _resume_windows_gateways_and_merge_outcome(restarted, windows_resume, gateway_mode)
+        _verify_fleet_after_update(restarted, _pre_update_plan=plan, _windows_gateway_resume=windows_resume,
+                                  update_complete=bool(runtime_safe) and not tail_owed)
+    except (Exception, SystemExit) as exc:  # health: allow BLE001 -- the code is committed (C3): the fleet obligation stays armed
+        reason = str(exc) or type(exc).__name__
+        record_followup("gateway_restart", reason)
+        if update_receipt._current.get() is None and update_id:  # verification already finalized the run
+            update_receipt.amend_terminal_followup(update_id, "gateway_restart", reason)
 
 
 def _restore_plan(data):

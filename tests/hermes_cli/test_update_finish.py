@@ -203,6 +203,8 @@ def completion(tmp_path, monkeypatch):
                     update._surviving_pre_update_serve_runtimes = lambda plan: []
                     fleet_verify._collect_fleet_snapshot = lambda *args: []
                     def restart(plan, gateway_mode):
+                        if fault == 'restart':
+                            raise RuntimeError('systemctl restart timed out')
                         assert isinstance(plan, UpdatePlan)
                         assert isinstance(plan.runtimes[0], RuntimeRecord)
                         assert plan.to_dict() == request['plan'] | {
@@ -300,6 +302,25 @@ def test_refused_gateway_resume_after_commit_is_a_followup_not_exit_1(completion
     assert (home / ".update_exit_code").read_text().strip() == "0"
     # The attempt is reported: the historical parent must not replay it at its own exit.
     assert json.loads(result.read_text())["resume_handled"] is True
+
+
+@pytest.mark.platforms("posix")
+def test_raising_fleet_restart_after_commit_is_a_followup_not_exit_1(completion):
+    """Review P3 (invariant 3): the takeover child's restart/verify run after the commit point, so
+    a raising fleet restart is an owed ``gateway_restart`` follow-up and exit 0, never exit 1 with a
+    ``failed`` receipt and a gateway watcher told 1."""
+    source, home, request, context, result, run = completion
+    request["gateway_mode"] = True
+    request["receipt"]["started_at"] = "2026-10-04T12:00:00+00:00"
+    context.write_text(json.dumps(request), encoding="utf-8")
+    child = run("restart")
+    assert child.returncode == 0, child.stdout + child.stderr
+    receipt = json.loads((home / "logs/update_receipts/latest.json").read_text())
+    assert receipt["update_id"] == request["update_id"]
+    assert receipt["outcome"] == "success"
+    owed = {row["step"]: row["reason"] for row in receipt["followups"]}
+    assert "systemctl restart timed out" in owed.get("gateway_restart", ""), child.stdout + child.stderr
+    assert (home / ".update_exit_code").read_text().strip() == "0"
 
 
 @pytest.mark.platforms("posix")

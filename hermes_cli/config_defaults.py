@@ -39,6 +39,12 @@ DEFAULT_CONFIG = {
     # of switching the turn to a fallback model.
     "fallback": {"min_switch_reset_seconds": 0},
     "credential_pool_strategies": {},
+    "codex_usage": {
+        "cache_ttl": 180.0,
+        "fetch_timeout": 5.0,
+        "fetch_budget": 2,
+        "exhausted_pct": 98.0,
+    },
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on
     # weak-fsync/shared filesystems where WAL is not crash-safe (macOS virtiofs, NFS, SMB).

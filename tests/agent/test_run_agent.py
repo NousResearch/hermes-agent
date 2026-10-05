@@ -402,11 +402,15 @@ class TestStripThinkBlocks:
             [
                 {"type": "text", "text": "visible answer"},
                 {"type": "thinking", "thinking": "internal reasoning"},
+                {"type": "text", "text": "<think>secret</think>hello"},
+                {"type": "image_url", "image_url": {"url": "http://x"}},
             ]
         )
         assert isinstance(result, str)
         assert "visible answer" in result
+        assert "hello" in result
         assert "internal reasoning" not in result
+        assert "secret" not in result
 
 
     def test_single_block_removed(self, agent):

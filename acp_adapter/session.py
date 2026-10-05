@@ -539,10 +539,14 @@ class SessionManager:
             runtime = resolve_runtime_provider(
                 requested=requested_provider or config_provider, target_model=(model or default_model) or None)
             kwargs.update({
-                "provider": runtime.get("provider"), "api_mode": api_mode or runtime.get("api_mode"),
-                "base_url": base_url or runtime.get("base_url"), "api_key": runtime.get("api_key"),
+                "provider": runtime.get("provider"),
+                "api_mode": api_mode or runtime.get("api_mode"),
+                "base_url": base_url or runtime.get("base_url"),
+                "api_key": runtime.get("api_key"),
                 "credential_pool": runtime.get("credential_pool"),
-                "command": runtime.get("command"), "args": list(runtime.get("args") or []),
+                "provider_source": runtime.get("source"),
+                "command": runtime.get("command"),
+                "args": list(runtime.get("args") or []),
             })
             # The resolved provider's request body (a custom entry's extra_body); an explicit base_url pointing
             # elsewhere is another endpoint, which must not inherit it.

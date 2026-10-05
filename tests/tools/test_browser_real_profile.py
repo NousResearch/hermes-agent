@@ -983,6 +983,37 @@ class TestReviewRound3:
         snap.assert_not_called()  # ← the fix: no overlay while a live browser owns the dir
         bt._real_profile_cdp_cache.clear()
 
+    def test_relaunch_path_does_snapshot(self, tmp_path):
+        """When there's no reusable session, the overlay DOES run (relaunch)."""
+        import tools.browser_tool as bt
+        bt._real_profile_cdp_cache.clear()
+
+        class FakeChrome:
+            def poll(self):
+                return None
+
+        def fake_popen(argv, **kw):
+            (tmp_path / "DevToolsActivePort").write_text("9251\n/devtools/browser/x\n")
+            return FakeChrome()
+
+        proc = Mock(returncode=0, stdout="", stderr="")
+        with patch.object(bt_cloud, "_use_real_profile", return_value=True), \
+             patch.object(bt_lightpanda_fallback, "_using_lightpanda_engine", return_value=False), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(tmp_path)), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile",
+                   return_value=(str(tmp_path), None)) as snap, \
+             patch("hermes_cli.browser_connect.chromium_executable", return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
+             patch.object(bt_real_profile, "_agent_browser_get_cdp",
+                          side_effect=[None, "http://127.0.0.1:9251"]), \
+             patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt_cloud, "_is_headed_mode", return_value=False):
+            cdp, err = bt_real_profile._real_profile_cdp()
+        assert err is None
+        snap.assert_called_once()
+        bt._real_profile_cdp_cache.clear()
 
 
 class TestWindowsLockedProfileCopy:

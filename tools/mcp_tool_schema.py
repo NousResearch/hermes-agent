@@ -112,6 +112,8 @@ def _repair_object_shape(node, *, _object_root=False):
             props = repaired.get("properties") or {}
             repaired["required"] = ([r for r in required if isinstance(r, str) and r in props]
                                     if isinstance(required, list) else [])
+    if repaired.get("type") == "array" and "items" not in repaired and "prefixItems" not in repaired:
+        repaired["items"] = {}
     return repaired
 
 

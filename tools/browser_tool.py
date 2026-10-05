@@ -64,6 +64,24 @@ def _build_browser_env() -> dict:
         value = scope.get(key) if routed else get_secret(key)
         if value is not None:
             env[key] = value
+
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime_dir or runtime_dir == "/tmp":
+        runtime_dir = "/tmp/runtime-root"
+    try:
+        os.makedirs(runtime_dir, mode=0o700, exist_ok=True)
+        os.chmod(runtime_dir, 0o700)
+    except Exception:
+        pass
+    env["XDG_RUNTIME_DIR"] = runtime_dir
+
+    if "AGENT_BROWSER_EXECUTABLE_PATH" not in env:
+        cft_path = os.path.expanduser("~/.hermes/chromium/chrome-linux64/chrome")
+        if os.path.isfile(cft_path) and os.access(cft_path, os.X_OK):
+            env["AGENT_BROWSER_EXECUTABLE_PATH"] = cft_path
+        elif os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH"):
+            env["AGENT_BROWSER_EXECUTABLE_PATH"] = os.environ["AGENT_BROWSER_EXECUTABLE_PATH"]
+
     # The Browser Use harness dials the resolved local CDP URL over ``websockets``; without a
     # loopback NO_PROXY a macOS system proxy captures that dial (#110565).
     # Headed Chromium opens on this profile's Bot Desktop when one is running (human can take it over). Pure: this

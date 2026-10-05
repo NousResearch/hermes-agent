@@ -3594,8 +3594,18 @@ def _evict_cached_clients(provider: str) -> None:
     normalized = _normalize_aux_provider(provider)
     home = hermes_home_key()
     with _client_cache_lock:
-        for key in [key for key in _client_cache
-                    if key[0] == home and _normalize_aux_provider(str(key[1])) == normalized]:
+        stale_keys = []
+        for key in _client_cache:
+            if key[0] != home:
+                continue
+            k_prov = _normalize_aux_provider(str(key[1]))
+            if k_prov == normalized:
+                stale_keys.append(key)
+            elif k_prov == "auto":
+                pool_hint = key[9] if len(key) > 9 else ""
+                if pool_hint and pool_hint.startswith(normalized + ":"):
+                    stale_keys.append(key)
+        for key in stale_keys:
             _client_cache.pop(key, None)
 
 
@@ -4634,8 +4644,30 @@ def _try_main_provider_route(
         elif runtime_api_key:
             explicit_api_key = runtime_api_key
     elif runtime_api_key:
-        # Pin aux to the main session's working key, not a re-selected (maybe exhausted) pool key.
-        explicit_api_key = runtime_api_key
+        # Pin auxiliary to the same api_key as the active main chat session
+        # so that a working key is reused instead of re-selecting from the pool
+        # (which might pick a different, potentially exhausted key).
+        #
+        # However, if the main provider has a credential pool and the pool has
+        # been rotated (meaning the pool's current active key is different from
+        # the runtime_api_key), we must NOT use the stale runtime_api_key.
+        _pool_key = None
+        _p_norm = _normalize_aux_provider(main_provider)
+        if _p_norm not in {"", "auto", "custom"}:
+            _pe = _peek_pool_entry(_p_norm)
+            if _pe is not None:
+                _pool_key = _pool_runtime_api_key(_pe)
+
+        if _pool_key and _pool_key != runtime_api_key:
+            logger.info(
+                "Auxiliary auto-detect: main runtime API key %s... is stale "
+                "(pool rotated to %s...); using pool active key instead",
+                runtime_api_key[:8] if runtime_api_key else "",
+                _pool_key[:8] if _pool_key else "",
+            )
+            explicit_api_key = _pool_key
+        else:
+            explicit_api_key = runtime_api_key
     # Skip if the main provider was recently 402'd (unhealthy TTL bounds the bypass).
     main_chain_label = _normalize_chain_label(resolved_provider)
     if main_chain_label and _is_provider_unhealthy(main_chain_label, health_base_url):

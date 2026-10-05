@@ -605,6 +605,7 @@ from cron.jobs import (
     _ensure_cron_dir, advance_next_runs, claim_dispatch, claim_job_for_fire, fire_claim_fence,
     clear_run_claim, get_due_jobs, heartbeat_fire_claim, heartbeat_run_claim, mark_job_run,
     save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
+from cron.execution_identity import enter_cron_execution, exit_cron_execution
 from cron.executions import (
     _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
@@ -3390,6 +3391,16 @@ def _fire_secret_scope():
         _reset_fire_secret_scope(tokens)
 
 
+def _start_owned_run(job: dict, execution_id: str) -> "Optional[contextvars.Token]":
+    """Win the run's ``claimed`` → ``running`` CAS and bind its cron identity; ``None`` when the run
+    lost ownership first. A restart-safe worker already won it by adopting the row."""
+    if os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id:
+        record = get_execution(execution_id)
+    elif (record := mark_execution_running(execution_id)) is None:
+        return None
+    return enter_cron_execution(job, execution_id, record or {})
+
+
 def _run_one_job_body(
     job: dict, *, adapters=None, loop=None, verbose: bool = False,
     extra_prompt: Optional[str] = None, claim_lost: Optional[_CancelEventLike] = None,
@@ -3410,6 +3421,7 @@ def _run_one_job_body(
 
     _fire_scope_tokens = None
     _terminal_scope_token = None
+    _identity_token = None
     try:
         # get_secret() fails closed outside a scope; the ticker thread has none. Delivery adapters
         # resolve credentials, so the scope must span delivery too (reset in the outer finally) —
@@ -3432,38 +3444,22 @@ def _run_one_job_body(
         # Claimed durably before dispatch; becomes running only right before the actual run.
         # Detached workers transition to running while adopting; in-process paths must win the
         # claimed->running CAS here before any user script or agent side effect may begin.
-        external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
-        if not external_owner and mark_execution_running(execution_id) is None:
+        # The identity plugins read via ctx.current_cron_execution() is bound only on that win.
+        _identity_token = _start_owned_run(job, execution_id)
+        if _identity_token is None:
             logger.warning("Cron job %s lost execution ownership before start; skipping", job["id"])
             return True
 
-        # Same for terminal policy (gateway/run.py _profile_runtime_scope): else the ticker reads
-        # process-global TERMINAL_* env a concurrent profile pinned. Resolution failure installs a
-        # refusal scope — terminal execution raises instead of using the launch process's policy.
-        # Same isolation for terminal settings (third profile seam; see gateway/run.py
-        # _profile_runtime_scope): installs the firing profile's COMPLETE terminal policy for this fire —
-        # run, delivery, and bookkeeping — resetting in this function's finally alongside the secret scope.
-        # See #68559.
-        # Bind the profile's COMPLETE terminal policy for the agent build (fail-closed: malformed policy →
-        # refusal scope) so _make_agent's terminal probing / cwd hints resolve the routed profile, never the
-        # launch process (#98581 class).
-        # Same authoritative terminal policy the gateway binds per turn (#68559): a docker-configured
-        # dashboard profile must never resolve the launch process's pinned env.
-        # Fourth profile seam: bind the session profile's COMPLETE terminal policy for this turn
-        # (dashboard/TUI analogue of the gateway's per-turn scope). #98581's unified-desktop reproduction
-        # ran a docker-configured profile on the host because terminal_tool read the launch process's pinned
-        # env.
+        # Bind the firing profile's COMPLETE terminal policy for this fire — agent build, run, delivery
+        # and bookkeeping (gateway/run.py _profile_runtime_scope does the same per turn) — else the
+        # ticker reads process-global TERMINAL_* env another profile pinned (#68559, #98581). A
+        # malformed policy installs a refusal scope: terminal execution raises instead.
         from tools.terminal_scope import (
             install_profile_terminal_scope)
 
         _terminal_scope_token = install_profile_terminal_scope(_get_hermes_home())
-        # Defer agent teardown until AFTER delivery; closing first races the live send against a
-        # torn-down async client. run_job hands the agent back via this list.
-        # Defer the cron agent's async-resource teardown until AFTER delivery. run_job normally closes the
-        # agent (and reaps stale async clients) in its finally block; doing that before _deliver_result runs
-        # means the live send races a torn-down async client (#58720). Passing a holder list makes run_job
-        # hand the agent back instead, and we tear it down below once delivery is done. Defense-in-depth
-        # alongside the interpreter-shutdown guard in _deliver_result.
+        # Defer agent teardown until AFTER delivery: closing first races the live send against a
+        # torn-down async client (#58720). run_job hands the agent back via this list instead.
         _deferred_agents: list = []
 
         def _teardown_deferred() -> None:
@@ -3612,6 +3608,7 @@ def _run_one_job_body(
     finally:
         # Function-level on purpose: must scope delivery, deferred teardown, claim-loss handling and
         # bookkeeping — not just run_job. Do not move into the run block's finally.
+        exit_cron_execution(_identity_token)
         if _fire_scope_tokens is not None:
             _reset_fire_secret_scope(_fire_scope_tokens)
         if _terminal_scope_token is not None:

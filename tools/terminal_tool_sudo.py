@@ -186,62 +186,72 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45, *, command: str = "") -
     """Prompt for a sudo password; "" on skip (empty Enter), timeout, or error. Prefers the
     CLI-registered callback (prompt_toolkit-integrated); otherwise reads /dev/tty (msvcrt on
     Windows) with echo disabled. Human wait time is excluded from tool deadlines (``human_wait_window``)."""
-    from tools.terminal_tool import _get_sudo_password_callback
-    _sudo_cb = _get_sudo_password_callback()
-    if _sudo_cb is not None:
-        token = _sudo_prompt_command.set(command)
+    from tools.human_input_hooks import human_input_request
+    # The password never reaches the hook; only how the prompt ended.
+    with human_input_request("sudo", prompt=command) as human:
+        from tools.terminal_tool import _get_sudo_password_callback
+        _sudo_cb = _get_sudo_password_callback()
+        if _sudo_cb is not None:
+            token = _sudo_prompt_command.set(command)
+            try:
+                from tools.approval_human_wait import human_wait_window
+                with human_wait_window():
+                    password = _sudo_cb() or ""
+                human.outcome = "provided" if password else "skipped"
+                return password
+            except Exception:
+                human.outcome = "error"
+                return ""
+            finally:
+                _sudo_prompt_command.reset(token)
+
+        result = {"password": None, "done": False}
         try:
+            os.environ["HERMES_SPINNER_PAUSE"] = "1"
+            time.sleep(0.2)
+            print("\n".join((
+                "",
+                "┌" + "─" * 58 + "┐",
+                "│  🔐 SUDO PASSWORD REQUIRED" + " " * 30 + "│",
+                "├" + "─" * 58 + "┤",
+                "│  Enter password below (input is hidden), or:            │",
+                "│    • Press Enter to skip (command fails gracefully)     │",
+                f"│    • Wait {timeout_seconds}s to auto-skip" + " " * 27 + "│",
+                "└" + "─" * 58 + "┘",
+                "",
+            )))
+            print("  Password (hidden): ", end="", flush=True)
+            password_thread = threading.Thread(target=_read_hidden_password, args=(result,), daemon=True)
+            password_thread.start()
             from tools.approval_human_wait import human_wait_window
             with human_wait_window():
-                return _sudo_cb() or ""
-        except Exception:
+                password_thread.join(timeout=timeout_seconds)
+            if not result["done"]:
+                print("\n  ⏱ Timeout - continuing without sudo\n    (Press Enter to dismiss)\n")
+                sys.stdout.flush()
+                human.outcome = "timeout"
+                return ""
+            password = result["password"] or ""
+            human.outcome = "provided" if password else "skipped"
+            # Newline after the hidden input, then the outcome line.
+            if password:
+                print("\n  ✓ Password received (cached for this session)\n")
+            else:
+                print("\n  ⏭ Skipped - continuing without sudo\n")
+            sys.stdout.flush()
+            return password
+        except (EOFError, KeyboardInterrupt):
+            print("\n  ⏭ Cancelled - continuing without sudo\n")
+            sys.stdout.flush()
+            human.outcome = "cancelled"
+            return ""
+        except Exception as e:
+            print(f"\n  [sudo prompt error: {e}] - continuing without sudo\n")
+            sys.stdout.flush()
+            human.outcome = "error"
             return ""
         finally:
-            _sudo_prompt_command.reset(token)
-
-    result = {"password": None, "done": False}
-    try:
-        os.environ["HERMES_SPINNER_PAUSE"] = "1"
-        time.sleep(0.2)
-        print("\n".join((
-            "",
-            "┌" + "─" * 58 + "┐",
-            "│  🔐 SUDO PASSWORD REQUIRED" + " " * 30 + "│",
-            "├" + "─" * 58 + "┤",
-            "│  Enter password below (input is hidden), or:            │",
-            "│    • Press Enter to skip (command fails gracefully)     │",
-            f"│    • Wait {timeout_seconds}s to auto-skip" + " " * 27 + "│",
-            "└" + "─" * 58 + "┘",
-            "",
-        )))
-        print("  Password (hidden): ", end="", flush=True)
-        password_thread = threading.Thread(target=_read_hidden_password, args=(result,), daemon=True)
-        password_thread.start()
-        from tools.approval_human_wait import human_wait_window
-        with human_wait_window():
-            password_thread.join(timeout=timeout_seconds)
-        if not result["done"]:
-            print("\n  ⏱ Timeout - continuing without sudo\n    (Press Enter to dismiss)\n")
-            sys.stdout.flush()
-            return ""
-        password = result["password"] or ""
-        # Newline after the hidden input, then the outcome line.
-        if password:
-            print("\n  ✓ Password received (cached for this session)\n")
-        else:
-            print("\n  ⏭ Skipped - continuing without sudo\n")
-        sys.stdout.flush()
-        return password
-    except (EOFError, KeyboardInterrupt):
-        print("\n  ⏭ Cancelled - continuing without sudo\n")
-        sys.stdout.flush()
-        return ""
-    except Exception as e:
-        print(f"\n  [sudo prompt error: {e}] - continuing without sudo\n")
-        sys.stdout.flush()
-        return ""
-    finally:
-        os.environ.pop("HERMES_SPINNER_PAUSE", None)
+            os.environ.pop("HERMES_SPINNER_PAUSE", None)
 
 
 def _looks_like_env_assignment(token: str) -> bool:

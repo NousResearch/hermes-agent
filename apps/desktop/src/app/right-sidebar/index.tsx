@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, useCallback, useEffect } from 'react'
+import { type ComponentProps, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { ErrorBoundary } from '@/components/error-boundary'
@@ -19,6 +19,8 @@ import { $focusedWorkspaceCwd } from '@/store/session-states'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
+import { buildSessionFileTree } from './files/session-files'
+import { $sessionFiles } from './files/session-files-store'
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
 
@@ -48,6 +50,16 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
     setShowIgnored,
     showIgnored
   } = useProjectTree(hasWorkspace ? targetCwd : '')
+
+  // "This session" filter (#133481): per window, not persisted. Off by default
+  // so the tree looks exactly as before until someone asks for the filter.
+  const [sessionOnly, setSessionOnly] = useState(false)
+  const sessionFiles = useStore($sessionFiles)
+
+  const sessionTree = useMemo(
+    () => buildSessionFileTree(sessionFiles.values(), effectiveCwd),
+    [effectiveCwd, sessionFiles]
+  )
 
   useEffect(() => {
     const activeCwd = effectiveCwd || (hasWorkspace ? targetCwd : '')
@@ -116,8 +128,11 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
         onNodeOpenChange={setNodeOpen}
         onPreviewFile={previewFile}
         onRefresh={handleRefresh}
+        onToggleSessionOnly={() => setSessionOnly(!sessionOnly)}
         onToggleShowIgnored={() => setShowIgnored(!showIgnored)}
         openState={openState}
+        sessionOnly={sessionOnly}
+        sessionTree={sessionTree}
         showIgnored={showIgnored}
       />
     </aside>
@@ -130,7 +145,10 @@ interface FilesystemTabProps extends FileTreeBodyProps {
   hasWorkspace: boolean
   onCollapseAll: () => void
   onRefresh: () => void
+  onToggleSessionOnly: () => void
   onToggleShowIgnored: () => void
+  sessionOnly: boolean
+  sessionTree: ReturnType<typeof buildSessionFileTree>
   showIgnored: boolean
 }
 
@@ -157,8 +175,11 @@ function FilesystemTab({
   onNodeOpenChange,
   onPreviewFile,
   onRefresh,
+  onToggleSessionOnly,
   onToggleShowIgnored,
   openState,
+  sessionOnly,
+  sessionTree,
   showIgnored
 }: FilesystemTabProps) {
   const { t } = useI18n()
@@ -188,6 +209,20 @@ function FilesystemTab({
         <div className="flex min-w-0 flex-1">
           <SidebarPanelLabel>{cwdName}</SidebarPanelLabel>
         </div>
+        <Tip label={sessionOnly ? r.showAllFiles : r.showSessionFiles}>
+          <Button
+            aria-label={sessionOnly ? r.showAllFiles : r.showSessionFiles}
+            aria-pressed={sessionOnly}
+            // Same rule as the gitignored toggle: stays visible while active,
+            // because the tree is showing less than the folder holds.
+            className={sessionOnly ? HEADER_ACTION_CLASS : HEADER_ACTION_LABEL_REVEAL}
+            onClick={onToggleSessionOnly}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <Codicon name={sessionOnly ? 'filter-filled' : 'filter'} size="0.8125rem" />
+          </Button>
+        </Tip>
         <Tip label={showIgnored ? r.hideIgnored : r.showIgnored}>
           <Button
             aria-label={showIgnored ? r.hideIgnored : r.showIgnored}
@@ -227,6 +262,15 @@ function FilesystemTab({
           </Button>
         </Tip>
       </RightSidebarSectionHeader>
+      {sessionOnly ? (
+        <SessionFileTreeBody
+          cwd={cwd}
+          onActivateFile={onActivateFile}
+          onActivateFolder={onActivateFolder}
+          onPreviewFile={onPreviewFile}
+          tree={sessionTree}
+        />
+      ) : (
       <FileTreeBody
         collapseNonce={collapseNonce}
         cwd={cwd}
@@ -241,6 +285,7 @@ function FilesystemTab({
         onRetry={onRefresh}
         openState={openState}
       />
+      )}
     </div>
   )
 }
@@ -348,6 +393,46 @@ function FileTreeBody({
         openState={openState}
       />
     </ErrorBoundary>
+  )
+}
+
+const noop = () => {}
+
+// Folders in the filtered tree are built already loaded and open, so there is
+// nothing to fetch and nothing to remember when one is toggled.
+function SessionFileTreeBody({
+  cwd,
+  onActivateFile,
+  onActivateFolder,
+  onPreviewFile,
+  tree
+}: {
+  cwd: string
+  onActivateFile: (path: string) => void
+  onActivateFolder: (path: string) => void
+  onPreviewFile?: (path: string) => void
+  tree: ReturnType<typeof buildSessionFileTree>
+}) {
+  const { t } = useI18n()
+  const r = t.rightSidebar
+
+  if (tree.fileCount === 0) {
+    return <EmptyState body={r.noSessionFilesBody} title={r.noSessionFilesTitle} />
+  }
+
+  return (
+    <ProjectTree
+      // Remount when the set of files changes so newly added folders open too.
+      collapseNonce={tree.fileCount}
+      cwd={cwd}
+      data={tree.data}
+      onActivateFile={onActivateFile}
+      onActivateFolder={onActivateFolder}
+      onLoadChildren={noop}
+      onNodeOpenChange={noop}
+      onPreviewFile={onPreviewFile}
+      openState={tree.openState}
+    />
   )
 }
 

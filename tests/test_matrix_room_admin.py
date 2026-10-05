@@ -7,6 +7,8 @@ surfacing, gating, registration), never a live Matrix server.
 """
 import asyncio
 import json
+import sys
+import types
 
 import aiohttp
 import pytest
@@ -15,7 +17,9 @@ from tools import matrix_room_tool as m
 
 
 def _run(coro):
-    return asyncio.run(coro)
+    # Run on the loop tests/conftest.py installs; asyncio.run() would replace it
+    # and orphan it, surfacing as an "unclosed event loop" error in a later test.
+    return asyncio.get_event_loop().run_until_complete(coro)
 
 
 def _parse(result):
@@ -24,9 +28,27 @@ def _parse(result):
     return json.loads(result)
 
 
+CURRENT_ROOM = "!r:hs"
+
+
+def _bind_session(monkeypatch, **session):
+    """Stand in for the gateway's per-turn session vars."""
+    monkeypatch.setattr(m, "get_session_env", lambda name, default="": session.get(name, default))
+
+
 @pytest.fixture()
 def creds(monkeypatch):
+    """Configured Matrix, a turn bound to CURRENT_ROOM, no cross-room opt-in, no live gateway."""
     monkeypatch.setattr(m, "_matrix_creds", lambda: ("https://matrix.example.org", "tok"))
+    monkeypatch.setattr(m, "_live_matrix_adapter", lambda: None)
+    monkeypatch.delenv("MATRIX_TOOLS_ALLOW_CROSS_ROOM", raising=False)
+    _bind_session(monkeypatch, HERMES_SESSION_PLATFORM="matrix", HERMES_SESSION_CHAT_ID=CURRENT_ROOM)
+
+
+class _FakeAdapter:
+    def __init__(self):
+        self._joined_rooms = {CURRENT_ROOM, "!other:hs"}
+        self._dm_rooms = {CURRENT_ROOM: True, "!other:hs": False}
 
 
 def _recorder(responses):
@@ -187,7 +209,8 @@ class TestLeaveRoom:
         _run(m._handle_matrix_leave_room({"room_id": "!r:hs", "reason": "cleanup"}))
         assert fake.calls[0]["body"] == {"reason": "cleanup"}
 
-    def test_leave_missing_room_id(self, creds):
+    def test_leave_missing_room_id_outside_matrix(self, creds, monkeypatch):
+        _bind_session(monkeypatch)  # CLI: no Matrix room to default to
         out = _parse(_run(m._handle_matrix_leave_room({})))
         assert "room_id is required" in out["error"]
 
@@ -239,9 +262,221 @@ class TestDeleteRoom:
         out = _parse(_run(m._handle_matrix_delete_room({"room_id": "!r:hs"})))
         assert "Matrix forget error (400)" in out["error"]
 
-    def test_delete_missing_room_id(self, creds):
+    def test_delete_missing_room_id_outside_matrix(self, creds, monkeypatch):
+        _bind_session(monkeypatch)  # CLI: no Matrix room to default to
         out = _parse(_run(m._handle_matrix_delete_room({})))
         assert "room_id is required" in out["error"]
+
+
+# --------------------------------------------------------------------------
+# transport failures + the raw CS-API call
+# --------------------------------------------------------------------------
+def _raising(*fail_on):
+    """_matrix_room_action stand-in that raises for the given actions, 200s otherwise."""
+    async def fake(homeserver, token, room_id, action, body=None):
+        if action in fail_on:
+            raise aiohttp.ClientError(f"{action} unreachable")
+        return 200, "{}"
+    return fake
+
+
+class TestTransport:
+    def test_leave_request_exception(self, creds, monkeypatch):
+        monkeypatch.setattr(m, "_matrix_room_action", _raising("leave"))
+        out = _parse(_run(m._handle_matrix_leave_room({})))
+        assert "matrix_leave_room request failed: leave unreachable" in out["error"]
+
+    def test_delete_leave_exception(self, creds, monkeypatch):
+        monkeypatch.setattr(m, "_matrix_room_action", _raising("leave"))
+        out = _parse(_run(m._handle_matrix_delete_room({})))
+        assert "matrix_delete_room leave failed: leave unreachable" in out["error"]
+
+    def test_delete_forget_exception(self, creds, monkeypatch):
+        monkeypatch.setattr(m, "_matrix_room_action", _raising("forget"))
+        out = _parse(_run(m._handle_matrix_delete_room({})))
+        assert "matrix_delete_room forget failed: forget unreachable" in out["error"]
+
+    def test_room_action_posts_to_escaped_room_url(self, monkeypatch):
+        calls = _fake_client_session(monkeypatch, 200, {})
+        status, text = _run(m._matrix_room_action("https://hs", "tok", "!a:b/c", "leave", {"reason": "x"}))
+        assert (status, text) == (200, "{}")
+        assert calls == [{
+            "url": "https://hs/_matrix/client/v3/rooms/%21a%3Ab%2Fc/leave",
+            "headers": {"Authorization": "Bearer tok", "Content-Type": "application/json"},
+            "body": {"reason": "x"},
+        }]
+
+    def test_room_action_sends_empty_body_by_default(self, monkeypatch):
+        calls = _fake_client_session(monkeypatch, 200, {})
+        _run(m._matrix_room_action("https://hs", "tok", "!a:b", "forget"))
+        assert calls[0]["body"] == {}
+
+    def test_create_without_aiohttp(self, creds, monkeypatch):
+        monkeypatch.setitem(sys.modules, "aiohttp", None)  # makes `import aiohttp` raise ImportError
+        out = _parse(_run(m._handle_matrix_create_room({"name": "x"})))
+        assert "aiohttp not installed" in out["error"]
+
+
+# --------------------------------------------------------------------------
+# room scoping: the current room by default, other rooms only on operator opt-in
+# --------------------------------------------------------------------------
+class TestRoomScope:
+    @pytest.mark.parametrize("handler", ["_handle_matrix_leave_room", "_handle_matrix_delete_room"])
+    def test_defaults_to_current_room(self, creds, monkeypatch, handler):
+        fake = _recorder({"leave": (200, "{}"), "forget": (200, "{}")})
+        monkeypatch.setattr(m, "_matrix_room_action", fake)
+        out = _parse(_run(getattr(m, handler)({})))
+        assert out["room_id"] == CURRENT_ROOM
+        assert {c["room_id"] for c in fake.calls} == {CURRENT_ROOM}
+
+    @pytest.mark.parametrize("handler", ["_handle_matrix_leave_room", "_handle_matrix_delete_room"])
+    def test_other_room_refused_without_opt_in(self, creds, monkeypatch, handler):
+        fake = _recorder({"leave": (200, "{}"), "forget": (200, "{}")})
+        monkeypatch.setattr(m, "_matrix_room_action", fake)
+        out = _parse(_run(getattr(m, handler)({"room_id": "!other:hs"})))
+        assert "Refusing to act on !other:hs" in out["error"]
+        assert f"the current room ({CURRENT_ROOM})" in out["error"]
+        assert "MATRIX_TOOLS_ALLOW_CROSS_ROOM" in out["error"]
+        assert fake.calls == []  # nothing sent to the homeserver
+
+    @pytest.mark.parametrize("val", ["true", "1", "yes", "TRUE"])
+    def test_other_room_allowed_with_opt_in(self, creds, monkeypatch, val):
+        monkeypatch.setenv("MATRIX_TOOLS_ALLOW_CROSS_ROOM", val)
+        fake = _recorder({"leave": (200, "{}")})
+        monkeypatch.setattr(m, "_matrix_room_action", fake)
+        out = _parse(_run(m._handle_matrix_leave_room({"room_id": "!other:hs"})))
+        assert out["success"] is True
+        assert fake.calls[0]["room_id"] == "!other:hs"
+
+    @pytest.mark.parametrize("val", ["", "false", "no"])
+    def test_opt_in_off_values(self, creds, monkeypatch, val):
+        monkeypatch.setenv("MATRIX_TOOLS_ALLOW_CROSS_ROOM", val)
+        out = _parse(_run(m._handle_matrix_leave_room({"room_id": "!other:hs"})))
+        assert "Refusing" in out["error"]
+
+    def test_explicit_current_room_needs_no_opt_in(self, creds, monkeypatch):
+        fake = _recorder({"leave": (200, "{}")})
+        monkeypatch.setattr(m, "_matrix_room_action", fake)
+        out = _parse(_run(m._handle_matrix_leave_room({"room_id": f"  {CURRENT_ROOM} "})))
+        assert out["room_id"] == CURRENT_ROOM
+
+    def test_non_matrix_session_has_no_current_room(self, creds, monkeypatch):
+        # A Telegram chat id must never be mistaken for a Matrix room.
+        _bind_session(monkeypatch, HERMES_SESSION_PLATFORM="telegram", HERMES_SESSION_CHAT_ID=CURRENT_ROOM)
+        out = _parse(_run(m._handle_matrix_leave_room({"room_id": CURRENT_ROOM})))
+        assert "Refusing" in out["error"]
+        assert "a Matrix conversation's own room" in out["error"]
+
+    def test_cli_with_opt_in_may_name_any_room(self, creds, monkeypatch):
+        _bind_session(monkeypatch)
+        monkeypatch.setenv("MATRIX_TOOLS_ALLOW_CROSS_ROOM", "true")
+        fake = _recorder({"leave": (200, "{}")})
+        monkeypatch.setattr(m, "_matrix_room_action", fake)
+        out = _parse(_run(m._handle_matrix_leave_room({"room_id": "!other:hs"})))
+        assert out["success"] is True
+
+    @pytest.mark.parametrize("platform", ["matrix", "Matrix", " MATRIX "])
+    def test_current_room_platform_match_is_normalised(self, monkeypatch, platform):
+        _bind_session(monkeypatch, HERMES_SESSION_PLATFORM=platform, HERMES_SESSION_CHAT_ID=" !x:hs ")
+        assert m._current_matrix_room() == "!x:hs"
+
+    def test_schemas_no_longer_require_room_id(self):
+        assert m.MATRIX_LEAVE_ROOM_SCHEMA["parameters"]["required"] == []
+        assert m.MATRIX_DELETE_ROOM_SCHEMA["parameters"]["required"] == []
+
+
+# --------------------------------------------------------------------------
+# reconciling the live adapter's membership caches after a leave
+# --------------------------------------------------------------------------
+class TestAdapterReconcile:
+    @pytest.fixture()
+    def adapter(self, creds, monkeypatch):
+        fake = _FakeAdapter()
+        monkeypatch.setattr(m, "_live_matrix_adapter", lambda: fake)
+        return fake
+
+    def test_leave_drops_room_from_caches(self, adapter, monkeypatch):
+        monkeypatch.setattr(m, "_matrix_room_action", _recorder({"leave": (200, "{}")}))
+        _run(m._handle_matrix_leave_room({}))
+        assert adapter._joined_rooms == {"!other:hs"}
+        assert adapter._dm_rooms == {"!other:hs": False}
+
+    def test_failed_leave_keeps_caches(self, adapter, monkeypatch):
+        monkeypatch.setattr(m, "_matrix_room_action", _recorder({"leave": (500, "boom")}))
+        _run(m._handle_matrix_leave_room({}))
+        assert CURRENT_ROOM in adapter._joined_rooms
+        assert CURRENT_ROOM in adapter._dm_rooms
+
+    @pytest.mark.parametrize("leave", [(200, "{}"), (403, '{"errcode":"M_FORBIDDEN"}')])
+    def test_delete_drops_room_even_if_forget_fails(self, adapter, monkeypatch, leave):
+        # The membership is gone once leave succeeds; a failed forget must not leave a stale cache.
+        monkeypatch.setattr(m, "_matrix_room_action", _recorder({"leave": leave, "forget": (400, "x")}))
+        out = _parse(_run(m._handle_matrix_delete_room({})))
+        assert "Matrix forget error (400)" in out["error"]
+        assert CURRENT_ROOM not in adapter._joined_rooms
+        assert CURRENT_ROOM not in adapter._dm_rooms
+
+    def test_delete_hard_leave_error_keeps_caches(self, adapter, monkeypatch):
+        monkeypatch.setattr(m, "_matrix_room_action", _recorder({"leave": (500, "boom"), "forget": (200, "{}")}))
+        _run(m._handle_matrix_delete_room({}))
+        assert CURRENT_ROOM in adapter._joined_rooms
+
+    def test_room_not_cached_is_fine(self, adapter):
+        m._reconcile_adapter_after_leave("!never:hs")
+        assert adapter._joined_rooms == {CURRENT_ROOM, "!other:hs"}
+
+    def test_adapter_without_caches_is_fine(self, monkeypatch):
+        monkeypatch.setattr(m, "_live_matrix_adapter", lambda: object())
+        m._reconcile_adapter_after_leave(CURRENT_ROOM)  # must not raise
+
+    def test_no_gateway_is_fine(self, monkeypatch):
+        monkeypatch.setattr(m, "_live_matrix_adapter", lambda: None)
+        m._reconcile_adapter_after_leave(CURRENT_ROOM)  # must not raise
+
+
+# --------------------------------------------------------------------------
+# live adapter lookup + creds
+# --------------------------------------------------------------------------
+class TestLiveAdapter:
+    @staticmethod
+    def _runner_ref(monkeypatch, ref):
+        # Stub gateway.run: importing the real module opens an event loop + sockets at import time.
+        stub = types.ModuleType("gateway.run")
+        stub._gateway_runner_ref = ref
+        monkeypatch.setitem(sys.modules, "gateway.run", stub)
+
+    def test_returns_matrix_adapter(self, monkeypatch):
+        from gateway.config import Platform
+        adapter = _FakeAdapter()
+        runner = types.SimpleNamespace(adapters={Platform.MATRIX: adapter})
+        self._runner_ref(monkeypatch, lambda: runner)
+        assert m._live_matrix_adapter() is adapter
+
+    def test_no_runner(self, monkeypatch):
+        self._runner_ref(monkeypatch, lambda: None)
+        assert m._live_matrix_adapter() is None
+
+    def test_lookup_error_is_swallowed(self, monkeypatch):
+        def boom():
+            raise RuntimeError("gateway half torn down")
+
+        self._runner_ref(monkeypatch, boom)
+        assert m._live_matrix_adapter() is None
+
+    def test_creds_prefer_live_adapter(self, monkeypatch):
+        adapter = _FakeAdapter()
+        adapter._homeserver = "https://live.example/"
+        adapter._access_token = "live-tok"
+        monkeypatch.setattr(m, "_live_matrix_adapter", lambda: adapter)
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://env.example")
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "env-tok")
+        assert m._matrix_creds() == ("https://live.example", "live-tok")
+
+    def test_creds_fall_back_to_env(self, monkeypatch):
+        monkeypatch.setattr(m, "_live_matrix_adapter", lambda: None)
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://env.example/")
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "env-tok")
+        assert m._matrix_creds() == ("https://env.example", "env-tok")
 
 
 # --------------------------------------------------------------------------
@@ -272,6 +507,17 @@ class TestRegistration:
         for name in ("matrix_create_room", "matrix_leave_room", "matrix_delete_room"):
             assert name in registry._tools
             assert registry._tools[name].toolset == "hermes-matrix"
+
+    def test_only_the_matrix_bundle_exposes_them(self):
+        import toolsets
+        room_tools = {"matrix_create_room", "matrix_leave_room", "matrix_delete_room"}
+        assert room_tools.isdisjoint(toolsets._HERMES_CORE_TOOLS)
+        assert room_tools <= set(toolsets.resolve_toolset("hermes-matrix", include_registry=False))
+        for name, spec in toolsets.TOOLSETS.items():
+            if name == "hermes-matrix" or "hermes-matrix" in spec.get("includes", []):
+                continue  # the Matrix bundle itself, or an aggregate that includes it on purpose
+            exposed = room_tools & set(toolsets.resolve_toolset(name, include_registry=False))
+            assert not exposed, f"{name} exposes {sorted(exposed)}"
 
     def test_gates_wired_as_check_fn(self):
         from tools.registry import registry

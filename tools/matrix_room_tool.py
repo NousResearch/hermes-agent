@@ -20,6 +20,7 @@ Implementation note — why a raw Client-Server API call and NOT
 """
 import os
 
+from gateway.session_context import get_session_env
 from tools.registry import registry, tool_error, tool_result
 
 MATRIX_CREATE_ROOM_SCHEMA = {
@@ -59,23 +60,28 @@ def _check_matrix_create_room() -> bool:
     return os.getenv("MATRIX_TOOLS_ALLOW_ROOM_CREATE", "").lower() in ("true", "1", "yes")
 
 
+def _live_matrix_adapter():
+    """The running gateway's MatrixAdapter, or None (CLI, gateway not up)."""
+    try:
+        from gateway.run import _gateway_runner_ref
+        from gateway.config import Platform
+
+        runner = _gateway_runner_ref()
+        return runner.adapters.get(Platform.MATRIX) if runner is not None else None
+    except Exception:
+        return None
+
+
 def _matrix_creds():
     """Return (homeserver, token), preferring the live adapter's connected
     values, falling back to env. Keeps us in lock-step with whatever the
     running gateway actually authenticated with."""
     homeserver = ""
     token = ""
-    try:
-        from gateway.run import _gateway_runner_ref
-        from gateway.config import Platform
-
-        runner = _gateway_runner_ref()
-        adapter = runner.adapters.get(Platform.MATRIX) if runner is not None else None
-        if adapter is not None:
-            homeserver = getattr(adapter, "_homeserver", "") or ""
-            token = getattr(adapter, "_access_token", "") or ""
-    except Exception:
-        pass
+    adapter = _live_matrix_adapter()
+    if adapter is not None:
+        homeserver = getattr(adapter, "_homeserver", "") or ""
+        token = getattr(adapter, "_access_token", "") or ""
     homeserver = (homeserver or os.getenv("MATRIX_HOMESERVER", "")).rstrip("/")
     token = token or os.getenv("MATRIX_ACCESS_TOKEN", "")
     return homeserver, token
@@ -175,22 +181,24 @@ MATRIX_LEAVE_ROOM_SCHEMA = {
         "Leave (unjoin) a Matrix room you are a member of. The room keeps "
         "existing for its other members; you simply stop participating. Pass the "
         "room_id (e.g. '!abc123:example.org') as returned by "
-        "matrix_create_room. Use matrix_delete_room instead if you also want the "
-        "room removed from your room list."
+        "matrix_create_room, or omit it to leave the room this conversation is in. "
+        "A room other than the current one is only accepted when the operator "
+        "allows cross-room room admin. Use matrix_delete_room instead if you also "
+        "want the room removed from your room list."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "room_id": {
                 "type": "string",
-                "description": "Room to leave, e.g. '!abc123:example.org'.",
+                "description": "Room to leave, e.g. '!abc123:example.org'. Defaults to the current room.",
             },
             "reason": {
                 "type": "string",
                 "description": "Optional human-readable reason recorded in the leave event.",
             },
         },
-        "required": ["room_id"],
+        "required": [],
     },
 }
 
@@ -201,21 +209,23 @@ MATRIX_DELETE_ROOM_SCHEMA = {
         "it disappears from your room list. For a room you created and are the only "
         "member of, this effectively tears it down. NOTE: Matrix has no true "
         "server-side delete for regular users — any other members keep their own "
-        "copy; a full server purge requires a homeserver admin. Pass the room_id."
+        "copy; a full server purge requires a homeserver admin. Defaults to the "
+        "room this conversation is in; another room_id is only accepted when the "
+        "operator allows cross-room room admin."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "room_id": {
                 "type": "string",
-                "description": "Room to delete (leave + forget), e.g. '!abc123:example.org'.",
+                "description": "Room to delete (leave + forget), e.g. '!abc123:example.org'. Defaults to the current room.",
             },
             "reason": {
                 "type": "string",
                 "description": "Optional reason recorded in the leave event.",
             },
         },
-        "required": ["room_id"],
+        "required": [],
     },
 }
 
@@ -240,17 +250,61 @@ async def _matrix_room_action(homeserver, token, room_id, action, body=None):
             return resp.status, await resp.text()
 
 
+def _current_matrix_room() -> str:
+    """The room this turn is bound to, or "" outside a Matrix session.
+
+    Matrix sessions are room/thread-bound: the gateway binds HERMES_SESSION_PLATFORM
+    and HERMES_SESSION_CHAT_ID (the room_id) per turn."""
+    if get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower() != "matrix":
+        return ""
+    return get_session_env("HERMES_SESSION_CHAT_ID", "").strip()
+
+
+def _cross_room_allowed() -> bool:
+    """Operator opt-in for acting on a room other than the current one (and for
+    leave/delete outside a Matrix session, e.g. from the CLI). Off by default."""
+    return os.getenv("MATRIX_TOOLS_ALLOW_CROSS_ROOM", "").lower() in ("true", "1", "yes")
+
+
 def _require_room(args):
-    """Shared validation: returns (homeserver, token, room_id) or a tool_error."""
+    """Shared validation: returns (homeserver, token, room_id) or a tool_error.
+
+    The room defaults to the one this turn is bound to. Any other room, or any
+    room outside a Matrix session, needs MATRIX_TOOLS_ALLOW_CROSS_ROOM."""
     homeserver, token = _matrix_creds()
     if not homeserver or not token:
         return None, tool_error(
             "Matrix not configured (MATRIX_HOMESERVER + MATRIX_ACCESS_TOKEN required)."
         )
-    room_id = str(args.get("room_id") or "").strip()
+    current = _current_matrix_room()
+    room_id = str(args.get("room_id") or "").strip() or current
     if not room_id:
         return None, tool_error("room_id is required (e.g. '!abc123:example.org').")
+    if room_id != current and not _cross_room_allowed():
+        where = f"the current room ({current})" if current else "a Matrix conversation's own room"
+        return None, tool_error(
+            f"Refusing to act on {room_id}: room admin is limited to {where}. "
+            "The operator can allow other rooms with MATRIX_TOOLS_ALLOW_CROSS_ROOM=true."
+        )
     return (homeserver, token, room_id), None
+
+
+def _reconcile_adapter_after_leave(room_id: str) -> None:
+    """Drop *room_id* from the live MatrixAdapter's membership caches.
+
+    The leave goes through a separate HTTP client, and incremental sync only ever
+    adds joined rooms, so without this the adapter would keep treating the room as
+    joined (and ``_join_room_by_id`` would skip a later re-join). Plain set and
+    dict removals: safe to run from the agent loop."""
+    adapter = _live_matrix_adapter()
+    if adapter is None:
+        return
+    joined = getattr(adapter, "_joined_rooms", None)
+    if joined is not None:
+        joined.discard(room_id)
+    dm_rooms = getattr(adapter, "_dm_rooms", None)
+    if dm_rooms is not None:
+        dm_rooms.pop(room_id, None)
 
 
 async def _handle_matrix_leave_room(args, **kwargs):
@@ -265,6 +319,7 @@ async def _handle_matrix_leave_room(args, **kwargs):
         return tool_error(f"matrix_leave_room request failed: {exc}")
     if status != 200:
         return tool_error(f"Matrix leave error ({status}): {text[:300]}")
+    _reconcile_adapter_after_leave(room_id)
     return tool_result(success=True, room_id=room_id, action="leave")
 
 
@@ -283,6 +338,8 @@ async def _handle_matrix_delete_room(args, **kwargs):
     already_gone = lstatus == 403 and "M_FORBIDDEN" in ltext
     if lstatus != 200 and not already_gone:
         return tool_error(f"Matrix leave (during delete) error ({lstatus}): {ltext[:300]}")
+    # Membership is gone from here on, whatever the forget below does.
+    _reconcile_adapter_after_leave(room_id)
 
     # 2) forget — removes the room from this account's room list (requires having left)
     try:

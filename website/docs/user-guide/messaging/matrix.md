@@ -420,11 +420,19 @@ room lifecycle over the Matrix Client-Server API:
 | Tool | Action |
 |---|---|
 | `matrix_create_room` | Create a room (preset / topic / invite / optional E2EE) |
-| `matrix_leave_room` | Leave (unjoin) a room |
-| `matrix_delete_room` | Leave **+ forget** the room from the bot's own account |
+| `matrix_leave_room` | Leave (unjoin) the current room |
+| `matrix_delete_room` | Leave **+ forget** the current room from the bot's own account |
 
-All three are disabled by default and require `MATRIX_TOOLS_ALLOW_ROOM_CREATE=true`.
+All three are disabled by default, require `MATRIX_TOOLS_ALLOW_ROOM_CREATE=true`,
+and are offered only to Matrix sessions (the `hermes-matrix` toolset).
 Creating a **public** room additionally requires `MATRIX_ALLOW_PUBLIC_ROOMS=true`.
+
+Leave and delete act on the room the conversation is happening in; `room_id`
+defaults to it. Naming a different room is refused unless the operator sets
+`MATRIX_TOOLS_ALLOW_CROSS_ROOM=true`, so a prompt in one room cannot make the
+bot abandon another. After a successful leave, the room is also dropped from the
+gateway's joined-room cache, so a later invite to the same room is joined again.
+
 `matrix_delete_room` is an account-level delete: other members keep their copy,
 and a true server-side purge requires a homeserver admin.
 

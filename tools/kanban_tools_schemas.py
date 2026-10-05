@@ -4,8 +4,10 @@ from __future__ import annotations
 from typing import Any
 
 _DESC_TASK_ID_DEFAULT = (
-    "Task id. If omitted, defaults to HERMES_KANBAN_TASK from the env "
-    "(the task the dispatcher spawned you to work on)."
+    "Task id. If omitted, defaults to HERMES_KANBAN_TASK from the env — the "
+    "task the dispatcher spawned you to work on. That default only exists for "
+    "a dispatcher-spawned worker; any other caller has no default and must "
+    "pass an explicit task_id (use kanban_list to discover ids)."
 )
 
 _DESC_BOARD = (
@@ -48,7 +50,9 @@ KANBAN_SHOW_SCHEMA = _schema(
         "and recent events. Use this to (re)orient yourself before "
         "starting work, especially on retries. The response includes a "
         "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning."
+        "verbatim in your reasoning. Outside a dispatcher-spawned worker "
+        "there is no default task: a bare call returns a pointer to "
+        "``kanban_list`` instead of task state."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
@@ -146,8 +150,8 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "Optional list of absolute paths to deliverable "
                 "files you produced during this run — generated "
                 "charts, PDFs, spreadsheets, images, archives. "
-                "Examples: [\"/tmp/q3-revenue.png\", "
-                "\"/tmp/report.pdf\"]. The gateway notifier "
+                "Examples: [\"~/.hermes/cache/scratch/q3-revenue.png\", "
+                "\"~/.hermes/cache/scratch/report.pdf\"]. The gateway notifier "
                 "uploads each path as a native attachment to the "
                 "subscribed chat (images embed inline, everything "
                 "else uploads as a file) so the deliverable "
@@ -190,13 +194,34 @@ KANBAN_BLOCK_SCHEMA = _schema(
             "enum": ["dependency", "needs_input", "capability", "transient"],
             "description": (
                 "Why you're blocked. 'dependency' waits in todo and "
-                "resumes automatically; the others surface to a human. "
-                "Omit only if none apply."
+                "resumes automatically when an incomplete parent finishes; "
+                "if no parent is open it is recorded as needs_input instead. "
+                "The others surface to a human. Omit only if none apply."
             ),
         },
     },
     ["reason"],
 )
+
+KANBAN_SCHEDULE_SCHEMA = _schema(
+    "kanban_schedule",
+    (
+        "Park your current task in the 'scheduled' state while it waits for "
+        "time or an external event. This ends the current run and makes the "
+        "task non-dispatchable until an orchestrator unblocks it; it does not "
+        "create a timer. Put any wake-up marker such as "
+        "``SCHEDULED_UNTIL=<ISO8601>`` in ``reason``."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "reason": _prop("string", (
+            "Optional reason or machine-readable wake-up marker recorded on "
+            "the completed run and scheduled event."
+        )),
+    },
+    [],
+)
+
 
 KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
     "kanban_request_review",
@@ -228,6 +253,24 @@ KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
                 "as changed_files, tests_run, commit, or decisions."
             ),
             "additionalProperties": True,
+        },
+        "artifacts": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Optional list of absolute paths to deliverable "
+                "files this handoff names — generated charts, "
+                "PDFs, spreadsheets, images, archives. Examples: "
+                "['~/.hermes/cache/scratch/q3-revenue.png', '~/.hermes/cache/scratch/report.pdf']. "
+                "A review handoff is the last implementer "
+                "transition, so the kernel copies these into the "
+                "task's durable attachments before the reviewer's "
+                "completion cleans the scratch workspace up, and "
+                "the gateway notifier uploads them as native "
+                "attachments to the subscribed chat. A missing "
+                "declared scratch artifact keeps the task in place "
+                "so you can fix the path and retry."
+            ),
         },
     },
     ["summary"],
@@ -281,7 +324,9 @@ KANBAN_COMMENT_SCHEMA = _schema(
     {
         "task_id": _prop("string", (
                 "Task id. Required (may be your own task or "
-                "another's — comment threads are per-task)."
+                "another's — comment threads are per-task). Outside a "
+                "dispatcher-spawned worker there is no default; use "
+                "kanban_list to discover ids."
         )),
         "body": _prop("string", "Markdown-supported comment body."),
     },
@@ -458,6 +503,10 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "open-ended cards where one shot rarely finishes the "
                 "work. Defaults to false (classic single-shot worker)."
         )),
+        "completion_contract": _prop("string", (
+            "Declare at creation: local-only (default), OWNER/REPO for PR publication, or an exact GitHub PR URL. "
+            "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass metadata.published_pr."
+        )),
         "goal_max_turns": _prop("integer", (
                 "Turn budget for goal_mode workers. Caps how many "
                 "continuation turns the worker may take before the task "
@@ -501,7 +550,9 @@ KANBAN_LINK_SCHEMA = _schema(
     (
         "Add a parent→child dependency edge after both tasks already "
         "exist. The child won't promote to 'ready' until all parents "
-        "are 'done'. Cycles and self-links are rejected."
+        "are 'done'. Cycles and self-links are rejected. A running child "
+        "is rejected unless the active owning worker is linking its own "
+        "card for a dependency handoff."
     ),
     {
         "parent_id": {"type": "string", "description": "Parent task id."},

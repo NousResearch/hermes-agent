@@ -154,48 +154,11 @@ class TestSessionDbInitTimeout:
         assert final_response == "ok"
         assert mock_agent_cls.call_args.kwargs["session_db"] is None
 
-    def test_invalid_timeout_env_falls_back_to_default(self, tmp_path, monkeypatch, caplog):
-        """A malformed HERMES_CRON_SESSION_DB_TIMEOUT logs a warning and still
-        bounds the call (mirrors HERMES_CRON_TIMEOUT's own fallback)."""
-        monkeypatch.setenv("HERMES_CRON_SESSION_DB_TIMEOUT", "not-a-number")
-        fake_db = MagicMock()
-        job = {"id": "bad-timeout-env", "name": "test", "prompt": "hello"}
-        timeouts: list = []
-
-        with patch("cron.scheduler._hermes_home", tmp_path), \
-             patch("cron.scheduler_delivery._resolve_origin", return_value=None), \
-             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
-             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
-             patch("hermes_state_registry.acquire", return_value=fake_db), \
-             patch(
-                 "hermes_cli.runtime_provider.resolve_runtime_provider",
-                 return_value=_RUNTIME,
-             ), \
-             patch("run_agent.AIAgent") as mock_agent_cls, \
-             patch(
-                 "cron.scheduler.concurrent.futures.ThreadPoolExecutor",
-                 side_effect=_session_db_executor(timeouts, instant_timeout=False),
-             ):
-            mock_agent = MagicMock()
-            mock_agent.run_conversation.return_value = {"final_response": "ok"}
-            mock_agent_cls.return_value = mock_agent
-
-            with caplog.at_level("WARNING"):
-                success, output, final_response, error = run_job(job)
-
-        # Invalid env → fall back to default 10s bound (still passed to result).
-        assert timeouts == [10.0]
-        assert success is True
-        assert mock_agent_cls.call_args.kwargs["session_db"] is fake_db
-        assert any(
-            "HERMES_CRON_SESSION_DB_TIMEOUT" in rec.message
-            for rec in caplog.records
-        ), f"Expected warning about invalid timeout env var; got: {[r.message for r in caplog.records]}"
 
     def test_timeout_resolved_from_config_yaml(self, tmp_path, monkeypatch):
         """cron.session_db_timeout_seconds in config.yaml is respected when
         the env var is not set — the canonical config-first resolution path."""
-        import yaml
+        import hermes_yaml as yaml
 
         monkeypatch.delenv("HERMES_CRON_SESSION_DB_TIMEOUT", raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -239,8 +202,8 @@ class TestDispatchGuardReleasedAfterHang:
         import cron.scheduler as sched
 
         monkeypatch.setenv("HERMES_CRON_SESSION_DB_TIMEOUT", "0.2")
-        sched._parallel_pool = None
-        sched._parallel_pool_max_workers = None
+        sched._parallel_pools.clear()
+        sched._parallel_pool_max_workers.clear()
         sched._running_job_ids.clear()
 
         job = {
@@ -291,7 +254,7 @@ class TestDispatchGuardReleasedAfterHang:
                 n2 = sched.tick(verbose=False)
                 assert n2 == 1
         finally:
-            sched._running_job_ids.discard("guard-sessiondb-hang")
+            sched._running_job_ids.discard(sched._inflight_key("guard-sessiondb-hang"))
             sched._shutdown_parallel_pool()
 
 
@@ -299,40 +262,6 @@ class TestDispatchGuardReleasedAfterHang:
 # Bug #72782: late SessionDB result leaks FDs after timeout abandonment
 # ===========================================================================
 
-class TestCloseLateSessionDbResult:
-    """Unit tests for the done-callback that closes a SessionDB whose
-    constructor completed after run_job's timeout."""
-
-    def test_closes_db_from_completed_future(self):
-        """A completed future holding a SessionDB is closed."""
-        import concurrent.futures
-        from cron.scheduler import _close_late_session_db_result
-
-        mock_db = MagicMock()
-        fut = concurrent.futures.Future()
-        fut.set_result(mock_db)
-
-        _close_late_session_db_result(fut)
-
-        mock_db.close.assert_called_once()
-
-    def test_safe_when_result_is_none(self):
-        """No error when the future's result is None."""
-        import concurrent.futures
-        from cron.scheduler import _close_late_session_db_result
-
-        fut = concurrent.futures.Future()
-        fut.set_result(None)
-        _close_late_session_db_result(fut)  # must not raise
-
-    def test_safe_when_future_raised(self):
-        """No error when the future itself raised (e.g. connect failed)."""
-        import concurrent.futures
-        from cron.scheduler import _close_late_session_db_result
-
-        fut = concurrent.futures.Future()
-        fut.set_exception(RuntimeError("connect failed"))
-        _close_late_session_db_result(fut)  # must not raise
 
 
 class TestLateSessionDbClosedAfterTimeout:

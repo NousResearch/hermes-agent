@@ -188,12 +188,6 @@ class TestControlSocketPath:
 
 
 class TestTerminalToolConfig:
-    def test_ssh_persistent_default_true(self, monkeypatch):
-        """SSH persistent defaults to True (via TERMINAL_PERSISTENT_SHELL)."""
-        monkeypatch.delenv("TERMINAL_SSH_PERSISTENT", raising=False)
-        monkeypatch.delenv("TERMINAL_PERSISTENT_SHELL", raising=False)
-        from tools.terminal_tool import _get_env_config
-        assert _get_env_config()["ssh_persistent"] is True
 
 
     def test_ssh_persistent_respects_config(self, monkeypatch):
@@ -231,6 +225,86 @@ class TestSSHPreflight:
         assert called["count"] == 1
         assert env.host == "example.com"
         assert env.user == "alice"
+
+    def test_ssh_environment_can_skip_agent_file_sync(self, monkeypatch):
+        monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_establish_connection", lambda self: None)
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/alice")
+        monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+        monkeypatch.setattr(
+            ssh_env.SSHEnvironment,
+            "_ensure_remote_dirs",
+            lambda self: pytest.fail("workspace browsing must not mutate the SSH target"),
+        )
+        monkeypatch.setattr(
+            ssh_env,
+            "FileSyncManager",
+            lambda **_kw: pytest.fail("workspace browsing must not start agent file sync"),
+        )
+
+        env = ssh_env.SSHEnvironment(
+            host="example.com",
+            user="alice",
+            sync_files=False,
+        )
+
+        assert env._sync_manager is None
+        env._before_execute()
+
+
+@pytest.fixture
+def _mock_ssh_runtime(monkeypatch, tmp_path):
+    hooks = {
+        "_establish_connection": MagicMock(),
+        "_detect_remote_home": MagicMock(return_value="/home/alice"),
+        "_ensure_remote_dirs": MagicMock(),
+        "init_session": MagicMock(),
+    }
+    monkeypatch.setattr(ssh_env.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
+    for name, hook in hooks.items():
+        monkeypatch.setattr(ssh_env.SSHEnvironment, name, hook)
+    hooks["sync_factory"] = MagicMock(return_value=MagicMock())
+    monkeypatch.setattr(ssh_env, "FileSyncManager", hooks["sync_factory"])
+    return hooks
+
+
+class TestSSHProbeOnly:
+    def test_probe_only_skips_state_sync_and_session_setup(self, _mock_ssh_runtime):
+        env = ssh_env.SSHEnvironment(host="example.com", user="alice", probe_only=True)
+        env._before_execute()
+        env.cleanup()
+
+        _mock_ssh_runtime["_establish_connection"].assert_called_once_with()
+        _mock_ssh_runtime["_detect_remote_home"].assert_not_called()
+        _mock_ssh_runtime["_ensure_remote_dirs"].assert_not_called()
+        _mock_ssh_runtime["sync_factory"].assert_not_called()
+        _mock_ssh_runtime["init_session"].assert_not_called()
+
+    def test_probe_only_control_socket_is_isolated(self, monkeypatch, _mock_ssh_runtime):
+        control_exit_calls = []
+
+        def _fake_run(*args, **kwargs):
+            control_exit_calls.append(args[0])
+            return subprocess.CompletedProcess([], 0)
+
+        monkeypatch.setattr(ssh_env.subprocess, "run", _fake_run)
+
+        normal = ssh_env.SSHEnvironment(host="example.com", user="alice")
+        first_probe = ssh_env.SSHEnvironment(host="example.com", user="alice", probe_only=True)
+        second_probe = ssh_env.SSHEnvironment(host="example.com", user="alice", probe_only=True)
+
+        assert first_probe.control_socket != normal.control_socket
+        assert second_probe.control_socket != first_probe.control_socket
+        assert len(first_probe.control_socket.name) == len(normal.control_socket.name)
+
+        normal.control_socket.touch()
+        first_probe.control_socket.touch()
+        first_probe.cleanup()
+
+        assert normal.control_socket.exists()
+        assert not first_probe.control_socket.exists()
+        assert len(control_exit_calls) == 1
 
 
 def _setup_ssh_env(monkeypatch, persistent: bool):

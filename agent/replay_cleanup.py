@@ -6,12 +6,17 @@ re-issues the unanswered call → endless "thinking"/reboot loop. These pure hel
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any, Dict, List
+import math
+import re
+import time
+from typing import Any, Dict, List, Optional
 
 from agent.tool_dispatch_helpers import make_tool_result_message
 from agent.tool_result_classification import tool_may_have_side_effect
 from agent.turn_context import drop_stale_api_content
+from hermes_cli.timefmt import coerce_epoch
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +31,32 @@ _DANGLING_NOTICES = (
 )
 
 
+# Every executor ends the killed run's ``output`` with a bracketed marker line: "[Command
+# interrupted]" (tools/environments/, exit 130), "[Command interrupted - Modal ...]"
+# (managed_modal.py, exit 130), "[execution interrupted ...]" (code_execution_tool.py, exit -1).
+_INTERRUPT_MARKER_LINE = re.compile(r"^\[(?:command|execution) interrupted\b[^\n]*\]\s*$", re.IGNORECASE)
+
+
 def is_interrupted_tool_result(content: Any) -> bool:
-    """Return True if a tool result indicates the tool was interrupted."""
+    """True only when the result has the executor's interrupt SHAPE: the marker is the last
+    line of the output (JSON envelope with a non-zero exit code, or a bare text result). A
+    marker quoted inside successful output — a grep hit, a doc example — is ordinary data;
+    this runs on every live request, so a false positive rewrites real tool output."""
     if not isinstance(content, str):
         return False
-    lowered = content.lower()
-    return "[command interrupted]" in lowered or ("exit_code" in lowered and ("130" in lowered or "-1" in lowered) and "interrupt" in lowered)
+    output = content
+    if content.lstrip().startswith("{"):
+        try:
+            envelope = json.loads(content)
+        except ValueError:
+            return False
+        if not isinstance(envelope, dict) or envelope.get("exit_code") in (0, None):
+            return False
+        output = envelope.get("output")
+        if not isinstance(output, str):
+            return False
+    last_line = output.rstrip().rsplit("\n", 1)[-1]
+    return _INTERRUPT_MARKER_LINE.match(last_line) is not None
 
 
 def _call_name(call: Dict[str, Any]) -> str:
@@ -126,6 +151,26 @@ def sanitize_replay_history(agent_history: List[Dict[str, Any]]) -> List[Dict[st
     return strip_dangling_tool_call_tail(strip_interrupted_tool_tails(agent_history))
 
 
+def canonicalize_replay_history(
+    agent_history: List[Dict[str, Any]], *, now: Optional[float] = None
+) -> List[Dict[str, Any]]:
+    """Apply every destructive replay transform in the shared, fixed order.
+
+    Resume surfaces and the send path must serialize the same history bytes, or a
+    resumed request diverges in the middle of the cached prefix.
+
+    The input is never modified. ``now`` is the expiry clock; the send path passes the
+    turn's admission time so every request in one turn sees the same bytes.
+    """
+    if not agent_history:
+        return agent_history
+    if now is None:
+        now = time.time()
+    cleaned = strip_interrupted_tool_tails(agent_history)
+    cleaned = strip_dangling_tool_call_tail(cleaned)
+    return strip_stale_dangerous_confirmations(cleaned, now=now)
+
+
 # --- Stale dangerous-confirmation text expiry ---
 
 # Short on purpose: a dangerous confirmation must not survive any restart or resume gap.
@@ -151,7 +196,10 @@ _EXPIRED_CONFIRMATION_SENTINEL = (
 
 def is_dangerous_confirmation(content: Any) -> bool:
     """True if user-message text contains a known dangerous confirmation phrase."""
-    return isinstance(content, str) and any(pattern in content.strip().lower() for pattern in _DANGEROUS_CONFIRMATION_PATTERNS)
+    if not isinstance(content, str):
+        return False
+    lowered = content.strip().lower()
+    return any(pattern in lowered for pattern in _DANGEROUS_CONFIRMATION_PATTERNS)
 
 
 def strip_stale_dangerous_confirmations(
@@ -174,12 +222,20 @@ def strip_stale_dangerous_confirmations(
     cleaned: List[Dict[str, Any]] = []
     for msg in agent_history:
         ts = msg.get("timestamp") if isinstance(msg, dict) and msg.get("role") == "user" else None
-        if ts is None or not is_dangerous_confirmation(msg.get("content", "")) or (now - float(ts)) <= expiry_seconds:
+        if ts is None or not is_dangerous_confirmation(msg.get("content", "")):
+            cleaned.append(msg)
+            continue
+        # A present-but-untrustworthy stamp (corrupt, or issued in the future relative to
+        # the admission clock) is treated as expired: its age is unknowable, and keeping the
+        # text (plus its api_content sidecar) would replay a live confirmation.
+        ts_f = coerce_epoch(ts, field="message timestamp")
+        age = math.inf if ts_f is None else now - ts_f
+        if 0 <= age <= expiry_seconds:
             cleaned.append(msg)
             continue
         logger.debug(
             "Redacting stale dangerous-confirmation text in user message (age=%.1fs, expiry=%.1fs): %r",
-            now - float(ts), expiry_seconds, (msg.get("content") or "")[:80],
+            age, expiry_seconds, (msg.get("content") or "")[:80],
         )
         redacted = dict(msg)
         redacted["content"] = _EXPIRED_CONFIRMATION_SENTINEL

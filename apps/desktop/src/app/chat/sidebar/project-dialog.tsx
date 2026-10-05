@@ -17,6 +17,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { isSubmitEnter } from '@/lib/ime'
 import { type ProjectIdeaTemplate, randomIdeaTemplates } from '@/lib/project-idea-templates'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
@@ -27,10 +28,13 @@ import {
   clearNewProjectDropPlacement,
   closeProjectDialog,
   createProject,
+  enterProject,
   generateProjectIdea,
   pickProjectFolder,
   renameProject
 } from '@/store/projects'
+
+import { baseName } from './projects/workspace-groups'
 
 // Single dialog mounted once in the sidebar; it renders create / rename /
 // add-folder flows driven by the $projectDialog atom. Folders are chosen via
@@ -127,6 +131,13 @@ export function ProjectDialog() {
       }
 
       setFolders(prev => (prev.includes(dir) ? prev : [...prev, dir]))
+
+      // Picking a folder with no name typed names the project after the folder
+      // (the ⌘O "Open folder…" naming), so one pick + Create is enough. The name
+      // lands in the input, never in a hidden fallback the user cannot see.
+      if (mode === 'create') {
+        setName(prev => prev.trim() || baseName(dir) || prev)
+      }
     } catch (err) {
       notifyError(err, p.createFailed)
     }
@@ -150,10 +161,19 @@ export function ProjectDialog() {
       // The arm is consumed exactly on SUCCESS (before the close): a failed
       // create leaves the dialog open for a retry that still lands where it
       // was dropped; the open-state effect discards it on cancel/teardown.
-      await runSubmit(
-        () => createProject({ dropPlacement, folders, idea: idea.trim() || undefined, name: trimmed, use: true }),
-        clearNewProjectDropPlacement
-      )
+      await runSubmit(async () => {
+        const created = await createProject({
+          dropPlacement,
+          folders,
+          idea: idea.trim() || undefined,
+          name: trimmed,
+          use: true
+        })
+
+        if (created) {
+          enterProject(created.id)
+        }
+      }, clearNewProjectDropPlacement)
     }
   }
 
@@ -191,7 +211,7 @@ export function ProjectDialog() {
             disabled={submitting}
             onChange={event => setName(event.target.value)}
             onKeyDown={event => {
-              if (event.key === 'Enter') {
+              if (isSubmitEnter(event)) {
                 event.preventDefault()
                 void submit()
               } else if (event.key === 'Escape') {

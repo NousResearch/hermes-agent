@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 import shlex
 import shutil
@@ -726,6 +727,21 @@ def _run_cells(machine, j: Journey, cells) -> None:
         previous = name
 
 
+# run_tests.sh reports a file whose every test was deselected (pytest exit 5) or skipped as
+# passed, so the workflow's "Every crash cell ran" step requires this manifest: the journey
+# writes it only when it actually ran (review F52).
+CELLS_RAN_MANIFEST = "crash-cells-ran.txt"
+
+
+def _record_cells_ran(j: Journey) -> None:
+    artifacts = os.environ.get("HERMES_E2E_ARTIFACTS")
+    if not artifacts:
+        return
+    Path(artifacts).mkdir(parents=True, exist_ok=True)
+    lines = [f"{name}: {'ok' if j.ok(name) else 'failed'}" for name in j.results]
+    (Path(artifacts) / CELLS_RAN_MANIFEST).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 @pytest.fixture(scope="module")
 def journey(tmp_path_factory):
     with FakeLLMServer() as srv:
@@ -754,6 +770,7 @@ def journey(tmp_path_factory):
                         machine, srv, "mid-git-bootstrap", _cli_update(machine, "mid-git-bootstrap-update"),
                         boot_hold.point, boot_hold, runtime_files=("hermes_bootstrap.py", *RUNTIME_FILES))),
                 ))
+            _record_cells_ran(j)
             yield j
         finally:
             machine.teardown()

@@ -200,6 +200,33 @@ def test_orphan_marker_guard_fires_once_the_fix_lands(monkeypatch):
         test_orphan_marker_wrapper_expires_once_its_fix_is_in_the_tree()
 
 
+# Review 5411223855 (F52): a runtime proof the crash file ran, beside the static selection check
+# above: a lost opt-in env or any other zero-execution path also exits 0 per file.
+def test_workflow_requires_the_crash_journey_manifest(tmp_path, monkeypatch):
+    from tests.ci import workflow_steps
+
+    yaml = pytest.importorskip("hermes_yaml")
+    wf = yaml.safe_load((_REPO / ".github/workflows/windows-install-update-e2e.yml").read_text(encoding="utf-8-sig"))
+    steps = wf["jobs"]["install-update"]["steps"]
+    names = [s.get("name") for s in steps]
+    run, check = steps[names.index("Run Windows install + update E2E")], steps[names.index("Every crash cell ran")]
+    assert names.index("Every crash cell ran") > names.index("Run Windows install + update E2E")
+    workflow_steps.required(check, {"inputs": {}})  # neither disabled nor advisory
+    assert check["env"]["HERMES_E2E_ARTIFACTS"] == run["env"]["HERMES_E2E_ARTIFACTS"]
+    assert f"'{crash.CELLS_RAN_MANIFEST}'" in check["run"] and "throw" in check["run"]
+
+    j = crash.Journey(_Machine(tmp_path))
+    j.step("install", lambda: "ok")
+    j.step("mid_fetch", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.delenv("HERMES_E2E_ARTIFACTS", raising=False)
+    crash._record_cells_ran(j)
+    assert not list(tmp_path.rglob(crash.CELLS_RAN_MANIFEST))
+    monkeypatch.setenv("HERMES_E2E_ARTIFACTS", str(tmp_path / "artifacts"))
+    crash._record_cells_ran(j)
+    assert (tmp_path / "artifacts" / crash.CELLS_RAN_MANIFEST).read_text(encoding="utf-8") == (
+        "install: ok\nmid_fetch: failed\n")
+
+
 # Review 5411223855 (crash-cell timing): while the hold filter blocks git, the op and index.lock
 # cannot move, so a starved runner must get more wall time, never fewer looks, before the verdict.
 def test_mid_git_hold_verdict_needs_looks_as_well_as_seconds(tmp_path, monkeypatch):

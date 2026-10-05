@@ -88,6 +88,20 @@ jobs:
           OPENAI_API_KEY: ''
           NOUS_API_KEY: ''
 
+      - name: Every crash cell ran
+        # run_tests.sh passes a file whose tests were all deselected (pytest exit 5) or skipped,
+        # so a lost marker or opt-in would run zero crash cells green. The crash journey writes
+        # this manifest only when it ran (tests/e2e/core/windows_update/test_crash_cells.py).
+        shell: pwsh
+        env:
+          HERMES_E2E_ARTIFACTS: ${{ runner.temp }}\win-update-e2e
+        run: |
+          $manifest = Join-Path $env:HERMES_E2E_ARTIFACTS 'crash-cells-ran.txt'
+          if (-not (Test-Path -LiteralPath $manifest)) {
+            throw "test_crash_cells.py ran no crash cells: $manifest is missing"
+          }
+          Get-Content -LiteralPath $manifest
+
       - name: Upload transcripts, logs and receipts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

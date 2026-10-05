@@ -8,17 +8,9 @@ the action log. The scan gate is the common case: a blocked install used to prin
 """
 
 import sys
-from io import StringIO
-
 import pytest
-from rich.console import Console
 
 import hermes_cli.skills_hub as cli_hub
-
-
-def _console():
-    sink = StringIO()
-    return Console(file=sink, force_terminal=False, color_system=None, width=200), sink
 
 
 def _scan_gate_env(monkeypatch, tmp_path, *, verdict="dangerous", installed=None):
@@ -63,17 +55,6 @@ def _scan_gate_env(monkeypatch, tmp_path, *, verdict="dangerous", installed=None
     return installs, audit
 
 
-@pytest.mark.parametrize("verdict", ["dangerous", "caution"])
-def test_scan_blocked_install_reports_failure(monkeypatch, tmp_path, verdict):
-    installs, audit = _scan_gate_env(monkeypatch, tmp_path, verdict=verdict)
-    console, sink = _console()
-
-    assert cli_hub.do_install("org/repo/risky-skill", console=console, skip_confirm=True) is False
-    assert installs == []
-    assert "Not installed:" in sink.getvalue()
-    assert audit and audit[0][0] == "BLOCKED"
-
-
 # --- the process exit code, through the real `hermes` entry point ---
 
 
@@ -87,15 +68,30 @@ def test_scan_blocked_install_reports_failure(monkeypatch, tmp_path, verdict):
     (["skills", "uninstall", "x", "--yes"], "do_uninstall", True, 0),
     (["skills", "snapshot", "import", "snap.json"], "do_snapshot_import", False, 1),
     (["skills", "snapshot", "import", "snap.json"], "do_snapshot_import", None, 0),
+    # The real scan gate, not a stubbed outcome: a refused community skill installs nothing and exits 1.
+    (["skills", "install", "org/repo/risky-skill", "--yes"], "scan_gate", "dangerous", 1),
+    (["skills", "install", "org/repo/risky-skill", "--yes"], "scan_gate", "caution", 1),
 ])
-def test_cli_exit_code_follows_the_action_outcome(monkeypatch, argv, target, outcome, code):
+def test_cli_exit_code_follows_the_action_outcome(monkeypatch, tmp_path, capsys, argv, target, outcome, code):
     from hermes_cli.main import main
 
-    monkeypatch.setattr(cli_hub, target, lambda *a, **k: outcome)
-    monkeypatch.setattr(sys, "argv", ["hermes", *argv])
-    try:
-        main()
-        exit_code = 0
-    except SystemExit as exc:
-        exit_code = exc.code or 0
+    if target == "scan_gate":
+        installs, audit = _scan_gate_env(monkeypatch, tmp_path, verdict=outcome)
+    else:
+        monkeypatch.setattr(cli_hub, target, lambda *a, **k: outcome)
+    if argv[1] == "update":
+        # Never run hermes_cli.main with `update` in argv (it can turn into a real self-update): drive
+        # the same router `hermes skills` returns its exit code from.
+        from argparse import Namespace
+        exit_code = cli_hub.skills_command(Namespace(skills_action="update", name=None, force=False)) or 0
+    else:
+        monkeypatch.setattr(sys, "argv", ["hermes", *argv])
+        try:
+            main()
+            exit_code = 0
+        except SystemExit as exc:
+            exit_code = exc.code or 0
     assert exit_code == code
+    if target == "scan_gate":
+        assert installs == [] and "Not installed:" in capsys.readouterr().out
+        assert audit and audit[0][0] == "BLOCKED"

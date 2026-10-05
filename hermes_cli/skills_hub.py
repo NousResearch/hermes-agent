@@ -132,7 +132,9 @@ def _finish_change(c: Console, invalidate_cache: bool, what: str = "Change will 
 
 
 def _print_error(c: Console, message: str) -> None:
-    c.print(f"[bold red]Error:[/] {message}\n")
+    # One unwrapped line: the Desktop Hub toasts a failed action's last 3 log lines, and an 80-column
+    # wrap left only the tail of the message there (the subject was cut off).
+    c.print(f"[bold red]Error:[/] {message}\n", soft_wrap=True)
 
 
 def _print_listed(c: Console, label: str, items) -> None:

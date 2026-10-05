@@ -676,29 +676,23 @@ def _stub_search(monkeypatch, results):
     monkeypatch.setattr(search, "unified_search", lambda *args, **kwargs: list(results))
 
 
-def test_resolve_short_name_matches_identifier_slug(monkeypatch):
-    """A catalog row whose title is prettified ("Blender Bpy Enhanced") still resolves when the
-    user installs the slug the Hub lists — before this, `hermes skills install <slug>` answered
-    "No exact match" while printing that very slug as the suggestion."""
-    from hermes_cli.skills_hub import _resolve_short_name
-
-    _stub_search(monkeypatch, [_meta("Blender Bpy Enhanced", "@emergencescience/blender-bpy-enhanced")])
-    console, sink = _sink_console()
-
-    resolved = _resolve_short_name("blender-bpy-enhanced", [], console)
-
-    assert resolved == "@emergencescience/blender-bpy-enhanced"
-    assert "No exact match" not in sink.getvalue()
-
-
 @pytest.mark.parametrize("identifier", [
     "computer-use", "NousResearch/hermes-agent/skills/productivity/pdf",
-    "skills-sh/nousresearch/hermes-agent/google-workspace"])
-def test_install_of_a_bundled_name_restores_it_and_never_touches_the_hub(monkeypatch, tmp_path, identifier):
+    "skills-sh/nousresearch/hermes-agent/google-workspace", "blender-bpy-enhanced"])
+def test_install_by_name_resolves_to_the_skill_it_names(monkeypatch, tmp_path, identifier):
     """`hermes skills install <bundled skill>` failed every time: the name resolved to a stranger's
     same-named hub skill or an ambiguity table, and this repo's own copy was rescanned as community
-    content and refused. It now makes the shipped skill active and fetches nothing."""
+    content and refused. It now makes the shipped skill active and fetches nothing. A hub slug behind
+    a prettified catalog title ("Blender Bpy Enhanced") resolves too, where it answered "No exact match"
+    while printing that very slug as the suggestion."""
     import hermes_cli.skills_hub as cli_hub
+
+    if identifier == "blender-bpy-enhanced":
+        _stub_search(monkeypatch, [_meta("Blender Bpy Enhanced", "@emergencescience/blender-bpy-enhanced")])
+        console, sink = _sink_console()
+        assert cli_hub._resolve_short_name(identifier, [], console) == "@emergencescience/blender-bpy-enhanced"
+        assert "No exact match" not in sink.getvalue()
+        return
     from tools import skills_sync
 
     import tools.skills_hub as hub
@@ -742,6 +736,8 @@ def test_install_of_a_bundled_name_restores_it_and_never_touches_the_hub(monkeyp
                                  install_path=f"hub-installs/{name}", files=["SKILL.md"])
     console, sink = _sink_console()
     assert cli_hub.do_install(identifier, console=console, skip_confirm=True) is False
-    out = " ".join(sink.getvalue().split())
-    assert "already available" not in out and f"hermes skills uninstall {name}" in out
+    # One line, subject and remedy together: the Desktop toast shows only a failed action's last 3 lines.
+    error = next(line for line in sink.getvalue().splitlines() if line.startswith("Error:"))
+    assert f"'{name}' is a built-in skill" in error and f"`hermes skills uninstall {name}`" in error
+    assert "already available" not in sink.getvalue()
     assert (stranger / "SKILL.md").read_text().endswith("stranger\n")

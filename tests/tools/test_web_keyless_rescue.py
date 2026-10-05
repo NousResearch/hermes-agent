@@ -369,6 +369,8 @@ class TestDegradedSignal:
             raw = await web_tools.web_extract_tool(["https://a"])
         out = json.loads(raw)
         assert out["degraded"] is True
+        assert out["rescued_from"] == "keenable"
+        assert "HTTP 500 upstream exploded" in out["backend_error"]
         assert isinstance(out["results"], list) and out["results"]
 
     @pytest.mark.asyncio
@@ -394,4 +396,5 @@ class TestDegradedSignal:
             raw = await web_tools.web_extract_tool(["https://a"])
         out = json.loads(raw)
         assert "degraded" not in out
+        assert "rescued_from" not in out and "backend_error" not in out
         ring.assert_not_called()

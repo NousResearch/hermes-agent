@@ -34,35 +34,63 @@ def _clean_env(monkeypatch):
 
 
 class TestResolutionOrder:
-    """``agent.max_stream_retries`` resolves through the real init path."""
+    """``agent.max_stream_retries`` resolves through the real init path.
 
-    def _resolve(self, agent_section):
+    Order: user-file key wins (even 0); the env var applies only when the key is ABSENT
+    from the raw file; otherwise the shared default (2). These tests drive
+    ``load_config_readonly()`` against an isolated ``HERMES_HOME`` so the raw-vs-merged
+    presence logic is exercised instead of a hand-built dict (a merged dict always
+    carries the DEFAULT_CONFIG value, which is exactly the bug that hid the env var).
+    """
+
+    def _resolve(self, tmp_path, monkeypatch, file_text=None, env_value=None):
+        home = tmp_path / "hermes-home"
+        home.mkdir(exist_ok=True)
+        if file_text is not None:
+            (home / "config.yaml").write_text(file_text, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        if env_value is None:
+            monkeypatch.delenv("HERMES_STREAM_RETRIES", raising=False)
+        else:
+            monkeypatch.setenv("HERMES_STREAM_RETRIES", env_value)
+        from hermes_cli.config import load_config_readonly
         agent = _agent()
-        _apply_agent_section(agent, {"agent": agent_section})
+        _apply_agent_section(agent, load_config_readonly())
         return agent._max_stream_retries
 
-    def test_default_when_unset_anywhere(self):
-        assert self._resolve({}) == 2
+    def test_default_when_unset_anywhere(self, tmp_path, monkeypatch):
+        assert self._resolve(tmp_path, monkeypatch) == 2
 
-    def test_config_value_wins(self):
-        assert self._resolve({"max_stream_retries": 5}) == 5
+    def test_env_is_the_fallback_when_config_is_absent(self, tmp_path, monkeypatch):
+        assert self._resolve(tmp_path, monkeypatch, env_value="3") == 3
 
-    def test_zero_is_allowed_and_means_no_reconnect(self):
-        assert self._resolve({"max_stream_retries": 0}) == 0
+    def test_config_beats_env(self, tmp_path, monkeypatch):
+        assert self._resolve(
+            tmp_path, monkeypatch,
+            file_text="agent:\n  max_stream_retries: 4\n",
+            env_value="9",
+        ) == 4
 
-    def test_env_is_the_fallback_when_config_is_absent(self, monkeypatch):
-        monkeypatch.setenv("HERMES_STREAM_RETRIES", "3")
-        assert self._resolve({}) == 3
+    def test_file_zero_beats_env(self, tmp_path, monkeypatch):
+        assert self._resolve(
+            tmp_path, monkeypatch,
+            file_text="agent:\n  max_stream_retries: 0\n",
+            env_value="9",
+        ) == 0
 
-    def test_config_beats_env(self, monkeypatch):
-        monkeypatch.setenv("HERMES_STREAM_RETRIES", "9")
-        assert self._resolve({"max_stream_retries": 4}) == 4
+    def test_unparseable_file_value_falls_back_to_default(self, tmp_path, monkeypatch):
+        assert self._resolve(
+            tmp_path, monkeypatch,
+            file_text="agent:\n  max_stream_retries: not-a-number\n",
+        ) == 2
 
-    def test_negative_is_clamped_to_zero(self):
-        assert self._resolve({"max_stream_retries": -3}) == 0
-
-    def test_unparseable_config_falls_back_to_default(self):
-        assert self._resolve({"max_stream_retries": "not-a-number"}) == 2
+    def test_resolver_coercion(self):
+        from agent.agent_init import _coerce_max_stream_retries
+        assert _coerce_max_stream_retries(0) == 0
+        assert _coerce_max_stream_retries(5) == 5
+        assert _coerce_max_stream_retries(-3) == 0
+        assert _coerce_max_stream_retries("not-a-number") == 2
+        assert _coerce_max_stream_retries(None) == 2
 
 
 class TestCodexResponsesPath:

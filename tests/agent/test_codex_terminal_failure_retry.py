@@ -1,10 +1,17 @@
 """Invariant tests for in-stream retry of a terminal ``response.failed`` on the Responses path.
 
 A provider can end a stream with ``response.failed`` and a transient error code
-(``server_error``). That frame produces no answer, so the stream is safe to retry once rather than
-surfacing a hard failure the outer turn loop has to absorb. The contracts pinned here:
+(``server_error``). When the failed attempt delivered no visible answer, the stream is safe
+to retry once rather than surfacing a hard failure the outer turn loop has to absorb —
+but when visible text already reached a consumer, retrying would re-stream the full
+completion (duplicate visible text + TTS, no reconnect marker), so the failure is
+returned instead (mirroring the chat path's "died AFTER tokens delivered: normally no
+retry"). The contracts pinned here:
 
-- a retryable terminal failure retries in-stream and returns the later attempt's response;
+- a retryable terminal failure with no visible delivery retries in-stream and returns
+  the later attempt's response;
+- a retryable terminal failure AFTER visible text was delivered does NOT retry;
+- whitespace-only / think-only deltas record nothing visible, so those attempts still retry;
 - the retry is bounded, so a provider that keeps failing still surfaces the failure;
 - ``status=incomplete`` never retries (a retry would re-burn the completion budget for the same
   truncation);
@@ -17,7 +24,7 @@ from unittest.mock import MagicMock
 import pytest
 
 
-def _agent():
+def _agent(consumer=False):
     from run_agent import AIAgent
 
     agent = AIAgent(
@@ -30,6 +37,10 @@ def _agent():
     )
     agent.api_mode = "codex_responses"
     agent._interrupt_requested = False
+    if consumer:
+        # A live display/TTS consumer: without one, _fire_stream_delta records nothing and
+        # the visible-delivery guard can never fire.
+        setattr(agent, "stream_delta_callback", lambda text: None)
     # Pin the retry count so these assertions do not depend on the configured default. The count
     # is intended to become configurable (one attempted retry here), and a default change must not
     # silently turn a one-retry assertion into a two-retry one.
@@ -143,13 +154,47 @@ def test_non_retryable_failed_code_is_not_retried():
     assert result.status == "failed"
 
 
-def test_failed_attempt_text_does_not_leak_into_retry_accounting():
-    agent = _agent()
-    _run(agent, [_failed_frame(text="partial-bytes"), _completed_frame("final")])
+def test_failed_attempt_without_visible_delivery_still_retries_and_resets_accounting():
+    """No visible text delivered (whitespace-only delta, with a consumer attached) -> retry.
 
+    Whitespace records nothing visible, so the attempt is safe to retry; the retry's
+    accounting still starts clean.
+    """
+    agent = _agent(consumer=True)
+    result, n = _run(agent, [_failed_frame(text="   "), _completed_frame("final")])
+
+    assert n == 2, "an attempt with no visible delivery must still be retried"
+    assert result.status == "completed"
     streamed = "".join(agent._codex_streamed_text_parts)
-    assert "partial-bytes" not in streamed
     assert streamed == "final"
+
+
+def test_failed_attempt_after_visible_delivery_does_not_retry():
+    """Visible text reached a consumer before the terminal failure -> no retry.
+
+    Retrying would re-stream the full completion (duplicate visible text + TTS with no
+    reconnect marker), mirroring the chat path's "died AFTER tokens delivered" rule.
+    """
+    agent = _agent(consumer=True)
+    result, n = _run(agent, [_failed_frame(text="partial-bytes"), _completed_frame("final")])
+
+    assert n == 1, "visible delivery must suppress the in-stream retry"
+    assert result.status == "failed"
+
+
+def test_prior_turn_text_does_not_suppress_a_clean_retry():
+    """Turn-scoped buffer text from an earlier iteration must not block a safe retry.
+
+    ``_current_streamed_assistant_text`` accumulates across tool iterations, so the guard
+    only considers text delivered by the failing attempt itself.
+    """
+    agent = _agent(consumer=True)
+    agent._current_streamed_assistant_text = "earlier tool iteration output"
+    result, n = _run(agent, [_failed_frame(), _completed_frame("recovered")])
+
+    assert n == 2, "stale turn text must not suppress a retry when this attempt delivered nothing"
+    assert result.status == "completed"
+    assert result.output_text == "recovered"
 
 
 @pytest.mark.parametrize("final,expected", [

@@ -1355,6 +1355,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         # Per attempt: a superseded attempt's bytes must not inflate the streamed_chars diagnostic
         # or leak into the next attempt's accounting.
         agent._codex_streamed_text_parts = []
+        # Visible-delivery snapshot for THIS attempt: ``_current_streamed_assistant_text`` is
+        # turn-scoped (it accumulates across tool iterations), so the no-retry-after-delivery
+        # guard below must only consider text this attempt delivered — never the turn's
+        # accumulated buffer, which would wrongly skip safe retries.
+        _visible_before = getattr(agent, "_current_streamed_assistant_text", "") or ""
         try:
             try:
                 event_stream = relay_llm.stream(
@@ -1414,9 +1419,29 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                                final.status, final.incomplete_details, final.error,
                                sum(len(p) for p in agent._codex_streamed_text_parts), agent._client_log_context())
             if _is_retryable_terminal_failure(final) and attempt < max_stream_retries:
-                # The provider ended the stream with a transient error and produced no answer, so
-                # there is nothing to preserve. Retry in-stream instead of surfacing a hard failure
-                # the outer turn loop has to absorb.
+                # Mirror the chat path's "died AFTER tokens delivered: normally no retry".
+                # Live deltas already reached a consumer this attempt (``_fire_stream_delta``
+                # records only scrubbed, delivered text), so retrying would re-stream the full
+                # completion — duplicate visible text + TTS with no reconnect marker. The check
+                # uses the same visible-delivery semantics as the chat path (stripped visible
+                # text); whitespace-only / think-only deltas record nothing visible, so those
+                # attempts are still safe to retry.
+                _visible_now = getattr(agent, "_current_streamed_assistant_text", "") or ""
+                _grown = (
+                    _visible_now[len(_visible_before):]
+                    if _visible_now.startswith(_visible_before)
+                    else _visible_now
+                )
+                if _grown.strip():
+                    logger.warning(
+                        "Codex Responses stream failed after visible text was delivered "
+                        "(%d chars this attempt); not retrying to avoid duplicate text. %s",
+                        len(_grown), agent._client_log_context(),
+                    )
+                    return final
+                # The provider ended the stream with a transient error and produced no visible
+                # answer, so there is nothing to preserve. Retry in-stream instead of surfacing
+                # a hard failure the outer turn loop has to absorb.
                 logger.debug("Codex Responses stream terminal failure is retryable (code=%s, attempt %s/%s); "
                              "retrying. %s", _codex_terminal_error_code(final), attempt + 1,
                              max_stream_retries + 1, agent._client_log_context())

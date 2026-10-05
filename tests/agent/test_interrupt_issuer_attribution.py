@@ -10,7 +10,7 @@ import logging
 import threading
 
 from agent.interrupt_compat import request_hard_interrupt
-from agent.interrupt_control import interrupt_issuer
+from agent.interrupt_control import interrupt_issuer, interrupt_skip_wording
 from tools.interrupt import set_interrupt
 
 
@@ -109,5 +109,8 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
         assert interrupt_issuer(agent) == "terminal_batch_timeout"
         # No message: gateway/CLI re-queue ``_interrupt_message`` as the user's next turn.
         assert agent._interrupt_message is None
+        # Rendered verbatim: consumers substitute ``{name}`` with str.replace, never str.format.
+        agent._tool_interrupt_reason = "guard {x}"
+        assert interrupt_skip_wording(agent) == "Turn aborted — guard {x}"
     finally:
         set_interrupt(False)

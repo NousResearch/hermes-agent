@@ -336,11 +336,13 @@ def _format_match_locations(content: str, matches: list[Span], cap: int = 5) -> 
 
 
 def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
-                           replace_all: bool = False) -> tuple[str, int, Optional[str], Optional[str]]:
+                           replace_all: bool = False, *,
+                           correction_notes: Optional[list[str]] = None) -> tuple[str, int, Optional[str], Optional[str]]:
     """Find and replace via the strategy chain.
 
     Returns ``(new_content, match_count, strategy_name, error)``; on failure
-    ``(content, 0, None, error)``.
+    ``(content, 0, None, error)``. Successful escape corrections append their
+    explanation to ``correction_notes`` when supplied by a tool caller.
     """
     if not old_string:
         # Actionable recovery text: a terse "cannot be empty" leaves the model
@@ -358,6 +360,13 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             "old_string is only whitespace — provide non-blank text to match. Set it "
             "to the exact existing text the replacement should replace (read the file "
             "first if unsure). Do not re-send this call unchanged.")
+    # All consumers, including validation and approval previews, must use the
+    # same correction policy before a fuzzy strategy can match ambiguous text.
+    from tools.escape_drift_autocorrect import AmbiguousEscapeDriftError, maybe_correct_escape_drift
+    try:
+        old_string, new_string, correction_note = maybe_correct_escape_drift(old_string, new_string, content)
+    except AmbiguousEscapeDriftError as exc:
+        return content, 0, None, str(exc)
     if old_string == new_string:
         return content, 0, None, IDENTICAL_STRINGS_ERROR
 
@@ -395,6 +404,8 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             unicode_plan=(_unicode_edit_plan(old_string, effective_new)
                           if strategy_name == "unicode_normalized" else None))
         _note_edit_match(strategy_name)
+        if correction_note and correction_notes is not None:
+            correction_notes.append(correction_note)
         return new_content, len(matches), strategy_name, None
 
     _note_edit_match(None, "no_match")

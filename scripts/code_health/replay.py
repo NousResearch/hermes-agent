@@ -1,10 +1,15 @@
 """Replay the ratchet over recently merged PRs: what would it have blocked?
 
-    python -m scripts.code_health.replay --limit 300 --out <dir>
+    python -m scripts.code_health.replay --merged 2026-09-01..2026-09-30 --limit 300 --out <dir>
+    python -m scripts.code_health.replay --manifest <dir>/manifest.json --out <dir2>
 
-Writes ``<dir>/replay.jsonl`` (one row per PR) and prints per-rule totals. Use it before
-promoting a rule to blocking or changing a target: a rule whose hits on merged PRs are mostly
-legitimate code ships advisory until its checker is fixed.
+The sample is every PR merged into main inside a closed date window, in PR-number order, so the
+same window always selects the same PRs (a new comment on an old PR cannot reshuffle it). Each run
+writes ``<dir>/manifest.json`` (number, base, head per PR); ``--manifest`` replays exactly those
+ranges, e.g. to compare two engine versions on identical input. Writes ``<dir>/replay.jsonl`` (one
+row per PR) and prints per-rule totals plus how many PRs had at least one blocking finding. Use it
+before promoting a rule to blocking or changing a target: a rule whose hits on merged PRs are
+mostly legitimate code ships as a warning until its checker is fixed.
 """
 
 from __future__ import annotations
@@ -36,12 +41,12 @@ query($q: String!, $after: String) {
 }"""
 
 
-def merged_prs(repo: Path, limit: int) -> list[dict]:
+def merged_prs(repo: Path, window: str, limit: int) -> list[dict]:
     prs: list[dict] = []
     after = None
+    query = f"repo:NousResearch/hermes-agent is:pr is:merged base:main merged:{window} sort:created-asc"
     while len(prs) < limit:
-        args = ["gh", "api", "graphql", "-f", f"query={_QUERY}",
-                "-f", "q=repo:NousResearch/hermes-agent is:pr is:merged base:main sort:updated-desc"]
+        args = ["gh", "api", "graphql", "-f", f"query={_QUERY}", "-f", f"q={query}"]
         if after:
             args += ["-f", f"after={after}"]
         out = subprocess.run(args, cwd=repo, capture_output=True, text=True, encoding="utf-8", check=True,
@@ -51,7 +56,18 @@ def merged_prs(repo: Path, limit: int) -> list[dict]:
         if not data["pageInfo"]["hasNextPage"]:
             break
         after = data["pageInfo"]["endCursor"]
-    return prs[:limit]
+    return sorted(prs, key=lambda pr: pr["number"])[:limit]
+
+
+def build_manifest(repo: Path, window: str, limit: int) -> list[dict]:
+    rows = []
+    for pr in merged_prs(repo, window, limit):
+        try:
+            base, head = pr_range(repo, pr)
+        except RuntimeError as exc:
+            base, head = "", f"error: {exc}"
+        rows.append({"number": pr["number"], "title": pr["title"], "base": base, "head": head})
+    return rows
 
 
 def pr_range(repo: Path, pr: dict) -> tuple[str, str]:
@@ -85,30 +101,38 @@ def replay_one(repo: Path, measurer: Measurer, base: str, head: str) -> list[dic
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="code_health.replay")
+    sample = parser.add_mutually_exclusive_group(required=True)
+    sample.add_argument("--merged", help="closed merge-date window, e.g. 2026-09-01..2026-09-30")
+    sample.add_argument("--manifest", help="manifest.json from an earlier run: replay exactly those ranges")
     parser.add_argument("--limit", type=int, default=300)
     parser.add_argument("--out", required=True)
     args = parser.parse_args(argv)
     repo = gitio.repo_root(Path.cwd())
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+    if args.manifest:
+        manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    else:
+        manifest = build_manifest(repo, args.merged, args.limit)
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
     measurer = Measurer(repo, resolve_ruff(repo), known_env=set())
     per_rule: Counter[str] = Counter()
-    prs_blocked: Counter[str] = Counter()
+    prs_per_rule: Counter[str] = Counter()
+    blocked = 0
     with (out_dir / "replay.jsonl").open("w", encoding="utf-8") as fh:
-        for pr in merged_prs(repo, args.limit):
+        for row in manifest:
             try:
-                base, head = pr_range(repo, pr)
-                findings = replay_one(repo, measurer, base, head)
+                findings = replay_one(repo, measurer, row["base"], row["head"]) if row["base"] else []
             except RuntimeError as exc:
-                findings, base, head = [{"error": str(exc)}], "", ""
-            row = {"number": pr["number"], "title": pr["title"], "base": base, "head": head,
-                   "findings": findings}
-            fh.write(json.dumps(row) + "\n")
-            rules = {f["rule"] for f in findings if "rule" in f}
-            prs_blocked.update(rules)
-            per_rule.update(f["rule"] for f in findings if "rule" in f)
+                findings = [{"error": str(exc)}]
+            fh.write(json.dumps({**row, "findings": findings}) + "\n")
+            hits = [f for f in findings if "rule" in f]
+            per_rule.update(f["rule"] for f in hits)
+            prs_per_rule.update({f["rule"] for f in hits})
+            blocked += any(f["blocking"] for f in hits)
     for rule, count in per_rule.most_common():
-        print(f"{rule:<11} findings {count:>4}  PRs {prs_blocked[rule]:>4}")
+        print(f"{rule:<11} findings {count:>4}  PRs {prs_per_rule[rule]:>4}")
+    print(f"{blocked} of {len(manifest)} PRs had at least one blocking finding")
     return 0
 
 

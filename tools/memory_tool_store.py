@@ -344,6 +344,33 @@ class MemoryStore:
         # content) but still refuse a failed read — add rewrites the WHOLE file.
         return self._mutate(target, _add, skip_drift=True)
 
+    def add_independent_entries(self, target: str, contents: List[str]) -> Dict[str, Any]:
+        """Save each eligible addition that fits, without requiring the rest of a staged batch.
+
+        Called only after the original batch has been validated and its destructive entries
+        pinned. A skipped duplicate/oversized entry is not reported as saved. The write and
+        resulting count share one lock and disk snapshot; no hidden consolidation failures.
+        """
+        cleaned = [content.strip() for content in contents if isinstance(content, str) and content.strip()]
+        if not cleaned:
+            return {"success": True, "additions_saved": 0}
+        for content in cleaned:
+            if scan_error := _scan_memory_content(content):
+                return _error(scan_error)
+
+        def _add_fitting(entries, limit):
+            working = list(entries)
+            saved = 0
+            for content in cleaned:
+                if content not in working and len(ENTRY_DELIMITER.join(working + [content])) <= limit:
+                    working.append(content)
+                    saved += 1
+            if not saved:
+                return {"success": True, "additions_saved": 0}
+            return working, "Independent additions saved.", {"additions_saved": saved}
+
+        return self._mutate(target, _add_fitting, skip_drift=True)
+
     def replace(self, target: str, old_text: str, new_content: str,
                 matched_entry: Optional[str] = None) -> Dict[str, Any]:
         """Find the entry containing old_text (whole-entry exact match first) and
@@ -445,12 +472,13 @@ class MemoryStore:
         working[idx:idx + 1] = [content] if act == "replace" else []
         return None, previous_content
 
-    def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def apply_batch(self, target: str, operations: List[Dict[str, Any]], *,
+                    preserve_existing: bool = False) -> Dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
         can free space and add entries. All-or-nothing: any malformed / unmatched op or
         an over-limit result writes NOTHING and returns the first failure. Aborts do not
         echo ``current_entries`` — the store is unchanged and the model already has it."""
-        return self._batch(target, operations, commit=True)
+        return self._batch(target, operations, commit=True, preserve_existing=preserve_existing)
 
     def resolve_batch_entries(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Dry-run ``apply_batch`` under the lock without persisting: the same content scan,
@@ -459,7 +487,8 @@ class MemoryStore:
         entry its replace/remove selects now (None for add), in batch order."""
         return self._batch(target, operations, commit=False)
 
-    def _batch(self, target: str, operations: List[Dict[str, Any]], *, commit: bool) -> Dict[str, Any]:
+    def _batch(self, target: str, operations: List[Dict[str, Any]], *, commit: bool,
+               preserve_existing: bool = False) -> Dict[str, Any]:
         if not operations:
             return _error("operations list is empty.")
         ops = [op or {} for op in operations]
@@ -481,6 +510,12 @@ class MemoryStore:
                 if msg:  # a failed op's second value is its closest_entries (or None)
                     return self._batch_failure(target, msg, closest_entries=previous_content)
                 matched.append(previous_content)
+            if preserve_existing and any(
+                not any(new == old or new.startswith((old + " ", old + "\n")) for new in working)
+                for old in entries
+            ):
+                return _error("Background review cannot verify that every existing entry remains "
+                              "verbatim; stage this change for approval.", requires_approval=True)
             if entries and not working:
                 # #103419: a consolidation batch that removes the last entry would
                 # commit an empty file as a normal successful write. Refuse; single

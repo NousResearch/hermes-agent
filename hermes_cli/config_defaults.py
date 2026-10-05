@@ -2642,6 +2642,9 @@ OPTIONAL_ENV_VARS = {
         "Parallel API key", "https://parallel.ai/", tools=["web_search", "web_extract"]),
     "FIRECRAWL_API_KEY": _tool("Firecrawl API key for web search and scraping", "Firecrawl API key",
         "https://firecrawl.dev/", tools=["web_search", "web_extract"]),
+    "FIRECRAWL_API_KEYS": _tool("Ordered Firecrawl API keys (JSON array) for web search/extract credit failover",
+        "Firecrawl API keys (JSON array)", "https://firecrawl.dev/", password=True,
+        tools=["web_search", "web_extract"], advanced=True),
     "FIRECRAWL_API_URL": _tool("Firecrawl API URL for self-hosted instances (optional)",
         "Firecrawl API URL (leave empty for cloud)", None, password=False, advanced=True),
     "FIRECRAWL_GATEWAY_URL": _tool(

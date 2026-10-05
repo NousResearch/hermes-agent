@@ -965,7 +965,7 @@ def _unset_nested(config, dotted_key: str) -> bool:
 
 _ENV_CONFIG_KEYS = frozenset({
     'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-    'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
+    'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_KEYS', 'FIRECRAWL_API_URL',
     'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_URL', 'CONNECTOR_GATEWAY_URL',
     'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
     'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY', 'PERPLEXITY_API_KEY', 'API_SERVER_KEY',
@@ -2819,7 +2819,7 @@ _SECRET_CONFIG_KEYS = frozenset({
     "private_key", "bearer", "jwt"})
 # Env-map shapes (``mcp_servers.<s>.env.FOO_API_KEY``, ``FAL_KEY``, ``AWS_SECRET_ACCESS_KEY``) and
 # the suffixes ``_is_env_config_key`` routes to .env. Suffix-only so ``token_count`` stays visible.
-_SECRET_CONFIG_KEY_SUFFIXES = ("_api_key", "_token", "_secret", "_password", "_key", "_access_key")
+_SECRET_CONFIG_KEY_SUFFIXES = ("_api_key", "_api_keys", "_token", "_secret", "_password", "_key", "_access_key")
 # .env-routed keys are credentials by default; these suffixes name the non-secret exceptions
 # (``TERMINAL_SSH_HOST``, ``TOOL_GATEWAY_URL``, ``BROWSERBASE_PROJECT_ID``).
 _NON_SECRET_KEY_SUFFIXES = ("_url", "_host", "_user", "_id", "_domain", "_scheme")
@@ -2844,7 +2844,8 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
         return value
     if isinstance(value, dict):
         return {
-            k: mask_secret(v)
+            k: "***" if isinstance(k, str) and _is_secret_config_key(k) and isinstance(v, list)
+            else mask_secret(v)
             if isinstance(k, str) and _is_secret_config_key(k) and isinstance(v, str) and v
             and not _ENV_PLACEHOLDER_RE.match(v)
             else redact_config_value(v, _depth + 1)

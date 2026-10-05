@@ -153,8 +153,9 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
     failed (backend outage, not per-page problems). Rescued batches are never cached.
     """
     import inspect
-    from tools.web_result_cache import extract_cache_put
+    from tools.web_result_cache import _credential_namespace, extract_cache_put
     timeout = _extract_timeout_seconds()
+    namespace = _credential_namespace(provider.name)
     try:
         if inspect.iscoroutinefunction(provider.extract):
             coro = provider.extract(fetch_urls, format=format)
@@ -192,7 +193,8 @@ async def _dispatch_extract(provider, fetch_urls: List[str], format: Optional[st
         url = next((u for u in (fetched.get("url"), source) if u in requested), None)
         _content = fetched.get("raw_content", "") or fetched.get("content", "")
         if url and _content and not fetched.get("error"):
-            extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name)
+            extract_cache_put(url, _content, fetched.get("title", ""), format=format, provider=provider.name,
+                              **({"namespace": namespace} if namespace else {}))
     return results
 
 

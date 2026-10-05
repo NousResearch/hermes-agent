@@ -53,3 +53,13 @@ def test_bootstrap_argv_is_identity_only_for_the_process_running_it(join: str) -
     watcher = _JOINS[join]([PY, "-c", "import os, sys, time\npid = int(sys.argv[1]); cmd = sys.argv[2:]\n", "1234", *store])
     assert not looks_like_gateway_command_line(chat) and _hermes_holder_subcommand(chat) == "chat"
     assert not looks_like_gateway_command_line(watcher) and _hermes_holder_subcommand(watcher) is None
+
+
+def test_bundled_posix_launcher_bootstrap_is_a_gateway() -> None:
+    source = (
+        "import os, site, sys; sys.argv[0]='hermes'; "
+        "site.addsitedir(os.environ['HERMES_SITE']); "
+        "from hermes_cli.main import main; sys.exit(main())"
+    )
+    command_line = " ".join([PY, "-P", "-c", source, "gateway", "run", "--replace"])
+    assert looks_like_gateway_command_line(command_line)

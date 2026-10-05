@@ -606,6 +606,10 @@ _BOOTSTRAPS = (
         re.S)),
     # hermes_cli._launchers._launcher_script (the published POSIX shell / Windows .cmd launcher)
     ("entry", re.compile(r"import os, re, sys\s.*\bfrom\s+(?P<target>[\w.]+)\s+import\s+(?P<func>\w+)\b.*\bsys\.exit\(\s*(?P=func)\(\)\s*\)", re.S)),
+    ("entry", re.compile(
+        r"import os, site, sys;.*\bsite\.addsitedir\(os\.environ\[['\"]HERMES_SITE['\"]\]\);"
+        r"\s*from\s+(?P<target>[\w.]+)\s+import\s+(?P<func>\w+)\s*;\s*sys\.exit\(\s*(?P=func)\(\)\s*\)",
+        re.S)),
     # hermes_cli._launchers._write_cmd_launcher: the launcher script, base64-encoded
     ("base64", re.compile(rf"import base64; exec\(base64\.b64decode\({_Q}(?P<target>[A-Za-z0-9+/=]+){_Q}\)\)")),
 )

@@ -1050,7 +1050,10 @@ def _read_discord_prompt_timeout() -> int:
 from plugins.platforms.discord.adapter_media import DiscordMediaMixin
 
 
-class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
+from .adapter_typing import DiscordTypingMixin
+
+
+class DiscordAdapter(DiscordTypingMixin, DiscordMediaMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -1115,6 +1118,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._threads = ThreadParticipationTracker("discord")
         # Persistent typing loops per channel (DMs don't reliably show bot typing events).
         self._typing_tasks: Dict[str, asyncio.Task] = {}
+        self._typing_owners = {}
         self._bot_task: Optional[asyncio.Task] = None
         # Background task that runs post-connect housekeeping (command-menu registration + DM-topic setup)
         # off the connect path so a slow Bot API call (e.g. a set_my_commands stall for certain tokens)
@@ -1966,6 +1970,9 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         self._disconnecting = True
         # Cancel the liveness probe first so it can't fire a spurious fatal/reconnect mid-teardown.
         await self._cancel_liveness_task()
+        # Fatal/reconnect callers invoke disconnect directly, without the normal
+        # shutdown cleanup. Drain typing owners before closing their HTTP client.
+        await self.cancel_background_tasks()
         # Leave voice *before* cancelling the bot task: VoiceClient.disconnect() needs the main
         # gateway WS (run by the bot task) or it blocks until the timeout.
         for guild_id in list(self._voice_clients.keys()):
@@ -4246,53 +4253,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
 
 
-
-    async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Start a persistent typing loop (POST typing every 12s; indicator lasts ~10s).
-        TYPING_START is unreliable for bots in DMs; 429 sleeps ``retry_after``; CancelledError ends it."""
-        if not self._client:
-            return
-        if chat_id in self._typing_tasks:
-            return
-
-        async def _typing_loop() -> None:
-            try:
-                while True:
-                    try:
-                        route = discord.http.Route(
-                            "POST", "/channels/{channel_id}/typing", channel_id=chat_id,
-                        )
-                        await self._client.http.request(route)
-                    except asyncio.CancelledError:
-                        return
-                    except Exception as e:
-                        retry_after = self._extract_discord_retry_after(e)
-                        if retry_after is not None:
-                            logger.warning(
-                                "Typing indicator rate-limited for %s; retrying in %.1fs",
-                                chat_id, retry_after,
-                            )
-                        else:
-                            logger.debug("Discord typing indicator failed for %s: %s", chat_id, e)
-                            return
-                        await asyncio.sleep(retry_after)
-                        continue
-                    await asyncio.sleep(12)
-            except asyncio.CancelledError:
-                pass
-            finally:
-                self._typing_tasks.pop(chat_id, None)
-        self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
-
-    async def stop_typing(self, chat_id: str) -> None:
-        """Stop the persistent typing indicator for a channel."""
-        task = self._typing_tasks.pop(chat_id, None)
-        if task:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Discord channel."""

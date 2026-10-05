@@ -479,6 +479,17 @@ class GatewayAgentCacheMixin:
             ).start()
         return _generation_at_interrupt
 
+    async def _interrupt_adapter_activity(self, session_key: str, source: SessionSource) -> None:
+        """Clear transport activity even when no foreground run remains."""
+        adapter = self._delivery_adapter_for(source)
+        interrupt_session_activity = getattr(type(adapter), "interrupt_session_activity", None)
+        if adapter and callable(interrupt_session_activity):
+            metadata = self._thread_metadata_for_source(source)
+            if _accepts_keyword(interrupt_session_activity, "metadata"):
+                await adapter.interrupt_session_activity(session_key, source.chat_id, metadata=metadata)
+            else:
+                await adapter.interrupt_session_activity(session_key, source.chat_id)
+
     async def _interrupt_and_clear_session(
         self, session_key: str, source: SessionSource, *, interrupt_reason: str,
         invalidation_reason: str, release_running_state: bool = True,
@@ -516,14 +527,8 @@ class GatewayAgentCacheMixin:
                 )
             except Exception:
                 logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
+        await self._interrupt_adapter_activity(session_key, source)
         adapter = self._delivery_adapter_for(source)
-        interrupt_session_activity = getattr(type(adapter), "interrupt_session_activity", None)
-        if adapter and callable(interrupt_session_activity):
-            metadata = self._thread_metadata_for_source(source)
-            if _accepts_keyword(interrupt_session_activity, "metadata"):
-                await adapter.interrupt_session_activity(session_key, source.chat_id, metadata=metadata)
-            else:
-                await adapter.interrupt_session_activity(session_key, source.chat_id)
         if adapter and hasattr(adapter, "get_pending_message"):
             # Discard a stale human follow-up (the slot held only user text when /stop started doing
             # this, 59575d6a917) — but an internal wake (async-delegation completion, notify+wake)

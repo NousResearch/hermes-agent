@@ -2639,6 +2639,17 @@ class ProcessRegistry(ProcessCheckpointMixin):
             lambda s: s.session_key == session_key
             and (max_active_age is None or (now - s.started_at) < max_active_age))
 
+    def has_completion_work_for_session(self, session_key: str) -> bool:
+        """Reader-observed bounded work, without I/O, for gateway typing ticks.
+
+        Silent servers/watchers have no completion contract and must not keep a
+        conversation typing forever. Readers/watchers own exit reconciliation;
+        unlike list_sessions this query never probes a host or sandbox.
+        """
+        with self._lock:
+            return any(s.session_key == session_key and s.notify_on_complete and not s.exited
+                       for s in self._running.values())
+
     def has_any_active(self) -> bool:
         """Whether ANY background process is running — scale-to-zero must not
         suspend a gateway with live background work or the process is lost."""

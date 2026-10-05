@@ -136,10 +136,8 @@ The stage-by-stage contract: `website/docs/developer-guide/cli-internals.md` § 
   `_ZIP_PRESERVED_NESTED` build outputs into the swap.
 - Restarts are fleet-wide and drain-first, bounded by the home each unit runs on
   (`update_fleet_scope.py`); another install's runtime is never restarted.
-- After the commit point nothing fails `hermes update`: failures are receipt follow-ups with
-  their obligations kept armed, exit 0, except a parked autostash (`partial`, exit 1, #122557) and
-  Ctrl-C (`interrupted`, 130); table in `developer-guide/source-update-completion.md`. Receipts live under the ROOT home's
-  `logs/update_receipts/`.
+- Post-commit failures are owed follow-ups, exit 0 (stash left 1, Ctrl-C 130);
+  receipts in ROOT `logs/update_receipts/`.
 - Nothing runs pulled code in the pre-pull interpreter. `update_handoff.py` and
   `update_serve_obligations.py` are a FROZEN compat surface (`tests/compat/old_updater_surface.json`):
   removing a name bricks releases mid-update.

@@ -132,7 +132,7 @@ module.exports = {
       ? [{ from: 'build/agent-payload', to: 'agent-payload' }]
       : []),
     {
-      from: 'assets/icon.ico',
+      from: 'public/ix-agency.ico',
       to: 'icon.ico'
     }
   ],
@@ -217,6 +217,7 @@ module.exports = {
     ]
   },
   win: {
+    icon: 'public/ix-agency.ico',
     executableName: windowsExecutableName,
     legalTrademarks: displayName,
     target: ['msix'],

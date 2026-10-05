@@ -1413,8 +1413,9 @@ const WINDOW_BUTTON_POSITION = {
 // width live via the Window Controls Overlay API.
 // The apple-touch PNG bakes in the macOS-style ~10% margin, which is correct
 // for the dock but renders visibly smaller than neighboring taskbar icons on
-// Windows, where icons are full-bleed. Windows prefers the full-bleed
-// assets/icon.ico (shipped to resources/ via extraResources) and only falls
+// Windows, where icons are full-bleed. The shipped resources/icon.ico is the
+// IX Agency mark. The generated assets/icon.ico is only the fallback when
+// that mark is missing.
 // back to the padded PNG if the ico is missing.
 // The ladder is BUILT once here but each window factory RE-RESOLVES through
 // resolveAppIcon (decoding probe): existence alone is not proof the bytes

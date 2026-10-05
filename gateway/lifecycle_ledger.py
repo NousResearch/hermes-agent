@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import time
 from contextlib import closing
 from datetime import datetime, timezone
@@ -61,9 +62,9 @@ def _proc_fields(path: str, wanted: Dict[str, str]) -> Dict[str, int]:
     return found
 
 
-def sample_memory() -> Dict[str, Any]:
-    """Cheap /proc snapshot (KiB): own RSS + MemTotal/MemAvailable + swap used.  Linux-only
-    (``{}`` elsewhere), never raises; the 30s heartbeat embeds it so OOM cycles are classifiable."""
+def _sample_memory_proc() -> Dict[str, Any]:
+    """Linux fast path: own RSS + MemTotal/MemAvailable + swap used from ``/proc`` (KiB).
+    Missing files yield ``{}``; never raises."""
     sample = _proc_fields("/proc/self/status", {"VmRSS": "rss_kib"})
     mem = _proc_fields("/proc/meminfo", {"MemTotal": "mem_total_kib", "MemAvailable": "mem_available_kib",
                                          "SwapTotal": "SwapTotal", "SwapFree": "SwapFree"})
@@ -72,6 +73,45 @@ def sample_memory() -> Dict[str, Any]:
     if swap_total is not None and swap_free is not None:
         sample["swap_used_kib"] = swap_total - swap_free
     return sample
+
+
+def _sample_memory_psutil() -> Dict[str, Any]:
+    """Portable fallback for hosts without ``/proc`` (Windows, macOS): the same keys from
+    ``psutil``, which is already a runtime dependency. Each value is read independently so one
+    failing call drops only its own key; no ``psutil`` at all yields ``{}``. Never raises."""
+    sample: Dict[str, Any] = {}
+    try:
+        import psutil
+    except Exception:
+        return sample
+    try:
+        sample["rss_kib"] = psutil.Process(os.getpid()).memory_info().rss // 1024
+    except Exception:
+        pass
+    try:
+        vm = psutil.virtual_memory()
+        sample["mem_total_kib"] = vm.total // 1024
+        sample["mem_available_kib"] = vm.available // 1024
+    except Exception:
+        pass
+    try:
+        sample["swap_used_kib"] = psutil.swap_memory().used // 1024
+    except Exception:
+        pass
+    return sample
+
+
+def sample_memory() -> Dict[str, Any]:
+    """Cheap memory snapshot (KiB): own RSS + MemTotal/MemAvailable + swap used; never raises.
+    Linux reads ``/proc`` directly; other platforms go through ``psutil``. The key shape is
+    the same everywhere (``rss_kib``, ``mem_total_kib``, ``mem_available_kib``,
+    ``swap_used_kib``); a missing key means that value could not be measured, which every
+    consumer already treats as "no measurement". The 30s heartbeat embeds the result so OOM
+    cycles are classifiable, and the kanban dispatcher derives its concurrency cap and
+    pressure guard from it."""
+    if sys.platform.startswith("linux"):
+        return _sample_memory_proc()
+    return _sample_memory_psutil()
 
 
 def _read_json(path: Path) -> Optional[Dict[str, Any]]:

@@ -75,6 +75,108 @@ def test_sample_memory_has_expected_keys_on_linux() -> None:
     assert "mem_available_kib" in sample
 
 
+# The dispatcher's memory-derived concurrency cap and pressure guard, and the OOM
+# heuristic, all read these two keys; without them every memory guard is inert.
+_GUARD_KEYS = {"mem_total_kib", "mem_available_kib"}
+
+
+def test_sample_memory_measures_on_the_current_platform() -> None:
+    """On any supported host, the sample carries the keys the guards read. Pre-fix this
+    was ``{}`` on Windows and macOS (#94936, #119870)."""
+    sample = sample_memory()
+    assert _GUARD_KEYS.issubset(sample), f"missing: {_GUARD_KEYS - set(sample)}"
+    assert sample.get("rss_kib", 0) > 0
+    for key, value in sample.items():
+        assert isinstance(value, int) and not isinstance(value, bool), key
+        assert value >= 0, key
+    assert sample["mem_available_kib"] <= sample["mem_total_kib"]
+
+
+def test_sample_memory_routes_linux_to_proc(monkeypatch: pytest.MonkeyPatch) -> None:
+    import gateway.lifecycle_ledger as ledger_mod
+
+    sentinel = {"rss_kib": 1, "mem_total_kib": 4, "mem_available_kib": 2, "swap_used_kib": 0}
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(ledger_mod, "_sample_memory_proc", lambda: sentinel)
+    monkeypatch.setattr(ledger_mod, "_sample_memory_psutil", lambda: pytest.fail("psutil path on linux"))
+    assert sample_memory() == sentinel
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_sample_memory_routes_other_platforms_to_psutil(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    import gateway.lifecycle_ledger as ledger_mod
+
+    sentinel = {"rss_kib": 1, "mem_total_kib": 4, "mem_available_kib": 2, "swap_used_kib": 0}
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(ledger_mod, "_sample_memory_proc", lambda: pytest.fail("/proc path off linux"))
+    monkeypatch.setattr(ledger_mod, "_sample_memory_psutil", lambda: sentinel)
+    assert sample_memory() == sentinel
+
+
+def test_psutil_fallback_reads_real_values() -> None:
+    """The fallback itself, on whatever host runs the suite: psutil is a runtime dependency,
+    so the guard keys must come back as sane integers."""
+    from gateway.lifecycle_ledger import _sample_memory_psutil
+
+    sample = _sample_memory_psutil()
+    assert _GUARD_KEYS.issubset(sample), f"missing: {_GUARD_KEYS - set(sample)}"
+    assert sample["mem_total_kib"] > 0
+    assert 0 <= sample["mem_available_kib"] <= sample["mem_total_kib"]
+    assert sample.get("rss_kib", 0) > 0
+
+
+def test_psutil_fallback_never_raises_without_psutil(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A forensics failure must not affect the lifecycle it observes: no psutil means ``{}``."""
+    import builtins
+
+    from gateway.lifecycle_ledger import _sample_memory_psutil
+
+    real_import = builtins.__import__
+
+    def _no_psutil(name, *args, **kwargs):
+        if name == "psutil":
+            raise ImportError("simulated: psutil unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_psutil)
+    assert _sample_memory_psutil() == {}
+
+
+def test_psutil_fallback_drops_only_the_failing_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One failing psutil call loses its own key, not the whole sample (a swapless host is
+    the common real case)."""
+    psutil = pytest.importorskip("psutil")
+
+    def _boom():
+        raise RuntimeError("no swap accounting on this host")
+
+    monkeypatch.setattr(psutil, "swap_memory", _boom)
+    from gateway.lifecycle_ledger import _sample_memory_psutil
+
+    sample = _sample_memory_psutil()
+    assert "swap_used_kib" not in sample
+    assert _GUARD_KEYS.issubset(sample)
+
+
+def test_oom_heuristic_sees_a_measurement_off_linux(monkeypatch: pytest.MonkeyPatch) -> None:
+    """End to end through the real heuristic: with a measured sample the verdict depends on
+    the numbers, and a critically low ``mem_available_kib`` is flagged. Pre-fix the sample
+    was ``{}`` on Windows/macOS, so ``_suspected_oom`` was a structural ``False``."""
+    from gateway.lifecycle_ledger import _suspected_oom
+    from gateway.memory_status import _CRITICAL_AVAILABLE_KIB
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    sample = sample_memory()
+    assert "mem_available_kib" in sample
+    assert isinstance(_suspected_oom(sample), bool)
+
+    starved = dict(sample, mem_available_kib=max(0, _CRITICAL_AVAILABLE_KIB - 1))
+    assert _suspected_oom(starved) is True
+    assert _suspected_oom({}) is False
+
+
 # ---------------------------------------------------------------------------
 # First boot / clean lifecycle
 # ---------------------------------------------------------------------------

@@ -375,12 +375,12 @@ class TestPlatformReconnectWatcher:
         runner._failed_platforms[platform] = {
             "config": PlatformConfig(enabled=True), "attempts": 0, "next_retry": 0,
         }
-        rearmed = []
+        rearmed, healed, on_loop = [], [], []
         manager = MagicMock()
-        manager.rearm_failed_platform.side_effect = lambda name: rearmed.append(name) or True
+        manager.rearm_failed_platform.side_effect = lambda name: rearmed.append(name) or on_loop.append(
+            threading.current_thread() is threading.main_thread()) or True
         monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
         adapter = StubAdapter(platform=platform)
-        healed, on_loop = [], []
         monkeypatch.setattr(runner, "_create_adapter", lambda p, c: adapter if rearmed and healed else None)
         monkeypatch.setattr("gateway.platform_registry.platform_registry.get",
                             lambda name: on_loop.append(threading.current_thread() is threading.main_thread()))
@@ -392,7 +392,7 @@ class TestPlatformReconnectWatcher:
             await runner._reconnect_failed_platform(platform, time.monotonic())
 
         assert rearmed == ["irc"] * 3  # a permanently broken plugin stops being re-imported after the cap
-        assert on_loop and not any(on_loop)  # the plugin load never blocks the event loop
+        assert on_loop and not any(on_loop)  # neither the re-arm nor the plugin load blocks the event loop
         runner._install_reconnected_adapter.assert_awaited_once_with(platform, adapter)
 
 

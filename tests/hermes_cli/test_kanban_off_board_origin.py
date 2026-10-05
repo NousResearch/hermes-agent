@@ -259,6 +259,86 @@ def test_force_does_not_bypass_origin_gate(env):
     assert _status(kb, tid) == "running"
 
 
+def test_invalid_origin_unreadable_json_with_launch_event_refuses(env):
+    """Round-2 residual HIGH: unreadable metadata on a run that HAS a launch
+    event must refuse, not silently downgrade to on-board."""
+    kb = env
+    tid = _card(kb)
+    with _conn() as c:
+        kb.record_off_board_run(c, tid, served_model="m")
+        rid = kb._current_run_id(c, tid)
+        c.execute("UPDATE task_runs SET metadata = ? WHERE id = ?", ('{"off_board_run":', rid))
+        c.commit()
+        with pytest.raises(kb.OffBoardOriginError):
+            kb.complete_task(c, tid, summary="s", require_recorded_origin=False)
+    assert _status(kb, tid) == "running"
+
+
+def test_unreadable_metadata_without_launch_event_stays_on_board(env):
+    """Unreadable metadata with NO launch event for the run is ordinary on-board
+    (backwards compatible)."""
+    kb = env
+    tid = _card(kb)
+    with _conn() as c:
+        rid = kb._current_run_id(c, tid)
+        c.execute("UPDATE task_runs SET metadata = ? WHERE id = ?", ("not-json", rid))
+        c.commit()
+        assert kb.complete_task(c, tid, summary="s")
+    assert _status(kb, tid) == "done"
+
+
+def test_request_review_cannot_clobber_origin(env):
+    """request_review carries caller metadata; it must not overwrite the trusted
+    origin on the run it closes (review round-2 residual MEDIUM #5)."""
+    from hermes_cli import kanban_db_connect as kbc
+    kb = env
+    with kbc.connect_closing() as c:
+        tid = kb.create_task(c, title="rr", assignee="builder", workspace_kind="scratch")
+        assert kb.claim_task(c, tid) is not None
+        kb.record_off_board_run(c, tid, served_model="origin-model")
+        ok = kb.request_review(
+            c, tid, summary="handing off",
+            metadata={"off_board_run": {"schema": "v1", "off_board": True,
+                                        "served_model": "forged"}},
+        )
+    assert ok
+    meta = _run_metadata(kb, tid)
+    assert meta["off_board_run"]["served_model"] == "origin-model"
+
+
+def test_edit_task_cannot_clobber_origin(env):
+    """edit_task backfills metadata; it must not overwrite the historical origin
+    (review round-2 residual MEDIUM #5)."""
+    kb = env
+    tid = _card(kb)
+    with _conn() as c:
+        kb.record_off_board_run(c, tid, served_model="origin-model")
+        assert kb.complete_task(c, tid, summary="s", require_recorded_origin=False)
+    with _conn() as c:
+        assert kb.edit_task(c, tid, result="r2",
+                            metadata={"off_board_run": {"schema": "v1",
+                                                        "off_board": True,
+                                                        "served_model": "forged"}})
+    assert _run_metadata(kb, tid)["off_board_run"]["served_model"] == "origin-model"
+
+
+def test_tool_recorded_origin_assigns_model_and_event(env):
+    """Strengthened tool test (round-2 #9): assert the persisted model AND the
+    completion event, not just ``ok``/``done``."""
+    kb = env
+    tid = _card(kb)
+    with _conn() as c:
+        kb.record_off_board_run(c, tid, served_model="tool-model")
+    from tools import kanban_tools  # noqa: F401
+    from tools.registry import registry
+    r = json.loads(registry.dispatch("kanban_complete", {"task_id": tid, "summary": "s"}))
+    assert r.get("ok"), r
+    assert _status(kb, tid) == "done"
+    assert _run_metadata(kb, tid).get("served_model") == "tool-model"
+    rows = _events(kb, tid, "route_served_model")
+    assert rows and rows[-1]["served_model"] == "tool-model"
+
+
 def test_previous_run_origin_does_not_cover_current(env):
     """An origin on an ENDED run must not attribute the current run."""
     kb = env

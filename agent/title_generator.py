@@ -17,6 +17,7 @@ from typing import Any, Callable, Optional
 
 from agent.auxiliary_client import call_llm
 from agent.context_compressor import LEGACY_SUMMARY_PREFIX
+from agent.conversation_compression_plan_pointer import PLAN_POINTER_HEADER
 from agent.delegation_context import is_dispatcher_owned_worker_context
 from agent.message_content import flatten_message_text
 
@@ -140,7 +141,7 @@ _MACHINE_PREFIXES = (
     # so without this entry it looks like a real opening turn: switching models before the first real
     # message titled the session "[System: The active model for this chat has…" instead of the user's actual
     # question.
-    "[System: The active model for this chat has changed to ",
+    "[System: The active model for this chat has changed to ", PLAN_POINTER_HEADER,
 )
 
 

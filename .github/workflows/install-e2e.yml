@@ -36,11 +36,14 @@ name: Install & Update E2E
 #   * every 12 hours, so upstream drift (a new uv, a Node bump, a PyPI change)
 #     surfaces on a schedule rather than in someone's review cycle;
 #   * manually, where you can pick the route (a preset or specific legs) and how many
-#     releases to sample.
-#
-# Deliberately NOT on pull_request: a leg takes ~11 minutes of real toolchain
-# installation, and the matrix multiplies that. Updating is release-shaped work,
-# so it is gated on releases and the clock instead.
+#     releases to sample;
+#   * pull_request, path-filtered to the install/update surface, runs ONLY the
+#     `pr` route (generate-e2e-matrix.mjs PR_SUBSET): installer-script ->
+#     hermes-update on linux (newest release -> PR, and PR -> NEXT), windows
+#     (PR -> NEXT) and macos (newest release -> PR), sampling just the newest tag.
+#     Four legs in parallel keep a PR's wall clock near one leg (~15 min);
+#     the full matrix multiplies that, so it stays on the clock and releases.
+#     A red scheduled run is reported by install-e2e-red.yml.
 
 on:
   workflow_dispatch:
@@ -116,6 +119,42 @@ on:
   schedule:
     # Every 12 hours, off the hour to avoid the top-of-hour runner crunch.
     - cron: '20 7,19 * * *'
+  pull_request:
+    # The install/update surface: derived from 60 days of commits whose subject
+    # names update/install/pm/bootstrap/relaunch. Keep it to code a real
+    # install or `hermes update` executes; hermes_cli/main.py and friends are
+    # deliberately absent (they change daily and are covered by e2e-upgrade).
+    paths:
+      - 'scripts/install*'
+      - 'scripts/desktop-update/**'
+      - 'setup-hermes.*'
+      - 'hermes_bootstrap.py'
+      - 'pm/**'
+      - '!pm/**/*.md'
+      - 'hermes_cli/update*'
+      - 'hermes_cli/*update*'
+      - 'hermes_cli/pm*'
+      - 'hermes_cli/*install*'
+      - 'hermes_cli/_early_recovery.py'
+      - 'hermes_cli/_launchers.py'
+      - 'hermes_cli/managed_uv.py'
+      - 'hermes_cli/venv_sync.py'
+      - 'hermes_cli/relaunch.py'
+      - 'hermes_cli/gateway.py'
+      - 'gateway/status.py'
+      - 'apps/bootstrap-installer/**'
+      - 'apps/desktop/electron/*update*'
+      - 'apps/desktop/electron/updater/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tests/install/**'
+      - 'scripts/sandbox/generate-e2e-matrix.mjs'
+      - 'scripts/sandbox/pick-release-tags.sh'
+      - 'scripts/ci/setup_toolchain.py'
+      - '.github/actions/setup-pm/**'
+      - '.github/workflows/install-e2e*.yml'
 
 permissions:
   contents: read
@@ -139,7 +178,7 @@ jobs:
       # checkout: no blobs (filter), no other files (sparse), but DO fetch
       # tags -- they are the whole input, and the default shallow checkout
       # has none.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           filter: blob:none
           fetch-tags: true
@@ -159,7 +198,7 @@ jobs:
           # stable release the candidate tag itself is the newest release
           # tag, and sampling it as an OLD version would produce a no-change
           # update leg — the candidate must never update from itself.
-          TAG_COUNT: ${{ inputs.tag-count || 2 }}
+          TAG_COUNT: ${{ github.event_name == 'pull_request' && '1' || inputs.tag-count || 2 }}
           INSTALL_REF: ${{ inputs.install-ref }}
           EXCLUDE_REF: ${{ inputs.exclude-ref }}
           RELEASE_MODE: ${{ inputs.release }}
@@ -204,15 +243,15 @@ jobs:
       windows-legs: ${{ steps.gen.outputs.windows-legs }}
       macos-legs: ${{ steps.gen.outputs.macos-legs }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           sparse-checkout: scripts/sandbox/generate-e2e-matrix.mjs
           sparse-checkout-cone-mode: false
       - id: gen
         env:
           # Free text on dispatch, so it reaches the script as data, never as script.
-          # Scheduled runs have no inputs: the default route.
-          ROUTE: ${{ inputs.route || 'all' }}
+          # Scheduled runs have no inputs: the default route. PRs run the pr subset.
+          ROUTE: ${{ github.event_name == 'pull_request' && 'pr' || inputs.route || 'all' }}
         run: |
           set -euo pipefail
           matrices="$(node scripts/sandbox/generate-e2e-matrix.mjs \
@@ -230,6 +269,8 @@ jobs:
 
   bundle-inputs:
     name: Validate pinned bundle transitions
+    # Bundled legs need dispatch-only manifests; a PR never runs them.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -238,7 +279,7 @@ jobs:
       windows-arch: ${{ steps.inputs.outputs.windows-arch }}
       macos-arch: ${{ steps.inputs.outputs.macos-arch }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
       - id: inputs
         env:
           BUNDLE_WINDOWS_MANIFEST: ${{ inputs.windows-bundle-manifest }}
@@ -346,7 +387,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           sparse-checkout: tests/install/e2e-assets/playback.html
           sparse-checkout-cone-mode: false
@@ -413,9 +454,9 @@ jobs:
     if: always()
     needs: [leg-player, pick-releases, linux, windows, macos, bundle-inputs, windows-bundled, macos-bundled]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           sparse-checkout: |
             scripts/sandbox/generate-e2e-matrix.mjs
@@ -425,15 +466,31 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # The repo's GITHUB_TOKEN shares one hourly API budget with every
+          # other workflow; a busy hour answered "API rate limit exceeded for
+          # installation" and turned a green matrix red here. Retry, then
+          # say the chart is missing instead of failing the run.
+          fetch() {
+            local out=$1; shift
+            for wait in 30 60 90 0; do
+              gh api "$@" > "$out" && return 0
+              [ "$wait" -eq 0 ] || sleep "$wait"
+            done
+            return 1
+          }
+          if ! fetch /tmp/e2e-jobs.ndjson "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+                --paginate --jq '.jobs[] | {name, conclusion}' \
+             || ! fetch /tmp/e2e-artifacts.ndjson "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts?per_page=100" \
+                --paginate --jq '.artifacts[] | {name, id}'; then
+            echo "::warning::Result chart unavailable: the GitHub API refused the job list; each leg's own conclusion stands."
+            echo "Result chart unavailable: the GitHub API refused the job list; each leg's own conclusion stands." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           {
             echo "OS jobs: linux ${{ needs.linux.result }}, windows ${{ needs.windows.result }}, macos ${{ needs.macos.result }}"
             echo
             # The tag annotations let the chart say WHY a cell skipped
             # (pre-desktop vs declared TODO) instead of a flat "skip".
-            gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
-              --paginate --jq '.jobs[] | {name, conclusion}' > /tmp/e2e-jobs.ndjson
-            gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts?per_page=100" \
-              --paginate --jq '.artifacts[] | {name, id}' > /tmp/e2e-artifacts.ndjson
             echo 'Legend: ✅ upgrade passed · known [n] = exact historical failure, see footnote · ❌ unexpected failure · pre-desktop / TODO = why a leg skipped · 📼 opens the leg player (recording + synced logs)'
             echo
             node scripts/sandbox/generate-e2e-matrix.mjs --format results \

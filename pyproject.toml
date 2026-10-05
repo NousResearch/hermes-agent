@@ -127,6 +127,11 @@ dependencies = [
   # Browser CDP supervisor + browser_dialog import this directly. Keep core
   # so browser tool discovery doesn't fail on lean installs.
   "websockets==15.0.1; python_version >= '3.14'",
+  # Engine of the default browser_exec tool (the `browser-use` CLI is a thin
+  # wrapper over it). Pure Python, and its pins match Pillow/websockets above,
+  # so it rides in the main venv and every install, Desktop bundle included,
+  # ships it without a separate tool environment.
+  "browser-harness==0.1.13; python_version >= '3.14'",
   # .gitignore-aware file matching for desktop build stamp.
   "pathspec==1.1.1; python_version >= '3.14'",
   "fastapi>=0.104.0,<1; python_version >= '3.14'",
@@ -194,7 +199,7 @@ dependencies = [
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.29; sys_platform == 'win32' and python_version >= '3.14'",
-  # First-party lifecycle and shared-metrics runtime. Relay 0.8 is the supported
+  # First-party lifecycle and shared-metrics runtime. Relay 0.9 is the supported
   # native runtime and provider-codec baseline. Managed calls pass request and
   # response data through this native module in-process; shared metrics installs
   # no network exporter and consumes only its bounded projection. This marker
@@ -208,7 +213,7 @@ dependencies = [
   # 738 CPython reports sys_platform == 'android' and never matched.) Pre-GKI
   # devices can still slip through; they get the same resolution failure as
   # before, worked around by installing with `--no-deps` or an older release.
-  "nemo-relay>=0.8.3,<0.9; ((sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')) and python_version >= '3.14'",]
+  "nemo-relay>=0.9,<0.10; ((sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')) and python_version >= '3.14'",]
 
 [project.optional-dependencies]
 # High-performance event loop — uvloop replaces the stdlib asyncio loop with
@@ -251,7 +256,7 @@ kittentts = [
 piper = [
   "piper-tts==1.8.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or sys_platform != 'darwin')",
 ]
-modal = ["modal==1.3.4"]
+modal = ["modal==1.5.5"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
 google-meet = ["playwright==1.62.0", "websockets==15.0.1"]
@@ -318,7 +323,6 @@ wake = [
   "sounddevice==0.5.5",
   "numpy==2.4.3",
 ]
-honcho = ["honcho-ai==2.2.0"]
 # Platform sub-extras / alias extras — declared so pm.extras.ANCHORS names
 # only real extras (contract: tests/pm/test_extras.py). Each is
 # lazy-installed at first use via pm.ensure_import(name) and therefore
@@ -360,9 +364,8 @@ google-chat = [
 # can re-sync exactly the pin from core.
 doc-extract = ["firecrawl-anydoc==0.2.4"]
 trace-upload = ["huggingface-hub==1.24.0"]
-# Cloud memory providers are opt-in PM extras. They stay outside [all],
-# like honcho, so a quarantined release cannot break fresh installs.
-supermemory = ["supermemory==3.50.0"]
+# Cloud memory providers are opt-in PM extras. They stay outside [all]
+# so a quarantined release cannot break fresh installs.
 # mem0ai pulls qdrant-client → grpcio, which has no win_arm64 wheel — same
 # win32-arm64 gate as google-chat. mem0 is lazy-installed, so on arm64 the
 # provider is simply unavailable.
@@ -403,7 +406,6 @@ mcp = [
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
 # wheel targets and intentionally unavailable on other platforms.
 nemo-relay = []
-homeassistant = ["aiohttp==3.14.3"]
 sms = ["aiohttp==3.14.3"]
 teams = [
   "microsoft-teams-apps==2.0.13.4",
@@ -443,17 +445,15 @@ termux = [
   "python-telegram-bot[webhooks]==22.8",
   "hermes-agent[cron]",
   "hermes-agent[mcp]",
-  "hermes-agent[honcho]",
   "hermes-agent[acp]",
 ]
 termux-all = [
   # Best-effort "install all" profile for Termux. Same policy as [all]:
   # only includes extras that are not prepared on demand by PM.
-  # Backends like telegram/slack/dingtalk/feishu/honcho lazy-install at
+  # Backends like telegram/slack/dingtalk/feishu lazy-install at
   # first use, so they're no longer eager-installed here.
   "hermes-agent[termux]",
   "hermes-agent[google]",
-  "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[web]",
   "hermes-agent[pty]",
@@ -524,7 +524,6 @@ all = [
   "hermes-agent[pty]",
   "hermes-agent[mcp]",
   "hermes-agent[uvloop]",
-  "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",
   "hermes-agent[google]",
@@ -697,6 +696,7 @@ asyncpg = false
 azure-identity = false
 boto3 = false
 brotlicffi = false
+browser-harness = false
 certifi = false
 concurrent-log-handler = false
 croniter = false
@@ -722,7 +722,6 @@ google-auth-httplib2 = false
 google-auth-oauthlib = false
 google-cloud-pubsub = false
 h2 = false
-honcho-ai = false
 httplib2 = false
 httpx = false
 httpx2 = false
@@ -780,7 +779,6 @@ snowballstemmer = false
 sounddevice = false
 soundfile = "2026-06-06T08:58:48Z"
 starlette = false
-supermemory = false
 tenacity = false
 ty = false
 tzdata = false

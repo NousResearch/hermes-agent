@@ -41,11 +41,6 @@ let
 
   extraRunFlags = lib.concatMapStrings (line: " \\\n      --run ${lib.escapeShellArg line}") extraRun;
 
-  electronHeaders = pkgs.fetchurl {
-    url = "https://artifacts.electronjs.org/headers/dist/v${electron.version}/node-v${electron.version}-headers.tar.gz";
-    sha256 = "sha256-f8bSbLRmtbP93CJAvEBs+sHWDZ1xP2bcpLhC1EnOmZU=";
-  };
-
   # node-pty ships no Electron-tagged prebuild we can trust to match this
   # exact nixpkgs electron version, so it's always compiled from source
   # against Electron's own headers (not whatever Node ran `npm`).
@@ -87,17 +82,21 @@ let
 
       patchShebangs .
 
-      # The native provider runs before compilation. Use the headers for
-      # the exact Electron runtime shipped by this derivation, offline.
-      mkdir -p "$TMPDIR/electron-headers"
-      tar -xzf ${electronHeaders} -C "$TMPDIR/electron-headers" --strip-components=1
+      # The native provider runs before compilation. Compile node-pty against
+      # the exact Electron runtime this derivation ships (the nixpkgs
+      # `electron`). Its headers come from nixpkgs' own `electron.headers`
+      # derivation — version-locked to `electron`, so it tracks every bump
+      # automatically with no hand-pinned hash to go stale, needs no network
+      # (node-gyp's --disturl path can't run in the sandbox), and is already
+      # the --nodedir layout. Same pattern as signal-desktop / github-desktop /
+      # session-desktop / rstudio in nixpkgs.
       ${lib.getExe hermesNpmLib.node-gyp} rebuild \
         --directory=node_modules/node-pty \
         --build-from-source \
         --runtime=electron \
         --target=${electron.version} \
         --arch=${targetArch} \
-        --nodedir="$TMPDIR/electron-headers" \
+        --nodedir=${electron.headers} \
         --disturl="" \
         --offline
 
@@ -118,7 +117,7 @@ let
 
       pushd apps/desktop
 
-        npm run postbuild
+        node scripts/assert-dist-built.mjs
 
         # validate staged node-pty native binary is present.
         STAGED_PTY_NODE="./dist/node_modules/node-pty/build/Release/pty.node"
@@ -182,6 +181,7 @@ stdenv.mkDerivation {
     makeWrapper ${lib.getExe electron} $out/bin/hermes-desktop \
       --add-flags "$out/share/hermes-desktop" \
       --set HERMES_DESKTOP_HERMES "${lib.getExe hermesAgent}" \
+      --set-default ELECTRON_OZONE_PLATFORM_HINT auto \
       --set ELECTRON_IS_DEV 0${extraEnvFlags}${extraRunFlags}
 
     # XDG launcher entry
@@ -192,7 +192,8 @@ stdenv.mkDerivation {
     cp ${../hermes_cli/linux_desktop_entry.py} "$PYTHONPATH/linux_desktop_entry.py"
     export DESKTOP_EXEC="$out/bin/hermes-desktop"
     export DESKTOP_ICON="$out/share/icons/hicolor/1024x1024/apps/hermes.png"
-    python3 -c 'import os; from linux_desktop_entry import render_desktop_entry; print(render_desktop_entry(os.environ["DESKTOP_EXEC"], os.environ["DESKTOP_ICON"]))' > $out/share/applications/hermes.desktop
+    entry_name=$(python3 -c 'from linux_desktop_entry import DESKTOP_ENTRY_NAME; print(DESKTOP_ENTRY_NAME)')
+    python3 -c 'import os; from linux_desktop_entry import render_desktop_entry; print(render_desktop_entry(os.environ["DESKTOP_EXEC"], os.environ["DESKTOP_ICON"]))' > "$out/share/applications/$entry_name"
     runHook postInstall
   '';
 

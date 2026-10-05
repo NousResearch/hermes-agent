@@ -78,6 +78,10 @@ class GitHubAuth:
         self._cached_token: Optional[str] = None
         self._cached_method: Optional[str] = None
         self._app_token_expiry: float = 0
+        # Credentials GitHub answered 401 to: skipped from then on so the chain falls through (#98725).
+        self._rejected_tokens: set = set()
+        self._rejected_methods: set = set()
+        self.rejected: List[str] = []  # human labels, for the install error
 
     def get_headers(self) -> Dict[str, str]:
         token = self._resolve_token()
@@ -97,14 +101,29 @@ class GitHubAuth:
         for method, resolve in (
             ("pat", self._try_pat), ("gh-cli", self._try_gh_cli), ("github-app", self._try_github_app),
         ):
-            token = resolve()
-            if token:
+            token = None if method in self._rejected_methods else resolve()
+            if token and token not in self._rejected_tokens:
                 self._cached_token, self._cached_method = token, method
                 if method == "github-app":
                     self._app_token_expiry = time.time() + 3500  # ~58 min (tokens last 1 hour)
                 return token
         self._cached_method = "anonymous"
         return None
+
+    def reject(self, token: str) -> None:
+        """GitHub answered 401 Bad credentials to *token*: stop sending it, so the next method and
+        finally anonymous are tried. A revoked GITHUB_TOKEN in .env otherwise shadows a working
+        `gh auth login` (and anonymous access to public repos) for the whole process."""
+        if token in self._rejected_tokens:
+            return
+        self._rejected_tokens.add(token)
+        if token == self._cached_token and self._cached_method:
+            label = {"pat": "GITHUB_TOKEN/GH_TOKEN", "gh-cli": "`gh auth token`"}.get(
+                self._cached_method, "the GitHub App token")
+            self._rejected_methods.add(self._cached_method)
+            self.rejected.append(label)
+            self._cached_token = self._cached_method = None
+            logger.warning("GitHub rejected %s (401 Bad credentials); trying the next credential", label)
 
     @staticmethod
     def _try_pat() -> Optional[str]:
@@ -113,16 +132,10 @@ class GitHubAuth:
         return get_secret("GITHUB_TOKEN") or get_secret("GH_TOKEN")
 
     def _try_gh_cli(self) -> Optional[str]:
-        try:
-            result = subprocess.run(
-                ["gh", "auth", "token"], capture_output=True, text=True, encoding='utf-8', errors='replace',
-                timeout=5, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                return result.stdout.strip()
-        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            logger.debug("gh CLI token lookup failed: %s", e)
-        return None
+        # Shared with git clones: strips GH_TOKEN/GITHUB_TOKEN, which gh would otherwise echo back
+        # instead of its keyring login (the dead .env token would come back as the "gh" credential).
+        from hermes_cli.git_credentials import _gh_cli_token
+        return _gh_cli_token()
 
     def _try_github_app(self) -> Optional[str]:
         from agent.secret_scope import get_secret
@@ -471,6 +484,14 @@ class GitHubSource(SkillSource):
                 last_resp = resp
                 if resp.status_code == 200:
                     return resp
+                sent = hdrs.get("Authorization", "")
+                if resp.status_code == 401 and sent:
+                    # Bad credentials: same request with the next credential, then anonymous.
+                    self.auth.reject(sent.split(" ", 1)[-1])
+                    retry = {k: v for k, v in hdrs.items() if k != "Authorization"}
+                    retry.update((k, v) for k, v in self.auth.get_headers().items() if k == "Authorization")
+                    return self._github_get(url, params=params, headers=retry, timeout=timeout,
+                                            max_retries=max_retries)
                 if resp.status_code in (403, 429):
                     limited = _is_rate_limit_response(resp)
                     if not limited or last_attempt:

@@ -15,8 +15,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
 
+from agent.file_safety import HOME_CREDENTIAL_DIRS
 from agent.model_metadata import CHARS_PER_TOKEN, estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, harden_git_argv, noninteractive_git_env, windows_hide_flags
+from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.sizefmt import format_bytes
 
 # ── Plugin context-reference provider API ────────────────────────────────────
@@ -89,7 +91,6 @@ _FILE_VALUE_PATTERN = re.compile(
 TRAILING_PUNCTUATION = ",.;!?"
 _OPENERS = {")": "(", "]": "[", "}": "{"}
 _NEEDS_QUOTING = re.compile(r"""[\s()\[\]{}<>"'`]""")
-_SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh")
 _SENSITIVE_HERMES_DIRS = (Path("skills") / ".hub",)
 _SENSITIVE_HOME_FILES = tuple(Path(p) for p in (
     ".ssh/authorized_keys", ".ssh/id_rsa", ".ssh/id_ed25519", ".ssh/config", ".bashrc", ".zshrc",
@@ -296,10 +297,30 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
     if is_folder:
         listing = _build_folder_listing(path, cwd, display_base=allowed_root)
         return None, f"📁 {ref.raw} ({estimate_tokens_rough(listing)} tokens)\n{listing}"
+    try:
+        # Keep admission through every sniff, stat and text read (a connection can start
+        # between a check and a later open otherwise), but release it before token
+        # counting/formatting: the registry lock blocks every tracked connect/close.
+        with offline_file_access(path, what="preview context reference"):
+            early, text = _read_file_reference(ref, path, max_inline_tokens)
+    except LiveConnectionError:
+        return None, _on_disk_reference_block(
+            ref, path, descriptor="live SQLite database file",
+            reason="not previewed: raw access would cancel SQLite's POSIX locks.",
+            guidance="Do not open this file directly while its database connection is live.",
+        )
+    return early or _format_file_reference(ref, path, text, max_inline_tokens)
+
+
+def _read_file_reference(
+    ref: ContextReference, path: Path, max_inline_tokens: int | None,
+) -> tuple[Expansion | None, str]:
+    """Raw file I/O for an @file ref: ``(early, text)`` where ``early`` is a refusal block
+    (then ``text`` is empty) or ``None`` with the text to inline."""
     if _is_binary_file(path):
         # A bare "not supported" warning was a dead end (the model gave up); the file IS
         # on disk where the agent's tools run, so hand it an actionable block instead.
-        return None, _binary_reference_block(ref, path)
+        return (None, _binary_reference_block(ref, path)), ""
     if ref.line_start is not None:
         # A ranged ref wants a slice, not the file: stream to the window so a GB-scale
         # file serves :1-5 without being materialized. Lines are read in bounded pieces
@@ -338,7 +359,7 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
                     break
                 total_chars += len(line)
                 if char_budget is not None and total_chars > char_budget:
-                    return None, _oversized_text_reference_block(ref, path, total_chars // CHARS_PER_TOKEN)
+                    return (None, _oversized_text_reference_block(ref, path, total_chars // CHARS_PER_TOKEN)), ""
                 parts.append(line)
         text = "".join(parts)
     else:
@@ -346,8 +367,12 @@ def _expand_path_reference(ref: ContextReference, cwd: Path, *, allowed_root: Pa
         # file past that byte ceiling is certainly oversized; refuse without reading it.
         size = path.stat().st_size
         if max_inline_tokens is not None and size > max_inline_tokens * CHARS_PER_TOKEN:
-            return None, _oversized_text_reference_block(ref, path, size // CHARS_PER_TOKEN)
+            return (None, _oversized_text_reference_block(ref, path, size // CHARS_PER_TOKEN)), ""
         text = path.read_text(encoding="utf-8-sig")
+    return None, text
+
+
+def _format_file_reference(ref: ContextReference, path: Path, text: str, max_inline_tokens: int | None) -> Expansion:
     lang = _FENCE_LANGUAGES.get(path.suffix.lower(), "")
     text_tokens = estimate_tokens_rough(text)
     # Check BEFORE building the fenced block: an oversized file is not going to be
@@ -459,6 +484,27 @@ def _composer_paste_roots() -> list[Path]:
     return [hermes_dir / COMPOSER_PASTES_DIRNAME for hermes_dir in _hermes_dirs()]
 
 
+def _agent_staged_path(path: Path) -> bool:
+    """True when *path* sits in a Hermes dir the gateway stages for the agent.
+
+    Those are the ``_CACHE_DIRS`` roots — ``attachments/`` (file drops),
+    ``images/`` (image uploads), ``cache/*`` (platform downloads) and now
+    ``composer-pastes/`` (large text pastes) — the gateway's OWN payload, never
+    a workspace escape, and they live outside the workspace by construction: on
+    a remote execution backend (ssh and friends) the workspace root is a path
+    on THAT host (#110174), so the workspace check below rejected every staged
+    attachment there. The bytes are staged to (or already live on) the gateway
+    either way, so the ref still expands — text inlines; binaries point at the
+    backend-visible path via ``to_agent_visible_cache_path``.
+    """
+    try:
+        from tools.credential_files import get_cache_directory_mounts
+        return any(_is_under(path, Path(entry["host_path"]).expanduser().resolve())
+                   for entry in get_cache_directory_mounts())
+    except Exception:
+        return False
+
+
 def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
     from agent.file_safety import is_nt_namespace_path
     if is_nt_namespace_path(target):  # raw-string check: resolving such a path is the NTLM-leak trigger
@@ -468,6 +514,7 @@ def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -
         allowed_root is not None
         and not _is_under(resolved, allowed_root)
         and not any(_is_under(resolved, root) for root in _composer_paste_roots())
+        and not _agent_staged_path(resolved)
     ):
         raise ValueError("path is outside the allowed workspace")
     return resolved
@@ -478,7 +525,7 @@ def _ensure_reference_path_allowed(path: Path) -> None:
     from hermes_constants import get_hermes_home
     home, hermes_home = Path(os.path.expanduser("~")).resolve(), get_hermes_home().resolve()
     blocked_exact = {home / rel for rel in _SENSITIVE_HOME_FILES} | {hermes_home / ".env"}
-    blocked_dirs = [home / rel for rel in _SENSITIVE_HOME_DIRS] + [hermes_home / rel for rel in _SENSITIVE_HERMES_DIRS]
+    blocked_dirs = [home / rel for rel in HOME_CREDENTIAL_DIRS] + [hermes_home / rel for rel in _SENSITIVE_HERMES_DIRS]
     if path in blocked_exact:
         raise ValueError("path is a sensitive credential file and cannot be attached")
     if any(_is_under(path, blocked_dir) for blocked_dir in blocked_dirs):
@@ -635,15 +682,18 @@ def _file_metadata(path: Path) -> str:
         size = path.stat().st_size
     except OSError:
         return "unknown size"
-    # A listing line is a summary, not content: past the cap, byte size conveys the
-    # same "how big is this" without a full scan per entry.
-    if _is_binary_file(path) or size > _LINE_COUNT_MAX_BYTES:
-        return f"{size} bytes"
     try:
-        with path.open("rb") as fh:
-            # UTF-8 never embeds 0x0A inside a multibyte sequence, so counting bytes
-            # matches a decoded newline count while streaming instead of read_text.
-            lines = sum(chunk.count(b"\n") for chunk in iter(lambda: fh.read(1 << 20), b""))
-        return f"{lines + 1} lines"
-    except Exception:
+        # A directory preview inspects each entry separately; the registry lock
+        # must cover both its binary sniff and optional line-count read.
+        with offline_file_access(path, what="inspect folder entry"):
+            # A listing line is a summary, not content: past the cap, byte size conveys
+            # the same "how big is this" without a full scan per entry.
+            if _is_binary_file(path) or size > _LINE_COUNT_MAX_BYTES:
+                return f"{size} bytes"
+            with path.open("rb") as fh:
+                # UTF-8 never embeds 0x0A inside a multibyte sequence, so counting bytes
+                # matches a decoded newline while streaming instead of read_text.
+                lines = sum(chunk.count(b"\n") for chunk in iter(lambda: fh.read(1 << 20), b""))
+            return f"{lines + 1} lines"
+    except (LiveConnectionError, OSError):
         return f"{size} bytes"

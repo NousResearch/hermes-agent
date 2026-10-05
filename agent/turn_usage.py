@@ -17,7 +17,7 @@ from typing import Any, Dict, List
 
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
-from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -98,7 +98,8 @@ def record_response_usage(
         )
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
-    canonical_usage = normalize_usage(response.usage, provider=agent.provider, api_mode=agent.api_mode)
+    canonical_usage = with_served_service_tier(
+        normalize_usage(response.usage, provider=agent.provider, api_mode=agent.api_mode), response)
     # Aggregator-only usage kept for pricing: advisor tokens are priced at each advisor's
     # OWN model rate and added as dollars below.
     aggregator_usage = canonical_usage

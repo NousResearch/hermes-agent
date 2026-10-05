@@ -10,7 +10,9 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import os
 import shutil
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -21,6 +23,7 @@ from hermes_cli.plugin_catalog import (
     find_removed, get_live_catalog_entry, load_catalog_live, match_removed, resolved_removed_entries,
     _NAME_RE, _normalize_repo,
 )
+from pm.filesystem import is_junction
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +237,7 @@ def _refuse_unsupported_catalog_platform(entry: PluginCatalogEntry) -> None:
 
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
                           allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True,
-                          before_swap=None) -> tuple:
+                          assume_deps_consent: bool = False, before_swap=None) -> tuple:
     """``_install_plugin_core`` at the catalog pin (an explicit *ref* wins) + provenance recorded on the
     install-metadata record at the sha ACTUALLY checked out (a ``--ref`` install is not at the reviewed
     pin, so ``update_available`` must say so). Returns the core's ``(target, manifest, installed_name)``."""
@@ -244,7 +247,8 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
     _refuse_unsupported_catalog_platform(entry)
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
-        reviewed_pin=entry.sha, python_deps=python_deps, allow_removed=allow_removed, before_swap=before_swap,
+        reviewed_pin=entry.sha, python_deps=python_deps, assume_deps_consent=assume_deps_consent,
+        allow_removed=allow_removed, before_swap=before_swap,
         catalog={"name": entry.name, "repo": entry.repo, "tier": entry.tier, "pin": entry.sha})
     return target, manifest, installed_name
 
@@ -281,26 +285,58 @@ def refuse_if_installed_removed(name: str, plugin_dir) -> None:
             "or reinstall with `hermes plugins install <source> --force --allow-removed` if you trust it.")
 
 
-_PRESERVE_SKIP = ("__pycache__", CATALOG_SIDECAR)
+_PRESERVE_SKIP = ("__pycache__", ".git", CATALOG_SIDECAR)
+_NO_GIT_REVISION_FILES = frozenset({
+    "plugin.yaml", "plugin.yml", "plugin.json", "mcp.json",
+    "pyproject.toml", "package.json", "package-lock.json", "uv.lock",
+})
+_NO_GIT_REVISION_DIRS = frozenset({"dashboard", "desktop", "skills", "sidecar", "node_modules"})
+# JS module/JSX variants the guard does not classify as code. Kept local: adding them to
+# tools.plugin_guard.CODE_FILE_EXTENSIONS would exempt them from env-secret scan patterns.
+_NO_GIT_REVISION_EXTENSIONS = frozenset({".mjs", ".cjs", ".jsx", ".tsx"})
 
 
-def _local_changes(target: Path) -> tuple[list[str], list[str]]:
-    """``(untracked_or_ignored, modified_tracked)`` relative paths in a git checkout; empty for a
-    non-git tree (subdir installs carry no ``.git``, so nothing can be told apart from the clone)."""
-    from hermes_cli.plugins_cmd import _resolve_git_executable, _run_plugin_git
+def _skip_preserve(name: str) -> bool:
+    """Installer/cache names that are never user state (checked per path component)."""
+    return name in _PRESERVE_SKIP or name.endswith(".pyc")
+
+
+def _revision_owned_without_git(rel: Path) -> bool:
+    """True for plugin code/control surfaces an update must never resurrect from the old tree."""
+    from tools.plugin_guard import CODE_FILE_EXTENSIONS
+    suffix = rel.suffix.lower()
+    return (
+        suffix in CODE_FILE_EXTENSIONS
+        or suffix in _NO_GIT_REVISION_EXTENSIONS
+        or rel.as_posix() in _NO_GIT_REVISION_FILES
+        or bool(rel.parts and rel.parts[0] in _NO_GIT_REVISION_DIRS)
+    )
+
+
+def _local_changes(target: Path) -> tuple[Optional[list[str]], list[str]]:
+    """``(untracked_or_ignored, modified_tracked)`` in a git checkout. The first item is ``None``
+    when git cannot classify the installed tree (notably subdirectory installs, which carry no ``.git``)."""
+    from hermes_cli.plugins_cmd import PluginOperationError, _resolve_git_executable, _run_plugin_git
     git_exe = _resolve_git_executable()
-    if not git_exe or not (target / ".git").exists():
-        return [], []
+    if not (target / ".git").exists():
+        return None, []
+    if not git_exe:
+        raise PluginOperationError(
+            f"Could not inspect local changes for '{target.name}': git executable is unavailable."
+        )
     status = _run_plugin_git(git_exe, target, "status", "--porcelain", "--ignored", "-z", "--untracked-files=all",
                              "--ignored=matching", timeout=30)
     if status.returncode != 0:
-        return [], []
+        detail = (status.stderr or status.stdout or "git status failed").strip()
+        raise PluginOperationError(
+            f"Could not inspect local changes for '{target.name}': {detail}"
+        )
     local, modified = [], []
     for item in status.stdout.split("\0"):
         if len(item) < 4:
             continue
         code, rel = item[:2], item[3:]
-        if any(part in _PRESERVE_SKIP or part.endswith(".pyc") for part in Path(rel).parts):
+        if any(_skip_preserve(part) for part in Path(rel).parts):
             continue
         (local if code in ("??", "!!") else modified).append(rel)
     return local, modified
@@ -313,6 +349,126 @@ def _stash_local_files(target: Path, rels: list[str], stash: Path) -> None:
             dst = stash / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
+
+
+def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> list[str]:
+    """Carry user-owned files into a staged replacement without reviving old plugin code.
+
+    For a git checkout, *local* is the ``??``/``!!`` set and may contain a directory entry
+    such as ``data/``; descendants of those entries are copied and win over same-path files in
+    the new tree. ``None`` means there is no git checkout, so user-state files absent from the new
+    tree are carried while executable/declarative plugin surfaces remain revision-owned. If a
+    user-owned path cannot be represented safely in the new tree (a layout clash, or a symlink in a
+    git checkout's untracked/ignored set), fail before publication rather than silently dropping it.
+    Dirs in ``tools.plugin_guard.EXCLUDED_DIRS`` (``.venv/``, ``node_modules/``, tool caches) are
+    install artefacts: they are neither carried nor inspected, so links inside them never stop an update.
+    Returns the carried paths (POSIX, relative to the tree) so a later scan block can name them.
+    """
+    from hermes_cli.plugins_cmd import PluginOperationError
+    from tools.plugin_guard import EXCLUDED_DIRS
+
+    keep = {Path(rel) for rel in local or ()}
+    linked: list[str] = []
+    carried: list[str] = []
+
+    def _user_link(rel: Path) -> None:
+        # Git-owned user state that is a symlink is refused, never followed: a link injected after the
+        # installer's scan could point outside the plugin root past the guard (which skips links).
+        if local is not None and not keep.isdisjoint((rel, *rel.parents)):
+            linked.append(rel.as_posix())
+
+    def _walk_error(exc: OSError) -> None:
+        raise PluginOperationError(f"Could not preserve user files from '{old}': {exc}") from exc
+
+    def _conflict(rel: Path, reason: str = "its destination conflicts with the updated plugin") -> PluginOperationError:
+        return PluginOperationError(
+            f"Cannot preserve user file '{rel}': {reason}. The installed plugin was left unchanged."
+        )
+
+    for dirpath, dirnames, filenames in os.walk(old, onerror=_walk_error):
+        here = Path(dirpath)
+        walk = []
+        for name in dirnames:
+            # The guard's excluded dirs (.venv, node_modules, tool caches) are reproducible install
+            # artefacts, not user state: never walk or carry them, so the fresh tree rebuilds them whole
+            # (a partial copy has no bin/python or .bin shims and suppresses `npm ci`). Without git,
+            # top-level revision-owned dirs are never carried either.
+            if (_skip_preserve(name) or name in EXCLUDED_DIRS
+                    or (local is None and here == old and name in _NO_GIT_REVISION_DIRS)):
+                continue
+            if (here / name).is_symlink() or is_junction(here / name):
+                _user_link((here / name).relative_to(old))
+                continue
+            walk.append(name)
+        dirnames[:] = walk
+        for name in filenames:
+            # Skipped directories are pruned above, so only the file name itself needs checking.
+            if _skip_preserve(name):
+                continue
+            src = here / name
+            rel = src.relative_to(old)
+            if local is None:
+                # A no-git subdir install cannot distinguish removed upstream code from user files.
+                # Never resurrect known executable/control surfaces.
+                if _revision_owned_without_git(rel):
+                    continue
+            elif keep.isdisjoint((rel, *rel.parents)):
+                continue
+            try:
+                src_mode = src.lstat().st_mode
+            except OSError as exc:
+                raise PluginOperationError(f"Could not preserve user file '{rel}': {exc}") from exc
+            # Only regular files are durable state. FIFOs, sockets and devices are runtime objects.
+            # Symlinks are never carried; in a git checkout a user-owned one fails the update below.
+            if stat.S_ISLNK(src_mode):
+                _user_link(rel)
+                continue
+            if not stat.S_ISREG(src_mode):
+                continue
+
+            dst = new / rel
+            if os.path.lexists(dst):
+                if is_junction(dst):
+                    raise _conflict(rel)
+                # A file -> directory clash cannot be skipped: that would delete a user-state file,
+                # so keep the live install intact and make the user resolve it.
+                if dst.is_dir() and not dst.is_symlink():
+                    raise _conflict(rel, "the updated plugin now has a directory at that path")
+                if local is None:
+                    # A same-shape path belongs to the new revision when git cannot prove otherwise.
+                    continue
+
+            parent = new
+            source_parent = old
+            for part in rel.parent.parts:
+                parent /= part
+                source_parent /= part
+                if os.path.lexists(parent):
+                    if is_junction(parent) or parent.is_symlink() or not parent.is_dir():
+                        raise _conflict(rel)
+                    continue
+                try:
+                    source_info = source_parent.lstat()
+                    if is_junction(source_parent) or not stat.S_ISDIR(source_info.st_mode):
+                        raise _conflict(rel, "its source path changed during the update")
+                    mode = stat.S_IMODE(source_info.st_mode)
+                    parent.mkdir(mode=mode)
+                    parent.chmod(mode)
+                except PluginOperationError:
+                    raise
+                except OSError as exc:
+                    raise _conflict(rel, "its destination could not be prepared") from exc
+            if dst.is_symlink() or dst.is_file():
+                dst.unlink()
+            shutil.copy2(src, dst, follow_symlinks=False)
+            carried.append(rel.as_posix())
+    if linked:
+        raise PluginOperationError(
+            f"Cannot preserve symlinked user file(s) {', '.join(sorted(linked))}: links are not followed "
+            "into an update. Replace each with a regular file (or remove it) and retry. "
+            "The installed plugin was left unchanged."
+        )
+    return carried
 
 
 class RepinResult(NamedTuple):
@@ -427,32 +583,34 @@ def repin_catalog_plugin(
         preview_target = _resolve_subdir_within(preview_root, subdir) if subdir else preview_root
         _consent_gate(_read_manifest_for_install(preview_target), preview_target)
 
-    with tempfile.TemporaryDirectory(prefix=".repin-", dir=_plugins_dir()) as tmp:
-        stash = Path(tmp) / "local"
-        _stash_local_files(target, local, stash)
-        # Outside the plugins dir: the discovery scanners recurse into every subdirectory there.
-        backup = _plugins_dir().parent / "plugins-backup" / f"{target.name}-{old_sha8}"
-        _stash_local_files(target, modified, backup)
-        from hermes_cli.plugins_transaction import update_plugin
+    # Outside the plugins dir: the discovery scanners recurse into every subdirectory there.
+    backup = _plugins_dir().parent / "plugins-backup" / f"{target.name}-{old_sha8}"
+    _stash_local_files(target, modified, backup)
+    from hermes_cli.plugins_transaction import update_plugin
 
-        update_plugin(target, catalog_entry=entry, interactive=interactive, preserved_files=stash)
-        matches = []
-        for installed_name, row in _read_install_metadata().items():
-            if not isinstance(row, dict):
-                continue
-            block = row.get("catalog")
-            if (
-                isinstance(block, dict)
-                and block.get("name") == entry.name
-                and at_catalog_pin(block, entry.sha)
-            ):
-                matches.append(installed_name)
-        if len(matches) != 1:
-            raise PluginOperationError(
-                f"Catalog update published but its install record is ambiguous: {matches or 'missing'}."
-            )
-        installed_name = matches[0]
-        new_target = target.parent / installed_name
+    update_plugin(
+        target,
+        catalog_entry=entry,
+        interactive=interactive,
+        carry_user_files=lambda staged: _carry_user_files(target, staged, local),
+    )
+    matches = []
+    for installed_name, row in _read_install_metadata().items():
+        if not isinstance(row, dict):
+            continue
+        block = row.get("catalog")
+        if (
+            isinstance(block, dict)
+            and block.get("name") == entry.name
+            and at_catalog_pin(block, entry.sha)
+        ):
+            matches.append(installed_name)
+    if len(matches) != 1:
+        raise PluginOperationError(
+            f"Catalog update published but its install record is ambiguous: {matches or 'missing'}."
+        )
+    installed_name = matches[0]
+    new_target = target.parent / installed_name
     warnings: list[str] = []
     if modified:
         warnings.append(f"Local edits to {len(modified)} tracked file(s) were not carried over; copies are under "
@@ -612,14 +770,22 @@ def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -
     installs the declared Python deps first so the capability probe imports what an install would."""
     from hermes_cli.plugin_validate import validate_plugin_dir
     from hermes_cli.plugins_cmd import _console
+    probe = None
     if install_deps:
         import pm
+        from pm import paths
+        from pm.environments import activation_environment, project_python
         from pm.plugin_inputs import Candidates
         try:
             pm.sync_venv(plugins=Candidates([Path(path)]))
+            # The sync commits a NEW environment that this running process never switches to,
+            # so the probe must import the plugin from that environment's interpreter.
+            root = paths.repo_root()
+            if project_python(root).is_file():  # a developer venv has no committed environment
+                probe = (project_python(root), activation_environment(root))
         except Exception as exc:  # validation still runs; the probe reports what is missing
             print(f"dependency preparation failed: {exc}", file=sys.stderr)
-    report = validate_plugin_dir(Path(path))
+    report = validate_plugin_dir(Path(path), probe)
     if as_json:
         print(json.dumps(report.to_dict(), indent=2))
         sys.exit(report.exit_code)
@@ -630,6 +796,12 @@ def cmd_validate(path: str, as_json: bool = False, install_deps: bool = False) -
                       + (f" [dim]— {detail}[/dim]" if detail else ""))
     for warning in report.warnings:
         console.print(f"[yellow]⚠ {warning}[/yellow]")
+    if report.isolation:
+        from hermes_cli.plugin_isolation_audit import IsolationReport
+        iso = IsolationReport(report.isolation["verdict"], report.isolation["reasons"], report.isolation["notes"])
+        console.print(f"{'[green]◆[/green]' if iso.host_ready else '[dim]◇[/dim]'} Isolation [dim]— {iso.summary()}[/dim]")
+        for note in iso.notes:
+            console.print(f"  [dim]· {note}[/dim]")
     console.print()
     console.print("[green bold]Validation passed.[/green bold]" if report.ok else "[red bold]Validation failed.[/red bold]")
     sys.exit(report.exit_code)
@@ -694,9 +866,34 @@ def catalog_pins() -> Dict[str, str]:
         return {}
 
 
+def catalog_titles() -> Dict[str, str]:
+    """``{catalog_name: title}`` for entries that carry one — the Plugins hub server-sentence display
+    name. One resolution for a whole listing: callers that annotate every installed plugin must not
+    pay a live-catalog fetch per candidate (see ``resolved_removed_entries``); empty on failure."""
+    try:
+        return {e.name: e.title for e in load_catalog_live() if e.title}
+    except Exception:
+        return {}
+
+
 def catalog_versions() -> Dict[str, str]:
     """``{catalog_name: version_label}`` for entries that carry one; empty on failure (best effort)."""
     try:
         return {e.name: e.version for e in load_catalog_live() if e.version}
     except Exception:
         return {}
+
+
+def catalog_rows_maps() -> tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
+    """The pins/versions/titles maps from ONE live-catalog resolution. Listing callers (``_plugin_rows``)
+    need all three; taking them via :func:`catalog_pins`/:func:`catalog_versions`/:func:`catalog_titles`
+    would pay the whole ``load_catalog_live()`` pass — git probe, ~300 catalog YAMLs, prefer-in-tree
+    merges — three times per inventory request (#125683). Best effort like the per-map helpers: an
+    empty triple on failure."""
+    try:
+        entries = load_catalog_live()
+    except Exception:
+        return {}, {}, {}
+    return ({e.name: e.sha for e in entries},
+            {e.name: e.version for e in entries if e.version},
+            {e.name: e.title for e in entries if e.title})

@@ -605,6 +605,22 @@ def test_do_install_stale_index_names_the_problem(monkeypatch):
     assert "Could not fetch" not in out
 
 
+def test_fetch_failure_names_rejected_github_credential():
+    """A credential GitHub refused is named, never reported as a stale index entry (#98725)."""
+    from types import SimpleNamespace
+    from hermes_cli.skills_hub import _print_fetch_failure
+
+    src = SimpleNamespace(is_rate_limited=False, auth=SimpleNamespace(rejected=["GITHUB_TOKEN/GH_TOKEN"]),
+                          source_id=lambda: "hermes-index")
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
+    _print_fetch_failure(console, [src], "o/r/s", meta=object(), source=src)
+
+    out = sink.getvalue()
+    assert "rejected GITHUB_TOKEN/GH_TOKEN" in out
+    assert "Stale index entry" not in out
+
+
 @pytest.mark.parametrize("meta_hit", [False, True])
 def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_hit):
     """No index hit — or a throttled fetch that only *looks* like a stale entry — keeps the

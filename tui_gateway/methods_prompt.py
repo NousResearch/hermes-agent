@@ -59,7 +59,13 @@ def _mem_db_pair_agrees(mem, db_msg) -> bool:
 
 
 def _find_user_turn_by_row_id(history: list, target_row_id: int):
-    """``(user_ordinal, history_index)`` for ``target_row_id``, or None."""
+    """``(user_ordinal, history_index)`` for ``target_row_id``, or None.
+
+    Exact ``_row_id`` matches only. An id absorbed into a merge carrier must NOT
+    resolve here: the carrier's own index cuts the whole merged pair away, but a
+    rewind aimed at the absorbed row has to retain the carrier's earlier half —
+    that mapping is `_resolve_truncate_row_id`'s durable-prefix path.
+    """
     return next(
         ((u_ord, h_idx) for u_ord, h_idx in enumerate(_history_user_indices(history))
          if _message_row_id(history[h_idx]) == target_row_id), None)
@@ -68,7 +74,10 @@ def _find_user_turn_by_row_id(history: list, target_row_id: int):
 def _load_durable_truncation_history(
     session: dict, fallback_sid: str = "", repair_alternation: bool = True):
     """Load the durable live-replay transcript, or None when it cannot be proven safe."""
-    session_key = str(session.get("session_key") or fallback_sid or "")
+    # Same stale-key hazard as the submit row and the out-of-band probe: a compression rotation moves the
+    # live tip off session_key, and this is the load every adoption path replays from — reading the parent
+    # returns a transcript without the continuation (#123545).
+    session_key = _submit_row_target_key(session) or str(fallback_sid or "")
     if not session_key:
         return []
     try:
@@ -87,22 +96,39 @@ def _load_durable_truncation_history(
 
 
 def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
-    """Resolve ``truncate_before_row_id`` to ``(user_ordinal, history_index)``: in-memory
-    stamps first, else the durable transcript mapped onto the live list by user ordinal.
-    Never falls back to a client-supplied ordinal — unknown row ids refuse.
+    """Resolve ``truncate_before_row_id`` against the live list: a
+    ``(user_ordinal, history_index)`` pair, or — when the target is a durable
+    row absorbed into a repaired live carrier — a triple appending the
+    physical ``durable_prefix`` to cut from. None refuses (fail closed);
+    a client-supplied ordinal is never trusted as a fallback.
 
     Prefer in-memory ``_row_id`` / ``row_id`` stamps. When a live turn rewrote ``session["history"]``
     without stamps (provider-format messages), load the session's durable transcript with
     ``include_row_ids=True`` and map the matched user-turn ordinal onto the live list. See #82959.
+
+    A cold resume/reload materializes the live history with ``repair_alternation=True``, so the
+    live list is the REPAIRED projection of the physical rows: a user;user run is merged into
+    its first row and the absorbed rows' ids have no live ordinal. When the physical target row
+    lives inside such a merged carrier, resolving to the carrier's own index would cut the whole
+    pair (losing the unanswered earlier half); instead the durable prefix — the physical rows
+    strictly before the target — is returned so the cut keeps the inner row boundary (#94486).
     """
     if (hit := _find_user_turn_by_row_id(history, target_row_id)) is not None:
         return hit
-    db_history = _load_durable_truncation_history(session)
+    # Identity lookups read the UN-REPAIRED transcript: repair merges any user;user run
+    # into its first row (a model-switch marker run, or an interrupted turn that persisted
+    # no assistant row followed by a resend), and the merged row keeps only the first
+    # row's _row_id — the absorbed rows' ids vanish from the repaired view, so resolving
+    # against it fails closed on rows that are physically present (#94486's live-session
+    # shape). Resolution must read the physical rows, the same discipline the rebind path
+    # applies below for the active-id set.
+    db_history = _load_durable_truncation_history(session, repair_alternation=False)
     if db_history is None:
         return None
-    # Heal missing stamps only when EVERY pair agrees: the durable copy is alternation-
-    # repaired while the live list can carry optimistic/marker rows, and a stamp on a
-    # misaligned pair is sticky (re-aims every later rewind at the wrong durable row).
+    # Heal missing stamps only when EVERY pair agrees: the live list can carry
+    # optimistic/marker rows while the durable copy is physical, and the two can coincide
+    # in length while position-shifted; a stamp on a misaligned pair is sticky (re-aims
+    # every later rewind at the wrong durable row).
     if len(db_history) == len(history) and all(
             _mem_db_pair_agrees(mem, db_msg) for mem, db_msg in zip(history, db_history)):
         for mem, db_msg in zip(history, db_history):
@@ -114,12 +140,56 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
         return None
     db_ord, db_idx = db_hit
     mem_user_indices = _history_user_indices(history)
-    # Same-ordinal mapping across lists that can diverge (repair may merge a user;user
-    # pair): trust it only when the mapped live turn shows the durable target's content.
-    if db_ord >= len(mem_user_indices) or not _mem_db_pair_agrees(
+    if db_ord < len(mem_user_indices) and _mem_db_pair_agrees(
             history[mem_user_indices[db_ord]], db_history[db_idx]):
-        return None
-    return db_ord, mem_user_indices[db_ord]
+        # Same-ordinal mapping across aligned lists: the live turn at that user
+        # ordinal shows the same content as the durable target.
+        return db_ord, mem_user_indices[db_ord]
+    # The live list can be the REPAIRED projection of these physical rows (a cold
+    # resume/reload materializes session["history"] with repair_alternation=True):
+    # the user;user run ending in the target row is merged into its FIRST row, so
+    # every user ordinal after the run shifts down and the target has no live
+    # ordinal of its own. Map the durable row onto the merge survivor that owns it
+    # — the carrier whose own or absorbed id names the target — gated on the
+    # carrier holding the durable target's text (repair folds a run with a
+    # "\n\n" join, so the target's sanitized text is a whole part of the carrier).
+    # The returned index keeps the merged pair: the prefix cut below carves the
+    # durable target's own boundary out of it instead of dropping both rows.
+    for u_ord, h_idx in enumerate(mem_user_indices):
+        carrier = history[h_idx]
+        absorbed_ids = [rid for rid in (carrier.get("_absorbed_row_ids") or ())
+                        if isinstance(rid, int)]
+        if target_row_id != _message_row_id(carrier) and target_row_id not in absorbed_ids:
+            continue
+        if not _merge_carrier_holds_target_text(carrier, db_history[db_idx]):
+            continue
+        return u_ord, h_idx, db_history[:db_idx]
+    return None
+
+
+def _merge_carrier_holds_target_text(carrier: dict, db_msg: dict) -> bool:
+    """True when the live merge *carrier* plausibly holds the durable target row's
+    text. ``_merge_consecutive_users`` joins a user;user run with ``"\\n\\n"`` (an
+    empty side drops out), so the target's sanitized text either IS the carrier's
+    content or appears in it as a whole ``"\\n\\n"``-delimited part. Both views are
+    user-originated by construction (the caller only visits user turns)."""
+    from agent.context_compressor import user_originated_turn_view
+    from agent.memory_manager import sanitize_context
+    mem_view = user_originated_turn_view(carrier)
+    db_view = user_originated_turn_view(db_msg)
+    if mem_view is None or db_view is None:
+        # The caller only visits user turns; a None view means a non-user row
+        # slipped in — refuse it.
+        return False
+    mem_content = mem_view.get("content")
+    db_content = db_view.get("content")
+    if not (isinstance(mem_content, str) and isinstance(db_content, str)):
+        # A merged carrier is always plain-text (repair never merges multimodal
+        # rows); a non-text durable target cannot live inside one.
+        return False
+    mem_text = sanitize_context(mem_content).strip()
+    db_text = sanitize_context(db_content).strip()
+    return db_text == mem_text or f"\n\n{db_text}" in mem_text
 
 
 def _coerce_truncate_int(rid, value, param_name="truncate_before_user_ordinal"):
@@ -268,14 +338,19 @@ def _parse_truncation_params(rid, sid, session, params, history):
 
 
 def _resolve_truncation_ordinal(rid, sid, session, params, history):
-    """Resolve the truncation target to ``(ordinal, cut_index, err)``: unresolvable target
-    (4018, fail closed — never degrade a missing row_id/message_id into an ordinal cut) ->
-    ordinal drift (4030) -> ordinal-only on a durable session (4004)."""
+    """Resolve the truncation target to ``(ordinal, cut_index, err)`` — with a fourth
+    ``durable_prefix`` element when the durable target was absorbed into a repaired
+    live carrier: unresolvable target (4018, fail closed — never degrade a missing
+    row_id/message_id into an ordinal cut) -> ordinal drift (4030) -> ordinal-only on
+    a durable session (4004)."""
     target_row_id, client_ordinal, err = _parse_truncation_params(
         rid, sid, session, params, history)
     if err is not None:
         return None, None, err
     truncate_message_id = params.get("truncate_before_message_id")
+    # The durable target was absorbed into a repaired live carrier: the physical
+    # prefix carries the true row boundary for the cut (see _resolve_truncate_row_id).
+    durable_prefix = None
     # Client ordinals count the full displayed lineage; after compression ancestors live in
     # display_history_prefix, so count their user turns once to translate ordinals.
     prefix_user_count = len(_history_user_indices(session.get("display_history_prefix") or []))
@@ -293,6 +368,12 @@ def _resolve_truncation_ordinal(rid, sid, session, params, history):
         if target_row_id is not None:
             param_name, target_repr = "truncate_before_row_id", target_row_id
             found_match = _resolve_truncate_row_id(session, history, target_row_id)
+            if len(found_match or ()) == 3:
+                # The durable target is a physical row absorbed into a repaired
+                # live carrier: the pair stays, the cut keeps the target's own
+                # row boundary (physical rows strictly before it).
+                durable_prefix = found_match[2]
+                found_match = found_match[:2]
             not_found = "target row_id %d not found for session %s (in-memory + durable)"
         else:
             param_name = "truncate_before_message_id"
@@ -346,6 +427,8 @@ def _resolve_truncation_ordinal(rid, sid, session, params, history):
     # BOTH ends: a negative ordinal would index user_indices[-1] and persist the loss.
     if ordinal < 0 or ordinal >= len(user_indices):
         return _stale(resolved_ordinal=ordinal)
+    if durable_prefix is not None:
+        return ordinal, user_indices[ordinal], None, durable_prefix
     return ordinal, user_indices[ordinal], None
 
 
@@ -357,11 +440,20 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
     """Rewind/regenerate cut under ``history_lock``: ``(err, survivor_fields)``; the fields
     are the client rowId-rebind payload."""
     history = _history_without_ephemeral_scaffolding(session.get("history", []))
-    ordinal, cut_index, err = _resolve_truncation_ordinal(rid, sid, session, params, history)
+    resolved = _resolve_truncation_ordinal(rid, sid, session, params, history)
+    ordinal, cut_index, err = resolved[0], resolved[1], resolved[2]
+    durable_prefix = resolved[3] if len(resolved) > 3 else None
     if err is not None:
         return err, {}
     from agent.context_compressor import history_before_user_originated_turn
-    truncated, _live_view = history_before_user_originated_turn(history, cut_index)
+    if durable_prefix is not None:
+        # Durable-boundary cut: the target row is physically present but merged into
+        # a repaired live carrier; the physical rows strictly before it are the
+        # survivors — the carrier's earlier half stays, the absorbed target and
+        # everything after it are replaced by the submitted turn.
+        truncated, _live_view = [message.copy() for message in durable_prefix], None
+    else:
+        truncated, _live_view = history_before_user_originated_turn(history, cut_index)
     # Second gate: ordinal 0 would DELETE every durable row; wiping needs its own opt-in.
     if not truncated and history and not is_truthy_value(params.get("confirm_empty_truncate")):
         logger.warning(
@@ -444,6 +536,25 @@ def _storage_error_data(failure, raw) -> dict:
     return {"code": failure.code, "cause": failure.cause, "details": storage_failure_details(raw)}
 
 
+def _reopen_if_finalized(db, session_id: str) -> None:
+    """The first real turn is what reopens a finalized session (#85303).
+
+    Mounting a chat (``session.resume``/hydration) is a READ and no longer clears
+    ``ended_at``/``end_reason`` — opening a finished session must not re-light DB-derived
+    liveness with no new activity. This runs on the submit path (the user actually sent
+    something) before the turn's first transcript write, so the row the turn writes is
+    live again. Best-effort: a failed read must not block the send."""
+    if not session_id:
+        return
+    try:
+        row = db.get_session(session_id)
+    except Exception:
+        logger.debug("finalized-session reopen check failed for %s", session_id, exc_info=True)
+        return
+    if row is not None and row.get("ended_at") is not None:
+        db.reopen_session(session_id)
+
+
 def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     """Lazily persist the DB row now that the user sent a message (a branch becomes real
     here), then the message itself (#111868: a freeze during the first build must leave a
@@ -459,6 +570,11 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
                 data=_storage_error_data(failure, _db_error))
         else:
             _persist_branch_seed(session)
+            # The first real turn reopens a finalized row (#85303): resume is read-only, so
+            # an ended_at set at mount time is cleared HERE, before the turn's first write.
+            with _session_db(session) as db:
+                if db is not None:
+                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
             _persist_submit_user_row(session, text, display_kind)
             return None
     except Exception as exc:
@@ -536,7 +652,8 @@ def _lock_in_submit_turn(
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
-        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+        if session.get("lazy") and _child_run_active(
+            str(session.get("session_key") or ""), session.get("profile_home") or None):
             return _err(rid, 4009, "subagent still running — wait for it to finish"), fields
         if is_truthy_value(params.get("confirm_truncate")) and not has_truncation:
             return _err(
@@ -649,7 +766,8 @@ def _(rid, params: dict) -> dict:
             # for `running` to clear and resubmits with the truncation intact.
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author)
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
+            display_kind=display_kind)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -664,6 +782,19 @@ def _(rid, params: dict) -> dict:
         if turn_author:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
+        # The isolated dispatch returns BELOW before the inline persist, so the reopen
+        # cannot live only in _persist_session_row_for_submit: the turn is already
+        # admitted here (running, in flight, active-slot lease claimed, truncation
+        # applied inline), and the child's transcript writes must land in a live row
+        # (#85303 review: the early return made _reopen_if_finalized unreachable on
+        # this path). Best-effort like the helper: a failed read never blocks the send.
+        try:
+            with _session_db(session) as db:
+                if db is not None:
+                    _reopen_if_finalized(db, str(session.get("session_key") or ""))
+        except Exception:
+            logger.debug("finalized-session reopen before isolated dispatch failed for %s",
+                         sid, exc_info=True)
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
         if not isolated_response.get("error"):
@@ -915,8 +1046,15 @@ def _(rid, params: dict) -> dict:
         from run_agent import AIAgent
         kwargs = _background_agent_kwargs(session["agent"], task_id)
         with _side_agent_session_db(kwargs.get("session_db")) as session_db:
-            result = AIAgent(**{**kwargs, "session_db": session_db}).run_conversation(
-                user_message=text, task_id=task_id)
+            agent = AIAgent(**{**kwargs, "session_db": session_db})
+            try:
+                result = agent.run_conversation(user_message=text, task_id=task_id)
+            finally:
+                # AIAgent.close() is the owner boundary (memory shutdown, tool
+                # subprocesses, httpx clients); an unclosed side agent leaks
+                # all of them for the gateway's life (#50197).
+                with contextlib.suppress(Exception):
+                    agent.close()
         return _final_response_text(result)
 
     return _spawn_side_agent(rid, session, task_id, parent, "background.complete", body)
@@ -1011,7 +1149,8 @@ def _(rid, params: dict) -> dict:
     if not request_id or not question_id:
         return _err(rid, 4002, "request_id and question_id required")
     answer = params.get("answer", "")
-    answer = answer if isinstance(answer, str) else json.dumps(answer, ensure_ascii=False)
+    if answer is not None and not isinstance(answer, str):
+        answer = json.dumps(answer, ensure_ascii=False)
     if (proxied := _lock_compute_host_clarify(rid, request_id, question_id, answer)) is not None:
         return proxied
     from tui_gateway import server_requests
@@ -1148,7 +1287,10 @@ def _spawn_side_agent(
     extra = extra or {}
 
     def run():
-        session_tokens = _set_session_context(task_id, cwd=(cwd or _session_cwd(session)))
+        # ``parent`` is the caller's live sid (``_sess`` admitted it): bind it as the UI owner so
+        # prompts this worker raises (skill secrets) reach the session whose profile it runs under.
+        session_tokens = _set_session_context(
+            task_id, cwd=(cwd or _session_cwd(session)), ui_session_id=parent)
         # Bug #50233: ephemeral agent threads don't inherit the session's ContextVar scopes (set on the
         # session-create thread), so a side turn under a non-default profile ran against the wrong home.
         # Bind the profile's home + secrets + terminal policy for the whole body, exactly as a prompt turn
@@ -1256,11 +1398,3 @@ def _approval_respond_session_fallback(params: dict):
 def register(server) -> None:
     """Publish this module's helpers + handlers onto ``server``, rebound to its globals."""
     bind_module(globals(), server, skip=("_",))
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import types  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

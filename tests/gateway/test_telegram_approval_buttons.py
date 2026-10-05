@@ -328,9 +328,8 @@ class TestTelegramApprovalCallback:
 
         token = set_hermes_home_override(profile_home)
         try:
-            with patch("hermes_constants.get_process_hermes_home", return_value=launch_home):
-                with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}):
-                    await adapter._handle_callback_query(update, context)
+            with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*", "HERMES_HOME": str(launch_home)}):
+                await adapter._handle_callback_query(update, context)
         finally:
             reset_hermes_home_override(token)
 

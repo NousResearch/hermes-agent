@@ -533,10 +533,9 @@ class GitHubSource(SkillSource):
             if path.endswith(skill_md_suffix) or path == skill_md_suffix[1:]:
                 return f"{repo}/{path[: -len('/SKILL.md')]}"
             skill_dirs.append(path[: -len("SKILL.md")].rstrip("/"))
-        # A single-skill repo may keep it in a generically named dir (``skills/SKILL.md``) that no
-        # slug matches; with only one SKILL.md in the tree there is nothing else it could mean
-        # (a lone root SKILL.md is left to ``_find_repo_root_skill``).
-        return f"{repo}/{skill_dirs[0]}" if len(skill_dirs) == 1 and skill_dirs[0] else None
+        # A single-skill repo may keep it in a generic dir (``skills/SKILL.md``) no slug matches; a lone
+        # NAMED dir (``skills/bar``) is another skill, and a lone root SKILL.md is ``_find_repo_root_skill``'s.
+        return f"{repo}/{skill_dirs[0]}" if skill_dirs in (["skills"], [".agents/skills"], [".claude/skills"]) else None
 
     def _find_repo_root_skill(self, repo: str) -> Optional[str]:
         """Identifier for a single-skill repo whose ``SKILL.md`` sits at the repo ROOT (no skill

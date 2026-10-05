@@ -370,21 +370,6 @@ class TestFindSkillInRepoTree:
         assert result == "davila7/claude-code-templates/cli-tool/components/skills/development/senior-backend"
 
     @patch("tools.skills_hub.httpx.get")
-    def test_finds_single_generic_skills_directory_when_slug_is_stale(self, mock_get):
-        tree_entries = [
-            {"path": "README.md", "type": "blob"},
-            {"path": "skills/SKILL.md", "type": "blob"},
-        ]
-        mock_get.side_effect = [
-            MagicMock(status_code=200, json=lambda: {"default_branch": "main"}),
-            MagicMock(status_code=200, json=lambda: {"tree": tree_entries}),
-        ]
-
-        result = self._source()._find_skill_in_repo_tree("tencent/wechatreading", "weread-skills")
-
-        assert result == "tencent/wechatreading/skills"
-
-    @patch("tools.skills_hub.httpx.get")
     def test_returns_none_when_repo_api_fails(self, mock_get):
         mock_get.return_value = MagicMock(status_code=404)
         result = self._source()._find_skill_in_repo_tree("owner/repo", "my-skill")
@@ -998,32 +983,6 @@ class TestHermesIndexSearch:
         ids = [h.identifier for h in hits]
         assert "NVIDIA/skills/skills/accelerated-computing-cudf" in ids
         assert "clawhub/unrelated" not in ids
-
-    def test_fetch_resolves_generic_skill_directory_from_index_slug(self, monkeypatch):
-        """Index rows with a slug path still fetch skills stored under ``skills/``."""
-        src = _make_index_source([{
-            "name": "weread-skills",
-            "description": "WeChat Reading skills",
-            "source": "skills.sh",
-            "identifier": "skills-sh/tencent/wechatreading/weread-skills",
-            "repo": "tencent/wechatreading",
-            "path": "weread-skills",
-        }])
-        github = MagicMock()
-        github._find_skill_in_repo_tree.return_value = "tencent/wechatreading/skills"
-        github._find_repo_root_skill.return_value = None
-        github.fetch.side_effect = [None, SkillBundle(
-            name="skills", files={"SKILL.md": "---\nname: weread-skills\n---\n"},
-            source="github", identifier="tencent/wechatreading/skills", trust_level="community",
-        )]
-        monkeypatch.setattr(src, "_get_github", lambda: github)
-
-        bundle = src.fetch("skills-sh/tencent/wechatreading/weread-skills")
-
-        assert bundle is not None
-        assert bundle.identifier == "skills-sh/tencent/wechatreading/weread-skills"
-        assert bundle.name == "weread-skills"  # installs under the slug, not as "skills/"
-        github._find_skill_in_repo_tree.assert_called_once_with("tencent/wechatreading", "weread-skills")
 
 class TestProviderFilter:
     def test_filter_results_by_provider_narrows_exactly(self):

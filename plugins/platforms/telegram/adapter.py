@@ -12,7 +12,7 @@ import re
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, Iterator, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, Iterator, List, Mapping, Optional, Set
 from hermes_cli import setup_platforms
 
 logger = logging.getLogger(__name__)
@@ -495,6 +495,16 @@ _TEXT_SEND_DEADLINE = 30.0
 # period would re-hang the lock on exactly the wedged socket this bounds, so the rare late landing is
 # accepted; httpx's own timeouts free the pool slot.
 _MEDIA_SEND_DEADLINE = 300.0
+# Slow-uplink scaling (#133093): the budgets above assume the cloud Bot API's 50 MB upload cap on a
+# ~2 Mbit/s link. A self-hosted Bot API server accepts files of any size, and a fixed budget cancels any
+# upload a slow uplink cannot finish in time — while the local server keeps draining the body and often
+# delivers minutes later, so the client reports a failure the user retries into a duplicate. Payloads
+# whose on-disk size exceeds what the fixed budgets cover (``_media_upload_seconds``) scale the media
+# read/write budgets and the wall-clock deadline with the size, so a slow link lengthens the verdict
+# instead of cancelling mid-upload; small payloads keep the fixed budgets unchanged.
+_MEDIA_SEND_WRITE_TIMEOUT = 60.0  # per-request baseline matching media_write_timeout
+_MEDIA_SEND_MIN_UPLOAD_RATE = 128 * 1024  # B/s worst uplink the budgets must still cover
+_MEDIA_SEND_DEADLINE_MAX = 3600.0  # cap on the scaled wall-clock deadline
 _POLLING_GENERATION_CONTEXT: ContextVar[Optional[int]] = ContextVar("telegram_polling_generation", default=None)
 
 
@@ -1270,13 +1280,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _send_with_dm_topic_reply_anchor_retry(
         self, send_fn: Any, send_kwargs: Dict[str, Any], metadata: Optional[Dict[str, Any]],
-        reply_to_message_id: Optional[int], media_label: str, reset_media: Optional[Any] = None) -> Any:
+        reply_to_message_id: Optional[int], media_label: str, reset_media: Optional[Any] = None,
+        deadline: float = _MEDIA_SEND_DEADLINE) -> Any:
         """Retry stale private-topic media replies once without the topic anchor. Serialized per chat with
-        ``send()`` so a file upload cannot land between two chunks of the text it accompanies."""
+        ``send()`` so a file upload cannot land between two chunks of the text it accompanies.
+        ``deadline`` is the wall-clock budget for each attempt (scaled for slow uplinks, #133093)."""
         async with self._chat_send_lock(send_kwargs.get("chat_id")):
             try:
                 return await _await_with_thread_deadline(
-                    send_fn(**send_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
+                    send_fn(**send_kwargs), timeout=deadline, label="telegram-media-send", dump_on_blocked_loop=False)
             except Exception as send_err:
                 if not self._should_retry_without_dm_topic_reply_anchor(send_err, metadata, reply_to_message_id):
                     raise
@@ -1290,7 +1302,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 retry_kwargs.pop("message_thread_id", None)
                 retry_kwargs.pop("direct_messages_topic_id", None)
                 return await _await_with_thread_deadline(
-                    send_fn(**retry_kwargs), timeout=_MEDIA_SEND_DEADLINE, label="telegram-media-send", dump_on_blocked_loop=False)
+                    send_fn(**retry_kwargs), timeout=deadline, label="telegram-media-send", dump_on_blocked_loop=False)
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -3036,8 +3048,9 @@ class TelegramAdapter(BasePlatformAdapter):
             "read_timeout": env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
             "write_timeout": env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             # PTB routes file requests to media_write_timeout; httpx budgets it per socket write (stall
-            # tolerance, not bandwidth), so 60s rides out congested-link buffer stalls.
-            "media_write_timeout": 60.0,
+            # tolerance, not bandwidth), so 60s rides out congested-link buffer stalls. Slow-uplink
+            # media sends override this per request (see _MEDIA_SEND_WRITE_TIMEOUT scaling, #133093).
+            "media_write_timeout": _MEDIA_SEND_WRITE_TIMEOUT,
         }
         # CLOSE_WAIT fd leak: PTB's httpx.AsyncClient has no keepalive tuning; inject platform_httpx_limits()
         # while preserving PTB's max_connections (httpx_kwargs is spread last, so `limits` here wins).
@@ -5227,13 +5240,39 @@ class TelegramAdapter(BasePlatformAdapter):
             "chat_id": normalize_telegram_chat_id(chat_id), "reply_to_message_id": reply_to_id,
             "read_timeout": _MEDIA_SEND_READ_TIMEOUT, **thread_kwargs, **self._notification_kwargs(metadata)}
 
+    @staticmethod
+    def _media_upload_seconds(media_kwargs: Mapping[str, Any]) -> float:
+        """Seconds at ``_MEDIA_SEND_MIN_UPLOAD_RATE`` to upload the largest on-disk media arg, 0 if none.
+
+        Only path-like media values are measured: URL/file-id strings fail ``os.stat`` and in-memory
+        buffers (already size-capped upstream) return 0, so those keep the fixed media budgets."""
+        largest = 0
+        for key in ("animation", "audio", "document", "photo", "sticker", "video", "video_note", "voice"):
+            value = media_kwargs.get(key)
+            if isinstance(value, (str, os.PathLike)):
+                try:
+                    largest = max(largest, os.stat(value).st_size)
+                except OSError:
+                    continue
+        return largest / _MEDIA_SEND_MIN_UPLOAD_RATE
+
     async def _send_media(
         self, send_fn: Any, chat_id: str, reply_to: Optional[str], metadata: Optional[Dict[str, Any]], media_label: str,
         reset_media: Optional[Any] = None, **media_kwargs: Any) -> Any:
         """Send one native media payload with thread routing + DM-topic anchor retry."""
         reply_to_id, kwargs = self._media_send_kwargs(chat_id, reply_to, metadata)
+        deadline = _MEDIA_SEND_DEADLINE
+        upload_seconds = self._media_upload_seconds(media_kwargs)
+        if upload_seconds > 0:
+            # Slow-uplink scaling (#133093): a Bot API server only answers after the whole body has
+            # arrived, so the read/write budgets must cover the transfer, and the wall-clock deadline
+            # gets the report's 1.5x transfer estimate on top of the fixed budget.
+            kwargs["read_timeout"] = _MEDIA_SEND_READ_TIMEOUT + upload_seconds
+            kwargs["write_timeout"] = _MEDIA_SEND_WRITE_TIMEOUT + upload_seconds
+            deadline = min(_MEDIA_SEND_DEADLINE_MAX, _MEDIA_SEND_DEADLINE + 1.5 * upload_seconds)
         return await self._send_with_dm_topic_reply_anchor_retry(
-            send_fn, {**kwargs, **media_kwargs}, metadata, reply_to_id, media_label, reset_media=reset_media)
+            send_fn, {**kwargs, **media_kwargs}, metadata, reply_to_id, media_label, reset_media=reset_media,
+            deadline=deadline)
 
     @staticmethod
     def _caption_1024(caption: Optional[str]) -> Optional[str]:

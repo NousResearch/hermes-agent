@@ -36,6 +36,28 @@ describe('$sidebarSessionRankIds', () => {
     expect($sidebarSessionRankIds.get()).toEqual(['big', 'small'])
   })
 
+  it('counts cache reads, so a cached session is not ranked by its cache misses alone', () => {
+    // `input_tokens` is cache-MISS input only; DeepSeek-style sessions hit 95%+ cache,
+    // so ranking on input+output alone would put the bigger session last.
+    $sessions.set([
+      session('cached', { input_tokens: 1_000, cache_read_tokens: 900_000, output_tokens: 5_000 }),
+      session('uncached', { input_tokens: 300_000, output_tokens: 10_000 })
+    ])
+    setSidebarOrdering('tokens')
+
+    expect($sidebarSessionRankIds.get()).toEqual(['cached', 'uncached'])
+  })
+
+  it('tolerates a row from a backend that never reported cache buckets', () => {
+    $sessions.set([
+      session('legacy', { input_tokens: 10, output_tokens: 10 }),
+      session('modern', { input_tokens: 1, cache_read_tokens: 40, output_tokens: 1 })
+    ])
+    setSidebarOrdering('tokens')
+
+    expect($sidebarSessionRankIds.get()).toEqual(['modern', 'legacy'])
+  })
+
   it('ranks by creation, newest first — the sidebar orders by recency elsewhere', () => {
     $sessions.set([session('older', { started_at: 1 }), session('newer', { started_at: 9 })])
     setSidebarOrdering('created')

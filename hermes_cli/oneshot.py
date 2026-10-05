@@ -76,7 +76,8 @@ def _attach_auxiliary_usage(result: dict, session_db, before: dict[str, dict],
 def _auxiliary_report(report: dict, by_task: dict[str, dict]) -> None:
     """Add the ``auxiliary`` breakdown and ``total_including_auxiliary`` to the ledger."""
     totals = {key: sum(t.get(key) or 0 for t in by_task.values()) for key in _AUX_COUNTERS}
-    totals["total_tokens"] = totals["input_tokens"] + totals["output_tokens"]
+    totals["total_tokens"] = (totals["input_tokens"] + totals["cache_read_tokens"]
+                              + totals["cache_write_tokens"] + totals["output_tokens"])
     report["auxiliary"] = {**totals, "by_task": by_task}
     main_cost = report.get("estimated_cost_usd")
     report["total_including_auxiliary"] = {

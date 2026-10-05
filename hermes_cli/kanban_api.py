@@ -71,6 +71,8 @@ _SAFE_ERROR_MARKERS = (
     "skill name cannot contain comma",
     "must be one of",
     "has no result or summary evidence",
+    "cannot reassign",
+    "cannot edit the title/body",
 )
 
 
@@ -473,7 +475,7 @@ def update_task(
                 board=slug,
             )
         except RuntimeError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _client_error(exc, fallback="task could not be updated", status_code=409) from exc
         if not applied:
             raise HTTPException(status_code=404, detail="task not found")
         return _task_response(conn, task_id)

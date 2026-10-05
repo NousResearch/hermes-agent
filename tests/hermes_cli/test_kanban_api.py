@@ -824,3 +824,17 @@ def test_task_list_reports_links_and_a_cut_page(client: TestClient) -> None:
 
     cut = client.get("/api/plugins/kanban/v1/tasks", params={"limit": 1}).json()
     assert cut["count"] == 1 and cut["has_more"] is True
+
+
+def test_patch_never_echoes_an_unrecognised_storage_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task_id = _create(client, idempotency_key="patch-leak")["task"]["id"]
+
+    def boom(*args, **kwargs):
+        raise kbc.KanbanDbCorruptError(Path("/srv/hermes/kanban.db"), None, "damaged header")
+
+    monkeypatch.setattr(kanban_db, "update_task_fields", boom)
+    rejected = client.patch(f"/api/plugins/kanban/v1/tasks/{task_id}", json={"priority": 1})
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"] == "task could not be updated"

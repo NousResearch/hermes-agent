@@ -1,35 +1,14 @@
-"""Auto-correction for JSON-double-escaping wire artifacts on ``patch`` calls.
+"""Conservative correction of escape drift before ``patch_replace`` matches text.
 
-``tools/fuzzy_match.py::_detect_escape_drift``/``_detect_backslash_doubling`` already diagnose,
-with certainty, two shapes of the same underlying artifact -- a spurious backslash before a
-quote/apostrophe (``\\'``/``\\"``) that the file does not have, or every backslash run in
-``old_string`` being exactly twice as long as the matched region's -- but only ever reject the
-call and ask the model to resend, costing a full round trip.
+Corrections require the corrected ``old_string`` to appear verbatim in the file.
+That evidence cannot establish the intended escaping of newly added code: deliberate
+double backslashes look the same as a serialization artifact. Backslash correction
+therefore halves only ``old_string`` and requires a backslash-free ``new_string``.
+An otherwise verified doubled anchor with replacement backslashes raises an explicit
+error; callers must reject it before fuzzy matching can apply the ambiguous text.
 
-Applied unconditionally, not gated to any particular model: each correction is safe by
-construction rather than by knowing which model is talking. Both only ever fire when the
-corrected ``old_string`` is verified to appear verbatim in the file's actual content -- a model
-that deliberately sent genuinely-escaped content (a correctly backslash-doubled string in a
-regex/shell string, or a source file that legitimately contains the two-character sequence
-``\\'``/``\\"``) would need the corrected form to coincidentally already exist at the same spot
-in the file for either correction to apply, which the checks below rule out; a wrong guess
-simply fails verification and falls through to the existing reject-and-ask guard unchanged.
-That verification covers ``old_string`` only: the lines ``new_string`` adds are not in the file,
-so each correction also requires ``new_string`` to be uniformly escaped (every backslash run
-even; every escaped quote escaped by exactly one backslash) and otherwise makes no correction,
-since un-escaping a backslash the model meant in new code would corrupt the file silently. An
-earlier version of the backslash-doubling correction gated it to a model-name substring match;
-that gate was removed because the substring check turned out to be unreliable in practice (the
-resolved "model" value at the check site did not reliably match the serving model's real name),
-and because the verification-against-file-content step already provides the safety property the
-gate was meant to add. Per-model gating can be reintroduced later if a model is found where a
-verified correction itself proves unsafe -- nothing observed so far suggests that.
-
-Called once from ``tools/file_operations.py::patch_replace``, before fuzzy matching runs, so a
-verified correction produces a clean exact match instead of ever reaching the guard. The applied
-correction (if any) is surfaced back to the caller as a note so it stays observable and
-auditable -- a bare `success: true` does not by itself distinguish a call that was silently
-auto-corrected from one whose arguments never needed correction at all.
+Quote correction retains its separate consistency checks. Successful corrections
+return a note for the tool result; already-exact anchors are left unchanged.
 """
 
 from __future__ import annotations
@@ -38,6 +17,10 @@ import re
 from typing import Optional, Tuple
 
 _BACKSLASH_RUN_RE = re.compile(r"\\+")
+
+
+class AmbiguousEscapeDriftError(ValueError):
+    """The replacement's intentional backslashes cannot be distinguished from drift."""
 
 
 def _halve_backslash_runs(s: str) -> str:
@@ -50,27 +33,28 @@ def _all_backslash_runs_even(s: str) -> bool:
 
 
 def maybe_correct_backslash_doubling(old_string: str, new_string: str, content: str) -> Tuple[str, str]:
-    """Return a corrected ``(old_string, new_string)`` if a doubled-backslash wire artifact is
-    detected AND verified against the file's actual content; otherwise return them unchanged.
+    """Halve a verified doubled anchor only when the replacement has no backslashes.
 
-    Two requirements, one per string. The halved ``old_string`` must appear verbatim in
-    ``content`` -- that verifies old_string. Nothing in the file can verify new_string (its
-    new lines are, by definition, not in the file yet), so it is checked structurally: an
-    extra escape doubles EVERY backslash, so every run in both strings must have even length.
-    An odd run (``print("done\\n")`` added alongside a doubled old_string) means that string
-    was not double-escaped; halving it would silently delete a real backslash, so the call is
-    left unchanged for the existing reject-and-ask guard.
+    Every old_string run must be even and its halved form must occur in the file.
+    Replacement backslashes are ambiguous regardless of run length, so raise
+    ``AmbiguousEscapeDriftError`` rather than let fuzzy matching apply them.
     """
     if "\\" not in old_string or old_string in content:
         return old_string, new_string
-    if not (_all_backslash_runs_even(old_string) and _all_backslash_runs_even(new_string)):
+    if not _all_backslash_runs_even(old_string):
         return old_string, new_string
 
     halved_old = _halve_backslash_runs(old_string)
     if halved_old not in content:
         return old_string, new_string
 
-    return halved_old, _halve_backslash_runs(new_string)
+    if "\\" in new_string:
+        raise AmbiguousEscapeDriftError(
+            "Escape-drift detected: halving old_string's backslashes matches the file, "
+            "but correcting new_string could remove intentional backslashes. "
+            "Re-read the file and resend old_string/new_string with their intended escaping."
+        )
+    return halved_old, new_string
 
 
 _QUOTE_WITH_BACKSLASHES_RE = {q: re.compile(r"(\\*)" + q) for q in ("'", '"')}
@@ -132,10 +116,9 @@ def maybe_correct_escape_drift(old_string: str, new_string: str, content: str) -
     """Apply whichever escape-drift auto-correction (if any) is verified against the file's
     actual content and report which one fired.
 
-    Tries quote-escaping then backslash-doubling; both are independently gated on the corrected
-    old_string being confirmed present in content, so at most one meaningfully changes anything
-    for a given call -- trying both in sequence just avoids an artificial ordering dependency,
-    not a real ambiguity between them.
+    Tries quote escaping, then backslash correction of the anchor only. Raises
+    ``AmbiguousEscapeDriftError`` for a verified doubled anchor whose replacement
+    contains backslashes; the caller must return an error without attempting a match.
 
     Returns ``(corrected_old, corrected_new, note)``: ``note`` is a human-readable description
     of the correction that was applied, or ``None`` if neither fired. The caller attaches
@@ -152,8 +135,8 @@ def maybe_correct_escape_drift(old_string: str, new_string: str, content: str) -
     corrected_old, corrected_new = maybe_correct_backslash_doubling(old_string, new_string, content)
     if corrected_old != old_string:
         return corrected_old, corrected_new, (
-            "escape-drift auto-corrected: halved doubled backslash runs in old_string/new_string "
-            "(a JSON-double-escaping wire artifact) before matching."
+            "escape-drift auto-corrected: halved doubled backslash runs in old_string "
+            "before matching; new_string has no backslashes and was left unchanged."
         )
 
     return old_string, new_string, None

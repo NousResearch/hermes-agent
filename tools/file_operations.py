@@ -1324,8 +1324,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         raw_content = read_result.stdout
         content, _ = _strip_bom(raw_content)
 
-        from tools.escape_drift_autocorrect import maybe_correct_escape_drift
-        old_string, new_string, escape_drift_note = maybe_correct_escape_drift(old_string, new_string, content)
+        from tools.escape_drift_autocorrect import AmbiguousEscapeDriftError, maybe_correct_escape_drift
+        try:
+            old_string, new_string, escape_drift_note = maybe_correct_escape_drift(old_string, new_string, content)
+        except AmbiguousEscapeDriftError as exc:
+            return PatchResult(error=str(exc))
 
         from tools.fuzzy_match import fuzzy_find_and_replace
         new_content, match_count, _strategy, error = fuzzy_find_and_replace(

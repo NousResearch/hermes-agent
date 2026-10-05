@@ -334,8 +334,8 @@ def test_stale_tmp_under_our_own_pid_number_is_reclaimed(marker):
     left is litter once it is older than any write of ours, while a fresh one may be in flight."""
     stale = marker.with_name(f"{marker.name}.{os.getpid()}.deadbeef.tmp")
     fresh = marker.with_name(f"{marker.name}.{os.getpid()}.cafe.tmp")
-    stale.write_text("x")
-    fresh.write_text("x")
+    stale.write_bytes(b"x")
+    fresh.write_bytes(b"x")
     hour_ago = time.time() - 3600
     os.utime(stale, (hour_ago, hour_ago))
 
@@ -351,11 +351,11 @@ def test_tmp_litter_with_a_digit_lookalike_pid_never_breaks_admission(marker, ow
     """A sibling whose pid field is a Unicode digit lookalike is not a pid we can judge: it is
     left alone and the claim still lands (``str.isdigit`` accepts it, ``int`` refuses it)."""
     odd = marker.with_name(f"{marker.name}.{owner}.tmp")
-    odd.write_text("x")
+    odd.write_bytes(b"x")
 
     lock = UpdateLock(path=marker)
     assert lock.acquire() is True
-    assert marker.read_text(encoding="utf-8").startswith(f"{os.getpid()}\n")
+    assert marker.read_bytes().startswith(f"{os.getpid()}\n".encode())
     lock.release()
 
 
@@ -401,7 +401,7 @@ def test_withdrawing_a_torn_claim_never_deletes_a_replacement(marker, monkeypatc
     monkeypatch.setattr(os, "write", _torn_write(replace))
     assert UpdateLock(path=marker).acquire() is False
     monkeypatch.undo()
-    assert marker.read_text(encoding="utf-8").startswith(f"{other_pid}\n")
+    assert marker.read_bytes().startswith(f"{other_pid}\n".encode())
 
 
 def test_unreadable_creation_time_gets_the_v1_ceiling(marker, other_pid, monkeypatch):
@@ -892,7 +892,7 @@ def test_read_only_lock_file_is_refused_on_windows(tmp_path):
     root = tmp_path / "install"
     root.mkdir()
     lock_file = checkout_lock_path(root)
-    lock_file.write_text("0\n0\n")
+    lock_file.write_bytes(b"0\n0\n")
     lock_file.chmod(0o444)  # FILE_ATTRIBUTE_READONLY: O_RDWR is denied, the read-only open works
     marker = tmp_path / "home" / ".hermes-update-in-progress"
     try:

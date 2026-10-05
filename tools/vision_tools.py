@@ -559,8 +559,8 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
 def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> bool:
     """One gate for both native lanes — the ``vision_analyze`` fast path and the ``computer_use`` capture route
     (#115248): the profile's ``supports_vision_tool_messages=False`` veto first, then either the provider's tool
-    results are known to carry media or the capability lookup (config override → catalog → probes → profile)
-    attests the model as vision-capable."""
+    results are known to carry media or the per-model capability lookup (config override → catalog incl. the
+    profile's ``model_capabilities`` → local probes) attests the model as vision-capable."""
     if _profile_rejects_tool_media(provider, model):
         return False
     if _supports_media_in_tool_results(provider, model):

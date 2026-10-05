@@ -204,10 +204,11 @@ Select an isolated development `HERMES_HOME` and `HERMES_RUNTIME_DIR` first;
 see `website/docs/reference/package-management.md#developer-workflow`.
 fish: `source ./activate.fish`; PowerShell: `. .\activate.ps1`. `deactivate` restores the prior
 environment. Non-interactive callers run under `scripts/run-in-hermes-env CMD...` instead of sourcing.
-For tests, use the independent test environment in `CONTRIBUTING.md` (or Nix);
-PM activation's `PYTHONPATH` does not survive the test runner's environment scrub.
-`scripts/run_tests.sh` probes `.venv`, then `venv`, then `$HOME/.hermes/hermes-agent/venv`
-(worktrees sharing the main checkout's venv).
+Tests run under PM's separate test environment (`pm.testenv`), which activation builds and
+exports as `$__HERMES_TEST_PYTHON`; it is not the `python` on the activated `PATH`.
+`scripts/run_tests.sh` uses it, re-running itself under `scripts/run-in-hermes-env` when the
+inherited environment is missing or stale; only a non-activated shell with an explicit
+`HERMES_PYTHON` that has pytest (Nix devShell, CI installer lanes) runs another interpreter.
 
 ## Project Structure
 
@@ -382,7 +383,15 @@ isolation via `scripts/run_tests_parallel.py` (no xdist; workers scale with CPU 
 module-level dicts/ContextVars cannot leak between files. Direct `pytest` on a big machine
 with API keys set has caused repeated "works locally, fails in CI" incidents (and the reverse).
 
-Prepare a test interpreter with the checkout's bootstrapped Python:
+For a single ad-hoc run inside an activated shell, `"$__HERMES_TEST_PYTHON" -m pytest ...` is
+the only other supported form. Never `python -m pytest` / `pytest` from an arbitrary shell: a
+shell alias or function named `python` outranks the activated `PATH`, and a conda, Homebrew or
+system interpreter runs the suite against the wrong dependency set. `tests/conftest.py` refuses
+such a run before collection (`tests/_interpreter_guard.py`: the running `sys.prefix` must be
+the checkout's selected test environment whenever one exists);
+`HERMES_ALLOW_FOREIGN_TEST_PYTHON=1` is the deliberate opt-out.
+
+Without PM activation (e.g. Nix), prepare a test interpreter with the checkout's bootstrapped Python:
 
 ```bash
 python -m pm.build_env --source . --out .venv --group dev --group test

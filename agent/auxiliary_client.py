@@ -3715,47 +3715,6 @@ def _recoverable_pool_provider(
     return None
 
 
-def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "") -> bool:
-    """Try same-provider credential-pool recovery for auxiliary calls.
-
-    ``failed_api_key`` lets mark_exhausted_and_rotate identify the right pool entry even if
-    another process already rotated (current() would be None).
-    """
-    normalized = _normalize_aux_provider(provider)
-    try:
-        pool = load_pool(normalized)
-    except Exception as load_exc:
-        logger.debug("Auxiliary client: could not load pool for %s recovery: %s", normalized, load_exc)
-        return False
-    if not pool or not pool.has_credentials():
-        return False
-    status_code = getattr(exc, "status_code", None)
-
-    def _rotate(fallback_status: int) -> bool:
-        error_context: Dict[str, Any] = {"message": str(exc)}
-        if status_code is not None:
-            error_context["status_code"] = status_code
-        next_entry = pool.mark_exhausted_and_rotate(
-            status_code=status_code if status_code is not None else fallback_status,
-            error_context=error_context, api_key_hint=failed_api_key or None,
-        )
-        if next_entry is None:
-            return False
-        _evict_cached_clients(normalized)
-        return True
-
-    if _is_auth_error(exc):
-        if pool.try_refresh_current() is not None:
-            _evict_cached_clients(normalized)
-            return True
-        return _rotate(401)
-    if _is_payment_error(exc):
-        return _rotate(402)
-    if _is_rate_limit_error(exc) and not _is_overloaded_error(exc):
-        return _rotate(429)
-    return False
-
-
 def _prepare_same_provider_retry(
     *, task: Optional[str], resolved_provider: str, resolved_model: Optional[str],
     resolved_base_url: Optional[str], resolved_api_key: Optional[str],
@@ -7584,7 +7543,8 @@ def _prepare_aux_request(
 
 class _LadderStep(NamedTuple):
     """A provider request the ladder asks its driver to perform. kind: "call" (client, kwargs) |
-    "retry_same_provider" (provider, model) | "fallback" (fb_client, fb_model, fb_label)."""
+    "retry_same_provider" (provider, model) | "retry_pool" (provider, model, key, base) |
+    "fallback" (fb_client, fb_model, fb_label)."""
     kind: str
     args: tuple
 
@@ -7823,6 +7783,7 @@ def _ladder_credential_rungs(
     # unaccepted on purpose (a fresh key cannot fix an unreachable endpoint), so rotation
     # is skipped and ``first_err`` is handed to the provider-fallback chain as-is.
     if pool_provider and _credential_rung_accepts(first_err):
+        from agent.auxiliary_pool_recovery import recover_provider_pool
         recovery_err = first_err
         # Skip the extra retry for clear payment/quota errors — the endpoint won't accept
         # another request with the same exhausted key.
@@ -7831,18 +7792,21 @@ def _ladder_credential_rungs(
                 _LadderStep("call", (client, kwargs)), _credential_rung_accepts)
             if recovery_err is None:
                 return resp, None
-        if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+        replacement = recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key)
+        if replacement is not None:
+            replacement_key = _pool_runtime_api_key(replacement)
+            replacement_base = _pool_runtime_base_url(replacement, route.base_info)
             logger.info("Auxiliary %s%s: recovered %s via credential-pool rotation after %s",
                         task or "call", tag, pool_provider, type(recovery_err).__name__)
             try:
                 return (yield _LadderStep(
-                    "retry_same_provider", (resolved_provider, route.resolved_model))), None
+                    "retry_pool", (pool_provider, route.resolved_model, replacement_key, replacement_base))), None
             except Exception as retry2_err:
                 # Rotated key also hit a wall: mark it now so concurrent processes skip it,
                 # then fall through to the provider fallback.
                 if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                         or _is_rate_limit_error(retry2_err)):
-                    _recover_provider_pool(pool_provider, retry2_err)
+                    recover_provider_pool(pool_provider, retry2_err, failed_api_key=replacement_key)
                     first_err = retry2_err
                 else:
                     raise
@@ -8176,6 +8140,10 @@ def _ladder_step_call(
     if step.kind == "retry_same_provider":
         retry_provider, retry_model = step.args
         return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model)
+    if step.kind == "retry_pool":
+        retry_provider, retry_model, retry_key, retry_base = step.args
+        return "retry", (), dict(retry_kwargs, resolved_provider=retry_provider, resolved_model=retry_model,
+                                  resolved_api_key=retry_key, resolved_base_url=retry_base)
     return "fallback", step.args, candidate_kwargs
 
 

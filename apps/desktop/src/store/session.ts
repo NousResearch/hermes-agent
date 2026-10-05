@@ -1373,6 +1373,30 @@ export function getSessionOwnerHint(
   return matches.length === 1 ? { ...matches[0].route } : undefined
 }
 
+/** The chat view scopes its owner lookup by the window's active gateway
+ *  profile, but a chat opened through a shared default connection records its
+ *  hint under the session's own profile — an exact miss for those rows after a
+ *  relaunch, which stranded the transcript tail with no "Show earlier".
+ *  Resolve the way the session was recorded: the exact (connection, profile)
+ *  hint first, then the session's single recorded owner on the same
+ *  connection. Ambiguity stays undefined rather than guessing. */
+export function getSessionViewOwnerHint(
+  sessionId: string,
+  scope?: Pick<SessionOwnerRoute, 'connectionId' | 'profile'>
+): SessionOwnerRoute | undefined {
+  const exact = getSessionOwnerHint(sessionId, scope)
+
+  if (exact || !scope?.connectionId) {
+    return exact
+  }
+
+  const sameConnection = getSessionOwnerHints(sessionId).filter(
+    route => route.connectionId === scope.connectionId.trim()
+  )
+
+  return sameConnection.length === 1 ? sameConnection[0] : undefined
+}
+
 // Stored-session id whose resume has EXHAUSTED its bounded auto-retries (the
 // terminal-failure latch above kept failing through all MAX_RESUME_RETRIES
 // attempts). Distinct from $resumeFailedSessionId, which is armed *during* the

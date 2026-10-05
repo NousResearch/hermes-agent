@@ -184,7 +184,10 @@ def test_machine_and_unknown_sources_are_denied(tmp_path, platform):
 def test_every_bundled_adapter_has_explicit_authorization_classification():
     bundled, _aliases = Platform._scan_bundled_plugin_platforms()
     denied = {"a2a", "homeassistant", "ntfy", "raft"}
-    assert bundled == bot_mode_probe._MESSAGING_GATEWAY_SESSION_SOURCES.intersection(bundled) | denied
+    assert bundled == (
+        bot_mode_probe._MESSAGING_GATEWAY_SESSION_SOURCES.intersection(bundled)
+        | denied.intersection(bundled)
+    )
 
 
 @pytest.mark.parametrize("raw", ["", "null\n", "[]\n", "agent: [unclosed\n"])

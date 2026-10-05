@@ -1181,12 +1181,18 @@ class TestMatrixSyncLoop:
         return fake_client
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode, hint", [
+        ("off", "set MATRIX_E2EE_MODE=optional"),
+        # Degraded optional mode: the install/enable advice is wrong; point at the setup failure.
+        ("optional", "E2EE mode is optional but the decryptor was not set up"),
+    ])
     async def test_absorb_sync_warns_once_per_room_for_encrypted_events_without_crypto(
-        self, caplog
+        self, caplog, mode, hint
     ):
         """Encrypted events with no decryptor must fail loud, once per room (#131778)."""
         adapter = _make_adapter()
         adapter._closing = False
+        adapter._e2ee_mode = mode
         fake_client = self._cryptoless_client()
         adapter._client = fake_client
 
@@ -1205,7 +1211,8 @@ class TestMatrixSyncLoop:
 
         warnings = [r.getMessage() for r in caplog.records if "encrypted" in r.getMessage()]
         assert len(warnings) == 1
-        assert "!enc:example.org" in warnings[0] and "MATRIX_E2EE_MODE" in warnings[0]
+        assert "!enc:example.org" in warnings[0] and hint in warnings[0]
+        assert (mode == "off") == ("pip install" in warnings[0])
 
     @pytest.mark.asyncio
     async def test_absorb_sync_no_encrypted_warning_when_crypto_attached(self, caplog):

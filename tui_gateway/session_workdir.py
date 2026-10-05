@@ -709,7 +709,6 @@ def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text
     if not isinstance(staged, dict) or agent is None or staged.get("content") != text:
         return
     if staged["content"] != persist_user_message:
-        from agent.session_persistence import _durable_content
         with _session_db(session) as db:
             if db is None:
                 return
@@ -719,7 +718,7 @@ def _adopt_submit_user_row(session: dict, agent, persist_user_message: Any, text
                 # rewrite, leaving the transcript replaying the raw keystrokes.
                 db.set_user_message_content(
                     _submit_row_owner_key(staged, session), staged["_row_id"],
-                    _durable_content(persist_user_message))
+                    persist_user_message)
             except Exception:
                 logger.debug("submit-time user row update failed; the turn writes its own row", exc_info=True)
                 return

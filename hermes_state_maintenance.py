@@ -347,7 +347,7 @@ class SessionMaintenanceMixin:
                 removed_ids.extend(chunk)
             self._delete_unreferenced_system_prompts(conn)
             return len(session_ids)
-        count = self._execute_write(_do)
+        count = self._execute_write(_do, sweep_media=True)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
@@ -398,6 +398,8 @@ class SessionMaintenanceMixin:
         VACUUM reads every page and commits the result back, turning contained damage into an
         amplified one (#105670). Same guard ``_execute_write`` applies to every write."""
         self._raise_if_db_corrupt()
+        from hermes_state_media import try_sweep_transcript_media
+        try_sweep_transcript_media(self)
         optimized = 0
         try:
             optimized = self.optimize_fts()  # manages its own lock
@@ -442,6 +444,8 @@ class SessionMaintenanceMixin:
         Messaging and UI sources are never touched here. See #54189.
         """
         from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
+        from hermes_state_media import try_sweep_transcript_media
+        try_sweep_transcript_media(self)
         result: dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
         if retention_days is None or retention_days < 0:
             # A negative retention would build a future cutoff and match every ended

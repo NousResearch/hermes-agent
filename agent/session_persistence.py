@@ -236,6 +236,11 @@ def _db_flush_row(agent, msg: dict, is_current_turn_user: bool) -> dict[str, Any
         "platform_message_id": msg.get("platform_message_id") or msg.get("message_id"),
         "observed": bool(msg.get("observed")),
     }
+    from hermes_state_media import has_images, prepare_media_content
+
+    db = getattr(agent, "_session_db", None)
+    if db is not None and has_images(content):
+        row["content"], row["media_content"] = prepare_media_content(db.db_path, content, display=False)
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]
     # The merge witness rides on the survivor's row (an owned column: a row-addressed rewrite of the

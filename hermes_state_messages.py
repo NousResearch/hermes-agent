@@ -22,6 +22,7 @@ from hermes_cli.timefmt import coerce_epoch
 from hermes_state_common import (
     _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _ended_by_compression,
     _json_or, _legacy_reset_child_sql, _placeholders, _sql_json_extract)
+from hermes_state_media import prepare_media_content, restore_media_content
 from hermes_state_identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none, _tool_call_uids_json)
 
@@ -33,8 +34,8 @@ _INSERT_MESSAGE_SQL = """INSERT INTO messages (session_id, role, content, tool_c
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, _compressed_summary, active, api_content, display_kind,
                    display_metadata, display_identity, message_uid, absorbed_message_uids, tool_call_uids,
-                   tool_call_uid)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                   tool_call_uid, media_content)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 # Every column this module knows how to read: the ones it writes plus the three SQLite/compaction
 # owns. `_row_to_message_dict` drops raw bytes ONLY outside this set — a schema column keeps its
 # key (and its typed decoder) even when a row holds a BLOB, so no reader ever loses msg["content"].
@@ -271,7 +272,8 @@ class SessionMessagesMixin:
         ``message_id`` (yuanbao's message-dict convention)."""
         _str_or_none = lambda v: _scrub_surrogates(v) if isinstance(v, str) else None
         _reasoning = lambda key: msg.get(key) if keep_reasoning else None
-        encoded_content = self._encode_content(msg.get("content"))
+        content, media_content = prepare_media_content(self.db_path, msg.get("content"), msg.get("media_content"))
+        encoded_content = self._encode_content(content)
         encoded_tool_calls = json.dumps(tool_calls) if tool_calls else None
         encoded_tool_name = _scrub_surrogates(msg.get("tool_name"))
         display_metadata = self._encode_display_metadata(msg.get("display_metadata"))
@@ -292,7 +294,7 @@ class SessionMessagesMixin:
             _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
             display_metadata, self._display_identity(self._display_dedupe_key(identity_row)),
             message_uid_or_none(msg), _absorbed_uids_json(msg),
-            _tool_call_uids_json(msg), _tool_call_uid_or_none(msg))
+            _tool_call_uids_json(msg), _tool_call_uid_or_none(msg), media_content)
 
     @staticmethod
     def _stamp_tool_call_uids(msg: dict[str, Any], tool_calls: Any, batch_index: dict[str, str]) -> None:
@@ -337,7 +339,7 @@ class SessionMessagesMixin:
         """Decode one durable row without replay dedupe, alternation repair, or content stripping."""
         msg: dict[str, Any] = {
             "role": row["role"],
-            "content": self._decode_content(row["content"]),
+            "content": restore_media_content(self.db_path, row["media_content"], self._decode_content(row["content"])),
         }
         for column in ("tool_call_id", "tool_name", "effect_disposition", "token_count", "finish_reason"):
             if row[column] is not None:
@@ -511,13 +513,19 @@ class SessionMessagesMixin:
                         msg[key] = value
 
         def _attempt(conn):
+            from hermes_state_media import clear_inactive_media
             _restore()
-            return fn(conn)
+            result = fn(conn)
+            clear_inactive_media(conn)
+            return result
         try:
-            return self._execute_write(_attempt, **kwargs)
+            result = self._execute_write(_attempt, **kwargs)
         except BaseException:
             _restore()
             raise
+        from hermes_state_media import try_sweep_transcript_media
+        try_sweep_transcript_media(self)
+        return result
 
     def set_latest_matching_message_display_kind(self, session_id: str, *, role: str, content: str,
                                                  display_kind: str,
@@ -1132,9 +1140,11 @@ class SessionMessagesMixin:
         raw keystrokes, and the turn must not append a second row for the same input."""
         if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
             return 0
+        content, media_content = prepare_media_content(self.db_path, content, display=False)
         return self._write_rowcount(
-            "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-            (self._encode_content(content), row_id, session_id))
+            "UPDATE messages SET content = ?, media_content = ? "
+            "WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
+            (self._encode_content(content), media_content, row_id, session_id), sweep_media=True)
 
     def deactivate_message(self, session_id: str, row_id: int) -> int:
         """Deactivate ONE known row (id-addressed, idempotent; returns the affected row count). Used by
@@ -1146,7 +1156,7 @@ class SessionMessagesMixin:
             return 0
         return self._write_rowcount(
             "UPDATE messages SET active = 0 WHERE id = ? AND session_id = ?",
-            (row_id, session_id))
+            (row_id, session_id), sweep_media=True)
 
     def resolve_active_row_id(self, session_id: str, row_id: int) -> Optional[int]:
         """The active row that still carries *row_id*'s message: *row_id* itself while active, else the one
@@ -1179,7 +1189,7 @@ class SessionMessagesMixin:
             return 0
         return self._write_rowcount(
             "UPDATE messages SET active = 0 WHERE session_id = ? AND display_kind = ? AND active = 1",
-            (session_id, _scrub_surrogates(display_kind)))
+            (session_id, _scrub_surrogates(display_kind)), sweep_media=True)
 
     def _display_dedupe_key(self, row) -> tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""
@@ -1324,7 +1334,8 @@ class SessionMessagesMixin:
         msg.pop("display_order", None)
         if summary_flag and msg.pop("_compressed_summary", 0):
             msg["_compressed_summary"] = True
-        msg["content"] = self._decode_content(msg["content"])
+        msg["content"] = restore_media_content(
+            self.db_path, msg.get("media_content"), self._decode_content(msg["content"]), model=False)
         if msg.get("tool_calls"):
             msg["tool_calls"] = _json_or(
                 msg["tool_calls"], [], f"Failed to deserialize tool_calls in {warn_context}, falling back to []")
@@ -1582,6 +1593,7 @@ class SessionMessagesMixin:
         unindexed_tool_owners: list[dict[str, Any]] = []
         for row in rows:
             content = self._loaded_view_content(row["role"], self._decode_content(row["content"]))
+            content = restore_media_content(self.db_path, row["media_content"], content, model=repair_alternation)
             # Underscore-prefixed like ``_row_id``: transports strip it before the wire; compression's
             # assembly copies strip it so rotated child handoffs still flush (_fresh_compaction_message_copy).
             msg = {"role": row["role"], "content": content, _DB_PERSISTED_MARKER_KEY: True}
@@ -1818,7 +1830,8 @@ class SessionMessagesMixin:
         if not target_row.get("active"):
             raise ValueError("rewind target is not active")
         handoff, live_view = split_user_originated_turn({
-            **target_row, "content": self._decode_content(target_row.get("content")),
+            **target_row, "content": restore_media_content(
+                self.db_path, target_row.get("media_content"), self._decode_content(target_row.get("content")), model=False),
             "display_metadata": self._decode_display_metadata(target_row.get("display_metadata"))})
         if live_view is None:
             raise ValueError("rewind target is not a user-originated turn")
@@ -1871,10 +1884,11 @@ class SessionMessagesMixin:
             conn.execute(f"{_SET_COUNTERS_SQL} WHERE id = ?", (message_count, tool_call_count, session_id))
             head_id = conn.execute(
                 "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1", (session_id,)).fetchone()[0]
+            # Materialize prefill before post-commit GC can reclaim the retired image.
+            target_row["content"] = restore_media_content(
+                self.db_path, target_row.get("media_content"), self._decode_content(target_row.get("content")), model=False)
             return target_row, ids, head_id, replacement
-        target_row, rewound, new_head_id, replacement = self._execute_write(_do)
-        # Decode for the prompt-buffer prefill without a second fallible DB operation.
-        target_row["content"] = self._decode_content(target_row.get("content"))
+        target_row, rewound, new_head_id, replacement = self._execute_write(_do, sweep_media=True)
         return {"rewound_count": len(rewound), "target_message": target_row, "new_head_id": new_head_id,
                 **({"replacement_message_id": replacement and replacement["_row_id"],
                     "replacement_message_uid": replacement and message_uid_or_none(replacement)}
@@ -1954,7 +1968,7 @@ class SessionMessagesMixin:
         def _do(conn):
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute(_RESET_COUNTERS_SQL, (session_id,))
-        self._execute_write(_do)
+        self._execute_write(_do, sweep_media=True)
 
     def purge_stale_tool_call_markers(self, *, dry_run: bool = False, backup: bool = True) -> dict[str, Any]:
         """Permanently clear bare tool-call marker content ("[memory]") left by pre-fix sessions
@@ -1983,9 +1997,9 @@ class SessionMessagesMixin:
         def _do(conn):
             ids = _find_affected(conn)
             if ids:
-                conn.execute(f"UPDATE messages SET content = '' WHERE id IN ({_placeholders(ids)})", ids)
+                conn.execute(f"UPDATE messages SET content = '', media_content = NULL WHERE id IN ({_placeholders(ids)})", ids)
             return ids
-        affected_ids = self._execute_write(_do)
+        affected_ids = self._execute_write(_do, sweep_media=True)
         if affected_ids:
             logger.info("Permanently cleared %d stale tool-call marker row(s) in state.db (#78148)", len(affected_ids))
         return _result(affected_ids, backup_path)

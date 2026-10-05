@@ -341,7 +341,7 @@ class TestRealProfileCdpLaunch:
             cdp, err = bt_real_profile._real_profile_cdp()
         if live_browser_id == "/devtools/browser/x":
             assert (cdp, err) == ("http://127.0.0.1:41000", None)
-            attach.assert_called_once_with(41000, str(tmp_path))
+            attach.assert_called_once_with(41000, str(tmp_path), "chrome")
             snapshot.assert_not_called()
         else:
             attach.assert_not_called()

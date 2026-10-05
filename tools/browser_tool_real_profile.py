@@ -234,13 +234,18 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str,
     return None, _RP + "the real-profile browser did not expose a debug port in time. Retry, or turn the toggle off."
 
 
-def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> Tuple[Optional[str], Optional[str]]:
+def _attach_agent_browser_to_real_profile(port: int, copy_dir: str,
+                                          browser: str | None = None) -> Tuple[Optional[str], Optional[str]]:
     """Make agent-browser ATTACH to the running Chrome (never launch its own); returns ``(http_cdp, error)``.
 
     The daemon may answer with the endpoint of a browser IT spawned (throwaway temp profile);
-    the DevToolsActivePort OUR Chrome wrote is authoritative on disagreement.
+    the port we launched and confirmed is authoritative. For a build that never writes
+    ``DevToolsActivePort`` (Dia) the file-based correction can never fire — the file is always
+    absent — so the confirmed port must win outright, or agent-browser's throwaway endpoint is
+    silently used and the snapshot is never read.
     """
     _bt = _origin()
+    from hermes_cli.browser_connect import browser_writes_devtools_port
     try:
         browser_cmd = _install._find_agent_browser()
     except FileNotFoundError as e:
@@ -259,9 +264,13 @@ def _attach_agent_browser_to_real_profile(port: int, copy_dir: str) -> Tuple[Opt
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()
         return None, f"{_RP}the real-profile browser failed to start: {tail[-1] if tail else f'exit {proc.returncode}'}"
     cdp = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
-    our_port = _read_devtools_port(copy_dir)
-    if our_port is not None and (m := re.search(r":(\d+)", cdp or "")) and m.group(1) != our_port:
-        cdp = f"http://127.0.0.1:{our_port}"
+    if not browser_writes_devtools_port(browser):
+        # No bootstrap file to cross-check: our launched-and-confirmed port is the only truth.
+        cdp = f"http://127.0.0.1:{port}"
+    else:
+        our_port = _read_devtools_port(copy_dir)
+        if our_port is not None and (m := re.search(r":(\d+)", cdp or "")) and m.group(1) != our_port:
+            cdp = f"http://127.0.0.1:{our_port}"
     if not cdp:
         return None, _RP + "the real-profile browser started without exposing a devtools endpoint. Retry, or turn the toggle off."
     return cdp, None
@@ -294,7 +303,9 @@ def _real_profile_cdp() -> tuple:
                       "Set browser.engine to 'auto' or 'chrome' to use real-profile browsing, or turn the toggle off.")
 
     from hermes_cli.browser_connect import (chromium_executable, detect_default_chromium,
-                                            real_profile_copy_dir, snapshot_real_profile)
+                                            real_profile_copy_dir, snapshot_real_profile,
+                                            browser_uses_profile_in_place, real_profile_product_dir,
+                                            browser_profile_is_running, _locked_profile_error)
 
     if not _bt._real_profile_cdp_lock.acquire(
         timeout=_bt._REAL_PROFILE_CDP_LOCK_TIMEOUT_S
@@ -317,44 +328,77 @@ def _real_profile_cdp() -> tuple:
         unsupported = _real_profile_unsupported_reason(browser)
         if unsupported:
             return None, unsupported
+        assert browser is not None  # _real_profile_unsupported_reason rejects None above
 
         # Reuse BEFORE writing anything. CRITICAL: the snapshot overlay (truncates/rewrites
         # Cookies / Login Data) must NOT run while a live copy-browser (maybe from a previous
         # hermes process) holds the user-data-dir open — that corrupts the databases.
-        copy_dir = real_profile_copy_dir(browser)
-        existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
-        if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
-            _bt._real_profile_cdp_cache["cdp"] = existing
-            return existing, None
-        if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
-            _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
-        # A Chrome from an earlier hermes process can still hold the copy dir after its attach
-        # daemon was reaped (that owner died). Re-attach to it rather than overlay a live profile;
-        # if the daemon cannot attach, fail closed — never snapshot over an open profile. Not ours
-        # to terminate (no Popen handle): it lives until the user closes it, by design.
-        surviving = _surviving_chrome_cdp(copy_dir)
-        if surviving:
-            cdp, err = _attach_agent_browser_to_real_profile(int(surviving.rsplit(":", 1)[1]), copy_dir)
+        # An in-place browser has no copy to reuse or overlay; it launches on its own profile
+        # below, and while it runs nothing else may read that profile. Skip the copy-path reuse
+        # and survival probes entirely so they cannot interfere.
+        in_place = browser_uses_profile_in_place(browser)
+        copy_dir = "" if in_place else real_profile_copy_dir(browser)
+        if not in_place:
+            existing = _agent_browser_get_cdp(_bt._REAL_PROFILE_SESSION)
+            if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
+                _bt._real_profile_cdp_cache["cdp"] = existing
+                return existing, None
+            if existing:  # stale/wrong-dir session: close it so nothing holds the dir open
+                _agent_browser_close_session(_bt._REAL_PROFILE_SESSION)
+            # A Chrome from an earlier hermes process can still hold the copy dir after its attach
+            # daemon was reaped (that owner died). Re-attach to it rather than overlay a live profile;
+            # if the daemon cannot attach, fail closed — never snapshot over an open profile. Not ours
+            # to terminate (no Popen handle): it lives until the user closes it, by design.
+            surviving = _surviving_chrome_cdp(copy_dir)
+            if surviving:
+                cdp, err = _attach_agent_browser_to_real_profile(
+                    int(surviving.rsplit(":", 1)[1]), copy_dir, browser)
+                if not cdp:
+                    return None, err
+                _bt._real_profile_cdp_cache["cdp"] = cdp
+                _bt.logger.info("real-profile: re-attached to surviving Chrome at %s (%s)", cdp, copy_dir)
+                return cdp, None
+
+        # In-place browsers are driven on their OWN profile: identity lives in product-level
+        # state beside the profile, which a snapshot does not carry, so a copy always renders
+        # as a fresh install. No snapshot is taken; the browser must be fully quit first
+        # (single-instance, and its profile DBs are write-locked while running).
+        if browser_uses_profile_in_place(browser):
+            if browser_profile_is_running(browser):
+                return None, _locked_profile_error(browser)
+            launch_dir = real_profile_product_dir(browser)
+            if not launch_dir or not os.path.isdir(launch_dir):
+                return None, (f"{_RP}the real profile directory for '{browser}' was not found "
+                              f"({launch_dir!r}). Launch it once, or turn the toggle off.")
+            real_binary = chromium_executable(browser)
+            if real_binary is None:
+                return None, f"{_RP}the real browser binary for '{browser}' could not be found. Reinstall it or turn the toggle off."
+            port, err = _launch_real_profile_chrome(real_binary, launch_dir, browser)
+            if port is None:
+                return None, err
+            cdp, err = _attach_agent_browser_to_real_profile(port, launch_dir, browser)
             if not cdp:
                 return None, err
             _bt._real_profile_cdp_cache["cdp"] = cdp
-            _bt.logger.info("real-profile: re-attached to surviving Chrome at %s (%s)", cdp, copy_dir)
+            _bt.logger.info("real-profile: in-place %s ready at %s (%s)", browser, cdp, launch_dir)
             return cdp, None
 
-        copy_dir, err = snapshot_real_profile(browser)
-        if err or not copy_dir:
+        # ``snapshot_real_profile`` returns the launch dir (copy root) — the snapshot's profile
+        # may sit nested beneath it, and a nesting browser appends its own segment.
+        launch_dir, err = snapshot_real_profile(browser)
+        if err or not launch_dir:
             return None, _real_profile_snapshot_error(err)
         real_binary = chromium_executable(browser)
         if real_binary is None:
             return None, f"{_RP}the real browser binary for '{browser}' could not be found. Reinstall it or turn the toggle off."
-        port, err = _launch_real_profile_chrome(real_binary, copy_dir, browser)
+        port, err = _launch_real_profile_chrome(real_binary, launch_dir, browser)
         if port is None:
             return None, err
-        cdp, err = _attach_agent_browser_to_real_profile(port, copy_dir)
+        cdp, err = _attach_agent_browser_to_real_profile(port, launch_dir, browser)
         if not cdp:
             return None, err
         _bt._real_profile_cdp_cache["cdp"] = cdp
-        _bt.logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
+        _bt.logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, launch_dir)
         return cdp, None
     finally:
         _bt._real_profile_cdp_lock.release()

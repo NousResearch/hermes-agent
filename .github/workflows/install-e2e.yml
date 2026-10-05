@@ -130,6 +130,7 @@ on:
       - 'setup-hermes.*'
       - 'hermes_bootstrap.py'
       - 'pm/**'
+      - '!pm/**/*.md'
       - 'hermes_cli/update*'
       - 'hermes_cli/*update*'
       - 'hermes_cli/pm*'

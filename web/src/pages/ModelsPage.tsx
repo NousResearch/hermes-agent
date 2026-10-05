@@ -55,6 +55,7 @@ const PERIODS = [
 const AUX_TASKS: readonly { key: string; label: string; hint: string }[] = [
   { key: "vision", label: "Vision", hint: "Image analysis" },
   { key: "compression", label: "Compression", hint: "Context compaction" },
+  { key: "micro_compaction", label: "Micro-compaction", hint: "Incremental context summaries" },
   { key: "skills_hub", label: "Skills Hub", hint: "Skill search" },
   { key: "approval", label: "Approval", hint: "Smart auto-approve" },
   { key: "mcp", label: "MCP", hint: "MCP tool routing" },
@@ -623,7 +624,8 @@ function AuxiliaryTasksModal({
           <p className="text-xs text-text-secondary mt-2">
             Auxiliary tasks handle side-jobs like vision, session search, and
             compression. <span className="font-mono">auto</span> means
-            &quot;use the main model&quot;. Override per-task when you want a
+            &quot;use the main model&quot; for most tasks; for micro-compaction it
+            means &quot;inherit compression&quot;. Override per-task when you want a
             cheap/fast model for a specific job.
           </p>
         </header>
@@ -647,7 +649,9 @@ function AuxiliaryTasksModal({
                   </div>
                   <div className="text-xs font-mono text-text-secondary truncate">
                     {isAuto
-                      ? "auto (use main model)"
+                      ? t.key === "micro_compaction"
+                        ? "auto (inherit compression)"
+                        : "auto (use main model)"
                       : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
                   </div>
                 </div>

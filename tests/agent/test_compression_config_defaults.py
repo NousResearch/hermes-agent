@@ -24,3 +24,7 @@ def test_threshold_tokens_default_and_null_opt_out(agent_cfg, expected):
     cs = _parse_compression_config(_agent(), agent_cfg)
     assert cs.threshold_tokens == expected
     assert cs.threshold == DEFAULT_CONFIG["compression"]["threshold"]
+
+
+def test_micro_compaction_auxiliary_default_is_an_empty_inheriting_child():
+    assert DEFAULT_CONFIG["auxiliary"]["micro_compaction"] == {}

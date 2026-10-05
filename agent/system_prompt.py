@@ -799,7 +799,7 @@ def _persisted_workspace_block(prompt: str, key: str) -> Optional[str]:
         return None
     try:
         git_root, owner = _workspace_roots(key)
-    except Exception:
+    except (OSError, RuntimeError):  # vanished key, or a symlink loop under Python <= 3.12
         return None
     if owner is None or not _same_live_dir(root_line, str(owner)):
         return None

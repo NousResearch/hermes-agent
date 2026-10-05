@@ -3,7 +3,7 @@ import { beforeEach, expect, test, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 
-import { $notifications, clearNotifications, isDiskFullErrorMessage, notifyError } from './notifications'
+import { $notifications, clearNotifications, isDiskFullErrorMessage, notifyError, readableError } from './notifications'
 import { $backendRestartRequest, $routeRequest } from './recovery-requests'
 
 beforeEach(() => {
@@ -225,4 +225,13 @@ test('a launch-credentials refusal says the key changed and offers a new chat', 
   clearNotifications()
   notifyError(new Error('launch_credentials_unavailable'), en.desktop.modelSwitchFailed)
   expect(lastMessage()).toBe(en.assistant.thread.errorCodes.launch_credentials_unavailable.body)
+})
+
+test('custom IPC errors preserve the actionable message without the wrapper', () => {
+  expect(
+    readableError(
+      new Error("Error invoking remote method 'x': DesktopBridgeError: The backend is unavailable."),
+      'fallback'
+    ).message
+  ).toBe('The backend is unavailable.')
 })

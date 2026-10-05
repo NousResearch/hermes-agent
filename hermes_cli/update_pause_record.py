@@ -70,15 +70,15 @@ def record_path() -> Path:
     return get_default_hermes_root() / f"{RECORD_STEM}.{_install_key()}.json"
 
 
-def _create_time(pid: int) -> float | None:
-    from hermes_cli.process_identity import _process_create_time
-    return _process_create_time(pid)
-
-
 def identity(pid: int | None = None) -> dict:
-    """``{"pid", "ct"}`` with ``ct`` spelled like the update marker's line 3 (``ct:<s.3f>``)."""
+    """``{"pid", "ct"}`` with ``ct`` spelled like the update marker's line 3 (``ct:<s.3f>``).
+
+    The creation time comes from the probe :func:`identity_is_live` judges with
+    (``update_lock.process_create_time``: psutil, else stdlib), so a host without psutil still
+    writes a provable identity instead of ``ct=None``."""
+    from hermes_cli import update_lock
     pid = os.getpid() if pid is None else int(pid)
-    created = _create_time(pid)
+    created = update_lock.process_create_time(pid)
     return {"pid": pid, "ct": None if created is None else f"ct:{created:.3f}"}
 
 

@@ -650,3 +650,13 @@ def test_a_malformed_retired_list_is_set_aside_only_when_nothing_refers_to_it(tm
     with pytest.raises(pause_record.RetiredUnknown):
         pause_record.orphans()
     assert retired.read_text(encoding="utf-8-sig") == "{trunc"
+
+
+def test_a_host_without_psutil_records_an_identity_the_liveness_rule_can_prove(monkeypatch):
+    """Review 5411136378 fix 2: the record's creation time comes from the same probe the reader
+    judges with, so a psutil-less host never writes ``ct=None`` (unprovable, so never orphaned)."""
+    from hermes_cli import update_lock
+    monkeypatch.setitem(sys.modules, "psutil", None)  # `import psutil` raises ImportError
+    ident = pause_record.identity()
+    assert ident["ct"] is not None, "no creation time without psutil"
+    assert update_lock.incarnation_live(ident["pid"], ident["ct"]) is True

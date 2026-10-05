@@ -275,9 +275,10 @@ def _hermes_launchd_wrapper_candidate(argv: list[str]) -> bool:
     looks like it launches one: a wrapper script under the Hermes home (``bash
     ~/.hermes/bin/start-serve-remote.sh`` — the wrapper's own argv carries no serve tail at all) or
     a hermes-named executable. Such jobs must still reach the loaded-job scan, because the live PID
-    launchd reports for them IS the backend's ancestor; unrelated jobs stay out, which also bounds
-    the per-label ``launchctl print`` probe count. A stray match is harmless: attribution below is
-    by live PID, ancestor, or exact argv, never by this heuristic alone."""
+    launchd reports for them IS the backend's ancestor; a job whose argv carries no Hermes marker
+    at all is held to the stricter live-PID-is-a-holder evidence in the scan instead. A stray
+    match is harmless: attribution below is by live PID, ancestor, or exact argv, never by this
+    heuristic alone."""
     for token in argv:
         if "/.hermes" in token or token.rsplit("/", 1)[-1] == "hermes":
             return True
@@ -288,12 +289,14 @@ def _loaded_launchd_backend_jobs(
     plist_dirs: list[tuple[str, Path]] | None = None,
 ) -> list[tuple[str, str, list[str], int | None]]:
     """``(domain, label, program_arguments, live_pid)`` for every LOADED launchd job whose
-    ``ProgramArguments`` is a ``hermes dashboard`` / ``hermes serve`` backend — spelled directly or
-    via a Hermes-referencing wrapper script, whose argv has no parseable serve tail but whose live
-    PID is the backend's ancestor. macOS only (empty elsewhere). Reads the plists
-    (unreadable/malformed ones are skipped) and asks ``launchctl print`` per candidate label — a
-    job that is not loaded in any domain is not returned, so an operator's stale plist never claims
-    a process."""
+    ``ProgramArguments`` is a ``hermes dashboard`` / ``hermes serve`` backend — spelled directly,
+    via a Hermes-referencing wrapper script (whose argv has no parseable serve tail but whose live
+    PID is the backend's ancestor), or via any operator wrapper that exec's the backend (the argv
+    carries no marker at all; the live PID launchd reports then IS a holder, and that identity —
+    not the plist text — is what admits the job). macOS only (empty elsewhere). Reads the plists
+    (unreadable/malformed ones are skipped) and asks ``launchctl print`` per label — a job that is
+    not loaded in any domain is not returned, so an operator's stale plist never claims a
+    process."""
     if sys.platform != "darwin":
         return []
     import plistlib
@@ -324,17 +327,38 @@ def _loaded_launchd_backend_jobs(
             if not label or not isinstance(args, list) or not args:
                 continue
             argv = [str(a) for a in args]
-            if _parse_dashboard_runtime(shlex.join(argv)) is None and not _hermes_launchd_wrapper_candidate(argv):
-                continue
+            # A marker-less operator wrapper (``/bin/bash /ops/start-dashboard.sh`` exec-ing
+            # ``hermes dashboard``, #116536) is identified by neither the parse nor the heuristic,
+            # so its plist no longer ends the scan here: the job is admitted only when launchd
+            # reports a live PID whose own cmdline IS a holder. That live-PID identity is what
+            # attributes the backend, and a loaded-but-unrelated job (a user shell, an updater)
+            # never passes the cmdline check, so the widened probe cannot claim a manual serve.
+            needs_live_holder = _parse_dashboard_runtime(
+                shlex.join(argv)
+            ) is None and not _hermes_launchd_wrapper_candidate(argv)
             domains = ("system",) if kind == "daemon" else (f"gui/{uid}", f"user/{uid}")
             for domain in domains:
                 try:
                     loaded, live_pid = _launchd_print_service_pid(domain, label)
                 except _SYSTEMCTL_ERRORS:
                     loaded, live_pid = False, None
-                if loaded:
-                    jobs.append((domain, label, argv, live_pid))
-                    break
+                if not loaded:
+                    continue
+                if needs_live_holder:
+                    live_cmdline = (
+                        _dashboard_cmdline_for_pid(live_pid)
+                        if live_pid is not None
+                        else None
+                    )
+                    if (
+                        live_cmdline is None
+                        or _parse_dashboard_runtime(shlex.join(live_cmdline)) is None
+                    ):
+                        # Loaded, but the live PID is not a holder — the job supervises something
+                        # else. No other domain holds this label, so stop probing it.
+                        break
+                jobs.append((domain, label, argv, live_pid))
+                break
     return jobs
 
 

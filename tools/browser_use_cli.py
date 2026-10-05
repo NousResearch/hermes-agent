@@ -86,7 +86,7 @@ _IMAGE_PATH_RE = re.compile(
     r"((?:[A-Za-z]:[\\/]|/)[^\s\"']+?\.(?:png|jpe?g|webp))", re.IGNORECASE
 )
 _IMAGE_TOKEN_RE = re.compile(r"[^\s\"']+")
-_IMAGE_PATH_START_RE = re.compile(r"(?:[A-Za-z]:[\\/]|/)")
+_IMAGE_PATH_START_RE = re.compile(r"(?:[A-Za-z]:[\\/]|/)", re.IGNORECASE)
 # http(s) URL literals in exec code checked against browser_navigate's policy
 _URL_RE = re.compile(r"https?://[^\s'\"\\)]+", re.IGNORECASE)
 _FHS_BIN_DIRS = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")

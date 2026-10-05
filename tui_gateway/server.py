@@ -3157,7 +3157,7 @@ _TUI_EXTRA: list[tuple[str, str, str]] = [
 # Commands that queue onto _pending_input in the CLI; the slash worker has no reader for that queue, so
 # slash.exec routes them to command.dispatch instead.
 _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset({
-    "retry", "queue", "q", "steer", "plan", "goal", "loop", "proactive", "moa", "undo", "learn",
+    "retry", "queue", "q", "steer", "plan", "goal", "supergoal", "sg", "loop", "proactive", "moa", "undo", "learn",
     "init", "compress", "compact",
 })
 

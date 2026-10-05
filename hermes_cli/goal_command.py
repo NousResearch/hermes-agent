@@ -120,14 +120,14 @@ def _gate(mgr, arg, authorize_gate):
         return GoalCommandResult(f"/goal gate {operation}: {exc}", error=True)
 
 
-def _set(mgr, arg, *, drafting, last_user_message, render, progress):
+def _set(mgr, arg, *, drafting, last_user_message, render, progress, mode):
     if drafting:
         if not arg:
             return GoalCommandResult("Usage: /goal draft <objective in plain language>", error=True)
         if progress is not None:
             progress("Drafting completion contract…")
         try:
-            contract = goals.draft_contract(arg)
+            contract = goals.draft_contract(arg, **({"mode": mode} if mode == "supergoal" else {}))
         except Exception as exc:
             logger.debug("goal draft failed: %s", exc)
             contract = None
@@ -135,7 +135,7 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
     else:
         headline, contract = goals.parse_contract(arg)
         contract = contract if not contract.is_empty() else None
-    state = mgr.set(headline or arg, contract=contract)
+    state = mgr.set(headline or arg, contract=contract, mode=mode)
     output = render("gateway.goal.set", "⊙ Goal set ({budget}-turn budget): {goal}",
                     budget=state.max_turns, goal=state.goal)
     if state.has_contract():
@@ -152,7 +152,14 @@ def _set(mgr, arg, *, drafting, last_user_message, render, progress):
         output += (f"\nAfter each turn, a judge model checks if the goal is done{against}. "
                    "Hermes keeps working until it is, you pause/clear it, or the budget is "
                    "exhausted. Use /goal status, /goal show, /goal pause, /goal resume, /goal clear.")
-    return GoalCommandResult(output, goals.goal_kick_prompt(state.goal, last_user_message), kickoff=True)
+    prompt = goals.goal_kick_prompt(state.goal, last_user_message)
+    if state.mode == "supergoal":
+        from hermes_cli.supergoal_prompts import AUTONOMY_INSTRUCTIONS
+        output += "\nSupergoal mode: autonomous investigation; no routine clarification questions."
+        prompt += "\n\n" + AUTONOMY_INSTRUCTIONS
+        if state.has_contract():
+            prompt += "\n\nCompletion contract:\n" + state.contract.render_block()
+    return GoalCommandResult(output, prompt, kickoff=True)
 
 
 def is_goal_control(arg: str) -> bool:
@@ -164,7 +171,7 @@ def is_goal_control(arg: str) -> bool:
 def dispatch_goal_command(
     mgr: goals.GoalManager, arg: str, *, authorize_gate: Callable[[], str | None],
     last_user_message=None, render: Callable = _english,
-    progress: Callable[[str], None] | None = None,
+    progress: Callable[[str], None] | None = None, mode: str = "goal",
 ) -> GoalCommandResult:
     """Apply one command. ``authorize_gate`` returns a denial or None (explicit approval).
 
@@ -187,8 +194,8 @@ def dispatch_goal_command(
             return _gate(mgr, rest, authorize_gate)
         return _set(mgr, rest if verb == "draft" else arg,
                     drafting=verb == "draft", last_user_message=last_user_message,
-                    render=render, progress=progress)
-    except (RuntimeError, ValueError, IndexError) as exc:
+                    render=render, progress=progress, mode=mode)
+    except (RuntimeError, ValueError, IndexError, OSError) as exc:
         output = (render("gateway.goal.invalid", "Invalid goal: {error}", error=str(exc))
                   if prefix == "Invalid goal" else f"{prefix}: {exc}")
         return GoalCommandResult(output, error=True)

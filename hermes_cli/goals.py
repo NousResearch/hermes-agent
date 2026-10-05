@@ -16,7 +16,7 @@ import re
 import subprocess
 import threading
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # ── Constants & defaults ──────────────────────────────────────────────
 
 DEFAULT_MAX_TURNS = 20
+DEFAULT_SUPERGOAL_MAX_TURNS = 40
 DEFAULT_JUDGE_TIMEOUT = 30.0
 # Judge output budget. Reasoning models burn hidden-reasoning tokens before the visible one-line
 # JSON verdict; 200 (the original) reliably truncated it and tripped the auto-pause. 4096 covers
@@ -427,6 +428,7 @@ class GoalState:
     contract: GoalContract = field(default_factory=GoalContract)
     # /goal gate add <cmd>: ALL must pass before the judge may declare done.
     gates: List[GoalGate] = field(default_factory=list)
+    mode: str = "goal"              # goal | supergoal; old records default to goal
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -434,13 +436,17 @@ class GoalState:
     @classmethod
     def from_json(cls, raw: str) -> "GoalState":
         data = json.loads(raw)
+        if data.get("mode", "goal") not in {"goal", "supergoal"}:
+            raise ValueError("unknown goal mode")
         raw_subgoals = data.get("subgoals") or []
         ints = {k: int(data.get(k) or 0) for k in ("turns_used", "consecutive_parse_failures", "consecutive_transport_failures", "waiting_on_delegations")}
         floats = {k: float(data.get(k) or 0.0) for k in ("created_at", "last_turn_at", "waiting_until", "waiting_since")}
         return cls(
             goal=data.get("goal", ""),
+            mode=data.get("mode", "goal"),
             status=data.get("status", "active"),
-            max_turns=int(data.get("max_turns") or DEFAULT_MAX_TURNS),
+            max_turns=int(data.get("max_turns") or (
+                DEFAULT_SUPERGOAL_MAX_TURNS if data.get("mode") == "supergoal" else DEFAULT_MAX_TURNS)),
             last_verdict=data.get("last_verdict"),
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
@@ -609,39 +615,92 @@ def _warn_dropped_write(manager: str, kind: str, session_id: str) -> None:
     )
 
 
-def load_goal(session_id: str) -> Optional[GoalState]:
+def load_goal(session_id: str, *, strict: bool = False) -> Optional[GoalState]:
     """Load the goal for a session, or None if none exists."""
     if not session_id:
         return None
     db = _get_session_db()
     if db is None:
+        if strict:
+            raise RuntimeError("Goal state database unavailable")
         return None
     try:
         raw = db.get_meta(_meta_key(session_id))
     except Exception as exc:
         logger.debug("GoalManager: get_meta failed: %s", exc)
+        if strict:
+            raise
         return None
-    if not raw:
+    if raw is None or (not strict and not raw):
         return None
     try:
-        return GoalState.from_json(raw)
+        state = GoalState.from_json(raw)
     except Exception as exc:
         logger.warning("GoalManager: could not parse stored goal for %s: %s", session_id, exc)
+        if strict:
+            raise
         return None
+    # Bootstrap development-era rows before any goal loop is resumed. Never infer
+    # an allow from a DB error, nor scan SQLite from the clarification boundary.
+    if state.mode == "supergoal" and state.status == "active":
+        from hermes_cli.supergoal_policy import policy_write_lock, restrict_clarification
+        with policy_write_lock(session_id):
+            # The first read may predate a replacement which released its marker.
+            # Re-read under the same lock as every goal writer before bootstrapping.
+            try:
+                raw = db.get_meta(_meta_key(session_id))
+                if raw is None or (not strict and not raw):
+                    return None
+                state = GoalState.from_json(raw)
+            except Exception as exc:
+                logger.debug("GoalManager: bootstrap reread failed: %s", exc)
+                if strict:
+                    raise
+                return None
+            if state.mode == "supergoal" and state.status == "active":
+                restrict_clarification(session_id)
+    return state
 
 
-def save_goal(session_id: str, state: GoalState) -> None:
-    """Persist a goal to SessionDB. No-op if DB unavailable."""
+def save_goal(session_id: str, state: GoalState, *, strict: bool = False) -> None:
+    """Persist policy before activation; release it only after a verified DB save.
+
+    Failures leave a conservative restriction, not an unguarded supergoal. Ordinary
+    goals retain best-effort persistence unless replacing a restricted session.
+    """
+    from hermes_cli.supergoal_policy import (
+        clarification_restricted, policy_write_lock, release_clarification, restrict_clarification,
+    )
     if not session_id:
+        if strict or state.mode == "supergoal":
+            raise RuntimeError("Goal session id is required")
         return
-    db = _get_session_db()
-    if db is None:
-        _warn_dropped_write("GoalManager", "goal", session_id)
-        return
-    try:
-        db.set_meta(_meta_key(session_id), state.to_json())
-    except Exception as exc:
-        logger.debug("GoalManager: set_meta failed: %s", exc)
+    # Ordinary writes also participate: the first SG activation can otherwise
+    # race an absent-marker check and leave an ordinary row restricted.
+    with policy_write_lock(session_id):
+        restricted = clarification_restricted(session_id)
+        active_supergoal = state.mode == "supergoal" and state.status == "active"
+        strict = strict or restricted or state.mode == "supergoal"
+        if active_supergoal:
+            restrict_clarification(session_id)
+        db = _get_session_db()
+        if db is None:
+            _warn_dropped_write("GoalManager", "goal", session_id)
+            if strict:
+                raise RuntimeError("Goal state database unavailable; supergoal not started")
+            return
+        try:
+            payload = state.to_json()
+            db.set_meta(_meta_key(session_id), payload)
+            if strict and db.get_meta(_meta_key(session_id)) != payload:
+                raise RuntimeError("Goal state persistence verification failed")
+        except Exception as exc:
+            logger.debug("GoalManager: set_meta failed: %s", exc)
+            if strict:
+                raise RuntimeError("Goal state could not be persisted") from exc
+            return
+        if restricted and not active_supergoal:
+            release_clarification(session_id)
 
 
 def clear_goal(session_id: str) -> None:
@@ -654,8 +713,10 @@ def clear_goal(session_id: str) -> None:
 
 
 def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason: str = "") -> bool:
-    """Carry a persistent /goal from a parent session to its continuation. Best-effort, never raises
-    (a failure here must not block compression). Returns True when a goal was migrated.
+    """Carry a persistent /goal to its continuation, verifying before archiving.
+
+    Goal-row failures return False and leave restrictions in place. Policy-copy
+    failures raise: callers must not publish an unprotected compression child.
 
     Context compression rotates ``session_id`` to a fresh child session, but ``load_goal`` does a flat
     ``goal:<session_id>`` lookup with no parent-lineage walk — so an active goal silently dies at the
@@ -665,16 +726,26 @@ def migrate_goal_to_session(old_session_id: str, new_session_id: str, *, reason:
     """
     if not old_session_id or not new_session_id or old_session_id == new_session_id:
         return False
+    from hermes_cli.supergoal_policy import carry_clarification_restriction
     try:
-        state = load_goal(old_session_id)
+        # Don't impose the parent's policy on an already-owned destination.
+        if load_goal(new_session_id, strict=True) is not None:
+            return False
+    except Exception as exc:
+        carry_clarification_restriction(old_session_id, new_session_id)
+        logger.debug("GoalManager: migration destination unreadable: %s", exc)
+        return False
+    # This part is not best-effort: a rotated session must never lose its guard,
+    # even when the goal row cannot be read or copied.
+    carry_clarification_restriction(old_session_id, new_session_id)
+    try:
+        state = load_goal(old_session_id, strict=True)
         if state is None or state.status == "cleared":
             return False
-        # Don't clobber a goal already set on the child (e.g. a resumed lineage).
-        if load_goal(new_session_id) is not None:
-            return False
-        save_goal(new_session_id, state)
-        # Archive the parent's row so it isn't double-counted as active.
-        clear_goal(old_session_id)
+        save_goal(new_session_id, state, strict=True)
+        # Verify the archive too; a best-effort clear can silently fail after
+        # copying the child. Never release the parent's marker on that failure.
+        save_goal(old_session_id, replace(state, status="cleared"), strict=True)
         logger.debug("GoalManager: migrated goal %s -> %s (%s)", old_session_id, new_session_id, reason or "rotation")
         return True
     except Exception as exc:  # pragma: no cover - defensive
@@ -876,6 +947,7 @@ def judge_goal(
     background_processes: Optional[List[Dict[str, Any]]] = None,
     contract: Optional[GoalContract] = None,
     active_delegations: int = 0,
+    mode: str = "goal",
 ) -> Tuple[str, str, bool, Optional[Dict[str, Any]], bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -918,8 +990,14 @@ def judge_goal(
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(**common)
 
+    system_prompt = JUDGE_SYSTEM_PROMPT
+    if mode == "supergoal":
+        from hermes_cli.supergoal_prompts import JUDGE_SYSTEM_PROMPT as supergoal_policy, judge_prompt
+        system_prompt = supergoal_policy
+        prompt = judge_prompt(**common, contract=contract, subgoals=clean_subgoals)
+
     try:
-        raw = _call_goal_judge_llm(call_llm, JUDGE_SYSTEM_PROMPT, prompt, timeout)
+        raw = _call_goal_judge_llm(call_llm, system_prompt, prompt, timeout)
     except AuxiliaryClientUnavailable as exc:
         # No client at all (e.g. a dead Nous refresh token): name the cause so the user is sent to
         # re-authenticate, not to context-length / model debugging (#42177). Still fails open.
@@ -1017,7 +1095,7 @@ def gather_background_processes(task_id: Optional[str] = None, *, owner_task_id:
     return running
 
 
-def draft_contract(objective: str, *, timeout: Optional[float] = None) -> Optional[GoalContract]:
+def draft_contract(objective: str, *, timeout: Optional[float] = None, mode: str = "goal") -> Optional[GoalContract]:
     """Expand a plain-language objective into a completion contract via the ``goal_judge`` auxiliary
     task (a side LLM call, not a conversation turn). None when unavailable or unparseable."""
     objective = (objective or "").strip()
@@ -1036,7 +1114,12 @@ def draft_contract(objective: str, *, timeout: Optional[float] = None) -> Option
         return None
 
     try:
-        raw = _call_goal_judge_llm(call_llm, DRAFT_CONTRACT_SYSTEM_PROMPT, f"Objective:\n{_truncate(objective, 4000)}", timeout)
+        policy = DRAFT_CONTRACT_SYSTEM_PROMPT
+        if mode == "supergoal":
+            from hermes_cli.supergoal_prompts import AUTONOMY_INSTRUCTIONS
+            policy = policy.replace("stop and ask for human input", "stop at an unavoidable authorization or capability boundary")
+            policy += "\n\n" + AUTONOMY_INSTRUCTIONS
+        raw = _call_goal_judge_llm(call_llm, policy, f"Objective:\n{_truncate(objective, 4000)}", timeout)
     except Exception as exc:
         logger.info("goal draft: API call failed (%s)", exc)
         return None
@@ -1098,7 +1181,8 @@ class GoalManager:
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
         con = ", contract" if self.has_contract() else ""
         gat = f", {len(s.gates)} gate{'s' if len(s.gates) != 1 else ''}" if s.gates else ""
-        meta = f"{turns}{sub}{con}{gat}"
+        mode = ", supergoal — autonomous" if s.mode == "supergoal" else ""
+        meta = f"{turns}{sub}{con}{gat}{mode}"
         if s.status == "active":
             if s.waiting_on_session and _session_waiting(s.waiting_on_session):
                 return f"⏳ Goal (parked on {s.waiting_reason or f'session {s.waiting_on_session}'}, {meta}): {s.goal}"
@@ -1141,15 +1225,23 @@ class GoalManager:
         self._pause_state(paused_reason)
         return _decision("paused", False, None, verdict, reason, message)
 
-    def set(self, goal: str, *, max_turns: Optional[int] = None, contract: Optional[GoalContract] = None) -> GoalState:
+    def set(self, goal: str, *, max_turns: Optional[int] = None, contract: Optional[GoalContract] = None, mode: str = "goal") -> GoalState:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
-        self._state = GoalState(
-            goal=goal, status="active", turns_used=0, created_at=time.time(), last_turn_at=0.0,
-            max_turns=int(max_turns) if max_turns else self.default_max_turns,
+        if mode not in {"goal", "supergoal"}:
+            raise ValueError("unknown goal mode")
+        state = GoalState(
+            goal=goal, mode=mode, status="active", turns_used=0, created_at=time.time(), last_turn_at=0.0,
+            max_turns=int(max_turns) if max_turns else (
+                DEFAULT_SUPERGOAL_MAX_TURNS if mode == "supergoal" else self.default_max_turns),
             contract=contract if contract is not None else GoalContract(),
         )
+        if mode == "supergoal":
+            save_goal(self.session_id, state, strict=True)
+            self._state = state
+            return state
+        self._state = state
         return self._save()
 
     def set_contract(self, contract: GoalContract) -> Optional[GoalState]:
@@ -1170,11 +1262,17 @@ class GoalManager:
     def resume(self, *, reset_budget: bool = True) -> Optional[GoalState]:
         if not self._state:
             return None
-        self._state.status = "active"
-        self._state.paused_reason = None
-        self._state.clear_wait()   # resuming starts fresh
+        state = replace(self._state) if self._state.mode == "supergoal" else self._state
+        state.status = "active"
+        state.paused_reason = None
+        state.clear_wait()   # resuming starts fresh
         if reset_budget:
-            self._state.turns_used = 0
+            state.turns_used = 0
+        if state.mode == "supergoal":
+            save_goal(self.session_id, state, strict=True)
+            self._state = state
+            return state
+        self._state = state
         return self._save()
 
     def clear(self) -> None:
@@ -1275,6 +1373,19 @@ class GoalManager:
             lines.append(f"- {i}. $ {g.command}{status}")
         return "\n".join(lines)
 
+    def _superseded_supergoal_decision(self) -> Optional[Dict[str, Any]]:
+        """A user control during a slow gate/judge must win over its stale result."""
+        state = self._state
+        if state is None or state.mode != "supergoal":
+            return None
+        current = load_goal(self.session_id, strict=True)
+        if (current is None or current.status != "active"
+                or current.created_at != state.created_at or current.mode != state.mode):
+            self._state = current
+            return _decision(current.status if current else None, False, None,
+                             "inactive", "goal changed during evaluation", "")
+        return None
+
     def _check_gates(self) -> Optional[Dict[str, Any]]:
         """Run quality gates in order; return a decision dict on failure.
 
@@ -1290,6 +1401,8 @@ class GoalManager:
 
         for gate in state.gates:
             passed, exit_code, tail = run_gate(gate)
+            if changed := self._superseded_supergoal_decision():
+                return changed
             gate.last_exit_code = exit_code
             gate.last_output_tail = tail
             if passed:
@@ -1313,6 +1426,10 @@ class GoalManager:
                 goal=state.goal, command=gate.command, exit_code=exit_code, attempt=gate.attempts,
                 max_retries=gate.max_retries, output=tail or "(no output)",
             )
+            if state.mode == "supergoal":
+                # Keep gate evidence, but no instruction to stop after one failed method.
+                evidence = prompt.split("Fix the underlying problem", 1)[0]
+                prompt = self.next_continuation_prompt() + "\n\n" + evidence
             return _decision(
                 "active", True, prompt, "gate_failed",
                 f"gate failed (exit {exit_code}): $ {gate.command}",
@@ -1476,7 +1593,10 @@ class GoalManager:
         verdict, reason, parse_failed, wait_directive, transport_failed = judge_goal(
             state.goal, last_response, subgoals=state.subgoals or None, background_processes=background_processes,
             contract=state.contract if state.has_contract() else None, active_delegations=active_delegations,
+            **({"mode": state.mode} if state.mode == "supergoal" else {}),
         )
+        if changed := self._superseded_supergoal_decision():
+            return changed
         state.last_verdict = verdict
         state.last_reason = reason
         # Parse failures reset on any usable reply INCLUDING transport errors, so a flaky network
@@ -1536,6 +1656,9 @@ class GoalManager:
         s = self._state
         if not s or s.status != "active":
             return None
+        if s.mode == "supergoal":
+            from hermes_cli.supergoal_prompts import continuation_prompt
+            return continuation_prompt(s)
         # Contract first (it carries the verification surface); subgoals fold in as extra criteria.
         if s.has_contract():
             contract_block = s.contract.render_block()

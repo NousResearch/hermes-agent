@@ -186,7 +186,8 @@ def _run_batch(normalized: List[dict], callback, question: str) -> str:
 
 
 def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_select: bool = False,
-                 questions: Optional[List[dict]] = None, callback: Optional[Callable] = None) -> str:
+                 questions: Optional[List[dict]] = None, callback: Optional[Callable] = None,
+                 *, session_id: Optional[str] = None) -> str:
     """Ask one question (``question``/``choices``/``multi_select``) or a batch (``questions``
     wins when non-empty). ``callback(question, choices, multi_select=False) -> str`` is
     platform injected (batch-capable ones also take ``questions=``). Returns result JSON.
@@ -202,6 +203,21 @@ def clarify_tool(question: str, choices: Optional[List[str]] = None, multi_selec
     normalized list in one call; platforms without it are looped one question at a time. Injected by the
     agent runner (cli.py / gateway).
     """
+    # Check durable per-session policy at invocation, including reused agents. Keep the
+    # schema stable for prompt caching; the caller supplies identity, never model args.
+    if session_id:
+        from hermes_cli.supergoal_policy import clarification_restricted
+
+        try:
+            restricted = clarification_restricted(session_id)
+        except Exception:
+            return tool_error("Clarification withheld: the session's goal policy could not be read. "
+                              "Continue with safe investigation; do not bypass required approvals.")
+        if restricted:
+            return tool_error("Clarify is disabled during an active supergoal. Work autonomously: "
+                              "inspect the available context, make safe assumptions, and try "
+                              "alternative approaches without asking the user. Required approvals "
+                              "and permission boundaries still apply.")
     if questions is not None:
         normalized, error = _normalize_questions(questions)
         if error:
@@ -312,7 +328,8 @@ registry.register(
         choices=args.get("choices"),
         multi_select=args.get("multi_select", False),
         questions=args.get("questions"),
-        callback=kw.get("callback")),
+        callback=kw.get("callback"),
+        session_id=kw.get("session_id")),
     check_fn=check_clarify_requirements,
     emoji="❓",
 )

@@ -9,6 +9,7 @@ PR #28494).
 import asyncio
 import sys
 import types
+from collections import deque
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -63,7 +64,6 @@ def _stub_mautrix():
 
 _stub_mautrix()
 
-from gateway.platforms.helpers import MessageDeduplicator  # noqa: E402
 from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt  # noqa: E402
 
 
@@ -79,7 +79,8 @@ def _make_adapter(allowed_user_ids=None):
     adapter._approval_reaction_map = {"✅": "once", "❎": "deny"}
     adapter._approval_prompts_by_event = {}
     adapter._approval_prompt_by_session = {}
-    adapter._dedup = MessageDeduplicator()
+    adapter._processed_events = deque(maxlen=512)
+    adapter._processed_events_set = set()
     return adapter
 
 

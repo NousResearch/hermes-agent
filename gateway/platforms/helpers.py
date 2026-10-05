@@ -25,9 +25,8 @@ class MessageDeduplicator:
         self._max_size = max_size
         self._ttl = ttl_seconds
 
-    def is_duplicate(self, msg_id: str, seen_at: Optional[float] = None) -> bool:
-        """Return True if *msg_id* was already seen within the TTL window. ``seen_at`` (default now)
-        records a platform timestamp instead, which ``newest_seen_ts`` then reports."""
+    def is_duplicate(self, msg_id: str) -> bool:
+        """Return True if *msg_id* was already seen within the TTL window."""
         if not msg_id:
             return False
         now = time.time()
@@ -35,7 +34,7 @@ class MessageDeduplicator:
             if now - self._seen[msg_id] < self._ttl:
                 return True
             del self._seen[msg_id]  # expired: treat as new
-        self._seen[msg_id] = seen_at or now
+        self._seen[msg_id] = now
         if len(self._seen) > self._max_size:
             cutoff = now - self._ttl
             self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
@@ -60,10 +59,6 @@ class MessageDeduplicator:
 
     def clear(self):
         self._seen.clear()
-
-    def newest_seen_ts(self) -> float:
-        """Newest recorded seen time (0.0 when empty) — a reconnect's resume point."""
-        return max(self._seen.values(), default=0.0)
 
     def absorb(self, other: "MessageDeduplicator") -> None:
         """Adopt *other*'s still-live IDs (at their original seen times) into this cache."""

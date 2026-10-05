@@ -1,5 +1,4 @@
-"""Matrix startup grace (#133265): offline-backlog drops are logged once per connect, and an
-in-process reconnect delivers the outage window instead of dropping it like a cold boot."""
+"""Matrix startup grace (#133265): offline-backlog drops are logged once per connect."""
 
 import logging
 import time
@@ -8,7 +7,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.helpers import carry_inbound_dedup, inbound_dedup_caches
 from tests.gateway.test_matrix import _make_fake_mautrix
 
 _LOGGER = "plugins.platforms.matrix.adapter"
@@ -60,22 +58,3 @@ async def test_cold_boot_grace_drop_logs_one_summary(caplog, tmp_path, monkeypat
     assert len(summaries) == 1 and summaries[0].levelname == "WARNING"
     assert "skipped 2 message(s)" in summaries[0].getMessage()
     await adapter.disconnect()
-
-
-@pytest.mark.asyncio
-async def test_reconnect_delivers_outage_window_once(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    old = _adapter()
-    await _connect(old, [])
-    t = time.time() - 120
-    old._startup_ts = t - 10  # the bot had been up when the event at T arrived live
-    await old._on_room_message(_event("$t", t))
-    assert old._handle_text_message.await_count == 1
-    await old.disconnect()
-    # The runner's reconnect builds a fresh adapter, carries the dedup over, and connects with is_reconnect.
-    new = _adapter()
-    carry_inbound_dedup(inbound_dedup_caches(old), new)
-    await _connect(new, [_event("$t", t), _event("$t60", t + 60)], is_reconnect=True)
-    delivered = [c.args[2] for c in new._handle_text_message.await_args_list]
-    assert delivered == ["$t60"]
-    await new.disconnect()

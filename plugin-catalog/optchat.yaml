@@ -1,0 +1,18 @@
+name: optchat
+repo: https://github.com/aska-digital/optchat-memory
+sha: "7b0f3abd65b95996366d0495787c95af981ea587"
+subdir: optchat
+description: "OptChat-style endless memory for Hermes: an append-only verbatim log plus a binary summary tree, exposed as recall through the MemoryProvider ABC. Background compactor builds the tree with a cheap auxiliary model (call_llm task optchat_compact); prefetch returns a fixed-budget view of the whole history; optchat_zoom/optchat_date tools open any line down to the verbatim message. Disclosure: the log and tree are local files under HERMES_HOME, but compaction sends logged messages (including tool output) to the configured auxiliary/main model route for summarization."
+maintainer: ahrazzle
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+version: "0.1.0"
+docs_url: https://github.com/aska-digital/optchat-memory/tree/7b0f3abd65b95996366d0495787c95af981ea587#readme
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: [optchat_zoom, optchat_date]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

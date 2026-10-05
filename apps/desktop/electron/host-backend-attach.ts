@@ -125,7 +125,8 @@ function nonemptyToken(value: string | null | undefined): string | null {
 async function validate(
   record: HostBackendRecord,
   deps: HostBackendAttachDeps,
-  expectedCommit: string | null
+  expectedCommit: string | null,
+  unreadableIdentity: 'unconfirmed' | 'token-attach'
 ): Promise<AttachedBackend | null | typeof UNCONFIRMED> {
   const baseUrl = recordBaseUrl(record)
   const servedToken = nonemptyToken(await deps.resolveServedToken(baseUrl).catch(() => null))
@@ -168,7 +169,13 @@ async function validate(
         `[attach] ${baseUrl} (pid ${record.pid}) is ready but its code identity is unreadable: ${(error as Error).message}`
       )
 
-      return UNCONFIRMED
+      if (unreadableIdentity === 'unconfirmed') {
+        return UNCONFIRMED
+      }
+
+      // Retries exhausted: an unreadable identity is still not a mismatch, so
+      // keep the token-validated attach rather than spawn a second backend.
+      theirs = expectedCommit
     }
 
     if (theirs?.toLowerCase() !== expectedCommit.toLowerCase()) {
@@ -210,7 +217,8 @@ export async function attachToHostBackend(
 
 async function findHostBackend(
   { isolated, ledgerPath }: { isolated: boolean; ledgerPath: string },
-  deps: HostBackendAttachDeps
+  deps: HostBackendAttachDeps,
+  unreadableIdentity: 'unconfirmed' | 'token-attach' = 'unconfirmed'
 ): Promise<AttachedBackend | null | typeof UNCONFIRMED> {
   const records = parseSpawnLedger(deps.readLedger(ledgerPath))
   const decision = spawnOrAttach({ isolated, records, isPidAlive: deps.isPidAlive })
@@ -237,7 +245,7 @@ async function findHostBackend(
   let unconfirmed = false
 
   for (const record of ordered) {
-    const attached = await validate(record, deps, expectedCommit)
+    const attached = await validate(record, deps, expectedCommit, unreadableIdentity)
 
     if (attached === UNCONFIRMED) {
       unconfirmed = true
@@ -324,6 +332,16 @@ export async function attachOrReserveSpawn(
     await gate.sleep(pollMs)
 
     found = await findHostBackend(options, deps)
+
+    if (found && found !== UNCONFIRMED) {
+      return { attached: found }
+    }
+  }
+
+  // Only a definitive non-matching commit is a mismatch: a ready backend whose
+  // identity stayed unreadable for the whole budget keeps the token attach.
+  if (found === UNCONFIRMED) {
+    found = await findHostBackend(options, deps, 'token-attach')
 
     if (found && found !== UNCONFIRMED) {
       return { attached: found }

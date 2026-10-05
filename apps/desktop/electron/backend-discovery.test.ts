@@ -614,3 +614,59 @@ test('a transient identity read failure retries the running backend instead of s
     server.close()
   }
 })
+
+/**
+ * An identity that stays unreadable for the whole wait budget is "unknown",
+ * never a mismatch: startup keeps the token-validated attach instead of
+ * spawning a second backend beside a correct but slow one.
+ */
+test('an identity unreadable for the whole budget keeps the token attach, never a second backend', async () => {
+  let clock = 0
+  let takes = 0
+  const ledger = JSON.stringify([{ host: '127.0.0.1', pid: 4711, port: 65_238, purpose: 'serve', registered_at: 1 }])
+
+  const outcome = await attachOrReserveSpawn(
+    { isolated: false, ledgerPath: '/ledger.json' },
+    {
+      ...attachDeps(ledger),
+      backendCodeIdentity: async () => {
+        throw new Error('The operation was aborted due to timeout')
+      },
+      expectedCodeIdentity: async () => NEW_COMMIT
+    },
+    {
+      now: () => clock,
+      read: () => null,
+      take: () => {
+        takes += 1
+
+        return () => {}
+      },
+      sleep: async ms => {
+        clock += ms
+      }
+    },
+    { pollMs: 500, waitBudgetMs: 2_000 }
+  )
+
+  assert.equal('attached' in outcome && outcome.attached.token, 'served-token')
+  assert.equal(takes, 0, 'no spawn reservation may be taken beside a ready backend of unknown identity')
+})
+
+test('a definitive non-matching commit is still refused after the budget', async () => {
+  let clock = 0
+  const ledger = JSON.stringify([{ host: '127.0.0.1', pid: 4711, port: 65_238, purpose: 'serve', registered_at: 1 }])
+
+  const outcome = await attachOrReserveSpawn(
+    { isolated: false, ledgerPath: '/ledger.json' },
+    {
+      ...attachDeps(ledger),
+      backendCodeIdentity: async () => OLD_COMMIT,
+      expectedCodeIdentity: async () => NEW_COMMIT
+    },
+    { now: () => clock, read: () => null, take: () => () => {}, sleep: async ms => void (clock += ms) },
+    { pollMs: 500, waitBudgetMs: 2_000 }
+  )
+
+  assert.equal('reservation' in outcome, true)
+})

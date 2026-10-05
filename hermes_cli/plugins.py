@@ -213,7 +213,9 @@ VALID_HOOKS: Set[str] = {
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as
 # the shell-hook allow-list, so these are refused loudly instead of having output silently ignored.
-SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification"}
+# on_status_bar_render returns a scalar fragment and _parse_response has no scalar channel, so a
+# configured shell hook would either contribute nothing or render a dict literal in the footer.
+SHELL_UNSUPPORTED_HOOKS: Set[str] = {"transform_api_error_classification", "on_status_bar_render"}
 
 _env_enabled = env_var_enabled  # imported by plugins/memory
 _UNSET = object()

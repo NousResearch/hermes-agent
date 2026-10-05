@@ -120,8 +120,9 @@ def _resolve_openrouter_runtime(
     explicit > CUSTOM_BASE_URL > trusted ``model.base_url`` > OPENROUTER_BASE_URL > default.
     OPENAI_BASE_URL never picks the endpoint (config.yaml is the single source of truth for endpoint
     URLs); it is read only to keep an OPENAI_API_KEY bound to another host out of the OpenRouter
-    fallback. OpenRouter contexts prefer OPENROUTER_API_KEY; custom endpoints never receive the
-    OpenRouter key and only get env keys gated on their authoritative hosts."""
+    fallback. OpenRouter contexts prefer OPENROUTER_API_KEY, except that a bare ``custom`` block on a
+    trusted openrouter.ai ``model.base_url`` uses the key configured beside it first; custom endpoints
+    never receive the OpenRouter key and only get env keys gated on their authoritative hosts."""
     rp = _rp()
     model_cfg = rp._get_model_config()
     cfg_base_url = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
@@ -156,6 +157,7 @@ def _resolve_openrouter_runtime(
                 and base_url == (env_openrouter_base_url or "").rstrip("/"))
         )
     )
+    from hermes_cli.runtime_provider_custom import _model_cfg_key_env_for
     if is_openrouter_context:
         # OPENAI_API_KEY is a legacy home for an OpenRouter key. When OPENAI_BASE_URL binds it, it
         # goes only to that origin: another scheme or port on the same host is another endpoint.
@@ -168,12 +170,17 @@ def _resolve_openrouter_runtime(
             openai_key_ok = bool(openai_origin[1]) and openai_origin == base_url_origin(base_url)
         else:
             openai_key_ok = not is_openrouter_url or rp.looks_like_openrouter_key(openai_key)
-        candidates = [explicit_api_key, get_secret_str("OPENROUTER_API_KEY"),
-                      openai_key if openai_key_ok else ""]
+        # A bare ``provider: custom`` block whose trusted model.base_url is on openrouter.ai keeps
+        # the key declared beside it, ahead of env keys, as on any other custom host.
+        cfg_key_ok = requested_norm == "custom" and use_config_base_url and base_url == cfg_base_url.strip().rstrip("/")
+        # An unresolved ``${VAR}`` is not a key: sending it would 401 a setup that works on the env key.
+        cfg_literal_ok = cfg_key_ok and "${" not in cfg_api_key
+        candidates = [explicit_api_key, (cfg_api_key if cfg_literal_ok else ""),
+                      (_model_cfg_key_env_for(model_cfg, base_url) if cfg_key_ok else ""),
+                      get_secret_str("OPENROUTER_API_KEY"), openai_key if openai_key_ok else ""]
     else:
         # ``model.api_key`` and ``model.key_env`` back a trusted config base_url only; the key_env
         # rung is what a bare ``provider: custom`` block relies on (#67453).
-        from hermes_cli.runtime_provider_custom import _model_cfg_key_env_for
         candidates = [explicit_api_key, (cfg_api_key if use_config_base_url else ""),
                       (_model_cfg_key_env_for(model_cfg, base_url) if use_config_base_url else ""),
                       *rp._host_gated_env_key_candidates(base_url, ollama=True)]
@@ -185,7 +192,13 @@ def _resolve_openrouter_runtime(
         return rp._runtime("openrouter", cfg_api_mode or rp._detect_api_mode_for_url(base_url) or "chat_completions", base_url,
                            api_key, source=source)
     if base_url:
-        pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", cfg_api_mode, provider_name=None)
+        # By URL alone this would pick a same-URL named sibling's pool; resolve only from a pool the
+        # main model's own key (config key for a trusted base_url, else the resolved one) can own.
+        owner_api_key = (cfg_api_key if use_config_base_url else "") or api_key
+        # No own key to match (none configured, none resolved): keep main's URL-only lookup, so the
+        # model's sole same-URL entry still lends it the entry's credential.
+        pool_result = rp._try_resolve_from_custom_pool(base_url, "custom", cfg_api_mode, provider_name=None,
+                                                       owner_api_key=owner_api_key or None)
         if pool_result:
             return pool_result
     # Local no-auth servers get a placeholder key — the OpenAI SDK requires a non-empty string.

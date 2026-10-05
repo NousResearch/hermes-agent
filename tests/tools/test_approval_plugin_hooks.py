@@ -344,6 +344,9 @@ def _capture_hooks(run):
     with patch("hermes_cli.plugins.invoke_hook",
                side_effect=lambda name, **kw: captured.append((name, kw)) or []):
         result = run()
+    # on_human_input_* fire around the same prompts with their own payload contract
+    # (tests/tools/test_human_input_hooks.py); this helper compares the approval pair.
+    captured = [(name, kw) for name, kw in captured if not name.startswith("on_human_input_")]
     for _, kw in captured:
         for key in ("turn_id", "tool_call_id", "session_id"):
             kw.pop(key, None)

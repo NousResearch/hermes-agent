@@ -14,6 +14,7 @@ One or two invariant tests per Round 5 finding:
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import re
@@ -459,6 +460,21 @@ def test_timed_out_probe_is_killed_with_its_whole_process_tree(tmp_path, perl):
     grandchild = int(pidfile.read_text(encoding="utf-8-sig"))
     time.sleep(0.2)
     assert not Path(f"/proc/{grandchild}").exists() or Path(f"/proc/{grandchild}/stat").read_text(encoding="utf-8").split(") ")[1].startswith("Z")
+
+
+@pytest.mark.parametrize("locale", ["C", "C.UTF-8"])
+def test_json_escape_round_trips_every_control_character(locale):
+    """The result and status files are JSON built by json_escape. A message or warning carrying
+    a raw control char other than \\n \\r \\t (git/ps output: ESC colour codes, BEL...) made
+    the whole result invalid JSON, so the Desktop dropped it unread."""
+    body = POSIX.read_text(encoding="utf-8-sig")
+    found = re.search(r"^json_escape\(\) \{.*?^\}\n", body, re.S | re.M)
+    assert found
+    text = "".join(chr(c) for c in range(1, 128)) + " \u00e9 \u2713 & \\& \x1b[31mred\x1b[0m"
+    env = {**os.environ, "LC_ALL": locale}
+    out = subprocess.run([shutil.which("bash"), "-c", found.group(0) + 'json_escape "$1"', "json_escape", text],
+                         env=env, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert json.loads(f'"{out.stdout}"') == text, out.stdout
 
 
 def test_line_two_is_refreshed_only_while_the_claim_is_still_ours(tmp_path, procs):

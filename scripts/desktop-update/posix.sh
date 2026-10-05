@@ -233,12 +233,19 @@ trap 'on_signal QUIT' QUIT
 trap 'on_signal TERM' TERM
 
 # ── shim ────────────────────────────────────────────────────────────────────
-json_escape() { # minimal JSON string escape: \ " and control whitespace
-  local s=${1//\\/\\\\}
+json_escape() { # JSON string escape: \ " \n \r \t, every other control char (< 0x20) as \u00XX
+  local s=${1//\\/\\\\} o ch hex
   s=${s//\"/\\\"}
   s=${s//$'\n'/\\n}
   s=${s//$'\r'/\\r}
   s=${s//$'\t'/\\t}
+  if [[ "$s" == *[[:cntrl:]]* ]]; then  # a raw control char is invalid JSON (git/ps output can carry ESC, BEL...)
+    for o in 001 002 003 004 005 006 007 010 013 014 016 017 020 021 022 023 024 025 026 027 \
+             030 031 032 033 034 035 036 037; do
+      printf -v ch "\\$o"; printf -v hex '\\u%04x' "$((8#$o))"
+      s=${s//"$ch"/"$hex"}
+    done
+  fi
   printf '%s' "$s"
 }
 

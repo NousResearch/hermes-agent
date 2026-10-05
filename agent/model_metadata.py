@@ -834,16 +834,21 @@ _PER_MILLION_QUOTE_MIN = 0.001
 _TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write")
 
 
-_CURRENCY_PREFIX_RE = re.compile(r"^\s*[$€£¥]\s*")
+_DOLLAR_PREFIX_RE = re.compile(r"^[ \t]*\$[ \t]*")
 
 
 def _coerce_rate(value: Any) -> float:
-    """A published token rate → float. Tolerates a leading currency symbol, which some
-    OpenAI-compatible ``/models`` endpoints emit (e.g. ``"$0.0000006"``); a bare ``float()``
-    raises on those and silently drops the rate, pricing the model at $0.00. Only the currency
-    symbol is removed — a comma is left in place so a malformed decimal-comma quote keeps raising
-    and is dropped (cost stays visibly 'unknown') instead of being read as a different number."""
-    return float(_CURRENCY_PREFIX_RE.sub("", str(value)).strip())
+    """A published token rate → float. Tolerates a leading ``$``, which some OpenAI-compatible
+    ``/models`` endpoints emit (e.g. ``"$0.0000006"``); a bare ``float()`` raises on those and
+    silently drops the rate, pricing the model at $0.00.
+
+    Only a leading ``$`` is removed, and nothing else. Rates parsed here feed USD cost, so a
+    non-dollar symbol (``€``, ``£``, ``¥``) is deliberately left in place: the value then fails to
+    parse and the rate is dropped (cost stays visibly 'unknown'), which is fail-closed. Reading
+    ``€0.0000006`` as ``0.6`` USD would be a confident wrong price — the same budget-safety
+    problem the comma case had. A comma is likewise left in so a malformed decimal-comma quote
+    keeps raising instead of being read as a different number."""
+    return float(_DOLLAR_PREFIX_RE.sub("", str(value)).strip())
 
 
 def _normalize_token_rates(pricing: Dict[str, Any], unit: Any) -> Dict[str, Any]:

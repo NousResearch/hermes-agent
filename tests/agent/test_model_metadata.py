@@ -2094,17 +2094,17 @@ def test_endpoint_pricing_currency_prefix_per_million_not_inflated():
     assert float(entry.output_cost_per_million) == pytest.approx(1.2)
 
 
-def test_rate_coercion_strips_leading_currency_symbol():
-    """The coercion helpers strip a leading currency symbol (the reported defect) and nothing else:
-    a malformed quote must keep failing → dropped rate / 'unknown' cost, rather than being read as
-    a different number. Stripping every comma would turn a decimal-comma quote ``"0,0000006"``
-    into ``6.0`` — a confident price orders of magnitude off, which is worse than 'unknown'."""
+def test_rate_coercion_strips_leading_dollar_only():
+    """The coercion helpers strip a leading ``$`` (the reported defect) and nothing else: a
+    malformed quote must keep failing → dropped rate / 'unknown' cost, rather than being read as a
+    different number. Stripping every comma would turn a decimal-comma quote ``"0,0000006"`` into
+    ``6.0``. Rates feed USD cost, so a non-dollar symbol must stay fail-closed too: ``€0.0000006``
+    must not become ``0.6`` USD."""
     from agent.model_metadata import _coerce_rate
     from agent.usage_pricing import _to_decimal
 
     assert _coerce_rate("$0.0000006") == pytest.approx(0.0000006)
     assert _coerce_rate(" $0.0000006 ") == pytest.approx(0.0000006)
-    assert _coerce_rate("€0.6") == pytest.approx(0.6)
     assert _coerce_rate(0.5) == pytest.approx(0.5)
 
     # Commas are not thousands separators for a per-token rate: decimal-comma quotes stay rejected.
@@ -2112,6 +2112,12 @@ def test_rate_coercion_strips_leading_currency_symbol():
         _coerce_rate("0,0000006")
     with pytest.raises(ValueError):
         _coerce_rate(" 1,200 ")
+
+    # Non-dollar currency prefixes are fail-closed: treated as unparseable, never as USD.
+    for non_usd in ("€0.0000006", "£0.6", "¥100"):
+        with pytest.raises(ValueError):
+            _coerce_rate(non_usd)
+        assert _to_decimal(non_usd) is None
 
     assert float(_to_decimal("$1.20")) == pytest.approx(1.2)
     assert _to_decimal("0,0000006") is None

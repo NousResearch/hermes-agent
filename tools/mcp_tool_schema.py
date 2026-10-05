@@ -179,12 +179,11 @@ def mcp_prefixed_tool_name(server_name: str, tool_name: str) -> str:
     suffix = "_" + hashlib.sha256(full_name.encode("utf-8")).hexdigest()[:_MCP_TOOL_NAME_HASH_LENGTH]
     if full_name not in _clamped_names_warned:  # recomputed on every health refresh; warn once
         _clamped_names_warned.add(full_name)
-        from tools.mcp_tool_handlers import _call_redaction_values
-
-        logger.warning("MCP tool name %r (%d chars) exceeds the %d-char provider limit; shortened to a "
-                       "deterministic hash-suffixed name",
-                       _sanitize_error(full_name, _call_redaction_values(server_name)),
-                       len(full_name), _MCP_TOOL_NAME_MAX_LENGTH)
+        # Count-only: the name is peer-controlled and normalized, so a credential it reflects no
+        # longer matches the exact-value redaction; the hashed wire name identifies it.
+        logger.warning("MCP server '%s': a tool name (%d chars) exceeds the %d-char provider limit; shortened "
+                       "to the deterministic hash-suffixed name ending %r", server_name, len(full_name),
+                       _MCP_TOOL_NAME_MAX_LENGTH, suffix)
     return full_name[:_MCP_TOOL_NAME_MAX_LENGTH - len(suffix)] + suffix
 
 

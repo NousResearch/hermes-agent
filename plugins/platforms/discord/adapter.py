@@ -6906,7 +6906,8 @@ def _standalone_message_reference(reply_to: Optional[str], channel_id: str) -> O
         return None
     message_id = reply_to if isinstance(reply_to, str) else ""
     target_channel_id = channel_id if isinstance(channel_id, str) else ""
-    if not message_id or not message_id.isdigit() or not target_channel_id or not target_channel_id.isdigit():
+    if (not 6 <= len(message_id) <= 32 or not message_id.isdigit()
+            or not 6 <= len(target_channel_id) <= 32 or not target_channel_id.isdigit()):
         raise ValueError("Discord reply_to and channel_id must be numeric snowflakes")
     return {
         "message_id": message_id,

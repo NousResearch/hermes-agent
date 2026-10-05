@@ -318,6 +318,23 @@ def test_reply_to_is_forwarded_for_discord(fake_tool, monkeypatch):
     }]
 
 
+@pytest.mark.parametrize("reply_to", [" ", "12345", "1" * 33])
+def test_reply_to_rejects_malformed_discord_identifiers(fake_tool, capsys, monkeypatch, reply_to):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    args = _parse([
+        "--to", "discord:1554216204460101653:1554216204460101653",
+        "--reply-to", reply_to,
+        "terminal receipt",
+    ])
+
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+
+    assert exc.value.code == 2
+    assert "reply-to" in capsys.readouterr().err
+    assert fake_tool.calls == []
+
+
 # ---------------------------------------------------------------------------
 # Env loader
 # ---------------------------------------------------------------------------

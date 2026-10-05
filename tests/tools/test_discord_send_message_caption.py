@@ -13,6 +13,8 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from plugins.platforms.discord.adapter import _remember_channel_is_forum, _standalone_send
 
 
@@ -68,6 +70,11 @@ def _tmpfile(suffix):
 
 def _payload_json_content(form_data):
     """Extract the 'content' from a FormData's payload_json field, if any."""
+    return (_payload_json(form_data) or {}).get("content")
+
+
+def _payload_json(form_data):
+    """Extract the complete payload_json object from a FormData upload."""
     for field in getattr(form_data, "_fields", []):
         # aiohttp FormData stores (type_options_dict, headers, value)
         try:
@@ -76,7 +83,7 @@ def _payload_json_content(form_data):
         except (IndexError, TypeError):
             continue
         if type_opts.get("name") == "payload_json":
-            return json.loads(value).get("content")
+            return json.loads(value)
     return None
 
 
@@ -176,6 +183,91 @@ def test_whitespace_reply_anchor_is_not_normalized():
     assert res.get("success") is not True
     assert "numeric snowflakes" in res["error"]
     assert calls == []
+
+
+@pytest.mark.parametrize("reply_to", ["12345", "1" * 33])
+def test_out_of_range_reply_anchor_fails_closed_without_posting(reply_to):
+    """Direct adapter callers get the same bounded snowflake contract as the CLI."""
+    thread_id = "999000889"
+    _remember_channel_is_forum(thread_id, False)
+    session_ctx, calls = _session_with([_resp(200, {"id": "unexpected"})])
+    with patch("aiohttp.ClientSession", return_value=session_ctx):
+        res = asyncio.run(
+            _standalone_send(
+                _pconfig(),
+                thread_id,
+                "sanitized terminal receipt",
+                thread_id=thread_id,
+                reply_to=reply_to,
+            )
+        )
+    assert res.get("success") is not True
+    assert "numeric snowflakes" in res["error"]
+    assert calls == []
+
+
+def test_reply_reference_is_only_on_first_text_plus_media_request():
+    """A multi-request send replies once; attachment follow-ups are not duplicates."""
+    thread_id = "999000890"
+    source_message_id = "999000891"
+    _remember_channel_is_forum(thread_id, False)
+    img = _tmpfile(".png")
+    try:
+        session_ctx, calls = _session_with(
+            [_resp(200, {"id": "text1"}), _resp(200, {"id": "media1"})]
+        )
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            res = asyncio.run(
+                _standalone_send(
+                    _pconfig(),
+                    thread_id,
+                    "sanitized terminal receipt",
+                    thread_id=thread_id,
+                    media_files=[(img, False)],
+                    reply_to=source_message_id,
+                )
+            )
+        assert res["success"] is True
+        assert len(calls) == 2
+        assert calls[0][1]["message_reference"] == {
+            "message_id": source_message_id,
+            "channel_id": thread_id,
+            "fail_if_not_exists": False,
+        }
+        assert "message_reference" not in (_payload_json(calls[1][2]) or {})
+    finally:
+        os.unlink(img)
+
+
+def test_reply_reference_is_attached_to_captioned_media_request():
+    """A caption-only media send carries the native reference on its one upload."""
+    thread_id = "999000892"
+    source_message_id = "999000893"
+    _remember_channel_is_forum(thread_id, False)
+    img = _tmpfile(".png")
+    try:
+        session_ctx, calls = _session_with([_resp(200, {"id": "media1"})])
+        with patch("aiohttp.ClientSession", return_value=session_ctx):
+            res = asyncio.run(
+                _standalone_send(
+                    _pconfig(),
+                    thread_id,
+                    "",
+                    thread_id=thread_id,
+                    media_files=[(img, False)],
+                    caption="sanitized terminal receipt",
+                    reply_to=source_message_id,
+                )
+            )
+        assert res["success"] is True
+        assert len(calls) == 1
+        assert _payload_json(calls[0][2])["message_reference"] == {
+            "message_id": source_message_id,
+            "channel_id": thread_id,
+            "fail_if_not_exists": False,
+        }
+    finally:
+        os.unlink(img)
 
 
 def test_no_caption_non_forum_keeps_separate_text():

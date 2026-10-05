@@ -55,8 +55,8 @@ def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
     ``tools_config._get_platform_tools`` lets through: registered toolsets, any configured MCP server by
     its ``mcp-<server>`` toolset name or bare alias (neither is registered before MCP discovery; a
     disabled server is inactive, not a typo), ``hermes-<platform>`` plugin-platform bundles and the
-    ``no_mcp`` sentinel. The manifest scan and the plugin lookup (which may run plugin discovery)
-    happen only for a name the cheaper checks cannot place."""
+    ``no_mcp`` sentinel. The manifest/catalog scans and the plugin lookup (which may run plugin
+    discovery) happen only for a name the cheaper checks cannot place."""
     from functools import cache
 
     from toolsets import validate_toolset
@@ -68,8 +68,14 @@ def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
     @cache
     def platform_bundles() -> frozenset:
         from hermes_cli.config import _platform_plugin_manifests
+        from hermes_cli.plugin_catalog import CATALOG_TIERS, load_catalog
 
-        return frozenset(f"hermes-{name}" for name, _manifest in _platform_plugin_manifests())
+        manifest_names = {name for name, _manifest in _platform_plugin_manifests()}
+        catalog_names = {
+            entry.name for entry in load_catalog()
+            if entry.category == "platform" and entry.tier in CATALOG_TIERS
+        }
+        return frozenset(f"hermes-{name}" for name in manifest_names | catalog_names)
 
     @cache
     def plugin_names() -> frozenset:

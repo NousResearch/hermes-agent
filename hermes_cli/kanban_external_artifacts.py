@@ -157,14 +157,72 @@ def _board_for_task(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     return board if managed else None
 
 
-def _is_external_requirement(item: str) -> bool:
-    """True when *item* names a file OUTSIDE managed scratch storage (i.e. not a
-    scratch artifact the in-txn staging owns). Unreadable paths are treated as
-    external so a missing declaration is still refused rather than ignored."""
+def _managed_root_resolved_forms() -> list[Path]:
+    """RESOLVED root directories that count as managed scratch storage — the
+    same roots :func:`_managed_scratch_path_info` considers, as their resolved
+    forms only. Ownership classification (R5-05/R5-06) works on resolved
+    containment alone: a requirement spelled via a symlinked share still
+    resolves to a file whose content lives under the managed root."""
+    roots: list[Path] = []
+
+    def _add(anchor: Path, parts: tuple[str, ...]) -> None:
+        with contextlib.suppress(OSError):
+            roots.append(anchor.joinpath(*parts).resolve(strict=False))
+
+    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+    if override:
+        override_root = Path(override).expanduser()
+        with contextlib.suppress(OSError):
+            _add(override_root.parent.resolve(strict=False), (override_root.name,))
     try:
-        return not _kb._is_managed_scratch_path(Path(item).expanduser())
+        home = _kb.kanban_home().resolve(strict=False)
+    except OSError:
+        return roots
+    _add(home, ("kanban", "workspaces"))
+    try:
+        entries = list((home / "kanban" / "boards").iterdir())
+    except OSError:
+        entries = []
+    for entry in entries:
+        with contextlib.suppress(OSError):
+            if entry.is_dir():
+                _add(home, ("kanban", "boards", entry.name, "workspaces"))
+    return roots
+
+
+def _is_external_requirement(item: str, own_workspace: Optional[Path] = None) -> bool:
+    """True when *item* needs the EXTERNAL capture lane — i.e. NOT a file the
+    in-txn scratch staging of *this task* will preserve (R5-05/R5-06, review 5
+    2026-10-05): one ownership partition, assessed on the RESOLVED path.
+
+    * Resolves inside THIS task's own managed workspace root → NOT external
+      (the scratch staging owns it, whatever spelling it was declared with —
+      including the resolved spelling through a symlinked workspace root,
+      which the old lexical-AND-resolved double-claim refused).
+    * Resolves inside ANOTHER managed scratch root (any other task's
+      workspace tree) → external (a cross-task scratch requirement is a
+      foreign durable copy: the producer's cleanup would delete it).
+    * Resolves outside ALL managed storage → external.
+    Unresolvable paths stay external (missing declarations must be refused,
+    never ignored).
+    """
+    try:
+        p = Path(item).expanduser().resolve(strict=False)
+        own_root = (
+            own_workspace.resolve(strict=False)
+            if own_workspace is not None else None
+        )
     except OSError:
         return True
+    if own_root is not None and p.is_relative_to(own_root):
+        return False  # own scratch: the in-txn staging preserves it
+    for root in _managed_root_resolved_forms():
+        try:
+            if p.is_relative_to(root):
+                return True  # another task's managed scratch => foreign
+        except ValueError:
+            continue
+    return True  # unmanaged => operator's own storage
 
 
 def required_external_artifacts(
@@ -182,7 +240,7 @@ def required_external_artifacts(
         if item in seen:
             continue
         seen.add(item)
-        if _is_external_requirement(item):
+        if _is_external_requirement(item, own_workspace=_kb._scratch_workspace(conn, task_id)):
             out.append(item)
     return out
 
@@ -229,7 +287,7 @@ def required_scratch_artifacts(
     if not is_managed:
         return []
     try:
-        workspace_root = workspace.resolve()
+        workspace_root = workspace.resolve(strict=False)
     except OSError:
         return []
     seen: set[str] = set()
@@ -239,9 +297,13 @@ def required_scratch_artifacts(
             continue
         seen.add(item)
         try:
-            resolved = Path(item).expanduser().resolve()
+            resolved = Path(item).expanduser().resolve(strict=False)
         except OSError:
             continue
+        # R5-05/R5-06: ownership on the RESOLVED path, in ONE place. Managed +
+        # inside THIS task's root => scratch-owned (whatever spelling it was
+        # declared with — physical through a symlinked root included, which the
+        # old lexical-only test misclassified as both external and scratch).
         if resolved.is_relative_to(workspace_root):
             # Round 4 (re-review MEDIUM): return the ORIGINAL declared spelling,
             # not the resolved path. Downstream classification
@@ -282,8 +344,8 @@ def capture_external_artifacts(
         if item in seen:
             continue
         seen.add(item)
-        if not _is_external_requirement(item):
-            continue  # inside managed scratch: staged in-txn, not ours here
+        if not _is_external_requirement(item, own_workspace=_kb._scratch_workspace(conn, task_id)):
+            continue  # own scratch: staged in-txn, not ours here
         path = Path(item).expanduser()
         # HIGH #2 (round 2): a DECLARED external requirement that is absent when
         # we try to capture it is a typed refusal — NOT a skip. Silently

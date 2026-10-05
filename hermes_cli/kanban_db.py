@@ -3580,6 +3580,11 @@ def complete_task(
     # copies are then bound and must never be discarded — a post-commit failure
     # (e.g. ``_check_file_length_invariant`` after COMMIT) rolls nothing back.
     committed = False
+    # R5-08 (review 5): scratch staging copies must ALSO be orphan-free on any
+    # non-commit exit. The in-txn staging assigns this ref; the uniform
+    # finally below discards them (rows never committed) together with the
+    # external copies.
+    staged_scratch_ref: list = []
     try:
         with write_txn(conn):
             # Hard invariant even for human review approval: a parent may have
@@ -3687,6 +3692,7 @@ def complete_task(
                     conn, task_id, metadata, now,
                     bound_external=_bound_external,
                 )
+                staged_scratch_ref.extend(_staged)
             # Round-3 HIGH #3: the scratch staging must COVER every scratch
             # requirement of the gate's snapshot — the analogue of the external
             # coverage check above. An A→B→A mixed swap that staged only B's
@@ -3806,6 +3812,10 @@ def complete_task(
         # refusal paths alike. ``committed`` is False on all non-commit exits.
         if not committed:
             _kea.discard_published_artifacts(published_external, conn)
+            # R5-08: the scratch staging's own copies go too (rows never
+            # committed; a leaked copy would make the retry stage name_1.ext).
+            if staged_scratch_ref:
+                _discard_staged_copies(staged_scratch_ref, Path(str(staged_scratch_ref[0])).parent)
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
@@ -4860,10 +4870,22 @@ def _merge_contract_artifacts_into_metadata(
             continue
         path = Path(item).expanduser()
         try:
-            in_managed = path.is_file() and _is_managed_scratch_path(path)
+            # R5-05/R5-06: ONE ownership partition — the same resolved test
+            # ``kea._is_external_requirement`` applies at capture. An item the
+            # external lane owns (foreign scratch, unmanaged) is not staged
+            # here; an OWN-scratch item is staged whatever spelling it carries
+            # (the old lexical-AND filter dropped the resolved spelling of a
+            # symlinked workspace, leaving the in-txn coverage uncovered and
+            # refusing VALID contracts).
+            in_owned_scratch = (
+                path.is_file()
+                and not _kea._is_external_requirement(
+                    item, own_workspace=workspace,
+                )
+            )
         except OSError:
             continue
-        if in_managed and item not in artifacts and str(path) not in artifacts:
+        if in_owned_scratch and item not in artifacts and str(path) not in artifacts:
             artifacts.append(str(path))
 
 
@@ -4908,11 +4930,20 @@ def _stage_completion_artifacts(
         conn, task_id, metadata, bound_external=bound_external,
     )
     staged = [Path(stored_path) for stored_path in metadata.pop("_staged_artifacts", [])]
-    for path in staged:
-        _insert_completion_attachment(
-            conn, task_id, filename=path.name, stored_path=str(path),
-            size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
-        )
+    try:
+        for path in staged:
+            _insert_completion_attachment(
+                conn, task_id, filename=path.name, stored_path=str(path),
+                size=path.stat().st_size, created_at=now, uploaded_by=uploaded_by,
+            )
+    except Exception:
+        # R5-08: a row failure mid-staging must not leak the copies already on
+        # disk (rows never committed; the retry would stage name_1.ext beside
+        # the orphans). Discard ALL of this call's copies, then re-raise — the
+        # enclosing completion request rolls its txn back as before.
+        if staged:
+            _discard_staged_copies(staged, staged[0].parent)
+        raise
     return staged, covered
 
 

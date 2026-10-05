@@ -331,7 +331,7 @@ def test_real_systemd_crash_sweep_stops_the_scopes_of_a_gone_pid(real_systemd_ga
             time.sleep(0.1)
         assert load_state(dead_unit) == "loaded" and load_state(live_unit) == "loaded"
         # The enumeration the sweep depends on sees both, on a real manager.
-        enumerated = process_registry.list_systemd_user_scope_units("hermes-fg-*.scope")
+        enumerated = process_registry_systemd.list_systemd_user_scope_units("hermes-fg-*.scope")
         assert dead_unit in enumerated and live_unit in enumerated, enumerated
 
         swept = local_env.sweep_dead_foreground_scopes()

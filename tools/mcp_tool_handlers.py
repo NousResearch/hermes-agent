@@ -337,8 +337,12 @@ def _dispatch(server_name: str, server: Any, op: str, call, tool_timeout: float,
     try:
         result = call_once()
         return _record_call_outcome(server_name, result) if record_outcome else result
-    except InterruptedError:
-        return tool_error("MCP call interrupted: user sent a new message")
+    except InterruptedError as exc:
+        # The raise site renders the true stop cause (user message vs system abort, #133539);
+        # a message-less interrupt keeps the legacy user wording.
+        return tool_error(
+            f"MCP call interrupted: {str(exc) or 'user sent a new message'}"
+        )
     except Exception as exc:
         for recover in recoverers:
             recovered = recover(server_name, exc, call_once, op)

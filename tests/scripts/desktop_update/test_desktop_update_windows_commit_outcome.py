@@ -64,11 +64,13 @@ if __name__ == '__main__':
 """
 
 
-def _handoff(tmp_path: Path, *args: str, verify: str = 'pass\n', timeout: int = 150, **env: str):
+def _handoff(tmp_path: Path, *args: str, verify: str = 'pass\n', timeout: int = 150, prepare=None, **env: str):
     install = tmp_path / 'checkout'
     publish_fixture_launcher(install, CLI)
     (install / 'hermes_cli/desktop_update_verify.py').write_text(verify, encoding='utf-8')
     home = tmp_path / 'home'; home.mkdir()
+    if prepare is not None:
+        prepare(home, install)
     calls = tmp_path / 'calls.jsonl'
     proc = subprocess.Popen(
         ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(SCRIPT),
@@ -84,7 +86,8 @@ def _handoff(tmp_path: Path, *args: str, verify: str = 'pass\n', timeout: int = 
         out, _ = proc.communicate()
         pytest.fail(f'hand-off did not finish within {timeout}s: {out}')
     argv = [json.loads(line) for line in calls.read_text(encoding='utf-8-sig').splitlines()] if calls.exists() else []
-    result = json.loads((home / '.hermes-update-result.json').read_text(encoding='utf-8-sig'))
+    result_path = home / '.hermes-update-result.json'
+    result = json.loads(result_path.read_text(encoding='utf-8-sig')) if result_path.is_file() else None
     return proc.returncode, out, argv, result, home
 
 
@@ -107,6 +110,17 @@ def test_result_is_atomic_json_carrying_started_at_and_warnings(tmp_path: Path) 
     assert code == 0, out
     assert (result['ok'], result['started_at'], result['warnings']) == (True, started, []), result
     assert not list(home.glob('.hermes-update-result.json.*.tmp'))
+
+
+@pytest.mark.platforms('windows')
+def test_a_result_that_cannot_be_published_leaves_no_tmp_file(tmp_path: Path) -> None:
+    # Write-Result's Move/Replace fail (the result path is a directory): its <result>.<pid>.tmp
+    # must not be left beside it, one per hand-off, forever.
+    code, out, _, result, home = _handoff(
+        tmp_path, '-NoGateway', prepare=lambda home, _install: (home / '.hermes-update-result.json').mkdir())
+    assert code == 0, out
+    assert result is None
+    assert not list(home.glob('.hermes-update-result.json.*.tmp')), list(home.iterdir())
 
 
 @pytest.mark.platforms('windows')

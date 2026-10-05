@@ -678,6 +678,8 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
     # Atomic (tmp + rename over): a reader never sees a torn file, and the
     # previous result survives until this one is complete. run_id matches the
     # marker across heartbeat rewrites; started_at stays for older consumers.
+    # A failed replace leaves no "<result>.<pid>.tmp" behind (finally).
+    $tmp = "$ResultPath.$PID.tmp"
     try {
         $obj = @{
             ok         = $Ok
@@ -691,7 +693,6 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
             warnings   = @($script:Warnings)
             finished_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         } | ConvertTo-Json -Compress
-        $tmp = "$ResultPath.$PID.tmp"
         [System.IO.File]::WriteAllText($tmp, $obj, (New-Object System.Text.UTF8Encoding $false))
         if ([System.IO.File]::Exists($ResultPath)) {
             [System.IO.File]::Replace($tmp, $ResultPath, [NullString]::Value)
@@ -700,6 +701,8 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
         }
     } catch {
         Write-HandoffLog "WARNING: could not write the update result: $($_.Exception.Message)"
+    } finally {
+        if ([System.IO.File]::Exists($tmp)) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     }
 }
 

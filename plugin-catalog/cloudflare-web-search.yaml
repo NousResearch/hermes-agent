@@ -1,15 +1,7 @@
 name: cloudflare-web-search
 repo: https://github.com/Adolanium/hermes-cloudflare-web-search
 sha: a0ee6267fb981154affcb77b52cf092a49fae9d5
-description: >-
-  Cloudflare Web Search backend for Hermes' existing web_search tool, with Ceramic,
-  Exa, or Linkup selected in plugin settings. Search only; keep a separate extract
-  backend. Disclosure: sends queries, result limits, gateway IDs, and optional BYOK
-  aliases to api.cloudflare.com, which forwards searches to the selected provider
-  and records them in AI Gateway logs. Requests can consume gateway credits or
-  provider quota. Reads its own settings and CLOUDFLARE_WEB_SEARCH_API_TOKEN through
-  Hermes' profile-scoped APIs. Registers one web provider, with no new tools, hooks,
-  background processes, file writes, or self-updater. Independent community plugin.
+description: "Cloudflare Web Search backend for Hermes' existing web_search tool, with Ceramic, Exa, or Linkup selected in plugin settings. Search only; keep a separate extract backend. Disclosure — sends queries, result limits, gateway IDs, and optional BYOK aliases to api.cloudflare.com, which forwards searches to the selected provider and records them in AI Gateway logs. Requests can consume gateway credits or provider quota. Reads its own settings and CLOUDFLARE_WEB_SEARCH_API_TOKEN through Hermes' profile-scoped APIs. Registers one web provider, with no new tools, hooks, background processes, file writes, or self-updater. Independent community plugin."
 maintainer: Adolanium
 tier: community
 category: web

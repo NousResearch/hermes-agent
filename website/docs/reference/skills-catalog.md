@@ -58,6 +58,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 |-------|-------------|------|
 | [`email-inbox-triage`](../user-guide/skills/bundled/email/email-email-inbox-triage.md) | Triage an inbox: prioritize threads, draft replies safely. | `email/email-inbox-triage` |
 | [`himalaya`](../user-guide/skills/bundled/email/email-himalaya.md) | Himalaya CLI: IMAP/SMTP email from terminal. | `email/himalaya` |
+| [`mail-templates`](../user-guide/skills/bundled/email/email-mail-templates.md) | Draft Mail Studio templates from real scrape fields. | `email/mail-templates` |
 
 ## media
 
@@ -81,6 +82,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`box`](../user-guide/skills/bundled/productivity/productivity-box.md) | Box manages cloud files, sharing, search, and metadata. | `productivity/box` |
 | [`document-to-action-items`](../user-guide/skills/bundled/productivity/productivity-document-to-action-items.md) | Extract cited obligations, deadlines, tasks from documents. | `productivity/document-to-action-items` |
 | [`docx`](../user-guide/skills/bundled/productivity/productivity-docx.md) | Create, read, edit, template, and review Word .docx files. | `productivity/docx` |
+| [`engagement-stack`](../user-guide/skills/bundled/productivity/productivity-engagement-stack.md) | Run scrape, preview, and approve in Automation Studio. | `productivity/engagement-stack` |
 | [`google-workspace`](../user-guide/skills/bundled/productivity/productivity-google-workspace.md) | Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python. | `productivity/google-workspace` |
 | [`maps`](../user-guide/skills/bundled/productivity/productivity-maps.md) | Geocode, POIs, routes, timezones via OpenStreetMap/OSRM. | `productivity/maps` |
 | [`meeting-action-items`](../user-guide/skills/bundled/productivity/productivity-meeting-action-items.md) | Turn meeting notes into cited decisions, owners, tickets. | `productivity/meeting-action-items` |

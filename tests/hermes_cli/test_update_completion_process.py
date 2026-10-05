@@ -280,6 +280,37 @@ def test_missing_child_result_fails_boundary_receipt_and_releases_lock(transitio
     lock.release()
 
 
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("never_built", ["dependencies", "refused", "died"])
+@pytest.mark.parametrize("desktop", [True, False])
+def test_desktop_build_that_never_ran_is_named_for_the_handoff(transition, capsys, never_built, desktop):
+    """Review P4 (F6): the hand-off scripts read ``Desktop app build owed:`` to tell the user the app is
+    stale. The builder prints it only when the build fails; a run whose build never ran (dependency
+    sync failed, the tail refused by the update lock, the prepared child died) must print it too."""
+    scripts = Path(update_completion.__file__).parents[1] / "scripts/desktop-update"
+    for script in ("posix.sh", "windows.ps1"):  # the exact prefix the hand-off scripts match
+        assert "Desktop app build owed: " in (scripts / script).read_text(encoding="utf-8")
+    assert update_completion.DESKTOP_BUILD_OWED == "Desktop app build owed:"
+    root, git, old, new, request = transition
+    request["desktop"] = desktop
+    shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
+    if never_built == "dependencies":
+        (root / "pm/__init__.py").write_text("def sync_venv(**kw): raise RuntimeError('dependency refused')\n")
+    elif never_built == "refused":
+        (root / "hermes_cli/source_completion.py").write_text(
+            "def complete_source_checkout(*args, **kwargs):\n"
+            "    raise RuntimeError('an update is still running (pid 1); wait for it to exit')\n")
+    else:
+        (root / "hermes_cli/source_completion.py").write_text(
+            "import os, signal\n"
+            "def complete_source_checkout(*args, **kwargs): os.kill(os.getpid(), signal.SIGKILL)\n")
+    result = update_completion.run_completion(request)
+    out = capsys.readouterr().out
+    assert result["exit_code"] == 0, out
+    owed = [line.strip() for line in out.splitlines() if line.strip().startswith("Desktop app build owed: ")]
+    assert len(owed) == (1 if desktop else 0), out
+
+
 def test_unwritable_gateway_status_never_fails_a_settled_commit(tmp_path, monkeypatch):
     """Review P1: the bootstrap's gateway status write is best effort, like
     ``_write_gateway_update_exit_code``; the committed run still answers its result with exit 0."""

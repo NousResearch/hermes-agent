@@ -31,8 +31,9 @@ METRIC_FIX = {
     " branch ladder with a dict/table -> handler",
     "FUNC_LINES": "extract phases into named helpers or a topical sibling module",
     "NESTING": "return early, or extract the inner block into a helper",
-    "FILE_LINES": "split along `<stem>_<topic>` (facade + siblings, see root AGENTS.md); new"
-    " behaviour goes in a new or topical sibling, never appended to a facade",
+    "FILE_LINES": "offset the growth in the same PR: move an existing function or class into a"
+    " topical sibling `<stem>_<topic>.py` (moved code keeps its cap; see root AGENTS.md), or put"
+    " new tests in a new `test_<stem>_<topic>.py`; new behaviour never goes into a facade",
     "MEASURE": "the file must parse and measure (a file that cannot be measured cannot be"
     " judged); fix the syntax, or report the measurer bug",
 }

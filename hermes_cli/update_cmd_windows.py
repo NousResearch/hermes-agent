@@ -948,15 +948,18 @@ def _pause_windows_gateways_for_update() -> dict | None:
     if not running_pids:
         return _cold_start_pause_token(adopted, claims)
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes and pid not in service_gateway_pids]
+    from gateway.status import get_process_start_time
+    from hermes_cli.dashboard_procs import _hermes_home_for_pid
+    born = {int(pid): get_process_start_time(int(pid)) for pid in running_pids}  # the processes discovered
     # Snapshot unmapped gateways' argv *before* anything stops so resume (or a later launch) can replay it.
-    # Unmapped = no profile->PID-file mapping (e.g. Scheduled Task ``pythonw.exe -m ...``).
+    # Unmapped = no profile->PID-file mapping (e.g. Scheduled Task ``pythonw.exe -m ...``). Two homes can
+    # run identical selectorless argv, so the home and birth identify the runtime the replay must restore.
     unmapped = [
         {"pid": int(pid), "argv": _try_call(lambda p=int(pid): _capture_gateway_argv(p),
-                                            "Could not capture argv for unmapped gateway %s: %s", int(pid))}
+                                            "Could not capture argv for unmapped gateway %s: %s", int(pid)),
+         "home": _hermes_home_for_pid(int(pid)), "ct": born[int(pid)]}
         for pid in unmapped_pids
     ]
-    from gateway.status import get_process_start_time
-    born = {int(pid): get_process_start_time(int(pid)) for pid in running_pids}  # the processes discovered
     intended = {
         "resume_needed": True, "unmapped_pids": unmapped_pids, "unmapped": unmapped,
         "profiles": {str(profile_processes[pid].profile): int(pid) for pid in running_pids
@@ -1354,7 +1357,9 @@ def _relaunch_paused_gateways(profiles: dict, unmapped: list) -> tuple[dict, lis
     launched_unmapped = []
     for entry in unmapped:
         argv, old_pid = entry.get("argv"), entry.get("pid")
-        if argv and old_pid and _try_call(lambda o=old_pid, a=argv: launch_detached_gateway_restart_by_cmdline(int(o), list(a)),
+        # On the paused runtime's home (None on a pre-home record: the updater's own home, as before).
+        if argv and old_pid and _try_call(lambda o=old_pid, a=argv, h=entry.get("home"): launch_detached_gateway_restart_by_cmdline(
+                int(o), list(a), home=h),
                                           "Could not restart unmapped Windows gateway (pid %s) after update: %s", old_pid):
             launched_unmapped.append(entry)
     return launched, launched_unmapped
@@ -1391,16 +1396,30 @@ def _relaunch_verify_timeout_s(profiles: dict, unmapped: list, pid_exists) -> fl
 
 
 def _unmapped_ready_filter(entry: dict, taken: set):
-    """``pid_filter`` matching the gateway an unmapped entry's argv replay started: same arguments
-    after the (normalized) interpreter, not the old pid, not one another entry already vouched for."""
+    """``pid_filter`` matching the gateway an unmapped entry's replay started: a gateway running the
+    same arguments after the (normalized) interpreter on the entry's home, born after the process it
+    replaces, not one another entry already vouched for. Two homes can run identical selectorless argv,
+    so argv alone would let home B's gateway retire home A's debt (a service gateway on another home
+    included; on A's home only one gateway can run). An entry recorded before ``home`` was captured
+    keeps the argv-only match: nothing else identifies it."""
     import psutil
+    from gateway.status import _looks_like_gateway_process, _same_hermes_home, get_process_start_time
+    from hermes_cli.dashboard_procs import _hermes_home_for_pid
     tail, old = list(entry.get("argv") or [])[1:], int(entry.get("pid") or 0)
+    home, old_ct = entry.get("home"), entry.get("ct")
+
+    def same_runtime(pid: int) -> bool:
+        if not home:
+            return True
+        live_home, ct = _hermes_home_for_pid(pid), get_process_start_time(pid)
+        return live_home is not None and _same_hermes_home(live_home, home) and (old_ct is None or ct is None or ct > old_ct)
 
     def matches(pid: int) -> bool:
         if pid == old or pid in taken:
             return False
         try:
-            return list(psutil.Process(pid).cmdline() or [])[1:] == tail
+            return (list(psutil.Process(pid).cmdline() or [])[1:] == tail and _looks_like_gateway_process(pid)
+                    and same_runtime(pid))
         except (psutil.Error, OSError, ValueError):  # exited, access denied, zombie, invalid pid
             return False
     return lambda pids: [pid for pid in _owned_gateway_pids(pids) if matches(int(pid))]

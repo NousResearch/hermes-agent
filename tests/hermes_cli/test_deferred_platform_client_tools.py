@@ -457,6 +457,9 @@ class TestDeferredPlatformToolPreregistration:
             m.setattr("hermes_cli.plugins_discovery._get_disabled_plugins", lambda: {"probeplat-platform"})
             mgr._gate_manifest(manifest, {"probeplat-platform"}, None)
             assert mgr.rearm_failed_platform("probeplat") is False
+        with monkeypatch.context() as m:  # nor one built for another Hermes version
+            m.setattr("hermes_cli.plugins_manifest.requires_hermes_error", lambda _manifest: "needs newer hermes")
+            assert mgr.rearm_failed_platform("probeplat") is False
 
         from hermes_cli import plugins_loader
         release = threading.Event()

@@ -203,6 +203,13 @@ def validate_entry(data: object) -> tuple[list[str], list[str]]:
     if version is not None and (not isinstance(version, str) or not VERSION_RE.match(version)):
         errors.append(f"version {version!r} must be 1-32 chars of [A-Za-z0-9._+-] (quote it in YAML)")
 
+    docs_url = data.get("docs_url")
+    if docs_url is not None and (not isinstance(docs_url, str) or docs_url.strip()) and (
+        not isinstance(docs_url, str)
+        or not re.fullmatch(r"https://\S+", docs_url.strip())
+    ):
+        errors.append(f"docs_url {docs_url!r} must be an https:// URL (the docs site renders it as a link)")
+
     image = data.get("image")
     if image is not None and (not isinstance(image, str) or not _is_allowed_image_url(image)):
         errors.append(f"image {image!r} must be an https URL on {list(IMAGE_HOSTS)} or *{IMAGE_HOST_SUFFIX}")

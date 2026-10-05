@@ -30,6 +30,13 @@ _INTERPRETER_PREFIXES = tuple({
 # resolve once at import, as before: they are fixed for the process lifetime.
 _normcase = os.path.normcase
 _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_PREFIXES)
+# The sealed-payload descriptor PM looks for beside the checkout
+# (pm.environments.payload_venv / store_root: ``<checkout>/../manifest.json``). Every
+# ``hermes_bootstrap`` import probes it with ``is_file()``; with the default install layout
+# above, that names ``<real home>/manifest.json``. Probing whether this one file exists is
+# install-layout discovery, not Hermes state, so metadata calls on exactly this path pass.
+# Reading it, writing it, or anything else beside it is still refused.
+_CHECKOUT_PAYLOAD_MANIFEST = _normcase(os.fspath(Path(__file__).resolve().parent.parent.parent / "manifest.json"))
 
 
 def _within(path: str, prefix: str) -> bool:
@@ -79,6 +86,8 @@ class HomeIOGuard:
             # link to compare inode identity); resolving it names whatever file that fd holds,
             # which is not I/O against the home.
             if metadata and (absolute == "/proc" or absolute.startswith("/proc" + os.sep)):
+                return
+            if metadata and absolute == _CHECKOUT_PAYLOAD_MANIFEST:
                 return
             resolved = self._refuse_installed_app_change(value, absolute) if destructive else None
             roots = tuple(_normcase(os.fspath(r)) for r in self.roots())

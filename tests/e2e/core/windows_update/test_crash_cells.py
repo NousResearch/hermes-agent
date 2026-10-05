@@ -279,9 +279,16 @@ def _kill_when(machine, proc, label: str, point, target: str) -> str:
             taskkill_tree(proc.pid)
             raise
         if seen:
-            taskkill_tree(proc.pid)
+            # A persistent point (HEAD at the target) also holds after a clean exit: only an
+            # update still running when taskkill found it was interrupted there.
+            killed = taskkill_tree(proc.pid) if proc.poll() is None else None
             proc.wait(timeout=60)
             machine.kill_owned()  # stragglers that left the tree (detached helpers)
+            if killed is None or killed.returncode != 0:
+                raise AssertionError(fail_with(
+                    machine, f"{label}: the update was not running when killed at {seen} (exit rc="
+                             f"{proc.returncode}, taskkill rc={killed and killed.returncode}): no crash "
+                             f"at the kill point (transcript {proc.transcript.name})"))
             return seen
         if proc.poll() is not None:
             raise AssertionError(fail_with(

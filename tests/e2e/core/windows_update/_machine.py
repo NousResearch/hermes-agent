@@ -644,6 +644,8 @@ def descendants(proc: subprocess.Popen) -> list[Any]:
         return []
 
 
-def taskkill_tree(pid: int) -> None:
-    """``taskkill /T /F``: what Task Manager's End task tree / a power cut does to an update."""
-    subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60)
+def taskkill_tree(pid: int) -> subprocess.CompletedProcess:
+    """``taskkill /T /F``: what Task Manager's End task tree / a power cut does to an update.
+
+    rc 0 means it found and terminated ``pid``: the process was alive at the kill."""
+    return subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=60)

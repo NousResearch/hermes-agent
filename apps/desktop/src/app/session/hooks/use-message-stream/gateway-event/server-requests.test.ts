@@ -441,8 +441,8 @@ describe('preview requests act for the session that asked (#73890)', () => {
     try {
       const background = deliver('preview.act', { action: 'back', session_id: 'rt-a' }, 'rt-a')
 
-      expect(background.respond).toHaveBeenCalledTimes(1)
-      expect(JSON.parse(background.respond.mock.calls[0][0].value)).toMatchObject({ success: false })
+      expect(background.decline).toHaveBeenCalledTimes(1)
+      expect(background.respond).not.toHaveBeenCalled()
       expect(backA).not.toHaveBeenCalled()
       expect(backB).not.toHaveBeenCalled()
       activateTreePane('grp-b', 'workspace')
@@ -463,8 +463,8 @@ describe('preview requests act for the session that asked (#73890)', () => {
 
     const background = deliver('tour', { action: 'discover', session_id: 'rt-a', surface: 'preview' }, 'rt-a')
 
-    expect(background.respond).toHaveBeenCalledTimes(1)
-    expect(JSON.parse(background.respond.mock.calls[0][0].value)).toMatchObject({ success: false })
+    expect(background.decline).toHaveBeenCalledTimes(1)
+    expect(background.respond).not.toHaveBeenCalled()
     expect(runTour).not.toHaveBeenCalled()
     activateTreePane('grp-b', 'workspace')
     const { respond } = deliver('tour', { action: 'discover', session_id: 'rt-a', surface: 'preview' }, 'rt-a')
@@ -596,20 +596,18 @@ describe('tour request routing', () => {
     }
   })
 
-  it('still refuses a scoped request naming another conversation', () => {
-    // The window hosts the request's session as a tile (so the request is
-    // routed here rather than left unanswered), but the pane shows a different
-    // conversation — the gate must still refuse.
+  it('declines a hosted request naming another conversation without settling it', () => {
+    // A hosted tile is not foreground ownership. Leave the request open for
+    // another window whose genuinely focused conversation owns the tour.
     setSessions([{ id: 'stored-tip', _lineage_root_id: 'stored-root' } as SessionInfo])
     deps.sessionStateByRuntimeIdRef.current.set('runtime-2', createClientSessionState('stored-tip'))
     $sessionTiles.set([{ runtimeId: 'runtime-2', storedSessionId: 'stored-tip' } as never])
 
     try {
-      const { respond } = deliver('tour', { action: 'discover', session_id: 'runtime-2' }, 'other-root')
+      const { decline, respond } = deliver('tour', { action: 'discover', session_id: 'runtime-2' }, 'other-root')
 
-      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({
-        error: expect.stringContaining('the session the user is looking at')
-      })
+      expect(decline).toHaveBeenCalledTimes(1)
+      expect(respond).not.toHaveBeenCalled()
     } finally {
       $sessionTiles.set([])
       deps.sessionStateByRuntimeIdRef.current.clear()

@@ -717,6 +717,22 @@ export function handleServerRequest(
   const storedIdForRuntimeId = (runtimeId: string) =>
     deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId ?? undefined
 
+  const runHandler = (currentSessionId: null | string) => {
+    const isActiveSession = requestNamesFocusedSession(sessionId, currentSessionId, storedIdForRuntimeId)
+
+    if (sessionId && (request.method === 'preview.act' || request.method === 'tour') && !isActiveSession) {
+      // A hosted but unfocused session may be focused in another window. Its
+      // bystanders must decline, not settle the fanout with a false refusal.
+      // Reuse this gate after reconnect so newly bound background sessions
+      // cannot beat the foreground owner's answer either.
+      declineNotShown(request)
+
+      return
+    }
+
+    handler({ deps, request, sessionId, isActiveSession })
+  }
+
   if (WINDOW_OWNED_REQUESTS.has(request.method)) {
     // Route window.read through the tolerant claim (see windowReadClaimsSession);
     // every other window-owned request keeps the strict host check.
@@ -757,16 +773,7 @@ export function handleServerRequest(
             storedIdForRuntimeId
           }) === 'run'
         ) {
-          handler({
-            deps,
-            request,
-            sessionId,
-            isActiveSession: requestNamesFocusedSession(
-              sessionId,
-              deps.activeSessionIdRef.current,
-              storedIdForRuntimeId
-            )
-          })
+          runHandler(deps.activeSessionIdRef.current)
         } else {
           declineNotShown(request)
         }
@@ -776,12 +783,7 @@ export function handleServerRequest(
     }
   }
 
-  handler({
-    deps,
-    request,
-    sessionId,
-    isActiveSession: requestNamesFocusedSession(sessionId, activeSessionId, storedIdForRuntimeId)
-  })
+  runHandler(activeSessionId)
 
   return true
 }

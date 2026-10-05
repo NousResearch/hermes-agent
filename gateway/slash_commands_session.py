@@ -912,6 +912,8 @@ class GatewaySessionCommandsMixin:
         # #119864); /resume IS one, and the funnel above clears only in-memory state — without this
         # the next turn's _rehydrate_session_model_override resurrects the pin it just cleared.
         await self.async_session_store.set_model_override(session_key, None)
+        # Same for the persisted /reasoning override, which switch_session carries alongside the pin.
+        await self.async_session_store.set_reasoning_override(session_key, None)
         # Evict so the next turn rebuilds with the right session_id — the cached AIAgent's memory
         # provider cached _session_id at initialize() and would keep writing to the wrong session.
         self._evict_cached_agent(session_key)

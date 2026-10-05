@@ -528,6 +528,30 @@ class TestUserInstalledProviderCli:
         assert p is not None
         assert p.name == "extcliload"
 
+    def test_cli_discovery_racing_the_provider_import(self, tmp_path, monkeypatch):
+        """CLI discovery and the provider import write the same sys.modules keys. Unlocked, cli.py
+        exec'd against the half-initialized provider package, failed, and the broken module stayed
+        cached, so the plugin's CLI commands were gone for the process."""
+        import sys
+        from plugins.memory import _load_package, _module_name, discover_plugin_cli_commands
+
+        plugin_dir = self._make_plugin_with_cli(tmp_path, "extclirace")
+        init = plugin_dir / "__init__.py"
+        init.write_text(
+            "import time, _memrace_sync\n_memrace_sync.started.set()\ntime.sleep(0.3)\nSENTINEL = 1\n"
+            + init.read_text(encoding="utf-8"), encoding="utf-8")
+        (plugin_dir / "cli.py").write_text(
+            "from . import SENTINEL\ndef register_cli(subparser):\n    pass\n", encoding="utf-8")
+        self._activate(tmp_path, monkeypatch, "extclirace")
+        monkeypatch.setitem(sys.modules, "_memrace_sync", SimpleNamespace(started=threading.Event()))
+        provider = threading.Thread(target=_load_package, args=(plugin_dir, "extclirace"))
+        provider.start()
+        assert sys.modules["_memrace_sync"].started.wait(5)  # provider package is mid-exec
+        commands = discover_plugin_cli_commands()
+        provider.join()
+        assert [c["name"] for c in commands] == ["extclirace"]
+        assert sys.modules[_module_name(plugin_dir, "extclirace")].SENTINEL == 1
+
 
 class TestEntryPointMemoryProviderDiscovery:
     """Memory providers installed as Python packages should be discoverable."""

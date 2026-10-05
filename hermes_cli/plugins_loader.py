@@ -708,29 +708,33 @@ class PluginLoaderMixin:
             ns_pkg = types.ModuleType(_NS_PARENT)
             ns_pkg.__path__ = []  # type: ignore[attr-defined]
             ns_pkg.__package__ = _NS_PARENT
-            sys.modules[_NS_PARENT] = ns_pkg
+            sys.modules.setdefault(_NS_PARENT, ns_pkg)
         module_name = module_name or self._directory_module_name(manifest)
-        # Evict stale entries for this slug (same slug cached from another Hermes home, or an earlier force
-        # reload). Replacing only sys.modules[module_name] is not enough: the plugin's relative imports are
-        # cached as "module_name.sub" and resolve from sys.modules first, so a stale submodule would keep
-        # serving the previous load's code/state.
-        _evict_modules(module_name)
-        spec = importlib.util.spec_from_file_location(
-            module_name, init_file, submodule_search_locations=[str(plugin_dir)])
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Cannot create module spec for {init_file}")
-        module = importlib.util.module_from_spec(spec)
-        module.__package__ = module_name
-        module.__path__ = [str(plugin_dir)]  # type: ignore[attr-defined]
-        sys.modules[module_name] = module
-        try:
-            spec.loader.exec_module(module)
-        except BaseException:
-            # Don't leave a half-initialized module (or its partially imported relative submodules) cached — a
-            # retry or a same-slug plugin in another profile would inherit broken state.
+        from plugins.plugin_loader import module_lock
+
+        # The lock every plugin loader shares: evict + exec must not interleave with another load of this name.
+        with module_lock(module_name):
+            # Evict stale entries for this slug (same slug cached from another Hermes home, or an earlier force
+            # reload). Replacing only sys.modules[module_name] is not enough: the plugin's relative imports are
+            # cached as "module_name.sub" and resolve from sys.modules first, so a stale submodule would keep
+            # serving the previous load's code/state.
             _evict_modules(module_name)
-            raise
-        return module
+            spec = importlib.util.spec_from_file_location(
+                module_name, init_file, submodule_search_locations=[str(plugin_dir)])
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Cannot create module spec for {init_file}")
+            module = importlib.util.module_from_spec(spec)
+            module.__package__ = module_name
+            module.__path__ = [str(plugin_dir)]  # type: ignore[attr-defined]
+            sys.modules[module_name] = module
+            try:
+                spec.loader.exec_module(module)
+            except BaseException:
+                # Don't leave a half-initialized module (or its partially imported relative submodules) cached
+                # — a retry or a same-slug plugin in another profile would inherit broken state.
+                _evict_modules(module_name)
+                raise
+            return module
 
     def _load_entrypoint_module(self, manifest: PluginManifest) -> Union[types.ModuleType, Callable[..., Any]]:
         """Load a pip-installed plugin via its entry-point reference: the module for a bare ``module`` target,

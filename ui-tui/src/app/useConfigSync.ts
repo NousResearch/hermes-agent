@@ -4,7 +4,8 @@ import { useEffect, useRef } from 'react'
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
-import { normalizeLocale, translate } from '../i18n/index.js'
+import { syncTuiLocale } from '../i18n/loader.js'
+import { t } from '../i18n/runtime.js'
 import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, parseVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
@@ -17,7 +18,7 @@ import {
   type StatusBarMode
 } from './interfaces.js'
 import { turnController } from './turnController.js'
-import { getUiState, patchUiState } from './uiStore.js'
+import { patchUiState } from './uiStore.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
   bottom: 'bottom',
@@ -258,7 +259,7 @@ export async function hydrateFullConfig(
 ): Promise<ConfigFullResponse | null> {
   const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
 
-  if (signal?.aborted) {
+  if (signal?.aborted || !cfg) {
     return null
   }
 
@@ -266,8 +267,9 @@ export async function hydrateFullConfig(
   // not only locale and voice.record_key. The mtime poll deliberately keeps
   // the previous revision in this case so the same edit is retried.
   applyDisplay(cfg, setBell, setVoiceRecordKey, setBellOnPrompt)
+  const loaded = await syncTuiLocale(gw, cfg.config?.display?.language, signal)
 
-  return cfg
+  return signal?.aborted || !loaded ? null : cfg
 }
 
 /** Refresh a changed config revision and acknowledge it only after the full
@@ -334,7 +336,6 @@ export const applyDisplay = (
     focusView: !!d.focus_view,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
-    locale: normalizeLocale(d.language),
     mouseTracking: normalizeMouseTracking(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
@@ -433,7 +434,7 @@ export function useConfigSync({
         } else if (nextMcpRev) {
           void syncMcpReload(gw, sid, nextMcpRev, mcpRevRef.current, () => {
             if (!controller.signal.aborted) {
-              turnController.pushActivity(translate(getUiState().locale, 'activity.mcpReloadedAfterConfigChange'))
+              turnController.pushActivity(t('status.mcpReloaded'))
             }
           })
         }

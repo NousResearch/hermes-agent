@@ -5,14 +5,13 @@ import type {
   SubscriptionStateResponse,
   SubscriptionUpgradeResponse
 } from '../../../gatewayTypes.js'
-import { translate, type TranslationKey } from '../../../i18n/index.js'
+import { t } from '../../../i18n/runtime.js'
 import { openExternalUrl } from '../../../lib/openExternalUrl.js'
 import type { SubscriptionOverlayCtx } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
 type Sys = (text: string) => void
-type Translator = (key: TranslationKey, vars?: Record<string, string | number>) => string
 
 /**
  * Build the manage-subscription URL locally from the loaded subscription state.
@@ -64,88 +63,87 @@ const buildSubscriptionCtx = (
   ctx: SlashRunCtx,
   sys: Sys,
   initialState: SubscriptionStateResponse
-): SubscriptionOverlayCtx => {
-  const locale = ctx.ui?.locale ?? 'en'
-  const tr: Translator = (key, vars) => translate(locale, key, vars)
+): SubscriptionOverlayCtx => ({
+  fetchCard: () =>
+    ctx.gateway
+      .rpc<BillingStateResponse>('billing.state', {})
+      .then(r => (r?.ok ? (r.card ?? null) : null))
+      .catch(() => null),
+  openManageLink: (tierId?: string) => {
+    const url = buildManageUrl(initialState, tierId)
 
-  return {
-    fetchCard: () =>
-      ctx.gateway
-        .rpc<BillingStateResponse>('billing.state', {})
-        .then(r => (r?.ok ? (r.card ?? null) : null))
-        .catch(() => null),
-    openManageLink: (tierId?: string) => {
-      const url = buildManageUrl(initialState, tierId)
+    if (!url) {
+      sys(t('slashCmd.subscription.manageUrlFailed'))
 
-      if (!url) {
-        sys(tr('subscription.error.manageUrl'))
+      return Promise.resolve(false)
+    }
 
-        return Promise.resolve(false)
-      }
+    const opened = openExternalUrl(url)
 
-      const opened = openExternalUrl(url)
+    if (opened) {
+      sys(t('slashCmd.subscription.openingManage'))
+    } else {
+      sys(t('slashCmd.subscription.openBrowserFailedManage', url))
+    }
 
-      if (opened) {
-        sys(tr('subscription.openingManagePage'))
-      } else {
-        sys(tr('subscription.error.openManageBrowser', { url }))
-      }
-
-      return Promise.resolve(opened)
-    },
-    openPortal: (url: string) => {
-      if (openExternalUrl(url)) {
-        sys(tr('subscription.openingPortal'))
-      } else {
-        sys(tr('subscription.error.openPortalBrowser', { url }))
-      }
-    },
-    preview: tierId =>
-      ctx.gateway
-        .rpc<SubscriptionPreviewResponse>('subscription.preview', { subscription_type_id: tierId })
-        .then(r => r ?? null)
-        .catch(() => null),
-    refreshState: () =>
-      ctx.gateway
-        .rpc<SubscriptionStateResponse>('subscription.state', {})
-        .then(r => r ?? null)
-        .catch(() => null),
-    requestRemoteSpending: () =>
-      ctx.gateway
-        .rpc<BillingMutationResponse>('billing.step_up', { session_id: ctx.sid ?? undefined })
-        // Carry the typed denial (session_revoked / remote_spending_revoked /
-        // rate_limited / …) so the stepup screen shows the right recovery.
-        .then(r => ({ error: r?.error, granted: !!(r && r.ok && r.granted), message: r?.message }))
-        .catch(() => ({ granted: false, message: tr('subscription.error.billingUnavailable') })),
-    resume: () =>
-      ctx.gateway
-        .rpc<BillingMutationResponse>('subscription.resume', {})
-        .then(r => r ?? null)
-        .catch(() => null),
-    scheduleCancellation: () =>
-      ctx.gateway
-        .rpc<BillingMutationResponse>('subscription.change', { cancel: true })
-        .then(r => r ?? null)
-        .catch(() => null),
-    scheduleChange: tierId =>
-      ctx.gateway
-        .rpc<BillingMutationResponse>('subscription.change', { subscription_type_id: tierId })
-        .then(r => r ?? null)
-        .catch(() => null),
-    sys,
-    upgrade: (tierId, idempotencyKey) =>
-      ctx.gateway
-        .rpc<SubscriptionUpgradeResponse>('subscription.upgrade', {
-          subscription_type_id: tierId,
-          ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {})
-        })
-        .then(r => r ?? null)
-        .catch(() => null)
-  }
-}
+    return Promise.resolve(opened)
+  },
+  openPortal: (url: string) => {
+    if (openExternalUrl(url)) {
+      sys(t('slashCmd.subscription.openingPortal'))
+    } else {
+      sys(t('slashCmd.subscription.openBrowserFailedPortal', url))
+    }
+  },
+  preview: tierId =>
+    ctx.gateway
+      .rpc<SubscriptionPreviewResponse>('subscription.preview', { subscription_type_id: tierId })
+      .then(r => r ?? null)
+      .catch(() => null),
+  refreshState: () =>
+    ctx.gateway
+      .rpc<SubscriptionStateResponse>('subscription.state', {})
+      .then(r => r ?? null)
+      .catch(() => null),
+  requestRemoteSpending: () =>
+    ctx.gateway
+      .rpc<BillingMutationResponse>('billing.step_up', { session_id: ctx.sid ?? undefined })
+      // Carry the typed denial (session_revoked / remote_spending_revoked /
+      // rate_limited / …) so the stepup screen shows the right recovery.
+      .then(r => ({ error: r?.error, granted: !!(r && r.ok && r.granted), message: r?.message }))
+      .catch(() => ({
+        granted: false,
+        message: t('slashCmd.subscription.billingUnreachable')
+      })),
+  resume: () =>
+    ctx.gateway
+      .rpc<BillingMutationResponse>('subscription.resume', {})
+      .then(r => r ?? null)
+      .catch(() => null),
+  scheduleCancellation: () =>
+    ctx.gateway
+      .rpc<BillingMutationResponse>('subscription.change', { cancel: true })
+      .then(r => r ?? null)
+      .catch(() => null),
+  scheduleChange: tierId =>
+    ctx.gateway
+      .rpc<BillingMutationResponse>('subscription.change', { subscription_type_id: tierId })
+      .then(r => r ?? null)
+      .catch(() => null),
+  sys,
+  upgrade: (tierId, idempotencyKey) =>
+    ctx.gateway
+      .rpc<SubscriptionUpgradeResponse>('subscription.upgrade', {
+        subscription_type_id: tierId,
+        ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {})
+      })
+      .then(r => r ?? null)
+      .catch(() => null)
+})
 
 export const subscriptionCommands: SlashCommand[] = [
   {
+    help: 'View or change your Nous subscription plan',
     name: 'subscription',
     aliases: ['upgrade'],
     // ZERO sub-commands: bare `/subscription` fetches state and opens the
@@ -153,15 +151,13 @@ export const subscriptionCommands: SlashCommand[] = [
     // moves money, via the V3 upgrade route).
     run: (_arg, ctx) => {
       const sys: Sys = ctx.transcript.sys
-      const locale = ctx.ui?.locale ?? 'en'
-      const tr: Translator = (key, vars) => translate(locale, key, vars)
 
       ctx.gateway
         .rpc<SubscriptionStateResponse>('subscription.state', {})
         .then(
           ctx.guarded<SubscriptionStateResponse>(s => {
             if (!s.logged_in) {
-              sys(tr('subscription.notLoggedIn'))
+              sys(t('slashCmd.subscription.notLoggedIn'))
 
               return
             }

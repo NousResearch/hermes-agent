@@ -1,8 +1,7 @@
-import { getUiState } from '../../app/uiStore.js'
 import { FloatBox } from '../../components/appChrome.js'
 import { GridTestOverlay } from '../../components/gridTestOverlay.js'
 import { Overlay } from '../../components/overlay.js'
-import { translate } from '../../i18n/index.js'
+import { getLocale, t as tr } from '../../i18n/index.js'
 import { openWidget } from '../host.js'
 import { defineWidgetApp } from '../registry.js'
 import { isCtrl, type WidgetInput } from '../types.js'
@@ -114,12 +113,12 @@ export const gridTestApp = defineWidgetApp<GridTestState>({
     // `d` opens the dialog app as a nested demo — apps launch each other via
     // the typed programmatic API; the host swaps the active app.
     if (ch === 'd') {
-      const locale = getUiState().locale
+      const locale = getLocale()
 
       openWidget(dialogTestApp, {
-        body: translate(locale, 'widget.grid.dialogBody'),
-        hint: translate(locale, 'widget.grid.dialogHint'),
-        title: translate(locale, 'widget.grid.dialogTitle'),
+        body: tr('widget.grid.dialogBody'),
+        hint: tr('widget.grid.dialogHint'),
+        title: tr('widget.grid.dialogTitle'),
         zone: 'center'
       })
 

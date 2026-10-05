@@ -12,8 +12,9 @@ import { $petBox } from '../app/petFlashStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, NATIVE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
+import { placeholder } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
-import { type TranslationKey, useI18n } from '../i18n/index.js'
+import { useT } from '../i18n/useT.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -22,7 +23,6 @@ import {
 } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
-import { pick } from '../lib/text.js'
 import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from '../sdk/host.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
@@ -304,7 +304,7 @@ const ComposerPane = memo(function ComposerPane({
   nativeMode: boolean
 }) {
   const ui = useStore($uiState)
-  const i18n = useI18n()
+  const T = useT()
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
 
@@ -321,20 +321,6 @@ const ComposerPane = memo(function ComposerPane({
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
-
-  const placeholderKey = useMemo<TranslationKey>(
-    () =>
-      pick([
-        'input.placeholder1',
-        'input.placeholder2',
-        'input.placeholder3',
-        'input.placeholder4',
-        'input.placeholder5',
-        'input.placeholder6',
-        'input.placeholder7'
-      ]),
-    []
-  )
 
   const captureInputDrag = (e: GutterMouseEvent) => {
     if (e.button !== 0) {
@@ -404,9 +390,7 @@ const ComposerPane = memo(function ComposerPane({
 
       {ui.bgTasks.size > 0 && (
         <Text color={ui.theme.color.muted}>
-          {i18n.t(ui.bgTasks.size === 1 ? 'task.backgroundRunningOne' : 'task.backgroundRunningMany', {
-            count: String(ui.bgTasks.size)
-          })}
+          {ui.bgTasks.size} background {ui.bgTasks.size === 1 ? 'task' : 'tasks'} running
         </Text>
       )}
 
@@ -478,7 +462,7 @@ const ComposerPane = memo(function ComposerPane({
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
-                  placeholder={composer.empty ? i18n.t(placeholderKey) : ui.busy ? i18n.t('input.interruptHint') : ''}
+                  placeholder={composer.empty ? placeholder() : ui.busy ? T.composer.interruptHint : ''}
                   // Exactly the "(and N more toolsets…)" tone. `muted` is a
                   // MID-luminance family tone, so it reads receded on both
                   // poles even when polarity detection is wrong (transparent
@@ -502,7 +486,7 @@ const ComposerPane = memo(function ComposerPane({
 
       {nativeMode && composer.input === '?' && !composer.inputBuf.length && <HelpHint nativeMode t={ui.theme} />}
 
-      {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>☤ {i18n.tStatus(ui.status)}</Text>}
+      {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>☤ {ui.status}</Text>}
 
       <AmbientDock placement="dock-bottom" />
       <StatusRulePane at="bottom" composer={composer} nativeMode={nativeMode} status={status} />
@@ -571,10 +555,7 @@ const StatusRulePane = memo(function StatusRulePane({
         t={ui.theme}
         turnStartedAt={status.turnStartedAt}
         usage={ui.usage}
-        voiceEnabled={status.voiceEnabled}
-        voiceProcessing={status.voiceProcessing}
-        voiceRecording={status.voiceRecording}
-        voiceTts={status.voiceTts}
+        voiceLabel={status.voiceLabel}
       />
     </Box>
   )
@@ -635,7 +616,7 @@ export const AppLayout = memo(function AppLayout({
               <PromptZone
                 cols={composer.cols}
                 onApprovalChoice={actions.answerApproval}
-                onClarifyAnswer={actions.answerClarify}
+                onClarifyCancel={actions.cancelClarify}
                 onClarifyQuestionAnswer={actions.answerClarifyQuestion}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}

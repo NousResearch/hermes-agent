@@ -1,25 +1,23 @@
 import { Box, Text } from '@hermes/ink'
 
-import { HOTKEYS } from '../content/hotkeys.js'
-import { type TranslationKey, useI18n } from '../i18n/index.js'
+import { hotkeys } from '../content/hotkeys.js'
+import { useT } from '../i18n/useT.js'
 import type { Theme } from '../theme.js'
 
-const COMMON_COMMAND_KEYS: [string, TranslationKey][] = [
-  ['/help', 'help.fullList'],
-  ['/clear', 'help.newSession'],
-  ['/resume', 'help.resumeSession'],
-  ['/details', 'help.detailsDesc'],
-  ['/copy', 'help.copyDesc'],
-  ['/quit', 'help.exitDesc']
-]
-
-const HOTKEY_PREVIEW = HOTKEYS.slice(0, 8)
-
 export function HelpHint({ nativeMode = false, t }: { nativeMode?: boolean; t: Theme }) {
-  const { t: ti } = useI18n()
-  const COMMON_COMMANDS: [string, string][] = COMMON_COMMAND_KEYS.map(([k, key]) => [k, ti(key)])
+  const T = useT()
 
-  const labelW = Math.max(...COMMON_COMMANDS.map(([k]) => k.length), ...HOTKEY_PREVIEW.map(([k]) => k.length))
+  const commands: [string, string][] = [
+    ['/help', T.help.commands.help],
+    ['/clear', T.help.commands.clear],
+    ['/resume', T.help.commands.resume],
+    ['/details', T.help.commands.details],
+    ['/copy', T.help.commands.copy],
+    ['/quit', T.help.commands.quit]
+  ]
+
+  const hotkeyPreview = hotkeys().slice(0, 8)
+  const labelW = Math.max(...commands.map(([k]) => k.length), ...hotkeyPreview.map(([k]) => k.length))
 
   const pad = (s: string) => s + ' '.repeat(Math.max(0, labelW - s.length + 2))
 
@@ -40,18 +38,18 @@ export function HelpHint({ nativeMode = false, t }: { nativeMode?: boolean; t: T
       >
         <Text>
           <Text bold color={t.color.primary}>
-            {ti('help.quickHelp')}
+            {T.help.quickHelp}
           </Text>
-          <Text color={t.color.muted}>{ti('help.dismissHint')}</Text>
+          <Text color={t.color.muted}>{T.help.quickHelpTail}</Text>
         </Text>
 
         <Box marginTop={1}>
           <Text bold color={t.color.accent}>
-            {ti('help.commonCommands')}
+            {T.help.commonCommands}
           </Text>
         </Box>
 
-        {COMMON_COMMANDS.map(([k, v]) => (
+        {commands.map(([k, v]) => (
           <Text key={k}>
             <Text color={t.color.label}>{pad(k)}</Text>
             <Text color={t.color.muted}>{v}</Text>
@@ -60,14 +58,14 @@ export function HelpHint({ nativeMode = false, t }: { nativeMode?: boolean; t: T
 
         <Box marginTop={1}>
           <Text bold color={t.color.accent}>
-            {ti('help.hotkeys')}
+            {T.help.hotkeys}
           </Text>
         </Box>
 
-        {HOTKEY_PREVIEW.map(([k, key]) => (
+        {hotkeyPreview.map(([k, v]) => (
           <Text key={k}>
             <Text color={t.color.label}>{pad(k)}</Text>
-            <Text color={t.color.muted}>{ti(key as TranslationKey)}</Text>
+            <Text color={t.color.muted}>{v}</Text>
           </Text>
         ))}
       </Box>

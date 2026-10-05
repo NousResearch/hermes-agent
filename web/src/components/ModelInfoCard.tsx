@@ -1,40 +1,37 @@
-import { useEffect, useRef, useState } from "react";
-import { Brain, Eye, Gauge, Lightbulb, Wrench } from "lucide-react";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { api } from "@/lib/api";
-import type { ModelInfoResponse } from "@/lib/api";
-import { compactNumber } from "@hermes/shared";
-import { useI18n } from "@/i18n";
+import { useEffect, useRef, useState } from 'react'
+import { Brain, Eye, Gauge, Lightbulb, Wrench } from 'lucide-react'
+import { Spinner } from '@nous-research/ui/ui/components/spinner'
+import { api } from '@/lib/api'
+import type { ModelInfoResponse } from '@/lib/api'
+import { compactNumber } from '@hermes/shared'
+import { useI18n } from '@/i18n'
 
 interface ModelInfoCardProps {
   /** Current model string from config state — used to detect changes */
-  currentModel: string;
+  currentModel: string
   /** Bumped after config saves to trigger re-fetch */
-  refreshKey?: number;
+  refreshKey?: number
 }
 
-export function ModelInfoCard({
-  currentModel,
-  refreshKey = 0,
-}: ModelInfoCardProps) {
-  const { format, t } = useI18n();
-  const [info, setInfo] = useState<ModelInfoResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const lastFetchKeyRef = useRef("");
+export function ModelInfoCard({ currentModel, refreshKey = 0 }: ModelInfoCardProps) {
+  const { format, t } = useI18n()
+  const [info, setInfo] = useState<ModelInfoResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const lastFetchKeyRef = useRef('')
 
   useEffect(() => {
-    if (!currentModel) return;
+    if (!currentModel) return
     // Re-fetch when model changes OR when refreshKey bumps (after save)
-    const fetchKey = `${currentModel}:${refreshKey}`;
-    if (fetchKey === lastFetchKeyRef.current) return;
-    lastFetchKeyRef.current = fetchKey;
-    setLoading(true);
+    const fetchKey = `${currentModel}:${refreshKey}`
+    if (fetchKey === lastFetchKeyRef.current) return
+    lastFetchKeyRef.current = fetchKey
+    setLoading(true)
     api
       .getModelInfo()
       .then(setInfo)
       .catch(() => setInfo(null))
-      .finally(() => setLoading(false));
-  }, [currentModel, refreshKey]);
+      .finally(() => setLoading(false))
+  }, [currentModel, refreshKey])
 
   if (loading) {
     return (
@@ -42,13 +39,13 @@ export function ModelInfoCard({
         <Spinner className="text-xs" />
         {t.modelInfo.loading}
       </div>
-    );
+    )
   }
 
-  if (!info || !info.model || info.effective_context_length <= 0) return null;
+  if (!info || !info.model || info.effective_context_length <= 0) return null
 
-  const caps = info.capabilities;
-  const hasCaps = caps && Object.keys(caps).length > 0;
+  const caps = info.capabilities
+  const hasCaps = caps && Object.keys(caps).length > 0
 
   return (
     <div className="border border-border/60 bg-muted/30 px-3 py-2.5 space-y-2">
@@ -64,13 +61,11 @@ export function ModelInfoCard({
           {info.config_context_length > 0 ? (
             <span className="text-amber-500 text-xs">
               {format(t.modelInfo.overrideAuto, {
-                tokens: compactNumber(info.auto_context_length),
+                tokens: compactNumber(info.auto_context_length)
               })}
             </span>
           ) : (
-            <span className="text-text-tertiary text-xs">
-              {t.modelInfo.autoDetected}
-            </span>
+            <span className="text-text-tertiary text-xs">{t.modelInfo.autoDetected}</span>
           )}
         </div>
       </div>
@@ -81,9 +76,7 @@ export function ModelInfoCard({
             <Lightbulb className="h-3.5 w-3.5" />
             <span className="font-medium">{t.modelInfo.maxOutput}</span>
           </div>
-          <span className="font-mono font-semibold text-foreground">
-            {compactNumber(caps.max_output_tokens)}
-          </span>
+          <span className="font-mono font-semibold text-foreground">{compactNumber(caps.max_output_tokens)}</span>
         </div>
       )}
 
@@ -112,5 +105,5 @@ export function ModelInfoCard({
         </div>
       )}
     </div>
-  );
+  )
 }

@@ -1,24 +1,30 @@
-// Language identity and normalization are shared with Dashboard and Python
-// through locales/registry.json. Each UI still owns its presentation pack.
-export { type Locale, LOCALES } from '@hermes/shared/locale-registry'
+// TUI i18n type contract. `Translations` is derived from the bundled English
+// catalog: adding a string to en.ts is the whole schema change.
 
-export interface LangPack {
-  toolVerbs: Record<string, string>
-  verbs: string[]
-  status: Record<string, string>
-  /** UI string catalog — key set is authoritative from the EN pack. */
-  catalog: Record<string, string>
-  /** How the status bar renders thinking verbs.
-   *  'pad' — pad to a fixed width (Latin languages)
-   *  'ellipsis' — append '…' (CJK languages) */
-  verbStyle: 'ellipsis' | 'pad'
-}
+import type { en } from './en.js'
 
-/** A locale may translate any subset; omitted values inherit from English. */
-export interface LangPackOverlay<CatalogKey extends string = string> {
-  catalog?: Partial<Record<CatalogKey, string>>
-  status?: Record<string, string>
-  toolVerbs?: Record<string, string>
-  verbs?: string[]
-  verbStyle?: LangPack['verbStyle']
+export type Translations = typeof en
+
+/** A catalog leaf: a fixed string or a positional-argument formatter. */
+export type MessageLeaf = ((...args: never[]) => string) | string
+
+type Join<A extends string, B extends string> = A extends '' ? B : `${A}.${B}`
+
+type Leaves<T, Prefix extends string = ''> = T extends MessageLeaf
+  ? Prefix
+  : T extends readonly unknown[]
+    ? Prefix
+    : T extends object
+      ? { [K in keyof T & string]: Leaves<T[K], Join<Prefix, K>> }[keyof T & string]
+      : never
+
+/** Every flat dotted key of the catalog (`status.ready`, `prompt.approval.title`). */
+export type TranslationKey = Leaves<Translations>
+
+/** The flat `{lang, surface, messages}` shape `i18n.catalog` returns; `messages`
+ *  is dotted-key → string (function leaves as `{0}`/`{1}` templates). */
+export interface CatalogPack {
+  lang: string
+  messages: Record<string, string>
+  surface: string
 }

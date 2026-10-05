@@ -1,41 +1,41 @@
 /** Types for the dashboard plugin system. */
 
-import type { ComponentType } from "react";
+import type { ComponentType } from 'react'
 
 export interface PluginManifest {
-  name: string;
-  label: string;
+  name: string
+  label: string
   /** i18n key under `t.app.nav` for sidebar label translation. Falls back to `label` when unset. */
-  labelKey?: string;
-  description: string;
+  labelKey?: string
+  description: string
   /** i18n key under `t.pluginsPage.descriptions`; unknown keys fall back to `description`. */
-  descriptionKey?: string;
-  icon: string;
-  version: string;
+  descriptionKey?: string
+  icon: string
+  version: string
   tab: {
-    path: string;
+    path: string
     /** "end", "after:<pathSegment>", "before:<pathSegment>" (e.g. "after:skills" → after `/skills`) */
-    position?: string;
+    position?: string
     /** When set to a built-in route path, this plugin replaces that page instead of adding a new tab. */
-    override?: string;
+    override?: string
     /** When true, the plugin may register without a sidebar tab (slot-only, etc.). */
-    hidden?: boolean;
-  };
+    hidden?: boolean
+  }
   /** Declared for discovery; actual slots use registerSlot in the plugin bundle. */
-  slots?: string[];
-  entry: string;
-  css?: string | null;
-  has_api: boolean;
+  slots?: string[]
+  entry: string
+  css?: string | null
+  has_api: boolean
   /**
    * Optional Subresource Integrity hash (e.g. "sha384-..."). When set,
    * the browser will refuse to execute the plugin bundle if its hash
    * does not match. This protects against tampered plugin delivery.
    */
-  integrity?: string;
-  source: string;
+  integrity?: string
+  source: string
 }
 
 export interface RegisteredPlugin {
-  manifest: PluginManifest;
-  component: ComponentType;
+  manifest: PluginManifest
+  component: ComponentType
 }

@@ -69,7 +69,8 @@ class SetupReadyPayload(OpenPayload):
 
     provider_configured: bool
     inference_provider: str
-    free_tier: bool
+    free_tier_account: bool
+    free_tier_route: bool
     has_identity: bool
     other_providers: bool
     error: str = ""

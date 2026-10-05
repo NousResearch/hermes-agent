@@ -7,20 +7,22 @@ import type {
   BillingMutationResponse,
   BillingStateResponse
 } from '../../../gatewayTypes.js'
-import { translate, type TranslationKey } from '../../../i18n/index.js'
+import { t } from '../../../i18n/runtime.js'
 import { openExternalUrl } from '../../../lib/openExternalUrl.js'
 import type { BillingChargeOutcome, BillingOverlayCtx } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import type { SlashCommand, SlashRunCtx } from '../types.js'
 
 type Sys = (text: string) => void
-type Translator = (key: TranslationKey, vars?: Record<string, string | number>) => string
+
+/** " (try again in ~N min)" for throttled/unavailable errors, or '' when no retry_after. */
+const retrySuffix = (retryAfter?: number | null): string =>
+  retryAfter ? t('slashCmd.topup.error.retryIn', String(Math.max(1, Math.round(retryAfter / 60)))) : ''
 
 /** Map a typed billing error envelope to user-facing copy + portal funnel. */
 const renderBillingError = (
   sys: Sys,
   ctx: SlashRunCtx,
-  tr: Translator,
   env: {
     actor?: string
     code?: string
@@ -39,7 +41,7 @@ const renderBillingError = (
       // Reached by non-charge mutations (e.g. auto-reload config) that need
       // Remote Spending allowed. The resumable step-up lives on the buy/charge
       // path; point the user there rather than leaking the raw scope name.
-      sys(tr('billing.error.insufficientScope'))
+      sys(t('slashCmd.topup.error.insufficientScope'))
 
       break
     case 'remote_spending_revoked': {
@@ -47,11 +49,10 @@ const renderBillingError = (
       // wait for the token refresh ~15 min away) and tell the user who did it.
       patchOverlayState({ billing: null })
 
-      sys(
-        tr(
-          env.actor === 'admin' ? 'billing.error.remoteSpendingRevokedAdmin' : 'billing.error.remoteSpendingRevokedSelf'
-        )
-      )
+      const who =
+        env.actor === 'admin' ? t('slashCmd.topup.error.revokedByAdmin') : t('slashCmd.topup.error.revokedByYou')
+
+      sys(t('slashCmd.topup.error.revokedReconnect', who))
 
       return
     }
@@ -59,51 +60,51 @@ const renderBillingError = (
     case 'session_revoked':
       // Stronger than a spend-revoke: the whole session is gone → full re-login.
       patchOverlayState({ billing: null })
-      sys(tr('billing.error.sessionRevoked'))
+      sys(t('slashCmd.topup.error.sessionRevoked'))
 
       return
 
     case 'cli_billing_disabled':
 
     case 'remote_spending_disabled':
-      // Account-wide switch is OFF (dual-emitted error/code). An admin must flip
-      // it on the portal; this is NOT a per-terminal revoke.
-      sys(tr('billing.error.cliBillingDisabled'))
+      // Account-wide switch is OFF (dual-emitted error/code). A billing admin can
+      // turn it on from the portal's Hermes Agent page; this is NOT a per-terminal stop.
+      sys(t('slashCmd.topup.error.remoteSpendingDisabled'))
 
       break
 
     case 'role_required':
-      sys(tr('billing.error.roleRequired'))
+      sys(t('slashCmd.topup.error.roleRequired'))
 
       break
 
     case 'consent_required':
-      sys(tr('billing.error.consentRequired'))
+      sys(t('slashCmd.topup.error.consentRequired'))
 
       break
 
     case 'org_access_denied':
-      sys(tr('billing.error.orgAccessDenied'))
+      sys(t('slashCmd.topup.error.orgAccessDenied'))
 
       break
 
     case 'upgrade_cap_exceeded':
-      sys(tr('billing.error.upgradeCapExceeded'))
+      sys(t('slashCmd.topup.error.upgradeCapExceeded'))
 
       break
 
     case 'auto_top_up_disabled_failures':
-      sys(tr('billing.error.autoReloadDisabledFailures'))
+      sys(t('slashCmd.topup.error.autoTopUpDisabledFailures'))
 
       break
 
     case 'idempotency_conflict':
-      sys(tr('billing.error.idempotencyConflict'))
+      sys(t('slashCmd.topup.error.idempotencyConflict'))
 
       break
 
     case 'no_payment_method':
-      sys(tr('billing.error.noPaymentMethod'))
+      sys(t('slashCmd.topup.error.noPaymentMethod'))
 
       break
     case 'monthly_cap_exceeded': {
@@ -111,8 +112,8 @@ const renderBillingError = (
       const remaining = env.payload?.remainingUsd
       sys(
         remaining != null
-          ? tr('billing.error.monthlyCapExceededRemaining', { remaining })
-          : tr('billing.error.monthlyCapExceeded')
+          ? t('slashCmd.topup.error.monthlyCapExceededRemaining', String(remaining))
+          : t('slashCmd.topup.error.monthlyCapExceeded')
       )
 
       break
@@ -122,32 +123,23 @@ const renderBillingError = (
     case 'temporarily_unavailable': {
       // 429 throttle OR 503 gate-fail-closed: NOT a payment failure, NOT a
       // revoke. Back off and tell the user to retry.
-      const minutes = env.retry_after ? Math.max(1, Math.round(env.retry_after / 60)) : null
-      sys(minutes == null ? tr('billing.error.rateLimited') : tr('billing.error.rateLimitedWithRetry', { minutes }))
+      sys(t('slashCmd.topup.error.rateLimited', retrySuffix(env.retry_after)))
 
       break
     }
 
     case 'stripe_unavailable': {
-      const minutes = env.retry_after ? Math.max(1, Math.round(env.retry_after / 60)) : null
-      sys(
-        minutes == null
-          ? tr('billing.error.stripeUnavailable')
-          : tr('billing.error.stripeUnavailableWithRetry', { minutes })
-      )
+      sys(t('slashCmd.topup.error.stripeUnavailable', retrySuffix(env.retry_after)))
 
       break
     }
 
     default:
-      // Unknown backend details are not stable presentation copy. Keep the
-      // user-facing fallback inside the locale catalog instead of leaking a
-      // server-authored English sentence into non-English sessions.
-      sys(tr('billing.error.generic', { message: tr('billing.error.requestFailed') }))
+      sys(t('slashCmd.topup.error.generic', env.message || env.error || t('slashCmd.topup.error.genericFallback')))
   }
 
   if (portal) {
-    sys(tr('billing.portalLine', { url: portal }))
+    sys(t('slashCmd.topup.error.portal', portal))
   }
 }
 
@@ -169,33 +161,39 @@ const requestRemoteSpending = (ctx: SlashRunCtx): Promise<boolean> =>
     .then(r => !!(r && r.ok && r.granted))
     .catch(() => false)
 
-/** Poll a charge to a terminal state through the shared billing state machine. */
-const pollCharge = (sys: Sys, ctx: SlashRunCtx, tr: Translator, chargeId: string, portalUrl?: string | null): void => {
+/** Poll a charge to a terminal state (settled/failed/timeout). Non-blocking. */
+const pollCharge = (sys: Sys, ctx: SlashRunCtx, chargeId: string, portalUrl?: string | null): void => {
   const renderOutcome = (outcome: SettlementOutcome): void => {
     switch (outcome.kind) {
       case 'settled':
         sys(
-          outcome.status.amount_usd
-            ? tr('billing.charge.addedAmount', { amount: outcome.status.amount_usd })
-            : tr('billing.charge.added')
+          t(
+            'slashCmd.topup.charge.settled',
+            outcome.status.amount_usd ? `$${outcome.status.amount_usd}` : t('slashCmd.topup.charge.creditsFallback')
+          )
         )
 
         return
 
       case 'failed':
-        renderChargeFailed(sys, tr, outcome.status.reason, portalUrl)
+        renderChargeFailed(sys, outcome.status.reason, portalUrl)
 
         return
 
       case 'refused':
-        sys(tr('billing.charge.couldNotCheck', { message: tr('billing.error.requestFailed') }))
+        sys(
+          t(
+            'slashCmd.topup.charge.couldNotCheck',
+            outcome.status.message || outcome.status.error || t('slashCmd.topup.charge.couldNotCheckFallback')
+          )
+        )
 
         return
 
       case 'ambiguous':
         if (outcome.status) {
-          renderBillingError(sys, ctx, tr, outcome.status)
-          sys(tr('billing.charge.unconfirmed'))
+          renderBillingError(sys, ctx, outcome.status)
+          sys(t('slashCmd.topup.charge.unconfirmed'))
 
           return
         }
@@ -205,16 +203,16 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, tr: Translator, chargeId: string
         }
 
         if (!ctx.stale()) {
-          sys(tr('billing.charge.unconfirmed'))
+          sys(t('slashCmd.topup.charge.unconfirmed'))
         }
 
         return
 
       case 'timed_out':
-        sys(tr('billing.charge.timeout'))
+        sys(t('slashCmd.topup.charge.timedOut'))
 
         if (portalUrl) {
-          sys(tr('billing.portalLine', { url: portalUrl }))
+          sys(t('slashCmd.topup.error.portal', portalUrl))
         }
 
         return
@@ -250,58 +248,58 @@ const pollCharge = (sys: Sys, ctx: SlashRunCtx, tr: Translator, chargeId: string
   })
 }
 
-const renderChargeFailed = (sys: Sys, tr: Translator, reason?: string | null, portalUrl?: string | null): void => {
+const renderChargeFailed = (sys: Sys, reason?: string | null, portalUrl?: string | null): void => {
   switch ((reason || '').trim()) {
     case 'authentication_required':
-      sys(tr('billing.charge.authRequired'))
+      sys(t('slashCmd.topup.charge.authenticationRequired'))
 
       break
 
     case 'payment_method_expired':
-      sys(tr('billing.charge.cardExpired'))
+      sys(t('slashCmd.topup.charge.paymentMethodExpired'))
 
       break
 
     case 'card_declined':
-      sys(tr('billing.charge.cardDeclined'))
+      sys(t('slashCmd.topup.charge.cardDeclined'))
 
       break
 
     case 'processing_error':
-      sys(tr('billing.charge.failed', { reason: 'processing_error' }))
+      sys(t('slashCmd.topup.charge.failedReason', 'processing_error'))
 
       break
 
     default:
-      sys(tr('billing.charge.failed', { reason: reason || 'processing_error' }))
+      sys(t('slashCmd.topup.charge.failedReason', reason || 'processing_error'))
   }
 
   // Funnel to the portal after any failure (parity with cli.py _billing_portal_hint).
   if (portalUrl) {
-    sys(tr('billing.portalLine', { url: portalUrl }))
+    sys(t('slashCmd.topup.error.portal', portalUrl))
   }
 }
 
 /** Validate a custom amount against state bounds + 2dp, mirroring the server. */
-const validateAmount = (raw: string, s: BillingStateResponse, tr: Translator): { amount?: string; error?: string } => {
+const validateAmount = (raw: string, s: BillingStateResponse): { amount?: string; error?: string } => {
   const cleaned = raw.trim().replace(/^\$/, '').trim()
 
   if (!cleaned || !/^\d+(\.\d{1,2})?$/.test(cleaned)) {
-    return { error: tr('billing.validate.amountFormat') }
+    return { error: t('slashCmd.topup.validate.invalid') }
   }
 
   const value = Number(cleaned)
 
   if (!(value > 0)) {
-    return { error: tr('billing.validate.amountPositive') }
+    return { error: t('slashCmd.topup.validate.notPositive') }
   }
 
   if (s.min_usd != null && value < Number(s.min_usd)) {
-    return { error: tr('billing.validate.minimum', { amount: s.min_usd }) }
+    return { error: t('slashCmd.topup.validate.minimum', String(s.min_usd)) }
   }
 
   if (s.max_usd != null && value > Number(s.max_usd)) {
-    return { error: tr('billing.validate.maximum', { amount: s.max_usd }) }
+    return { error: t('slashCmd.topup.validate.maximum', String(s.max_usd)) }
   }
 
   return { amount: cleaned }
@@ -312,100 +310,94 @@ const validateAmount = (raw: string, s: BillingStateResponse, tr: Translator): {
  * and emit transcript lines.  Keeps ALL RPC + error-mapping logic here
  * (single source of truth) — the overlay only renders + routes keys.
  */
-const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse): BillingOverlayCtx => {
-  const locale = ctx.ui?.locale ?? 'en'
-  const tr: Translator = (key, vars) => translate(locale, key, vars)
+const buildOverlayCtx = (ctx: SlashRunCtx, sys: Sys, s: BillingStateResponse): BillingOverlayCtx => ({
+  applyAutoReload: (enabled, threshold, topUp) =>
+    ctx.gateway
+      .rpc<BillingMutationResponse>('billing.auto_reload', {
+        enabled,
+        ...(threshold != null ? { threshold } : {}),
+        ...(topUp != null ? { top_up_amount: topUp } : {})
+      })
+      .then(r => {
+        if (r && r.ok) {
+          return true
+        }
 
-  return {
-    applyAutoReload: (enabled, threshold, topUp) =>
-      ctx.gateway
-        .rpc<BillingMutationResponse>('billing.auto_reload', {
-          enabled,
-          ...(threshold != null ? { threshold } : {}),
-          ...(topUp != null ? { top_up_amount: topUp } : {})
-        })
-        .then(r => {
-          if (r && r.ok) {
-            return true
-          }
+        if (r) {
+          renderBillingError(sys, ctx, r)
+        }
 
-          if (r) {
-            renderBillingError(sys, ctx, tr, r)
-          }
+        return false
+      })
+      .catch(e => {
+        ctx.guardedErr(e)
 
-          return false
-        })
-        .catch(e => {
-          ctx.guardedErr(e)
+        return false
+      }),
+  charge: (amount: string, idempotencyKey?: string): Promise<BillingChargeOutcome> => {
+    sys(t('slashCmd.topup.charge.submitted'))
 
-          return false
-        }),
-    charge: (amount: string, idempotencyKey?: string): Promise<BillingChargeOutcome> => {
-      sys(tr('billing.charge.submitted'))
-
-      return ctx.gateway
-        .rpc<BillingChargeResponse>('billing.charge', {
-          amount_usd: amount,
-          ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {})
-        })
-        .then((r): BillingChargeOutcome => {
-          if (!r) {
-            return 'error'
-          }
-
-          if (r.ok && r.charge_id) {
-            pollCharge(sys, ctx, tr, r.charge_id, s.portal_url)
-
-            return 'submitted'
-          }
-
-          // insufficient_scope → the overlay routes to the resumable step-up
-          // (no error line here; the stepup screen owns that UX).
-          if (r.error === 'insufficient_scope') {
-            return 'needs_remote_spending'
-          }
-
-          renderBillingError(sys, ctx, tr, r)
-
+    return ctx.gateway
+      .rpc<BillingChargeResponse>('billing.charge', {
+        amount_usd: amount,
+        ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {})
+      })
+      .then((r): BillingChargeOutcome => {
+        if (!r) {
           return 'error'
-        })
-        .catch((e): BillingChargeOutcome => {
-          ctx.guardedErr(e)
+        }
 
-          return 'error'
-        })
-    },
-    requestRemoteSpending: () => requestRemoteSpending(ctx),
-    openPortal: (url: string) => {
-      openExternalUrl(url)
-      sys(tr('billing.openingPortal', { url }))
-    },
-    refreshState: () =>
-      ctx.gateway
-        .rpc<BillingStateResponse>('billing.state', {})
-        .then(r => (r?.ok ? r : null))
-        .catch(() => null),
-    sys,
-    validate: (raw: string) => validateAmount(raw, s, tr)
-  }
-}
+        if (r.ok && r.charge_id) {
+          pollCharge(sys, ctx, r.charge_id, s.portal_url)
+
+          return 'submitted'
+        }
+
+        // insufficient_scope → the overlay routes to the resumable step-up
+        // (no error line here; the stepup screen owns that UX).
+        if (r.error === 'insufficient_scope') {
+          return 'needs_remote_spending'
+        }
+
+        renderBillingError(sys, ctx, r)
+
+        return 'error'
+      })
+      .catch((e): BillingChargeOutcome => {
+        ctx.guardedErr(e)
+
+        return 'error'
+      })
+  },
+  requestRemoteSpending: () => requestRemoteSpending(ctx),
+  openPortal: (url: string) => {
+    openExternalUrl(url)
+    sys(t('slashCmd.topup.openingPortal', url))
+  },
+  refreshState: () =>
+    ctx.gateway
+      .rpc<BillingStateResponse>('billing.state', {})
+      .then(r => (r?.ok ? r : null))
+      .catch(() => null),
+  sys,
+  validate: (raw: string) => validateAmount(raw, s)
+})
 
 export const topupCommands: SlashCommand[] = [
   {
+    help: 'Show your balance and manage billing — add funds, auto-reload, limits',
     name: 'topup',
     // ZERO sub-commands (plan §0.4): any arg is ignored. Bare `/topup`
     // fetches state and opens the interactive overlay (CLI/TUI parity).
     run: (_arg, ctx) => {
       const sys: Sys = ctx.transcript.sys
-      const locale = ctx.ui?.locale ?? 'en'
-      const tr: Translator = (key, vars) => translate(locale, key, vars)
 
       ctx.gateway
         .rpc<BillingStateResponse>('billing.state', {})
         .then(
           ctx.guarded<BillingStateResponse>(s => {
             if (!s.logged_in) {
-              sys(tr('billing.notLoggedIn'))
+              sys(t('slashCmd.topup.notLoggedIn'))
 
               return
             }

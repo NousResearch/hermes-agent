@@ -14,23 +14,23 @@ import { timeAgo, cn, themedBody } from '@/lib/utils'
 import {
   DASHBOARD_MODAL_BACKDROP,
   DASHBOARD_MODAL_PANEL,
-  shouldCloseOuterModalOnEscape,
-} from "@/lib/dashboard-modal-shell";
-import { compactNumber } from "@hermes/shared";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { Stats } from "@nous-research/ui/ui/components/stats";
-import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Switch } from "@nous-research/ui/ui/components/switch";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { useModalBehavior } from "@/hooks/useModalBehavior";
-import { usePageHeader } from "@/contexts/usePageHeader";
-import { useI18n } from "@/i18n";
-import { PluginSlot } from "@/plugins";
-import { ModelPickerDialog } from "@/components/ModelPickerDialog";
-import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
-import { errorMessage } from "@/lib/api-error";
+  shouldCloseOuterModalOnEscape
+} from '@/lib/dashboard-modal-shell'
+import { compactNumber } from '@hermes/shared'
+import { Button } from '@nous-research/ui/ui/components/button'
+import { Spinner } from '@nous-research/ui/ui/components/spinner'
+import { Stats } from '@nous-research/ui/ui/components/stats'
+import { Card, CardContent, CardHeader, CardTitle } from '@nous-research/ui/ui/components/card'
+import { Badge } from '@nous-research/ui/ui/components/badge'
+import { Switch } from '@nous-research/ui/ui/components/switch'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { useModalBehavior } from '@/hooks/useModalBehavior'
+import { usePageHeader } from '@/contexts/usePageHeader'
+import { useI18n } from '@/i18n'
+import { PluginSlot } from '@/plugins'
+import { ModelPickerDialog } from '@/components/ModelPickerDialog'
+import { ModelReloadConfirm } from '@/components/ModelReloadConfirm'
+import { errorMessage } from '@/lib/api-error'
 
 const PERIODS = [
   { label: '7d', days: 7 },
@@ -253,7 +253,7 @@ function UseAsMenu({
       onAssigned()
       setOpen(false)
     } catch (e) {
-      setError(errorMessage(e, t.common));
+      setError(errorMessage(e, t.common))
     } finally {
       setBusy(false)
     }
@@ -708,7 +708,7 @@ function MoaModelsModal({
       onSaved(saved)
       onClose()
     } catch (e) {
-      setError(errorMessage(e, t.common));
+      setError(errorMessage(e, t.common))
     } finally {
       setBusy(false)
     }
@@ -1153,9 +1153,9 @@ export default function ModelsPage() {
         setData(models)
         setAux(auxData)
       })
-      .catch((err) => setError(errorMessage(err, t.common)))
-      .finally(() => setLoading(false));
-  }, [days]);
+      .catch(err => setError(errorMessage(err, t.common)))
+      .finally(() => setLoading(false))
+  }, [days])
 
   const refreshAux = useCallback(() => {
     api

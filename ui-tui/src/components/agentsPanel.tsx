@@ -6,7 +6,8 @@ import { useEffect, useState } from 'react'
 import { $agentDockCollapsed, useAgentRoster } from '../app/agentRoster.js'
 import { type ProcessRow, useProcessRows } from '../app/processRoster.js'
 import { $uiState } from '../app/uiStore.js'
-import { type Locale, translate, useI18n } from '../i18n/index.js'
+import { messages } from '../i18n/runtime.js'
+import { useT } from '../i18n/useT.js'
 import { type AgentRows, buildAgentRows, dockRowLimit } from '../lib/agentRows.js'
 import { processGlyph } from '../lib/processGlyph.js'
 import { statusGlyph } from '../lib/subagentGlyph.js'
@@ -52,15 +53,11 @@ export const splitDockBudget = (
   return { agents: agentBudget, processes: Math.max(1, limit - agentBudget) }
 }
 
-export const processSummary = (block: ProcessBlock, locale: Locale = 'en'): string => {
+export const processSummary = (block: ProcessBlock): string => {
   const done = block.total - block.running
+  const T = messages().hubs.agentsPanel
 
-  return [
-    block.running ? translate(locale, 'process.running', { count: block.running }) : '',
-    done ? translate(locale, 'process.done', { count: done }) : ''
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  return [block.running ? T.running(block.running) : '', done ? T.done(done) : ''].filter(Boolean).join(' · ')
 }
 
 /** One `⚙ command · 42s · last: …` line per process; the exit verdict replaces the
@@ -88,25 +85,21 @@ export function AgentsPanelView({
   running,
   t
 }: AgentRows & { collapsed?: boolean; cols: number; processes?: ProcessBlock; t: Theme }) {
-  const { t: ti, locale } = useI18n()
+  const T = useT().hubs.agentsPanel
 
   if (!running && !processes.total) {
     return null
   }
 
   const counts = [
-    running ? ti('process.liveAgents', { count: running }) : '',
-    processes.total
-      ? processes.running
-        ? ti('process.procs', { count: processes.running })
-        : ti('process.done', { count: processes.total })
-      : ''
+    running ? T.liveAgents(running) : '',
+    processes.total ? (processes.running ? T.procs(processes.running) : T.procsDone(processes.total)) : ''
   ]
     .filter(Boolean)
     .join(' · ')
 
   const summary = `▸ ${counts}`
-  const hints = ti('process.expandHint')
+  const hints = T.collapsedHint
   const activityWidth = cols - stringWidth(summary + hints) - 3
   const firstDetail = rows[0]?.detail ?? processes.rows[0]?.detail ?? ''
   const activity = firstDetail && activityWidth >= 12 ? ` · ${compactPreview(firstDetail, activityWidth)}` : ''
@@ -125,7 +118,7 @@ export function AgentsPanelView({
       ) : null}
       {!collapsed && running ? (
         <Text bold color={t.color.accent} wrap="truncate-end">
-          {`▾ ${ti('process.liveAgents', { count: running })}${hidden ? ti('process.more', { count: hidden }) : ''}${ti('process.collapseHint')}`}
+          {`▾ ${T.liveAgents(running)}${hidden ? T.moreHidden(hidden) : ''}${T.expandedHint}`}
         </Text>
       ) : null}
       {!collapsed &&
@@ -141,8 +134,8 @@ export function AgentsPanelView({
         ))}
       {!collapsed && processes.total ? (
         <Text bold color={t.color.accent} wrap="truncate-end">
-          {`▾ ${ti('process.title')} · ${processSummary(processes, locale)}${processes.hidden ? ti('process.more', { count: processes.hidden }) : ''}${
-            running ? '' : ti('process.collapseHint')
+          {`▾ ${T.processes} · ${processSummary(processes)}${processes.hidden ? T.moreHidden(processes.hidden) : ''}${
+            running ? '' : T.expandedHint
           }`}
         </Text>
       ) : null}

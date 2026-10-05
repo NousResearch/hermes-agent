@@ -32,7 +32,8 @@ import type {
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
-import { translate, type TranslationKey } from '../i18n/index.js'
+import { t } from '../i18n/runtime.js'
+import { useT } from '../i18n/useT.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
@@ -41,8 +42,8 @@ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import {
   buildToolTrailLine,
+  clarifyAnswerText,
   formatAbandonedClarify,
-  formatAbandonedClarifyBatch,
   sameToolTrailGroup,
   toolTrailLabel
 } from '../lib/text.js'
@@ -72,12 +73,12 @@ import { useConfigSync } from './useConfigSync.js'
 import { shouldDetachEditedHistoryInput, useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
 import {
-  BACKEND_GAVE_UP_ACTIVITY,
-  BACKEND_RESTARTING,
-  BACKEND_RESTARTING_ACTIVITY,
   backendGaveUp,
-  CONNECTION_LOST,
-  CONNECTION_LOST_ACTIVITY,
+  backendGaveUpActivity,
+  backendRestarting,
+  backendRestartingActivity,
+  connectionLost,
+  connectionLostActivity,
   lastStderrLine
 } from './userMessages.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
@@ -86,6 +87,9 @@ import { useSubmission } from './useSubmission.js'
 const BRACKET_PASTE_ON = '\x1b[?2004h'
 const BRACKET_PASTE_OFF = '\x1b[?2004l'
 const MAX_HEIGHT_CACHE_BUCKETS = 12
+
+const clarifyQuestionCountLabel = (count: number) =>
+  t(count === 1 ? 'session.main.clarifyQuestionsOne' : 'session.main.clarifyQuestionsOther', String(count))
 
 const statusColorOf = (status: string, t: { error: string; muted: string; ok: string; warn: string }) => {
   if (status === 'ready') {
@@ -134,11 +138,10 @@ export async function startPromptLiveSession({
   // the initial title. Auto-title generation can rename it after the first
   // response; pre-queuing prompt text here causes duplicate-title errors when
   // users dispatch common prompts like "Hello, what model are you?".
-  const locale = getUiState().locale
-  const sid = (await newLiveSession(translate(locale, 'sys.newLiveSessionStarted'))) ?? null
+  const sid = (await newLiveSession(t('session.lifecycle.newLiveSessionStarted'))) ?? null
 
   if (!sid) {
-    sys(translate(locale, 'errors.failedStartLiveSession'))
+    sys(`error: ${t('session.main.failedToStartLiveSession')}`)
 
     return null
   }
@@ -149,16 +152,12 @@ export async function startPromptLiveSession({
     const result = await rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: sid, value: requestedModel })
 
     if (!result?.value) {
-      sys(
-        translate(locale, 'errors.invalidResponse', {
-          method: translate(locale, 'action.switchModel')
-        })
-      )
+      sys(`error: ${t('session.main.invalidModelSwitchResponse')}`)
 
       return sid
     }
 
-    sys(translate(locale, 'sys.modelSet', { model: result.value }))
+    sys(t('session.main.modelSwitched', result.value))
     maybeWarn(result)
     onModelSwitched?.(result.value, result)
   }
@@ -233,13 +232,8 @@ export function useMainApp(gw: GatewayClient) {
   const [bellOnPrompt, setBellOnPrompt] = useState(false)
 
   const ui = useStore($uiState)
-
-  const ti = useCallback(
-    (key: TranslationKey, vars?: Record<string, string | number>) => translate(ui.locale, key, vars),
-    [ui.locale]
-  )
-
   const overlay = useStore($overlayState)
+  const i18n = useT()
 
   const turnLiveTailActive = useTurnSelector(state =>
     Boolean(
@@ -255,7 +249,7 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const slashFlightRef = useRef(0)
-  const slashRef = useRef<(cmd: string) => boolean>(() => false)
+  const slashRef = useRef<(cmd: string, typed?: boolean) => boolean>(() => false)
   const colsRef = useRef(cols)
   const scrollRef = useRef<null | ScrollBoxHandle>(null)
   const onEventRef = useRef<(ev: AnyGatewayEvent) => void>(() => {})
@@ -344,11 +338,7 @@ export function useMainApp(gw: GatewayClient) {
   const empty = !historyItems.some(msg => msg.kind !== 'intro')
 
   useEffect(() => {
-    if (!ui.sid) {
-      return
-    }
-
-    void terminalParityHints(process.env, { locale: ui.locale })
+    void terminalParityHints()
       .then(hints => {
         for (const hint of hints) {
           if (terminalHintsShownRef.current.has(hint.key)) {
@@ -360,7 +350,7 @@ export function useMainApp(gw: GatewayClient) {
         }
       })
       .catch(() => {})
-  }, [ui.locale, ui.sid])
+  }, [])
 
   const messageId = useCallback((msg: Msg) => {
     const hit = msgIdsRef.current.get(msg)
@@ -500,15 +490,15 @@ export function useMainApp(gw: GatewayClient) {
     () =>
       onUserWidgets(({ added, errors, removed }) => {
         for (const id of added) {
-          sys(`widget /${id} is live — type /${id} to open`)
+          sys(t('session.main.widgetLive', id))
         }
 
         for (const id of removed) {
-          sys(`widget /${id} removed (file deleted)`)
+          sys(t('session.main.widgetRemoved', id))
         }
 
         for (const err of errors) {
-          sys(`widget ${err.file} failed to load: ${err.message}`)
+          sys(t('session.main.widgetFailedToLoad', err.file, err.message))
         }
       }),
     [sys]
@@ -530,10 +520,10 @@ export function useMainApp(gw: GatewayClient) {
       const warning = (value as { warning?: unknown } | null)?.warning
 
       if (typeof warning === 'string' && warning) {
-        sys(ti('common.warning') + `: ${warning}`)
+        sys(`warning: ${warning}`)
       }
     },
-    [sys, ti]
+    [sys]
   )
 
   const rpc: GatewayRpc = useCallback(
@@ -548,14 +538,14 @@ export function useMainApp(gw: GatewayClient) {
           return result
         }
 
-        sys(ti('errors.invalidResponse', { method }))
+        sys(`error: ${t('session.common.invalidResponse', method)}`)
       } catch (e) {
-        sys(ti('errors.rpc', { message: rpcErrorMessage(e) }))
+        sys(`error: ${rpcErrorMessage(e)}`)
       }
 
       return null
     },
-    [gw, sys, ti]
+    [gw, sys]
   )
 
   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
@@ -755,54 +745,34 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [rpc, stdout, ui.sid])
 
-  const answerClarify = useCallback(
-    (answer: string) => {
-      const clarify = overlay.clarify
+  const cancelClarify = useCallback(() => {
+    const clarify = overlay.clarify
 
-      if (!clarify) {
-        return
-      }
+    if (!clarify) {
+      return
+    }
 
-      const label = toolTrailLabel('clarify')
+    const label = toolTrailLabel('clarify')
 
-      turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
-      patchTurnState({ turnTrail: turnController.turnTools })
+    turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
+    patchTurnState({ turnTrail: turnController.turnTools })
 
-      if (!respondToServerRequest(clarify.requestId, { answer })) {
-        // The request already expired (request.cancel raced the keystroke): nothing to answer.
-        patchOverlayState({ clarify: null })
+    if (!respondToServerRequest(clarify.requestId, {})) {
+      // The request already expired (request.cancel raced the keystroke): nothing to answer.
+      patchOverlayState({ clarify: null })
 
-        return
-      }
+      return
+    }
 
-      {
-        if (answer) {
-          turnController.persistedToolLabels.add(label)
-          appendMessage({
-            kind: 'trail',
-            role: 'system',
-            text: '',
-            tools: [buildToolTrailLine('clarify', clarify.question)]
-          })
-          appendMessage({ role: 'user', text: answer })
-          patchUiState({ status: 'running…' })
-        } else {
-          // Esc / Ctrl+C cancel: persist the question + options as a system
-          // line (not a transient "prompt cancelled" flash) so the prompt
-          // survives on screen as standard output, matching the timeout path.
-          appendMessage({
-            role: 'system',
-            text: clarify.questions?.length
-              ? formatAbandonedClarifyBatch(clarify.questions, clarify.answers ?? {}, 'cancelled', getUiState().locale)
-              : formatAbandonedClarify(clarify.question, clarify.choices, 'cancelled', getUiState().locale)
-          })
-        }
-
-        patchOverlayState({ clarify: null })
-      }
-    },
-    [appendMessage, overlay.clarify]
-  )
+    // Esc / Ctrl+C cancel: persist the question as a system line (not a
+    // transient "prompt cancelled" flash) so the prompt survives on screen as
+    // standard output, matching the timeout path.
+    appendMessage({
+      role: 'system',
+      text: formatAbandonedClarify(clarify.questions, clarify.answers ?? {}, 'cancelled')
+    })
+    patchOverlayState({ clarify: null })
+  }, [appendMessage, overlay.clarify])
 
   // Lock one answer of a batch clarify (`clarify.lock` RPC). The overlay stays
   // up until the server reports no remaining questions — the final lock
@@ -811,12 +781,12 @@ export function useMainApp(gw: GatewayClient) {
     (qid: string, answer: string) => {
       const clarify = overlay.clarify
 
-      if (!clarify?.questions?.length) {
+      if (!clarify) {
         return
       }
 
       rpc<ClarifyLockResponse>('clarify.lock', {
-        answer,
+        answer: answer.trim() ? answer : null,
         question_id: qid,
         request_id: clarify.requestId
       }).then(r => {
@@ -838,8 +808,7 @@ export function useMainApp(gw: GatewayClient) {
           return
         }
 
-        // Batch complete: persist the whole Q&A set as one user-visible
-        // block (mirrors the single-question trail + answer lines).
+        // Batch complete: persist the whole Q&A set as one user-visible block.
         const label = toolTrailLabel('clarify')
 
         turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
@@ -849,13 +818,14 @@ export function useMainApp(gw: GatewayClient) {
           kind: 'trail',
           role: 'system',
           text: '',
-          tools: [buildToolTrailLine('clarify', ti('prompt.clarifyBatchCount', { count: clarify.questions!.length }))]
+          tools: [buildToolTrailLine('clarify', clarifyQuestionCountLabel(clarify.questions.length))]
         })
         appendMessage({
           role: 'user',
-          text: clarify
-            .questions!.map(
-              q => `${q.question} → ${answers[q.qid]?.trim() ? answers[q.qid] : ti('prompt.clarifySkipped')}`
+          text: clarify.questions
+            .map(
+              q =>
+                `${q.question} → ${answers[q.qid]?.trim() ? clarifyAnswerText(answers[q.qid]!, q.multiSelect) : t('session.main.skipped')}`
             )
             .join('\n')
         })
@@ -863,7 +833,7 @@ export function useMainApp(gw: GatewayClient) {
         patchOverlayState({ clarify: null })
       })
     },
-    [appendMessage, overlay.clarify, rpc, ti]
+    [appendMessage, overlay.clarify, rpc]
   )
 
   sysRef.current = sys
@@ -907,8 +877,8 @@ export function useMainApp(gw: GatewayClient) {
 
   const { pagerPageSize } = useInputHandlers({
     actions: {
-      answerClarify,
       appendMessage,
+      cancelClarify,
       die,
       dispatchSubmission,
       guardBusySessionSwitch: session.guardBusySessionSwitch,
@@ -1018,11 +988,11 @@ export function useMainApp(gw: GatewayClient) {
       // reconnect and reset its backoff.
       if (gw.attached) {
         recoverSidRef.current = storedSid ?? recoverSidRef.current
-        patchUiState({ busy: false, compacting: false, sid: null, status: 'reconnecting…' })
+        patchUiState({ busy: false, compacting: false, sid: null, status: t('session.status.reconnecting') })
 
         if (state.sid) {
-          turnController.pushActivity(CONNECTION_LOST_ACTIVITY(getUiState().locale), 'warn')
-          sys(CONNECTION_LOST(getUiState().locale))
+          turnController.pushActivity(connectionLostActivity(), 'warn')
+          sys(connectionLost())
         }
 
         return
@@ -1040,12 +1010,12 @@ export function useMainApp(gw: GatewayClient) {
       // dead/respawning gateway. recoverSidRef carries the session forward, and
       // resumeById restores sid once the fresh gateway is ready.
       recoveryAtRef.current = plan.attempts
-      patchUiState({ busy: false, compacting: false, sid: null, status: 'restarting…' })
+      patchUiState({ busy: false, compacting: false, sid: null, status: t('session.status.restarting') })
 
       if (plan.recover && plan.sid) {
         recoverSidRef.current = plan.sid
-        turnController.pushActivity(BACKEND_RESTARTING_ACTIVITY(getUiState().locale), 'warn')
-        sys(BACKEND_RESTARTING(getUiState().locale))
+        turnController.pushActivity(backendRestartingActivity(), 'warn')
+        sys(backendRestarting())
         gw.start()
 
         return
@@ -1057,12 +1027,12 @@ export function useMainApp(gw: GatewayClient) {
       // recovery target: when that background reconnect eventually succeeds,
       // gateway.ready must reopen the SAME chat instead of forging a new one.
       recoverSidRef.current = plan.sid
-      patchUiState({ status: 'stopped' })
+      patchUiState({ status: t('session.status.stopped') })
 
       if (!gaveUpRef.current) {
         gaveUpRef.current = true
-        turnController.pushActivity(BACKEND_GAVE_UP_ACTIVITY(getUiState().locale), 'error')
-        sys(`error: ${backendGaveUp(code, lastStderrLine(gw.getLogTail(20)), getUiState().locale)}`)
+        turnController.pushActivity(backendGaveUpActivity(), 'error')
+        sys(`error: ${backendGaveUp(code, lastStderrLine(gw.getLogTail(20)))}`)
       }
     }
 
@@ -1077,7 +1047,7 @@ export function useMainApp(gw: GatewayClient) {
       gw.off('request', requestHandler)
       gw.off('exit', exitHandler)
     }
-  }, [gw, sys, ti])
+  }, [gw, sys])
 
   useLongRunToolCharms()
 
@@ -1153,7 +1123,9 @@ export function useMainApp(gw: GatewayClient) {
 
       respondWith(overlay.approval.requestId, { choice }, () => {
         patchOverlayState({ approval: null })
-        patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
+        patchTurnState({
+          outcome: choice === 'deny' ? t('session.approval.denied') : t('session.approval.approved', choice)
+        })
         patchUiState({ status: 'running…' })
       })
     },
@@ -1222,12 +1194,12 @@ export function useMainApp(gw: GatewayClient) {
 
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
-    slashRef.current(`/model ${value}`)
+    slashRef.current(`/model ${value}`, false) // the typed /model that opened the picker already counted
   }, [])
 
   const closeLiveSession = useCallback(
     async (id: string) => {
-      patchUiState({ status: 'closing session…' })
+      patchUiState({ status: t('session.status.closingSession') })
 
       try {
         const result = (await session.closeSession(id)) as null | SessionCloseResponse
@@ -1236,13 +1208,13 @@ export function useMainApp(gw: GatewayClient) {
         return result
       } catch (e: unknown) {
         const message = e instanceof Error ? e.message : String(e)
-        sys(ti('errors.rpc', { message }))
+        sys(`error: ${message}`)
         patchUiState({ status: 'ready' })
 
         throw e
       }
     },
-    [session, sys, ti]
+    [session, sys]
   )
 
   const newPromptSession = useCallback(
@@ -1326,11 +1298,11 @@ export function useMainApp(gw: GatewayClient) {
       activateLiveSession: session.activateLiveSession,
       closeLiveSession,
       answerApproval,
-      answerClarify,
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
       answerVaultUnlock,
+      cancelClarify,
       clearSelection,
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
@@ -1340,7 +1312,7 @@ export function useMainApp(gw: GatewayClient) {
       // (Switching between live sessions and `+ new` keep the current session
       // running, so those stay unguarded — that's the orchestrator's purpose.)
       resumeById: (id: string) => {
-        if (session.guardBusySessionSwitch(translate(getUiState().locale, 'action.switchSessions'))) {
+        if (session.guardBusySessionSwitch(t('session.lifecycle.switchSessions'))) {
           return
         }
 
@@ -1350,11 +1322,11 @@ export function useMainApp(gw: GatewayClient) {
     }),
     [
       answerApproval,
-      answerClarify,
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
       answerVaultUnlock,
+      cancelClarify,
       clearSelection,
       closeLiveSession,
       newPromptSession,
@@ -1429,18 +1401,17 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
-      // Raw voice state is passed through so StatusRule owns presentation and
-      // computes the translated label from the same active provider as the
-      // rest of the application tree.
-      voiceRecording,
-      voiceProcessing,
-      voiceEnabled,
-      voiceTts
+      voiceLabel: voiceRecording
+        ? i18n.session.main.voiceRec
+        : voiceProcessing
+          ? i18n.session.main.voiceStt
+          : `${voiceEnabled ? i18n.session.main.voiceOn : i18n.session.main.voiceOff}${voiceTts ? i18n.session.main.voiceTtsSuffix : ''}`
     }),
     [
       cwd,
       gitBranch,
       goodVibesTick,
+      i18n,
       lastTurnEndedAt,
       sessionStartedAt,
       stickyPrompt,

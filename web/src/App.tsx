@@ -9,17 +9,10 @@ import {
   type ComponentType,
   type FocusEvent,
   type MouseEvent,
-  type ReactNode,
-} from "react";
-import { createPortal } from "react-dom";
-import {
-  Routes,
-  Route,
-  NavLink,
-  Navigate,
-  useLocation,
-  useNavigate,
-} from "react-router";
+  type ReactNode
+} from 'react'
+import { createPortal } from 'react-dom'
+import { Routes, Route, NavLink, Navigate, useLocation, useNavigate } from 'react-router'
 import {
   Activity,
   BarChart3,
@@ -54,98 +47,91 @@ import {
   Webhook,
   Wrench,
   X,
-  Zap,
-} from "lucide-react";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { SelectionSwitcher } from "@nous-research/ui/ui/components/selection-switcher";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { Typography } from "@nous-research/ui/ui/components/typography/index";
-import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
-import { cn } from "@/lib/utils";
-import { SidebarFooter } from "@/components/SidebarFooter";
-import {
-  SidebarStatusStrip,
-  gatewayLine,
-} from "@/components/SidebarStatusStrip";
-import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
-import { useSidebarStatus } from "@/hooks/useSidebarStatus";
-import { AuthWidget } from "@/components/AuthWidget";
-import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
-import { ProfileProvider } from "@/contexts/ProfileProvider";
-import { useProfileScope } from "@/contexts/useProfileScope";
-import { ProfileSwitcher } from "@/components/ProfileSwitcher";
-import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
-import { MemoryPressureBanner } from "@/components/MemoryPressureBanner";
-import { MultiplexStandaloneBanner } from "@/components/MultiplexStandaloneBanner";
-import { useSystemActions } from "@/contexts/useSystemActions";
-import type { SystemAction } from "@/contexts/system-actions-context";
+  Zap
+} from 'lucide-react'
+import { Button } from '@nous-research/ui/ui/components/button'
+import { SelectionSwitcher } from '@nous-research/ui/ui/components/selection-switcher'
+import { Spinner } from '@nous-research/ui/ui/components/spinner'
+import { Typography } from '@nous-research/ui/ui/components/typography/index'
+import { ConfirmDialog } from '@nous-research/ui/ui/components/confirm-dialog'
+import { cn } from '@/lib/utils'
+import { SidebarFooter } from '@/components/SidebarFooter'
+import { SidebarStatusStrip, gatewayLine } from '@/components/SidebarStatusStrip'
+import { useBelowBreakpoint } from '@nous-research/ui/hooks/use-below-breakpoint'
+import { useSidebarStatus } from '@/hooks/useSidebarStatus'
+import { AuthWidget } from '@/components/AuthWidget'
+import { PageHeaderProvider } from '@/contexts/PageHeaderProvider'
+import { ProfileProvider } from '@/contexts/ProfileProvider'
+import { useProfileScope } from '@/contexts/useProfileScope'
+import { ProfileSwitcher } from '@/components/ProfileSwitcher'
+import { ProfileScopeBanner } from '@/components/ProfileScopeBanner'
+import { MemoryPressureBanner } from '@/components/MemoryPressureBanner'
+import { MultiplexStandaloneBanner } from '@/components/MultiplexStandaloneBanner'
+import { useSystemActions } from '@/contexts/useSystemActions'
+import type { SystemAction } from '@/contexts/system-actions-context'
 // Route pages are lazy-loaded so the initial dashboard shell does not pay for
 // every admin surface (and heavy deps like xterm) up front.
-const ConfigPage = lazy(() => import("@/pages/ConfigPage"));
-const DocsPage = lazy(() => import("@/pages/DocsPage"));
-const EnvPage = lazy(() => import("@/pages/EnvPage"));
-const FilesPage = lazy(() => import("@/pages/FilesPage"));
-const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
-const LogsPage = lazy(() => import("@/pages/LogsPage"));
-const AnalyticsPage = lazy(() => import("@/pages/AnalyticsPage"));
-const ModelsPage = lazy(() => import("@/pages/ModelsPage"));
-const CronPage = lazy(() => import("@/pages/CronPage"));
-const ProfilesPage = lazy(() => import("@/pages/ProfilesPage"));
-const ProfileBuilderPage = lazy(() => import("@/pages/ProfileBuilderPage"));
-const SkillsPage = lazy(() => import("@/pages/SkillsPage"));
-const PluginsPage = lazy(() => import("@/pages/PluginsPage"));
-const McpPage = lazy(() => import("@/pages/McpPage"));
-const PairingPage = lazy(() => import("@/pages/PairingPage"));
-const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
-const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
-const SystemPage = lazy(() => import("@/pages/SystemPage"));
-const ChatPage = lazy(() => import("@/pages/ChatPage"));
-import { LanguageSwitcher } from "@/components/LanguageSwitcher";
-import { ThemeSwitcher } from "@/components/ThemeSwitcher";
-import { resolveNavLabel, useI18n } from "@/i18n";
-import type { Translations } from "@/i18n/types";
-import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
-import type { PluginManifest } from "@/plugins";
-import { useTheme } from "@/themes";
-import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
-import { latchChatActivation } from "@/lib/chat-activation";
-import { sharedGatewayProfiles } from "@/lib/shared-gateway";
-import { api } from "@/lib/api";
-import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
+const ConfigPage = lazy(() => import('@/pages/ConfigPage'))
+const DocsPage = lazy(() => import('@/pages/DocsPage'))
+const EnvPage = lazy(() => import('@/pages/EnvPage'))
+const FilesPage = lazy(() => import('@/pages/FilesPage'))
+const SessionsPage = lazy(() => import('@/pages/SessionsPage'))
+const LogsPage = lazy(() => import('@/pages/LogsPage'))
+const AnalyticsPage = lazy(() => import('@/pages/AnalyticsPage'))
+const ModelsPage = lazy(() => import('@/pages/ModelsPage'))
+const CronPage = lazy(() => import('@/pages/CronPage'))
+const ProfilesPage = lazy(() => import('@/pages/ProfilesPage'))
+const ProfileBuilderPage = lazy(() => import('@/pages/ProfileBuilderPage'))
+const SkillsPage = lazy(() => import('@/pages/SkillsPage'))
+const PluginsPage = lazy(() => import('@/pages/PluginsPage'))
+const McpPage = lazy(() => import('@/pages/McpPage'))
+const PairingPage = lazy(() => import('@/pages/PairingPage'))
+const ChannelsPage = lazy(() => import('@/pages/ChannelsPage'))
+const WebhooksPage = lazy(() => import('@/pages/WebhooksPage'))
+const SystemPage = lazy(() => import('@/pages/SystemPage'))
+const ChatPage = lazy(() => import('@/pages/ChatPage'))
+import { LanguageSwitcher } from '@/components/LanguageSwitcher'
+import { ThemeSwitcher } from '@/components/ThemeSwitcher'
+import { resolveNavLabel, useI18n } from '@/i18n'
+import type { Translations } from '@/i18n/types'
+import { PluginPage, PluginSlot, usePlugins } from '@/plugins'
+import type { PluginManifest } from '@/plugins'
+import { useTheme } from '@/themes'
+import { isDashboardEmbeddedChatEnabled } from '@/lib/dashboard-flags'
+import { latchChatActivation } from '@/lib/chat-activation'
+import { sharedGatewayProfiles } from '@/lib/shared-gateway'
+import { api } from '@/lib/api'
+import type { StatusResponse, UpdateCheckResponse } from '@/lib/api'
 
 function RouteFallback({ label }: { label: string }) {
   return (
-    <div
-      className="flex min-h-[12rem] flex-1 items-center justify-center"
-      aria-busy="true"
-      aria-live="polite"
-    >
+    <div className="flex min-h-[12rem] flex-1 items-center justify-center" aria-busy="true" aria-live="polite">
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <Spinner />
         <span>{label}</span>
       </div>
     </div>
-  );
+  )
 }
 
 function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
+  return <Navigate to="/sessions" replace />
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   if (pluginsLoading) {
     // Render nothing during the plugin-load window — a spinner here would just flash.
-    return null;
+    return null
   }
-  return <Navigate to="/sessions" replace />;
+  return <Navigate to="/sessions" replace />
 }
 
 const CHAT_NAV_ITEM: NavItem = {
-  path: "/chat",
-  labelKey: "chat",
-  label: "Chat",
-  icon: Terminal,
-};
+  path: '/chat',
+  labelKey: 'chat',
+  label: 'Chat',
+  icon: Terminal
+}
 
 /**
  * Built-in routes except /chat.  Chat is rendered persistently (outside
@@ -159,79 +145,79 @@ const CHAT_NAV_ITEM: NavItem = {
  * keep working.
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
-  "/": RootRedirect,
-  "/sessions": SessionsPage,
-  "/files": FilesPage,
-  "/analytics": AnalyticsPage,
-  "/models": ModelsPage,
-  "/logs": LogsPage,
-  "/cron": CronPage,
-  "/skills": SkillsPage,
-  "/plugins": PluginsPage,
-  "/mcp": McpPage,
-  "/pairing": PairingPage,
-  "/channels": ChannelsPage,
-  "/webhooks": WebhooksPage,
-  "/system": SystemPage,
-  "/profiles": ProfilesPage,
-  "/profiles/new": ProfileBuilderPage,
-  "/config": ConfigPage,
-  "/env": EnvPage,
-  "/docs": DocsPage,
-};
+  '/': RootRedirect,
+  '/sessions': SessionsPage,
+  '/files': FilesPage,
+  '/analytics': AnalyticsPage,
+  '/models': ModelsPage,
+  '/logs': LogsPage,
+  '/cron': CronPage,
+  '/skills': SkillsPage,
+  '/plugins': PluginsPage,
+  '/mcp': McpPage,
+  '/pairing': PairingPage,
+  '/channels': ChannelsPage,
+  '/webhooks': WebhooksPage,
+  '/system': SystemPage,
+  '/profiles': ProfilesPage,
+  '/profiles/new': ProfileBuilderPage,
+  '/config': ConfigPage,
+  '/env': EnvPage,
+  '/docs': DocsPage
+}
 
 // Route placeholder for /chat.  The persistent ChatPage host (rendered
 // outside <Routes> when embedded chat is on) paints on top; this empty
 // element just claims the path so the `*` catch-all redirect doesn't
 // fire when the user navigates to /chat.
 function ChatRouteSink() {
-  return null;
+  return null
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
   {
-    path: "/sessions",
-    labelKey: "sessions",
-    label: "Sessions",
-    icon: MessageSquare,
+    path: '/sessions',
+    labelKey: 'sessions',
+    label: 'Sessions',
+    icon: MessageSquare
   },
-  { path: "/files", labelKey: "files", label: "Files", icon: FolderOpen },
+  { path: '/files', labelKey: 'files', label: 'Files', icon: FolderOpen },
   {
-    path: "/analytics",
-    labelKey: "analytics",
-    label: "Analytics",
-    icon: BarChart3,
+    path: '/analytics',
+    labelKey: 'analytics',
+    label: 'Analytics',
+    icon: BarChart3
   },
   {
-    path: "/models",
-    labelKey: "models",
-    label: "Models",
-    icon: Cpu,
+    path: '/models',
+    labelKey: 'models',
+    label: 'Models',
+    icon: Cpu
   },
-  { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
-  { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
-  { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
-  { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
-  { path: "/mcp", labelKey: "mcp", label: "MCP", icon: Plug },
-  { path: "/channels", labelKey: "channels", label: "Channels", icon: Radio },
-  { path: "/webhooks", labelKey: "webhooks", label: "Webhooks", icon: Webhook },
+  { path: '/logs', labelKey: 'logs', label: 'Logs', icon: FileText },
+  { path: '/cron', labelKey: 'cron', label: 'Cron', icon: Clock },
+  { path: '/skills', labelKey: 'skills', label: 'Skills', icon: Package },
+  { path: '/plugins', labelKey: 'plugins', label: 'Plugins', icon: Puzzle },
+  { path: '/mcp', labelKey: 'mcp', label: 'MCP', icon: Plug },
+  { path: '/channels', labelKey: 'channels', label: 'Channels', icon: Radio },
+  { path: '/webhooks', labelKey: 'webhooks', label: 'Webhooks', icon: Webhook },
   {
-    path: "/pairing",
-    labelKey: "pairing",
-    label: "Pairing",
-    icon: ShieldCheck,
+    path: '/pairing',
+    labelKey: 'pairing',
+    label: 'Pairing',
+    icon: ShieldCheck
   },
-  { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
-  { path: "/config", labelKey: "config", label: "Config", icon: Settings },
-  { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
-  { path: "/system", labelKey: "system", label: "System", icon: Wrench },
+  { path: '/profiles', labelKey: 'profiles', label: 'Profiles', icon: Users },
+  { path: '/config', labelKey: 'config', label: 'Config', icon: Settings },
+  { path: '/env', labelKey: 'keys', label: 'Keys', icon: KeyRound },
+  { path: '/system', labelKey: 'system', label: 'System', icon: Wrench },
   {
-    path: "/docs",
-    labelKey: "documentation",
-    label: "Documentation",
-    icon: BookOpen,
-  },
-];
+    path: '/docs',
+    labelKey: 'documentation',
+    label: 'Documentation',
+    icon: BookOpen
+  }
+]
 
 const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Activity,
@@ -256,188 +242,185 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Heart,
   Star,
   Code,
-  Eye,
-};
-
-function resolveIcon(name: string): ComponentType<{ className?: string }> {
-  return ICON_MAP[name] ?? Puzzle;
+  Eye
 }
 
-function buildNavItems(
-  builtIn: NavItem[],
-  manifests: PluginManifest[],
-): NavItem[] {
-  const items = [...builtIn];
+function resolveIcon(name: string): ComponentType<{ className?: string }> {
+  return ICON_MAP[name] ?? Puzzle
+}
+
+function buildNavItems(builtIn: NavItem[], manifests: PluginManifest[]): NavItem[] {
+  const items = [...builtIn]
 
   for (const manifest of manifests) {
-    if (manifest.tab.override) continue;
-    if (manifest.tab.hidden) continue;
+    if (manifest.tab.override) continue
+    if (manifest.tab.hidden) continue
 
     const pluginItem: NavItem = {
       path: manifest.tab.path,
       label: manifest.label,
       labelKey: manifest.labelKey,
-      icon: resolveIcon(manifest.icon),
-    };
+      icon: resolveIcon(manifest.icon)
+    }
 
-    const pos = manifest.tab.position ?? "end";
-    if (pos === "end") {
-      items.push(pluginItem);
-    } else if (pos.startsWith("after:")) {
-      const target = "/" + pos.slice(6);
-      const idx = items.findIndex((i) => i.path === target);
-      items.splice(idx >= 0 ? idx + 1 : items.length, 0, pluginItem);
-    } else if (pos.startsWith("before:")) {
-      const target = "/" + pos.slice(7);
-      const idx = items.findIndex((i) => i.path === target);
-      items.splice(idx >= 0 ? idx : items.length, 0, pluginItem);
+    const pos = manifest.tab.position ?? 'end'
+    if (pos === 'end') {
+      items.push(pluginItem)
+    } else if (pos.startsWith('after:')) {
+      const target = '/' + pos.slice(6)
+      const idx = items.findIndex(i => i.path === target)
+      items.splice(idx >= 0 ? idx + 1 : items.length, 0, pluginItem)
+    } else if (pos.startsWith('before:')) {
+      const target = '/' + pos.slice(7)
+      const idx = items.findIndex(i => i.path === target)
+      items.splice(idx >= 0 ? idx : items.length, 0, pluginItem)
     } else {
-      items.push(pluginItem);
+      items.push(pluginItem)
     }
   }
 
-  return items;
+  return items
 }
 
 /** Split merged nav into built-in sidebar entries vs plugin tabs, preserving plugin order hints. */
 function partitionSidebarNav(
   builtIn: NavItem[],
-  manifests: PluginManifest[],
+  manifests: PluginManifest[]
 ): { coreItems: NavItem[]; pluginItems: NavItem[] } {
-  const merged = buildNavItems(builtIn, manifests);
-  const builtinPaths = new Set(builtIn.map((i) => i.path));
-  const coreItems: NavItem[] = [];
-  const pluginItems: NavItem[] = [];
+  const merged = buildNavItems(builtIn, manifests)
+  const builtinPaths = new Set(builtIn.map(i => i.path))
+  const coreItems: NavItem[] = []
+  const pluginItems: NavItem[] = []
   for (const item of merged) {
-    if (builtinPaths.has(item.path)) coreItems.push(item);
-    else pluginItems.push(item);
+    if (builtinPaths.has(item.path)) coreItems.push(item)
+    else pluginItems.push(item)
   }
-  return { coreItems, pluginItems };
+  return { coreItems, pluginItems }
 }
 
 function buildRoutes(
   builtinRoutes: Record<string, ComponentType>,
-  manifests: PluginManifest[],
+  manifests: PluginManifest[]
 ): Array<{
-  key: string;
-  path: string;
-  element: ReactNode;
+  key: string
+  path: string
+  element: ReactNode
 }> {
-  const byOverride = new Map<string, PluginManifest>();
-  const addons: PluginManifest[] = [];
+  const byOverride = new Map<string, PluginManifest>()
+  const addons: PluginManifest[] = []
 
   for (const m of manifests) {
     if (m.tab.override) {
-      byOverride.set(m.tab.override, m);
+      byOverride.set(m.tab.override, m)
     } else {
-      addons.push(m);
+      addons.push(m)
     }
   }
 
   const routes: Array<{
-    key: string;
-    path: string;
-    element: ReactNode;
-  }> = [];
+    key: string
+    path: string
+    element: ReactNode
+  }> = []
 
   for (const [path, Component] of Object.entries(builtinRoutes)) {
-    const om = byOverride.get(path);
+    const om = byOverride.get(path)
     if (om) {
       routes.push({
         key: `override:${om.name}`,
         path,
-        element: <PluginPage name={om.name} />,
-      });
+        element: <PluginPage name={om.name} />
+      })
     } else {
-      routes.push({ key: `builtin:${path}`, path, element: <Component /> });
+      routes.push({ key: `builtin:${path}`, path, element: <Component /> })
     }
   }
 
   for (const m of addons) {
-    if (m.tab.hidden) continue;
-    if (m.tab.path === "/plugins") continue;
-    if (builtinRoutes[m.tab.path]) continue;
+    if (m.tab.hidden) continue
+    if (m.tab.path === '/plugins') continue
+    if (builtinRoutes[m.tab.path]) continue
     routes.push({
       key: `plugin:${m.name}`,
       path: m.tab.path,
-      element: <PluginPage name={m.name} />,
-    });
+      element: <PluginPage name={m.name} />
+    })
   }
 
   for (const m of manifests) {
-    if (!m.tab.hidden) continue;
-    if (m.tab.path === "/plugins") continue;
-    if (builtinRoutes[m.tab.path] || m.tab.override) continue;
+    if (!m.tab.hidden) continue
+    if (m.tab.path === '/plugins') continue
+    if (builtinRoutes[m.tab.path] || m.tab.override) continue
     routes.push({
       key: `plugin:hidden:${m.name}`,
       path: m.tab.path,
-      element: <PluginPage name={m.name} />,
-    });
+      element: <PluginPage name={m.name} />
+    })
   }
 
-  return routes;
+  return routes
 }
 
-const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
+const SIDEBAR_COLLAPSED_KEY = 'hermes-sidebar-collapsed'
 
 export default function App() {
-  const { t } = useI18n();
-  const { pathname } = useLocation();
-  const { manifests, loading: pluginsLoading } = usePlugins();
-  const { theme } = useTheme();
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const closeMobile = useCallback(() => setMobileOpen(false), []);
+  const { t } = useI18n()
+  const { pathname } = useLocation()
+  const { manifests, loading: pluginsLoading } = usePlugins()
+  const { theme } = useTheme()
+  const [mobileOpen, setMobileOpen] = useState(false)
+  const closeMobile = useCallback(() => setMobileOpen(false), [])
 
   const [collapsed, setCollapsed] = useState(() => {
     try {
-      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+      return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true'
     } catch {
-      return false;
+      return false
     }
-  });
+  })
   const toggleCollapsed = useCallback(() => {
-    setCollapsed((prev) => {
-      const next = !prev;
+    setCollapsed(prev => {
+      const next = !prev
       try {
-        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
+        localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next))
       } catch {
         /* localStorage may be unavailable in private browsing */
       }
-      return next;
-    });
-  }, []);
-  const isMobile = useBelowBreakpoint(1024);
-  const isDesktopCollapsed = collapsed && !isMobile;
-  const tooltipWarmRef = useRef(0);
-  const sidebarStatus = useSidebarStatus();
-  const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
-  const normalizedPath = pathname.replace(/\/$/, "") || "/";
-  const isChatRoute = normalizedPath === "/chat";
-  const embeddedChat = isDashboardEmbeddedChatEnabled();
+      return next
+    })
+  }, [])
+  const isMobile = useBelowBreakpoint(1024)
+  const isDesktopCollapsed = collapsed && !isMobile
+  const tooltipWarmRef = useRef(0)
+  const sidebarStatus = useSidebarStatus()
+  const isDocsRoute = pathname === '/docs' || pathname === '/docs/'
+  const normalizedPath = pathname.replace(/\/$/, '') || '/'
+  const isChatRoute = normalizedPath === '/chat'
+  const embeddedChat = isDashboardEmbeddedChatEnabled()
   // Defer mounting the persistent chat host (and its xterm chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
   // PTY survives later tab switches.
-  const [chatHostMounted, setChatHostMounted] = useState(isChatRoute);
+  const [chatHostMounted, setChatHostMounted] = useState(isChatRoute)
   useEffect(() => {
-    setChatHostMounted((prev) => latchChatActivation(prev, isChatRoute));
-  }, [isChatRoute]);
+    setChatHostMounted(prev => latchChatActivation(prev, isChatRoute))
+  }, [isChatRoute])
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
   // page itself remains reachable by URL (it renders an explanation when
   // the flag is off — see AnalyticsPage), but hiding the nav entry avoids
   // surfacing misleading token/cost numbers in the sidebar.  Default off.
-  const [showTokenAnalytics, setShowTokenAnalytics] = useState(false);
+  const [showTokenAnalytics, setShowTokenAnalytics] = useState(false)
   useEffect(() => {
     api
       .getConfig()
-      .then((cfg) => {
+      .then(cfg => {
         const dash = (cfg?.dashboard ?? {}) as {
-          show_token_analytics?: unknown;
-        };
-        setShowTokenAnalytics(dash.show_token_analytics === true);
+          show_token_analytics?: unknown
+        }
+        setShowTokenAnalytics(dash.show_token_analytics === true)
       })
-      .catch(() => setShowTokenAnalytics(false));
-  }, []);
+      .catch(() => setShowTokenAnalytics(false))
+  }, [])
 
   // A plugin can replace the built-in /chat page via `tab.override: "/chat"`
   // in its manifest.  When one does, `buildRoutes` already swaps the route
@@ -456,71 +439,58 @@ export default function App() {
   // — killing the session mid-paint.  Delaying host mount by the
   // plugin-load window (typically <50ms, worst case 2s safety timeout)
   // is the cheaper trade-off.
-  const chatOverriddenByPlugin = useMemo(
-    () => manifests.some((m) => m.tab.override === "/chat"),
-    [manifests],
-  );
+  const chatOverriddenByPlugin = useMemo(() => manifests.some(m => m.tab.override === '/chat'), [manifests])
 
   const builtinRoutes = useMemo(
     () => ({
       ...BUILTIN_ROUTES_CORE,
-      ...(embeddedChat ? { "/chat": ChatRouteSink } : {}),
+      ...(embeddedChat ? { '/chat': ChatRouteSink } : {})
     }),
-    [embeddedChat],
-  );
+    [embeddedChat]
+  )
 
   const builtinNav = useMemo(() => {
-    const base = embeddedChat
-      ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
-      : BUILTIN_NAV_REST;
-    return showTokenAnalytics
-      ? base
-      : base.filter((n) => n.path !== "/analytics");
-  }, [embeddedChat, showTokenAnalytics]);
+    const base = embeddedChat ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST] : BUILTIN_NAV_REST
+    return showTokenAnalytics ? base : base.filter(n => n.path !== '/analytics')
+  }, [embeddedChat, showTokenAnalytics])
 
-  const sidebarNav = useMemo(
-    () => partitionSidebarNav(builtinNav, manifests),
-    [builtinNav, manifests],
-  );
-  const routes = useMemo(
-    () => buildRoutes(builtinRoutes, manifests),
-    [builtinRoutes, manifests],
-  );
+  const sidebarNav = useMemo(() => partitionSidebarNav(builtinNav, manifests), [builtinNav, manifests])
+  const routes = useMemo(() => buildRoutes(builtinRoutes, manifests), [builtinRoutes, manifests])
   const pluginTabMeta = useMemo(
     () =>
       manifests
-        .filter((m) => !m.tab.hidden)
-        .map((m) => ({
+        .filter(m => !m.tab.hidden)
+        .map(m => ({
           path: m.tab.override ?? m.tab.path,
-          label: resolveNavLabel(t, m.label, m.labelKey),
+          label: resolveNavLabel(t, m.label, m.labelKey)
         })),
-    [manifests, t],
-  );
+    [manifests, t]
+  )
 
-  const layoutVariant = theme.layoutVariant ?? "standard";
+  const layoutVariant = theme.layoutVariant ?? 'standard'
 
   useEffect(() => {
-    if (!mobileOpen) return;
+    if (!mobileOpen) return
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setMobileOpen(false);
-    };
-    document.addEventListener("keydown", onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+      if (e.key === 'Escape') setMobileOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
     return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prevOverflow;
-    };
-  }, [mobileOpen]);
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [mobileOpen])
 
   useEffect(() => {
-    const mql = window.matchMedia("(min-width: 1024px)");
+    const mql = window.matchMedia('(min-width: 1024px)')
     const onChange = (e: MediaQueryListEvent) => {
-      if (e.matches) setMobileOpen(false);
-    };
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, []);
+      if (e.matches) setMobileOpen(false)
+    }
+    mql.addEventListener('change', onChange)
+    return () => mql.removeEventListener('change', onChange)
+  }, [])
 
   return (
     <ProfileProvider>
@@ -536,15 +506,15 @@ export default function App() {
 
         <header
           className={cn(
-            "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
-            "flex items-center gap-2 px-4 py-2",
-            "border-b border-current/20",
-            "bg-background-base",
+            'lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14',
+            'flex items-center gap-2 px-4 py-2',
+            'border-b border-current/20',
+            'bg-background-base'
           )}
           style={{
-            background: "var(--component-header-background, var(--background-base))",
-            borderImage: "var(--component-header-border-image)",
-            clipPath: "var(--component-header-clip-path)",
+            background: 'var(--component-header-background, var(--background-base))',
+            borderImage: 'var(--component-header-border-image)',
+            clipPath: 'var(--component-header-clip-path)'
           }}
         >
           <Button
@@ -569,59 +539,49 @@ export default function App() {
             ghost
             aria-label={t.app.closeNavigation}
             onClick={closeMobile}
-            className={cn(
-              "lg:hidden fixed inset-0 z-40 p-0 block",
-              "bg-black/70",
-            )}
+            className={cn('lg:hidden fixed inset-0 z-40 p-0 block', 'bg-black/70')}
           />
         )}
 
-      {/* Single mobile header clearance for the banner stack + content. The
+        {/* Single mobile header clearance for the banner stack + content. The
           fixed lg:hidden header is h-14/z-40; previously each banner carried
           its own mt-14 AND the content kept pt-14, so two visible banners
           stacked three offsets (NS-656 review P3). One spacer, applied once. */}
-      <div aria-hidden className="h-14 shrink-0 lg:hidden" />
+        <div aria-hidden className="h-14 shrink-0 lg:hidden" />
         <PluginSlot name="header-banner" />
         <ProfileScopeBanner />
-      <MemoryPressureBanner status={sidebarStatus} />
-      <MultiplexStandaloneBanner status={sidebarStatus} />
+        <MemoryPressureBanner status={sidebarStatus} />
+        <MultiplexStandaloneBanner status={sidebarStatus} />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
           <div className="flex min-h-0 min-w-0 flex-1">
             <aside
               id="app-sidebar"
               aria-label={t.app.navigation}
               className={cn(
-                "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans",
-                "border-r border-current/20",
-                "bg-background-base",
-                "transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
-                mobileOpen ? "translate-x-0" : "-translate-x-full",
-                "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
-                "lg:transition-[width] lg:duration-300 lg:ease-[cubic-bezier(0.23,1,0.32,1)]",
-                collapsed && "lg:w-14",
+                'fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col font-sans',
+                'border-r border-current/20',
+                'bg-background-base',
+                'transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]',
+                mobileOpen ? 'translate-x-0' : '-translate-x-full',
+                'lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden',
+                'lg:transition-[width] lg:duration-300 lg:ease-[cubic-bezier(0.23,1,0.32,1)]',
+                collapsed && 'lg:w-14'
               )}
               style={{
-                background: "var(--component-sidebar-background, var(--background-base))",
-                clipPath: "var(--component-sidebar-clip-path)",
-                borderImage: "var(--component-sidebar-border-image)",
+                background: 'var(--component-sidebar-background, var(--background-base))',
+                clipPath: 'var(--component-sidebar-clip-path)',
+                borderImage: 'var(--component-sidebar-border-image)'
               }}
             >
               <div
                 className={cn(
-                  "flex h-14 shrink-0 items-center gap-2",
-                  "border-b border-current/20",
-                  collapsed
-                    ? "lg:justify-center lg:px-0"
-                    : "px-4 justify-between",
+                  'flex h-14 shrink-0 items-center gap-2',
+                  'border-b border-current/20',
+                  collapsed ? 'lg:justify-center lg:px-0' : 'px-4 justify-between'
                 )}
               >
-                <div
-                  className={cn(
-                    "flex items-center gap-2",
-                    collapsed && "lg:hidden",
-                  )}
-                >
+                <div className={cn('flex items-center gap-2', collapsed && 'lg:hidden')}>
                   <PluginSlot name="header-left" />
 
                   <Typography className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase">
@@ -648,11 +608,7 @@ export default function App() {
                   aria-label={collapsed ? t.common.expand : t.common.collapse}
                   className="hidden lg:flex text-text-secondary hover:text-midground"
                 >
-                  {collapsed ? (
-                    <PanelLeftOpen className="h-4 w-4" />
-                  ) : (
-                    <PanelLeftClose className="h-4 w-4" />
-                  )}
+                  {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
                 </Button>
               </div>
 
@@ -663,7 +619,7 @@ export default function App() {
                 aria-label={t.app.navigation}
               >
                 <ul className="flex flex-col">
-                  {sidebarNav.coreItems.map((item) => (
+                  {sidebarNav.coreItems.map(item => (
                     <SidebarNavLink
                       closeMobile={closeMobile}
                       collapsed={isDesktopCollapsed}
@@ -683,9 +639,9 @@ export default function App() {
                   >
                     <span
                       className={cn(
-                        "px-5 pt-2.5 pb-1",
-                        "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
-                        isDesktopCollapsed && "lg:hidden",
+                        'px-5 pt-2.5 pb-1',
+                        'font-sans text-display text-xs tracking-[0.12em] text-text-tertiary',
+                        isDesktopCollapsed && 'lg:hidden'
                       )}
                       id="hermes-sidebar-plugin-nav-heading"
                     >
@@ -693,7 +649,7 @@ export default function App() {
                     </span>
 
                     <ul className="flex flex-col">
-                      {sidebarNav.pluginItems.map((item) => (
+                      {sidebarNav.pluginItems.map(item => (
                         <SidebarNavLink
                           closeMobile={closeMobile}
                           collapsed={isDesktopCollapsed}
@@ -717,19 +673,14 @@ export default function App() {
 
               <div
                 className={cn(
-                  "flex shrink-0 items-center gap-2",
-                  "px-3 py-2",
-                  "border-t border-current/20",
-                  isDesktopCollapsed
-                    ? "lg:flex-col lg:items-start lg:gap-3 lg:py-3"
-                    : "justify-between",
+                  'flex shrink-0 items-center gap-2',
+                  'px-3 py-2',
+                  'border-t border-current/20',
+                  isDesktopCollapsed ? 'lg:flex-col lg:items-start lg:gap-3 lg:py-3' : 'justify-between'
                 )}
               >
                 <div
-                  className={cn(
-                    "flex min-w-0 items-center gap-2",
-                    isDesktopCollapsed && "lg:flex-col lg:items-start",
-                  )}
+                  className={cn('flex min-w-0 items-center gap-2', isDesktopCollapsed && 'lg:flex-col lg:items-start')}
                 >
                   <PluginSlot name="header-right" />
                   <SidebarIconWithTooltip
@@ -750,12 +701,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div
-                className={cn(
-                  "flex shrink-0 flex-col",
-                  isDesktopCollapsed && "lg:hidden",
-                )}
-              >
+              <div className={cn('flex shrink-0 flex-col', isDesktopCollapsed && 'lg:hidden')}>
                 <AuthWidget />
                 <SidebarFooter status={sidebarStatus} />
               </div>
@@ -764,22 +710,18 @@ export default function App() {
             <PageHeaderProvider pluginTabs={pluginTabMeta}>
               <div
                 className={cn(
-                  "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                  "px-3 sm:px-6",
-                  isChatRoute
-                    ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
-                    : "pt-2 sm:pt-4 lg:pt-6",
-                  isDocsRoute && "min-h-0 flex-1",
+                  'relative z-2 flex min-w-0 min-h-0 flex-1 flex-col',
+                  'px-3 sm:px-6',
+                  isChatRoute ? 'pb-0 pt-1 sm:pt-2 lg:pt-4' : 'pt-2 sm:pt-4 lg:pt-6',
+                  isDocsRoute && 'min-h-0 flex-1'
                 )}
               >
                 <PluginSlot name="pre-main" />
                 <div
                   className={cn(
-                    "w-full min-w-0",
-                    !isChatRoute &&
-                      "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
-                    (isDocsRoute || isChatRoute) &&
-                      "min-h-0 flex flex-1 flex-col",
+                    'w-full min-w-0',
+                    !isChatRoute && 'pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8',
+                    (isDocsRoute || isChatRoute) && 'min-h-0 flex flex-1 flex-col'
                   )}
                 >
                   <ProfileKeyedRoutes>
@@ -788,14 +730,7 @@ export default function App() {
                         {routes.map(({ key, path, element }) => (
                           <Route key={key} path={path} element={element} />
                         ))}
-                        <Route
-                          path="*"
-                          element={
-                            <UnknownRouteFallback
-                              pluginsLoading={pluginsLoading}
-                            />
-                          }
-                        />
+                        <Route path="*" element={<UnknownRouteFallback pluginsLoading={pluginsLoading} />} />
                       </Routes>
                     </Suspense>
                   </ProfileKeyedRoutes>
@@ -808,20 +743,11 @@ export default function App() {
                       ) : null
                     ) : chatHostMounted ? (
                       <div
-                        data-chat-active={isChatRoute ? "true" : "false"}
-                        className={cn(
-                          "min-h-0 min-w-0",
-                          isChatRoute ? "flex flex-1 flex-col" : "hidden",
-                        )}
+                        data-chat-active={isChatRoute ? 'true' : 'false'}
+                        className={cn('min-h-0 min-w-0', isChatRoute ? 'flex flex-1 flex-col' : 'hidden')}
                         aria-hidden={!isChatRoute}
                       >
-                        <Suspense
-                          fallback={
-                            isChatRoute ? (
-                              <RouteFallback label={t.app.loadingChat} />
-                            ) : null
-                          }
-                        >
+                        <Suspense fallback={isChatRoute ? <RouteFallback label={t.app.loadingChat} /> : null}>
                           <ChatPage isActive={isChatRoute} />
                         </Suspense>
                       </div>
@@ -838,7 +764,7 @@ export default function App() {
         <PluginSlot name="overlay" />
       </div>
     </ProfileProvider>
-  );
+  )
 }
 
 /**
@@ -852,63 +778,50 @@ export default function App() {
  * remount (channel keyed on scopedProfile).
  */
 function ProfileKeyedRoutes({ children }: { children: ReactNode }) {
-  const { profile } = useProfileScope();
+  const { profile } = useProfileScope()
   return (
-    <div key={profile || "__own__"} className="contents">
+    <div key={profile || '__own__'} className="contents">
       {children}
     </div>
-  );
+  )
 }
 
-function SidebarNavLink({
-  closeMobile,
-  collapsed,
-  item,
-  tooltipWarmRef,
-  t,
-}: SidebarNavLinkProps) {
-  const { path, label, labelKey, icon: Icon } = item;
-  const [hovered, setHovered] = useState(false);
-  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
+function SidebarNavLink({ closeMobile, collapsed, item, tooltipWarmRef, t }: SidebarNavLinkProps) {
+  const { path, label, labelKey, icon: Icon } = item
+  const [hovered, setHovered] = useState(false)
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null)
 
-  const navLabel = resolveNavLabel(t, label, labelKey);
-  const showTooltip = (
-    event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>,
-  ) => {
-    setHovered(true);
-    setTooltipAnchor(event.currentTarget);
-  };
+  const navLabel = resolveNavLabel(t, label, labelKey)
+  const showTooltip = (event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
+    setHovered(true)
+    setTooltipAnchor(event.currentTarget)
+  }
   const hideTooltip = () => {
-    setHovered(false);
-    setTooltipAnchor(null);
-  };
+    setHovered(false)
+    setTooltipAnchor(null)
+  }
 
   return (
-    <li
-      onMouseEnter={collapsed ? showTooltip : undefined}
-      onMouseLeave={collapsed ? hideTooltip : undefined}
-    >
+    <li onMouseEnter={collapsed ? showTooltip : undefined} onMouseLeave={collapsed ? hideTooltip : undefined}>
       <NavLink
         to={path}
-        end={path === "/sessions"}
+        end={path === '/sessions'}
         onClick={closeMobile}
         aria-label={collapsed ? navLabel : undefined}
         onFocus={collapsed ? showTooltip : undefined}
         onBlur={collapsed ? hideTooltip : undefined}
         className={({ isActive }) =>
           cn(
-            "group/nav relative flex items-center gap-3",
-            "px-5 py-2.5",
-            "font-sans text-display uppercase text-sm tracking-[0.12em]",
-            "whitespace-nowrap transition-colors cursor-pointer",
-            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-            isActive
-              ? "text-midground"
-              : "text-text-secondary hover:text-midground",
+            'group/nav relative flex items-center gap-3',
+            'px-5 py-2.5',
+            'font-sans text-display uppercase text-sm tracking-[0.12em]',
+            'whitespace-nowrap transition-colors cursor-pointer',
+            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground',
+            isActive ? 'text-midground' : 'text-text-secondary hover:text-midground'
           )
         }
         style={{
-          clipPath: "var(--component-tab-clip-path)",
+          clipPath: 'var(--component-tab-clip-path)'
         }}
       >
         {({ isActive }) => (
@@ -916,10 +829,7 @@ function SidebarNavLink({
             <Icon className="h-3.5 w-3.5 shrink-0" />
 
             <span
-              className={cn(
-                "truncate transition-opacity duration-300",
-                collapsed ? "lg:opacity-0" : "lg:opacity-100",
-              )}
+              className={cn('truncate transition-opacity duration-300', collapsed ? 'lg:opacity-0' : 'lg:opacity-100')}
             >
               {navLabel}
             </span>
@@ -929,186 +839,148 @@ function SidebarNavLink({
               className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover/nav:opacity-5"
             />
 
-            {isActive && (
-              <span
-                aria-hidden
-                className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-              />
-            )}
+            {isActive && <span aria-hidden className="absolute left-0 top-0 bottom-0 w-px bg-midground" />}
           </>
         )}
       </NavLink>
 
       {collapsed && hovered && tooltipAnchor && (
-        <SidebarTooltip
-          anchor={tooltipAnchor}
-          label={navLabel}
-          warmRef={tooltipWarmRef}
-        />
+        <SidebarTooltip anchor={tooltipAnchor} label={navLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
-  );
+  )
 }
 
-function SidebarSystemActions({
-  collapsed,
-  onNavigate,
-  status,
-  tooltipWarmRef,
-}: SidebarSystemActionsProps) {
-  const { t } = useI18n();
-  const navigate = useNavigate();
-  const { activeAction, isBusy, isRunning, pendingAction, runAction } =
-    useSystemActions();
-  const canUpdateHermes = status?.can_update_hermes === true;
+function SidebarSystemActions({ collapsed, onNavigate, status, tooltipWarmRef }: SidebarSystemActionsProps) {
+  const { t } = useI18n()
+  const navigate = useNavigate()
+  const { activeAction, isBusy, isRunning, pendingAction, runAction } = useSystemActions()
+  const canUpdateHermes = status?.can_update_hermes === true
   // Served by the shared multiplexer: a restart blips every bot on this device — say which.
-  const sharedGateway = sharedGatewayProfiles(status);
-  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
-  const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
-  const [updateConfirmInfo, setUpdateConfirmInfo] =
-    useState<UpdateCheckResponse | null>(null);
-  const [updateConfirmChecking, setUpdateConfirmChecking] = useState(false);
+  const sharedGateway = sharedGatewayProfiles(status)
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false)
+  const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false)
+  const [updateConfirmInfo, setUpdateConfirmInfo] = useState<UpdateCheckResponse | null>(null)
+  const [updateConfirmChecking, setUpdateConfirmChecking] = useState(false)
 
   useEffect(() => {
-    if (!updateConfirmOpen) return;
-    let cancelled = false;
+    if (!updateConfirmOpen) return
+    let cancelled = false
     api
       .checkHermesUpdate(false)
-      .then((info) => {
-        if (!cancelled) setUpdateConfirmInfo(info);
+      .then(info => {
+        if (!cancelled) setUpdateConfirmInfo(info)
       })
       .catch(() => {
-        if (!cancelled) setUpdateConfirmInfo(null);
+        if (!cancelled) setUpdateConfirmInfo(null)
       })
       .finally(() => {
-        if (!cancelled) setUpdateConfirmChecking(false);
-      });
+        if (!cancelled) setUpdateConfirmChecking(false)
+      })
     return () => {
-      cancelled = true;
-    };
-  }, [updateConfirmOpen]);
+      cancelled = true
+    }
+  }, [updateConfirmOpen])
 
   const updateConfirmDescription = useMemo(() => {
     if (updateConfirmInfo?.behind && updateConfirmInfo.behind > 0) {
-      const cmd = updateConfirmInfo.update_command;
-      const n = updateConfirmInfo.behind;
+      const cmd = updateConfirmInfo.update_command
+      const n = updateConfirmInfo.behind
       const template =
-        n === 1
-          ? t.status.updateHermesBehindOneConfirmMessage
-          : t.status.updateHermesBehindConfirmMessage;
-      return template.replace("{command}", cmd).replace("{count}", String(n));
+        n === 1 ? t.status.updateHermesBehindOneConfirmMessage : t.status.updateHermesBehindConfirmMessage
+      return template.replace('{command}', cmd).replace('{count}', String(n))
     }
-    return t.status.updateHermesConfirmMessage;
-  }, [t.status, updateConfirmInfo]);
+    return t.status.updateHermesConfirmMessage
+  }, [t.status, updateConfirmInfo])
 
   const openUpdateConfirm = () => {
-    setUpdateConfirmInfo(null);
-    setUpdateConfirmChecking(true);
-    setUpdateConfirmOpen(true);
-  };
+    setUpdateConfirmInfo(null)
+    setUpdateConfirmChecking(true)
+    setUpdateConfirmOpen(true)
+  }
 
   const closeUpdateConfirm = () => {
-    setUpdateConfirmOpen(false);
-    setUpdateConfirmChecking(false);
-    setUpdateConfirmInfo(null);
-  };
+    setUpdateConfirmOpen(false)
+    setUpdateConfirmChecking(false)
+    setUpdateConfirmInfo(null)
+  }
 
   const items: SystemActionItem[] = [
     {
-      action: "restart",
+      action: 'restart',
       icon: RotateCw,
       label: t.status.restartGateway,
       runningLabel: t.status.restartingGateway,
-      spin: true,
-    },
-  ];
+      spin: true
+    }
+  ]
   if (canUpdateHermes) {
     items.push({
-      action: "update",
+      action: 'update',
       icon: Download,
       label: t.status.updateHermes,
       runningLabel: t.status.updatingHermes,
-      spin: false,
-    });
+      spin: false
+    })
   }
 
   const handleClick = (action: SystemAction) => {
-    if (isBusy) return;
-    if (action === "restart") {
-      setRestartConfirmOpen(true);
-      return;
+    if (isBusy) return
+    if (action === 'restart') {
+      setRestartConfirmOpen(true)
+      return
     }
-    if (action === "update") {
-      openUpdateConfirm();
-      return;
+    if (action === 'update') {
+      openUpdateConfirm()
+      return
     }
-    void runAction(action);
-    navigate("/sessions");
-    onNavigate();
-  };
+    void runAction(action)
+    navigate('/sessions')
+    onNavigate()
+  }
 
   const confirmRestart = () => {
-    setRestartConfirmOpen(false);
-    void runAction("restart");
-    navigate("/sessions");
-    onNavigate();
-  };
+    setRestartConfirmOpen(false)
+    void runAction('restart')
+    navigate('/sessions')
+    onNavigate()
+  }
 
   const confirmUpdate = () => {
-    closeUpdateConfirm();
-    void runAction("update");
-    navigate("/sessions");
-    onNavigate();
-  };
+    closeUpdateConfirm()
+    void runAction('update')
+    navigate('/sessions')
+    onNavigate()
+  }
 
   return (
     <>
-      <div
-        className={cn(
-          "shrink-0 flex flex-col",
-          "border-t border-current/10",
-          "py-1",
-        )}
-      >
+      <div className={cn('shrink-0 flex flex-col', 'border-t border-current/10', 'py-1')}>
         <span
           className={cn(
-            "px-5 pt-0.5 pb-0.5",
-            "font-sans text-display text-xs tracking-[0.12em] text-text-tertiary",
-            collapsed && "lg:hidden",
+            'px-5 pt-0.5 pb-0.5',
+            'font-sans text-display text-xs tracking-[0.12em] text-text-tertiary',
+            collapsed && 'lg:hidden'
           )}
         >
           {t.app.system}
         </span>
 
-        <div className={cn(collapsed && "lg:hidden")}>
+        <div className={cn(collapsed && 'lg:hidden')}>
           <SidebarStatusStrip status={status} />
         </div>
 
-        <GatewayDot
-          collapsed={collapsed}
-          status={status}
-          tooltipWarmRef={tooltipWarmRef}
-        />
+        <GatewayDot collapsed={collapsed} status={status} tooltipWarmRef={tooltipWarmRef} />
 
         <ul className="flex flex-col">
-          {items.map((item) => (
+          {items.map(item => (
             <SystemActionButton
               key={item.action}
               collapsed={collapsed}
-              disabled={
-                isBusy &&
-                !(
-                  pendingAction === item.action ||
-                  (activeAction === item.action && isRunning)
-                )
-              }
+              disabled={isBusy && !(pendingAction === item.action || (activeAction === item.action && isRunning))}
               tooltipWarmRef={tooltipWarmRef}
               isPending={pendingAction === item.action}
-              isRunning={
-                activeAction === item.action &&
-                isRunning &&
-                pendingAction !== item.action
-              }
+              isRunning={activeAction === item.action && isRunning && pendingAction !== item.action}
               item={item}
               onClick={() => handleClick(item.action)}
             />
@@ -1119,8 +991,12 @@ function SidebarSystemActions({
       <ConfirmDialog
         cancelLabel={t.common.cancel}
         confirmLabel={sharedGateway ? t.sharedGateway.restartAll : t.status.restartGateway}
-        description={sharedGateway ? t.sharedGateway.restartDescription.replace("{profiles}", sharedGateway.join(", ")) : t.status.restartGatewayConfirmMessage}
-        loading={pendingAction === "restart"}
+        description={
+          sharedGateway
+            ? t.sharedGateway.restartDescription.replace('{profiles}', sharedGateway.join(', '))
+            : t.status.restartGatewayConfirmMessage
+        }
+        loading={pendingAction === 'restart'}
         onCancel={() => setRestartConfirmOpen(false)}
         onConfirm={confirmRestart}
         open={restartConfirmOpen}
@@ -1130,17 +1006,15 @@ function SidebarSystemActions({
       <ConfirmDialog
         cancelLabel={t.common.cancel}
         confirmLabel={t.status.updateHermesConfirmNow}
-        description={
-          updateConfirmChecking ? t.common.loading : updateConfirmDescription
-        }
-        loading={pendingAction === "update" || updateConfirmChecking}
+        description={updateConfirmChecking ? t.common.loading : updateConfirmDescription}
+        loading={pendingAction === 'update' || updateConfirmChecking}
         onCancel={closeUpdateConfirm}
         onConfirm={confirmUpdate}
         open={updateConfirmOpen}
         title={t.status.updateHermesConfirmTitle}
       />
     </>
-  );
+  )
 }
 
 function SystemActionButton({
@@ -1150,29 +1024,24 @@ function SystemActionButton({
   isRunning: isActionRunning,
   item,
   onClick,
-  tooltipWarmRef,
+  tooltipWarmRef
 }: SystemActionButtonProps) {
-  const { icon: Icon, label, runningLabel, spin } = item;
-  const [hovered, setHovered] = useState(false);
-  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
-  const busy = isPending || isActionRunning;
-  const displayLabel = isActionRunning ? runningLabel : label;
-  const showTooltip = (
-    event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>,
-  ) => {
-    setHovered(true);
-    setTooltipAnchor(event.currentTarget);
-  };
+  const { icon: Icon, label, runningLabel, spin } = item
+  const [hovered, setHovered] = useState(false)
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null)
+  const busy = isPending || isActionRunning
+  const displayLabel = isActionRunning ? runningLabel : label
+  const showTooltip = (event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
+    setHovered(true)
+    setTooltipAnchor(event.currentTarget)
+  }
   const hideTooltip = () => {
-    setHovered(false);
-    setTooltipAnchor(null);
-  };
+    setHovered(false)
+    setTooltipAnchor(null)
+  }
 
   return (
-    <li
-      onMouseEnter={collapsed ? showTooltip : undefined}
-      onMouseLeave={collapsed ? hideTooltip : undefined}
-    >
+    <li onMouseEnter={collapsed ? showTooltip : undefined} onMouseLeave={collapsed ? hideTooltip : undefined}>
       <button
         onClick={onClick}
         disabled={disabled}
@@ -1182,13 +1051,13 @@ function SystemActionButton({
         onBlur={collapsed ? hideTooltip : undefined}
         type="button"
         className={cn(
-          "group/action relative flex w-full items-center gap-3",
-          "px-5 py-2.5",
-          "font-sans text-display text-xs tracking-[0.1em]",
-          "whitespace-nowrap transition-colors cursor-pointer",
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-          busy ? "text-midground" : "text-text-secondary hover:text-midground",
-          "disabled:text-text-disabled disabled:cursor-not-allowed",
+          'group/action relative flex w-full items-center gap-3',
+          'px-5 py-2.5',
+          'font-sans text-display text-xs tracking-[0.1em]',
+          'whitespace-nowrap transition-colors cursor-pointer',
+          'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground',
+          busy ? 'text-midground' : 'text-text-secondary hover:text-midground',
+          'disabled:text-text-disabled disabled:cursor-not-allowed'
         )}
       >
         {isPending ? (
@@ -1196,20 +1065,10 @@ function SystemActionButton({
         ) : isActionRunning && spin ? (
           <Spinner className="shrink-0 text-[0.875rem]" />
         ) : (
-          <Icon
-            className={cn(
-              "h-3.5 w-3.5 shrink-0",
-              isActionRunning && !spin && "animate-pulse",
-            )}
-          />
+          <Icon className={cn('h-3.5 w-3.5 shrink-0', isActionRunning && !spin && 'animate-pulse')} />
         )}
 
-        <span
-          className={cn(
-            "truncate transition-opacity duration-300",
-            collapsed ? "lg:opacity-0" : "lg:opacity-100",
-          )}
-        >
+        <span className={cn('truncate transition-opacity duration-300', collapsed ? 'lg:opacity-0' : 'lg:opacity-100')}>
           {displayLabel}
         </span>
 
@@ -1218,45 +1077,31 @@ function SystemActionButton({
           className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover/action:opacity-5"
         />
 
-        {busy && (
-          <span
-            aria-hidden
-            className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-          />
-        )}
+        {busy && <span aria-hidden className="absolute left-0 top-0 bottom-0 w-px bg-midground" />}
       </button>
 
       {collapsed && hovered && tooltipAnchor && (
-        <SidebarTooltip
-          anchor={tooltipAnchor}
-          label={displayLabel}
-          warmRef={tooltipWarmRef}
-        />
+        <SidebarTooltip anchor={tooltipAnchor} label={displayLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
-  );
+  )
 }
 
-function SidebarIconWithTooltip({
-  children,
-  collapsed,
-  label,
-  tooltipWarmRef,
-}: SidebarIconWithTooltipProps) {
-  const [hovered, setHovered] = useState(false);
-  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
+function SidebarIconWithTooltip({ children, collapsed, label, tooltipWarmRef }: SidebarIconWithTooltipProps) {
+  const [hovered, setHovered] = useState(false)
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null)
   const showTooltip = (event: MouseEvent<HTMLDivElement>) => {
-    setHovered(true);
-    setTooltipAnchor(event.currentTarget);
-  };
+    setHovered(true)
+    setTooltipAnchor(event.currentTarget)
+  }
   const hideTooltip = () => {
-    setHovered(false);
-    setTooltipAnchor(null);
-  };
+    setHovered(false)
+    setTooltipAnchor(null)
+  }
 
   return (
     <div
-      className={cn("relative w-fit", collapsed && "group/icon")}
+      className={cn('relative w-fit', collapsed && 'group/icon')}
       onMouseEnter={collapsed ? showTooltip : undefined}
       onMouseLeave={collapsed ? hideTooltip : undefined}
     >
@@ -1270,57 +1115,49 @@ function SidebarIconWithTooltip({
       )}
 
       {collapsed && hovered && tooltipAnchor && (
-        <SidebarTooltip
-          anchor={tooltipAnchor}
-          label={label}
-          warmRef={tooltipWarmRef}
-        />
+        <SidebarTooltip anchor={tooltipAnchor} label={label} warmRef={tooltipWarmRef} />
       )}
     </div>
-  );
+  )
 }
 
 function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
-  const { t } = useI18n();
-  const [hovered, setHovered] = useState(false);
-  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
+  const { t } = useI18n()
+  const [hovered, setHovered] = useState(false)
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null)
 
   const toneToColor: Record<string, string> = {
-    "text-success": "bg-success",
-    "text-warning": "bg-warning",
-    "text-destructive": "bg-destructive",
-    "text-muted-foreground": "bg-muted-foreground",
-  };
+    'text-success': 'bg-success',
+    'text-warning': 'bg-warning',
+    'text-destructive': 'bg-destructive',
+    'text-muted-foreground': 'bg-muted-foreground'
+  }
 
-  let color: string;
-  let label: string;
+  let color: string
+  let label: string
 
   if (!status) {
-    color = "bg-midground/20";
-    label = t.status.gateway;
+    color = 'bg-midground/20'
+    label = t.status.gateway
   } else {
-    const gw = gatewayLine(status, t);
-    color = toneToColor[gw.tone] ?? "bg-muted-foreground";
-    label = `${t.status.gateway} ${gw.label}`;
+    const gw = gatewayLine(status, t)
+    color = toneToColor[gw.tone] ?? 'bg-muted-foreground'
+    label = `${t.status.gateway} ${gw.label}`
   }
-  const showTooltip = (
-    event: MouseEvent<HTMLDivElement> | FocusEvent<HTMLDivElement>,
-  ) => {
-    setHovered(true);
-    setTooltipAnchor(event.currentTarget);
-  };
+  const showTooltip = (event: MouseEvent<HTMLDivElement> | FocusEvent<HTMLDivElement>) => {
+    setHovered(true)
+    setTooltipAnchor(event.currentTarget)
+  }
   const hideTooltip = () => {
-    setHovered(false);
-    setTooltipAnchor(null);
-  };
+    setHovered(false)
+    setTooltipAnchor(null)
+  }
 
   return (
     <div
       className={cn(
-        "hidden lg:flex py-3 pl-[1.625rem] transition-opacity duration-300",
-        collapsed
-          ? "lg:opacity-100"
-          : "lg:opacity-0 lg:h-0 lg:py-0 lg:overflow-hidden",
+        'hidden lg:flex py-3 pl-[1.625rem] transition-opacity duration-300',
+        collapsed ? 'lg:opacity-100' : 'lg:opacity-0 lg:h-0 lg:py-0 lg:overflow-hidden'
       )}
       role="status"
       aria-label={label}
@@ -1330,117 +1167,111 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
       onFocus={collapsed ? showTooltip : undefined}
       onBlur={collapsed ? hideTooltip : undefined}
     >
-      <span aria-hidden className={cn("h-1.5 w-1.5 rounded-full", color)} />
+      <span aria-hidden className={cn('h-1.5 w-1.5 rounded-full', color)} />
 
-      {hovered && tooltipAnchor && (
-        <SidebarTooltip
-          anchor={tooltipAnchor}
-          label={label}
-          warmRef={tooltipWarmRef}
-        />
-      )}
+      {hovered && tooltipAnchor && <SidebarTooltip anchor={tooltipAnchor} label={label} warmRef={tooltipWarmRef} />}
     </div>
-  );
+  )
 }
 
 function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
-  const rect = anchor.getBoundingClientRect();
-  const sidebar = document.getElementById("app-sidebar");
-  const sidebarRight = sidebar?.getBoundingClientRect().right ?? rect.right;
-  const [isWarm, setIsWarm] = useState(false);
+  const rect = anchor.getBoundingClientRect()
+  const sidebar = document.getElementById('app-sidebar')
+  const sidebarRight = sidebar?.getBoundingClientRect().right ?? rect.right
+  const [isWarm, setIsWarm] = useState(false)
 
   useEffect(() => {
     if (!warmRef) {
-      setIsWarm(false);
-      return;
+      setIsWarm(false)
+      return
     }
-    const now = Date.now();
-    setIsWarm(now - warmRef.current < 300);
-    warmRef.current = now;
+    const now = Date.now()
+    setIsWarm(now - warmRef.current < 300)
+    warmRef.current = now
     return () => {
-      if (warmRef) warmRef.current = Date.now();
-    };
-  }, [warmRef]);
+      if (warmRef) warmRef.current = Date.now()
+    }
+  }, [warmRef])
 
   return createPortal(
     <span
       className={cn(
-        "fixed z-[100] pointer-events-none",
-        "px-2 py-1",
-        "bg-background-base border border-current/20 shadow-lg",
-        "font-sans text-display text-xs tracking-[0.1em] text-midground uppercase",
+        'fixed z-[100] pointer-events-none',
+        'px-2 py-1',
+        'bg-background-base border border-current/20 shadow-lg',
+        'font-sans text-display text-xs tracking-[0.1em] text-midground uppercase'
       )}
       style={{
         top: rect.top + rect.height / 2,
         left: sidebarRight + 8,
-        transform: "translateY(-50%)",
+        transform: 'translateY(-50%)',
         opacity: isWarm ? 1 : undefined,
-        animation: isWarm ? "none" : "sidebar-tooltip-in 120ms ease-out",
+        animation: isWarm ? 'none' : 'sidebar-tooltip-in 120ms ease-out'
       }}
     >
       {label}
     </span>,
-    document.body,
-  );
+    document.body
+  )
 }
 
-type TooltipWarmRef = React.RefObject<number>;
+type TooltipWarmRef = React.RefObject<number>
 
 interface GatewayDotProps {
-  collapsed: boolean;
-  status: StatusResponse | null;
-  tooltipWarmRef: TooltipWarmRef;
+  collapsed: boolean
+  status: StatusResponse | null
+  tooltipWarmRef: TooltipWarmRef
 }
 
 interface NavItem {
-  icon: ComponentType<{ className?: string }>;
-  label: string;
-  labelKey?: string;
-  path: string;
+  icon: ComponentType<{ className?: string }>
+  label: string
+  labelKey?: string
+  path: string
 }
 
 interface SidebarIconWithTooltipProps {
-  children: ReactNode;
-  collapsed: boolean;
-  label: string;
-  tooltipWarmRef: TooltipWarmRef;
+  children: ReactNode
+  collapsed: boolean
+  label: string
+  tooltipWarmRef: TooltipWarmRef
 }
 
 interface SidebarNavLinkProps {
-  closeMobile: () => void;
-  collapsed: boolean;
-  item: NavItem;
-  t: Translations;
-  tooltipWarmRef: TooltipWarmRef;
+  closeMobile: () => void
+  collapsed: boolean
+  item: NavItem
+  t: Translations
+  tooltipWarmRef: TooltipWarmRef
 }
 
 interface SidebarSystemActionsProps {
-  collapsed: boolean;
-  onNavigate: () => void;
-  status: StatusResponse | null;
-  tooltipWarmRef: TooltipWarmRef;
+  collapsed: boolean
+  onNavigate: () => void
+  status: StatusResponse | null
+  tooltipWarmRef: TooltipWarmRef
 }
 
 interface SidebarTooltipProps {
-  anchor: HTMLElement;
-  label: string;
-  warmRef?: TooltipWarmRef;
+  anchor: HTMLElement
+  label: string
+  warmRef?: TooltipWarmRef
 }
 
 interface SystemActionButtonProps {
-  collapsed: boolean;
-  disabled: boolean;
-  isPending: boolean;
-  isRunning: boolean;
-  item: SystemActionItem;
-  onClick: () => void;
-  tooltipWarmRef: TooltipWarmRef;
+  collapsed: boolean
+  disabled: boolean
+  isPending: boolean
+  isRunning: boolean
+  item: SystemActionItem
+  onClick: () => void
+  tooltipWarmRef: TooltipWarmRef
 }
 
 interface SystemActionItem {
-  action: SystemAction;
-  icon: ComponentType<{ className?: string }>;
-  label: string;
-  runningLabel: string;
-  spin: boolean;
+  action: SystemAction
+  icon: ComponentType<{ className?: string }>
+  label: string
+  runningLabel: string
+  spin: boolean
 }

@@ -8,7 +8,7 @@ import {
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
 import type { SessionInterruptResponse } from '../gatewayTypes.js'
-import { translate } from '../i18n/index.js'
+import { t } from '../i18n/runtime.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
@@ -22,8 +22,7 @@ import {
   toolTrailLine,
   verboseToolTrailLine
 } from '../lib/text.js'
-import type { ToolTrailEntry } from '../types.js'
-import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
+import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem, ToolTrailEntry } from '../types.js'
 
 import type { Notice } from './interfaces.js'
 import { resetFlowOverlays } from './overlayStore.js'
@@ -48,7 +47,7 @@ function toolTrailLines(
     }
 
     return verbose
-      ? verboseToolTrailLine(head, false, took, done?.verboseArgs, resultText || summary, getUiState().locale)
+      ? verboseToolTrailLine(head, false, took, done?.verboseArgs, resultText || summary)
       : toolTrailLine(head, false, summary, took)
   })
 }
@@ -125,7 +124,7 @@ const finalTail = (finalText: string, segments: Msg[]) => {
 }
 
 const interruptedText = (partial: string) => {
-  const marker = `*[${translate(getUiState().locale, 'common.interrupted')}]*`
+  const marker = `*[${t('session.turn.interrupted')}]*`
 
   return partial ? `${partial}\n\n${marker}` : marker
 }
@@ -398,7 +397,7 @@ class TurnController {
       appendMessage({ role: 'assistant', text, ...(tools.length && { tools }) })
       this.sealedInterrupt = { partial, text }
     } else {
-      sys(translate(getUiState().locale, 'common.interrupted'))
+      sys(t('session.turn.interrupted'))
       this.sealedInterrupt = { partial: '', text: null }
     }
 
@@ -406,7 +405,7 @@ class TurnController {
 
     if (opts.keepBusy) {
       // `idle()` already cleared busy; re-assert it so the drain waits for settle.
-      patchUiState({ busy: true, status: 'interrupting…' })
+      patchUiState({ busy: true, status: t('session.status.interrupting') })
 
       return
     }
@@ -835,10 +834,7 @@ class TurnController {
     // committed entry rather than merging into streaming reasoning.
     this.closeReasoningSegment()
 
-    const header = translate(getUiState().locale, 'transcript.moaReference', {
-      label,
-      position: index && count ? ` ${index}/${count}` : ''
-    })
+    const header = index && count ? `◇ Reference ${index}/${count} — ${label}` : `◇ Reference — ${label}`
 
     const body = text.trim()
     const thinking = body ? `${header}\n${body}` : header
@@ -1022,7 +1018,7 @@ class TurnController {
       this.streamTimer = null
       const raw = this.bufRef.trimStart()
       const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
-      patchTurnState({ streaming: boundedLiveRenderText(visible, {}, getUiState().locale) })
+      patchTurnState({ streaming: boundedLiveRenderText(visible) })
     }, this.streamDelay)
   }
 
@@ -1031,7 +1027,7 @@ class TurnController {
     this.bufRef = text
     const raw = this.bufRef.trimStart()
     const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
-    patchTurnState({ streaming: boundedLiveRenderText(visible, {}, getUiState().locale) })
+    patchTurnState({ streaming: boundedLiveRenderText(visible) })
   }
 
   startMessage() {

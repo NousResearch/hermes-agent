@@ -20,22 +20,22 @@ export type GatewaySkin = HermesSkin
 export type AnyGatewayEvent = { [K in GatewayEventName]: GatewayEvent<K> }[GatewayEventName]
 
 export interface GatewayCompletionItem {
+  meta_key?: string
+  meta_vars?: Record<string, string | number>
   display: string
   /** Completion class, set by the gateway. `skill` covers skill commands and
    *  skill bundles — the only kind offered for an inline `/skill` reference. */
   kind?: string
   meta?: string
-  meta_key?: string
-  meta_vars?: Record<string, string | number>
   text: string
 }
 
 // ── Commands / completion ────────────────────────────────────────────
 
 export interface CommandsCatalogResponse {
+  description_keys?: Record<string, string>
   canon?: Record<string, string>
   categories?: SlashCategory[]
-  description_keys?: Record<string, string>
   pairs?: [string, string][]
   skill_count?: number
   sub?: Record<string, string[]>
@@ -84,6 +84,7 @@ export interface ConfigDisplayConfig {
   /** Focus view (/focus) — display-only reduced-output mode. */
   focus_view?: boolean
   inline_diffs?: boolean
+  /** UI language id (`en`, `pl`, `pt-br`); the TUI fetches its pack via `i18n.catalog`. */
   language?: string
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>
@@ -164,7 +165,6 @@ export interface ConfigSetResponse {
   deferred?: boolean
   history_reset?: boolean
   info?: SessionInfo
-  scope?: 'global' | 'once' | 'session'
   value?: string
   warning?: string
 }
@@ -361,11 +361,11 @@ export interface ShellExecResponse {
 }
 
 export interface ClipboardPasteResponse {
+  reason?: string
   attached?: boolean
   count?: number
   height?: number
   message?: string
-  reason?: 'empty' | 'extract_failed' | string
   token_estimate?: number
   width?: number
 }

@@ -1,5 +1,12 @@
+import { afterEach } from 'vitest'
+
+import { resetLocale } from '../i18n/runtime.js'
+
+import { activateZh } from './localeFixture.js'
+afterEach(resetLocale)
 import { describe, expect, it } from 'vitest'
 
+import { t } from '../i18n/runtime.js'
 import {
   boundedLiveRenderText,
   buildToolTrailLine,
@@ -55,8 +62,8 @@ describe('buildVerboseToolTrailLine', () => {
       'first line\nsecond :: line'
     )
 
-    expect(line).toContain('Args:\n{')
-    expect(line).toContain('Result:\nfirst line\nsecond :: line')
+    expect(line).toContain(`${t('libText.text.argsLabel')}:\n{`)
+    expect(line).toContain(`${t('libText.text.resultLabel')}:\nfirst line\nsecond :: line`)
     expect(parseToolTrailResultLine(line)).toEqual({
       call: 'Terminal("npm test") (1.3s)',
       detail: 'Args:\n{\n  "cmd": "npm test"\n}\nResult:\nfirst line\nsecond :: line',
@@ -152,14 +159,15 @@ describe('boundedLiveRenderText', () => {
     const out = boundedLiveRenderText(['a', 'b', 'c', 'd'].join('\n'), { maxChars: 100, maxLines: 2 })
 
     expect(out).toContain('c\nd')
-    expect(out).toContain('omitted 2 lines')
+    expect(out).toContain(t('libText.text.omittedLinesChars', t('libText.text.showingLiveTail'), '2', '4'))
     expect(out).not.toContain('a\nb')
   })
 
   it('localizes framework-owned truncation metadata', () => {
-    const out = boundedLiveRenderText('abcdefghij', { maxChars: 4, maxLines: 10 }, 'zh')
+    activateZh()
+    const out = boundedLiveRenderText('abcdefghij', { maxChars: 4, maxLines: 10 })
 
-    expect(out).toContain('已省略 6 个字符')
+    expect(out).toContain('已省略 6 字符')
     expect(out).toContain('ghij')
   })
 })
@@ -187,12 +195,13 @@ describe('pasteTokenLabel', () => {
   it('builds readable long-paste labels with counts', () => {
     const label = pasteTokenLabel('Vampire Bondage ropes slipped from her neck, still stained with blood', 250)
     expect(label.startsWith('[[ ')).toBe(true)
-    expect(label).toContain('[250 lines]')
+    expect(label).toContain(t('libText.text.pasteLinesChip', '250'))
     expect(label.endsWith(' ]]')).toBe(true)
   })
 
   it('localizes the long-paste line count', () => {
-    expect(pasteTokenLabel('内容', 250, 'zh')).toContain('[250 行]')
+    activateZh()
+    expect(pasteTokenLabel('内容', 250)).toContain('[250 行]')
   })
 })
 

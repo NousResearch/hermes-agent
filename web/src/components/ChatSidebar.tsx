@@ -58,6 +58,8 @@ interface SessionInfo {
   title?: string
 }
 
+const SIDE_CAR_MAX_RECONNECT_ATTEMPTS = 5
+
 const STATE_TONE: Record<ConnectionState, 'secondary' | 'warning' | 'success' | 'destructive'> = {
   idle: 'secondary',
   connecting: 'warning',
@@ -107,13 +109,23 @@ export function ChatSidebar({
   const [version, setVersion] = useState(0)
   const gw = useMemo(() => new GatewayClient(), [])
   const feed = useMemo(() => new EventsFeedClient(), [])
+  // Sidecar auto-redial budget (#95951). A ref, NOT effect state: the counter
+  // must survive the [gw, version] effect re-runs a redial triggers, or the
+  // budget resets every attempt and never exhausts.
+  // Reset on a successful open and on scope switches.
+  const sidecarRedialAttemptRef = useRef(0)
+  const sidecarGaveUpRef = useRef(false)
+  const [sidecarGaveUp, setSidecarGaveUp] = useState(false)
 
   const [state, setState] = useState<ConnectionState>('idle')
   const [info, setInfo] = useState<SessionInfo>({})
   const [modelOpen, setModelOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [eventsError, setEventsError] = useState<
-    { kind: 'reconnecting'; seconds: number } | { kind: 'rejected'; code: number } | { kind: 'gaveUp'; attempts: number } | null
+    | { kind: 'reconnecting'; seconds: number }
+    | { kind: 'rejected'; code: number }
+    | { kind: 'gaveUp'; attempts: number }
+    | null
   >(null)
   // The badge shows config.yaml's main model (`model.default`) via
   // `/api/model/info` — the same value the Models page writes and a new chat
@@ -176,6 +188,10 @@ export function ChatSidebar({
     prevScopeKey.current = scopeKey
     setError(null)
     setEventsError(null)
+    // Fresh scope, fresh sidecar redial budget (#95951).
+    sidecarRedialAttemptRef.current = 0
+    sidecarGaveUpRef.current = false
+    setSidecarGaveUp(false)
     setVersion(v => v + 1)
   }, [scopeKey])
 
@@ -206,6 +222,55 @@ export function ChatSidebar({
       }
     })
 
+    // Auto-redial after a transient drop (#95951): a dashboard service
+    // restart closes the sidecar's WebSocket with 1012, and GatewayClient
+    // deliberately delegates reconnect policy to this connection owner.
+    // Bounded exponential backoff — the same shape the PTY pane uses —
+    // capped at SIDE_CAR_MAX_RECONNECT_ATTEMPTS; after that the manual
+    // Reconnect affordance stays the only path. A successful open resets
+    // the counter; unmount or a scope switch (version bump) cancels the
+    // pending timer because this effect tears down with the old client.
+    let redialTimer: ReturnType<typeof setTimeout> | null = null
+    const offRedial = gw.onState(s => {
+      if (s === 'open') {
+        sidecarRedialAttemptRef.current = 0
+        if (sidecarGaveUpRef.current) {
+          sidecarGaveUpRef.current = false
+          setSidecarGaveUp(false)
+        }
+        return
+      }
+      if (s !== 'closed' && s !== 'error') {
+        return
+      }
+      if (cancelled || redialTimer) {
+        return
+      }
+      // The attempt counter lives in a ref: each redial rebuilds the client
+      // and re-runs this effect, so a closure-local counter would reset and
+      // the budget would never exhaust (#95951).
+      if (sidecarRedialAttemptRef.current >= SIDE_CAR_MAX_RECONNECT_ATTEMPTS) {
+        // Mirror the events feed's give-up contract: say so once, then the
+        // manual Reconnect affordance stays the only path. Cleared again if
+        // a later connection does open (manual reconnect followed by a
+        // within-budget drop).
+        if (!sidecarGaveUpRef.current) {
+          sidecarGaveUpRef.current = true
+          setSidecarGaveUp(true)
+        }
+        return
+      }
+      const attempt = sidecarRedialAttemptRef.current
+      sidecarRedialAttemptRef.current += 1
+      const delayMs = Math.min(250 * 2 ** attempt, 3000)
+      redialTimer = setTimeout(() => {
+        redialTimer = null
+        if (!cancelled) {
+          setVersion(v => v + 1)
+        }
+      }, delayMs)
+    })
+
     // Create the sidecar session so the gateway surfaces session-scoped
     // signals (connection state, credential warnings). It's independent of the
     // PTY pane's session by design. The model picker no longer rides this
@@ -228,12 +293,16 @@ export function ChatSidebar({
 
     return () => {
       cancelled = true
+      if (redialTimer) {
+        clearTimeout(redialTimer)
+        redialTimer = null
+      }
+      offRedial()
       offState()
       offSessionInfo()
       offError()
       gw.close()
     }
-    // `profile` is read from render; scope changes bump `version` → redial.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gw, version])
 
@@ -368,13 +437,23 @@ export function ChatSidebar({
   // sidecar gateway session, so it's available whenever the sidebar is mounted.
   const modelName = effectiveModel || info.model || '—'
   const modelLabel = modelName.split('/').slice(-1)[0] ?? '—'
-  const eventsBanner = eventsError && format({
-    reconnecting: t.chatSidebar.eventsReconnecting,
-    rejected: t.chatSidebar.eventsRejected,
-    gaveUp: t.chatSidebar.eventsGaveUp
-  }[eventsError.kind], eventsError)
+  const eventsBanner =
+    eventsError &&
+    format(
+      {
+        reconnecting: t.chatSidebar.eventsReconnecting,
+        rejected: t.chatSidebar.eventsRejected,
+        gaveUp: t.chatSidebar.eventsGaveUp
+      }[eventsError.kind],
+      eventsError
+    )
   const credential = credentialWarning(info.credential_warning, t.chatSidebar)
-  const banner = (error ? sidecarErrorMessage(error, t.chatSidebar) : null) ?? credential?.message ?? eventsBanner ?? null
+  const banner =
+    (error ? sidecarErrorMessage(error, t.chatSidebar) : null) ??
+    credential?.message ??
+    (sidecarGaveUp ? format(t.chatSidebar.sidecarGaveUp, { count: SIDE_CAR_MAX_RECONNECT_ATTEMPTS }) : null) ??
+    eventsBanner ??
+    null
 
   return (
     <aside
@@ -448,7 +527,7 @@ export function ChatSidebar({
                 {t.chatSidebar.reloadPage}
               </Button>
             )}
-            {(error || (!credential && eventsError && eventsError.kind !== 'rejected')) && (
+            {(error || sidecarGaveUp || (!credential && eventsError && eventsError.kind !== 'rejected')) && (
               <Button size="sm" outlined className="mt-1" onClick={reconnect} prefix={<RefreshCw />}>
                 {t.chatSidebar.reconnectSidePanel}
               </Button>

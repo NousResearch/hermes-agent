@@ -84,3 +84,13 @@ export function normalizeLocaleInput(value: unknown): Locale | null {
 
   return hasSiblingPack ? null : primary
 }
+
+/** Protocol aliases are canonical even when a plugin registers a regional id.
+ * Other ids remain available for the backend's layered language resolution. */
+export function normalizeLanguageIdentity(value: unknown): string {
+  const id = typeof value === 'string' ? value.trim().toLowerCase().replace(/_/g, '-').replace(/\s+/g, '-') : ''
+
+  return Object.hasOwn(registry.compatibilityAliases, id)
+    ? (registry.compatibilityAliases as Record<string, string>)[id]
+    : id || DEFAULT_LOCALE
+}

@@ -110,8 +110,8 @@ def test_normalize_language_uses_only_registered_aliases():
         "pt_BR": "pt",
         "ar-EG": "ar",
     }
-    assert {value: i18n.normalize_language(value) for value in cases} == cases
-    assert i18n.normalize_language("zh-extra") == "en"
+    assert {value: i18n._normalize_lang(value) for value in cases} == cases
+    assert i18n._normalize_lang("zh-extra") == "en"
 
 
 

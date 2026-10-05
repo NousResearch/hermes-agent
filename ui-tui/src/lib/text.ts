@@ -10,7 +10,7 @@ import {
   VERBOSE_TRAIL_MAX_LINES
 } from '../config/limits.js'
 import { VERBS } from '../content/verbs.js'
-import { type Locale, translate } from '../i18n/index.js'
+import { t } from '../i18n/runtime.js'
 import type { ToolTrailEntry } from '../types.js'
 import type { ThinkingMode } from '../types.js'
 
@@ -63,17 +63,18 @@ export const edgePreview = (s: string, head = 16, tail = 28) => {
       : `${one.slice(0, head).trimEnd()}.. ${one.slice(-tail).trimStart()}`
 }
 
-export const pasteTokenLabel = (text: string, lineCount: number, locale: Locale = 'en') => {
+export const pasteTokenLabel = (text: string, lineCount: number) => {
   const preview = edgePreview(text)
-  const lineLabel = translate(locale, 'input.pasteLines', { count: compactNumber(lineCount) })
+
+  const chip = t('libText.text.pasteLinesChip', compactNumber(lineCount))
 
   if (!preview) {
-    return `[[ [${lineLabel}] ]]`
+    return `[[ ${chip} ]]`
   }
 
   const [head = preview, tail = ''] = preview.split('.. ', 2)
 
-  return tail ? `[[ ${head.trimEnd()}.. [${lineLabel}] .. ${tail.trimStart()} ]]` : `[[ ${preview} [${lineLabel}] ]]`
+  return tail ? `[[ ${head.trimEnd()}.. ${chip} .. ${tail.trimStart()} ]]` : `[[ ${preview} ${chip} ]]`
 }
 
 const THINKING_STATUS_RE = new RegExp(`^(?:${VERBS.join('|')})\\.{0,3}$`, 'i')
@@ -106,14 +107,13 @@ export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: numb
 
 export const boundedLiveRenderText = (
   text: string,
-  { maxChars = LIVE_RENDER_MAX_CHARS, maxLines = LIVE_RENDER_MAX_LINES } = {},
-  locale: Locale = 'en'
-) => boundedRenderText(text, { maxChars, maxLines }, locale)
+  { maxChars = LIVE_RENDER_MAX_CHARS, maxLines = LIVE_RENDER_MAX_LINES } = {}
+) => boundedRenderText(text, t('libText.text.showingLiveTail'), { maxChars, maxLines })
 
 const boundedRenderText = (
   text: string,
-  { maxChars, maxLines }: { maxChars: number; maxLines: number },
-  locale: Locale
+  labelPrefix: string,
+  { maxChars, maxLines }: { maxChars: number; maxLines: number }
 ) => {
   if (text.length <= maxChars && text.split('\n', maxLines + 1).length <= maxLines) {
     return text
@@ -146,12 +146,12 @@ const boundedRenderText = (
   const omittedLines = countNewlines(text, start)
   const omittedChars = Math.max(0, text.length - tail.length)
 
-  const label = translate(locale, omittedLines > 0 ? 'liveRender.omittedLines' : 'liveRender.omittedChars', {
-    chars: compactNumber(omittedChars),
-    lines: compactNumber(omittedLines)
-  })
+  const label =
+    omittedLines > 0
+      ? t('libText.text.omittedLinesChars', labelPrefix, compactNumber(omittedLines), compactNumber(omittedChars))
+      : t('libText.text.omittedChars', labelPrefix, compactNumber(omittedChars))
 
-  return `${label}${tail}`
+  return `${label}\n${tail}`
 }
 
 const countNewlines = (text: string, end: number) => {
@@ -207,7 +207,7 @@ export const toolTrailLine = (call: string, error?: boolean, note?: string, dura
 export const buildToolTrailLine = (name: string, context: string, error?: boolean, note?: string, duration?: number) =>
   toolTrailLine(formatToolCall(name, context), error, note, duration)
 
-const verboseToolBlock = (label: string, text: string | undefined, locale: Locale) => {
+const verboseToolBlock = (label: string, text?: string) => {
   const body = (text ?? '').trim()
 
   // Persisted trail blocks are kept all session and rendered expanded by
@@ -215,14 +215,10 @@ const verboseToolBlock = (label: string, text: string | undefined, locale: Local
   // budget) so a large tool output can't balloon the Ink render tree and
   // silently OOM-kill the TUI. See VERBOSE_TRAIL_MAX_CHARS (#34095).
   return body
-    ? `${label}:\n${boundedLiveRenderText(
-        body,
-        {
-          maxChars: VERBOSE_TRAIL_MAX_CHARS,
-          maxLines: VERBOSE_TRAIL_MAX_LINES
-        },
-        locale
-      )}`
+    ? `${label}:\n${boundedLiveRenderText(body, {
+        maxChars: VERBOSE_TRAIL_MAX_CHARS,
+        maxLines: VERBOSE_TRAIL_MAX_LINES
+      })}`
     : ''
 }
 
@@ -232,12 +228,11 @@ export const verboseToolTrailLine = (
   error?: boolean,
   duration?: number,
   argsText?: string,
-  resultText?: string,
-  locale: Locale = 'en'
+  resultText?: string
 ) => {
   const detail = [
-    verboseToolBlock(translate(locale, 'tool.args'), argsText, locale),
-    verboseToolBlock(translate(locale, error ? 'tool.error' : 'tool.result'), resultText, locale)
+    verboseToolBlock(t('libText.text.argsLabel'), argsText),
+    verboseToolBlock(error ? t('libText.text.errorLabel') : t('libText.text.resultLabel'), resultText)
   ]
     .filter(Boolean)
     .join('\n')
@@ -352,52 +347,39 @@ export const estimateRows = (text: string, w: number, compact = false) => {
 
 /**
  * Render an unanswered clarify prompt (timed out, or cancelled with Esc/Ctrl+C)
- * as a persistent transcript block.  The live `ClarifyPrompt` overlay is torn
- * down the moment the turn settles, so without this the question + options
- * vanish from the screen while the agent's follow-up still refers to "the
- * options above".  Mirrors the option formatting in ClarifyPrompt (the same
- * 1-based numbered list) so the persisted record reads identically to what was
- * on screen. `reason` is a stable catalog identity rather than display copy.
+ * as a persistent transcript block.  Every question on its own line, answered
+ * ones keeping their locked answer (partials survive a timeout server-side, so
+ * the record must show what was actually sent).  `reason` states why the
+ * prompt ended ("timed out", "cancelled").
  */
 export const formatAbandonedClarify = (
-  question: string,
-  choices: string[] | null,
-  reason: 'cancelled' | 'timedOut',
-  locale: Locale = 'en'
-) => {
-  const head = translate(locale, 'clarify.question', { question: question.trim() })
-  const opts = (choices ?? []).map((c, i) => `  ${i + 1}. ${c}`)
-  const reasonText = translate(locale, reason === 'cancelled' ? 'clarify.reason.cancelled' : 'clarify.reason.timedOut')
-
-  return [head, ...opts, `  ${translate(locale, 'clarify.noSelection', { reason: reasonText })}`].join('\n')
-}
-
-/**
- * Batch counterpart of `formatAbandonedClarify`: every question on its own
- * line, answered ones keeping their locked answer (partials survive a
- * timeout server-side, so the record must show what was actually sent).
- */
-export const formatAbandonedClarifyBatch = (
-  questions: { qid: string; question: string }[],
+  questions: { multiSelect?: boolean; qid: string; question: string }[],
   answers: Record<string, string>,
-  reason: 'cancelled' | 'timedOut',
-  locale: Locale = 'en'
+  reason: string
 ) => {
   const lines = questions.map(q => {
     const answer = answers[q.qid]
 
     return answer
-      ? `  ${translate(locale, 'clarify.batchAnswered', { question: q.question, answer })}`
-      : `  ${translate(locale, 'clarify.batchUnanswered', { question: q.question })}`
+      ? `  ${t('libText.text.clarifyAnswered', q.question, clarifyAnswerText(answer, q.multiSelect))}`
+      : `  ${t('libText.text.clarifyUnanswered', q.question)}`
   })
 
-  const reasonText = translate(locale, reason === 'cancelled' ? 'clarify.reason.cancelled' : 'clarify.reason.timedOut')
-
   return [
-    translate(locale, 'clarify.batchHeading', { count: questions.length }),
+    t('libText.text.clarifyHead', questions.length),
     ...lines,
-    `  ${translate(locale, 'clarify.batchReason', { reason: reasonText })}`
+    `  ${t('libText.text.clarifyReason', reason)}`
   ].join('\n')
+}
+
+const clarifyAnswerItems = (answer: string): null | string[] => {
+  try {
+    const parsed: unknown = JSON.parse(answer)
+
+    return Array.isArray(parsed) ? parsed.map(String) : null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -407,21 +389,36 @@ export const formatAbandonedClarifyBatch = (
  * the Other row (index = choices.length) with the text staged for editing.
  * Unanswered questions restore to a clean cursor.
  */
-export const clarifyBatchRevisitState = (
+export const clarifyRevisitState = (
   choices: readonly string[],
-  answer: string | undefined
-): { custom: string; sel: number } => {
+  answer: string | undefined,
+  multiSelect = false
+): { custom: string; picked: string[]; sel: number } => {
   if (answer === undefined || answer === '') {
-    return { custom: '', sel: 0 }
+    return { custom: '', picked: [], sel: 0 }
+  }
+
+  const items = multiSelect ? clarifyAnswerItems(answer) : null
+
+  if (items) {
+    const custom = items.filter(item => !choices.includes(item)).join(', ')
+
+    return { custom, picked: items.filter(item => choices.includes(item)), sel: custom ? choices.length : 0 }
   }
 
   const choiceIndex = choices.indexOf(answer)
 
   if (choiceIndex >= 0) {
-    return { custom: '', sel: choiceIndex }
+    return { custom: '', picked: [], sel: choiceIndex }
   }
 
-  return { custom: answer, sel: choices.length > 0 ? choices.length : 0 }
+  return { custom: answer, picked: [], sel: choices.length > 0 ? choices.length : 0 }
+}
+
+export const clarifyAnswerText = (answer: string, multiSelect?: boolean) => {
+  const items = multiSelect ? clarifyAnswerItems(answer) : null
+
+  return items ? items.join(', ') : answer
 }
 
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()

@@ -381,8 +381,10 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     _info("Choose how to connect to your main chat model.",
           f"   Guide: {_DOCS_BASE}/integrations/providers", None)
     from hermes_cli.main import select_provider_and_model
+    from hermes_cli.observability.shared_metrics_setup import provider_setup_surface
     try:
-        select_provider_and_model()
+        with provider_setup_surface("cli_setup"):
+            select_provider_and_model()
     except (SystemExit, KeyboardInterrupt):
         _info(None, "Provider setup skipped.")
     except Exception as exc:
@@ -523,7 +525,15 @@ _SEND_CONSENT_EXPLAINER = (
 def setup_telemetry(config: dict):
     """Configure the local shared-metrics subscriber and optional sending."""
     print_header("Shared Metrics")
-    _info("Shared metrics contain only bounded counters and histograms.",
+    _info("Shared metrics contain only bounded counters: activity, session length,",
+          "outcomes, error classes, model routes and token totals, built-in tool, command",
+          "and catalog names, bucketed setup counts, update results and timing, crashes,",
+          "startup and reply speed, messaging-platform health, how Hermes gets used",
+          "(agent accuracy and efficiency, active time per surface, which features and",
+          "settings are used or switched off, provider setup outcomes), and coarse",
+          "machine facts (RAM range, GPU type, version age and channel, updates behind,",
+          "local model server yes/no). Never prompts, files, paths, setting values or",
+          "error text.",
           "Collection is local. Sending them to Nous is a separate opt-in.")
     shared_metrics = _sub_dict(_sub_dict(config, "telemetry"), "shared_metrics")
     current = shared_metrics.get("enabled") is True
@@ -706,6 +716,7 @@ def _run_setup_wizard_impl(args):
         # backwards-compatible no-op here.
         if quick_requested:
             _run_setup_steps([("Quick Setup", lambda: _run_quick_setup(config, hermes_home))])
+            _record_setup_completed(config)
             return
         print_header("Reconfigure", gap=True)
         print_success("You already have Hermes configured.")
@@ -726,6 +737,7 @@ def _run_setup_wizard_impl(args):
         if runner is not None:
             from hermes_cli import setup_quick
             _run_setup_steps([(label, lambda: getattr(setup_quick, runner)(config, hermes_home, is_existing))])
+            _record_setup_completed(config)
             return
     _run_full_setup(config, hermes_home, is_existing=is_existing, migration_ran=migration_ran)
 
@@ -736,3 +748,12 @@ def _run_setup_wizard_impl(args):
               "If setup changed a value you customized, restore it with:",
               f"  cp {_backup_path} {config_path}")
     _print_setup_summary(config, hermes_home)
+    _record_setup_completed(config)
+
+
+def _record_setup_completed(config: dict) -> None:
+    """Count a wizard run that finished. Runs after every section (shared-metrics consent
+    included) so a user who opted in during this run is counted; the API checks enablement."""
+    from hermes_cli.observability.shared_metrics_events import record_setup_completed
+    model = config.get("model")
+    record_setup_completed(surface="cli", provider=model.get("provider") if isinstance(model, dict) else None)

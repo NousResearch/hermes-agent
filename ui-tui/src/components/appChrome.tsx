@@ -10,10 +10,11 @@ import type { BatteryInfo, IndicatorStyle, Notice } from '../app/interfaces.js'
 import { $isStatusRuleOccluded } from '../app/overlayStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
-import { FACES } from '../content/faces.js'
+import { faces } from '../content/faces.js'
+import { thinkingVerbs } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
-import { getThinkingVerbs, type I18nApi, LOCALES, shouldEllipsisVerb, useI18n } from '../i18n/index.js'
+import { messages, t as tr } from '../i18n/runtime.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
@@ -24,41 +25,14 @@ import { scrollbarColors } from './overlayPrimitives.js'
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
-// Terminal display width: ASCII=1, CJK/fullwidth=2
-const charDispWidth = (c: string) => {
-  const code = c.codePointAt(0) ?? 0
-
-  return (code >= 0x1100 && code <= 0x115f) ||
-    (code >= 0x2e80 && code <= 0xa4cf) ||
-    (code >= 0xac00 && code <= 0xd7a3) ||
-    (code >= 0xf900 && code <= 0xfaff) ||
-    (code >= 0xfe10 && code <= 0xfe19) ||
-    (code >= 0xfe30 && code <= 0xfe6f) ||
-    (code >= 0xff00 && code <= 0xff60) ||
-    (code >= 0xffe0 && code <= 0xffe6)
-    ? 2
-    : 1
-}
-
-export const displayWidth = (s: string) => {
-  let w = 0
-
-  for (const c of s) {
-    w += charDispWidth(c)
-  }
-
-  return w
-}
-
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = Math.max(...LOCALES.flatMap(l => getThinkingVerbs(l)).map(v => displayWidth(v))) + 1 // + ellipsis
+export const verbPadWidth = () => Math.max(...thinkingVerbs().map(stringWidth)) + stringWidth('…')
 
 export const padVerb = (verb: string) => {
   const text = `${verb}…`
-  const pad = Math.max(0, VERB_PAD_LEN - displayWidth(text))
 
-  return text + ' '.repeat(pad)
+  return text + ' '.repeat(Math.max(0, verbPadWidth() - stringWidth(text)))
 }
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
@@ -82,7 +56,9 @@ interface IndicatorRender {
 
 const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
   if (style === 'kaomoji') {
-    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
+    const frames = faces()
+
+    return { frame: frames[tick % frames.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
   }
 
   if (style === 'emoji') {
@@ -111,14 +87,26 @@ const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender =
   return { frame, intervalMs: Math.max(SPINNER_TICK_MS, spinner.interval), showVerb: false }
 }
 
-// `FACES` / `EMOJI_FRAMES` are static, so measure their widest glyph once at
-// module load instead of rescanning on every status render.
-const KAOMOJI_FRAME_WIDTH = FACES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+// `EMOJI_FRAMES` is static, so measure its widest glyph once at module load
+// instead of rescanning on every status render. `faces()` follows the active
+// catalog, so its width is memoised per catalog table instead.
 const EMOJI_FRAME_WIDTH = EMOJI_FRAMES.reduce((max, f) => Math.max(max, stringWidth(f)), 1)
+
+let kaomojiWidthCache: { table: unknown; width: number } | null = null
+
+const kaomojiFrameWidth = (): number => {
+  const table = messages().content.faces
+
+  if (kaomojiWidthCache?.table !== table) {
+    kaomojiWidthCache = { table, width: Object.values(table).reduce((max, f) => Math.max(max, stringWidth(f)), 1) }
+  }
+
+  return kaomojiWidthCache.width
+}
 
 const indicatorFrameWidth = (style: IndicatorStyle): number => {
   if (style === 'kaomoji') {
-    return KAOMOJI_FRAME_WIDTH
+    return kaomojiFrameWidth()
   }
 
   if (style === 'emoji') {
@@ -143,9 +131,9 @@ export const MAX_DURATION_WIDTH = Math.max(
 // `unicode` is a bare 1-col braille spinner with no verb, while kaomoji/emoji/
 // ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
 // Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
-export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean, hasVerbOverride = false): number => {
+export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
   const { showVerb } = renderIndicator(style, 0)
-  const verb = showVerb || hasVerbOverride ? 1 + VERB_PAD_LEN : 0
+  const verb = showVerb ? 1 + verbPadWidth() : 0
   // ` · ` plus the bounded clock (e.g. `59m 59s`).
   const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
 
@@ -163,9 +151,8 @@ function FaceTicker({
   style: IndicatorStyle
   verbOverride?: string
 }) {
-  const { locale, verbs } = useI18n()
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * verbs.length))
+  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * thinkingVerbs().length))
   const [now, setNow] = useState(() => Date.now())
   const isOccluded = useStore($isStatusRuleOccluded)
 
@@ -210,8 +197,9 @@ function FaceTicker({
   }, [displayVerb, freezeVerb, intervalMs, isOccluded])
 
   const { frame } = renderIndicator(style, tick)
+  const verbs = thinkingVerbs()
   const verb = verbOverride ?? verbs[verbTick % verbs.length] ?? ''
-  const verbSegment = displayVerb ? ` ${shouldEllipsisVerb(locale) ? `${verb}…` : padVerb(verb)}` : ''
+  const verbSegment = displayVerb ? ` ${padVerb(verb)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra
@@ -247,8 +235,28 @@ function ctxBarColor(pct: number | undefined, t: Theme) {
   return t.color.statusGood
 }
 
-function statusSessionCountLabel(count: number, i18n: I18nApi) {
-  return i18n.t(count === 1 ? 'sessions.count.liveOne' : 'sessions.count.liveMany', { count })
+function statusSessionCountLabel(count: number) {
+  return tr('status.sessionCount', count)
+}
+
+// State values the app layer compares against ('ready', 'running…') are shown
+// through the catalog; anything else (a live verb, a slash reply) passes through.
+export function displayStatus(status: string): string {
+  const s = messages().status
+
+  if (status === 'ready') {
+    return s.ready
+  }
+
+  if (status === 'running…') {
+    return s.running
+  }
+
+  if (status === 'summoning hermes…') {
+    return s.summoning
+  }
+
+  return status
 }
 
 // Colour the battery read-out by its (Python-computed) category. Inverted vs
@@ -399,7 +407,7 @@ function SpawnHud({ t }: { t: Theme }) {
   const pieces: string[] = []
 
   if (delegation.paused) {
-    pieces.push('⏸ paused')
+    pieces.push(tr('status.paused'))
   }
 
   if (totals.descendantCount > 0) {
@@ -501,7 +509,7 @@ const shortModelLabel = (model: string) =>
     .trim()
 
 const modelLabel = (model: string, effort?: string, fast?: boolean, effortWire?: string) =>
-  [shortModelLabel(model), effortLabel(effort, effortWire), fast ? 'fast' : ''].filter(Boolean).join(' ')
+  [shortModelLabel(model), effortLabel(effort, effortWire), fast ? tr('status.fast') : ''].filter(Boolean).join(' ')
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
@@ -528,13 +536,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   return <Text color={color}>♥</Text>
 }
 
-export function StatusRule(props: StatusRuleProps) {
-  const i18n = useI18n()
-
-  return <StatusRuleView {...props} i18n={i18n} />
-}
-
-export function StatusRuleView({
+export function StatusRule({
   battery,
   focusView,
   cwdLabel,
@@ -557,14 +559,12 @@ export function StatusRuleView({
   sessionTitle,
   sessionStartedAt,
   turnStartedAt,
-  voiceRecording,
-  voiceProcessing,
-  voiceEnabled,
-  voiceTts,
+  voiceLabel,
   onSessionCountClick,
-  i18n,
   t
-}: StatusRuleProps & { i18n: I18nApi }) {
+}: StatusRuleProps) {
+  // Not a hook: tests call StatusRule as a plain function, and the rule re-renders on every tick anyway.
+  const T = messages()
   const pct = usage.context_percent ?? undefined
   const contextMark = usage.context_estimated ? '~' : ''
   const barColor = ctxBarColor(pct, t)
@@ -580,26 +580,15 @@ export function StatusRuleView({
     ok('context_detail') || ok('context_pct')
       ? usage.context_max
         ? segs.compactCtx
-          ? `${contextMark}${compactNumber(usage.context_used ?? 0)} ${i18n.t('usage.tokensShort')}`
+          ? `${contextMark}${compactNumber(usage.context_used ?? 0)} tok`
           : `${contextMark}${compactNumber(usage.context_used ?? 0)}/${compactNumber(usage.context_max ?? 0)}`
         : (usage.total ?? 0) > 0
-          ? `${compactNumber(usage.total)} ${i18n.t('usage.tokensShort')}`
+          ? `${compactNumber(usage.total)} tok`
           : ''
       : ''
 
   const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast, modelReasoningEffortWire)
-  const statusText = i18n.tStatus(status)
-  const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
-  const compressionText = `${i18n.t('usage.compressionsShort')} ${compressions}`
-  const bgText = `${bgCount} ${i18n.t('background.short')}`
-
-  const voiceLabel = voiceRecording
-    ? `● ${i18n.t('voice.recordingShort')}`
-    : voiceProcessing
-      ? `◉ ${i18n.t('voice.transcribingShort')}`
-      : i18n.t('voice.idle', { state: voiceEnabled ? i18n.t('voice.on') : i18n.t('voice.off') }) +
-        (voiceTts ? ' [tts]' : '')
 
   // Battery read-out — the first (pinned) status-bar element when enabled.
   const showBattery = !!battery && battery.available && battery.percent != null && ok('battery')
@@ -625,10 +614,10 @@ export function StatusRuleView({
   // (kaomoji is wide + verb; unicode is a bare 1-col spinner). When a notice
   // occupies the slot it reserves only `noticeReserve` (it shrinks/truncates).
   const slotWidth = busy
-    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null, compacting)
+    ? busyIndicatorWidth(indicatorStyle, turnStartedAt != null)
     : showNotice
       ? noticeReserve
-      : stringWidth(statusText)
+      : stringWidth(status)
 
   const essentialWidth =
     stringWidth('─ ') +
@@ -643,8 +632,9 @@ export function StatusRuleView({
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
-  // descending priority order. Lower-priority segments drop first and nothing
-  // truncates mid-segment, so status/model/context are never crushed.
+  // descending priority order — bar, duration, compressions, voice, session
+  // count, bg, cost. Lower-priority segments drop first and nothing truncates
+  // mid-segment, so status/model/context are never crushed.
   const SEP = stringWidth(' │ ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
 
@@ -658,7 +648,8 @@ export function StatusRuleView({
     return false
   }
 
-  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount, i18n) : ''
+  const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
+  const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
 
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
@@ -679,7 +670,10 @@ export function StatusRuleView({
     segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
 
   const showCompressions =
-    segs.compressions && ok('compressions') && compressions > 0 && fits(SEP + stringWidth(compressionText))
+    segs.compressions &&
+    ok('compressions') &&
+    compressions > 0 &&
+    fits(SEP + stringWidth(T.status.compressions(compressions)))
 
   // Cache-hit % + rolling latency / tokens-per-sec — mirrored from the classic
   // CLI bar (PR #98250). The server omits the keys when no data exists (zero
@@ -693,7 +687,7 @@ export function StatusRuleView({
 
   const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
-  const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(bgText))
+  const showBg = segs.bg && ok('bg_tasks') && bgCount > 0 && fits(SEP + stringWidth(T.status.bgTasks(bgCount)))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
 
   const showSubagents =
@@ -706,9 +700,7 @@ export function StatusRuleView({
   // Width-budgeted like every tail segment, so it drops first on a tight
   // terminal where ⛓ already carries the signal.
   const resumeHintText =
-    subagentCount === 1
-      ? i18n.t('background.resumeWhenSubagentFinishes')
-      : i18n.t('background.resumeWhenSubagentsFinish', { count: String(subagentCount) })
+    subagentCount === 1 ? T.status.resumesWhenSubagentFinishes : T.status.resumesWhenSubagentsFinish(subagentCount)
 
   const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
@@ -753,11 +745,11 @@ export function StatusRuleView({
               color={statusColor}
               startedAt={turnStartedAt}
               style={indicatorStyle}
-              verbOverride={compacting ? i18n.tStatus('compacting') : undefined}
+              verbOverride={compacting ? T.status.compacting : undefined}
             />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
-              {statusText}
+              {displayStatus(status)}
             </Text>
           )}
         </Box>
@@ -775,7 +767,7 @@ export function StatusRuleView({
         <Box flexDirection="row" flexShrink={0}>
           {DEV_CREDITS_MODE ? (
             <Text color={t.color.warn} wrap="truncate-end">
-              {i18n.t('status.devCredits')}
+              {T.status.devCredits}
             </Text>
           ) : null}
           <Text color={t.color.muted} wrap="truncate-end">
@@ -792,7 +784,7 @@ export function StatusRuleView({
         {showFocus ? (
           <Box flexDirection="row" flexShrink={0}>
             <Text color={t.color.muted}>{' │ '}</Text>
-            <Text color={t.color.warn}>◉ {i18n.t('focus.badge')}</Text>
+            <Text color={t.color.warn}>◉ focus</Text>
           </Box>
         ) : null}
         {showBar ? (
@@ -818,7 +810,7 @@ export function StatusRuleView({
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
-              {compressionText}
+              {T.status.compressions(compressions)}
             </Text>
           </Text>
         ) : null}
@@ -865,7 +857,7 @@ export function StatusRuleView({
         {showBg ? (
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
-            {bgText}
+            {T.status.bgTasks(bgCount)}
           </Text>
         ) : null}
         {showSubagents ? (
@@ -922,9 +914,8 @@ export function FloatBox({ children, color }: { children: ReactNode; color: stri
 }
 
 export function StickyPromptTracker({ messages, offsets, scrollRef, onChange }: StickyPromptTrackerProps) {
-  const { locale } = useI18n()
   const { atBottom, bottom, top } = useViewportSnapshot(scrollRef)
-  const text = stickyPromptFromViewport(messages, offsets, top, bottom, atBottom, locale)
+  const text = stickyPromptFromViewport(messages, offsets, top, bottom, atBottom)
 
   useEffect(() => onChange(text), [onChange, text])
 
@@ -1028,10 +1019,7 @@ interface StatusRuleProps {
   t: Theme
   turnStartedAt?: null | number
   usage: Usage
-  voiceRecording: boolean
-  voiceProcessing: boolean
-  voiceEnabled: boolean
-  voiceTts: boolean
+  voiceLabel?: string
   onSessionCountClick?: () => void
 }
 

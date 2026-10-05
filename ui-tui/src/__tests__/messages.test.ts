@@ -1,3 +1,9 @@
+import { afterEach } from 'vitest'
+
+import { resetLocale } from '../i18n/runtime.js'
+
+import { activateZh } from './localeFixture.js'
+afterEach(resetLocale)
 import { PassThrough } from 'stream'
 
 import { renderSync } from '@hermes/ink'
@@ -63,14 +69,16 @@ describe('toTranscriptMessages', () => {
       role: 'system',
       text: 'resumed interrupted turn'
     })
-    expect(toTranscriptMessages(rows, 'zh')[0]?.text).toBe('已恢复中断的轮次')
+    activateZh()
+    expect(toTranscriptMessages(rows)[0]?.text).toBe('已恢复被中断的对话轮次')
   })
 
   it('projects personality_switch as a localized event', () => {
     const rows = [{ role: 'user', text: '[System: personality changed]', display_kind: 'personality_switch' }]
 
     expect(toTranscriptMessages(rows, 'en')[0]?.text).toBe('personality changed')
-    expect(toTranscriptMessages(rows, 'zh')[0]?.text).toBe('个性已更换')
+    activateZh()
+    expect(toTranscriptMessages(rows)[0]?.text).toBe('人格已更改')
   })
 
   it('projects async_delegation_complete with task_count metadata', () => {

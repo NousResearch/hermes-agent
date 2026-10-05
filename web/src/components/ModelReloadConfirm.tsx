@@ -1,5 +1,5 @@
-import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { useI18n } from "@/i18n";
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { useI18n } from '@/i18n'
 
 /**
  * Confirm + full-page reload after a model change.
@@ -18,25 +18,22 @@ import { useI18n } from "@/i18n";
 export function ModelReloadConfirm({
   model,
   description,
-  onCancel,
+  onCancel
 }: {
-  model: string | null;
+  model: string | null
   /** Override the default body copy (e.g. the Models-page phrasing). */
-  description?: string;
-  onCancel: () => void;
+  description?: string
+  onCancel: () => void
 }) {
-  const { t } = useI18n();
+  const { t } = useI18n()
   return (
     <ConfirmDialog
       open={model !== null}
       title={t.modelPicker.reloadConfirmTitle}
-      description={
-        description ??
-        t.modelPicker.reloadConfirmDescription.replace("{model}", model ?? "")
-      }
+      description={description ?? t.modelPicker.reloadConfirmDescription.replace('{model}', model ?? '')}
       confirmLabel={t.modelPicker.reload}
       onConfirm={() => window.location.reload()}
       onCancel={onCancel}
     />
-  );
+  )
 }

@@ -127,7 +127,6 @@ describe('schema localization', () => {
   })
 })
 
-
 it('treats prototype property names as unknown schema fields', () => {
   const english = resolveTranslations('en').schema
   for (const key of ['constructor', 'toString', '__proto__']) {

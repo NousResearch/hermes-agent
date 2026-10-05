@@ -1,11 +1,11 @@
 import { LONG_MSG } from '../config/limits.js'
-import { type Locale, translate } from '../i18n/index.js'
+import { t } from '../i18n/runtime.js'
 import { buildToolTrailLine } from '../lib/text.js'
 import type { Msg, SessionInfo } from '../types.js'
 
 export const introMsg = (info: SessionInfo): Msg => ({ info, kind: 'intro', role: 'system', text: '' })
 
-export const userDisplay = (text: string, locale: Locale = 'en') => {
+export const userDisplay = (text: string) => {
   if (text.length <= LONG_MSG) {
     return text
   }
@@ -14,10 +14,10 @@ export const userDisplay = (text: string, locale: Locale = 'en') => {
   const words = first.split(/\s+/).filter(Boolean)
   const prefix = (words.length > 1 ? words.slice(0, 4).join(' ') : first).slice(0, 80)
 
-  return `${prefix || translate(locale, 'transcript.messageFallback')} ${translate(locale, 'transcript.longMessage')}`
+  return t('libText.messages.longMessage', prefix || t('libText.messages.messageFallback'))
 }
 
-export const toTranscriptMessages = (rows: unknown, locale: Locale = 'en'): Msg[] => {
+export const toTranscriptMessages = (rows: unknown): Msg[] => {
   if (!Array.isArray(rows)) {
     return []
   }
@@ -52,21 +52,21 @@ export const toTranscriptMessages = (rows: unknown, locale: Locale = 'en'): Msg[
     }
 
     if (display_kind === 'model_switch') {
-      out.push({ kind: 'event', role: 'system', text: translate(locale, 'transcript.modelChanged') })
+      out.push({ kind: 'event', role: 'system', text: t('libText.messages.modelChanged') })
       pending = []
 
       continue
     }
 
     if (display_kind === 'auto_continue') {
-      out.push({ kind: 'event', role: 'system', text: translate(locale, 'transcript.resumedInterruptedTurn') })
+      out.push({ kind: 'event', role: 'system', text: t('libText.messages.resumedInterruptedTurn') })
       pending = []
 
       continue
     }
 
     if (display_kind === 'personality_switch') {
-      out.push({ kind: 'event', role: 'system', text: translate(locale, 'transcript.personalityChanged') })
+      out.push({ kind: 'event', role: 'system', text: t('libText.messages.personalityChanged') })
       pending = []
 
       continue
@@ -78,12 +78,15 @@ export const toTranscriptMessages = (rows: unknown, locale: Locale = 'en'): Msg[
 
       const label =
         display_kind === 'process_complete'
-          ? translate(locale, 'transcript.backgroundProcessFinished')
+          ? t('libText.messages.backgroundProcessFinished')
           : count === undefined
-            ? translate(locale, 'transcript.backgroundAgentWorkFinished')
-            : count === 1
-              ? translate(locale, 'transcript.backgroundAgentFinished', { count })
-              : translate(locale, 'transcript.backgroundAgentsFinished', { count })
+            ? t('libText.messages.backgroundAgentWorkFinished')
+            : t(
+                count === 1
+                  ? 'libText.messages.backgroundAgentsFinishedOne'
+                  : 'libText.messages.backgroundAgentsFinishedOther',
+                count
+              )
 
       out.push({
         kind: 'event',

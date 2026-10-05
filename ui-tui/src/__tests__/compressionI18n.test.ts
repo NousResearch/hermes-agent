@@ -1,10 +1,18 @@
+import { afterEach } from 'vitest'
+
+import { resetLocale } from '../i18n/runtime.js'
+
+import { activateZh } from './localeFixture.js'
+afterEach(resetLocale)
 import { describe, expect, it } from 'vitest'
 
 import { formatCompressionSummary } from '../app/slash/commands/session.js'
 
 describe('manual compression localization', () => {
   it('renders structured backend feedback in Simplified Chinese', () => {
-    const lines = formatCompressionSummary('zh', {
+    activateZh()
+
+    const lines = formatCompressionSummary({
       summary: {
         after_count: 4,
         after_tokens: 40000,
@@ -23,6 +31,6 @@ describe('manual compression localization', () => {
   })
 
   it('leaves legacy pre-rendered summaries to the compatibility path', () => {
-    expect(formatCompressionSummary('zh', { summary: { headline: 'legacy' } })).toBeNull()
+    expect(formatCompressionSummary({ summary: { headline: 'legacy' } })).toBeNull()
   })
 })

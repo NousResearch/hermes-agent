@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { MOUSE_TRACKING } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
+import { t } from '../i18n/runtime.js'
 import { bootTheme } from '../lib/themeBoot.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -23,7 +24,6 @@ const buildUiState = (): UiState => ({
   info: null,
   liveSessionCount: 0,
   inlineDiffs: true,
-  locale: 'en',
   mouseTracking: MOUSE_TRACKING,
   notice: null,
   pasteCollapseLines: 5,
@@ -32,7 +32,7 @@ const buildUiState = (): UiState => ({
   sessionTitle: '',
   showReasoning: false,
   sid: null,
-  status: 'summoning hermes…',
+  status: t('status.summoning'),
   statusBar: 'top',
   storedSid: null,
   statusBarFields: null,

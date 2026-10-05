@@ -1,3 +1,9 @@
+import { afterEach } from 'vitest'
+
+import { resetLocale } from '../i18n/runtime.js'
+
+import { activateZh } from './localeFixture.js'
+afterEach(resetLocale)
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
@@ -18,8 +24,9 @@ describe('widget SDK host', () => {
   it('localizes built-in metadata while preserving the widget registry contract', () => {
     const app = getWidgetApp('grid-test')!
 
-    expect(widgetHelp(app, 'zh')).toBe('打开可交互的 Widget 网格演示浮层')
-    expect(widgetUsage(app, 'zh')).toContain('用法：/grid-test')
+    activateZh()
+    expect(widgetHelp(app)).toBe('打开可交互的 Widget 网格演示浮层')
+    expect(widgetUsage(app)).toContain('用法：/grid-test')
   })
 
   it('launch → dispatch → close lifecycle drives the overlay slot', () => {

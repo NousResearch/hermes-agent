@@ -1,4 +1,4 @@
-import { type Locale, translate } from '../i18n/index.js'
+import { t } from '../i18n/runtime.js'
 
 import {
   detectVSCodeLikeTerminal,
@@ -33,11 +33,10 @@ export function detectMacTerminalContext(env: NodeJS.ProcessEnv = process.env): 
 
 export async function terminalParityHints(
   env: NodeJS.ProcessEnv = process.env,
-  options?: { fileOps?: Partial<FileOps>; homeDir?: string; locale?: Locale; platform?: NodeJS.Platform }
+  options?: { fileOps?: Partial<FileOps>; homeDir?: string; platform?: NodeJS.Platform }
 ): Promise<MacTerminalHint[]> {
   const ctx = detectMacTerminalContext(env)
   const hints: MacTerminalHint[] = []
-  const locale = options?.locale ?? 'en'
 
   if (
     ctx.vscodeLike &&
@@ -51,7 +50,7 @@ export async function terminalParityHints(
     hints.push({
       key: 'ide-setup',
       tone: 'info',
-      message: translate(locale, 'terminal.hint.ide', { terminal: ctx.vscodeLike })
+      message: t('libText.terminalParity.ideSetup', ctx.vscodeLike)
     })
   }
 
@@ -59,7 +58,7 @@ export async function terminalParityHints(
     hints.push({
       key: 'apple-terminal',
       tone: 'warn',
-      message: translate(locale, 'terminal.hint.apple')
+      message: t('libText.terminalParity.appleTerminal')
     })
   }
 
@@ -67,7 +66,7 @@ export async function terminalParityHints(
     hints.push({
       key: 'tmux',
       tone: 'warn',
-      message: translate(locale, 'terminal.hint.tmux')
+      message: t('libText.terminalParity.tmux')
     })
   }
 
@@ -75,7 +74,7 @@ export async function terminalParityHints(
     hints.push({
       key: 'remote',
       tone: 'warn',
-      message: translate(locale, 'terminal.hint.remote')
+      message: t('libText.terminalParity.remote')
     })
   }
 

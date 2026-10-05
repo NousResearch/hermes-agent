@@ -1,50 +1,41 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import {
-  AlertTriangle,
-  Check,
-  Copy,
-  Plus,
-  RotateCw,
-  Trash2,
-  Webhook,
-  X,
-} from "lucide-react";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { H2 } from "@nous-research/ui/ui/components/typography/h2";
-import { api } from "@/lib/api";
-import type { WebhookRoute, WebhooksResponse } from "@/lib/api";
-import { copyTextToClipboard } from "@/lib/clipboard";
-import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
-import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
-import { useModalBehavior } from "@/hooks/useModalBehavior";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { Card, CardContent } from "@nous-research/ui/ui/components/card";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Label } from "@nous-research/ui/ui/components/label";
-import { usePageHeader } from "@/contexts/usePageHeader";
-import { cn, themedBody } from "@/lib/utils";
-import { useI18n } from "@/i18n";
-import { errorMessage } from "@/lib/api-error";
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react'
+import { AlertTriangle, Check, Copy, Plus, RotateCw, Trash2, Webhook, X } from 'lucide-react'
+import { Badge } from '@nous-research/ui/ui/components/badge'
+import { Button } from '@nous-research/ui/ui/components/button'
+import { Select, SelectOption } from '@nous-research/ui/ui/components/select'
+import { Spinner } from '@nous-research/ui/ui/components/spinner'
+import { H2 } from '@nous-research/ui/ui/components/typography/h2'
+import { api } from '@/lib/api'
+import type { WebhookRoute, WebhooksResponse } from '@/lib/api'
+import { copyTextToClipboard } from '@/lib/clipboard'
+import { DeleteConfirmDialog } from '@/components/DeleteConfirmDialog'
+import { useToast } from '@nous-research/ui/hooks/use-toast'
+import { useConfirmDelete } from '@nous-research/ui/hooks/use-confirm-delete'
+import { useModalBehavior } from '@/hooks/useModalBehavior'
+import { Toast } from '@nous-research/ui/ui/components/toast'
+import { Card, CardContent } from '@nous-research/ui/ui/components/card'
+import { Input } from '@nous-research/ui/ui/components/input'
+import { Label } from '@nous-research/ui/ui/components/label'
+import { usePageHeader } from '@/contexts/usePageHeader'
+import { cn, themedBody } from '@/lib/utils'
+import { useI18n } from '@/i18n'
+import { errorMessage } from '@/lib/api-error'
 
 interface CreatedWebhook {
-  url: string;
-  secret: string;
+  url: string
+  secret: string
 }
 
 function CopyButton({ value }: { value: string }) {
-  const { t } = useI18n();
-  const [copied, setCopied] = useState(false);
+  const { t } = useI18n()
+  const [copied, setCopied] = useState(false)
   const handleCopy = useCallback(() => {
-    void copyTextToClipboard(value).then((copied) => {
-      if (!copied) return;
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1500);
-    });
-  }, [value]);
+    void copyTextToClipboard(value).then(copied => {
+      if (!copied) return
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    })
+  }, [value])
   return (
     <Button
       ghost
@@ -56,227 +47,202 @@ function CopyButton({ value }: { value: string }) {
     >
       {copied ? <Check /> : <Copy />}
     </Button>
-  );
+  )
 }
 
 export default function WebhooksPage() {
-  const { format, t } = useI18n();
-  const [data, setData] = useState<WebhooksResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [enabling, setEnabling] = useState(false);
-  const [restartNeeded, setRestartNeeded] = useState(false);
-  const [restartMessage, setRestartMessage] = useState<
-    "gateway" | "enabled" | null
-  >(null);
+  const { format, t } = useI18n()
+  const [data, setData] = useState<WebhooksResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [enabling, setEnabling] = useState(false)
+  const [restartNeeded, setRestartNeeded] = useState(false)
+  const [restartMessage, setRestartMessage] = useState<'gateway' | 'enabled' | null>(null)
   const [restartError, setRestartError] = useState<
-    | { kind: "exit"; code: number }
-    | { kind: "enable"; detail: string }
-    | { kind: "raw"; message: string }
-    | null
-  >(null);
-  const [restarting, setRestarting] = useState(false);
-  const { toast, showToast } = useToast();
-  const { setEnd } = usePageHeader();
+    { kind: 'exit'; code: number } | { kind: 'enable'; detail: string } | { kind: 'raw'; message: string } | null
+  >(null)
+  const [restarting, setRestarting] = useState(false)
+  const { toast, showToast } = useToast()
+  const { setEnd } = usePageHeader()
 
   // New subscription modal state
-  const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [events, setEvents] = useState("");
-  const [deliver, setDeliver] = useState("log");
-  const [deliverOnly, setDeliverOnly] = useState(false);
-  const [prompt, setPrompt] = useState("");
-  const [creating, setCreating] = useState(false);
-  const [created, setCreated] = useState<CreatedWebhook | null>(null);
+  const [createModalOpen, setCreateModalOpen] = useState(false)
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [events, setEvents] = useState('')
+  const [deliver, setDeliver] = useState('log')
+  const [deliverOnly, setDeliverOnly] = useState(false)
+  const [prompt, setPrompt] = useState('')
+  const [creating, setCreating] = useState(false)
+  const [created, setCreated] = useState<CreatedWebhook | null>(null)
 
   const closeCreateModal = useCallback(() => {
-    setCreateModalOpen(false);
-    setCreated(null);
-  }, []);
+    setCreateModalOpen(false)
+    setCreated(null)
+  }, [])
   const createModalRef = useModalBehavior({
     open: createModalOpen,
-    onClose: closeCreateModal,
-  });
+    onClose: closeCreateModal
+  })
 
-  const enabled = data?.enabled ?? false;
-  const subscriptions = data?.subscriptions ?? [];
+  const enabled = data?.enabled ?? false
+  const subscriptions = data?.subscriptions ?? []
 
   const loadWebhooks = useCallback(() => {
     return api
       .getWebhooks()
       .then(setData)
-      .catch(() => showToast(t.webhooks.loadFailed, "error"))
-      .finally(() => setLoading(false));
-  }, [showToast, t.webhooks.loadFailed]);
+      .catch(() => showToast(t.webhooks.loadFailed, 'error'))
+      .finally(() => setLoading(false))
+  }, [showToast, t.webhooks.loadFailed])
 
   useEffect(() => {
-    loadWebhooks();
-  }, [loadWebhooks]);
+    loadWebhooks()
+  }, [loadWebhooks])
 
   const watchRestartOutcome = useCallback(async () => {
     for (let i = 0; i < 20; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await new Promise(resolve => setTimeout(resolve, 1500))
       try {
-        const st = await api.getActionStatus("gateway-restart", 5);
-        if (st.running) continue;
+        const st = await api.getActionStatus('gateway-restart', 5)
+        if (st.running) continue
         if (st.exit_code !== 0 && st.exit_code !== null) {
-          setRestartMessage(null);
-          setRestartNeeded(true);
-          setRestartError({ kind: "exit", code: st.exit_code });
-          showToast(
-            format(t.webhooks.restartExitToast, { code: st.exit_code }),
-            "error",
-          );
+          setRestartMessage(null)
+          setRestartNeeded(true)
+          setRestartError({ kind: 'exit', code: st.exit_code })
+          showToast(format(t.webhooks.restartExitToast, { code: st.exit_code }), 'error')
         } else {
-          setRestartMessage(null);
-          setRestartNeeded(false);
-          setRestartError(null);
+          setRestartMessage(null)
+          setRestartNeeded(false)
+          setRestartError(null)
         }
-        return;
+        return
       } catch {
         // The dashboard may briefly lose its connection while the gateway restarts.
       }
     }
-    setRestartMessage(null);
-  }, [format, showToast, t.webhooks.restartExitToast]);
+    setRestartMessage(null)
+  }, [format, showToast, t.webhooks.restartExitToast])
 
   const handleRestart = useCallback(async () => {
-    setRestarting(true);
+    setRestarting(true)
     try {
-      await api.restartGateway();
-      setRestartNeeded(false);
-      setRestartError(null);
-      setRestartMessage("gateway");
-      showToast(t.webhooks.gatewayRestarting, "success");
-      setTimeout(() => void loadWebhooks(), 4000);
-      void watchRestartOutcome();
+      await api.restartGateway()
+      setRestartNeeded(false)
+      setRestartError(null)
+      setRestartMessage('gateway')
+      showToast(t.webhooks.gatewayRestarting, 'success')
+      setTimeout(() => void loadWebhooks(), 4000)
+      void watchRestartOutcome()
     } catch (e) {
-      setRestartNeeded(true);
-      setRestartError({ kind: "raw", message: errorMessage(e, t.common) });
-      showToast(
-        format(t.webhooks.restartFailed, { error: errorMessage(e, t.common) }),
-        "error",
-      );
+      setRestartNeeded(true)
+      setRestartError({ kind: 'raw', message: errorMessage(e, t.common) })
+      showToast(format(t.webhooks.restartFailed, { error: errorMessage(e, t.common) }), 'error')
     } finally {
-      setRestarting(false);
+      setRestarting(false)
     }
-  }, [format, loadWebhooks, showToast, t.webhooks, watchRestartOutcome]);
+  }, [format, loadWebhooks, showToast, t.webhooks, watchRestartOutcome])
 
   const handleEnableWebhooks = useCallback(async () => {
-    setEnabling(true);
-    setRestartNeeded(false);
-    setRestartError(null);
+    setEnabling(true)
+    setRestartNeeded(false)
+    setRestartError(null)
     try {
-      const result = await api.enableWebhooks();
-      await loadWebhooks();
+      const result = await api.enableWebhooks()
+      await loadWebhooks()
       if (result.restart_started) {
-        setRestartMessage("enabled");
-        showToast(t.webhooks.enabledRestarting, "success");
-        setTimeout(() => void loadWebhooks(), 4000);
-        void watchRestartOutcome();
+        setRestartMessage('enabled')
+        showToast(t.webhooks.enabledRestarting, 'success')
+        setTimeout(() => void loadWebhooks(), 4000)
+        void watchRestartOutcome()
       } else {
-        const detail = result.restart_error ? `: ${result.restart_error}` : ".";
-        setRestartMessage(null);
-        setRestartNeeded(true);
-        setRestartError({ kind: "enable", detail });
-        showToast(
-          format(t.webhooks.enabledRestartFailed, { detail }),
-          "error",
-        );
+        const detail = result.restart_error ? `: ${result.restart_error}` : '.'
+        setRestartMessage(null)
+        setRestartNeeded(true)
+        setRestartError({ kind: 'enable', detail })
+        showToast(format(t.webhooks.enabledRestartFailed, { detail }), 'error')
       }
     } catch (e) {
-      showToast(
-        format(t.webhooks.enableFailed, { error: errorMessage(e, t.common) }),
-        "error",
-      );
+      showToast(format(t.webhooks.enableFailed, { error: errorMessage(e, t.common) }), 'error')
     } finally {
-      setEnabling(false);
+      setEnabling(false)
     }
-  }, [format, loadWebhooks, showToast, t.webhooks, watchRestartOutcome]);
+  }, [format, loadWebhooks, showToast, t.webhooks, watchRestartOutcome])
 
   const resetForm = useCallback(() => {
-    setName("");
-    setDescription("");
-    setEvents("");
-    setDeliver("log");
-    setDeliverOnly(false);
-    setPrompt("");
-  }, []);
+    setName('')
+    setDescription('')
+    setEvents('')
+    setDeliver('log')
+    setDeliverOnly(false)
+    setPrompt('')
+  }, [])
 
   const handleCreate = async () => {
     if (!name.trim()) {
-      showToast(t.webhooks.nameRequired, "error");
-      return;
+      showToast(t.webhooks.nameRequired, 'error')
+      return
     }
-    setCreating(true);
+    setCreating(true)
     try {
       const eventsList = events
-        .split(",")
-        .map((e) => e.trim())
-        .filter(Boolean);
+        .split(',')
+        .map(e => e.trim())
+        .filter(Boolean)
       const res = await api.createWebhook({
         name: name.trim(),
         description: description.trim() || undefined,
         events: eventsList.length ? eventsList : undefined,
         deliver,
         deliver_only: deliverOnly,
-        prompt: prompt.trim() || undefined,
-      });
-      showToast(t.webhooks.created, "success");
-      setCreated({ url: res.url, secret: res.secret });
-      resetForm();
-      loadWebhooks();
+        prompt: prompt.trim() || undefined
+      })
+      showToast(t.webhooks.created, 'success')
+      setCreated({ url: res.url, secret: res.secret })
+      resetForm()
+      loadWebhooks()
     } catch (e) {
-      showToast(
-        format(t.webhooks.createFailed, { error: errorMessage(e, t.common) }),
-        "error",
-      );
+      showToast(format(t.webhooks.createFailed, { error: errorMessage(e, t.common) }), 'error')
     } finally {
-      setCreating(false);
+      setCreating(false)
     }
-  };
+  }
 
-  const [togglingName, setTogglingName] = useState<string | null>(null);
+  const [togglingName, setTogglingName] = useState<string | null>(null)
 
   const handleToggleEnabled = useCallback(
     async (subName: string, nextEnabled: boolean) => {
-      setTogglingName(subName);
+      setTogglingName(subName)
       try {
-        await api.setWebhookEnabled(subName, nextEnabled);
+        await api.setWebhookEnabled(subName, nextEnabled)
         showToast(
-          format(
-            nextEnabled
-              ? t.webhooks.enabledNamed
-              : t.webhooks.disabledNamed,
-            { name: subName },
-          ),
-          "success",
-        );
-        loadWebhooks();
+          format(nextEnabled ? t.webhooks.enabledNamed : t.webhooks.disabledNamed, { name: subName }),
+          'success'
+        )
+        loadWebhooks()
       } catch (e) {
-        showToast(format(t.webhooks.error, { error: errorMessage(e, t.common) }), "error");
+        showToast(format(t.webhooks.error, { error: errorMessage(e, t.common) }), 'error')
       } finally {
-        setTogglingName(null);
+        setTogglingName(null)
       }
     },
-    [format, loadWebhooks, showToast, t.webhooks],
-  );
+    [format, loadWebhooks, showToast, t.webhooks]
+  )
 
   const webhookDelete = useConfirmDelete({
     onDelete: useCallback(
       async (name: string) => {
         try {
-          await api.deleteWebhook(name);
-          showToast(format(t.webhooks.deletedNamed, { name }), "success");
-          loadWebhooks();
+          await api.deleteWebhook(name)
+          showToast(format(t.webhooks.deletedNamed, { name }), 'success')
+          loadWebhooks()
         } catch (e) {
-          showToast(format(t.webhooks.error, { error: errorMessage(e, t.common) }), "error");
-          throw e;
+          showToast(format(t.webhooks.error, { error: errorMessage(e, t.common) }), 'error')
+          throw e
         }
       },
-      [format, loadWebhooks, showToast, t.webhooks],
-    ),
-  });
+      [format, loadWebhooks, showToast, t.webhooks]
+    )
+  })
 
   // Put "New subscription" button in page header
   useLayoutEffect(() => {
@@ -287,27 +253,27 @@ export default function WebhooksPage() {
         disabled={!enabled || enabling}
         prefix={<Plus />}
         onClick={() => {
-          setCreated(null);
-          setCreateModalOpen(true);
+          setCreated(null)
+          setCreateModalOpen(true)
         }}
       >
         {t.webhooks.newSubscription}
-      </Button>,
-    );
+      </Button>
+    )
     return () => {
-      setEnd(null);
-    };
-  }, [enabled, enabling, setEnd, t.webhooks.newSubscription]);
+      setEnd(null)
+    }
+  }, [enabled, enabling, setEnd, t.webhooks.newSubscription])
 
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
         <Spinner className="text-2xl text-primary" />
       </div>
-    );
+    )
   }
 
-  const pendingName = webhookDelete.pendingId ?? "";
+  const pendingName = webhookDelete.pendingId ?? ''
 
   return (
     <div className="flex flex-col gap-6">
@@ -319,9 +285,7 @@ export default function WebhooksPage() {
         onConfirm={webhookDelete.confirm}
         title={t.webhooks.deleteWebhook}
         description={
-          pendingName
-            ? format(t.webhooks.deleteNamedDescription, { name: pendingName })
-            : t.webhooks.deleteDescription
+          pendingName ? format(t.webhooks.deleteNamedDescription, { name: pendingName }) : t.webhooks.deleteDescription
         }
         loading={webhookDelete.isDeleting}
       />
@@ -331,12 +295,17 @@ export default function WebhooksPage() {
         <div
           ref={createModalRef}
           className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
-          onClick={(e) => e.target === e.currentTarget && closeCreateModal()}
+          onClick={e => e.target === e.currentTarget && closeCreateModal()}
           role="dialog"
           aria-modal="true"
           aria-labelledby="create-webhook-title"
         >
-          <div className={cn(themedBody, "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh] overflow-y-auto")}>
+          <div
+            className={cn(
+              themedBody,
+              'relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh] overflow-y-auto'
+            )}
+          >
             <Button
               ghost
               size="icon"
@@ -348,26 +317,19 @@ export default function WebhooksPage() {
             </Button>
 
             <header className="p-5 pb-3 border-b border-border">
-              <h2
-                id="create-webhook-title"
-                className="font-mondwest text-display text-base tracking-wider"
-              >
+              <h2 id="create-webhook-title" className="font-mondwest text-display text-base tracking-wider">
                 {t.webhooks.newSubscription}
               </h2>
             </header>
 
             {created ? (
               <div className="p-5 grid gap-4">
-                <p className="text-sm text-muted-foreground">
-                  {t.webhooks.createdSecretHint}
-                </p>
+                <p className="text-sm text-muted-foreground">{t.webhooks.createdSecretHint}</p>
 
                 <div className="grid gap-2">
                   <Label>{t.webhooks.webhookUrl}</Label>
                   <div className="flex items-center gap-2 border border-border bg-background/40 px-3 py-2">
-                    <span className="flex-1 min-w-0 truncate font-mono text-xs">
-                      {created.url}
-                    </span>
+                    <span className="flex-1 min-w-0 truncate font-mono text-xs">{created.url}</span>
                     <CopyButton value={created.url} />
                   </div>
                 </div>
@@ -375,19 +337,13 @@ export default function WebhooksPage() {
                 <div className="grid gap-2">
                   <Label>{t.webhooks.secretOnce}</Label>
                   <div className="flex items-center gap-2 border border-warning/40 bg-warning/10 px-3 py-2">
-                    <span className="flex-1 min-w-0 truncate font-mono text-xs">
-                      {created.secret}
-                    </span>
+                    <span className="flex-1 min-w-0 truncate font-mono text-xs">{created.secret}</span>
                     <CopyButton value={created.secret} />
                   </div>
                 </div>
 
                 <div className="flex justify-end">
-                  <Button
-                    className="uppercase"
-                    size="sm"
-                    onClick={closeCreateModal}
-                  >
+                  <Button className="uppercase" size="sm" onClick={closeCreateModal}>
                     {t.webhooks.done}
                   </Button>
                 </div>
@@ -401,19 +357,17 @@ export default function WebhooksPage() {
                     autoFocus
                     placeholder={t.webhooks.namePlaceholder}
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    onChange={e => setName(e.target.value)}
                   />
                 </div>
 
                 <div className="grid gap-2">
-                  <Label htmlFor="webhook-description">
-                    {t.webhooks.description}
-                  </Label>
+                  <Label htmlFor="webhook-description">{t.webhooks.description}</Label>
                   <Input
                     id="webhook-description"
                     placeholder={t.webhooks.descriptionPlaceholder}
                     value={description}
-                    onChange={(e) => setDescription(e.target.value)}
+                    onChange={e => setDescription(e.target.value)}
                   />
                 </div>
 
@@ -423,41 +377,31 @@ export default function WebhooksPage() {
                     id="webhook-events"
                     placeholder={t.webhooks.eventsPlaceholder}
                     value={events}
-                    onChange={(e) => setEvents(e.target.value)}
+                    onChange={e => setEvents(e.target.value)}
                   />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="grid gap-2">
-                    <Label htmlFor="webhook-deliver">
-                      {t.webhooks.deliverTo}
-                    </Label>
-                    <Select
-                      id="webhook-deliver"
-                      value={deliver}
-                      onValueChange={(v) => setDeliver(v)}
-                    >
+                    <Label htmlFor="webhook-deliver">{t.webhooks.deliverTo}</Label>
+                    <Select id="webhook-deliver" value={deliver} onValueChange={v => setDeliver(v)}>
                       <SelectOption value="log">{t.webhooks.log}</SelectOption>
                       <SelectOption value="telegram">Telegram</SelectOption>
                       <SelectOption value="discord">Discord</SelectOption>
                       <SelectOption value="slack">Slack</SelectOption>
                       <SelectOption value="email">{t.webhooks.email}</SelectOption>
-                      <SelectOption value="github_comment">
-                        {t.webhooks.githubComment}
-                      </SelectOption>
+                      <SelectOption value="github_comment">{t.webhooks.githubComment}</SelectOption>
                     </Select>
                   </div>
 
                   <div className="grid gap-2">
-                    <Label htmlFor="webhook-deliver-only">
-                      {t.webhooks.deliverOnly}
-                    </Label>
+                    <Label htmlFor="webhook-deliver-only">{t.webhooks.deliverOnly}</Label>
                     <label className="flex items-center gap-2 text-sm text-muted-foreground h-9">
                       <input
                         id="webhook-deliver-only"
                         type="checkbox"
                         checked={deliverOnly}
-                        onChange={(e) => setDeliverOnly(e.target.checked)}
+                        onChange={e => setDeliverOnly(e.target.checked)}
                       />
                       {t.webhooks.deliverOnlyHint}
                     </label>
@@ -471,7 +415,7 @@ export default function WebhooksPage() {
                     className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
                     placeholder={t.webhooks.promptPlaceholder}
                     value={prompt}
-                    onChange={(e) => setPrompt(e.target.value)}
+                    onChange={e => setPrompt(e.target.value)}
                   />
                 </div>
 
@@ -498,12 +442,8 @@ export default function WebhooksPage() {
             <div className="flex items-start gap-3">
               <Webhook className="h-5 w-5 shrink-0 text-warning" />
               <div className="flex flex-col gap-1">
-                <span className="font-medium">
-                  {t.webhooks.receiverDisabled}
-                </span>
-                <span className="text-muted-foreground">
-                  {t.webhooks.receiverDisabledHint}
-                </span>
+                <span className="font-medium">{t.webhooks.receiverDisabled}</span>
+                <span className="text-muted-foreground">{t.webhooks.receiverDisabledHint}</span>
               </div>
             </div>
             <Button
@@ -523,11 +463,7 @@ export default function WebhooksPage() {
         <Card className="border-border">
           <CardContent className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
             <RotateCw className="h-4 w-4 shrink-0 text-warning" />
-            <span>
-              {restartMessage === "enabled"
-                ? t.webhooks.enabledRestarting
-                : t.webhooks.gatewayRestarting}
-            </span>
+            <span>{restartMessage === 'enabled' ? t.webhooks.enabledRestarting : t.webhooks.gatewayRestarting}</span>
           </CardContent>
         </Card>
       )}
@@ -538,17 +474,17 @@ export default function WebhooksPage() {
             <div className="flex items-start gap-2 text-sm">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
               <span>
-                {restartError?.kind === "exit"
+                {restartError?.kind === 'exit'
                   ? format(t.webhooks.restartExit, {
-                      code: restartError.code,
+                      code: restartError.code
                     })
-                  : restartError?.kind === "enable"
+                  : restartError?.kind === 'enable'
                     ? format(t.webhooks.enabledRestartFailed, {
-                        detail: restartError.detail,
+                        detail: restartError.detail
                       })
-                    : restartError?.kind === "raw"
+                    : restartError?.kind === 'raw'
                       ? format(t.webhooks.restartFailed, {
-                          error: restartError.message,
+                          error: restartError.message
                         })
                       : t.webhooks.needsRestart}
               </span>
@@ -567,17 +503,12 @@ export default function WebhooksPage() {
       )}
 
       <div className="flex flex-col gap-3">
-        <H2
-          variant="sm"
-          className="flex items-center gap-2 text-muted-foreground"
-        >
+        <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
           <Webhook className="h-4 w-4" />
           {format(t.webhooks.subscriptions, { count: subscriptions.length })}
         </H2>
 
-        <p className="text-xs text-muted-foreground -mt-1">
-          {t.webhooks.hotReloadHint}
-        </p>
+        <p className="text-xs text-muted-foreground -mt-1">{t.webhooks.hotReloadHint}</p>
 
         {subscriptions.length === 0 && (
           <Card>
@@ -590,31 +521,21 @@ export default function WebhooksPage() {
         {subscriptions.map((sub: WebhookRoute) => (
           <Card key={sub.name}>
             <CardContent className="flex items-start gap-4 py-4">
-              <div className={cn("flex-1 min-w-0", !sub.enabled && "opacity-60")}>
+              <div className={cn('flex-1 min-w-0', !sub.enabled && 'opacity-60')}>
                 <div className="flex items-center gap-2 mb-1 flex-wrap">
-                  <span className="font-medium text-sm truncate">
-                    {sub.name}
-                  </span>
+                  <span className="font-medium text-sm truncate">{sub.name}</span>
                   <Badge tone="outline">{sub.deliver}</Badge>
-                  {sub.deliver_only && (
-                    <Badge tone="secondary">{t.webhooks.deliverOnly}</Badge>
-                  )}
-                  {!sub.enabled && (
-                    <Badge tone="warning">{t.webhooks.disabled}</Badge>
-                  )}
+                  {sub.deliver_only && <Badge tone="secondary">{t.webhooks.deliverOnly}</Badge>}
+                  {!sub.enabled && <Badge tone="warning">{t.webhooks.disabled}</Badge>}
                 </div>
 
-                {sub.description && (
-                  <p className="text-xs text-muted-foreground mb-2">
-                    {sub.description}
-                  </p>
-                )}
+                {sub.description && <p className="text-xs text-muted-foreground mb-2">{sub.description}</p>}
 
                 <div className="flex items-center gap-1 flex-wrap mb-2">
                   {sub.events.length === 0 ? (
                     <Badge tone="secondary">{t.webhooks.allEvents}</Badge>
                   ) : (
-                    sub.events.map((evt) => (
+                    sub.events.map(evt => (
                       <Badge key={evt} tone="secondary">
                         {evt}
                       </Badge>
@@ -623,9 +544,7 @@ export default function WebhooksPage() {
                 </div>
 
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="flex-1 min-w-0 truncate font-mono">
-                    {sub.url}
-                  </span>
+                  <span className="flex-1 min-w-0 truncate font-mono">{sub.url}</span>
                   <CopyButton value={sub.url} />
                 </div>
               </div>
@@ -656,5 +575,5 @@ export default function WebhooksPage() {
         ))}
       </div>
     </div>
-  );
+  )
 }

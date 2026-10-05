@@ -1,11 +1,10 @@
 import type { ServerRequest } from '@hermes/shared/json-rpc-channel'
 
-import { translate } from '../i18n/index.js'
-import type { ClarifyBatchQuestion } from '../types.js'
+import { t } from '../i18n/runtime.js'
+import type { ClarifyQuestion } from '../types.js'
 
 import { patchOverlayState } from './overlayStore.js'
 import { rememberServerRequest } from './serverRequestStore.js'
-import { getUiState } from './uiStore.js'
 
 export interface ServerRequestHandlerContext {
   ringPromptBell: () => void
@@ -43,7 +42,7 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
 
     switch (request.method) {
       case 'clarify': {
-        const batch: ClarifyBatchQuestion[] = (Array.isArray(p.questions) ? (p.questions as unknown[]) : [])
+        const questions: ClarifyQuestion[] = (Array.isArray(p.questions) ? (p.questions as unknown[]) : [])
           .map(raw => (raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}))
           .filter(q => str(q.qid) && str(q.question).trim())
           .map(q => ({
@@ -53,21 +52,23 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
             question: str(q.question).trim()
           }))
 
+        if (!questions.length) {
+          request.respond({})
+
+          return true
+        }
+
         const answers =
           p.answers && typeof p.answers === 'object'
             ? Object.fromEntries(
-                Object.entries(p.answers as Record<string, unknown>).filter(
-                  (entry): entry is [string, string] => typeof entry[1] === 'string'
-                )
+                Object.entries(p.answers as Record<string, unknown>)
+                  .map(([qid, answer]): [string, unknown] => [qid, answer === null ? '' : answer])
+                  .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
               )
             : {}
 
-        patchOverlayState({
-          clarify: batch.length
-            ? { answers, choices: null, question: '', questions: batch, requestId: request.id }
-            : { choices: strList(p.choices), question: str(p.question), requestId: request.id }
-        })
-        open(request, 'waiting for input…')
+        patchOverlayState({ clarify: { answers, questions, requestId: request.id } })
+        open(request, t('session.status.waitingForInput'))
 
         return true
       }
@@ -79,25 +80,25 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
             allowPermanent: p.allow_permanent !== false,
             choices: strList(p.choices) ?? undefined,
             command: str(p.command),
-            description: str(p.description) || translate(getUiState().locale, 'approval.dangerousCommand'),
+            description: str(p.description) || t('session.request.dangerousCommand'),
             requestId: request.id,
             smartDenied: p.smart_denied === true
           }
         })
-        open(request, 'approval needed')
+        open(request, t('session.status.approvalNeeded'))
 
         return true
       }
 
       case 'sudo':
         patchOverlayState({ sudo: { requestId: request.id } })
-        open(request, 'sudo password needed')
+        open(request, t('session.status.sudoPasswordNeeded'))
 
         return true
 
       case 'secret':
         patchOverlayState({ secret: { envVar: str(p.env_var), prompt: str(p.prompt), requestId: request.id } })
-        open(request, 'secret input needed')
+        open(request, t('session.status.secretInputNeeded'))
 
         return true
 
@@ -105,7 +106,7 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
         patchOverlayState({
           vaultUnlock: { backend: str(p.backend), displayName: str(p.display_name), requestId: request.id }
         })
-        open(request, translate(getUiState().locale, 'status.unlockVault', { name: str(p.display_name) }))
+        open(request, t('session.status.unlockVault', str(p.display_name)))
 
         return true
 

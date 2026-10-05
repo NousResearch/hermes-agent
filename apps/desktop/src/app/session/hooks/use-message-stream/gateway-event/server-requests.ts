@@ -12,7 +12,7 @@ import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
 import type { PreviewActAction } from '@/lib/preview-act/act-in-page'
 import type { TourAction, TourStep } from '@/lib/tour'
-import { normalizeChoices, normalizeQuestions, setClarifyRequest, warnDroppedChoices } from '@/store/clarify'
+import { normalizeQuestions, setClarifyRequest } from '@/store/clarify'
 import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import {
@@ -77,6 +77,15 @@ type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
  * the owner's pane is open (#113348).
  */
 const WINDOW_OWNED_REQUESTS = new Set(['preview.act', 'preview.read', 'terminal.read', 'window.read', 'tour'])
+
+/**
+ * A window not hosting the session declines instead of staying silent. The
+ * backend keeps the request open for the owner and only settles once every
+ * attached window declined, so when no window shows the chat the agent is told
+ * now rather than after its whole deadline (#119333). `decline` is a no-op
+ * against a backend that would take the first error as the answer.
+ */
+const declineNotShown = (request: ScopedServerRequest) => request.decline?.('This window is not showing the session.')
 
 /**
  * Whether a request's `session_id` names the same conversation as the pane's
@@ -207,59 +216,37 @@ const clarify: Handler = ctx => {
   const p = request.params
 
   if (sessionId && deps.sessionInterrupted(sessionId)) {
-    request.respond({ answer: '' })
+    request.respond({})
 
     return
   }
 
-  const question = str(p.question)
-  const rawChoices = p.choices
-  const choices = normalizeChoices(rawChoices)
-  const multiSelect = p.multi_select === true
-  // Batch (multi-question) clarify: `questions` replaces question/choices on the
-  // wire. `answers` rides along only on a reconnect replay (locks the server
-  // already accepted).
   const questions = normalizeQuestions(p.questions)
 
+  // `answers` rides along only on a reconnect replay (locks the server
+  // already accepted).
   const lockedAnswers =
     typeof p.answers === 'object' && p.answers !== null
       ? Object.fromEntries(
           Object.entries(p.answers as Record<string, unknown>).filter(
-            (entry): entry is [string, string] => typeof entry[1] === 'string'
+            (entry): entry is [string, null | string] => entry[1] === null || typeof entry[1] === 'string'
           )
         )
       : undefined
 
-  if (questions.length === 0 && !question) {
-    request.respond({ answer: '' })
+  if (questions.length === 0) {
+    request.respond({})
 
     return
   }
 
-  if (questions.length === 0 && rawChoices != null && choices.length === 0) {
-    warnDroppedChoices('gateway', question, rawChoices)
+  const clarifyRequest = {
+    lockedAnswers,
+    questions,
+    receivedAt: Date.now() / 1000,
+    requestId: request.id,
+    sessionId: sessionId || null
   }
-
-  const clarifyRequest =
-    questions.length > 0
-      ? {
-          choices: null,
-          lockedAnswers,
-          multiSelect: false,
-          question: '',
-          questions,
-          receivedAt: Date.now() / 1000,
-          requestId: request.id,
-          sessionId: sessionId || null
-        }
-      : {
-          choices: choices.length > 0 ? choices : null,
-          multiSelect,
-          question,
-          receivedAt: Date.now() / 1000,
-          requestId: request.id,
-          sessionId: sessionId || null
-        }
 
   rememberServerRequest(request)
   setClarifyRequest(clarifyRequest)
@@ -292,7 +279,7 @@ const clarify: Handler = ctx => {
     }
   }
 
-  notifyInput(ctx, questions.length > 0 ? questions.map(q => q.question).join(' · ') : question)
+  notifyInput(ctx, questions.map(q => q.question).join(' · '))
 }
 
 const approval: Handler = ctx => {
@@ -599,13 +586,15 @@ export function handleServerRequest(
     const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId, storedIdForRuntimeId })
 
     if (route === 'ignore') {
+      declineNotShown(request)
+
       return true
     }
 
     if (route === 'retry') {
       // Re-read the ref instead of capturing activeSessionId: session resume
       // publishes its binding synchronously between this replay and the next
-      // turn. A second miss deliberately stays silent for another window.
+      // turn. A second miss leaves the request to another window.
       setTimeout(() => {
         if (
           previewSessionRoute({
@@ -616,6 +605,8 @@ export function handleServerRequest(
           }) === 'run'
         ) {
           handler({ deps, request, sessionId, isActiveSession: true })
+        } else {
+          declineNotShown(request)
         }
       }, 0)
 

@@ -1,136 +1,117 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type DragEvent as ReactDragEvent,
-} from "react";
-import {
-  ArrowUp,
-  Download,
-  FileIcon,
-  Folder,
-  FolderOpen,
-  FolderPlus,
-  RefreshCw,
-  Trash2,
-  Upload,
-} from "lucide-react";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Card, CardContent } from "@nous-research/ui/ui/components/card";
+import { useCallback, useEffect, useRef, useState, type DragEvent as ReactDragEvent } from 'react'
+import { ArrowUp, Download, FileIcon, Folder, FolderOpen, FolderPlus, RefreshCw, Trash2, Upload } from 'lucide-react'
+import { Badge } from '@nous-research/ui/ui/components/badge'
+import { Button } from '@nous-research/ui/ui/components/button'
+import { Card, CardContent } from '@nous-research/ui/ui/components/card'
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
-} from "@nous-research/ui/ui/components/dialog";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
-import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { usePageHeader } from "@/contexts/usePageHeader";
-import { api } from "@/lib/api";
-import type { ManagedFileEntry, ManagedFilesResponse } from "@/lib/api";
-import { PluginSlot } from "@/plugins";
-import { useI18n } from "@/i18n";
-import { formatDateTime } from "@/lib/utils";
-import { errorMessage } from "@/lib/api-error";
+  DialogTitle
+} from '@nous-research/ui/ui/components/dialog'
+import { Input } from '@nous-research/ui/ui/components/input'
+import { Spinner } from '@nous-research/ui/ui/components/spinner'
+import { Toast } from '@nous-research/ui/ui/components/toast'
+import { useToast } from '@nous-research/ui/hooks/use-toast'
+import { DeleteConfirmDialog } from '@/components/DeleteConfirmDialog'
+import { usePageHeader } from '@/contexts/usePageHeader'
+import { api } from '@/lib/api'
+import type { ManagedFileEntry, ManagedFilesResponse } from '@/lib/api'
+import { PluginSlot } from '@/plugins'
+import { useI18n } from '@/i18n'
+import { formatDateTime } from '@/lib/utils'
+import { errorMessage } from '@/lib/api-error'
 
 function joinPath(base: string, name: string): string {
-  const cleanName = name.trim().replace(/^[\\/]+/, "");
-  if (!cleanName) return base;
-  const separator = base.includes("\\") && !base.includes("/") ? "\\" : "/";
-  if (!base || base.endsWith("/") || base.endsWith("\\")) return `${base}${cleanName}`;
-  return `${base}${separator}${cleanName}`;
+  const cleanName = name.trim().replace(/^[\\/]+/, '')
+  if (!cleanName) return base
+  const separator = base.includes('\\') && !base.includes('/') ? '\\' : '/'
+  if (!base || base.endsWith('/') || base.endsWith('\\')) return `${base}${cleanName}`
+  return `${base}${separator}${cleanName}`
 }
 
 function formatBytes(size: number | null): string {
-  if (size === null) return "-";
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  if (size === null) return '-'
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`
+  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
 function downloadDataUrl(dataUrl: string, name: string) {
-  const link = document.createElement("a");
-  link.href = dataUrl;
-  link.download = name || "download";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
+  const link = document.createElement('a')
+  link.href = dataUrl
+  link.download = name || 'download'
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
 }
 
 function displayPath(path: string | null | undefined, fallback: string): string {
-  return path?.trim() || fallback;
+  return path?.trim() || fallback
 }
 
 function transferHasFiles(event: ReactDragEvent<HTMLElement>): boolean {
-  return Array.from(event.dataTransfer.types).includes("Files");
+  return Array.from(event.dataTransfer.types).includes('Files')
 }
 
 export default function FilesPage() {
-  const { format, locale, t } = useI18n();
-  const { toast, showToast } = useToast();
-  const { setAfterTitle, setEnd } = usePageHeader();
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const dragDepthRef = useRef(0);
-  const [currentPath, setCurrentPath] = useState<string | undefined>(undefined);
-  const [pathInput, setPathInput] = useState("");
-  const [listing, setListing] = useState<ManagedFilesResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [draggingFiles, setDraggingFiles] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [folderName, setFolderName] = useState("");
-  const [pendingDelete, setPendingDelete] = useState<ManagedFileEntry | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { format, locale, t } = useI18n()
+  const { toast, showToast } = useToast()
+  const { setAfterTitle, setEnd } = usePageHeader()
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const dragDepthRef = useRef(0)
+  const [currentPath, setCurrentPath] = useState<string | undefined>(undefined)
+  const [pathInput, setPathInput] = useState('')
+  const [listing, setListing] = useState<ManagedFilesResponse | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [draggingFiles, setDraggingFiles] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createDialogOpen, setCreateDialogOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [folderName, setFolderName] = useState('')
+  const [pendingDelete, setPendingDelete] = useState<ManagedFileEntry | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
-  const activePath = listing?.path ?? currentPath ?? "";
-  const canChangePath = listing?.can_change_path ?? false;
-  const canUpload = Boolean(activePath) && !uploading;
-  const headerPath = displayPath(
-    listing?.locked_root ?? listing?.path ?? currentPath,
-    t.files.root,
-  );
+  const activePath = listing?.path ?? currentPath ?? ''
+  const canChangePath = listing?.can_change_path ?? false
+  const canUpload = Boolean(activePath) && !uploading
+  const headerPath = displayPath(listing?.locked_root ?? listing?.path ?? currentPath, t.files.root)
 
   const load = useCallback(
     async (path = currentPath) => {
-      setLoading(true);
-      setError(null);
+      setLoading(true)
+      setError(null)
       try {
-        const result = await api.listFiles(path);
-        setListing(result);
-        setCurrentPath(result.path);
-        setPathInput(result.path);
+        const result = await api.listFiles(path)
+        setListing(result)
+        setCurrentPath(result.path)
+        setPathInput(result.path)
       } catch (e) {
-        setError(errorMessage(e, t.common));
+        setError(errorMessage(e, t.common))
       } finally {
-        setLoading(false);
+        setLoading(false)
       }
     },
-    [currentPath],
-  );
+    [currentPath]
+  )
 
   useEffect(() => {
     // Existing dashboard data pages fetch from effects; keep this local and explicit
     // until the shared lint profile is updated for async page loaders.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void load(currentPath);
-  }, [currentPath]); // eslint-disable-line react-hooks/exhaustive-deps
+    void load(currentPath)
+  }, [currentPath]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setAfterTitle(
       <Badge tone="outline" className="max-w-[22rem] truncate text-xs" title={headerPath}>
         {headerPath}
-      </Badge>,
-    );
+      </Badge>
+    )
     setEnd(
       <div className="flex items-center gap-2">
         <Button
@@ -143,124 +124,124 @@ export default function FilesPage() {
         >
           {loading ? <Spinner /> : <RefreshCw />}
         </Button>
-      </div>,
-    );
+      </div>
+    )
     return () => {
-      setAfterTitle(null);
-      setEnd(null);
-    };
-  }, [headerPath, load, loading, setAfterTitle, setEnd, t.files.refresh]);
+      setAfterTitle(null)
+      setEnd(null)
+    }
+  }, [headerPath, load, loading, setAfterTitle, setEnd, t.files.refresh])
 
   const openDirectory = (entry: ManagedFileEntry) => {
     if (entry.is_directory) {
-      setCurrentPath(entry.path);
+      setCurrentPath(entry.path)
     }
-  };
+  }
 
   const goToPath = async () => {
-    const nextPath = pathInput.trim();
+    const nextPath = pathInput.trim()
     if (!nextPath) {
-      showToast(t.files.pathRequired, "error");
-      return;
+      showToast(t.files.pathRequired, 'error')
+      return
     }
-    await load(nextPath);
-  };
+    await load(nextPath)
+  }
 
   const createDirectory = async () => {
-    const name = folderName.trim();
+    const name = folderName.trim()
     if (!activePath) {
-      showToast(t.files.directoryUnavailable, "error");
-      return;
+      showToast(t.files.directoryUnavailable, 'error')
+      return
     }
     if (!name) {
-      showToast(t.files.folderNameRequired, "error");
-      return;
+      showToast(t.files.folderNameRequired, 'error')
+      return
     }
-    setCreating(true);
+    setCreating(true)
     try {
-      await api.createDirectory(joinPath(activePath, name));
-      setFolderName("");
-      setCreateDialogOpen(false);
-      showToast(t.files.folderCreated, "success");
-      await load();
+      await api.createDirectory(joinPath(activePath, name))
+      setFolderName('')
+      setCreateDialogOpen(false)
+      showToast(t.files.folderCreated, 'success')
+      await load()
     } catch (e) {
-      showToast(format(t.files.createFailed, { error: errorMessage(e, t.common) }), "error");
+      showToast(format(t.files.createFailed, { error: errorMessage(e, t.common) }), 'error')
     } finally {
-      setCreating(false);
+      setCreating(false)
     }
-  };
+  }
 
   const uploadFiles = async (files: FileList | null) => {
-    if (!files?.length) return;
-    setUploading(true);
+    if (!files?.length) return
+    setUploading(true)
     try {
       for (const file of Array.from(files)) {
-        await api.uploadFile(joinPath(activePath, file.name), file, true);
+        await api.uploadFile(joinPath(activePath, file.name), file, true)
       }
-      showToast(format(t.files.filesUploaded, { count: files.length }), "success");
-      await load();
+      showToast(format(t.files.filesUploaded, { count: files.length }), 'success')
+      await load()
     } catch (e) {
-      showToast(format(t.files.uploadFailed, { error: errorMessage(e, t.common) }), "error");
+      showToast(format(t.files.uploadFailed, { error: errorMessage(e, t.common) }), 'error')
     } finally {
-      setUploading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      setUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
     }
-  };
+  }
 
   const handleDragEnter = (event: ReactDragEvent<HTMLElement>) => {
-    if (!canUpload || !transferHasFiles(event)) return;
-    event.preventDefault();
-    dragDepthRef.current += 1;
-    setDraggingFiles(true);
-  };
+    if (!canUpload || !transferHasFiles(event)) return
+    event.preventDefault()
+    dragDepthRef.current += 1
+    setDraggingFiles(true)
+  }
 
   const handleDragOver = (event: ReactDragEvent<HTMLElement>) => {
-    if (!canUpload || !transferHasFiles(event)) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-  };
+    if (!canUpload || !transferHasFiles(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
 
   const handleDragLeave = (event: ReactDragEvent<HTMLElement>) => {
-    if (!canUpload || !transferHasFiles(event)) return;
-    event.preventDefault();
-    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (!canUpload || !transferHasFiles(event)) return
+    event.preventDefault()
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
     if (dragDepthRef.current === 0) {
-      setDraggingFiles(false);
+      setDraggingFiles(false)
     }
-  };
+  }
 
   const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
-    if (!canUpload) return;
-    event.preventDefault();
-    dragDepthRef.current = 0;
-    setDraggingFiles(false);
-    void uploadFiles(event.dataTransfer.files);
-  };
+    if (!canUpload) return
+    event.preventDefault()
+    dragDepthRef.current = 0
+    setDraggingFiles(false)
+    void uploadFiles(event.dataTransfer.files)
+  }
 
   const downloadFile = async (entry: ManagedFileEntry) => {
-    if (entry.is_directory) return;
+    if (entry.is_directory) return
     try {
-      const file = await api.readFile(entry.path);
-      downloadDataUrl(file.data_url, file.name);
+      const file = await api.readFile(entry.path)
+      downloadDataUrl(file.data_url, file.name)
     } catch (e) {
-      showToast(format(t.files.downloadFailed, { error: errorMessage(e, t.common) }), "error");
+      showToast(format(t.files.downloadFailed, { error: errorMessage(e, t.common) }), 'error')
     }
-  };
+  }
 
   const confirmDelete = async () => {
-    if (!pendingDelete) return;
-    setDeleting(true);
+    if (!pendingDelete) return
+    setDeleting(true)
     try {
-      await api.deleteFile(pendingDelete.path, pendingDelete.is_directory);
-      showToast(t.files.deleted, "success");
-      setPendingDelete(null);
-      await load();
+      await api.deleteFile(pendingDelete.path, pendingDelete.is_directory)
+      showToast(t.files.deleted, 'success')
+      setPendingDelete(null)
+      await load()
     } catch (e) {
-      showToast(format(t.files.deleteFailed, { error: errorMessage(e, t.common) }), "error");
+      showToast(format(t.files.deleteFailed, { error: errorMessage(e, t.common) }), 'error')
     } finally {
-      setDeleting(false);
+      setDeleting(false)
     }
-  };
+  }
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-4">
@@ -271,21 +252,21 @@ export default function FilesPage() {
         type="file"
         multiple
         className="hidden"
-        onChange={(event) => void uploadFiles(event.currentTarget.files)}
+        onChange={event => void uploadFiles(event.currentTarget.files)}
       />
 
       <div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
         {canChangePath ? (
           <form
             className="flex min-w-0 flex-1 items-center gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void goToPath();
+            onSubmit={event => {
+              event.preventDefault()
+              void goToPath()
             }}
           >
             <Input
               value={pathInput}
-              onChange={(event) => setPathInput(event.target.value)}
+              onChange={event => setPathInput(event.target.value)}
               aria-label={t.files.path}
               placeholder={t.files.path}
               className="h-9 min-w-0 flex-1 font-mono"
@@ -336,8 +317,8 @@ export default function FilesPage() {
         aria-label={t.files.uploadFiles}
         className={`flex min-h-20 w-full min-w-0 items-center justify-between gap-4 border border-dashed px-4 py-3 text-left transition ${
           draggingFiles
-            ? "border-primary bg-primary/10 text-foreground"
-            : "border-border bg-background/20 text-text-secondary hover:border-text-tertiary hover:bg-background/35"
+            ? 'border-primary bg-primary/10 text-foreground'
+            : 'border-border bg-background/20 text-text-secondary hover:border-text-tertiary hover:bg-background/35'
         } disabled:cursor-not-allowed disabled:opacity-60`}
       >
         <span className="flex min-w-0 items-center gap-3">
@@ -346,11 +327,7 @@ export default function FilesPage() {
           </span>
           <span className="min-w-0">
             <span className="block text-sm font-semibold uppercase tracking-[0.08em] text-foreground">
-              {uploading
-                ? t.files.uploading
-                : draggingFiles
-                  ? t.files.releaseToUpload
-                  : t.files.dropFilesHere}
+              {uploading ? t.files.uploading : draggingFiles ? t.files.releaseToUpload : t.files.dropFilesHere}
             </span>
             <span className="block truncate font-mono text-xs text-text-secondary" title={activePath}>
               {activePath || t.files.loading}
@@ -365,9 +342,7 @@ export default function FilesPage() {
       <Card className="min-w-0 max-w-full overflow-hidden">
         <CardContent className="overflow-x-auto p-0">
           {error && (
-            <div className="border-b border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
-              {error}
-            </div>
+            <div className="border-b border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>
           )}
 
           <div className="grid min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border px-4 py-2 text-xs font-semibold uppercase tracking-[0.08em] text-text-tertiary">
@@ -399,11 +374,9 @@ export default function FilesPage() {
               {t.files.loading}
             </div>
           ) : listing && listing.entries.length === 0 ? (
-            <div className="py-12 text-center text-sm text-muted-foreground">
-              {t.files.noFiles}
-            </div>
+            <div className="py-12 text-center text-sm text-muted-foreground">{t.files.noFiles}</div>
           ) : (
-            listing?.entries.map((entry) => (
+            listing?.entries.map(entry => (
               <div
                 key={entry.path}
                 className="grid min-w-[42rem] grid-cols-[minmax(12rem,1fr)_7rem_10rem_5.5rem] items-center gap-3 border-b border-border/60 px-4 py-2 text-sm last:border-b-0 hover:bg-background/35"
@@ -422,9 +395,7 @@ export default function FilesPage() {
                 </button>
                 <span className="text-xs tabular-nums text-text-secondary">{formatBytes(entry.size)}</span>
                 <span className="truncate text-xs text-text-secondary">
-                  {Number.isFinite(entry.mtime)
-                    ? formatDateTime(entry.mtime * 1000, locale)
-                    : "-"}
+                  {Number.isFinite(entry.mtime) ? formatDateTime(entry.mtime * 1000, locale) : '-'}
                 </span>
                 <span className="flex justify-end gap-1">
                   {entry.is_directory ? (
@@ -444,7 +415,7 @@ export default function FilesPage() {
                       type="button"
                       onClick={() => void downloadFile(entry)}
                       aria-label={format(t.files.downloadItem, {
-                        name: entry.name,
+                        name: entry.name
                       })}
                     >
                       <Download />
@@ -471,10 +442,10 @@ export default function FilesPage() {
 
       <Dialog
         open={createDialogOpen}
-        onOpenChange={(open) => {
-          if (creating) return;
-          setCreateDialogOpen(open);
-          if (!open) setFolderName("");
+        onOpenChange={open => {
+          if (creating) return
+          setCreateDialogOpen(open)
+          if (!open) setFolderName('')
         }}
       >
         <DialogContent className="max-w-sm">
@@ -482,7 +453,7 @@ export default function FilesPage() {
             <DialogTitle>{t.files.createFolder}</DialogTitle>
             <DialogDescription>
               {format(t.files.target, {
-                path: activePath || t.files.loading,
+                path: activePath || t.files.loading
               })}
             </DialogDescription>
           </DialogHeader>
@@ -490,9 +461,9 @@ export default function FilesPage() {
             <Input
               autoFocus
               value={folderName}
-              onChange={(event) => setFolderName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void createDirectory();
+              onChange={event => setFolderName(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === 'Enter') void createDirectory()
               }}
               placeholder={t.files.folderName}
               disabled={creating}
@@ -503,8 +474,8 @@ export default function FilesPage() {
               type="button"
               outlined
               onClick={() => {
-                setCreateDialogOpen(false);
-                setFolderName("");
+                setCreateDialogOpen(false)
+                setFolderName('')
               }}
               disabled={creating}
             >
@@ -529,20 +500,13 @@ export default function FilesPage() {
         onConfirm={() => void confirmDelete()}
         title={
           pendingDelete
-            ? format(
-                pendingDelete.is_directory
-                  ? t.files.deleteFolderTitle
-                  : t.files.deleteFileTitle,
-                { name: pendingDelete.name },
-              )
+            ? format(pendingDelete.is_directory ? t.files.deleteFolderTitle : t.files.deleteFileTitle, {
+                name: pendingDelete.name
+              })
             : t.files.deleteItemTitle
         }
-        description={
-          pendingDelete?.is_directory
-            ? t.files.deleteFolderDescription
-            : t.files.deleteFileDescription
-        }
+        description={pendingDelete?.is_directory ? t.files.deleteFolderDescription : t.files.deleteFileDescription}
       />
     </div>
-  );
+  )
 }

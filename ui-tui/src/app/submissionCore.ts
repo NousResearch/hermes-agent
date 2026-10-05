@@ -1,6 +1,6 @@
 import type { GatewayClient } from '../gatewayClient.js'
 import type { InputDetectDropResponse, PromptSubmitResponse } from '../gatewayTypes.js'
-import { translate } from '../i18n/index.js'
+import { t as tr } from '../i18n/index.js'
 import type { Msg } from '../types.js'
 
 import { turnController } from './turnController.js'
@@ -55,9 +55,6 @@ export function submitPrompt(
 ): void {
   const sid = getUiState().sid
 
-  const tr = (key: Parameters<typeof translate>[1], vars?: Record<string, string | number>) =>
-    translate(getUiState().locale, key, vars)
-
   if (!sid) {
     return deps.sys(tr('submission.sessionNotReady'))
   }
@@ -103,13 +100,11 @@ export function submitPrompt(
           patchUiState({ busy: true, status: 'queued for next turn' })
 
           return deps.sys(
-            tr('submission.queued', {
-              text: `${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}`
-            })
+            tr('slashCmd.core.queue.queued', `${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}`)
           )
         }
 
-        deps.sys(tr('errors.rpc', { message: e.message }))
+        deps.sys(tr('errors.rpc', e.message))
         patchUiState({ busy: false, status: 'ready' })
       })
   }

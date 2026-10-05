@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useMemo } from 'react'
 
-import { type Locale, translate } from '../i18n/index.js'
+import { getLocale, t as tr, useLocale, useT } from '../i18n/index.js'
 
 import { $uiState } from './uiStore.js'
 
@@ -67,19 +67,19 @@ const lastOutputLine = (preview: string | undefined): string => {
   return ''
 }
 
-export const processVerdict = (row: ProcessRow, exitCode: number | null | undefined, locale: Locale = 'en'): string => {
+export const processVerdict = (
+  row: ProcessRow,
+  exitCode: number | null | undefined,
+  locale: string = getLocale()
+): string => {
   if (row.status === 'running') {
-    return row.detail
-      ? translate(locale, 'process.last', { detail: row.detail })
-      : translate(locale, 'process.starting')
+    return row.detail ? tr('process.last', row.detail) : tr('pickers.session.status.starting')
   }
 
   const verdict =
-    row.status === 'killed' || row.status === 'lost'
-      ? translate(locale, `process.${row.status}`)
-      : translate(locale, 'process.exit', { code: exitCode ?? '?' })
+    row.status === 'killed' || row.status === 'lost' ? tr(`process.${row.status}`) : tr('process.exit', exitCode ?? '?')
 
-  return translate(locale, 'process.ago', { verdict, seconds: row.sinceExitSeconds })
+  return tr('process.ago', verdict, row.sinceExitSeconds)
 }
 
 /** Running processes first (longest running first), then recently exited ones
@@ -87,7 +87,7 @@ export const processVerdict = (row: ProcessRow, exitCode: number | null | undefi
 export const buildProcessRows = (
   processes: readonly ProcessEntry[],
   nowMs: number,
-  locale: Locale = 'en'
+  locale: string = getLocale()
 ): ProcessRow[] => {
   const nowS = nowMs / 1000
   const rows: ProcessRow[] = []
@@ -102,7 +102,7 @@ export const buildProcessRows = (
     }
 
     const row: ProcessRow = {
-      command: (entry.command ?? '').replace(/\s+/g, ' ').trim() || translate(locale, 'process.background'),
+      command: (entry.command ?? '').replace(/\s+/g, ' ').trim() || tr('process.background'),
       detail: lastOutputLine(entry.output_preview),
       elapsedSeconds: Math.max(0, entry.uptime_seconds ?? 0) - sinceExitSeconds,
       id: entry.session_id,
@@ -127,7 +127,9 @@ export const buildProcessRows = (
 
 export function useProcessRows(nowMs: number): ProcessRow[] {
   const snapshot = useStore($processSnapshot)
-  const { sid, locale } = useStore($uiState)
+  const { sid } = useStore($uiState)
+  const locale = useLocale()
+  useT()
 
   return useMemo(
     () => buildProcessRows(snapshot.sid === sid ? snapshot.processes : [], nowMs, locale),

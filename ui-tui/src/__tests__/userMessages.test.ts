@@ -1,8 +1,9 @@
 import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   backendGaveUp,
+  backendRestarting,
   describeCredentialWarning,
   describeRpcError,
   describeSlashExecError,
@@ -15,6 +16,7 @@ import {
   stderrLooksLikeProblem,
   stderrProblemActivity
 } from '../app/userMessages.js'
+import { applyLocale, resetLocale } from '../i18n/runtime.js'
 
 // Behaviour contracts for the user-facing wording, not snapshots: each test
 // asserts the message names what happened and cites the real next step.
@@ -258,20 +260,25 @@ describe('describeCredentialWarning', () => {
   })
 })
 
-describe('localized failure contracts', () => {
-  it('keeps recovery decisions and raw details independent of display language', () => {
-    const retryable = describeTurnFailure(
-      { error: 'upstream detail $&', error_surface: { code: 'server_error', retryable: true } },
-      'zh'
-    )
-    expect(retryable).toContain('模型服务商内部出错')
-    expect(retryable).toContain('/retry')
-    expect(retryable).toContain('upstream detail $&')
-    const permanent = describeTurnFailure({ error_surface: { layer: 'provider', retryable: false } }, 'zh')
-    expect(permanent).toContain('/model')
-    expect(permanent).not.toContain('/retry')
-    expect(describeRpcError(new Error('unknown provider detail'), 'zh')).toBe('unknown provider detail')
-    expect(promptTimeoutNotice('sudo', 'timeout', 'zh')).toContain('命令已跳过')
-    expect(promptTimeoutNotice('sudo', 'interrupted', 'zh')).toBeNull()
+describe('locale-aware resolution', () => {
+  afterEach(() => {
+    resetLocale()
+  })
+
+  it('resolves the turn-failure and prompt-timeout tables at call time so a pack swap is observed', () => {
+    applyLocale('xx', {
+      lang: 'xx',
+      messages: {
+        'userMessages.backend.restarting': 'RESTART-XX',
+        'userMessages.promptTimeout.sudo': 'SUDO-XX',
+        'userMessages.turn.code.auth.title': 'AUTH-XX',
+        'userMessages.turn.notAnswered': '{0} // XX'
+      },
+      surface: 'tui'
+    })
+
+    expect(backendRestarting()).toBe('RESTART-XX')
+    expect(promptTimeoutNotice('sudo', 'timeout')).toBe('SUDO-XX')
+    expect(describeTurnFailure({ error_surface: { code: 'auth', layer: 'auth' } }).split('\n')[0]).toBe('AUTH-XX // XX')
   })
 })

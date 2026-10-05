@@ -1,7 +1,7 @@
 import { Text } from '@hermes/ink'
 
 import { Dialog, Overlay, type OverlayZone } from '../../components/overlay.js'
-import { useI18n } from '../../i18n/index.js'
+import { useT } from '../../i18n/index.js'
 import { defineWidgetApp } from '../registry.js'
 import { isCtrl } from '../types.js'
 
@@ -29,7 +29,7 @@ export interface DialogTestState {
 export const dialogTestApp = defineWidgetApp<DialogTestState>({
   id: 'dialog-test',
   help: 'open a sample dialog overlay with a faked backdrop',
-  helpKey: 'widget.dialog.help',
+  helpKey: 'slashCmd.core.help.dialogTest',
   usage: USAGE,
   usageKey: 'widget.dialog.usage',
 
@@ -53,14 +53,14 @@ export const dialogTestApp = defineWidgetApp<DialogTestState>({
 })
 
 function DialogTestView({ cols, state }: { cols: number; state: DialogTestState }) {
-  const { t: ti } = useI18n()
-  const body = state.body || ti('widget.dialog.body', { zone: state.zone })
+  const ti = useT()
+  const body = state.body || ti.widget.dialog.body(state.zone)
 
   return (
     <Overlay backdrop zone={state.zone}>
       <Dialog
-        hint={state.hint ?? ti('widget.dialog.hint')}
-        title={state.title ?? ti('widget.dialog.title')}
+        hint={state.hint ?? ti.widget.dialog.hint}
+        title={state.title ?? ti.widget.dialog.title}
         width={Math.min(60, cols - 8)}
       >
         {body.split('\n').map((line, i) => (

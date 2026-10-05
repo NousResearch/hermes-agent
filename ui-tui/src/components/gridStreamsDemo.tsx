@@ -1,7 +1,7 @@
 import { Box, Text } from '@hermes/ink'
 import { memo, type ReactNode, useEffect, useRef, useState } from 'react'
 
-import { type TranslationKey, useI18n } from '../i18n/index.js'
+import { t as tr, type TranslationKey, useLocale, useT } from '../i18n/index.js'
 import { sparkRows } from '../lib/charts.js'
 import type { GridAreaCell, GridTrackSize } from '../lib/widgetGrid.js'
 import type { GridTestState } from '../sdk/apps/gridTestState.js'
@@ -60,8 +60,8 @@ const useHistory = (tick: number, sample: () => number, cap = 240) => {
 // ── stream panels ───────────────────────────────────────────────────────────
 
 function TokenStream({ height, t, width }: { height: number; t: Theme; width: number }) {
-  const { t: ti } = useI18n()
-  const tokenWords = ti('widget.grid.tokenStream').split(' ')
+  const ti = useT()
+  const tokenWords = ti.widget.grid.tokenStream.split(' ')
   const tick = useTick(90)
   const wordCount = tick % (tokenWords.length * 4)
   // Keep roughly enough trailing text to fill the cell, on word boundaries.
@@ -155,7 +155,8 @@ function ToolTicker({ height, t }: { height: number; t: Theme; width: number }) 
 }
 
 function MetaPanel({ t }: { height: number; t: Theme; width: number }) {
-  const { locale, t: ti } = useI18n()
+  const locale = useLocale()
+  const ti = useT()
   const tick = useTick(1000)
   const startedRef = useRef(Date.now())
   const uptime = Math.floor((Date.now() - startedRef.current) / 1000)
@@ -163,10 +164,8 @@ function MetaPanel({ t }: { height: number; t: Theme; width: number }) {
   return (
     <Box flexDirection="column">
       <Text color={t.color.text}>{new Date().toLocaleTimeString(locale)}</Text>
-      <Text color={t.color.muted}>
-        {ti('widget.grid.uptime', { minutes: Math.floor(uptime / 60), seconds: uptime % 60 })}
-      </Text>
-      <Text color={t.color.muted}>{ti('widget.grid.ticks', { count: tick })}</Text>
+      <Text color={t.color.muted}>{ti.widget.grid.uptime(Math.floor(uptime / 60), uptime % 60)}</Text>
+      <Text color={t.color.muted}>{ti.widget.grid.ticks(tick)}</Text>
     </Box>
   )
 }
@@ -243,7 +242,7 @@ export const STREAM_DEFS: StreamDef[] = [
   {
     id: 'meta',
     render: ({ height, t, width }) => <MetaPanel height={height} t={t} width={width} />,
-    titleKey: 'widget.grid.stream.session'
+    titleKey: 'pickers.model.persist.scopeSession'
   }
 ]
 
@@ -301,7 +300,7 @@ export const GridStreamsDemo = memo(function GridStreamsDemo({
   state: GridTestState
   t: Theme
 }) {
-  const { t: ti } = useI18n()
+  const ti = useT()
   const columnTracks: GridTrackSize[] = [{ fr: 1 }, { fr: 1 }, { fr: 1 }]
   const main = STREAM_DEFS[state.streamMain % STREAM_DEFS.length]!
 
@@ -325,9 +324,9 @@ export const GridStreamsDemo = memo(function GridStreamsDemo({
           width={cell.width}
         >
           <Text bold color={t.color.primary}>
-            {ti('widget.grid.missionControl')}
+            {ti.widget.grid.missionControl}
           </Text>
-          <Text color={t.color.muted}>{ti('widget.grid.main', { name: ti(main.titleKey) })}</Text>
+          <Text color={t.color.muted}>{ti.widget.grid.main(tr(main.titleKey))}</Text>
         </Box>
       )
     },
@@ -340,7 +339,7 @@ export const GridStreamsDemo = memo(function GridStreamsDemo({
           focused={STREAM_DEFS[state.streamFocus % STREAM_DEFS.length]!.id === def.id}
           main={def.id === main.id}
           t={t}
-          title={ti(def.titleKey)}
+          title={tr(def.titleKey)}
         >
           {def.render}
         </StreamPanel>

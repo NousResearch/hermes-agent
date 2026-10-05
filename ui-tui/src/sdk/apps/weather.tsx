@@ -3,7 +3,7 @@ import { mix } from '@hermes/shared/color'
 
 import { ShimmerRows } from '../../components/loaders.js'
 import { Dialog } from '../../components/overlay.js'
-import { useI18n } from '../../i18n/index.js'
+import { useT } from '../../i18n/index.js'
 import type { Theme } from '../../theme.js'
 import { updateWidget } from '../host.js'
 import { defineWidgetApp } from '../registry.js'
@@ -276,9 +276,9 @@ export const weatherApp = defineWidgetApp<WeatherState>({
 })
 
 function WeatherCard({ cols, state, t }: { cols: number; state: WeatherState; t: Theme }) {
-  const { t: ti } = useI18n()
+  const ti = useT()
   const { phase } = state
-  const title = phase.kind === 'ready' ? phase.report.area || ti('widget.weather.here') : ti('widget.weather.title')
+  const title = phase.kind === 'ready' ? phase.report.area || ti.widget.weather.here : ti.widget.weather.title
 
   return (
     <Dialog title={title} width={Math.min(42, cols - 4)}>
@@ -289,16 +289,14 @@ function WeatherCard({ cols, state, t }: { cols: number; state: WeatherState; t:
           rows={LOADING_ROWS}
         />
       )}
-      {phase.kind === 'error' && (
-        <Text color={t.color.error}>{ti('widget.weather.error', { message: phase.message })}</Text>
-      )}
+      {phase.kind === 'error' && <Text color={t.color.error}>{ti.widget.weather.error(phase.message)}</Text>}
       {phase.kind === 'ready' && <ReadyBody report={phase.report} t={t} />}
     </Dialog>
   )
 }
 
 function ReadyBody({ report, t }: { report: Report; t: Theme }) {
-  const { t: ti } = useI18n()
+  const ti = useT()
   const art = artFor(report.weatherCode)
 
   return (
@@ -311,13 +309,12 @@ function ReadyBody({ report, t }: { report: Report; t: Theme }) {
         ))}
       </Box>
       <Box flexDirection="column">
-        <Text color={t.color.label}>{report.condition || ti('widget.weather.unknown')}</Text>
+        <Text color={t.color.label}>{report.condition || ti.widget.weather.unknown}</Text>
         <Text color={t.color.text}>
-          {report.tempC}°C{' '}
-          <Text color={t.color.muted}>{ti('widget.weather.feels', { temperature: `${report.feelsC}°C` })}</Text>
+          {report.tempC}°C <Text color={t.color.muted}>{ti.widget.weather.feels(`${report.feelsC}°C`)}</Text>
         </Text>
-        <Text color={t.color.muted}>{ti('widget.weather.wind', { speed: `${report.windKmph} km/h` })}</Text>
-        <Text color={t.color.muted}>{ti('widget.weather.humidity', { percent: report.humidity })}</Text>
+        <Text color={t.color.muted}>{ti.widget.weather.wind(`${report.windKmph} km/h`)}</Text>
+        <Text color={t.color.muted}>{ti.widget.weather.humidity(report.humidity)}</Text>
       </Box>
     </Box>
   )

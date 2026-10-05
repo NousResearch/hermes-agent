@@ -5,7 +5,8 @@ import { useRef, useState } from 'react'
 
 import type { BillingOverlayState } from '../app/interfaces.js'
 import type { BillingStateResponse } from '../gatewayTypes.js'
-import { type I18nApi, type Locale, useI18n } from '../i18n/index.js'
+import type { Translations } from '../i18n/types.js'
+import { useT } from '../i18n/useT.js'
 import type { Theme } from '../theme.js'
 
 import { ActionRow, footer, MenuRow, type MenuRowSpec, UsageBars, useMenu } from './overlayPrimitives.js'
@@ -20,20 +21,20 @@ interface BillingOverlayProps {
   t: Theme
 }
 
-type Translator = I18nApi['t']
+type BillingMessages = Translations['billing']
 
-function autoReloadLine(s: BillingStateResponse, tr: Translator): null | string {
+function autoReloadLine(B: BillingMessages, s: BillingStateResponse): null | string {
   if (!s.auto_reload) {
     return null
   }
 
   return s.auto_reload.enabled
-    ? tr('billing.autoReload.lineOn', {
-        reloadTo: s.auto_reload.reload_to_display,
-        threshold: s.auto_reload.threshold_display
-      })
-    : tr('billing.autoReload.lineOff')
+    ? B.overview.autoReloadOn(s.auto_reload.threshold_display, s.auto_reload.reload_to_display)
+    : B.overview.autoReloadOff
 }
+
+/** `$` + raw numeric amount — USD formatting is a value, never a catalog literal. */
+const usd = (amount: string) => `$${amount}`
 
 /**
  * The /billing modal.  A self-contained state machine:
@@ -44,16 +45,11 @@ function autoReloadLine(s: BillingStateResponse, tr: Translator): null | string 
  */
 export function BillingOverlay({ onClose, onPatch, overlay, t }: BillingOverlayProps) {
   const { ctx, screen, state: s } = overlay
-  const { locale, t: tr } = useI18n()
 
   return (
     <Box borderColor={t.color.accent} borderStyle="round" flexDirection="column" paddingX={1}>
-      {screen === 'overview' && (
-        <OverviewScreen ctx={ctx} locale={locale} onClose={onClose} onPatch={onPatch} s={s} t={t} tr={tr} />
-      )}
-      {screen === 'buy' && (
-        <BuyScreen ctx={ctx} locale={locale} onClose={onClose} onPatch={onPatch} s={s} t={t} tr={tr} />
-      )}
+      {screen === 'overview' && <OverviewScreen ctx={ctx} onClose={onClose} onPatch={onPatch} s={s} t={t} />}
+      {screen === 'buy' && <BuyScreen ctx={ctx} onClose={onClose} onPatch={onPatch} s={s} t={t} />}
       {screen === 'confirm' && (
         <ConfirmScreen
           amount={overlay.pendingCharge?.amount ?? ''}
@@ -64,15 +60,10 @@ export function BillingOverlay({ onClose, onPatch, overlay, t }: BillingOverlayP
           onPatch={onPatch}
           s={s}
           t={t}
-          tr={tr}
         />
       )}
-      {screen === 'autoreload' && (
-        <AutoReloadScreen ctx={ctx} locale={locale} onClose={onClose} onPatch={onPatch} s={s} t={t} tr={tr} />
-      )}
-      {screen === 'limit' && (
-        <LimitScreen ctx={ctx} locale={locale} onClose={onClose} onPatch={onPatch} s={s} t={t} tr={tr} />
-      )}
+      {screen === 'autoreload' && <AutoReloadScreen ctx={ctx} onClose={onClose} onPatch={onPatch} s={s} t={t} />}
+      {screen === 'limit' && <LimitScreen ctx={ctx} onClose={onClose} onPatch={onPatch} s={s} t={t} />}
       {screen === 'stepup' && (
         <StepUpScreen
           amount={overlay.pendingCharge?.amount ?? ''}
@@ -80,7 +71,6 @@ export function BillingOverlay({ onClose, onPatch, overlay, t }: BillingOverlayP
           idempotencyKey={overlay.pendingCharge?.idempotencyKey}
           onClose={onClose}
           t={t}
-          tr={tr}
         />
       )}
     </Box>
@@ -91,15 +81,14 @@ export function BillingOverlay({ onClose, onPatch, overlay, t }: BillingOverlayP
 
 interface ScreenProps {
   ctx: BillingOverlayState['ctx']
-  locale: Locale
   onClose: () => void
   onPatch: (next: Partial<BillingOverlayState>) => void
   s: BillingStateResponse
   t: Theme
-  tr: Translator
 }
 
-function OverviewScreen({ ctx, locale, onClose, onPatch, s, t, tr }: ScreenProps) {
+function OverviewScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
+  const B = useT().billing
   // Full charge menu only for an admin with the org kill-switch on; otherwise it
   // collapses to Manage-on-portal / Close + a one-line note. NOTE: this is the
   // ORG-level gate (cli_billing_enabled), NOT the per-terminal remote spending scope —
@@ -109,9 +98,9 @@ function OverviewScreen({ ctx, locale, onClose, onPatch, s, t, tr }: ScreenProps
   const full = s.is_admin && s.cli_billing_enabled
 
   const note = !s.is_admin
-    ? tr('billing.overview.adminRequired')
+    ? B.overview.needsBillingPermissions
     : !s.cli_billing_enabled
-      ? tr('billing.overview.terminalOff')
+      ? B.overview.remoteSpendingOff
       : null
 
   // Always show the full billing menu for an admin/billing-on org — a missing
@@ -120,30 +109,19 @@ function OverviewScreen({ ctx, locale, onClose, onPatch, s, t, tr }: ScreenProps
   // on file, "Add funds" opens the guided add-card path (portal + check-again)
   // instead of an amount picker that would 403 no_payment_method.
   const items = full
-    ? [
-        { id: 'buy', label: tr('billing.action.addFunds') },
-        { id: 'autoreload', label: tr('billing.action.adjustAutoReload') },
-        { id: 'limit', label: tr('billing.action.adjustMonthlyLimit') },
-        { id: 'portal', label: tr('billing.action.managePortal') },
-        { id: 'cancel', label: tr('common.cancel') }
-      ]
-    : [
-        { id: 'portal', label: tr('billing.action.managePortal') },
-        { id: 'cancel', label: tr('common.cancel') }
-      ]
+    ? [B.overview.addFunds, B.overview.autoReload, B.overview.monthlyLimit, B.common.manageOnPortal, B.common.cancel]
+    : [B.common.manageOnPortal, B.common.cancel]
 
   const choose = (i: number) => {
-    const action = items[i]?.id
-
     if (full) {
-      if (action === 'buy') {
+      if (i === 0) {
         onPatch({ screen: 'buy' })
-      } else if (action === 'autoreload') {
+      } else if (i === 1) {
         onPatch({ screen: 'autoreload' })
-      } else if (action === 'limit') {
+      } else if (i === 2) {
         onPatch({ screen: 'limit' })
       } else {
-        if (action === 'portal' && s.portal_url) {
+        if (i === 3 && s.portal_url) {
           ctx.openPortal(s.portal_url)
         }
 
@@ -153,19 +131,19 @@ function OverviewScreen({ ctx, locale, onClose, onPatch, s, t, tr }: ScreenProps
       return
     }
 
-    if (action === 'portal' && s.portal_url) {
+    if (i === 0 && s.portal_url) {
       ctx.openPortal(s.portal_url)
     }
 
     onClose()
   }
 
-  const rows: MenuRowSpec[] = items.map((item, i) => ({ label: item.label, run: () => choose(i) }))
+  const rows: MenuRowSpec[] = items.map((label, i) => ({ label, run: () => choose(i) }))
   const sel = useMenu(rows, onClose)
 
-  const auto = autoReloadLine(s, tr)
+  const auto = autoReloadLine(B, s)
   // Balance leads, in the title — the first thing seen (review feedback).
-  const title = tr('billing.title.topUpBalance', { balance: s.balance_display })
+  const title = B.overview.title(s.balance_display)
 
   return (
     <Box flexDirection="column">
@@ -174,22 +152,20 @@ function OverviewScreen({ ctx, locale, onClose, onPatch, s, t, tr }: ScreenProps
       </Text>
       {s.org_name && (
         <Text color={t.color.muted}>
-          {tr('billing.orgLine', { org: s.org_name })}
+          {B.overview.org(s.org_name)}
           {s.role ? ` · ${s.role}` : ''}
         </Text>
       )}
       {/* The shared two-bar dollar usage (plan + top-up), same as /usage and
           /subscription. Renders nothing when no usage model is available. */}
-      <UsageBars locale={locale} model={s.usage} t={t} />
+      <UsageBars model={s.usage} t={t} />
       {auto && <Text color={t.color.muted}>{auto}</Text>}
       {/* Card presence at a glance: which card a charge would use (with why —
           "the card on your subscription"), or that none is saved. Only for the
           full menu — members/billing-off get the portal note instead. */}
       {full && (
         <Text color={t.color.muted}>
-          {s.card
-            ? tr('billing.payment.cardLabel', { card: s.card.display ?? s.card.masked })
-            : tr('billing.overview.noCardWalkthrough')}
+          {s.card ? B.overview.card(s.card.display ?? s.card.masked) : B.overview.noCardHint}
         </Text>
       )}
       {note && (
@@ -199,19 +175,20 @@ function OverviewScreen({ ctx, locale, onClose, onPatch, s, t, tr }: ScreenProps
       )}
 
       <Text />
-      {items.map((item, i) => (
-        <MenuRow active={sel === i} index={i + 1} key={item.id} label={item.label} t={t} />
+      {items.map((label, i) => (
+        <MenuRow active={sel === i} index={i + 1} key={label} label={label} t={t} />
       ))}
 
       <Text />
-      {footer(tr('billing.footer.overview', { count: items.length }), t)}
+      {footer(B.overview.hint(items.length), t)}
     </Box>
   )
 }
 
 // ── Screen 2: Buy credits ─────────────────────────────────────────────
 
-function BuyScreen({ ctx, onPatch, s, t, tr }: ScreenProps) {
+function BuyScreen({ ctx, onPatch, s, t }: ScreenProps) {
+  const B = useT().billing
   const presets = s.charge_presets_display
   const rawPresets = s.charge_presets
   // No card on file → the buy screen becomes the ADD-CARD path: cards are added
@@ -222,8 +199,8 @@ function BuyScreen({ ctx, onPatch, s, t, tr }: ScreenProps) {
   const noCard = !s.card
 
   const rows = noCard
-    ? [tr('billing.buy.addCardPortal'), tr('billing.buy.checkCardAgain'), tr('common.back')]
-    : [...presets, tr('billing.buy.customAmount'), tr('common.cancel')]
+    ? [B.buy.addCardOnPortal, B.buy.checkAgain, B.common.back]
+    : [...presets, B.buy.customAmount, B.common.cancel]
 
   const customIdx = presets.length
 
@@ -247,7 +224,7 @@ function BuyScreen({ ctx, onPatch, s, t, tr }: ScreenProps) {
       setChecking(false)
 
       if (!fresh) {
-        return setError(tr('billing.buy.refreshFailed'))
+        return setError(B.buy.refreshFailed)
       }
 
       setError(null)
@@ -256,9 +233,9 @@ function BuyScreen({ ctx, onPatch, s, t, tr }: ScreenProps) {
       onPatch({ state: fresh })
 
       if (fresh.card) {
-        ctx.sys(tr('billing.buy.cardFound', { card: fresh.card.display ?? fresh.card.masked }))
+        ctx.sys(B.buy.cardFound(fresh.card.display ?? fresh.card.masked))
       } else {
-        ctx.sys(tr('billing.buy.cardStillMissing'))
+        ctx.sys(B.buy.stillNoCard)
       }
     })
   }
@@ -276,7 +253,7 @@ function BuyScreen({ ctx, onPatch, s, t, tr }: ScreenProps) {
     const v = ctx.validate(raw)
 
     if (v.error || !v.amount) {
-      setError(v.error ?? tr('billing.buy.invalidPreset'))
+      setError(v.error ?? B.buy.invalidPreset)
 
       return
     }
@@ -288,7 +265,7 @@ function BuyScreen({ ctx, onPatch, s, t, tr }: ScreenProps) {
     const v = ctx.validate(raw)
 
     if (v.error || !v.amount) {
-      setError(v.error ?? tr('billing.buy.invalidAmount'))
+      setError(v.error ?? B.buy.invalidAmount)
 
       return
     }
@@ -301,9 +278,9 @@ function BuyScreen({ ctx, onPatch, s, t, tr }: ScreenProps) {
       if (i === 0) {
         if (s.portal_url) {
           ctx.openPortal(s.portal_url)
-          ctx.sys(tr('billing.buy.addCardInstruction'))
+          ctx.sys(B.buy.addCardThenCheckAgain)
         } else {
-          setError(tr('billing.buy.portalLinkFailed'))
+          setError(B.buy.portalLinkFailed)
         }
 
         return
@@ -357,27 +334,24 @@ function BuyScreen({ ctx, onPatch, s, t, tr }: ScreenProps) {
   // sel can go stale when a refresh flips the row set (3 add-card rows ↔ N
   // preset rows) — clamp for render + Enter.
   const cSel = Math.min(sel, rows.length - 1)
-
-  const payLine = s.card
-    ? tr('billing.payment.card', { card: s.card.display ?? s.card.masked })
-    : tr('billing.payment.noSavedCard')
+  const payLine = s.card ? B.common.payment(s.card.display ?? s.card.masked) : B.common.noSavedCard
 
   if (typing) {
     return (
       <Box flexDirection="column">
         <Text bold color={t.color.accent}>
-          {tr('billing.title.addFunds')}
+          {B.buy.title}
         </Text>
         <Text color={t.color.muted}>{payLine}</Text>
         <Text />
-        <Text color={t.color.label}>{tr('billing.buy.enterCustomAmount')}</Text>
+        <Text color={t.color.label}>{B.buy.enterCustomAmount}</Text>
         <Box>
           <Text color={t.color.label}>{'$'}</Text>
           <TextInput color={t.color.text} columns={20} onChange={setCustom} onSubmit={submitCustom} value={custom} />
         </Box>
         {error && <Text color={t.color.error}>{error}</Text>}
         <Text />
-        {footer(tr('billing.footer.confirmBack'), t)}
+        {footer(B.buy.typingHint, t)}
       </Box>
     )
   }
@@ -386,17 +360,17 @@ function BuyScreen({ ctx, onPatch, s, t, tr }: ScreenProps) {
     return (
       <Box flexDirection="column">
         <Text bold color={t.color.accent}>
-          {tr('billing.title.addFunds')}
+          {B.buy.title}
         </Text>
-        <Text color={t.color.text}>{tr('billing.buy.noCardSentence')}</Text>
-        <Text color={t.color.muted}>{tr('billing.buy.addCardBenefit')}</Text>
+        <Text color={t.color.text}>{B.buy.noSavedCardLine}</Text>
+        <Text color={t.color.muted}>{B.buy.addCardOnce}</Text>
         <Text />
         {rows.map((label, i) => (
           <MenuRow active={cSel === i} index={i + 1} key={label} label={label} t={t} />
         ))}
         {error && <Text color={t.color.error}>{error}</Text>}
         <Text />
-        {footer(checking ? tr('billing.buy.checkingCard') : tr('billing.footer.pickBack', { count: rows.length }), t)}
+        {footer(checking ? B.buy.checkingForCard : B.buy.hint(rows.length), t)}
       </Box>
     )
   }
@@ -404,7 +378,7 @@ function BuyScreen({ ctx, onPatch, s, t, tr }: ScreenProps) {
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.accent}>
-        {tr('billing.title.addFunds')}
+        {B.buy.title}
       </Text>
       <Text color={t.color.muted}>{payLine}</Text>
       <Text />
@@ -413,7 +387,7 @@ function BuyScreen({ ctx, onPatch, s, t, tr }: ScreenProps) {
       ))}
       {error && <Text color={t.color.error}>{error}</Text>}
       <Text />
-      {footer(tr('billing.footer.pickBack', { count: rows.length }), t)}
+      {footer(B.buy.hint(rows.length), t)}
     </Box>
   )
 }
@@ -428,8 +402,7 @@ function ConfirmScreen({
   onClose,
   onPatch,
   s,
-  t,
-  tr
+  t
 }: {
   amount: string
   ctx: BillingOverlayState['ctx']
@@ -439,8 +412,8 @@ function ConfirmScreen({
   onPatch: (next: Partial<BillingOverlayState>) => void
   s: BillingStateResponse
   t: Theme
-  tr: Translator
 }) {
+  const B = useT().billing
   // rows: Pay $X now / Cancel
   const [sel, setSel] = useState(0)
   const [submitting, setSubmitting] = useState(false)
@@ -501,26 +474,24 @@ function ConfirmScreen({
     }
   })
 
-  const payLine = s.card
-    ? tr('billing.payment.card', { card: s.card.display ?? s.card.masked })
-    : tr('billing.payment.noSavedCard')
+  const payLine = s.card ? B.common.payment(s.card.display ?? s.card.masked) : B.common.noSavedCard
 
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.accent}>
-        {tr('billing.title.confirmPurchase')}
+        {B.confirm.title}
       </Text>
-      <Text color={t.color.text}>{tr('billing.confirm.total', { amount })}</Text>
+      <Text color={t.color.text}>{B.confirm.total(usd(amount))}</Text>
       <Text color={t.color.muted}>{payLine}</Text>
       {/* Provenance-less payloads (older NAS) keep the generic line; when the
           resolver says WHY this card, payLine already carries it. */}
-      {s.card && !s.card.resolved_via && <Text color={t.color.muted}>{tr('billing.confirm.savedCardCharged')}</Text>}
-      <Text color={t.color.muted}>{tr('billing.confirm.consent')}</Text>
+      {s.card && !s.card.resolved_via && <Text color={t.color.muted}>{B.confirm.portalCardCharged}</Text>}
+      <Text color={t.color.muted}>{B.confirm.authorization}</Text>
       <Text />
-      <ActionRow active={sel === 0} color={t.color.ok} label={tr('billing.confirm.payNow', { amount })} t={t} />
-      <ActionRow active={sel === 1} label={tr('common.cancel')} t={t} />
+      <ActionRow active={sel === 0} color={t.color.ok} label={B.confirm.payNow(usd(amount))} t={t} />
+      <ActionRow active={sel === 1} label={B.common.cancel} t={t} />
       <Text />
-      {footer(tr('billing.footer.confirmYesNo'), t)}
+      {footer(B.confirm.hint, t)}
     </Box>
   )
 }
@@ -539,16 +510,15 @@ function StepUpScreen({
   ctx,
   idempotencyKey,
   onClose,
-  t,
-  tr
+  t
 }: {
   amount: string
   ctx: BillingOverlayState['ctx']
   idempotencyKey?: string
   onClose: () => void
   t: Theme
-  tr: Translator
 }) {
+  const B = useT().billing
   const [sel, setSel] = useState(0)
   const [phase, setPhase] = useState<'granted' | 'prompt' | 'resuming' | 'waiting'>('prompt')
 
@@ -558,11 +528,11 @@ function StepUpScreen({
     }
 
     setPhase('waiting')
-    ctx.sys(tr('billing.stepUp.openingBrowser'))
+    ctx.sys(B.stepUp.openingBrowser)
 
     void ctx.requestRemoteSpending().then(granted => {
       if (!granted) {
-        ctx.sys(tr('billing.stepUp.approvalFailed'))
+        ctx.sys(B.stepUp.notAllowed)
         onClose()
 
         return
@@ -580,12 +550,12 @@ function StepUpScreen({
     }
 
     setPhase('resuming')
-    ctx.sys(tr('billing.stepUp.enabledResume'))
+    ctx.sys(B.stepUp.allowedResuming)
     void ctx.charge(amount, idempotencyKey).then(outcome => {
       // If the replay STILL can't spend (grant raced/expired or downscoped),
       // say so — don't close on a reassuring line with no charge made.
       if (outcome === 'needs_remote_spending') {
-        ctx.sys(tr('billing.stepUp.stillNeedsApproval'))
+        ctx.sys(B.stepUp.stillNeedsApproval)
       }
 
       onClose()
@@ -593,7 +563,7 @@ function StepUpScreen({
   }
 
   const decline = () => {
-    ctx.sys(tr('billing.stepUp.noCharge'))
+    ctx.sys(B.stepUp.declined)
     onClose()
   }
 
@@ -652,13 +622,13 @@ function StepUpScreen({
     return (
       <Box flexDirection="column">
         <Text bold color={t.color.accent}>
-          {tr('billing.stepUp.enableTitle')}
+          {B.stepUp.title}
         </Text>
-        <Text color={t.color.warn}>{tr('billing.stepUp.waitingBrowser')}</Text>
-        <Text color={t.color.muted}>{tr('billing.stepUp.approveOpenedPage')}</Text>
-        <Text color={t.color.muted}>{tr('billing.stepUp.heldTopUp', { amount })}</Text>
+        <Text color={t.color.warn}>{B.stepUp.waitingForBrowser}</Text>
+        <Text color={t.color.muted}>{B.stepUp.approveInPage}</Text>
+        <Text color={t.color.muted}>{B.stepUp.heldHere(usd(amount))}</Text>
         <Text />
-        {footer(tr('billing.footer.escapeCancel'), t)}
+        {footer(B.stepUp.escCancel, t)}
       </Box>
     )
   }
@@ -667,13 +637,13 @@ function StepUpScreen({
     return (
       <Box flexDirection="column">
         <Text bold color={t.color.ok}>
-          {tr('billing.stepUp.enabledTitle')}
+          {B.stepUp.grantedTitle}
         </Text>
-        <Text color={t.color.text}>{tr('billing.stepUp.readyToFinish', { amount })}</Text>
+        <Text color={t.color.text}>{B.stepUp.readyToFinish(usd(amount))}</Text>
         <Text />
-        <ActionRow active color={t.color.ok} label={tr('billing.stepUp.pressEnterResume')} t={t} />
+        <ActionRow active color={t.color.ok} label={B.stepUp.pressEnterToResume} t={t} />
         <Text />
-        {footer(tr('billing.footer.resumeCancel'), t)}
+        {footer(B.stepUp.grantedHint, t)}
       </Box>
     )
   }
@@ -682,11 +652,11 @@ function StepUpScreen({
     return (
       <Box flexDirection="column">
         <Text bold color={t.color.accent}>
-          {tr('billing.stepUp.enableTitle')}
+          {B.stepUp.title}
         </Text>
-        <Text color={t.color.muted}>{tr('billing.stepUp.resumingTopUp', { amount })}</Text>
+        <Text color={t.color.muted}>{B.stepUp.resuming(usd(amount))}</Text>
         <Text />
-        {footer(tr('billing.footer.escapeCancel'), t)}
+        {footer(B.stepUp.escCancel, t)}
       </Box>
     )
   }
@@ -695,32 +665,34 @@ function StepUpScreen({
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.warn}>
-        {tr('billing.stepUp.oneTimeSetup')}
+        {B.stepUp.promptTitle}
       </Text>
-      <Text color={t.color.text}>{tr('billing.stepUp.enableOnce')}</Text>
-      <Text color={t.color.muted}>{tr('billing.stepUp.browserThenResume', { amount })}</Text>
+      <Text color={t.color.text}>{B.stepUp.promptBody}</Text>
+      <Text color={t.color.muted}>{B.stepUp.promptDetail(usd(amount))}</Text>
       <Text />
-      <ActionRow active={sel === 0} color={t.color.ok} label={tr('billing.stepUp.enableAction')} t={t} />
-      <ActionRow active={sel === 1} label={tr('billing.stepUp.cancel')} t={t} />
+      <ActionRow active={sel === 0} color={t.color.ok} label={B.stepUp.allow} t={t} />
+      <ActionRow active={sel === 1} label={B.stepUp.notNow} t={t} />
       <Text />
-      {footer(tr('billing.footer.confirmCancel'), t)}
+      {footer(B.stepUp.promptHint, t)}
     </Box>
   )
 }
 
 // ── Screen 4: Auto-reload (the 2-field form) ──────────────────────────
 
-function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
+/** Stable ids for the action rows — dispatch never compares translated labels. */
+type AutoReloadAction = 'cancel' | 'manageCard' | 'turnOff' | 'turnOn'
+
+function AutoReloadScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
+  const B = useT().billing
   const ar = s.auto_reload
   const enabled = Boolean(ar?.enabled)
   const distinctCard = ar?.card?.kind === 'distinct' ? ar.card : null
 
   const distinctCardName = distinctCard
     ? [distinctCard.brand, distinctCard.last4 ? `••${distinctCard.last4}` : null].filter(Boolean).join(' ') ||
-      tr('billing.autoReload.differentCard')
+      B.autoReload.aDifferentCard
     : null
-
-  const manageCardLabel = tr('billing.autoReload.manageCard')
 
   // Prefill from state (strip the $ from the *_usd raw fields if present).
   const prefill = (raw?: null | string) => (raw == null ? '' : String(raw).replace(/^\$/, '').trim())
@@ -729,23 +701,21 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
   const [field, setField] = useState<'reloadTo' | 'threshold'>('threshold')
   const [error, setError] = useState<null | string>(null)
   // focusRow: 0=threshold field, 1=reloadTo field, 2=Agree, 3=Turn off (if enabled), last=Cancel
-  const manageCardRows = distinctCard && s.portal_url ? [{ id: 'manageCard' as const, label: manageCardLabel }] : []
+  const manageCardRows: AutoReloadAction[] = distinctCard && s.portal_url ? ['manageCard'] : []
 
-  const actionRows = enabled
-    ? [
-        { id: 'turnOn' as const, label: tr('billing.autoReload.turnOn') },
-        { id: 'turnOff' as const, label: tr('billing.autoReload.turnOff') },
-        ...manageCardRows,
-        { id: 'cancel' as const, label: tr('common.cancel') }
-      ]
-    : [
-        { id: 'turnOn' as const, label: tr('billing.autoReload.turnOn') },
-        ...manageCardRows,
-        { id: 'cancel' as const, label: tr('common.cancel') }
-      ]
+  const actionRows: AutoReloadAction[] = enabled
+    ? ['turnOn', 'turnOff', ...manageCardRows, 'cancel']
+    : ['turnOn', ...manageCardRows, 'cancel']
 
-  const actionColors: Record<(typeof actionRows)[number]['id'], string | undefined> = {
-    cancel: undefined,
+  const actionLabels: Record<AutoReloadAction, string> = {
+    cancel: B.common.cancel,
+    manageCard: B.autoReload.manageCardOnPortal,
+    turnOff: B.autoReload.turnOff,
+    turnOn: B.autoReload.agreeAndTurnOn
+  }
+
+  const actionColors: Record<AutoReloadAction, string> = {
+    cancel: t.color.text,
     manageCard: t.color.accent,
     turnOff: t.color.warn,
     turnOn: t.color.ok
@@ -760,12 +730,7 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
     const tv = ctx.validate(threshold)
 
     if (tv.error || !tv.amount) {
-      setError(
-        tr('billing.autoReload.fieldError', {
-          field: tr('billing.autoReload.thresholdShort'),
-          message: tv.error ?? tr('billing.invalid')
-        })
-      )
+      setError(B.autoReload.thresholdError(tv.error ?? B.common.invalid))
 
       return null
     }
@@ -773,18 +738,13 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
     const rv = ctx.validate(reloadTo)
 
     if (rv.error || !rv.amount) {
-      setError(
-        tr('billing.autoReload.fieldError', {
-          field: tr('billing.autoReload.reloadToShort'),
-          message: rv.error ?? tr('billing.invalid')
-        })
-      )
+      setError(B.autoReload.reloadToError(rv.error ?? B.common.invalid))
 
       return null
     }
 
     if (Number(rv.amount) <= Number(tv.amount)) {
-      setError(tr('billing.autoReload.reloadAboveThreshold'))
+      setError(B.autoReload.reloadToMustExceedThreshold)
 
       return null
     }
@@ -796,7 +756,7 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
 
   const turnOn = () => {
     if (noCard) {
-      ctx.sys(tr('billing.autoReload.noCard'))
+      ctx.sys(B.autoReload.noCardManageOnPortal)
 
       if (s.portal_url) {
         ctx.openPortal(s.portal_url)
@@ -815,7 +775,7 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
 
     void ctx.applyAutoReload(true, Number(pair.threshold), Number(pair.reloadTo)).then(ok => {
       if (ok) {
-        ctx.sys(tr('billing.autoReload.enabled', { reloadTo: pair.reloadTo, threshold: pair.threshold }))
+        ctx.sys(B.autoReload.turnedOn(usd(pair.threshold), usd(pair.reloadTo)))
       }
     })
     onClose()
@@ -829,18 +789,18 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
     const rel = Number(prefill(ar?.reload_to_usd)) || 0
     void ctx.applyAutoReload(false, thr, rel).then(ok => {
       if (ok) {
-        ctx.sys(tr('billing.autoReload.disabled'))
+        ctx.sys(B.autoReload.turnedOff)
       }
     })
     onClose()
   }
 
-  const onAction = (action: undefined | (typeof actionRows)[number]) => {
-    if (action?.id === 'turnOn') {
+  const onAction = (action: AutoReloadAction) => {
+    if (action === 'turnOn') {
       turnOn()
-    } else if (action?.id === 'turnOff') {
+    } else if (action === 'turnOff') {
       turnOff()
-    } else if (action?.id === 'manageCard') {
+    } else if (action === 'manageCard') {
       if (s.portal_url) {
         ctx.openPortal(s.portal_url)
       }
@@ -878,7 +838,7 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
     if (key.return && !editingField) {
       const idx = row - FIELD_ROWS
 
-      return onAction(actionRows[idx])
+      return onAction(actionRows[idx] ?? 'cancel')
     }
 
     // a number quick-picks an action row (1..actionRows.length)
@@ -886,16 +846,13 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
       const n = parseInt(ch, 10)
 
       if (n >= 1 && n <= actionRows.length) {
-        return onAction(actionRows[n - 1])
+        return onAction(actionRows[n - 1]!)
       }
     }
   })
 
-  const cardLine = s.card
-    ? tr('billing.payment.cardOnFile', { card: s.card.masked })
-    : tr('billing.payment.noSavedCard')
-
-  const chargeCardName = distinctCardName ?? (s.card ? s.card.masked : tr('billing.payment.yourCard'))
+  const cardLine = s.card ? B.autoReload.cardOnFile(s.card.masked) : B.common.noSavedCard
+  const chargeCardName = distinctCardName ?? (s.card ? s.card.masked : B.autoReload.yourCard)
 
   const fieldBox = (label: string, value: string, onChange: (v: string) => void, focused: boolean, key: string) => (
     <Box flexDirection="column" key={key}>
@@ -926,39 +883,38 @@ function AutoReloadScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.accent}>
-        {tr('billing.title.autoReload')}
+        {B.autoReload.title}
       </Text>
-      <Text color={t.color.muted}>{tr('billing.autoReload.description')}</Text>
+      <Text color={t.color.muted}>{B.autoReload.description}</Text>
       <Text color={t.color.muted}>{cardLine}</Text>
-      {distinctCardName && (
-        <Text color={t.color.warn}>{tr('billing.autoReload.distinctCardWarning', { card: distinctCardName })}</Text>
-      )}
+      {distinctCardName && <Text color={t.color.warn}>{B.autoReload.distinctCardWarning(distinctCardName)}</Text>}
       <Text />
-      {fieldBox(tr('billing.autoReload.thresholdLabel'), threshold, setThreshold, row === 0, 'threshold')}
-      {fieldBox(tr('billing.autoReload.reloadToLabel'), reloadTo, setReloadTo, row === 1, 'reloadTo')}
+      {fieldBox(B.autoReload.thresholdLabel, threshold, setThreshold, row === 0, 'threshold')}
+      {fieldBox(B.autoReload.reloadToLabel, reloadTo, setReloadTo, row === 1, 'reloadTo')}
       <Text />
-      <Text color={t.color.muted}>{tr('billing.autoReload.authorization', { card: chargeCardName })}</Text>
+      <Text color={t.color.muted}>{B.autoReload.authorization(chargeCardName)}</Text>
       {error && <Text color={t.color.error}>{error}</Text>}
       <Text />
       {actionRows.map((action, i) => (
         <ActionRow
           active={!editingField && row - FIELD_ROWS === i}
-          color={actionColors[action.id] ?? t.color.text}
-          key={action.id}
-          label={action.label}
+          color={actionColors[action]}
+          key={action}
+          label={actionLabels[action]}
           t={t}
         />
       ))}
       <Text />
-      {footer(tr('billing.footer.autoReload'), t)}
+      {footer(B.autoReload.hint, t)}
     </Box>
   )
 }
 
 // ── Screen 5: Monthly spend limit (read-only) ─────────────────────────
 
-function LimitScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
-  const labels = [tr('billing.action.managePortal'), tr('common.cancel')]
+function LimitScreen({ ctx, onClose, onPatch, s, t }: ScreenProps) {
+  const B = useT().billing
+  const labels = [B.common.manageOnPortal, B.common.cancel]
 
   const choose = (i: number) => {
     if (i === 0 && s.portal_url) {
@@ -977,26 +933,24 @@ function LimitScreen({ ctx, onClose, onPatch, s, t, tr }: ScreenProps) {
 
   const usageLine =
     cap && cap.limit_usd != null
-      ? tr('billing.limit.usageLine', {
-          ceiling: cap.is_default_ceiling ? tr('billing.spend.defaultCeilingSuffix') : '',
-          limit: cap.limit_display,
-          spent: cap.spent_display
-        })
-      : tr('billing.limit.noCap')
+      ? cap.is_default_ceiling
+        ? B.limit.usageDefaultCeiling(cap.spent_display, cap.limit_display)
+        : B.limit.usage(cap.spent_display, cap.limit_display)
+      : B.limit.noCapVisible
 
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.accent}>
-        {tr('billing.title.monthlyLimit')}
+        {B.limit.title}
       </Text>
       <Text color={t.color.text}>{usageLine}</Text>
-      <Text color={t.color.muted}>{tr('billing.limit.readOnly')}</Text>
+      <Text color={t.color.muted}>{B.limit.readOnly}</Text>
       <Text />
       {labels.map((label, i) => (
         <MenuRow active={sel === i} index={i + 1} key={label} label={label} t={t} />
       ))}
       <Text />
-      {footer(tr('billing.footer.pickBack', { count: labels.length }), t)}
+      {footer(B.limit.hint(labels.length), t)}
     </Box>
   )
 }

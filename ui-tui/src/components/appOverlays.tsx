@@ -6,13 +6,12 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
-import { useI18n } from '../i18n/index.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
 import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
-import { MaskedPrompt } from './maskedPrompt.js'
+import { SecretPrompt, SudoPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
@@ -60,7 +59,7 @@ function PromptCell({ children, cols, id }: { children: ReactNode; cols: number;
 export function PromptZone({
   cols,
   onApprovalChoice,
-  onClarifyAnswer,
+  onClarifyCancel,
   onClarifyQuestionAnswer,
   onSecretSubmit,
   onSudoSubmit,
@@ -69,7 +68,7 @@ export function PromptZone({
   AppOverlaysProps,
   | 'cols'
   | 'onApprovalChoice'
-  | 'onClarifyAnswer'
+  | 'onClarifyCancel'
   | 'onClarifyQuestionAnswer'
   | 'onSecretSubmit'
   | 'onSudoSubmit'
@@ -77,7 +76,6 @@ export function PromptZone({
 >) {
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)
-  const { t } = useI18n()
 
   if (overlay.approval) {
     return (
@@ -149,8 +147,7 @@ export function PromptZone({
       <PromptCell cols={cols} id="clarify">
         <ClarifyPrompt
           cols={cols}
-          onAnswer={onClarifyAnswer}
-          onCancel={() => onClarifyAnswer('')}
+          onCancel={onClarifyCancel}
           onQuestionAnswer={onClarifyQuestionAnswer}
           req={overlay.clarify}
           t={theme}
@@ -162,7 +159,7 @@ export function PromptZone({
   if (overlay.sudo) {
     return (
       <PromptCell cols={cols} id="sudo">
-        <MaskedPrompt cols={cols} icon="🔐" label={t('prompt.sudoPassword')} onSubmit={onSudoSubmit} t={theme} />
+        <SudoPrompt cols={cols} onSubmit={onSudoSubmit} t={theme} />
       </PromptCell>
     )
   }
@@ -170,12 +167,11 @@ export function PromptZone({
   if (overlay.secret) {
     return (
       <PromptCell cols={cols} id="secret">
-        <MaskedPrompt
+        <SecretPrompt
           cols={cols}
-          icon="🔑"
-          label={overlay.secret.prompt}
+          envVar={overlay.secret.envVar}
           onSubmit={onSecretSubmit}
-          sub={t('prompt.secretFor', { envVar: overlay.secret.envVar })}
+          prompt={overlay.secret.prompt}
           t={theme}
         />
       </PromptCell>
@@ -185,12 +181,10 @@ export function PromptZone({
   if (overlay.vaultUnlock) {
     return (
       <PromptCell cols={cols} id="vault-unlock">
-        <MaskedPrompt
+        <VaultUnlockPrompt
           cols={cols}
-          icon="🔐"
-          label={`Unlock ${overlay.vaultUnlock.displayName} for this session`}
+          displayName={overlay.vaultUnlock.displayName}
           onSubmit={onVaultUnlockSubmit}
-          sub="master password · hidden · goes to the manager CLI only · Esc keeps it locked"
           t={theme}
         />
       </PromptCell>
@@ -229,7 +223,6 @@ export function FloatingOverlays({
   const overlay = useStore($overlayState)
   const sid = useStore($uiSessionId)
   const theme = useStore($uiTheme)
-  const { t } = useI18n()
 
   const hasAny = hasFloatingPanel(overlay) || completions.length
 
@@ -350,11 +343,8 @@ export function FloatingOverlays({
             <Box marginTop={1}>
               <OverlayHint t={theme}>
                 {pager.offset + pagerPageSize < pager.lines.length
-                  ? t('pager.navHint', {
-                      current: String(Math.min(pager.offset + pagerPageSize, pager.lines.length)),
-                      total: String(pager.lines.length)
-                    })
-                  : t('pager.navEnd', { total: String(pager.lines.length) })}
+                  ? `↑↓/jk line · Enter/Space/PgDn page · b/PgUp back · g/G top/bottom · Esc/q close (${Math.min(pager.offset + pagerPageSize, pager.lines.length)}/${pager.lines.length})`
+                  : `end · ↑↓/jk · b/PgUp back · g top · Esc/q close (${pager.lines.length} lines)`}
               </OverlayHint>
             </Box>
           </Box>

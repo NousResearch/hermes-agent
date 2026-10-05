@@ -1,4 +1,4 @@
-import { type Locale, translate } from '../i18n/index.js'
+import { t as tr } from '../i18n/index.js'
 
 import type { WidgetApp } from './types.js'
 
@@ -22,9 +22,8 @@ export const removeWidgetApp = (id: string): boolean => apps.delete(id)
 export const listWidgetApps = (): WidgetApp<never>[] => [...apps.values()].sort((a, b) => a.id.localeCompare(b.id))
 
 /** Resolve built-in presentation metadata without imposing i18n on user widgets. */
-export const widgetHelp = (app: WidgetApp<never>, locale: Locale): string =>
-  app.helpKey ? translate(locale, app.helpKey) : app.help
+export const widgetHelp = (app: WidgetApp<never>, locale?: string): string => (app.helpKey ? tr(app.helpKey) : app.help)
 
 /** Resolve a rejected launch to localized built-in usage or extension fallback. */
-export const widgetUsage = (app: WidgetApp<never>, locale: Locale): string =>
-  app.usageKey ? translate(locale, app.usageKey) : (app.usage ?? translate(locale, 'widget.usage', { id: app.id }))
+export const widgetUsage = (app: WidgetApp<never>, locale?: string): string =>
+  app.usageKey ? tr(app.usageKey) : (app.usage ?? tr('widget.usage', app.id))

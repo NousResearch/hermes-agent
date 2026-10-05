@@ -2,7 +2,8 @@ import { Box, Text, useInput } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
-import { useI18n } from '../i18n/index.js'
+import { messages } from '../i18n/runtime.js'
+import { useT } from '../i18n/useT.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -22,12 +23,11 @@ export async function sendAgentSteer(gw: GatewayClient, sid: string, id: string,
   )
 
   const accepted = result?.status === 'queued'
+  const T = messages().hubs.agentControls
 
   return {
     accepted,
-    message: accepted
-      ? 'Queued for child — applied at the next tool boundary.'
-      : 'Not queued: child has finished or is no longer accepting guidance.'
+    message: accepted ? T.queued : T.notQueued
   }
 }
 
@@ -46,7 +46,7 @@ export function AgentSteerForm({
   cols,
   onClose
 }: ControlProps & { cols: number; onClose: () => void }) {
-  const { t: ti } = useI18n()
+  const T = useT().hubs.agentControls
   const [text, setText] = useState('')
   const [feedback, setFeedback] = useState('')
   const [pending, setPending] = useState(false)
@@ -65,13 +65,13 @@ export function AgentSteerForm({
 
     try {
       const result = await sendAgentSteer(gw, sid, id, text)
-      setFeedback(ti(result.accepted ? 'agents.steerQueued' : 'agents.steerRejected'))
+      setFeedback(result.message)
 
       if (result.accepted) {
         setText('')
       }
     } catch (error) {
-      setFeedback(ti('agents.steerFailed', { error: error instanceof Error ? error.message : String(error) }))
+      setFeedback(T.notQueuedError(error instanceof Error ? error.message : String(error)))
     } finally {
       setPending(false)
     }
@@ -80,9 +80,9 @@ export function AgentSteerForm({
   return (
     <Box flexDirection="column" flexGrow={1}>
       <Text bold color={t.color.accent} wrap="truncate-end">
-        {ti('agents.steerTitle', { id })}
+        {T.steerTitle(id)}
       </Text>
-      <Text color={t.color.muted}>{ti('agents.steerDescription')}</Text>
+      <Text color={t.color.muted}>{T.steerIntro}</Text>
       <Box marginTop={1}>
         <Text color={t.color.accent}>❯ </Text>
         <TextInput
@@ -94,16 +94,17 @@ export function AgentSteerForm({
           value={text}
         />
       </Box>
-      <Text color={t.color.muted}>{pending ? ti('agents.steerQueueing') : feedback}</Text>
-      <Text color={t.color.muted}>{ti('agents.steerHint')}</Text>
+      <Text color={t.color.muted}>{pending ? T.queueing : feedback}</Text>
+      <Text color={t.color.muted}>{T.steerHint}</Text>
     </Box>
   )
 }
 
 export function AgentLiveTail({ gw, sid, id, t }: ControlProps) {
-  const { t: ti } = useI18n()
-  const [tail, setTail] = useState(() => ti('agents.tailLoading'))
+  const T = useT().hubs.agentControls
+  const [tail, setTail] = useState(() => T.loadingTranscript)
   useEffect(() => {
+    const M = messages().hubs.agentControls
     let active = true
     let pending = false
 
@@ -122,13 +123,13 @@ export function AgentLiveTail({ gw, sid, id, t }: ControlProps) {
         if (active) {
           setTail(
             result?.available
-              ? `${result.truncated ? `${ti('agents.tailTruncated')}\n` : ''}${result.text}`
-              : ti('agents.tailUnavailable')
+              ? `${result.truncated ? `${M.truncatedPrefix}\n` : ''}${result.text}`
+              : M.transcriptUnavailable
           )
         }
       } catch {
         if (active) {
-          setTail(ti('agents.tailRefreshFailed'))
+          setTail(M.transcriptRefreshFailed)
         }
       } finally {
         pending = false
@@ -142,12 +143,12 @@ export function AgentLiveTail({ gw, sid, id, t }: ControlProps) {
       active = false
       clearInterval(timer)
     }
-  }, [gw, sid, id, ti])
+  }, [gw, sid, id])
 
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.accent}>
-        {ti('agents.tailTitle')}
+        {T.transcriptTitle}
       </Text>
       <Text color={t.color.text} wrap="wrap">
         {tail}

@@ -10,8 +10,7 @@ interface SessionPruneCopy {
 
 const englishCopy: SessionPruneCopy = {
   removed: count => `Pruned ${count} session${count === 1 ? '' : 's'}`,
-  skippedOpen: count =>
-    `Skipped ${count} open session${count === 1 ? '' : 's'}; prune only removes ended sessions.`
+  skippedOpen: count => `Skipped ${count} open session${count === 1 ? '' : 's'}; prune only removes ended sessions.`
 }
 
 export function formatSessionPruneResult(result: SessionPruneResult, copy: SessionPruneCopy = englishCopy): string {

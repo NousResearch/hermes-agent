@@ -1,6 +1,6 @@
 import { Box, Text } from '@hermes/ink'
 
-import { useI18n } from '../i18n/index.js'
+import { useT } from '../i18n/useT.js'
 import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 
@@ -16,7 +16,7 @@ export function getQueueWindow(queueLen: number, queueEditIdx: number | null) {
 }
 
 export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessagesProps) {
-  const { t: ti } = useI18n()
+  const T = useT().chatBits.queued
 
   if (!queued.length) {
     return null
@@ -27,8 +27,7 @@ export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessages
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text color={t.color.muted} dimColor>
-        {ti('queue.header', { count: String(queued.length) })}
-        {queueEditIdx !== null ? ti('queue.editHint', { idx: String(queueEditIdx + 1) }) : ''}
+        {`${T.header(queued.length)}${queueEditIdx !== null ? T.editing(queueEditIdx + 1) : ''}`}
       </Text>
 
       {q.showLead && (
@@ -52,7 +51,7 @@ export function QueuedMessages({ cols, queueEditIdx, queued, t }: QueuedMessages
       {q.showTail && (
         <Text color={t.color.muted} dimColor>
           {'  '}
-          {ti('queue.more', { count: String(queued.length - q.end) })}
+          {T.more(queued.length - q.end)}
         </Text>
       )}
     </Box>

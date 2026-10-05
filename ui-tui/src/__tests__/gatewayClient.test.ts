@@ -104,6 +104,7 @@ import {
   WS_HEARTBEAT_DEAD_MS,
   WS_HEARTBEAT_INTERVAL_MS
 } from '../gatewayClient.js'
+import { t } from '../i18n/runtime.js'
 
 describe('GatewayClient websocket attach mode', () => {
   const originalWebSocket = globalThis.WebSocket
@@ -383,10 +384,10 @@ describe('GatewayClient websocket attach mode', () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway-new.test/api/ws?token=xyz'
     const next = gw.request('session.create', {})
 
-    await expect(stale).rejects.toThrow(/gateway attach url changed/)
-    await vi.waitFor(() => expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2))
+    await expect(stale).rejects.toThrow(t('libText.gateway.attachUrlChanged'))
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2))
 
-    const secondSocket = FakeWebSocket.instances.at(-1)!
+    const secondSocket = FakeWebSocket.instances[1]!
     expect(secondSocket.url).toContain('gateway-new.test')
 
     secondSocket.open()

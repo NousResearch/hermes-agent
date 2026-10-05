@@ -5,7 +5,7 @@ import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { THINKING_COT_MAX } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
-import { useI18n } from '../i18n/index.js'
+import { useT } from '../i18n/useT.js'
 import {
   buildSubagentTree,
   fmtTokens,
@@ -42,10 +42,6 @@ import type {
 
 const THINK: BrailleSpinnerName[] = ['helix', 'breathe', 'orbit', 'dna', 'waverows', 'snake', 'pulse']
 const TOOL: BrailleSpinnerName[] = ['cascade', 'scan', 'diagswipe', 'fillsweep', 'rain', 'columns', 'sparkle']
-const DELEGATE_TOOL_LABEL = toolTrailLabel('delegate_task')
-
-const isDelegateToolCall = (label: string) =>
-  label === DELEGATE_TOOL_LABEL || label.startsWith(`${DELEGATE_TOOL_LABEL}(`)
 
 const fmtElapsed = (ms: number) => {
   const sec = Math.max(0, ms) / 1000
@@ -299,7 +295,7 @@ function SubagentAccordion({
   rails?: TreeRails
   t: Theme
 }) {
-  const { t: ti, tStatus } = useI18n()
+  const T = useT().chatBits.thinking
   const [open, setOpen] = useState(expanded)
   const [deep, setDeep] = useState(expanded)
   const [openThinking, setOpenThinking] = useState(expanded)
@@ -350,14 +346,14 @@ function SubagentAccordion({
         ? `[${batchTag}] `
         : ''
 
-  const goalLabel = item.goal || ti('agents.fallbackName', { index: item.index + 1 })
+  const goalLabel = item.goal || T.subagentFallback(item.index + 1)
   const title = `${prefix}${open ? goalLabel : compactPreview(goalLabel, 60)}`
   const summary = compactPreview((item.summary || '').replace(/\s+/g, ' ').trim(), 72)
 
   // Suffix packs branch rollup: status · elapsed · per-branch tool/agent/token/cost.
   // Emphasises the numbers the user can't easily eyeball from a flat list.
   const statusLabel =
-    item.status === 'queued' ? tStatus('queued') : item.status === 'running' ? tStatus('running') : String(item.status)
+    item.status === 'queued' ? T.statusQueued : item.status === 'running' ? T.statusRunning : String(item.status)
 
   const rollupBits: string[] = [statusLabel]
 
@@ -369,18 +365,13 @@ function SubagentAccordion({
   const subtreeTools = aggregate.totalTools - localTools
 
   if (localTools > 0) {
-    rollupBits.push(
-      ti('agents.summaryTools', {
-        count: localTools,
-        noun: ti(localTools === 1 ? 'agents.tool' : 'agents.tools')
-      })
-    )
+    rollupBits.push(localTools === 1 ? T.toolsOne(localTools) : T.toolsOther(localTools))
   }
 
   const localTokens = (item.inputTokens ?? 0) + (item.outputTokens ?? 0)
 
   if (localTokens > 0) {
-    rollupBits.push(ti('agents.summaryTokens', { tokens: fmtTokens(localTokens) }))
+    rollupBits.push(T.tokShort(fmtTokens(localTokens)))
   }
 
   const filesLocal = (item.filesWritten?.length ?? 0) + (item.filesRead?.length ?? 0)
@@ -393,7 +384,7 @@ function SubagentAccordion({
     rollupBits.push(`${aggregate.descendantCount}↓`)
 
     if (subtreeTools > 0) {
-      rollupBits.push(ti('agents.subtreeAdditionalTools', { count: subtreeTools }))
+      rollupBits.push(T.subtreeTools(subtreeTools))
     }
 
     if (aggregate.activeCount > 0 && item.status !== 'running') {
@@ -431,7 +422,7 @@ function SubagentAccordion({
           }}
           open={openThinking}
           t={t}
-          title={ti('section.thinking')}
+          title={T.thinking}
         />
       ),
       key: 'thinking',
@@ -464,7 +455,7 @@ function SubagentAccordion({
           }}
           open={openTools}
           t={t}
-          title={ti('section.toolCalls')}
+          title={T.toolCalls}
         />
       ),
       key: 'tools',
@@ -505,7 +496,7 @@ function SubagentAccordion({
           }}
           open={openNotes}
           t={t}
-          title={ti('section.progress')}
+          title={T.progress}
           tone={statusTone}
         />
       ),
@@ -544,12 +535,9 @@ function SubagentAccordion({
             }
           }}
           open={openKids}
-          suffix={ti('agents.childDepthSummary', {
-            count: aggregate.descendantCount,
-            depth: item.depth + 1
-          })}
+          suffix={T.spawnedSuffix(item.depth + 1, aggregate.descendantCount)}
           t={t}
-          title={ti('section.spawned')}
+          title={T.spawned}
         />
       ),
       key: 'subagents',
@@ -648,13 +636,11 @@ export const Thinking = memo(function Thinking({
   streaming?: boolean
   t: Theme
 }) {
-  const { locale } = useI18n()
-
   const preview = useMemo(() => {
     const raw = thinkingPreview(reasoning, mode, THINKING_COT_MAX)
 
-    return mode === 'full' ? boundedLiveRenderText(raw, {}, locale) : raw
-  }, [locale, mode, reasoning])
+    return mode === 'full' ? boundedLiveRenderText(raw) : raw
+  }, [mode, reasoning])
 
   const lines = useMemo(() => preview.split('\n').map(line => line.replace(/\t/g, '  ')), [preview])
 
@@ -697,7 +683,6 @@ interface Group {
   color: string
   content: ReactNode
   details: DetailRow[]
-  isDelegate: boolean
   key: string
   label: string
 }
@@ -742,6 +727,8 @@ export const ToolTrail = memo(function ToolTrail({
   trail?: ToolTrailEntry[]
   activity?: ActivityItem[]
 }) {
+  const T = useT().chatBits.thinking
+
   const visible = useMemo(
     () => ({
       thinking: sectionMode('thinking', detailsMode, sections, commandOverride),
@@ -751,8 +738,6 @@ export const ToolTrail = memo(function ToolTrail({
     }),
     [commandOverride, detailsMode, sections]
   )
-
-  const { locale, t: ti } = useI18n()
 
   const thinkingDefaultExpanded =
     visible.thinking === 'expanded' && (preferExpandedThinking || commandOverride || sections?.thinking === 'expanded')
@@ -832,7 +817,7 @@ export const ToolTrail = memo(function ToolTrail({
   const spawnTotals = useMemo(() => treeTotals(spawnTree), [spawnTree])
   const spawnWidths = useMemo(() => widthByDepth(spawnTree), [spawnTree])
   const spawnSpark = useMemo(() => sparkline(spawnWidths), [spawnWidths])
-  const spawnSummaryLabel = useMemo(() => formatSpawnSummary(spawnTotals, locale), [locale, spawnTotals])
+  const spawnSummaryLabel = useMemo(() => formatSpawnSummary(spawnTotals), [spawnTotals])
 
   if (
     !busy &&
@@ -861,7 +846,6 @@ export const ToolTrail = memo(function ToolTrail({
         color: parsed.mark === '✗' ? t.color.error : t.color.text,
         content: parsed.call,
         details: [],
-        isDelegate: isDelegateToolCall(parsed.call),
         key: `tr-${i}`,
         label: parsed.call
       })
@@ -879,13 +863,12 @@ export const ToolTrail = memo(function ToolTrail({
     }
 
     if (typeof line !== 'string' && line.kind === 'draft') {
-      const label = toolTrailLabel(line.name)
+      const label = toolTrailLabel(line.name.trim())
 
       groups.push({
         color: t.color.text,
         content: label,
-        details: [{ color: t.color.muted, content: ti('tool.draftingProgress'), dimColor: true, key: `tr-${i}-d` }],
-        isDelegate: isDelegateToolCall(label),
+        details: [{ color: t.color.muted, content: T.drafting, dimColor: true, key: `tr-${i}-d` }],
         key: `tr-${i}`,
         label
       })
@@ -893,6 +876,7 @@ export const ToolTrail = memo(function ToolTrail({
       continue
     }
 
+    // The trail line is a fixed marker the store emits; only its display is localized.
     if (typeof line !== 'string' && line.kind === 'analyze') {
       pushDetail({
         color: t.color.muted,
@@ -900,19 +884,17 @@ export const ToolTrail = memo(function ToolTrail({
         key: `tr-${i}`,
         content: groups.length ? (
           <>
-            <Spinner color={t.color.accent} variant="think" /> {ti('tool.outputAnalysis')}
+            <Spinner color={t.color.accent} variant="think" /> {T.analyzingToolOutput}
           </>
         ) : (
-          ti('tool.outputAnalysis')
+          T.analyzingToolOutput
         )
       })
 
       continue
     }
 
-    if (typeof line === 'string') {
-      meta.push({ color: t.color.muted, content: line, dimColor: true, key: `tr-${i}` })
-    }
+    meta.push({ color: t.color.muted, content: line, dimColor: true, key: `tr-${i}` })
   }
 
   for (const tool of tools) {
@@ -921,14 +903,13 @@ export const ToolTrail = memo(function ToolTrail({
 
     groups.push({
       color: t.color.text,
-      isDelegate: tool.name === 'delegate_task',
       key: tool.id,
       label,
       details: tool.verboseArgs
         ? [
             {
               color: t.color.muted,
-              content: `${ti('tool.args')}:\n${boundedLiveRenderText(tool.verboseArgs, {}, locale)}`,
+              content: `${T.argsHeader}\n${boundedLiveRenderText(tool.verboseArgs)}`,
               dimColor: true,
               key: `${tool.id}-args`
             }
@@ -962,15 +943,13 @@ export const ToolTrail = memo(function ToolTrail({
 
   const toolTokenCount = toolTokens ?? 0
   const totalTokenCount = tokenCount + toolTokenCount
-  const thinkingTokensLabel = tokenCount > 0 ? ti('tool.tokenCount', { count: compactNumber(tokenCount) }) : null
+  const thinkingTokensLabel = tokenCount > 0 ? T.approxTokens(compactNumber(tokenCount)) : null
 
   const toolTokensLabel =
-    toolTokens !== undefined && toolTokens > 0 ? ti('tool.tokenCount', { count: compactNumber(toolTokens) }) : undefined
+    toolTokens !== undefined && toolTokens > 0 ? T.approxTokens(compactNumber(toolTokens)) : undefined
 
-  const totalTokensLabel =
-    tokenCount > 0 && toolTokenCount > 0 ? ti('tool.totalTokenCount', { count: compactNumber(totalTokenCount) }) : null
-
-  const delegateGroups = groups.filter(g => g.isDelegate)
+  const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? T.approxTotal(compactNumber(totalTokenCount)) : null
+  const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
 
   const toolLabel = (group: Group) => {
@@ -1087,11 +1066,11 @@ export const ToolTrail = memo(function ToolTrail({
             <Text color={t.color.accent}>{openThinking ? '▾ ' : '▸ '}</Text>
             {thinkingLive ? (
               <Text bold color={t.color.text}>
-                {ti('section.thinking')}
+                {T.thinking}
               </Text>
             ) : (
               <Text color={t.color.muted} dim>
-                {ti('section.thinking')}
+                {T.thinking}
               </Text>
             )}
             {thinkingTokensLabel ? (
@@ -1134,7 +1113,7 @@ export const ToolTrail = memo(function ToolTrail({
           open={openTools}
           suffix={toolTokensLabel}
           t={t}
-          title={ti('section.toolCalls')}
+          title={T.toolCalls}
         />
       ),
       key: 'tools',
@@ -1148,7 +1127,7 @@ export const ToolTrail = memo(function ToolTrail({
             // Surface the /agents hint the moment a delegate group appears —
             // while it's still in-flight and before any subagent has
             // registered — so users can open the live monitor immediately.
-            const isDelegateGroup = group.isDelegate
+            const isDelegateGroup = group.label.startsWith('Delegate Task')
 
             return (
               <Box flexDirection="column" key={group.key}>
@@ -1161,7 +1140,8 @@ export const ToolTrail = memo(function ToolTrail({
                       {toolLabel(group)}
                       {isDelegateGroup ? (
                         <Text color={t.color.statusFg} dim>
-                          {ti('activity.agentsMonitorHint')}
+                          {'  '}
+                          {T.agentsToMonitor}
                         </Text>
                       ) : null}
                     </>
@@ -1190,7 +1170,9 @@ export const ToolTrail = memo(function ToolTrail({
   if (hasSubagents && !inlineDelegateKey && visible.subagents !== 'hidden') {
     // Spark + summary give a one-line read on the branch shape before
     // opening the subtree.  `/agents` opens the full-screen audit overlay.
-    const suffix = spawnSpark ? `${spawnSummaryLabel}  ${spawnSpark}  (/agents)` : `${spawnSummaryLabel}  (/agents)`
+    const suffix = spawnSpark
+      ? `${spawnSummaryLabel}  ${spawnSpark}  ${T.agentsHint}`
+      : `${spawnSummaryLabel}  ${T.agentsHint}`
 
     panels.push({
       header: (
@@ -1208,7 +1190,7 @@ export const ToolTrail = memo(function ToolTrail({
           open={openSubagents}
           suffix={suffix}
           t={t}
-          title={ti('section.spawnTree')}
+          title={T.spawnTree}
         />
       ),
       key: 'subagents',
@@ -1231,7 +1213,7 @@ export const ToolTrail = memo(function ToolTrail({
           }}
           open={openMeta}
           t={t}
-          title={ti('section.activity')}
+          title={T.activity}
           tone={metaTone}
         />
       ),

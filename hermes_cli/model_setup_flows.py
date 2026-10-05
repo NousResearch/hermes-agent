@@ -18,7 +18,7 @@ from hermes_cli.model_setup_flows_common import (
     _ensure_dict_section, _ensure_flow_api_key, _finish_model,
     _load_config_model_section, _models_dev_merged, _oauth_gate, _persist_model, _pick_model_or_prompt,
     _print_numbered, _prompt_auth_credentials_choice,
-    _run_login, _say, _show_curated)
+    _note_setup_failure, _run_login, _say, _show_curated)
 from hermes_cli.model_setup_flows_custom import _model_flow_custom, _model_flow_named_custom
 from hermes_cli.model_setup_flows_azure import _model_flow_azure_foundry
 from hermes_cli.model_setup_flows_bedrock import _model_flow_bedrock
@@ -208,6 +208,7 @@ def _nous_model_catalog(free_tier: bool, portal_url: str, model_ids: list, prici
 
     if not model_ids and not unavailable_models:
         print("No models available for Nous Portal after filtering.")
+        _note_setup_failure("no_models")
         return None
     if free_tier and not model_ids:
         print("No free models currently available.")
@@ -236,8 +237,10 @@ def _nous_verified_credentials(creds_or_none=None):
                 _login_nous(_nous_login_args(None), PROVIDER_REGISTRY["nous"])
             except Exception as login_exc:
                 print(f"Re-login failed: {login_exc}")
+            _note_setup_failure("auth")
             return None
         print(f"Could not verify credentials: {msg}")
+        _note_setup_failure("auth")
         return None
 
 
@@ -466,6 +469,7 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
         creds = resolve_minimax_oauth_runtime_credentials()
     except AuthError as exc:
         print(format_auth_error(exc))
+        _note_setup_failure("auth")
         return
 
     from hermes_cli.models import _PROVIDER_MODELS
@@ -524,6 +528,7 @@ def _copilot_obtain_token() -> bool:
             _say("  Copilot token saved.", "")
         except Exception as exc:
             print(f"  Login failed: {exc}")
+            _note_setup_failure("auth")
             return False
         return True
     if choice == "2":
@@ -1093,6 +1098,7 @@ def _external_process_login_gate(profile, status) -> bool:
         return False
     if not profile.setup_status()["logged_in"]:
         print("Login failed.")
+        _note_setup_failure("auth")
         return False
     _say("", f"  {profile.display_name} credentials: ✓", "")
     return True

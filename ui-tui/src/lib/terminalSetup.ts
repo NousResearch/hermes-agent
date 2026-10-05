@@ -2,7 +2,7 @@ import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, posix, win32 } from 'node:path'
 
-import { type Locale, translate } from '../i18n/index.js'
+import { t } from '../i18n/runtime.js'
 
 export type SupportedTerminal = 'cursor' | 'vscode' | 'windsurf'
 
@@ -333,7 +333,6 @@ export async function configureTerminalKeybindings(
     env?: NodeJS.ProcessEnv
     fileOps?: Partial<FileOps>
     homeDir?: string
-    locale?: Locale
     platform?: NodeJS.Platform
   }
 ): Promise<TerminalSetupResult> {
@@ -342,12 +341,11 @@ export async function configureTerminalKeybindings(
   const homeDir = options?.homeDir ?? homedir()
   const ops: FileOps = { ...DEFAULT_FILE_OPS, ...(options?.fileOps ?? {}) }
   const meta = TERMINAL_META[terminal]
-  const locale = options?.locale ?? 'en'
 
   if (isRemoteShellSession(env)) {
     return {
       success: false,
-      message: translate(locale, 'terminal.setup.localOnly', { terminal: meta.label })
+      message: t('libText.terminalSetup.mustRunLocally', meta.label)
     }
   }
 
@@ -356,7 +354,7 @@ export async function configureTerminalKeybindings(
   if (!configDir) {
     return {
       success: false,
-      message: translate(locale, 'terminal.setup.pathUnknown', { terminal: meta.label })
+      message: t('libText.terminalSetup.settingsPathUnknown', meta.label)
     }
   }
 
@@ -376,10 +374,7 @@ export async function configureTerminalKeybindings(
       if (!Array.isArray(parsed)) {
         return {
           success: false,
-          message: translate(locale, 'terminal.setup.invalidFile', {
-            terminal: meta.label,
-            path: keybindingsFile
-          })
+          message: t('libText.terminalSetup.keybindingsNotArray', meta.label, keybindingsFile)
         }
       }
 
@@ -390,7 +385,7 @@ export async function configureTerminalKeybindings(
       if (code !== 'ENOENT') {
         return {
           success: false,
-          message: translate(locale, 'terminal.setup.readFailed', { terminal: meta.label, error: String(error) })
+          message: t('libText.terminalSetup.readFailed', meta.label, String(error))
         }
       }
     }
@@ -405,10 +400,7 @@ export async function configureTerminalKeybindings(
     if (conflicts.length) {
       return {
         success: false,
-        message: translate(locale, 'terminal.setup.conflict', {
-          path: keybindingsFile,
-          keys: conflicts.map(c => c.key).join(', ')
-        })
+        message: t('libText.terminalSetup.conflicts', keybindingsFile, conflicts.map(c => c.key).join(', '))
       }
     }
 
@@ -426,7 +418,7 @@ export async function configureTerminalKeybindings(
     if (!added && !migrated) {
       return {
         success: true,
-        message: translate(locale, 'terminal.setup.alreadyConfigured', { terminal: meta.label })
+        message: t('libText.terminalSetup.alreadyConfigured', meta.label)
       }
     }
 
@@ -440,30 +432,25 @@ export async function configureTerminalKeybindings(
 
     if (added) {
       parts.push(
-        translate(locale, added === 1 ? 'terminal.setup.addedBinding' : 'terminal.setup.addedBindings', {
-          count: added,
-          terminal: meta.label
-        })
+        t(added === 1 ? 'libText.terminalSetup.addedOne' : 'libText.terminalSetup.addedOther', added, meta.label)
       )
     }
 
     if (migrated) {
       parts.push(
-        translate(locale, migrated === 1 ? 'terminal.setup.migratedBinding' : 'terminal.setup.migratedBindings', {
-          count: migrated
-        })
+        t(migrated === 1 ? 'libText.terminalSetup.migratedOne' : 'libText.terminalSetup.migratedOther', migrated)
       )
     }
 
     return {
       success: true,
       requiresRestart: true,
-      message: translate(locale, 'terminal.setup.changed', { changes: parts.join(', '), path: keybindingsFile })
+      message: t('libText.terminalSetup.summaryIn', parts.join(', '), keybindingsFile)
     }
   } catch (error) {
     return {
       success: false,
-      message: translate(locale, 'terminal.setup.failed', { terminal: meta.label, error: String(error) })
+      message: t('libText.terminalSetup.configureFailed', meta.label, String(error))
     }
   }
 }
@@ -472,7 +459,6 @@ export async function configureDetectedTerminalKeybindings(options?: {
   env?: NodeJS.ProcessEnv
   fileOps?: Partial<FileOps>
   homeDir?: string
-  locale?: Locale
   platform?: NodeJS.Platform
 }): Promise<TerminalSetupResult> {
   const detected = detectVSCodeLikeTerminal(options?.env ?? process.env)
@@ -480,7 +466,7 @@ export async function configureDetectedTerminalKeybindings(options?: {
   if (!detected) {
     return {
       success: false,
-      message: translate(options?.locale ?? 'en', 'terminal.setup.notDetected')
+      message: t('libText.terminalSetup.noSupportedIde')
     }
   }
 

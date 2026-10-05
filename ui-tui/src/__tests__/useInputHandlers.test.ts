@@ -1,3 +1,7 @@
+import { afterEach } from 'vitest'
+
+import { applyLocale, resetLocale } from '../i18n/runtime.js'
+afterEach(resetLocale)
 import { describe, expect, it, vi } from 'vitest'
 
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
@@ -140,7 +144,7 @@ describe('handleIdleHotkeyExit', () => {
 
     expect(actions.die).not.toHaveBeenCalled()
     expect(requestDashboardNewSession).toHaveBeenCalledTimes(1)
-    expect(actions.sys).toHaveBeenCalledWith('starting a fresh dashboard chat…')
+    expect(actions.sys).toHaveBeenCalledWith('starting a fresh dashboard chat...')
   })
 })
 
@@ -149,6 +153,15 @@ describe('applyVoiceRecordResponse', () => {
     const setProcessing = vi.fn()
     const setRecording = vi.fn()
     const sys = vi.fn()
+    applyLocale('test', {
+      lang: 'test',
+      surface: 'tui',
+      messages: {
+        'session.input.secretCancelled': 'localized secret cancellation',
+        'session.input.sudoCancelled': 'localized sudo cancellation',
+        'session.input.vaultStaysLocked': 'localized vault cancellation'
+      }
+    })
 
     applyVoiceRecordResponse({ status: 'busy' }, true, { setProcessing, setRecording }, sys)
 
@@ -193,12 +206,17 @@ describe('dismissSensitivePrompt', () => {
     patchOverlayState({ sudo: { requestId: 'srq-sudo' } })
     const respond = openRequest('srq-sudo', 'sudo')
     const sys = vi.fn()
-
-    dismissSensitivePrompt(getOverlayState(), sys, {
-      secret: 'localized secret cancellation',
-      sudo: 'localized sudo cancellation',
-      vaultUnlock: 'localized vault cancellation'
+    applyLocale('test', {
+      lang: 'test',
+      surface: 'tui',
+      messages: {
+        'session.input.secretCancelled': 'localized secret cancellation',
+        'session.input.sudoCancelled': 'localized sudo cancellation',
+        'session.input.vaultStaysLocked': 'localized vault cancellation'
+      }
     })
+
+    dismissSensitivePrompt(getOverlayState(), {} as never, sys)
 
     expect(getOverlayState().sudo).toBeNull()
     expect(sys).toHaveBeenCalledWith('localized sudo cancellation')
@@ -210,12 +228,17 @@ describe('dismissSensitivePrompt', () => {
     resetServerRequestsForTests()
     patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'srq-gone' } })
     const sys = vi.fn()
-
-    dismissSensitivePrompt(getOverlayState(), sys, {
-      secret: 'localized secret cancellation',
-      sudo: 'localized sudo cancellation',
-      vaultUnlock: 'localized vault cancellation'
+    applyLocale('test', {
+      lang: 'test',
+      surface: 'tui',
+      messages: {
+        'session.input.secretCancelled': 'localized secret cancellation',
+        'session.input.sudoCancelled': 'localized sudo cancellation',
+        'session.input.vaultStaysLocked': 'localized vault cancellation'
+      }
     })
+
+    dismissSensitivePrompt(getOverlayState(), {} as never, sys)
 
     expect(getOverlayState().secret).toBeNull()
     expect(sys).toHaveBeenCalledWith('localized secret cancellation')
@@ -227,12 +250,17 @@ describe('dismissSensitivePrompt', () => {
     resetServerRequestsForTests()
     const respond = openRequest('vault-1', 'vault.unlock_prompt')
     const sys = vi.fn()
-
-    const pending = dismissSensitivePrompt(getOverlayState(), sys, {
-      secret: 'localized secret cancellation',
-      sudo: 'localized sudo cancellation',
-      vaultUnlock: 'localized vault cancellation'
+    applyLocale('test', {
+      lang: 'test',
+      surface: 'tui',
+      messages: {
+        'session.input.secretCancelled': 'localized secret cancellation',
+        'session.input.sudoCancelled': 'localized sudo cancellation',
+        'session.input.vaultStaysLocked': 'localized vault cancellation'
+      }
     })
+
+    const pending = dismissSensitivePrompt(getOverlayState(), {} as never, sys)
 
     expect(getOverlayState().vaultUnlock).toBeNull()
     expect(sys).toHaveBeenCalledWith('localized vault cancellation')

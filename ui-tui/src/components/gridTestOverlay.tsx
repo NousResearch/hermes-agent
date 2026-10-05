@@ -1,6 +1,6 @@
 import { Box, Text } from '@hermes/ink'
 
-import { useI18n } from '../i18n/index.js'
+import { useT } from '../i18n/index.js'
 import type { GridAreaCell, GridTrackSize } from '../lib/widgetGrid.js'
 import type { GridTestState } from '../sdk/apps/gridTestState.js'
 import type { Theme } from '../theme.js'
@@ -24,7 +24,7 @@ const MINI_CELL_HEIGHT = 3
 const showsNestedPreview = (row: number, col: number) => row % 2 === 0 && col % 2 === 0
 
 export function GridTestOverlay({ cols, state, t }: GridTestOverlayProps) {
-  const { t: ti } = useI18n()
+  const ti = useT()
   const gridCols = Math.max(12, cols)
   const activeIdx = state.activeRow * state.cols + state.activeCol
   const activeLabel = `c${activeIdx + 1}`
@@ -57,18 +57,16 @@ export function GridTestOverlay({ cols, state, t }: GridTestOverlayProps) {
           {state.zoomed ? `/grid-test / r${state.activeRow + 1} c${state.activeCol + 1}` : '/grid-test'}
         </Text>
         <Text color={t.color.muted}>
-          {state.streams
-            ? ti('widget.grid.streams')
-            : ti('widget.grid.dimensions', { cols: state.cols, rows: state.rows })}
+          {state.streams ? ti.widget.grid.streams : ti.widget.grid.dimensions(state.cols, state.rows)}
         </Text>
       </Box>
 
       <Text color={t.color.muted} wrap="truncate">
         {state.zoomed
-          ? ti('widget.grid.zoomHint')
+          ? ti.widget.grid.zoomHint
           : state.streams
-            ? ti('widget.grid.streamHint')
-            : ti('widget.grid.controlsHint')}
+            ? ti.widget.grid.streamHint
+            : ti.widget.grid.controlsHint}
       </Text>
 
       <Box marginTop={1}>
@@ -94,12 +92,12 @@ export function GridTestOverlay({ cols, state, t }: GridTestOverlayProps) {
       {!state.zoomed && !state.streams && (
         <Box marginTop={1}>
           <Text color={t.color.muted} wrap="truncate">
-            {ti('widget.grid.status', {
-              areas: state.areas ? ti('widget.grid.areasOn') : ti('sys.off'),
-              gap: state.gap ?? ti('widget.grid.auto'),
-              nested: state.nested ? ti('sys.on') : ti('sys.off'),
-              pad: state.paddingX ?? ti('widget.grid.auto')
-            })}
+            {ti.widget.grid.status(
+              state.gap ?? ti.widget.grid.auto,
+              state.paddingX ?? ti.widget.grid.auto,
+              state.nested ? ti.sys.on : ti.sys.off,
+              state.areas ? ti.widget.grid.areasOn : ti.sys.off
+            )}
           </Text>
         </Box>
       )}
@@ -243,7 +241,7 @@ function GridCell({
 }
 
 function ZoomedGridCell({ cols, parentLabel, t }: { cols: number; parentLabel: string; t: Theme }) {
-  const { t: ti } = useI18n()
+  const ti = useT()
   const childColumns = cols >= 72 ? 4 : 2
   const contentWidth = Math.max(1, cols - 4)
 
@@ -268,7 +266,7 @@ function ZoomedGridCell({ cols, parentLabel, t }: { cols: number; parentLabel: s
           {
             children: (
               <Text bold color={t.color.primary}>
-                {ti('widget.grid.parent', { cell: parentLabel })}
+                {ti.widget.grid.parent(parentLabel)}
               </Text>
             ),
             id: 'header-title'
@@ -276,7 +274,7 @@ function ZoomedGridCell({ cols, parentLabel, t }: { cols: number; parentLabel: s
           {
             children: (
               <Box justifyContent="flex-end" width="100%">
-                <Text color={t.color.muted}>{ti('widget.grid.nestedChild')}</Text>
+                <Text color={t.color.muted}>{ti.widget.grid.nestedChild}</Text>
               </Box>
             ),
             id: 'header-meta'

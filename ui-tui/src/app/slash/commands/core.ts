@@ -2,7 +2,7 @@ import { forceRedraw, type MouseTrackingMode } from '@hermes/ink'
 
 import { DASHBOARD_TUI_MODE, NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
-import { HOTKEYS } from '../../../content/hotkeys.js'
+import { hotkeys } from '../../../content/hotkeys.js'
 import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
@@ -14,12 +14,7 @@ import type {
   SessionUndoResponse,
   SystemBatteryResponse
 } from '../../../gatewayTypes.js'
-import {
-  translate,
-  translateSlashCategory,
-  translateSlashDescription,
-  type TranslationKey
-} from '../../../i18n/index.js'
+import { getLocale, t, translateOptional } from '../../../i18n/runtime.js'
 import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import {
@@ -33,36 +28,34 @@ import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
-const formatSessionStatus = (response: SessionStatusResponse, locale: Parameters<typeof translate>[0]): string => {
+const formatSessionStatus = (response: SessionStatusResponse): string => {
   const details = response.details
 
   if (!details) {
-    return response.output || translate(locale, 'sys.noStatus')
+    return response.output || t('slashCmd.core.status.empty')
   }
 
   const lines = [
-    translate(locale, 'sessionStatus.heading'),
+    t('sessionStatus.heading'),
     '',
-    translate(locale, 'sessionStatus.sessionId', { value: details.session_id }),
-    translate(locale, 'sessionStatus.path', { value: details.path })
+    t('sessionStatus.sessionId', details.session_id),
+    t('sessionStatus.path', details.path)
   ]
 
   if (details.project) {
-    lines.push(translate(locale, 'sessionStatus.project', { value: details.project }))
+    lines.push(t('sessionStatus.project', details.project))
   }
 
   if (details.title) {
-    lines.push(translate(locale, 'sessionStatus.title', { value: details.title }))
+    lines.push(t('sessionStatus.title', details.title))
   }
 
   lines.push(
-    translate(locale, 'sessionStatus.model', { model: details.model, provider: details.provider }),
-    translate(locale, 'sessionStatus.created', { value: details.created }),
-    translate(locale, 'sessionStatus.lastActivity', { value: details.last_activity }),
-    translate(locale, 'sessionStatus.tokens', { value: details.tokens.toLocaleString(locale) }),
-    translate(locale, 'sessionStatus.agentRunning', {
-      value: translate(locale, details.agent_running ? 'common.yes' : 'common.no')
-    })
+    t('sessionStatus.model', details.model, details.provider),
+    t('sessionStatus.created', details.created),
+    t('sessionStatus.lastActivity', details.last_activity),
+    t('sessionStatus.tokens', details.tokens.toLocaleString(getLocale())),
+    t('sessionStatus.agentRunning', t(details.agent_running ? 'common.yes' : 'common.no'))
   )
 
   return lines.join('\n')
@@ -117,47 +110,43 @@ const mouseModeFromArg = (arg: string, current: MouseTrackingMode): MouseTrackin
 const RESET_WORDS = new Set(['reset', 'clear', 'default'])
 const CYCLE_WORDS = new Set(['cycle', 'toggle'])
 
-const MOUSE_MODE_LABEL: Record<MouseTrackingMode, TranslationKey> = {
-  all: 'mouse.mode.all',
-  buttons: 'mouse.mode.buttons',
-  off: 'mouse.mode.off',
-  wheel: 'mouse.mode.wheel'
-}
+const PREVIEW_CHARS = 50
+
+/** Clip a queued/steered prompt for the confirmation line. */
+const previewOf = (text: string): string => `${text.slice(0, PREVIEW_CHARS)}${text.length > PREVIEW_CHARS ? '…' : ''}`
 
 export const coreCommands: SlashCommand[] = [
   {
+    help: 'list commands + hotkeys',
     name: 'help',
     run: (_arg, ctx) => {
       const sections: PanelSection[] = (ctx.local.catalog?.categories ?? []).map(cat => ({
         rows: cat.pairs.map(([command, description]) => [
           command,
-          translateSlashDescription(ctx.ui.locale, ctx.local.catalog?.descriptionKeys[command], description)
+          translateOptional(
+            `slash.${ctx.local.catalog?.descriptionKeys?.[command.split(' ')[0]]}`,
+            description
+          )
         ]),
-        title: translateSlashCategory(ctx.ui.locale, cat.key, cat.name)
+        title: translateOptional(cat.id ? `slashCategory.${cat.id}` : undefined, cat.name)
       }))
 
       if (ctx.local.catalog?.skillCount) {
-        sections.push({
-          text: translate(ctx.ui.locale, 'sys.helpSkillCount', { count: String(ctx.local.catalog?.skillCount ?? 0) })
-        })
+        sections.push({ text: t('slashCmd.core.help.skillCommandsAvailable', String(ctx.local.catalog.skillCount)) })
       }
 
       sections.push(
         {
           rows: [
-            ['/details [hidden|collapsed|expanded|cycle]', translate(ctx.ui.locale, 'sys.helpDetailGlobal')],
-            ['/details <section> [hidden|collapsed|expanded|reset]', translate(ctx.ui.locale, 'sys.helpDetailSection')],
-            ['/fortune [random|daily]', translate(ctx.ui.locale, 'sys.helpFortune')],
-            ['/theme [auto|light|dark]', translate(ctx.ui.locale, 'sys.helpTheme')],
-            ['/grid-test [cols]x[rows]', translate(ctx.ui.locale, 'sys.helpGridTest')],
-            ['/dialog-test [zone]', translate(ctx.ui.locale, 'sys.helpDialogTest')]
+            ['/details [hidden|collapsed|expanded|cycle]', t('slashCmd.core.help.detailsGlobal')],
+            ['/details <section> [hidden|collapsed|expanded|reset]', t('slashCmd.core.help.detailsSection')],
+            ['/fortune [random|daily]', t('slashCmd.core.help.fortune')],
+            ['/grid-test [cols]x[rows]', t('slashCmd.core.help.gridTest')],
+            ['/dialog-test [zone]', t('slashCmd.core.help.dialogTest')]
           ],
-          title: translate(ctx.ui.locale, 'section.tuiCommands')
+          title: t('slashCmd.core.help.tuiSection')
         },
-        {
-          rows: HOTKEYS.map(([k, key]) => [k, translate(ctx.ui.locale, key)]),
-          title: translate(ctx.ui.locale, 'section.hotkeys')
-        }
+        { rows: hotkeys(), title: t('help.hotkeys') }
       )
 
       ctx.transcript.panel(ctx.ui.theme.brand.helpHeader, sections)
@@ -166,6 +155,7 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['exit'],
+    help: 'exit hermes',
     name: 'quit',
     run: (_arg, ctx) => {
       // In the hosted dashboard chat there is no in-page restart path after
@@ -176,7 +166,7 @@ export const coreCommands: SlashCommand[] = [
       // (which auto-starts a fresh chat), the explicit quit command refuses and
       // instructs the user to run /new themselves.
       if (DASHBOARD_TUI_MODE) {
-        ctx.transcript.sys(translate(ctx.ui.locale, 'sys.dashboardExitDisabled'))
+        ctx.transcript.sys(t('slashCmd.core.quit.dashboardDisabled'))
 
         return
       }
@@ -186,15 +176,16 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    help: 'update Hermes Agent to the latest version (exits TUI)',
     name: 'update',
     run: (_arg, ctx) => {
       if (DASHBOARD_TUI_MODE) {
-        ctx.transcript.sys(translate(ctx.ui.locale, 'sys.dashboardUpdateDisabled'))
+        ctx.transcript.sys(t('slashCmd.core.update.dashboardDisabled'))
 
         return
       }
 
-      ctx.transcript.sys(translate(ctx.ui.locale, 'sys.updateExiting'))
+      ctx.transcript.sys(t('slashCmd.core.update.exiting'))
       // Exit code 42 signals the Python wrapper to exec `hermes update`.
       // Use dieWithCode for proper cleanup (gateway kill + Ink unmount).
       setTimeout(() => ctx.session.dieWithCode(42), 100)
@@ -203,33 +194,29 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['scroll'],
+    help: 'set mouse tracking preset [on|off|toggle|wheel|buttons|all]',
     name: 'mouse',
     run: (arg, ctx) => {
       const current = ctx.ui.mouseTracking
       const next = mouseModeFromArg(arg, current)
 
       if (next === null) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageMouse'))
+        return ctx.transcript.sys(t('slashCmd.core.mouse.usage'))
       }
 
       patchUiState({ mouseTracking: next })
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next }).catch(() => {})
 
-      queueMicrotask(() =>
-        ctx.transcript.sys(
-          translate(ctx.ui.locale, 'sys.mouseTracking', {
-            state: translate(ctx.ui.locale, MOUSE_MODE_LABEL[next])
-          })
-        )
-      )
+      queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.mouse.tracking', next)))
     }
   },
 
   {
     aliases: ['new'],
+    help: 'start a new session',
     name: 'clear',
     run: (arg, ctx, cmd) => {
-      if (ctx.session.guardBusySessionSwitch(translate(ctx.ui.locale, 'action.switchSessions'))) {
+      if (ctx.session.guardBusySessionSwitch(t('slashCmd.core.clear.switchSessions'))) {
         return
       }
 
@@ -237,9 +224,9 @@ export const coreCommands: SlashCommand[] = [
       const requestedTitle = isNew ? arg.trim() : ''
 
       const commit = () => {
-        patchUiState({ status: 'forging session…' })
+        patchUiState({ status: t('slashCmd.core.clear.forgingSession') })
         ctx.session.newSession(
-          isNew ? translate(ctx.ui.locale, 'sys.newSessionStarted') : undefined,
+          isNew ? t('slashCmd.core.clear.newSessionStarted') : undefined,
           requestedTitle || undefined
         )
       }
@@ -250,41 +237,39 @@ export const coreCommands: SlashCommand[] = [
 
       patchOverlayState({
         confirm: {
-          cancelLabel: translate(ctx.ui.locale, 'sys.confirm.clearCancel'),
-          confirmLabel: isNew
-            ? translate(ctx.ui.locale, 'sys.confirm.clearNew')
-            : translate(ctx.ui.locale, 'sys.confirm.clearCurrent'),
+          cancelLabel: t('slashCmd.core.clear.cancelLabel'),
+          confirmLabel: isNew ? t('slashCmd.core.clear.confirmNew') : t('slashCmd.core.clear.confirmClear'),
           danger: true,
-          detail: translate(ctx.ui.locale, 'sys.confirm.clearDetail'),
+          detail: t('slashCmd.core.clear.detail'),
           onConfirm: commit,
-          title: isNew
-            ? translate(ctx.ui.locale, 'sys.confirm.clearNewTitle')
-            : translate(ctx.ui.locale, 'sys.confirm.clearCurrentTitle')
+          title: isNew ? t('slashCmd.core.clear.titleNew') : t('slashCmd.core.clear.titleClear')
         }
       })
     }
   },
 
   {
+    help: 'force a full UI repaint',
     name: 'redraw',
     run: (_arg, ctx) => {
       forceRedraw(process.stdout)
-      ctx.transcript.sys(translate(ctx.ui.locale, 'sys.uiRedrawn'))
+      ctx.transcript.sys(t('slashCmd.core.redraw.done'))
     }
   },
 
   {
+    help: 'show live session info',
     name: 'status',
     run: (_arg, ctx) => {
       if (!ctx.sid) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.noActiveSession'))
+        return ctx.transcript.sys(t('slashCmd.core.status.noActiveSession'))
       }
 
       ctx.gateway
         .rpc<SessionStatusResponse>('session.status', { session_id: ctx.sid })
         .then(
           ctx.guarded<SessionStatusResponse>(r =>
-            ctx.transcript.page(formatSessionStatus(r, ctx.ui.locale), translate(ctx.ui.locale, 'section.status'))
+            ctx.transcript.page(formatSessionStatus(r), t('slashCmd.core.status.pageTitle'))
           )
         )
         .catch(ctx.guardedErr)
@@ -292,10 +277,11 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    help: 'set or show current session title',
     name: 'title',
     run: (arg, ctx) => {
       if (!ctx.sid) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.noActiveSession'))
+        return ctx.transcript.sys(t('slashCmd.core.title.noActiveSession'))
       }
 
       const title = arg.trim()
@@ -306,11 +292,7 @@ export const coreCommands: SlashCommand[] = [
           .then(
             ctx.guarded<SessionTitleResponse>(r => {
               const current = (r?.title ?? '').trim()
-              ctx.transcript.sys(
-                current
-                  ? translate(ctx.ui.locale, 'sys.titleCurrent', { title: current })
-                  : translate(ctx.ui.locale, 'sys.noTitleSet')
-              )
+              ctx.transcript.sys(current ? t('slashCmd.core.title.current', current) : t('slashCmd.core.title.none'))
             })
           )
           .catch(ctx.guardedErr)
@@ -319,7 +301,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       if (!title) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageTitle'))
+        return ctx.transcript.sys(t('slashCmd.core.title.usage'))
       }
 
       ctx.gateway
@@ -327,9 +309,9 @@ export const coreCommands: SlashCommand[] = [
         .then(
           ctx.guarded<SessionTitleResponse>(r => {
             const next = (r?.title ?? title).trim()
-            const suffix = r?.pending ? translate(ctx.ui.locale, 'session.titleQueuedSuffix') : ''
+            const suffix = r?.pending ? t('slashCmd.core.title.queuedSuffix') : ''
             patchUiState({ sessionTitle: next })
-            ctx.transcript.sys(translate(ctx.ui.locale, 'sys.titleSet', { title: next, suffix }))
+            ctx.transcript.sys(t('slashCmd.core.title.set', next, suffix))
           })
         )
         .catch(ctx.guardedErr)
@@ -343,24 +325,19 @@ export const coreCommands: SlashCommand[] = [
       const next = flagFromArg(arg, ctx.ui.compact)
 
       if (next === null) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageDensity'))
+        return ctx.transcript.sys(t('slashCmd.core.density.usage'))
       }
 
       patchUiState({ compact: next })
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'density', value: next ? 'on' : 'off' }).catch(() => {})
 
-      queueMicrotask(() =>
-        ctx.transcript.sys(
-          translate(ctx.ui.locale, 'sys.densityMode', {
-            state: next ? translate(ctx.ui.locale, 'sys.on') : translate(ctx.ui.locale, 'sys.off')
-          })
-        )
-      )
+      queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.density.state', next ? 'on' : 'off')))
     }
   },
 
   {
     aliases: ['detail'],
+    help: 'control agent detail visibility (global or per-section)',
     name: 'details',
     run: (arg, ctx) => {
       const { gateway, transcript, ui } = ctx
@@ -380,15 +357,9 @@ export const coreCommands: SlashCommand[] = [
               .map(s => `${s}=${ui.sections[s]}`)
               .join(' ')
 
-            transcript.sys(
-              translate(ctx.ui.locale, 'sys.detailsGlobal', { mode, overrides: overrides ? `  (${overrides})` : '' })
-            )
+            transcript.sys(t('slashCmd.core.details.current', mode, overrides ? `  (${overrides})` : ''))
           })
-          .catch(
-            () =>
-              !ctx.stale() &&
-              transcript.sys(translate(ctx.ui.locale, 'sys.detailsGlobal', { mode: ui.detailsMode, overrides: '' }))
-          )
+          .catch(() => !ctx.stale() && transcript.sys(t('slashCmd.core.details.current', ui.detailsMode, '')))
 
         return
       }
@@ -400,7 +371,7 @@ export const coreCommands: SlashCommand[] = [
         const mode = reset ? null : parseDetailsMode(second)
 
         if (!reset && !mode) {
-          return transcript.sys(translate(ctx.ui.locale, 'sys.usageDetailsSection'))
+          return transcript.sys(t('slashCmd.core.details.sectionUsage'))
         }
 
         const { [first]: _drop, ...rest } = ui.sections
@@ -409,12 +380,7 @@ export const coreCommands: SlashCommand[] = [
         gateway
           .rpc<ConfigSetResponse>('config.set', { key: `details_mode.${first}`, value: mode ?? '' })
           .catch(() => {})
-        transcript.sys(
-          translate(ctx.ui.locale, 'sys.detailsSection', {
-            section: first,
-            mode: mode ?? translate(ctx.ui.locale, 'common.reset')
-          })
-        )
+        transcript.sys(t('slashCmd.core.details.section', first, mode ?? t('slashCmd.core.details.reset')))
 
         return
       }
@@ -422,18 +388,19 @@ export const coreCommands: SlashCommand[] = [
       const next = CYCLE_WORDS.has(first ?? '') ? nextDetailsMode(ui.detailsMode) : parseDetailsMode(first)
 
       if (!next) {
-        return transcript.sys(translate(ctx.ui.locale, 'sys.usageDetails'))
+        return transcript.sys(t('slashCmd.core.details.usage'))
       }
 
       const sections = Object.fromEntries(SECTION_NAMES.map(section => [section, next]))
 
       patchUiState({ detailsMode: next, detailsModeCommandOverride: true, sections })
       gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => {})
-      transcript.sys(translate(ctx.ui.locale, 'sys.detailsGlobal', { mode: next, overrides: '' }))
+      transcript.sys(t('slashCmd.core.details.current', next, ''))
     }
   },
 
   {
+    help: 'local fortune',
     name: 'fortune',
     run: (arg, ctx) => {
       const key = arg.trim().toLowerCase()
@@ -446,11 +413,12 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys(dailyFortune(ctx.sid))
       }
 
-      ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageFortune'))
+      ctx.transcript.sys(t('slashCmd.core.fortune.usage'))
     }
   },
 
   {
+    help: 'copy selection or assistant message',
     name: 'copy',
     run: async (arg, ctx) => {
       const { sys } = ctx.transcript
@@ -459,21 +427,26 @@ export const coreCommands: SlashCommand[] = [
         const text = await ctx.composer.selection.copySelection()
 
         if (text) {
-          return sys(translate(ctx.ui.locale, 'sys.copiedChars', { count: String(text.length) }))
+          return sys(
+            t(
+              text.length === 1 ? 'slashCmd.core.copy.copiedCharsOne' : 'slashCmd.core.copy.copiedCharsOther',
+              String(text.length)
+            )
+          )
         } else {
-          return sys(translate(ctx.ui.locale, 'sys.clipboardCopyFailed'))
+          return sys(t('slashCmd.core.copy.clipboardFailed'))
         }
       }
 
       if (arg && Number.isNaN(parseInt(arg, 10))) {
-        return sys(translate(ctx.ui.locale, 'sys.usageCopy'))
+        return sys(t('slashCmd.core.copy.usage'))
       }
 
       const all = ctx.local.getHistoryItems().filter(m => m.role === 'assistant')
       const target = all[arg ? Math.min(parseInt(arg, 10), all.length) - 1 : all.length - 1]
 
       if (!target) {
-        return sys(translate(ctx.ui.locale, 'sys.nothingToCopy'))
+        return sys(t('slashCmd.core.copy.nothingToCopy'))
       }
 
       const shouldUseTerminalClipboard = isRemoteShellSession(process.env)
@@ -481,7 +454,7 @@ export const coreCommands: SlashCommand[] = [
       if (shouldUseTerminalClipboard) {
         writeOsc52Clipboard(target.text)
 
-        return sys('sent OSC52 copy sequence (terminal support required)')
+        return sys(t('slashCmd.core.copy.sentOsc52'))
       }
 
       void writeClipboardText(target.text)
@@ -491,28 +464,29 @@ export const coreCommands: SlashCommand[] = [
           }
 
           if (nativeOk) {
-            sys(translate(ctx.ui.locale, 'sys.copiedToClipboard'))
+            sys(t('slashCmd.core.copy.copied'))
           } else {
             writeOsc52Clipboard(target.text)
-            sys(translate(ctx.ui.locale, 'sys.sentOsc52'))
+            sys(t('slashCmd.core.copy.sentOsc52'))
           }
         })
         .catch(error => {
           if (!ctx.stale()) {
-            sys(translate(ctx.ui.locale, 'sys.copyFailed', { error: String(error) }))
+            sys(t('slashCmd.core.copy.failed', String(error)))
           }
         })
     }
   },
 
   {
+    help: 'attach clipboard image',
     name: 'paste',
-    run: (arg, ctx) =>
-      arg ? ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usagePaste')) : ctx.composer.attachClipboardImage()
+    run: (arg, ctx) => (arg ? ctx.transcript.sys(t('slashCmd.core.paste.usage')) : ctx.composer.attachClipboardImage())
   },
 
   {
     aliases: ['compose'],
+    help: 'compose your next prompt in $EDITOR (same as Ctrl+G)',
     name: 'prompt',
     run: (arg, ctx) => {
       if (arg) {
@@ -523,24 +497,25 @@ export const coreCommands: SlashCommand[] = [
       }
 
       void ctx.composer.openEditor().catch((err: unknown) => {
-        ctx.transcript.sys(translate(ctx.ui.locale, 'sys.editorOpenFailed', { message: String(err) }))
+        ctx.transcript.sys(t('slashCmd.core.prompt.editorFailed', String(err)))
       })
     }
   },
 
   {
+    help: 'configure IDE terminal keybindings for multiline + undo/redo',
     name: 'terminal-setup',
     run: (arg, ctx) => {
       const target = arg.trim().toLowerCase()
 
       if (target && !['auto', 'cursor', 'vscode', 'windsurf'].includes(target)) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageTerminalSetup'))
+        return ctx.transcript.sys(t('slashCmd.core.terminalSetup.usage'))
       }
 
       const runner =
         !target || target === 'auto'
-          ? configureDetectedTerminalKeybindings({ locale: ctx.ui.locale })
-          : configureTerminalKeybindings(target as 'cursor' | 'vscode' | 'windsurf', { locale: ctx.ui.locale })
+          ? configureDetectedTerminalKeybindings()
+          : configureTerminalKeybindings(target as 'cursor' | 'vscode' | 'windsurf')
 
       void runner
         .then(result => {
@@ -551,29 +526,31 @@ export const coreCommands: SlashCommand[] = [
           ctx.transcript.sys(result.message)
 
           if (result.success && result.requiresRestart) {
-            ctx.transcript.sys(translate(ctx.ui.locale, 'sys.restartIdeTerminal'))
+            ctx.transcript.sys(t('slashCmd.core.terminalSetup.restartIde'))
           }
         })
         .catch(error => {
           if (!ctx.stale()) {
-            ctx.transcript.sys(translate(ctx.ui.locale, 'sys.terminalSetupFailed', { error: String(error) }))
+            ctx.transcript.sys(t('slashCmd.core.terminalSetup.failed', String(error)))
           }
         })
     }
   },
 
   {
+    help: 'view gateway logs',
     name: 'logs',
     run: (arg, ctx) => {
       const text = ctx.gateway.gw.getLogTail(Math.min(80, Math.max(1, parseInt(arg, 10) || 20)))
 
       text
-        ? ctx.transcript.page(text, translate(ctx.ui.locale, 'section.log'))
-        : ctx.transcript.sys(translate(ctx.ui.locale, 'sys.noGatewayLogs'))
+        ? ctx.transcript.page(text, t('slashCmd.core.logs.pageTitle'))
+        : ctx.transcript.sys(t('slashCmd.core.logs.none'))
     }
   },
 
   {
+    help: 'view current transcript (user + assistant messages)',
     name: 'history',
     run: (arg, ctx) => {
       // The CLI-side `/history` runs in a detached slash-worker subprocess
@@ -583,33 +560,39 @@ export const coreCommands: SlashCommand[] = [
       const items = ctx.local.getHistoryItems().filter(m => m.role === 'user' || m.role === 'assistant')
 
       if (!items.length) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.noConversation'))
+        return ctx.transcript.sys(t('slashCmd.core.history.noConversation'))
       }
 
       const preview = Math.max(80, parseInt(arg, 10) || 400)
 
       const lines = items.map((m, i) => {
+        const index = String(i + 1)
+
         const tag =
-          m.role === 'user'
-            ? translate(ctx.ui.locale, 'sys.historyYou', { n: String(i + 1) })
-            : translate(ctx.ui.locale, 'sys.historyHermes', { n: String(i + 1) })
+          m.role === 'user' ? t('slashCmd.core.history.youTag', index) : t('slashCmd.core.history.hermesTag', index)
+
+        const toolCount = m.tools?.length ?? 0
 
         const body =
           m.text.trim() ||
-          (m.tools?.length
-            ? translate(ctx.ui.locale, 'sys.historyToolCalls', { n: String(m.tools.length) })
-            : translate(ctx.ui.locale, 'sys.historyEmpty'))
+          (toolCount
+            ? t(
+                toolCount === 1 ? 'slashCmd.core.history.toolCallsOne' : 'slashCmd.core.history.toolCallsOther',
+                String(toolCount)
+              )
+            : t('slashCmd.core.history.empty'))
 
         const clipped = body.length > preview ? `${body.slice(0, preview).trimEnd()}…` : body
 
         return `[${tag}]\n${clipped}`
       })
 
-      ctx.transcript.page(lines.join('\n\n'), translate(ctx.ui.locale, 'section.history'))
+      ctx.transcript.page(lines.join('\n\n'), t('slashCmd.core.history.pageTitle'))
     }
   },
 
   {
+    help: 'save the current transcript to JSON',
     name: 'save',
     run: (_arg, ctx) => {
       const hasConversation = ctx.local
@@ -617,11 +600,11 @@ export const coreCommands: SlashCommand[] = [
         .some(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
 
       if (!hasConversation) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.noConversation'))
+        return ctx.transcript.sys(t('slashCmd.core.save.noConversation'))
       }
 
       if (!ctx.sid) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.noActiveSessionSave'))
+        return ctx.transcript.sys(t('slashCmd.core.save.noActiveSession'))
       }
 
       ctx.gateway
@@ -631,9 +614,9 @@ export const coreCommands: SlashCommand[] = [
             const file = r?.file
 
             if (file) {
-              ctx.transcript.sys(translate(ctx.ui.locale, 'sys.savedToFile', { file }))
+              ctx.transcript.sys(t('slashCmd.core.save.saved', file))
             } else {
-              ctx.transcript.sys(translate(ctx.ui.locale, 'sys.failedToSave'))
+              ctx.transcript.sys(t('slashCmd.core.save.failed'))
             }
           })
         )
@@ -650,15 +633,13 @@ export const coreCommands: SlashCommand[] = [
 
       // `/focus status` reports without writing, matching the CLI surface.
       if (mode === 'status' || mode === 'show' || mode === '?') {
-        return ctx.transcript.sys(
-          current ? translate(ctx.ui.locale, 'focus.statusOn') : translate(ctx.ui.locale, 'focus.statusOff')
-        )
+        return ctx.transcript.sys(current ? t('slashCmd.core.focus.statusOn') : t('slashCmd.core.focus.statusOff'))
       }
 
       const next = flagFromArg(mode, current)
 
       if (next === null) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageFocus'))
+        return ctx.transcript.sys(t('slashCmd.core.focus.usage'))
       }
 
       // Display-only: Python owns the tool_progress stash/restore so /focus off
@@ -668,15 +649,14 @@ export const coreCommands: SlashCommand[] = [
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'focus', value: next ? 'on' : 'off' }).catch(() => {})
 
       queueMicrotask(() =>
-        ctx.transcript.sys(
-          next ? translate(ctx.ui.locale, 'focus.enabled') : translate(ctx.ui.locale, 'focus.disabled')
-        )
+        ctx.transcript.sys(next ? t('slashCmd.core.focus.enabled') : t('slashCmd.core.focus.disabled'))
       )
     }
   },
 
   {
     aliases: ['sb'],
+    help: 'status bar position (on|off|top|bottom)',
     name: 'statusbar',
     run: (arg, ctx) => {
       const mode = arg.trim().toLowerCase()
@@ -692,13 +672,13 @@ export const coreCommands: SlashCommand[] = [
               : null
 
       if (!next) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageStatusbar'))
+        return ctx.transcript.sys(t('slashCmd.core.statusbar.usage'))
       }
 
       patchUiState({ statusBar: next })
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next }).catch(() => {})
 
-      queueMicrotask(() => ctx.transcript.sys(translate(ctx.ui.locale, 'sys.statusBarMode', { mode: next })))
+      queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.statusbar.state', next)))
     }
   },
 
@@ -712,24 +692,20 @@ export const coreCommands: SlashCommand[] = [
       // matching the CLI surface. Fetch on demand so it works even while the
       // indicator (and its poller) is off.
       if (mode === 'status' || mode === 'show') {
-        const state = translate(ctx.ui.locale, ctx.ui.battery ? 'common.enabled' : 'common.disabled')
+        const state = ctx.ui.battery ? 'on' : 'off'
 
         ctx.gateway
           .rpc<SystemBatteryResponse>('system.battery', {})
           .then(r => {
             if (r?.available && typeof r.percent === 'number') {
               ctx.transcript.sys(
-                translate(ctx.ui.locale, 'battery.current', {
-                  icon: r.plugged ? '⚡' : '🔋',
-                  percent: r.percent,
-                  state
-                })
+                t('slashCmd.core.battery.statusLive', state, r.plugged ? '⚡' : '🔋', String(r.percent))
               )
             } else {
-              ctx.transcript.sys(translate(ctx.ui.locale, 'battery.unavailable', { state }))
+              ctx.transcript.sys(t('slashCmd.core.battery.statusNoBattery', state))
             }
           })
-          .catch(() => ctx.transcript.sys(translate(ctx.ui.locale, 'battery.state', { state })))
+          .catch(() => ctx.transcript.sys(t('slashCmd.core.battery.state', state)))
 
         return
       }
@@ -737,60 +713,50 @@ export const coreCommands: SlashCommand[] = [
       const next = flagFromArg(arg, ctx.ui.battery)
 
       if (next === null) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageBattery'))
+        return ctx.transcript.sys(t('slashCmd.core.battery.usage'))
       }
 
       patchUiState({ battery: next, ...(next ? {} : { batteryStatus: null }) })
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'battery', value: next ? 'on' : 'off' }).catch(() => {})
 
-      queueMicrotask(() =>
-        ctx.transcript.sys(
-          translate(ctx.ui.locale, 'battery.state', {
-            state: translate(ctx.ui.locale, next ? 'common.enabled' : 'common.disabled')
-          })
-        )
-      )
+      queueMicrotask(() => ctx.transcript.sys(t('slashCmd.core.battery.state', next ? 'on' : 'off')))
     }
   },
 
   {
     aliases: ['q'],
+    help: 'inspect or enqueue a message',
     name: 'queue',
     run: (arg, ctx) => {
       if (!arg) {
+        const count = ctx.composer.queueRef.current.length
+
         return ctx.transcript.sys(
-          translate(ctx.ui.locale, 'sys.queuedCount', {
-            count: String(ctx.composer.queueRef.current.length)
-          })
+          t(count === 1 ? 'slashCmd.core.queue.countOne' : 'slashCmd.core.queue.countOther', String(count))
         )
       }
 
       ctx.composer.enqueue(arg)
-      ctx.transcript.sys(
-        translate(ctx.ui.locale, 'sys.queuedText', { text: `${arg.slice(0, 50)}${arg.length > 50 ? '…' : ''}` })
-      )
+      ctx.transcript.sys(t('slashCmd.core.queue.queued', previewOf(arg)))
     }
   },
 
   {
     aliases: ['s'],
+    help: 'inject a message after the next tool call (no interrupt)',
     name: 'steer',
     run: (arg, ctx) => {
       const payload = arg?.trim() ?? ''
 
       if (!payload) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.usageSteer'))
+        return ctx.transcript.sys(t('slashCmd.core.steer.usage'))
       }
 
       // If the agent isn't running, fall back to the queue so the user's
       // message isn't lost — identical semantics to the gateway handler.
       if (!ctx.ui.busy || !ctx.sid) {
         ctx.composer.enqueue(payload)
-        ctx.transcript.sys(
-          translate(ctx.ui.locale, 'sys.steerQueuedNoTurn', {
-            text: `${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}`
-          })
-        )
+        ctx.transcript.sys(t('slashCmd.core.steer.noActiveTurnQueued', previewOf(payload)))
 
         return
       }
@@ -800,15 +766,11 @@ export const coreCommands: SlashCommand[] = [
         .then(
           ctx.guarded<SessionSteerResponse>(r => {
             if (r?.status === 'queued') {
-              ctx.transcript.sys(
-                translate(ctx.ui.locale, 'sys.steerQueued', {
-                  text: `${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}`
-                })
-              )
+              ctx.transcript.sys(t('slashCmd.core.steer.queued', previewOf(payload)))
             } else {
               // The turn ended before the steer landed (#64578): keep the words as the next turn.
               ctx.composer.enqueue(payload)
-              ctx.transcript.sys(translate(ctx.ui.locale, 'sys.steerRejected'))
+              ctx.transcript.sys(t('slashCmd.core.steer.rejected'))
             }
           })
         )
@@ -817,19 +779,22 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    help: 'undo last exchange',
     name: 'undo',
     run: (_arg, ctx) => {
       if (!ctx.sid) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.nothingToUndo'))
+        return ctx.transcript.sys(t('slashCmd.core.undo.nothing'))
       }
 
       ctx.gateway.rpc<SessionUndoResponse>('session.undo', { session_id: ctx.sid }).then(
         ctx.guarded<SessionUndoResponse>(r => {
           if ((r.removed ?? 0) > 0) {
             ctx.transcript.setHistoryItems((prev: Msg[]) => ctx.transcript.trimLastExchange(prev))
-            ctx.transcript.sys(translate(ctx.ui.locale, 'sys.undidMessages', { count: r.removed ?? 0 }))
+            ctx.transcript.sys(
+              t(r.removed === 1 ? 'slashCmd.core.undo.undidOne' : 'slashCmd.core.undo.undidOther', String(r.removed))
+            )
           } else {
-            ctx.transcript.sys(translate(ctx.ui.locale, 'sys.nothingToUndo'))
+            ctx.transcript.sys(t('slashCmd.core.undo.nothing'))
           }
         })
       )
@@ -837,22 +802,23 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    help: 'retry last user message',
     name: 'retry',
     run: (_arg, ctx) => {
       const last = ctx.local.getLastUserMsg()
 
       if (!last) {
-        return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.nothingToRetry'))
+        return ctx.transcript.sys(t('slashCmd.core.retry.nothing'))
       }
 
       if (!ctx.sid) {
         return ctx.transcript.send(last)
       }
 
-      ctx.gateway.rpc<SessionUndoResponse>('session.undo', { session_id: ctx.sid }).then(
+      ctx.gateway.rpc<SessionUndoResponse>('session.undo', { intent: 'retry', session_id: ctx.sid }).then(
         ctx.guarded<SessionUndoResponse>(r => {
           if ((r.removed ?? 0) <= 0) {
-            return ctx.transcript.sys(translate(ctx.ui.locale, 'sys.nothingToRetry'))
+            return ctx.transcript.sys(t('slashCmd.core.retry.nothing'))
           }
 
           ctx.transcript.setHistoryItems((prev: Msg[]) => ctx.transcript.trimLastExchange(prev))

@@ -1,117 +1,106 @@
-import { useCallback, useEffect, useState } from "react";
-import { Clock, Wand2 } from "lucide-react";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { Card, CardContent } from "@nous-research/ui/ui/components/card";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Label } from "@nous-research/ui/ui/components/label";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { api } from "@/lib/api";
-import type { AutomationBlueprint, AutomationBlueprintField } from "@/lib/api";
-import { cn, themedBody } from "@/lib/utils";
-import { useI18n } from "@/i18n";
-import { errorMessage } from "@/lib/api-error";
+import { useCallback, useEffect, useState } from 'react'
+import { Clock, Wand2 } from 'lucide-react'
+import { Button } from '@nous-research/ui/ui/components/button'
+import { Select, SelectOption } from '@nous-research/ui/ui/components/select'
+import { Spinner } from '@nous-research/ui/ui/components/spinner'
+import { Card, CardContent } from '@nous-research/ui/ui/components/card'
+import { Input } from '@nous-research/ui/ui/components/input'
+import { Label } from '@nous-research/ui/ui/components/label'
+import { Badge } from '@nous-research/ui/ui/components/badge'
+import { useToast } from '@nous-research/ui/hooks/use-toast'
+import { Toast } from '@nous-research/ui/ui/components/toast'
+import { api } from '@/lib/api'
+import type { AutomationBlueprint, AutomationBlueprintField } from '@/lib/api'
+import { cn, themedBody } from '@/lib/utils'
+import { useI18n } from '@/i18n'
+import { errorMessage } from '@/lib/api-error'
 
 interface AutomationBlueprintsProps {
-  profile: string;
+  profile: string
   /** Called after a blueprint is instantiated so the parent can refresh its job list. */
-  onCreated?: () => void;
+  onCreated?: () => void
 }
 
 /** Initial form values for a blueprint = each field's default (or ""). */
 function initialValues(blueprint: AutomationBlueprint): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const f of blueprint.fields) out[f.name] = f.default ?? "";
-  return out;
+  const out: Record<string, string> = {}
+  for (const f of blueprint.fields) out[f.name] = f.default ?? ''
+  return out
 }
 
 function FieldInput({
   field,
   value,
-  onChange,
+  onChange
 }: {
-  field: AutomationBlueprintField;
-  value: string;
-  onChange: (v: string) => void;
+  field: AutomationBlueprintField
+  value: string
+  onChange: (v: string) => void
 }) {
-  if (field.type === "enum" || field.type === "weekdays") {
+  if (field.type === 'enum' || field.type === 'weekdays') {
     return (
-      <Select value={value} onValueChange={(v) => onChange(v)}>
-        {field.options.map((opt) => (
+      <Select value={value} onValueChange={v => onChange(v)}>
+        {field.options.map(opt => (
           <SelectOption key={opt} value={opt}>
             {opt}
           </SelectOption>
         ))}
       </Select>
-    );
+    )
   }
-  if (field.type === "time") {
-    return (
-      <Input
-        type="time"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    );
+  if (field.type === 'time') {
+    return <Input type="time" value={value} onChange={e => onChange(e.target.value)} />
   }
   // text
   return (
-    <Input
-      type="text"
-      value={value}
-      placeholder={field.help || field.label}
-      onChange={(e) => onChange(e.target.value)}
-    />
-  );
+    <Input type="text" value={value} placeholder={field.help || field.label} onChange={e => onChange(e.target.value)} />
+  )
 }
 
 function BlueprintCard({
   blueprint,
   profile,
   showToast,
-  onCreated,
+  onCreated
 }: {
-  blueprint: AutomationBlueprint;
-  profile: string;
-  showToast: (message: string, type: "error" | "success") => void;
-  onCreated?: () => void;
+  blueprint: AutomationBlueprint
+  profile: string
+  showToast: (message: string, type: 'error' | 'success') => void
+  onCreated?: () => void
 }) {
-  const { format, t } = useI18n();
-  const [open, setOpen] = useState(false);
-  const [values, setValues] = useState<Record<string, string>>(() => initialValues(blueprint));
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { format, t } = useI18n()
+  const [open, setOpen] = useState(false)
+  const [values, setValues] = useState<Record<string, string>>(() => initialValues(blueprint))
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const submit = useCallback(async () => {
-    setSubmitting(true);
-    setError(null);
+    setSubmitting(true)
+    setError(null)
     try {
-      const job = await api.instantiateAutomationBlueprint({ blueprint: blueprint.key, values }, profile);
-      const when = job.schedule_display ? ` — ${job.schedule_display}` : "";
+      const job = await api.instantiateAutomationBlueprint({ blueprint: blueprint.key, values }, profile)
+      const when = job.schedule_display ? ` — ${job.schedule_display}` : ''
       showToast(
         format(t.automationBlueprints.scheduled, {
           title: blueprint.title,
-          when,
+          when
         }),
-        "success",
-      );
-      setOpen(false);
-      setValues(initialValues(blueprint));
-      onCreated?.();
+        'success'
+      )
+      setOpen(false)
+      setValues(initialValues(blueprint))
+      onCreated?.()
     } catch (e) {
       // 422 from the API carries the slot-level validation message.
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg.replace(/^\d+:\s*/, ""));
+      const msg = e instanceof Error ? e.message : String(e)
+      setError(msg.replace(/^\d+:\s*/, ''))
     } finally {
-      setSubmitting(false);
+      setSubmitting(false)
     }
-  }, [blueprint, format, onCreated, profile, showToast, t, values]);
+  }, [blueprint, format, onCreated, profile, showToast, t, values])
 
   return (
-    <Card className={cn("overflow-hidden", themedBody)}>
+    <Card className={cn('overflow-hidden', themedBody)}>
       <CardContent className="space-y-3 p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -121,37 +110,29 @@ function BlueprintCard({
             </div>
             <p className="mt-1 text-sm opacity-70">{blueprint.description}</p>
             <div className="mt-2 flex flex-wrap gap-1">
-              {blueprint.tags.map((t) => (
+              {blueprint.tags.map(t => (
                 <Badge key={t} tone="secondary">
                   {t}
                 </Badge>
               ))}
             </div>
           </div>
-          <Button
-            ghost={open}
-            size="sm"
-            onClick={() => setOpen((o) => !o)}
-          >
-            {open
-              ? t.automationBlueprints.cancel
-              : t.automationBlueprints.setUp}
+          <Button ghost={open} size="sm" onClick={() => setOpen(o => !o)}>
+            {open ? t.automationBlueprints.cancel : t.automationBlueprints.setUp}
           </Button>
         </div>
 
         {open && (
           <div className="space-y-3 border-t pt-3">
-            {blueprint.fields.map((f) => (
+            {blueprint.fields.map(f => (
               <div key={f.name} className="space-y-1">
                 <Label htmlFor={`${blueprint.key}-${f.name}`}>{f.label}</Label>
                 <FieldInput
                   field={f}
-                  value={values[f.name] ?? ""}
-                  onChange={(v) => setValues((prev) => ({ ...prev, [f.name]: v }))}
+                  value={values[f.name] ?? ''}
+                  onChange={v => setValues(prev => ({ ...prev, [f.name]: v }))}
                 />
-                {f.help && f.type !== "text" ? (
-                  <p className="text-xs opacity-60">{f.help}</p>
-                ) : null}
+                {f.help && f.type !== 'text' ? <p className="text-xs opacity-60">{f.help}</p> : null}
               </div>
             ))}
             {error ? (
@@ -160,11 +141,7 @@ function BlueprintCard({
               </p>
             ) : null}
             <div className="flex items-center gap-2">
-              <Button
-                onClick={() => void submit()}
-                disabled={submitting}
-                prefix={submitting ? <Spinner /> : <Clock />}
-              >
+              <Button onClick={() => void submit()} disabled={submitting} prefix={submitting ? <Spinner /> : <Clock />}>
                 {t.automationBlueprints.schedule}
               </Button>
             </div>
@@ -172,7 +149,7 @@ function BlueprintCard({
         )}
       </CardContent>
     </Card>
-  );
+  )
 }
 
 /**
@@ -182,63 +159,53 @@ function BlueprintCard({
  * via the same create_job path as everything else.
  */
 export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprintsProps) {
-  const { format, t } = useI18n();
-  const { toast, showToast } = useToast();
-  const [blueprints, setBlueprints] = useState<AutomationBlueprint[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { format, t } = useI18n()
+  const { toast, showToast } = useToast()
+  const [blueprints, setBlueprints] = useState<AutomationBlueprint[] | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
-    let cancelled = false;
+    let cancelled = false
     api
       .getAutomationBlueprints(profile)
-      .then((r) => {
+      .then(r => {
         if (!cancelled) {
-          setLoadError(null);
-          setBlueprints(r.blueprints);
+          setLoadError(null)
+          setBlueprints(r.blueprints)
         }
       })
-      .catch((e) => {
-        if (!cancelled) setLoadError(errorMessage(e, t.common));
-      });
+      .catch(e => {
+        if (!cancelled) setLoadError(errorMessage(e, t.common))
+      })
     return () => {
-      cancelled = true;
-    };
-  }, [profile]);
+      cancelled = true
+    }
+  }, [profile])
 
   if (loadError) {
-    return (
-      <p className="text-sm text-red-500">
-        {format(t.automationBlueprints.loadFailed, { error: loadError })}
-      </p>
-    );
+    return <p className="text-sm text-red-500">{format(t.automationBlueprints.loadFailed, { error: loadError })}</p>
   }
   if (blueprints === null) {
     return (
       <div className="flex items-center gap-2 opacity-70">
         <Spinner className="h-4 w-4" /> {t.automationBlueprints.loading}
       </div>
-    );
+    )
   }
   if (blueprints.length === 0) {
-    return <p className="opacity-70">{t.automationBlueprints.none}</p>;
+    return <p className="opacity-70">{t.automationBlueprints.none}</p>
   }
 
   return (
     <>
       <Toast toast={toast} />
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        {blueprints.map((r) => (
-          <BlueprintCard
-            key={r.key}
-            blueprint={r}
-            profile={profile}
-            showToast={showToast}
-            onCreated={onCreated}
-          />
+        {blueprints.map(r => (
+          <BlueprintCard key={r.key} blueprint={r} profile={profile} showToast={showToast} onCreated={onCreated} />
         ))}
       </div>
     </>
-  );
+  )
 }
 
-export default AutomationBlueprints;
+export default AutomationBlueprints

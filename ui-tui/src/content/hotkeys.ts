@@ -1,42 +1,47 @@
-import type { TranslationKey } from '../i18n/index.js'
+import { messages } from '../i18n/runtime.js'
 import { isMac, isRemoteShell } from '../lib/platform.js'
 
 const action = isMac ? 'Cmd' : 'Ctrl'
 const paste = isMac ? 'Cmd' : 'Alt'
 
-const copyHotkeys: [string, TranslationKey][] = isMac
-  ? [
-      ['Cmd+C', 'hotkey.copySelection'],
-      ['Ctrl+C', 'hotkey.interruptClearExit']
-    ]
-  : isRemoteShell()
-    ? [
-        ['Cmd+C', 'hotkey.forwardCopySelection'],
-        ['Ctrl+C', 'hotkey.copySelectionInterruptClearExit']
-      ]
-    : [['Ctrl+C', 'hotkey.copySelectionInterruptClearExit']]
+/** Hotkey table `[chord, description]`, resolved against the active language at call time. */
+export function hotkeys(): [string, string][] {
+  const h = messages().hints
 
-export const HOTKEYS: [string, TranslationKey][] = [
-  ...copyHotkeys,
-  [action + '+D', 'hotkey.quit'],
-  [action + '+G / Alt+G', 'hotkey.openEditor'],
-  [action + '+L', 'hotkey.redraw'],
-  [paste + '+V / /paste', 'hotkey.pasteTextOrImage'],
-  ['Esc Esc', 'hotkey.discardDraft'],
-  ['Tab', 'hotkey.applyCompletion'],
-  ['↑/↓', 'hotkey.navigateOrEdit'],
-  ['Ctrl+X', 'hotkey.openSessionsOrDeleteQueued'],
-  ['Ctrl+T', 'hotkey.expandLiveAgents'],
-  ['Ctrl+R / F7', 'hotkey.toggleLiveAgentPreview'],
-  ['Ctrl+O', 'hotkey.openModelPicker'],
-  [action + '+A/E', 'hotkey.lineStartEnd'],
-  [action + '+Z / ' + action + '+Y', 'hotkey.undoRedo'],
-  [action + '+W', 'hotkey.deleteWord'],
-  [action + '+U/K', 'hotkey.deleteToLineEnds'],
-  [action + '+←/→', 'hotkey.jumpWord'],
-  ['Home/End', 'hotkey.lineStartEnd'],
-  ['Shift+Enter / Alt+Enter', 'hotkey.insertNewline'],
-  ['\\+Enter', 'hotkey.multilineCont'],
-  ['!<cmd>', 'hotkey.runShellCmd'],
-  ['{!<cmd>}', 'hotkey.inlineShellCmd']
-]
+  const copyHotkeys: [string, string][] = isMac
+    ? [
+        ['Cmd+C', h.copySelection],
+        ['Ctrl+C', h.ctrlCMac]
+      ]
+    : isRemoteShell()
+      ? [
+          ['Cmd+C', h.copySelectionForwarded],
+          ['Ctrl+C', h.ctrlC]
+        ]
+      : [['Ctrl+C', h.ctrlC]]
+
+  return [
+    ...copyHotkeys,
+    [action + '+D', h.exit],
+    [action + '+G / Alt+G', h.openEditor],
+    [action + '+L', h.redraw],
+    [paste + '+V / /paste', h.paste],
+    ['Esc Esc', h.discardDraft],
+    ['Tab', h.applyCompletion],
+    ['↑/↓', h.arrows],
+    ['Ctrl+X', h.sessionSwitcher],
+    ['Ctrl+T', h.expandAgents],
+    ['Ctrl+R / F7', h.collapseAgents],
+    ['Ctrl+O', h.modelPicker],
+    [action + '+A/E', h.homeEnd],
+    [action + '+Z / ' + action + '+Y', h.undoRedo],
+    [action + '+W', h.deleteWord],
+    [action + '+U/K', h.killLine],
+    [action + '+←/→', h.jumpWord],
+    ['Home/End', h.lineStartEnd],
+    ['Shift+Enter / Alt+Enter', h.newline],
+    ['\\+Enter', h.continuation],
+    ['!<cmd>', h.shell],
+    ['{!<cmd>}', h.interpolate]
+  ]
+}

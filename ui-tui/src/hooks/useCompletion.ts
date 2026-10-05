@@ -1,5 +1,5 @@
 import { looksLikeSlashCommand } from '@hermes/shared/slash'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
 import { rankSlashItems } from '../app/slash/fuzzyScore.js'
@@ -7,7 +7,8 @@ import { getUiState } from '../app/uiStore.js'
 import { inlineSlashTrigger } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse, GatewayCompletionItem } from '../gatewayTypes.js'
-import { translate, translateOptional, translateSlashDescription, type TranslationKey, useI18n } from '../i18n/index.js'
+import { t, translateOptional } from '../i18n/runtime.js'
+import { useLocale } from '../i18n/useT.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { listWidgetApps, widgetHelp } from '../sdk/registry.js'
 
@@ -16,11 +17,7 @@ import { listWidgetApps, widgetHelp } from '../sdk/registry.js'
  *  app surfaces automatically, no hardcoded lists on either side. Matching is
  *  description-aware (ported from grok-cli's slash menu): `/timer` surfaces a
  *  widget whose help text mentions timers, not just id-prefix hits. */
-export function mergeWidgetAppItems(
-  input: string,
-  items: CompletionItem[],
-  locale: Parameters<typeof translate>[0] = 'en'
-): CompletionItem[] {
+export function mergeWidgetAppItems(input: string, items: CompletionItem[]): CompletionItem[] {
   // Only complete the command NAME position (no args typed yet).
   if (input.includes(' ')) {
     return items
@@ -28,48 +25,22 @@ export function mergeWidgetAppItems(
 
   const local = rankSlashItems(listWidgetApps(), input, app => ({ description: app.help, id: app.id }))
     .filter(app => !items.some(item => item.text === `/${app.id}`))
-    .map(app => ({ display: `/${app.id}`, meta: widgetHelp(app, locale), text: `/${app.id}` }))
+    .map(app => ({ display: `/${app.id}`, meta: widgetHelp(app), text: `/${app.id}` }))
 
   return [...items, ...local]
 }
 
-const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
-
-export interface LocalizableCompletionItem extends CompletionItem {
-  displayTranslationKey?: TranslationKey
-  metaTranslationKey?: string
-  metaTranslationVars?: Record<string, string | number>
-  slashDescriptionId?: string
-}
-
-export const localizeCompletionItems = (
-  items: readonly LocalizableCompletionItem[],
-  locale: Parameters<typeof translate>[0]
-): CompletionItem[] =>
+export const localizeCompletionItems = (items: readonly GatewayCompletionItem[]): CompletionItem[] =>
   items.map(item => ({
-    display: item.displayTranslationKey ? translate(locale, item.displayTranslationKey) : item.display,
-    kind: item.kind,
-    meta: item.slashDescriptionId
-      ? translateSlashDescription(locale, item.slashDescriptionId, item.meta ?? '')
-      : item.metaTranslationKey
-        ? translateOptional(locale, item.metaTranslationKey, item.meta ?? '', item.metaTranslationVars)
-        : item.meta,
-    text: item.text
+    ...item,
+    meta: translateOptional(
+      item.meta_key?.startsWith('completion.') ? item.meta_key : item.meta_key ? `slash.${item.meta_key}` : undefined,
+      item.meta ?? '',
+      item.meta_vars?.section
+    )
   }))
 
-export const localizableCompletionItem = (item: GatewayCompletionItem): LocalizableCompletionItem => {
-  const presentationKey = item.meta_key?.startsWith('completion.') ? item.meta_key : undefined
-
-  return {
-    display: item.display,
-    meta: item.meta,
-    metaTranslationKey: presentationKey,
-    metaTranslationVars: item.meta_vars,
-    slashDescriptionId: presentationKey ? undefined : item.meta_key,
-    text: item.text,
-    kind: item.kind
-  }
-}
+const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
 
 export function completionRequestForInput(
   input: string
@@ -120,20 +91,15 @@ export function completionRequestForInput(
 }
 
 export function useCompletion(input: string, blocked: boolean, gw: GatewayClient) {
-  const { locale } = useI18n()
-  const [rawCompletions, setRawCompletions] = useState<LocalizableCompletionItem[]>([])
+  useLocale()
+  const [completions, setCompletions] = useState<GatewayCompletionItem[]>([])
   const [compIdx, setCompIdx] = useState(0)
   const [compReplace, setCompReplace] = useState(0)
   const ref = useRef('')
 
-  const completions = useMemo<CompletionItem[]>(
-    () => localizeCompletionItems(rawCompletions, locale),
-    [locale, rawCompletions]
-  )
-
   useEffect(() => {
     const clear = () => {
-      setRawCompletions(prev => (prev.length ? [] : prev))
+      setCompletions(prev => (prev.length ? [] : prev))
       setCompIdx(prev => (prev ? 0 : prev))
       setCompReplace(prev => (prev ? 0 : prev))
     }
@@ -159,7 +125,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
       return
     }
 
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       if (ref.current !== input) {
         return
       }
@@ -180,7 +146,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
           const r = asRpcResult<CompletionResponse>(raw)
 
           const fetched =
-            request.method === 'complete.slash' ? mergeWidgetAppItems(input, r?.items ?? [], locale) : (r?.items ?? [])
+            request.method === 'complete.slash' ? mergeWidgetAppItems(input, r?.items ?? []) : (r?.items ?? [])
 
           // Mid-message offers SKILLS only. A built-in like `/model` or `/new`
           // acts on the app, so it's meaningless as a reference inside prose —
@@ -192,7 +158,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
               ? fetched.filter(item => item.kind === 'skill')
               : fetched
 
-          setRawCompletions(items.map(localizableCompletionItem))
+          setCompletions(items)
           setCompIdx(0)
           // An inline reference replaces its own token, so the gateway's
           // `replace_from` (an offset into the synthetic `/query` it was sent)
@@ -206,13 +172,11 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
             return
           }
 
-          setRawCompletions([
+          setCompletions([
             {
               text: '',
-              display: '',
-              displayTranslationKey: 'completion.unavailable',
-              meta: e instanceof Error && e.message ? e.message : undefined,
-              metaTranslationKey: e instanceof Error && e.message ? undefined : 'completion.unavailableMeta'
+              display: t('libText.completion.unavailable'),
+              meta: e instanceof Error && e.message ? e.message : t('libText.completion.unavailableMeta')
             }
           ])
           setCompIdx(0)
@@ -220,8 +184,10 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
         })
     }, 60)
 
-    return () => clearTimeout(t)
-  }, [blocked, gw, input, locale])
+    return () => clearTimeout(timer)
+  }, [blocked, gw, input])
 
-  return { completions, compIdx, setCompIdx, compReplace }
+  const localized = localizeCompletionItems(completions)
+
+  return { completions: localized, compIdx, setCompIdx, compReplace }
 }

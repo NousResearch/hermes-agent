@@ -4,7 +4,7 @@ import { mix } from '@hermes/shared/color'
 import { type ReactNode, useState } from 'react'
 
 import type { UsageModelData } from '../gatewayTypes.js'
-import { type Locale, translate } from '../i18n/index.js'
+import { t as tr, useT } from '../i18n/index.js'
 import { liftForContrast } from '../lib/color.js'
 import type { Theme } from '../theme.js'
 
@@ -163,7 +163,9 @@ export function barCells(ratio: number, cells: number = BAR_CELLS): { bar: strin
  *   `Plus    [██████░░░░]  $14.00 of $20.00 · 30% used`
  * Renders nothing for a free account (no bars to draw — caller shows upsell).
  */
-export function UsageBars({ locale, model, t }: { locale: Locale; model: undefined | UsageModelData; t: Theme }) {
+export function UsageBars({ model, t }: { model: undefined | UsageModelData; t: Theme }) {
+  useT()
+
   if (!model || !model.available) {
     return null
   }
@@ -171,12 +173,12 @@ export function UsageBars({ locale, model, t }: { locale: Locale; model: undefin
   const rows: ReactNode[] = []
   // Label the plan bar with the plan name (padded for column alignment with the
   // top-up row). Falls back to 'plan' when the name is absent.
-  const planLabel = (model.plan_name || translate(locale, 'usage.bar.planFallback')).padEnd(8).slice(0, 8)
+  const planLabel = (model.plan_name || tr('usage.bar.planFallback')).padEnd(8).slice(0, 8)
 
   if (model.plan_bar) {
     const b = model.plan_bar
     const { bar } = barCells(b.fill_fraction)
-    const pct = b.pct_used == null ? '' : ` · ${translate(locale, 'usage.bar.percentUsed', { percent: b.pct_used })}`
+    const pct = b.pct_used == null ? '' : ` · ${tr('usage.bar.percentUsed', b.pct_used)}`
 
     rows.push(
       <Text color={t.color.text} key="plan">
@@ -184,11 +186,7 @@ export function UsageBars({ locale, model, t }: { locale: Locale; model: undefin
         <Text color={t.color.muted}>[</Text>
         <Text color={t.color.accent}>{bar}</Text>
         <Text color={t.color.muted}>]</Text>
-        {`  ${translate(locale, 'usage.bar.remainingOfTotal', {
-          percent: pct,
-          remaining: b.remaining_display,
-          total: b.total_display
-        })}`}
+        {`  ${tr('usage.bar.remainingOfTotal', b.remaining_display, b.total_display, pct)}`}
       </Text>
     )
   }
@@ -199,11 +197,11 @@ export function UsageBars({ locale, model, t }: { locale: Locale; model: undefin
 
     rows.push(
       <Text color={t.color.text} key="topup">
-        {`${translate(locale, 'usage.bar.topUpLabel').padEnd(8).slice(0, 8)}`}
+        {`${tr('usage.bar.topUpLabel').padEnd(8).slice(0, 8)}`}
         <Text color={t.color.muted}>[</Text>
         <Text color={t.color.ok}>{bar}</Text>
         <Text color={t.color.muted}>]</Text>
-        {`  ${translate(locale, 'usage.bar.neverExpires', { remaining: b.remaining_display })}`}
+        {`  ${tr('usage.bar.neverExpires', b.remaining_display)}`}
       </Text>
     )
   }
@@ -220,26 +218,20 @@ export function UsageBars({ locale, model, t }: { locale: Locale; model: undefin
  * /usage transcript panel). Returns one string per line: a plan bar, a top-up
  * bar, and a total-spendable summary, whichever apply. Dollars only.
  */
-export function usageBarsText(model: undefined | UsageModelData, locale: Locale = 'en'): string[] {
+export function usageBarsText(model: undefined | UsageModelData, locale: string = 'en'): string[] {
   if (!model || !model.available) {
     return []
   }
 
   const lines: string[] = []
-  const planLabel = (model.plan_name || translate(locale, 'usage.bar.planFallback')).padEnd(8).slice(0, 8)
+  const planLabel = (model.plan_name || tr('usage.bar.planFallback')).padEnd(8).slice(0, 8)
 
   if (model.plan_bar) {
     const b = model.plan_bar
     const { bar } = barCells(b.fill_fraction)
-    const pct = b.pct_used == null ? '' : ` · ${translate(locale, 'usage.bar.percentUsed', { percent: b.pct_used })}`
+    const pct = b.pct_used == null ? '' : ` · ${tr('usage.bar.percentUsed', b.pct_used)}`
 
-    lines.push(
-      `${planLabel}[${bar}]  ${translate(locale, 'usage.bar.remainingOfTotal', {
-        percent: pct,
-        remaining: b.remaining_display,
-        total: b.total_display
-      })}`
-    )
+    lines.push(`${planLabel}[${bar}]  ${tr('usage.bar.remainingOfTotal', b.remaining_display, b.total_display, pct)}`)
   }
 
   if (model.topup_bar) {
@@ -247,16 +239,12 @@ export function usageBarsText(model: undefined | UsageModelData, locale: Locale 
     const { bar } = barCells(1)
 
     lines.push(
-      `${translate(locale, 'usage.bar.topUpLabel').padEnd(8).slice(0, 8)}[${bar}]  ${translate(
-        locale,
-        'usage.bar.neverExpires',
-        { remaining: b.remaining_display }
-      )}`
+      `${tr('usage.bar.topUpLabel').padEnd(8).slice(0, 8)}[${bar}]  ${tr('usage.bar.neverExpires', b.remaining_display)}`
     )
   }
 
   if (model.total_spendable_display && model.has_topup) {
-    lines.push(translate(locale, 'usage.bar.totalSpendable', { total: model.total_spendable_display }))
+    lines.push(tr('usage.bar.totalSpendable', model.total_spendable_display))
   }
 
   return lines

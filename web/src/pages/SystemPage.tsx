@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router";
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link } from 'react-router'
 import {
   Activity,
   Brain,
@@ -25,36 +25,36 @@ import {
   Terminal,
   Trash2,
   Upload,
-  X,
-} from "lucide-react";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { H2 } from "@nous-research/ui/ui/components/typography/h2";
-import { Card, CardContent } from "@nous-research/ui/ui/components/card";
-import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Label } from "@nous-research/ui/ui/components/label";
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
-import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
-import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
-import { useModalBehavior } from "@/hooks/useModalBehavior";
-import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { HermesConsoleModal } from "@/components/HermesConsoleModal";
-import { useI18n } from "@/i18n";
-import type { Translations } from "@/i18n/types";
-import { cn, formatDateTime, themedBody } from "@/lib/utils";
-import { api } from "@/lib/api";
-import { copyTextToClipboard } from "@/lib/clipboard";
+  X
+} from 'lucide-react'
+import { Badge } from '@nous-research/ui/ui/components/badge'
+import { Button } from '@nous-research/ui/ui/components/button'
+import { Spinner } from '@nous-research/ui/ui/components/spinner'
+import { H2 } from '@nous-research/ui/ui/components/typography/h2'
+import { Card, CardContent } from '@nous-research/ui/ui/components/card'
+import { Checkbox } from '@nous-research/ui/ui/components/checkbox'
+import { Input } from '@nous-research/ui/ui/components/input'
+import { Label } from '@nous-research/ui/ui/components/label'
+import { Select, SelectOption } from '@nous-research/ui/ui/components/select'
+import { Toast } from '@nous-research/ui/ui/components/toast'
+import { useToast } from '@nous-research/ui/hooks/use-toast'
+import { useConfirmDelete } from '@nous-research/ui/hooks/use-confirm-delete'
+import { ConfirmDialog } from '@nous-research/ui/ui/components/confirm-dialog'
+import { useModalBehavior } from '@/hooks/useModalBehavior'
+import { DeleteConfirmDialog } from '@/components/DeleteConfirmDialog'
+import { HermesConsoleModal } from '@/components/HermesConsoleModal'
+import { useI18n } from '@/i18n'
+import type { Translations } from '@/i18n/types'
+import { cn, formatDateTime, themedBody } from '@/lib/utils'
+import { api } from '@/lib/api'
+import { copyTextToClipboard } from '@/lib/clipboard'
 import {
   gatewayStateNeedsLogs,
   gatewayStateDescription,
   gatewayActionFailedMessage,
   servedProfileRefusal,
-  sharedGatewayProfiles,
-} from "@/lib/shared-gateway";
+  sharedGatewayProfiles
+} from '@/lib/shared-gateway'
 import type {
   StatusResponse,
   MemoryStatus,
@@ -68,47 +68,42 @@ import type {
   CuratorStatus,
   PortalStatus,
   DebugShareResponse,
-  GatewayMigratePlan,
-} from "@/lib/api";
-import { apiErrorFromResponse, errorMessage } from "@/lib/api-error";
+  GatewayMigratePlan
+} from '@/lib/api'
+import { apiErrorFromResponse, errorMessage } from '@/lib/api-error'
 
 function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`
 }
 
 function formatDuration(
   seconds: number,
-  labels: Translations["systemPage"]["host"],
-  format: (template: string, values: Record<string, string | number>) => string,
+  labels: Translations['systemPage']['host'],
+  format: (template: string, values: Record<string, string | number>) => string
 ): string {
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
+  const d = Math.floor(seconds / 86400)
+  const h = Math.floor((seconds % 86400) / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
   if (d > 0) {
-    return format(labels.durationDays, { days: d, hours: h, minutes: m });
+    return format(labels.durationDays, { days: d, hours: h, minutes: m })
   }
-  if (h > 0) return format(labels.durationHours, { hours: h, minutes: m });
-  return format(labels.durationMinutes, { minutes: m });
+  if (h > 0) return format(labels.durationHours, { hours: h, minutes: m })
+  return format(labels.durationMinutes, { minutes: m })
 }
 
-type BackupImportTarget =
-  | { kind: "upload"; file: File }
-  | { kind: "path"; path: string };
+type BackupImportTarget = { kind: 'upload'; file: File } | { kind: 'path'; path: string }
 
-function backupImportLabel(
-  target: BackupImportTarget | null,
-  fallback: string,
-): string {
-  if (!target) return fallback;
-  return target.kind === "upload" ? target.file.name : target.path;
+function backupImportLabel(target: BackupImportTarget | null, fallback: string): string {
+  if (!target) return fallback
+  return target.kind === 'upload' ? target.file.name : target.path
 }
 
 function backupFileName(path: string | null, fallback: string): string {
-  if (!path) return fallback;
-  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  if (!path) return fallback
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path
 }
 
 /**
@@ -119,48 +114,48 @@ function backupFileName(path: string | null, fallback: string): string {
 function ActionLogViewer({
   action,
   onClose,
-  onComplete,
+  onComplete
 }: {
-  action: string;
-  onClose: () => void;
-  onComplete?: (action: string, exitCode: number | null) => void;
+  action: string
+  onClose: () => void
+  onComplete?: (action: string, exitCode: number | null) => void
 }) {
-  const { format, t } = useI18n();
-  const [lines, setLines] = useState<string[]>([]);
-  const [running, setRunning] = useState(true);
-  const [exitCode, setExitCode] = useState<number | null>(null);
-  const [pollFailed, setPollFailed] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const completeRef = useRef(false);
+  const { format, t } = useI18n()
+  const [lines, setLines] = useState<string[]>([])
+  const [running, setRunning] = useState(true)
+  const [exitCode, setExitCode] = useState<number | null>(null)
+  const [pollFailed, setPollFailed] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const completeRef = useRef(false)
 
   useEffect(() => {
-    let cancelled = false;
-    completeRef.current = false;
+    let cancelled = false
+    completeRef.current = false
     const poll = async () => {
       try {
-        const st = await api.getActionStatus(action, 400);
-        if (cancelled) return;
-        setLines(st.lines);
-        setRunning(st.running);
-        setExitCode(st.exit_code);
+        const st = await api.getActionStatus(action, 400)
+        if (cancelled) return
+        setLines(st.lines)
+        setRunning(st.running)
+        setExitCode(st.exit_code)
         if (!st.running && !completeRef.current) {
-          completeRef.current = true;
-          onComplete?.(action, st.exit_code);
+          completeRef.current = true
+          onComplete?.(action, st.exit_code)
         }
-        if (st.running) timer.current = setTimeout(poll, 1200);
+        if (st.running) timer.current = setTimeout(poll, 1200)
       } catch {
         if (!cancelled) {
-          setRunning(false);
-          setPollFailed(true);
+          setRunning(false)
+          setPollFailed(true)
         }
       }
-    };
-    poll();
+    }
+    poll()
     return () => {
-      cancelled = true;
-      if (timer.current) clearTimeout(timer.current);
-    };
-  }, [action, onComplete]);
+      cancelled = true
+      if (timer.current) clearTimeout(timer.current)
+    }
+  }, [action, onComplete])
 
   return (
     <Card>
@@ -172,117 +167,100 @@ function ActionLogViewer({
             {running ? (
               <Badge tone="warning">{t.systemPage.actionLog.running}</Badge>
             ) : (
-              <Badge tone={exitCode === 0 ? "success" : "destructive"}>
+              <Badge tone={exitCode === 0 ? 'success' : 'destructive'}>
                 {pollFailed
                   ? t.status.failed
                   : exitCode === 0
                     ? t.systemPage.actionLog.done
                     : format(t.systemPage.actionLog.exitCode, {
-                        code: exitCode ?? "—",
+                        code: exitCode ?? '—'
                       })}
               </Badge>
             )}
           </div>
-          <Button
-            ghost
-            size="icon"
-            onClick={onClose}
-            aria-label={t.systemPage.actionLog.close}
-          >
+          <Button ghost size="icon" onClick={onClose} aria-label={t.systemPage.actionLog.close}>
             <X />
           </Button>
         </div>
         <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words bg-background/50 border border-border p-3 text-xs font-mono text-muted-foreground">
-          {lines.length ? lines.join("\n") : t.systemPage.actionLog.starting}
+          {lines.length ? lines.join('\n') : t.systemPage.actionLog.starting}
         </pre>
       </CardContent>
     </Card>
-  );
+  )
 }
 
 const HOOK_EVENTS_FALLBACK = [
-  "pre_tool_call",
-  "post_tool_call",
-  "pre_llm_call",
-  "post_llm_call",
-  "on_session_start",
-  "on_session_end",
-];
+  'pre_tool_call',
+  'post_tool_call',
+  'pre_llm_call',
+  'post_llm_call',
+  'on_session_start',
+  'on_session_end'
+]
 
-const MEMORY_STATUS_TONE: Record<
-  MemoryProviderInfo["status"],
-  "success" | "warning" | "destructive" | "secondary"
-> = {
-  ready: "success",
-  needs_config: "warning",
-  unavailable: "destructive",
-  missing: "destructive",
-};
+const MEMORY_STATUS_TONE: Record<MemoryProviderInfo['status'], 'success' | 'warning' | 'destructive' | 'secondary'> = {
+  ready: 'success',
+  needs_config: 'warning',
+  unavailable: 'destructive',
+  missing: 'destructive'
+}
 
 export default function SystemPage() {
-  const { format, locale, t } = useI18n();
-  const { toast, showToast } = useToast();
+  const { format, locale, t } = useI18n()
+  const { toast, showToast } = useToast()
 
-  const [status, setStatus] = useState<StatusResponse | null>(null);
-  const [stats, setStats] = useState<SystemStats | null>(null);
-  const [memory, setMemory] = useState<MemoryStatus | null>(null);
-  const [pool, setPool] = useState<CredentialPoolProvider[]>([]);
-  const [checkpoints, setCheckpoints] = useState<CheckpointsResponse | null>(
-    null,
-  );
-  const [hooks, setHooks] = useState<HooksResponse | null>(null);
-  const [curator, setCurator] = useState<CuratorStatus | null>(null);
-  const [portal, setPortal] = useState<PortalStatus | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState<StatusResponse | null>(null)
+  const [stats, setStats] = useState<SystemStats | null>(null)
+  const [memory, setMemory] = useState<MemoryStatus | null>(null)
+  const [pool, setPool] = useState<CredentialPoolProvider[]>([])
+  const [checkpoints, setCheckpoints] = useState<CheckpointsResponse | null>(null)
+  const [hooks, setHooks] = useState<HooksResponse | null>(null)
+  const [curator, setCurator] = useState<CuratorStatus | null>(null)
+  const [portal, setPortal] = useState<PortalStatus | null>(null)
+  const [loading, setLoading] = useState(true)
 
-  const [activeAction, setActiveAction] = useState<string | null>(null);
-  const [consoleOpen, setConsoleOpen] = useState(false);
-  const [migratePlan, setMigratePlan] = useState<GatewayMigratePlan | null>(null);
+  const [activeAction, setActiveAction] = useState<string | null>(null)
+  const [consoleOpen, setConsoleOpen] = useState(false)
+  const [migratePlan, setMigratePlan] = useState<GatewayMigratePlan | null>(null)
 
   // Add-credential form.
-  const [credProvider, setCredProvider] = useState("openrouter");
-  const [credKey, setCredKey] = useState("");
-  const [credLabel, setCredLabel] = useState("");
-  const [addingCred, setAddingCred] = useState(false);
+  const [credProvider, setCredProvider] = useState('openrouter')
+  const [credKey, setCredKey] = useState('')
+  const [credLabel, setCredLabel] = useState('')
+  const [addingCred, setAddingCred] = useState(false)
 
-  const [pendingBackupArchive, setPendingBackupArchive] = useState<string | null>(
-    null,
-  );
-  const [downloadableBackupArchive, setDownloadableBackupArchive] = useState<
-    string | null
-  >(null);
-  const [downloadingBackup, setDownloadingBackup] = useState(false);
-  const importUploadInputRef = useRef<HTMLInputElement | null>(null);
-  const [importFile, setImportFile] = useState<File | null>(null);
-  const [importPath, setImportPath] = useState("");
+  const [pendingBackupArchive, setPendingBackupArchive] = useState<string | null>(null)
+  const [downloadableBackupArchive, setDownloadableBackupArchive] = useState<string | null>(null)
+  const [downloadingBackup, setDownloadingBackup] = useState(false)
+  const importUploadInputRef = useRef<HTMLInputElement | null>(null)
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [importPath, setImportPath] = useState('')
   // Restore-from-backup is destructive (overwrites the live config) and the
   // spawned `hermes import` runs non-interactively (stdin is /dev/null), so
   // its CLI "Continue? [y/N]" prompt would auto-abort. The dashboard owns the
   // consent: confirm here, then call the endpoint with force=true.
-  const [importingBackup, setImportingBackup] = useState(false);
-  const [importConfirmTarget, setImportConfirmTarget] =
-    useState<BackupImportTarget | null>(null);
+  const [importingBackup, setImportingBackup] = useState(false)
+  const [importConfirmTarget, setImportConfirmTarget] = useState<BackupImportTarget | null>(null)
 
   // Create-hook modal.
-  const [hookModalOpen, setHookModalOpen] = useState(false);
-  const closeHookModal = useCallback(() => setHookModalOpen(false), []);
+  const [hookModalOpen, setHookModalOpen] = useState(false)
+  const closeHookModal = useCallback(() => setHookModalOpen(false), [])
   const hookModalRef = useModalBehavior({
     open: hookModalOpen,
-    onClose: closeHookModal,
-  });
-  const [hookEvent, setHookEvent] = useState("pre_tool_call");
-  const [hookCommand, setHookCommand] = useState("");
-  const [hookMatcher, setHookMatcher] = useState("");
-  const [hookTimeout, setHookTimeout] = useState("");
-  const [hookApprove, setHookApprove] = useState(true);
-  const [creatingHook, setCreatingHook] = useState(false);
+    onClose: closeHookModal
+  })
+  const [hookEvent, setHookEvent] = useState('pre_tool_call')
+  const [hookCommand, setHookCommand] = useState('')
+  const [hookMatcher, setHookMatcher] = useState('')
+  const [hookTimeout, setHookTimeout] = useState('')
+  const [hookApprove, setHookApprove] = useState(true)
+  const [creatingHook, setCreatingHook] = useState(false)
 
   // ── Update check ───────────────────────────────────────────────────
-  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResponse | null>(
-    null,
-  );
-  const [checkingUpdate, setCheckingUpdate] = useState(false);
-  const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResponse | null>(null)
+  const [checkingUpdate, setCheckingUpdate] = useState(false)
+  const [updateConfirmOpen, setUpdateConfirmOpen] = useState(false)
 
   const loadAll = useCallback(() => {
     Promise.allSettled([
@@ -297,115 +275,107 @@ export default function SystemPage() {
       // Cached (non-forced) check so the version row shows update status on
       // load without a separate effect / a forced network round-trip.
       api.checkHermesUpdate(false),
-      api.getGatewayMigratePlan(),
+      api.getGatewayMigratePlan()
     ])
       .then(([s, st, m, p, c, h, cur, prt, upd, mig]) => {
-        if (s.status === "fulfilled") setStatus(s.value);
-        if (st.status === "fulfilled") setStats(st.value);
-        if (m.status === "fulfilled") setMemory(m.value);
-        if (p.status === "fulfilled") setPool(p.value.providers);
-        if (c.status === "fulfilled") setCheckpoints(c.value);
-        if (h.status === "fulfilled") setHooks(h.value);
-        if (cur.status === "fulfilled") setCurator(cur.value);
-        if (prt.status === "fulfilled") setPortal(prt.value);
-        if (upd.status === "fulfilled") setUpdateInfo(upd.value);
-        if (mig.status === "fulfilled") setMigratePlan(mig.value);
+        if (s.status === 'fulfilled') setStatus(s.value)
+        if (st.status === 'fulfilled') setStats(st.value)
+        if (m.status === 'fulfilled') setMemory(m.value)
+        if (p.status === 'fulfilled') setPool(p.value.providers)
+        if (c.status === 'fulfilled') setCheckpoints(c.value)
+        if (h.status === 'fulfilled') setHooks(h.value)
+        if (cur.status === 'fulfilled') setCurator(cur.value)
+        if (prt.status === 'fulfilled') setPortal(prt.value)
+        if (upd.status === 'fulfilled') setUpdateInfo(upd.value)
+        if (mig.status === 'fulfilled') setMigratePlan(mig.value)
       })
-      .finally(() => setLoading(false));
-  }, []);
+      .finally(() => setLoading(false))
+  }, [])
 
   useEffect(() => {
-    loadAll();
-  }, [loadAll]);
+    loadAll()
+  }, [loadAll])
 
   // ── Gateway lifecycle ──────────────────────────────────────────────
   // A profile served by the shared multiplexer has no gateway of its own: Restart restarts
   // the ONE process every bot on this device runs in, so confirm first and say so after;
   // Start/Stop answer 409 with an explanation that belongs in a notice, not a raw error.
-  const sharedGateway = sharedGatewayProfiles(status);
-  const [sharedRestartOpen, setSharedRestartOpen] = useState(false);
-  const [servedNotice, setServedNotice] = useState<string | null>(null);
-  const runGateway = async (verb: "start" | "stop" | "restart"): Promise<boolean> => {
-    setServedNotice(null);
+  const sharedGateway = sharedGatewayProfiles(status)
+  const [sharedRestartOpen, setSharedRestartOpen] = useState(false)
+  const [servedNotice, setServedNotice] = useState<string | null>(null)
+  const runGateway = async (verb: 'start' | 'stop' | 'restart'): Promise<boolean> => {
+    setServedNotice(null)
     try {
-      if (verb === "start") {
-        await api.startGateway();
-        setActiveAction("gateway-start");
-      } else if (verb === "stop") {
-        await api.stopGateway();
-        setActiveAction("gateway-stop");
+      if (verb === 'start') {
+        await api.startGateway()
+        setActiveAction('gateway-start')
+      } else if (verb === 'stop') {
+        await api.stopGateway()
+        setActiveAction('gateway-stop')
       } else {
-        await api.restartGateway();
-        setActiveAction("gateway-restart");
+        await api.restartGateway()
+        setActiveAction('gateway-restart')
       }
-      showToast(format(t.systemPage.toast.gatewayStarted, { verb: t.systemPage.gateway[`${verb}Verb`] }), "success");
-      setTimeout(loadAll, 3000);
-      return true;
+      showToast(format(t.systemPage.toast.gatewayStarted, { verb: t.systemPage.gateway[`${verb}Verb`] }), 'success')
+      setTimeout(loadAll, 3000)
+      return true
     } catch (e) {
-      const refusal = servedProfileRefusal(e);
+      const refusal = servedProfileRefusal(e)
       if (refusal) {
-        setServedNotice(refusal);
-        return false;
+        setServedNotice(refusal)
+        return false
       }
-      showToast(gatewayActionFailedMessage(verb, errorMessage(e, t.common), e, t.systemPage), "error");
-      return false;
+      showToast(gatewayActionFailedMessage(verb, errorMessage(e, t.common), e, t.systemPage), 'error')
+      return false
     }
-  };
+  }
   const requestRestart = () => {
     if (sharedGateway) {
-      setSharedRestartOpen(true);
-      return;
+      setSharedRestartOpen(true)
+      return
     }
-    void runGateway("restart");
-  };
+    void runGateway('restart')
+  }
   // Same completion rule as the Desktop: the restart child exiting 0, or still running when the
   // bounded poll ends (in a no-service install it BECOMES the gateway and never exits), is
   // success — then the "(N bots)" toast; a non-zero exit is the action log's failure to show.
   const restartShared = async () => {
-    const bots = sharedGateway?.length ?? 0;
-    const started = await runGateway("restart");
-    if (!started) return;
+    const bots = sharedGateway?.length ?? 0
+    const started = await runGateway('restart')
+    if (!started) return
     for (let attempt = 0; attempt < 18; attempt += 1) {
-      await new Promise((r) => setTimeout(r, 1200));
-      const st = await api.getActionStatus("gateway-restart", 1).catch(() => null);
+      await new Promise(r => setTimeout(r, 1200))
+      const st = await api.getActionStatus('gateway-restart', 1).catch(() => null)
       if (st && !st.running) {
-        if (st.exit_code != null && st.exit_code !== 0) return;
-        break;
+        if (st.exit_code != null && st.exit_code !== 0) return
+        break
       }
     }
-    showToast(format(t.sharedGateway.restarted, { count: bots }), "success");
-  };
+    showToast(format(t.sharedGateway.restarted, { count: bots }), 'success')
+  }
 
   const migrateToMultiplex = async () => {
     try {
-      await api.migrateGatewayToMultiplex();
-      setActiveAction("gateway-migrate");
-      showToast(t.sharedGateway.migrating, "success");
-      setTimeout(loadAll, 5000);
+      await api.migrateGatewayToMultiplex()
+      setActiveAction('gateway-migrate')
+      showToast(t.sharedGateway.migrating, 'success')
+      setTimeout(loadAll, 5000)
     } catch (e) {
-      showToast(format(t.sharedGateway.migrationFailed, { error: errorMessage(e, t.common) }), "error");
+      showToast(format(t.sharedGateway.migrationFailed, { error: errorMessage(e, t.common) }), 'error')
     }
-  };
+  }
 
   // ── Curator ────────────────────────────────────────────────────────
   const toggleCuratorPaused = async () => {
-    if (!curator) return;
+    if (!curator) return
     try {
-      await api.setCuratorPaused(!curator.paused);
-      showToast(
-        curator.paused
-          ? t.systemPage.toast.curatorResumed
-          : t.systemPage.toast.curatorPaused,
-        "success",
-      );
-      void loadAll();
+      await api.setCuratorPaused(!curator.paused)
+      showToast(curator.paused ? t.systemPage.toast.curatorResumed : t.systemPage.toast.curatorPaused, 'success')
+      void loadAll()
     } catch (e) {
-      showToast(
-        format(t.systemPage.toast.curatorToggleFailed, { error: errorMessage(e, t.common) }),
-        "error",
-      );
+      showToast(format(t.systemPage.toast.curatorToggleFailed, { error: errorMessage(e, t.common) }), 'error')
     }
-  };
+  }
 
   // ── Memory ─────────────────────────────────────────────────────────
   // Memory provider selection lives on the /plugins page now (see the
@@ -415,393 +385,344 @@ export default function SystemPage() {
     onDelete: useCallback(
       async (target: string) => {
         try {
-          const res = await api.resetMemory(
-            target as "all" | "memory" | "user",
-          );
+          const res = await api.resetMemory(target as 'all' | 'memory' | 'user')
           showToast(
             format(t.systemPage.toast.memoryReset, {
-              items: res.deleted.join(", ") || t.systemPage.memory.nothing,
+              items: res.deleted.join(', ') || t.systemPage.memory.nothing
             }),
-            "success",
-          );
-          void loadAll();
+            'success'
+          )
+          void loadAll()
         } catch (e) {
           showToast(
             format(t.systemPage.toast.memoryResetFailed, {
-              error: errorMessage(e, t.common),
+              error: errorMessage(e, t.common)
             }),
-            "error",
-          );
-          throw e;
+            'error'
+          )
+          throw e
         }
       },
-      [format, loadAll, showToast, t],
-    ),
-  });
+      [format, loadAll, showToast, t]
+    )
+  })
 
   // ── Credential pool ────────────────────────────────────────────────
   const addCredential = async () => {
     if (!credProvider.trim() || !credKey.trim()) {
-      showToast(t.systemPage.toast.providerKeyRequired, "error");
-      return;
+      showToast(t.systemPage.toast.providerKeyRequired, 'error')
+      return
     }
-    setAddingCred(true);
+    setAddingCred(true)
     try {
-      await api.addCredentialPoolEntry(
-        credProvider.trim(),
-        credKey.trim(),
-        credLabel.trim() || undefined,
-      );
-      showToast(t.systemPage.toast.credentialAdded, "success");
-      setCredKey("");
-      setCredLabel("");
-      void loadAll();
+      await api.addCredentialPoolEntry(credProvider.trim(), credKey.trim(), credLabel.trim() || undefined)
+      showToast(t.systemPage.toast.credentialAdded, 'success')
+      setCredKey('')
+      setCredLabel('')
+      void loadAll()
     } catch (e) {
-      showToast(
-        format(t.systemPage.toast.credentialAddFailed, { error: errorMessage(e, t.common) }),
-        "error",
-      );
+      showToast(format(t.systemPage.toast.credentialAddFailed, { error: errorMessage(e, t.common) }), 'error')
     } finally {
-      setAddingCred(false);
+      setAddingCred(false)
     }
-  };
+  }
 
   const credDelete = useConfirmDelete({
     onDelete: useCallback(
       async (key: string) => {
-        const [provider, idxStr] = key.split("|");
+        const [provider, idxStr] = key.split('|')
         try {
-          await api.removeCredentialPoolEntry(provider, Number(idxStr));
-          showToast(t.systemPage.toast.credentialRemoved, "success");
-          void loadAll();
+          await api.removeCredentialPoolEntry(provider, Number(idxStr))
+          showToast(t.systemPage.toast.credentialRemoved, 'success')
+          void loadAll()
         } catch (e) {
           showToast(
             format(t.systemPage.toast.credentialRemoveFailed, {
-              error: errorMessage(e, t.common),
+              error: errorMessage(e, t.common)
             }),
-            "error",
-          );
-          throw e;
+            'error'
+          )
+          throw e
         }
       },
-      [format, loadAll, showToast, t],
-    ),
-  });
+      [format, loadAll, showToast, t]
+    )
+  })
 
   // ── Operations ─────────────────────────────────────────────────────
   const runOp = async (fn: () => Promise<{ name: string }>, label: string) => {
     try {
-      const res = await fn();
-      setActiveAction(res.name);
-      showToast(
-        format(t.systemPage.toast.operationStarted, { operation: label }),
-        "success",
-      );
+      const res = await fn()
+      setActiveAction(res.name)
+      showToast(format(t.systemPage.toast.operationStarted, { operation: label }), 'success')
     } catch (e) {
       showToast(
         format(t.systemPage.toast.operationFailed, {
           operation: label,
-          error: errorMessage(e, t.common),
+          error: errorMessage(e, t.common)
         }),
-        "error",
-      );
+        'error'
+      )
     }
-  };
+  }
 
   const runDashboardBackup = async () => {
     try {
-      const res = await api.runBackup();
-      setActiveAction(res.name);
-      setPendingBackupArchive(res.archive ?? null);
-      setDownloadableBackupArchive(null);
-      showToast(t.systemPage.toast.backupStarted, "success");
+      const res = await api.runBackup()
+      setActiveAction(res.name)
+      setPendingBackupArchive(res.archive ?? null)
+      setDownloadableBackupArchive(null)
+      showToast(t.systemPage.toast.backupStarted, 'success')
     } catch (e) {
-      showToast(
-        format(t.systemPage.toast.backupFailed, { error: errorMessage(e, t.common) }),
-        "error",
-      );
+      showToast(format(t.systemPage.toast.backupFailed, { error: errorMessage(e, t.common) }), 'error')
     }
-  };
+  }
 
   const handleActionComplete = useCallback(
     (action: string, exitCode: number | null) => {
-      if (action === "backup" && pendingBackupArchive) {
+      if (action === 'backup' && pendingBackupArchive) {
         if (exitCode === 0) {
-          setDownloadableBackupArchive(pendingBackupArchive);
-          showToast(t.systemPage.toast.backupReady, "success");
+          setDownloadableBackupArchive(pendingBackupArchive)
+          showToast(t.systemPage.toast.backupReady, 'success')
         } else {
-          setPendingBackupArchive(null);
+          setPendingBackupArchive(null)
         }
       }
     },
-    [pendingBackupArchive, showToast, t],
-  );
+    [pendingBackupArchive, showToast, t]
+  )
 
   const downloadBackup = async () => {
-    const archive = downloadableBackupArchive;
-    if (!archive) return;
-    setDownloadingBackup(true);
+    const archive = downloadableBackupArchive
+    if (!archive) return
+    setDownloadingBackup(true)
     try {
-      const res = await api.downloadBackup(archive);
+      const res = await api.downloadBackup(archive)
       if (!res.ok) {
-        throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), res.url);
+        throw apiErrorFromResponse(res.status, await res.text().catch(() => ''), res.url)
       }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = backupFileName(archive, t.systemPage.operations.noBackup);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = backupFileName(archive, t.systemPage.operations.noBackup)
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
     } catch (e) {
-      showToast(
-        format(t.systemPage.toast.downloadFailed, { error: errorMessage(e, t.common) }),
-        "error",
-      );
+      showToast(format(t.systemPage.toast.downloadFailed, { error: errorMessage(e, t.common) }), 'error')
     } finally {
-      setDownloadingBackup(false);
+      setDownloadingBackup(false)
     }
-  };
+  }
 
   const clearImportFile = () => {
-    setImportFile(null);
-    if (importUploadInputRef.current) importUploadInputRef.current.value = "";
-  };
+    setImportFile(null)
+    if (importUploadInputRef.current) importUploadInputRef.current.value = ''
+  }
 
   const runBackupImport = async (target: BackupImportTarget) => {
-    setImportingBackup(true);
+    setImportingBackup(true)
     try {
       const res =
-        target.kind === "upload"
-          ? await api.runImportUpload(target.file, true)
-          : await api.runImport(target.path, true);
-      setActiveAction(res.name);
-      showToast(t.systemPage.toast.importStarted, "success");
-      if (target.kind === "upload") clearImportFile();
+        target.kind === 'upload' ? await api.runImportUpload(target.file, true) : await api.runImport(target.path, true)
+      setActiveAction(res.name)
+      showToast(t.systemPage.toast.importStarted, 'success')
+      if (target.kind === 'upload') clearImportFile()
     } catch (e) {
-      showToast(
-        format(t.systemPage.toast.importFailed, { error: errorMessage(e, t.common) }),
-        "error",
-      );
+      showToast(format(t.systemPage.toast.importFailed, { error: errorMessage(e, t.common) }), 'error')
     } finally {
-      setImportingBackup(false);
+      setImportingBackup(false)
     }
-  };
+  }
 
   // ── Debug share ────────────────────────────────────────────────────
   // Unlike the fire-and-forget ops above, `debug share` produces shareable
   // paste URLs that are the whole point — so we surface them as real,
   // copyable links rather than a log tail.
-  const [shareRedact, setShareRedact] = useState(true);
-  const [sharing, setSharing] = useState(false);
-  const [shareResult, setShareResult] = useState<DebugShareResponse | null>(
-    null,
-  );
-  const [copiedLabel, setCopiedLabel] = useState<string | null>(null);
+  const [shareRedact, setShareRedact] = useState(true)
+  const [sharing, setSharing] = useState(false)
+  const [shareResult, setShareResult] = useState<DebugShareResponse | null>(null)
+  const [copiedLabel, setCopiedLabel] = useState<string | null>(null)
 
   const copyToClipboard = useCallback(
     async (text: string, label: string) => {
       if (await copyTextToClipboard(text)) {
-        setCopiedLabel(label);
-        setTimeout(
-          () => setCopiedLabel((cur) => (cur === label ? null : cur)),
-          1500,
-        );
+        setCopiedLabel(label)
+        setTimeout(() => setCopiedLabel(cur => (cur === label ? null : cur)), 1500)
       } else {
-        showToast(t.systemPage.toast.copyFailed, "error");
+        showToast(t.systemPage.toast.copyFailed, 'error')
       }
     },
-    [showToast, t],
-  );
+    [showToast, t]
+  )
 
   const runDebugShare = useCallback(async () => {
-    setSharing(true);
-    setShareResult(null);
+    setSharing(true)
+    setShareResult(null)
     try {
-      const res = await api.runDebugShare({ redact: shareRedact });
-      setShareResult(res);
-      const n = Object.keys(res.urls).length;
+      const res = await api.runDebugShare({ redact: shareRedact })
+      setShareResult(res)
+      const n = Object.keys(res.urls).length
       showToast(
-        format(
-          res.redacted
-            ? t.systemPage.toast.debugUploadedRedacted
-            : t.systemPage.toast.debugUploaded,
-          { count: n },
-        ),
-        "success",
-      );
+        format(res.redacted ? t.systemPage.toast.debugUploadedRedacted : t.systemPage.toast.debugUploaded, {
+          count: n
+        }),
+        'success'
+      )
     } catch (e) {
-      showToast(
-        format(t.systemPage.toast.debugShareFailed, { error: errorMessage(e, t.common) }),
-        "error",
-      );
+      showToast(format(t.systemPage.toast.debugShareFailed, { error: errorMessage(e, t.common) }), 'error')
     } finally {
-      setSharing(false);
+      setSharing(false)
     }
-  }, [format, shareRedact, showToast, t]);
-
+  }, [format, shareRedact, showToast, t])
 
   // ── Update check / apply ───────────────────────────────────────────
   const checkForUpdate = useCallback(
     async (force = false) => {
-      if (status?.can_update_hermes === false) return;
-      setCheckingUpdate(true);
+      if (status?.can_update_hermes === false) return
+      setCheckingUpdate(true)
       try {
-        const info = await api.checkHermesUpdate(force);
-        setUpdateInfo(info);
+        const info = await api.checkHermesUpdate(force)
+        setUpdateInfo(info)
         if (force) {
           if (info.update_available) {
             showToast(
               info.behind && info.behind > 0
                 ? format(t.systemPage.toast.updateBehind, {
-                    count: info.behind,
+                    count: info.behind
                   })
                 : t.systemPage.toast.updateAvailable,
-              "success",
-            );
+              'success'
+            )
           } else if (info.behind === 0) {
-            showToast(t.systemPage.toast.latestVersion, "success");
+            showToast(t.systemPage.toast.latestVersion, 'success')
           } else if (info.message) {
             showToast(
               format(t.systemPage.toast.updateCheckFailed, {
-                error: info.message,
+                error: info.message
               }),
-              "error",
-            );
+              'error'
+            )
           }
         }
       } catch (e) {
-        showToast(
-          format(t.systemPage.toast.updateCheckFailed, { error: errorMessage(e, t.common) }),
-          "error",
-        );
+        showToast(format(t.systemPage.toast.updateCheckFailed, { error: errorMessage(e, t.common) }), 'error')
       } finally {
-        setCheckingUpdate(false);
+        setCheckingUpdate(false)
       }
     },
-    [format, showToast, status?.can_update_hermes, t],
-  );
+    [format, showToast, status?.can_update_hermes, t]
+  )
 
   // Auto-check (cached) runs inside loadAll on mount; this is the
   // user-triggered forced re-check from the "Check for updates" button.
   const applyUpdate = async () => {
-    setUpdateConfirmOpen(false);
+    setUpdateConfirmOpen(false)
     if (status?.can_update_hermes === false) {
-      showToast(t.systemPage.toast.updatesManagedExternally, "success");
-      return;
+      showToast(t.systemPage.toast.updatesManagedExternally, 'success')
+      return
     }
     try {
-      const resp = await api.updateHermes();
+      const resp = await api.updateHermes()
       if (!resp.ok) {
         showToast(
           resp.message
             ? format(t.systemPage.toast.updateCheckFailed, {
-                error: resp.message,
+                error: resp.message
               })
             : t.systemPage.toast.dashboardUpdateUnavailable,
-          resp.message ? "error" : "success",
-        );
-        return;
+          resp.message ? 'error' : 'success'
+        )
+        return
       }
-      setActiveAction(resp.name ?? "hermes-update");
-      showToast(t.systemPage.toast.updateStarted, "success");
+      setActiveAction(resp.name ?? 'hermes-update')
+      showToast(t.systemPage.toast.updateStarted, 'success')
     } catch (e) {
-      showToast(
-        format(t.systemPage.toast.updateFailed, { error: errorMessage(e, t.common) }),
-        "error",
-      );
+      showToast(format(t.systemPage.toast.updateFailed, { error: errorMessage(e, t.common) }), 'error')
     }
-  };
+  }
 
   const checkpointsPrune = useConfirmDelete({
     onDelete: useCallback(async () => {
       try {
-        const res = await api.pruneCheckpoints();
-        setActiveAction(res.name);
-        showToast(t.systemPage.toast.pruneStarted, "success");
+        const res = await api.pruneCheckpoints()
+        setActiveAction(res.name)
+        showToast(t.systemPage.toast.pruneStarted, 'success')
       } catch (e) {
-        showToast(
-          format(t.systemPage.toast.pruneFailed, { error: errorMessage(e, t.common) }),
-          "error",
-        );
-        throw e;
+        showToast(format(t.systemPage.toast.pruneFailed, { error: errorMessage(e, t.common) }), 'error')
+        throw e
       }
-    }, [format, showToast, t]),
-  });
+    }, [format, showToast, t])
+  })
 
   // ── Hooks ──────────────────────────────────────────────────────────
   const createHook = async () => {
     if (!hookCommand.trim()) {
-      showToast(t.systemPage.toast.commandRequired, "error");
-      return;
+      showToast(t.systemPage.toast.commandRequired, 'error')
+      return
     }
-    setCreatingHook(true);
+    setCreatingHook(true)
     try {
       await api.createHook({
         event: hookEvent,
         command: hookCommand.trim(),
         matcher: hookMatcher.trim() || undefined,
         timeout: hookTimeout.trim() ? Number(hookTimeout) : undefined,
-        approve: hookApprove,
-      });
-      showToast(t.systemPage.toast.hookCreated, "success");
-      setHookCommand("");
-      setHookMatcher("");
-      setHookTimeout("");
-      setHookModalOpen(false);
-      void loadAll();
+        approve: hookApprove
+      })
+      showToast(t.systemPage.toast.hookCreated, 'success')
+      setHookCommand('')
+      setHookMatcher('')
+      setHookTimeout('')
+      setHookModalOpen(false)
+      void loadAll()
     } catch (e) {
-      showToast(
-        format(t.systemPage.toast.hookCreateFailed, { error: errorMessage(e, t.common) }),
-        "error",
-      );
+      showToast(format(t.systemPage.toast.hookCreateFailed, { error: errorMessage(e, t.common) }), 'error')
     } finally {
-      setCreatingHook(false);
+      setCreatingHook(false)
     }
-  };
+  }
 
   const hookDelete = useConfirmDelete({
     onDelete: useCallback(
       async (key: string) => {
-        const sep = key.indexOf("|");
-        const event = key.slice(0, sep);
-        const command = key.slice(sep + 1);
+        const sep = key.indexOf('|')
+        const event = key.slice(0, sep)
+        const command = key.slice(sep + 1)
         try {
-          await api.deleteHook(event, command);
-          showToast(t.systemPage.toast.hookRemoved, "success");
-          void loadAll();
+          await api.deleteHook(event, command)
+          showToast(t.systemPage.toast.hookRemoved, 'success')
+          void loadAll()
         } catch (e) {
           showToast(
             format(t.systemPage.toast.hookRemoveFailed, {
-              error: errorMessage(e, t.common),
+              error: errorMessage(e, t.common)
             }),
-            "error",
-          );
-          throw e;
+            'error'
+          )
+          throw e
         }
       },
-      [format, loadAll, showToast, t],
-    ),
-  });
+      [format, loadAll, showToast, t]
+    )
+  })
 
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
         <Spinner className="text-2xl text-primary" />
       </div>
-    );
+    )
   }
 
-  const gatewayRunning = status?.gateway_running;
-  const canUpdateHermes = status?.can_update_hermes !== false;
+  const gatewayRunning = status?.gateway_running
+  const canUpdateHermes = status?.can_update_hermes !== false
   const activeMemoryProvider = memory?.active
-    ? memory.providers.find((provider) => provider.name === memory.active)
-    : null;
-  const validEvents = hooks?.valid_events?.length
-    ? hooks.valid_events
-    : HOOK_EVENTS_FALLBACK;
+    ? memory.providers.find(provider => provider.name === memory.active)
+    : null
+  const validEvents = hooks?.valid_events?.length ? hooks.valid_events : HOOK_EVENTS_FALLBACK
 
   return (
     <div className="flex flex-col gap-8">
@@ -811,8 +732,8 @@ export default function SystemPage() {
         type="file"
         accept=".zip,application/zip,application/x-zip-compressed"
         className="hidden"
-        onChange={(event) => {
-          setImportFile(event.currentTarget.files?.[0] ?? null);
+        onChange={event => {
+          setImportFile(event.currentTarget.files?.[0] ?? null)
         }}
       />
 
@@ -820,11 +741,11 @@ export default function SystemPage() {
         open={sharedRestartOpen}
         onCancel={() => setSharedRestartOpen(false)}
         onConfirm={() => {
-          setSharedRestartOpen(false);
-          void restartShared();
+          setSharedRestartOpen(false)
+          void restartShared()
         }}
         title={t.sharedGateway.restartTitle}
-        description={format(t.sharedGateway.restartDescription, { profiles: (sharedGateway ?? []).join(", ") })}
+        description={format(t.sharedGateway.restartDescription, { profiles: (sharedGateway ?? []).join(', ') })}
         confirmLabel={t.sharedGateway.restartAll}
         cancelLabel={t.common.cancel}
       />
@@ -838,10 +759,10 @@ export default function SystemPage() {
           updateInfo && updateInfo.behind && updateInfo.behind > 0
             ? format(t.systemPage.confirm.updateBehindDescription, {
                 command: updateInfo.update_command,
-                count: updateInfo.behind,
+                count: updateInfo.behind
               })
             : format(t.systemPage.confirm.updateDescription, {
-                command: updateInfo?.update_command ?? "hermes update",
+                command: updateInfo?.update_command ?? 'hermes update'
               })
         }
         confirmLabel={t.systemPage.confirm.updateNow}
@@ -880,21 +801,20 @@ export default function SystemPage() {
         description={t.systemPage.confirm.removeHookDescription}
         loading={hookDelete.isDeleting}
       />
-      <HermesConsoleModal
-        open={consoleOpen}
-        onClose={() => setConsoleOpen(false)}
-      />
+      <HermesConsoleModal open={consoleOpen} onClose={() => setConsoleOpen(false)} />
 
       {/* Create-hook modal */}
       {hookModalOpen && (
         <div
           ref={hookModalRef}
           className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
-          onClick={(e) => e.target === e.currentTarget && setHookModalOpen(false)}
+          onClick={e => e.target === e.currentTarget && setHookModalOpen(false)}
           role="dialog"
           aria-modal="true"
         >
-          <div className={cn(themedBody, "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col")}>
+          <div
+            className={cn(themedBody, 'relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col')}
+          >
             <Button
               ghost
               size="icon"
@@ -905,19 +825,13 @@ export default function SystemPage() {
               <X />
             </Button>
             <header className="p-5 pb-3 border-b border-border">
-              <h2 className="font-mondwest text-display text-base tracking-wider">
-                {t.systemPage.hooks.newTitle}
-              </h2>
+              <h2 className="font-mondwest text-display text-base tracking-wider">{t.systemPage.hooks.newTitle}</h2>
             </header>
             <div className="p-5 grid gap-4">
               <div className="grid gap-2">
                 <Label htmlFor="hook-event">{t.systemPage.hooks.event}</Label>
-                <Select
-                  id="hook-event"
-                  value={hookEvent}
-                  onValueChange={(v) => setHookEvent(v)}
-                >
-                  {validEvents.map((ev) => (
+                <Select id="hook-event" value={hookEvent} onValueChange={v => setHookEvent(v)}>
+                  {validEvents.map(ev => (
                     <SelectOption key={ev} value={ev}>
                       {ev}
                     </SelectOption>
@@ -931,7 +845,7 @@ export default function SystemPage() {
                   autoFocus
                   placeholder="/usr/local/bin/my-hook.sh"
                   value={hookCommand}
-                  onChange={(e) => setHookCommand(e.target.value)}
+                  onChange={e => setHookCommand(e.target.value)}
                 />
               </div>
               <div className="grid grid-cols-2 gap-4">
@@ -941,7 +855,7 @@ export default function SystemPage() {
                     id="hook-matcher"
                     placeholder={t.systemPage.hooks.matcherPlaceholder}
                     value={hookMatcher}
-                    onChange={(e) => setHookMatcher(e.target.value)}
+                    onChange={e => setHookMatcher(e.target.value)}
                   />
                 </div>
                 <div className="grid gap-2">
@@ -950,7 +864,7 @@ export default function SystemPage() {
                     id="hook-timeout"
                     placeholder="10"
                     value={hookTimeout}
-                    onChange={(e) => setHookTimeout(e.target.value)}
+                    onChange={e => setHookTimeout(e.target.value)}
                   />
                 </div>
               </div>
@@ -958,7 +872,7 @@ export default function SystemPage() {
                 <Checkbox
                   checked={hookApprove}
                   id="hook-approve"
-                  onCheckedChange={(checked) => setHookApprove(checked === true)}
+                  onCheckedChange={checked => setHookApprove(checked === true)}
                 />
 
                 <Label
@@ -968,9 +882,7 @@ export default function SystemPage() {
                   {t.systemPage.hooks.approveNow}
                 </Label>
               </div>
-              <p className="text-xs text-warning">
-                {t.systemPage.hooks.securityWarning}
-              </p>
+              <p className="text-xs text-warning">{t.systemPage.hooks.securityWarning}</p>
               <div className="flex justify-end">
                 <Button
                   className="uppercase"
@@ -979,9 +891,7 @@ export default function SystemPage() {
                   disabled={creatingHook}
                   prefix={creatingHook ? <Spinner /> : undefined}
                 >
-                  {creatingHook
-                    ? t.systemPage.hooks.creating
-                    : t.systemPage.hooks.create}
+                  {creatingHook ? t.systemPage.hooks.creating : t.systemPage.hooks.create}
                 </Button>
               </div>
             </div>
@@ -1009,19 +919,27 @@ export default function SystemPage() {
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-y-3 gap-x-6 text-sm">
               <div>
                 <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.os}</div>
-                <div>{stats?.os} {stats?.os_release}</div>
+                <div>
+                  {stats?.os} {stats?.os_release}
+                </div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.architecture}</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  {t.systemPage.host.architecture}
+                </div>
                 <div>{stats?.arch}</div>
               </div>
               <div>
-                <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.hostname}</div>
+                <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                  {t.systemPage.host.hostname}
+                </div>
                 <div className="truncate">{stats?.hostname}</div>
               </div>
               <div>
                 <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.python}</div>
-                <div>{stats?.python_impl} {stats?.python_version}</div>
+                <div>
+                  {stats?.python_impl} {stats?.python_version}
+                </div>
               </div>
               <div>
                 <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.hermes}</div>
@@ -1033,7 +951,7 @@ export default function SystemPage() {
                       <Badge tone="warning">
                         {updateInfo.behind && updateInfo.behind > 0
                           ? format(t.systemPage.host.behind, {
-                              count: updateInfo.behind,
+                              count: updateInfo.behind
                             })
                           : t.systemPage.host.updateAvailable}
                       </Badge>
@@ -1048,16 +966,16 @@ export default function SystemPage() {
                 </div>
                 <div>
                   {format(t.systemPage.host.cores, {
-                    count: stats?.cpu_count ?? "—",
+                    count: stats?.cpu_count ?? '—'
                   })}
-                  {typeof stats?.cpu_percent === "number"
-                    ? ` · ${stats.cpu_percent.toFixed(0)}%`
-                    : ""}
+                  {typeof stats?.cpu_percent === 'number' ? ` · ${stats.cpu_percent.toFixed(0)}%` : ''}
                 </div>
               </div>
               {stats?.memory && (
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.memory}</div>
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                    {t.systemPage.host.memory}
+                  </div>
                   <div>
                     {formatBytes(stats.memory.used)} / {formatBytes(stats.memory.total)} ({stats.memory.percent}%)
                   </div>
@@ -1073,29 +991,25 @@ export default function SystemPage() {
                   </div>
                 </div>
               )}
-              {typeof stats?.uptime_seconds === "number" && (
+              {typeof stats?.uptime_seconds === 'number' && (
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.uptime}</div>
-                  <div>
-                    {formatDuration(
-                      stats.uptime_seconds,
-                      t.systemPage.host,
-                      format,
-                    )}
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                    {t.systemPage.host.uptime}
                   </div>
+                  <div>{formatDuration(stats.uptime_seconds, t.systemPage.host, format)}</div>
                 </div>
               )}
               {stats?.load_avg && stats.load_avg.length >= 3 && (
                 <div>
-                  <div className="text-xs uppercase tracking-wider text-muted-foreground">{t.systemPage.host.loadAverage}</div>
-                  <div>{stats.load_avg.map((n) => n.toFixed(2)).join(" / ")}</div>
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">
+                    {t.systemPage.host.loadAverage}
+                  </div>
+                  <div>{stats.load_avg.map(n => n.toFixed(2)).join(' / ')}</div>
                 </div>
               )}
             </div>
             {stats && !stats.psutil && (
-              <p className="mt-3 text-xs text-muted-foreground">
-                {t.systemPage.host.metricsHint}
-              </p>
+              <p className="mt-3 text-xs text-muted-foreground">{t.systemPage.host.metricsHint}</p>
             )}
             {canUpdateHermes && (
               <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-4">
@@ -1103,13 +1017,7 @@ export default function SystemPage() {
                   size="sm"
                   ghost
                   disabled={checkingUpdate}
-                  prefix={
-                    checkingUpdate ? (
-                      <Spinner className="h-3.5 w-3.5" />
-                    ) : (
-                      <RotateCw className="h-3.5 w-3.5" />
-                    )
-                  }
+                  prefix={checkingUpdate ? <Spinner className="h-3.5 w-3.5" /> : <RotateCw className="h-3.5 w-3.5" />}
                   onClick={() => void checkForUpdate(true)}
                 >
                   {t.systemPage.host.checkUpdates}
@@ -1123,19 +1031,15 @@ export default function SystemPage() {
                     {t.systemPage.host.updateNow}
                   </Button>
                 )}
-                {updateInfo &&
-                  !updateInfo.can_apply &&
-                  updateInfo.update_available && (
-                    <span className="text-xs text-muted-foreground">
-                      {format(t.systemPage.host.updateWith, {
-                        command: updateInfo.update_command,
-                      })}
-                    </span>
-                  )}
-                {updateInfo?.message && !updateInfo.update_available && (
+                {updateInfo && !updateInfo.can_apply && updateInfo.update_available && (
                   <span className="text-xs text-muted-foreground">
-                    {updateInfo.message}
+                    {format(t.systemPage.host.updateWith, {
+                      command: updateInfo.update_command
+                    })}
                   </span>
+                )}
+                {updateInfo?.message && !updateInfo.update_available && (
+                  <span className="text-xs text-muted-foreground">{updateInfo.message}</span>
                 )}
               </div>
             )}
@@ -1151,20 +1055,18 @@ export default function SystemPage() {
         <Card>
           <CardContent className="flex flex-col gap-3 py-4">
             <div className="flex items-center gap-3">
-              <Badge tone={portal?.logged_in ? "success" : "secondary"}>
-                {portal?.logged_in
-                  ? t.systemPage.portal.loggedIn
-                  : t.systemPage.portal.loggedOut}
+              <Badge tone={portal?.logged_in ? 'success' : 'secondary'}>
+                {portal?.logged_in ? t.systemPage.portal.loggedIn : t.systemPage.portal.loggedOut}
               </Badge>
               {portal?.provider && (
                 <span className="text-sm text-muted-foreground">
                   {format(t.systemPage.portal.inferenceProvider, {
-                    provider: portal.provider,
+                    provider: portal.provider
                   })}
                 </span>
               )}
               <a
-                href={portal?.subscription_url || "https://portal.nousresearch.com/manage-subscription"}
+                href={portal?.subscription_url || 'https://portal.nousresearch.com/manage-subscription'}
                 target="_blank"
                 rel="noreferrer"
                 className="ml-auto text-xs text-primary underline"
@@ -1177,7 +1079,7 @@ export default function SystemPage() {
                 <span className="text-xs uppercase tracking-wider text-muted-foreground">
                   {t.systemPage.portal.toolGatewayRouting}
                 </span>
-                {portal.features.map((f) => (
+                {portal.features.map(f => (
                   <div key={f.label} className="flex items-center justify-between text-sm">
                     <span>{f.label}</span>
                     <span className="text-muted-foreground">{f.state}</span>
@@ -1185,11 +1087,7 @@ export default function SystemPage() {
                 ))}
               </div>
             )}
-            {!portal?.logged_in && (
-              <p className="text-xs text-muted-foreground">
-                {t.systemPage.portal.loginHint}
-              </p>
-            )}
+            {!portal?.logged_in && <p className="text-xs text-muted-foreground">{t.systemPage.portal.loginHint}</p>}
           </CardContent>
         </Card>
       </section>
@@ -1202,7 +1100,7 @@ export default function SystemPage() {
         <Card>
           <CardContent className="flex items-center justify-between py-4">
             <div className="flex items-center gap-3">
-              <Badge tone={curator?.paused ? "warning" : curator?.enabled ? "success" : "secondary"}>
+              <Badge tone={curator?.paused ? 'warning' : curator?.enabled ? 'success' : 'secondary'}>
                 {curator?.paused
                   ? t.systemPage.curator.paused
                   : curator?.enabled
@@ -1212,30 +1110,26 @@ export default function SystemPage() {
               <span className="text-sm text-muted-foreground">
                 {curator?.interval_hours
                   ? format(t.systemPage.curator.everyHours, {
-                      hours: curator.interval_hours,
+                      hours: curator.interval_hours
                     })
-                  : ""}
-                {" · "}
+                  : ''}
+                {' · '}
                 {curator?.last_run_at
                   ? format(t.systemPage.curator.lastRun, {
-                      time: formatDateTime(curator.last_run_at, locale),
+                      time: formatDateTime(curator.last_run_at, locale)
                     })
                   : t.systemPage.curator.neverRun}
               </span>
             </div>
             <div className="flex items-center gap-2">
               <Button size="sm" ghost onClick={toggleCuratorPaused}>
-                {curator?.paused
-                  ? t.systemPage.curator.resume
-                  : t.systemPage.curator.pause}
+                {curator?.paused ? t.systemPage.curator.resume : t.systemPage.curator.pause}
               </Button>
               <Button
                 size="sm"
                 ghost
                 prefix={<Play className="h-3.5 w-3.5" />}
-                onClick={() =>
-                  runOp(api.runCurator, t.systemPage.curator.reviewOperation)
-                }
+                onClick={() => runOp(api.runCurator, t.systemPage.curator.reviewOperation)}
               >
                 {t.systemPage.curator.runNow}
               </Button>
@@ -1252,10 +1146,8 @@ export default function SystemPage() {
         <Card>
           <CardContent className="flex items-center justify-between py-4">
             <div className="flex items-center gap-3">
-              <Badge tone={gatewayRunning ? "success" : "secondary"}>
-                {gatewayRunning
-                  ? t.systemPage.gateway.running
-                  : t.systemPage.gateway.stopped}
+              <Badge tone={gatewayRunning ? 'success' : 'secondary'}>
+                {gatewayRunning ? t.systemPage.gateway.running : t.systemPage.gateway.stopped}
               </Badge>
               <span className="text-sm text-muted-foreground">
                 {gatewayStateDescription(status?.gateway_state, gatewayRunning, t.systemPage)}
@@ -1270,7 +1162,7 @@ export default function SystemPage() {
               <Button
                 size="sm"
                 className="uppercase"
-                onClick={() => runGateway("start")}
+                onClick={() => runGateway('start')}
                 disabled={gatewayRunning}
                 prefix={<Play className="h-3.5 w-3.5" />}
               >
@@ -1288,7 +1180,7 @@ export default function SystemPage() {
                 size="sm"
                 className="uppercase text-warning"
                 ghost
-                onClick={() => runGateway("stop")}
+                onClick={() => runGateway('stop')}
                 disabled={!gatewayRunning}
                 prefix={<Power className="h-3.5 w-3.5" />}
               >
@@ -1297,33 +1189,37 @@ export default function SystemPage() {
             </div>
           </CardContent>
           {(sharedGateway || servedNotice) && (
-            <CardContent className="border-t border-current/10 py-3 text-xs text-muted-foreground" data-slot="shared-gateway-notice">
-              {servedNotice ?? format(t.sharedGateway.servedWith, { profiles: sharedGateway!.join(", ") })}
+            <CardContent
+              className="border-t border-current/10 py-3 text-xs text-muted-foreground"
+              data-slot="shared-gateway-notice"
+            >
+              {servedNotice ?? format(t.sharedGateway.servedWith, { profiles: sharedGateway!.join(', ') })}
             </CardContent>
           )}
-          {migratePlan && !migratePlan.already_multiplexed && migratePlan.profiles.length > 1 && (
-            migratePlan.eligible || migratePlan.blockers.length > 0
-          ) && (
-            <CardContent className="flex flex-col gap-2 border-t border-border py-4 text-sm">
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-muted-foreground">
-                  {t.sharedGateway.migrationDescription}
-                </span>
-                <Button
-                  size="sm"
-                  className="uppercase"
-                  onClick={migrateToMultiplex}
-                  disabled={!migratePlan.eligible}
-                  title={migratePlan.eligible ? undefined : t.sharedGateway.fixBlockers}
-                >
-                  {t.sharedGateway.migrate}
-                </Button>
-              </div>
-              {migratePlan.blockers.map((b) => (
-                <div key={b} className="text-warning">• {b}</div>
-              ))}
-            </CardContent>
-          )}
+          {migratePlan &&
+            !migratePlan.already_multiplexed &&
+            migratePlan.profiles.length > 1 &&
+            (migratePlan.eligible || migratePlan.blockers.length > 0) && (
+              <CardContent className="flex flex-col gap-2 border-t border-border py-4 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-muted-foreground">{t.sharedGateway.migrationDescription}</span>
+                  <Button
+                    size="sm"
+                    className="uppercase"
+                    onClick={migrateToMultiplex}
+                    disabled={!migratePlan.eligible}
+                    title={migratePlan.eligible ? undefined : t.sharedGateway.fixBlockers}
+                  >
+                    {t.sharedGateway.migrate}
+                  </Button>
+                </div>
+                {migratePlan.blockers.map(b => (
+                  <div key={b} className="text-warning">
+                    • {b}
+                  </div>
+                ))}
+              </CardContent>
+            )}
         </Card>
       </section>
 
@@ -1336,18 +1232,16 @@ export default function SystemPage() {
           <CardContent className="flex flex-col gap-4 py-4">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
               <span>
-                {t.systemPage.memory.externalProvider}{" "}
-                <span className="font-mono text-foreground">
-                  {memory?.active || t.systemPage.memory.builtInOnly}
-                </span>
+                {t.systemPage.memory.externalProvider}{' '}
+                <span className="font-mono text-foreground">{memory?.active || t.systemPage.memory.builtInOnly}</span>
               </span>
               {activeMemoryProvider && (
                 <Badge tone={MEMORY_STATUS_TONE[activeMemoryProvider.status]}>
-                  {activeMemoryProvider.status === "ready"
+                  {activeMemoryProvider.status === 'ready'
                     ? t.systemPage.memory.statusReady
-                    : activeMemoryProvider.status === "needs_config"
+                    : activeMemoryProvider.status === 'needs_config'
                       ? t.systemPage.memory.statusNeedsSetup
-                      : activeMemoryProvider.status === "unavailable"
+                      : activeMemoryProvider.status === 'unavailable'
                         ? t.systemPage.memory.statusUnavailable
                         : t.systemPage.memory.statusMissing}
                 </Badge>
@@ -1356,14 +1250,14 @@ export default function SystemPage() {
                 {t.systemPage.memory.changeInPlugins}
               </Link>
               <span className="ml-auto">
-                {t.systemPage.memory.providerSetup}{" "}
+                {t.systemPage.memory.providerSetup}{' '}
                 <Link to="/plugins" className="underline">
                   {t.systemPage.memory.configureInPlugins}
                 </Link>
               </span>
             </div>
 
-            {activeMemoryProvider?.status === "missing" && (
+            {activeMemoryProvider?.status === 'missing' && (
               <p className="border border-destructive/50 px-3 py-2 text-xs text-destructive">
                 {t.systemPage.memory.providerMissing}
               </p>
@@ -1371,18 +1265,22 @@ export default function SystemPage() {
 
             <div className="flex flex-wrap items-center gap-3 border-t border-border pt-3">
               <span className="text-xs text-muted-foreground">
-                {t.systemPage.memory.builtInFiles} — MEMORY.md:{" "}
-                {formatBytes(memory?.builtin_files.memory ?? 0)} · USER.md:{" "}
-                {formatBytes(memory?.builtin_files.user ?? 0)}
+                {t.systemPage.memory.builtInFiles} — MEMORY.md: {formatBytes(memory?.builtin_files.memory ?? 0)} ·
+                USER.md: {formatBytes(memory?.builtin_files.user ?? 0)}
               </span>
               <div className="flex items-center gap-2 ml-auto">
-                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("memory")}>
+                <Button
+                  size="sm"
+                  ghost
+                  className="text-destructive"
+                  onClick={() => memoryReset.requestDelete('memory')}
+                >
                   {t.systemPage.memory.resetMemory}
                 </Button>
-                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("user")}>
+                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete('user')}>
                   {t.systemPage.memory.resetUser}
                 </Button>
-                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete("all")}>
+                <Button size="sm" ghost className="text-destructive" onClick={() => memoryReset.requestDelete('all')}>
                   {t.systemPage.memory.resetAll}
                 </Button>
               </div>
@@ -1401,39 +1299,64 @@ export default function SystemPage() {
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
               <div className="grid gap-2">
                 <Label htmlFor="cred-provider">{t.systemPage.credentials.provider}</Label>
-                <Input id="cred-provider" value={credProvider} onChange={(e) => setCredProvider(e.target.value)} placeholder="openrouter" />
+                <Input
+                  id="cred-provider"
+                  value={credProvider}
+                  onChange={e => setCredProvider(e.target.value)}
+                  placeholder="openrouter"
+                />
               </div>
               <div className="grid gap-2 sm:col-span-2">
                 <Label htmlFor="cred-key">{t.systemPage.credentials.apiKey}</Label>
-                <Input id="cred-key" type="password" value={credKey} onChange={(e) => setCredKey(e.target.value)} placeholder="sk-…" />
+                <Input
+                  id="cred-key"
+                  type="password"
+                  value={credKey}
+                  onChange={e => setCredKey(e.target.value)}
+                  placeholder="sk-…"
+                />
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="cred-label">{t.systemPage.credentials.label}</Label>
-                <Input id="cred-label" value={credLabel} onChange={(e) => setCredLabel(e.target.value)} placeholder={t.systemPage.credentials.optional} />
+                <Input
+                  id="cred-label"
+                  value={credLabel}
+                  onChange={e => setCredLabel(e.target.value)}
+                  placeholder={t.systemPage.credentials.optional}
+                />
               </div>
             </div>
             <div className="flex justify-end">
-              <Button size="sm" className="uppercase" onClick={addCredential} disabled={addingCred} prefix={addingCred ? <Spinner /> : undefined}>
+              <Button
+                size="sm"
+                className="uppercase"
+                onClick={addCredential}
+                disabled={addingCred}
+                prefix={addingCred ? <Spinner /> : undefined}
+              >
                 {t.systemPage.credentials.addKey}
               </Button>
             </div>
-            {pool.length === 0 && (
-              <p className="text-sm text-muted-foreground">
-                {t.systemPage.credentials.empty}
-              </p>
-            )}
-            {pool.map((prov) => (
+            {pool.length === 0 && <p className="text-sm text-muted-foreground">{t.systemPage.credentials.empty}</p>}
+            {pool.map(prov => (
               <div key={prov.provider} className="flex flex-col gap-2">
-                <span className="text-xs uppercase tracking-wider text-muted-foreground">
-                  {prov.provider}
-                </span>
-                {prov.entries.map((entry) => (
-                  <div key={`${prov.provider}-${entry.index}`} className="flex items-center gap-3 border border-border bg-background/40 px-3 py-2">
+                <span className="text-xs uppercase tracking-wider text-muted-foreground">{prov.provider}</span>
+                {prov.entries.map(entry => (
+                  <div
+                    key={`${prov.provider}-${entry.index}`}
+                    className="flex items-center gap-3 border border-border bg-background/40 px-3 py-2"
+                  >
                     <span className="text-sm font-medium">{entry.label}</span>
                     <span className="font-mono text-xs text-muted-foreground">{entry.token_preview}</span>
                     <Badge tone="outline">{entry.auth_type}</Badge>
                     {entry.last_status && <Badge tone="secondary">{entry.last_status}</Badge>}
-                    <Button ghost size="icon" className="ml-auto text-destructive" aria-label={t.systemPage.credentials.remove} onClick={() => credDelete.requestDelete(`${prov.provider}|${entry.index}`)}>
+                    <Button
+                      ghost
+                      size="icon"
+                      className="ml-auto text-destructive"
+                      aria-label={t.systemPage.credentials.remove}
+                      onClick={() => credDelete.requestDelete(`${prov.provider}|${entry.index}`)}
+                    >
                       <Trash2 />
                     </Button>
                   </div>
@@ -1454,22 +1377,52 @@ export default function SystemPage() {
             <Button size="sm" ghost prefix={<Terminal className="h-3.5 w-3.5" />} onClick={() => setConsoleOpen(true)}>
               {t.systemPage.operations.openConsole}
             </Button>
-            <Button size="sm" ghost prefix={<Stethoscope className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDoctor, t.systemPage.operations.doctor)}>
+            <Button
+              size="sm"
+              ghost
+              prefix={<Stethoscope className="h-3.5 w-3.5" />}
+              onClick={() => runOp(api.runDoctor, t.systemPage.operations.doctor)}
+            >
               {t.systemPage.operations.runDoctor}
             </Button>
-            <Button size="sm" ghost prefix={<ShieldCheck className="h-3.5 w-3.5" />} onClick={() => runOp(api.runSecurityAudit, t.systemPage.operations.securityAudit)}>
+            <Button
+              size="sm"
+              ghost
+              prefix={<ShieldCheck className="h-3.5 w-3.5" />}
+              onClick={() => runOp(api.runSecurityAudit, t.systemPage.operations.securityAudit)}
+            >
               {t.systemPage.operations.securityAudit}
             </Button>
-            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.updateSkillsFromHub, t.systemPage.operations.skillsUpdate)}>
+            <Button
+              size="sm"
+              ghost
+              prefix={<RotateCw className="h-3.5 w-3.5" />}
+              onClick={() => runOp(api.updateSkillsFromHub, t.systemPage.operations.skillsUpdate)}
+            >
               {t.systemPage.operations.updateSkills}
             </Button>
-            <Button size="sm" ghost prefix={<Activity className="h-3.5 w-3.5" />} onClick={() => runOp(api.runPromptSize, t.systemPage.operations.promptSize)}>
+            <Button
+              size="sm"
+              ghost
+              prefix={<Activity className="h-3.5 w-3.5" />}
+              onClick={() => runOp(api.runPromptSize, t.systemPage.operations.promptSize)}
+            >
               {t.systemPage.operations.promptSize}
             </Button>
-            <Button size="sm" ghost prefix={<Database className="h-3.5 w-3.5" />} onClick={() => runOp(api.runDump, t.systemPage.operations.supportDump)}>
+            <Button
+              size="sm"
+              ghost
+              prefix={<Database className="h-3.5 w-3.5" />}
+              onClick={() => runOp(api.runDump, t.systemPage.operations.supportDump)}
+            >
               {t.systemPage.operations.supportDump}
             </Button>
-            <Button size="sm" ghost prefix={<RotateCw className="h-3.5 w-3.5" />} onClick={() => runOp(api.runConfigMigrate, t.systemPage.operations.configMigrate)}>
+            <Button
+              size="sm"
+              ghost
+              prefix={<RotateCw className="h-3.5 w-3.5" />}
+              onClick={() => runOp(api.runConfigMigrate, t.systemPage.operations.configMigrate)}
+            >
               {t.systemPage.operations.migrateConfig}
             </Button>
           </CardContent>
@@ -1494,11 +1447,7 @@ export default function SystemPage() {
                     ghost
                     disabled={!downloadableBackupArchive || downloadingBackup}
                     prefix={
-                      downloadingBackup ? (
-                        <Spinner className="h-3.5 w-3.5" />
-                      ) : (
-                        <Download className="h-3.5 w-3.5" />
-                      )
+                      downloadingBackup ? <Spinner className="h-3.5 w-3.5" /> : <Download className="h-3.5 w-3.5" />
                     }
                     onClick={() => void downloadBackup()}
                   >
@@ -1506,14 +1455,9 @@ export default function SystemPage() {
                   </Button>
                   <span
                     className="min-w-0 truncate text-xs text-muted-foreground"
-                    title={
-                      pendingBackupArchive ?? t.systemPage.operations.noBackup
-                    }
+                    title={pendingBackupArchive ?? t.systemPage.operations.noBackup}
                   >
-                    {backupFileName(
-                      pendingBackupArchive,
-                      t.systemPage.operations.noBackup,
-                    )}
+                    {backupFileName(pendingBackupArchive, t.systemPage.operations.noBackup)}
                   </span>
                 </div>
               </div>
@@ -1535,13 +1479,9 @@ export default function SystemPage() {
                   </Button>
                   <span
                     className="min-w-0 truncate text-xs text-muted-foreground"
-                    title={
-                      importFile?.name ??
-                      t.systemPage.operations.noArchiveSelected
-                    }
+                    title={importFile?.name ?? t.systemPage.operations.noArchiveSelected}
                   >
-                    {importFile?.name ??
-                      t.systemPage.operations.noArchiveSelected}
+                    {importFile?.name ?? t.systemPage.operations.noArchiveSelected}
                   </span>
                 </div>
               </div>
@@ -1551,8 +1491,8 @@ export default function SystemPage() {
                 disabled={!importFile || importingBackup}
                 prefix={importingBackup ? <Spinner /> : undefined}
                 onClick={() => {
-                  if (!importFile) return;
-                  setImportConfirmTarget({ kind: "upload", file: importFile });
+                  if (!importFile) return
+                  setImportConfirmTarget({ kind: 'upload', file: importFile })
                 }}
               >
                 {t.systemPage.operations.restoreUpload}
@@ -1565,7 +1505,7 @@ export default function SystemPage() {
                 <Input
                   id="import-path"
                   value={importPath}
-                  onChange={(e) => setImportPath(e.target.value)}
+                  onChange={e => setImportPath(e.target.value)}
                   placeholder="$HERMES_HOME/backups/hermes-backup.zip"
                 />
               </div>
@@ -1575,9 +1515,9 @@ export default function SystemPage() {
                 disabled={!importPath.trim() || importingBackup}
                 prefix={importingBackup ? <Spinner /> : undefined}
                 onClick={() => {
-                  const path = importPath.trim();
-                  if (!path) return;
-                  setImportConfirmTarget({ kind: "path", path });
+                  const path = importPath.trim()
+                  if (!path) return
+                  setImportConfirmTarget({ kind: 'path', path })
                 }}
               >
                 {t.systemPage.operations.restorePath}
@@ -1587,19 +1527,16 @@ export default function SystemPage() {
               open={!!importConfirmTarget}
               title={t.systemPage.confirm.restoreTitle}
               description={format(t.systemPage.confirm.restoreDescription, {
-                archive: backupImportLabel(
-                  importConfirmTarget,
-                  t.systemPage.operations.noArchiveSelected,
-                ),
+                archive: backupImportLabel(importConfirmTarget, t.systemPage.operations.noArchiveSelected)
               })}
               destructive
               confirmLabel={t.systemPage.confirm.restore}
               cancelLabel={t.common.cancel}
               onCancel={() => setImportConfirmTarget(null)}
               onConfirm={() => {
-                const target = importConfirmTarget;
-                setImportConfirmTarget(null);
-                if (target) void runBackupImport(target);
+                const target = importConfirmTarget
+                setImportConfirmTarget(null)
+                if (target) void runBackupImport(target)
               }}
             />
           </CardContent>
@@ -1623,18 +1560,10 @@ export default function SystemPage() {
               <Button
                 size="sm"
                 disabled={sharing}
-                prefix={
-                  sharing ? (
-                    <Spinner className="h-3.5 w-3.5" />
-                  ) : (
-                    <Share2 className="h-3.5 w-3.5" />
-                  )
-                }
+                prefix={sharing ? <Spinner className="h-3.5 w-3.5" /> : <Share2 className="h-3.5 w-3.5" />}
                 onClick={() => void runDebugShare()}
               >
-                {sharing
-                  ? t.systemPage.operations.uploading
-                  : t.systemPage.operations.generateShareLink}
+                {sharing ? t.systemPage.operations.uploading : t.systemPage.operations.generateShareLink}
               </Button>
             </div>
 
@@ -1643,7 +1572,7 @@ export default function SystemPage() {
                 checked={shareRedact}
                 disabled={sharing}
                 id="share-redact"
-                onCheckedChange={(checked) => setShareRedact(checked === true)}
+                onCheckedChange={checked => setShareRedact(checked === true)}
               />
 
               <Label
@@ -1667,9 +1596,7 @@ export default function SystemPage() {
                     <span className="flex items-center gap-1 text-xs text-muted-foreground">
                       <Clock className="h-3 w-3" />
                       {format(t.systemPage.operations.autoDeletesHours, {
-                        hours: Math.round(
-                          shareResult.auto_delete_seconds / 3600,
-                        ),
+                        hours: Math.round(shareResult.auto_delete_seconds / 3600)
                       })}
                     </span>
                   </div>
@@ -1678,18 +1605,14 @@ export default function SystemPage() {
                       size="sm"
                       ghost
                       prefix={
-                        copiedLabel === "__all__" ? (
-                          <Check className="h-3.5 w-3.5" />
-                        ) : (
-                          <Copy className="h-3.5 w-3.5" />
-                        )
+                        copiedLabel === '__all__' ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />
                       }
                       onClick={() =>
                         void copyToClipboard(
                           Object.entries(shareResult.urls)
                             .map(([label, url]) => `${label}: ${url}`)
-                            .join("\n"),
-                          "__all__",
+                            .join('\n'),
+                          '__all__'
                         )
                       }
                     >
@@ -1699,14 +1622,9 @@ export default function SystemPage() {
                 </div>
 
                 {Object.entries(shareResult.urls).map(([label, url]) => (
-                  <div
-                    key={label}
-                    className="flex items-center gap-2 bg-background/50 border border-border px-3 py-2"
-                  >
+                  <div key={label} className="flex items-center gap-2 bg-background/50 border border-border px-3 py-2">
                     <Link2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <span className="font-mono text-xs shrink-0 w-24 truncate text-muted-foreground">
-                      {label}
-                    </span>
+                    <span className="font-mono text-xs shrink-0 w-24 truncate text-muted-foreground">{label}</span>
                     <a
                       href={url}
                       target="_blank"
@@ -1719,7 +1637,7 @@ export default function SystemPage() {
                       ghost
                       size="icon"
                       aria-label={format(t.systemPage.operations.copyLink, {
-                        label,
+                        label
                       })}
                       onClick={() => void copyToClipboard(url, label)}
                     >
@@ -1731,7 +1649,7 @@ export default function SystemPage() {
                 {shareResult.failures.length > 0 && (
                   <span className="text-xs text-destructive">
                     {format(t.systemPage.operations.uploadFailures, {
-                      errors: shareResult.failures.join("; "),
+                      errors: shareResult.failures.join('; ')
                     })}
                   </span>
                 )}
@@ -1751,10 +1669,17 @@ export default function SystemPage() {
             <span className="text-sm text-muted-foreground">
               {format(t.systemPage.checkpoints.sessions, {
                 count: checkpoints?.sessions.length ?? 0,
-                size: formatBytes(checkpoints?.total_bytes ?? 0),
+                size: formatBytes(checkpoints?.total_bytes ?? 0)
               })}
             </span>
-            <Button size="sm" ghost className="text-destructive" disabled={!checkpoints?.sessions.length} prefix={<Trash2 className="h-3.5 w-3.5" />} onClick={() => checkpointsPrune.requestDelete("all")}>
+            <Button
+              size="sm"
+              ghost
+              className="text-destructive"
+              disabled={!checkpoints?.sessions.length}
+              prefix={<Trash2 className="h-3.5 w-3.5" />}
+              onClick={() => checkpointsPrune.requestDelete('all')}
+            >
               {t.systemPage.checkpoints.prune}
             </Button>
           </CardContent>
@@ -1767,7 +1692,12 @@ export default function SystemPage() {
           <H2 variant="sm" className="flex items-center gap-2 text-muted-foreground">
             <Terminal className="h-4 w-4" /> {t.systemPage.hooks.title}
           </H2>
-          <Button size="sm" className="uppercase" prefix={<Plus className="h-3.5 w-3.5" />} onClick={() => setHookModalOpen(true)}>
+          <Button
+            size="sm"
+            className="uppercase"
+            prefix={<Plus className="h-3.5 w-3.5" />}
+            onClick={() => setHookModalOpen(true)}
+          >
             {t.systemPage.hooks.new}
           </Button>
         </div>
@@ -1785,27 +1715,21 @@ export default function SystemPage() {
               {h.matcher && (
                 <span className="text-xs text-muted-foreground">
                   {format(t.systemPage.hooks.matcherValue, {
-                    matcher: h.matcher,
+                    matcher: h.matcher
                   })}
                 </span>
               )}
               <span className="font-mono text-xs truncate flex-1">{h.command}</span>
-              {h.executable === false && (
-                <Badge tone="destructive">{t.systemPage.hooks.notExecutable}</Badge>
-              )}
-              <Badge tone={h.allowed ? "success" : "warning"}>
-                {h.allowed
-                  ? t.systemPage.hooks.allowed
-                  : t.systemPage.hooks.notApproved}
+              {h.executable === false && <Badge tone="destructive">{t.systemPage.hooks.notExecutable}</Badge>}
+              <Badge tone={h.allowed ? 'success' : 'warning'}>
+                {h.allowed ? t.systemPage.hooks.allowed : t.systemPage.hooks.notApproved}
               </Badge>
               <Button
                 ghost
                 size="icon"
                 className="text-destructive"
                 aria-label={t.systemPage.hooks.remove}
-                onClick={() =>
-                  hookDelete.requestDelete(`${h.event}|${h.command ?? ""}`)
-                }
+                onClick={() => hookDelete.requestDelete(`${h.event}|${h.command ?? ''}`)}
               >
                 <Trash2 />
               </Button>
@@ -1814,5 +1738,5 @@ export default function SystemPage() {
         ))}
       </section>
     </div>
-  );
+  )
 }

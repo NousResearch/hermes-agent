@@ -1,6 +1,6 @@
 import type { BillingBlock } from '@hermes/shared/billing'
 
-import { type Locale, translate } from '../i18n/index.js'
+import { t } from '../i18n/runtime.js'
 
 export interface BillingDialogCopy {
   cancelLabel: string
@@ -17,25 +17,24 @@ export interface BillingDialogCopy {
  * billing page (or `/model` to switch when we have no URL). Pure + exported so
  * the wording is unit-tested without driving the gateway.
  */
-export function billingDialogCopy(block: BillingBlock, locale: Locale = 'en'): BillingDialogCopy {
+export function billingDialogCopy(block: BillingBlock): BillingDialogCopy {
   if (block.is_nous) {
     return {
-      cancelLabel: translate(locale, 'billing.blocked.dismiss'),
-      confirmLabel: translate(locale, 'billing.blocked.nous.confirm'),
-      detail: translate(locale, 'billing.blocked.nous.detail'),
-      title: translate(locale, 'billing.blocked.nous.title')
+      cancelLabel: t('libText.billingDialog.dismiss'),
+      confirmLabel: t('libText.billingDialog.topUp'),
+      detail: t('libText.billingDialog.nousDetail'),
+      title: t('libText.billingDialog.nousTitle')
     }
   }
 
-  const label = block.provider_label || translate(locale, 'billing.blocked.provider.fallbackLabel')
+  const label = block.provider_label || t('libText.billingDialog.yourProvider')
 
   return {
-    cancelLabel: translate(locale, 'billing.blocked.dismiss'),
-    confirmLabel: translate(
-      locale,
-      block.billing_url ? 'billing.blocked.provider.confirmOpen' : 'billing.blocked.provider.confirmSwitch'
-    ),
-    detail: translate(locale, 'billing.blocked.provider.detail', { provider: label }),
-    title: translate(locale, 'billing.blocked.provider.title', { provider: label })
+    cancelLabel: t('libText.billingDialog.dismiss'),
+    confirmLabel: block.billing_url
+      ? t('libText.billingDialog.openBillingPage')
+      : t('libText.billingDialog.switchProvider'),
+    detail: t('libText.billingDialog.providerDetail', label),
+    title: t('libText.billingDialog.providerTitle', label)
   }
 }

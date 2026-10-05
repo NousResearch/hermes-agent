@@ -1,12 +1,13 @@
 // User-facing wording for gateway/transport failures in the TUI. Pure functions
 // so the copy — and the "what happened / what to do" shape — is unit-testable
-// without rendering. Every slash command cited here exists in
-// ui-tui/src/app/slash/commands (/logs, /retry, /model, /update, /resume,
-// /sessions, /quit) and `hermes doctor` is a real subcommand.
+// without rendering. The English copy lives in i18n/en/userMessages.ts
+// (namespace `userMessages`); every exported message is a function so it is
+// resolved against the active locale at call time, never at import time.
 
 import type { ErrorSurface } from '@hermes/shared/gateway-events'
 
-import { type Locale, translate, type TranslationKey } from '../i18n/index.js'
+import { messages, t } from '../i18n/runtime.js'
+import type { Translations } from '../i18n/types.js'
 
 /** JSON-RPC error codes the gateway answers with. */
 export const RPC_INVALID_PARAMS = 4000
@@ -24,48 +25,42 @@ interface RpcErrorShape {
 const rpcShape = (err: unknown): RpcErrorShape =>
   err instanceof Error ? { code: (err as { code?: number }).code, message: err.message } : {}
 
-const detailLine = (raw: string | undefined, locale: Locale = 'en'): string | null => {
+const detailLine = (raw: string | undefined): string | null => {
   const text = (raw ?? '').replace(/\s+/g, ' ').trim()
 
   if (!text) {
     return null
   }
 
-  return translate(locale, 'messages.detail', {
-    detail: text.length > DETAIL_LIMIT ? `${text.slice(0, DETAIL_LIMIT - 1)}…` : text
-  })
+  return t('userMessages.details', text.length > DETAIL_LIMIT ? `${text.slice(0, DETAIL_LIMIT - 1)}…` : text)
 }
 
 // ── Backend process lifecycle ─────────────────────────────────────────────
 
-export const BACKEND_RESTARTING = (locale: Locale = 'en') => translate(locale, 'messages.backend_restarting')
+export const backendRestarting = (): string => t('userMessages.backend.restarting')
 
-export const BACKEND_RESTARTING_ACTIVITY = (locale: Locale = 'en') =>
-  translate(locale, 'messages.backend_restarting_activity')
+export const backendRestartingActivity = (): string => t('userMessages.backend.restartingActivity')
 
 // Attached (dashboard / embedded) mode: only the socket dropped; Hermes and any
 // reply in progress are still alive on the backend and come back on reconnect.
-export const CONNECTION_LOST = (locale: Locale = 'en') => translate(locale, 'messages.connection_lost')
+export const connectionLost = (): string => t('userMessages.backend.connectionLost')
 
-export const CONNECTION_LOST_ACTIVITY = (locale: Locale = 'en') =>
-  translate(locale, 'messages.connection_lost_activity')
+export const connectionLostActivity = (): string => t('userMessages.backend.connectionLostActivity')
 
-export const backendGaveUp = (code: null | number, lastLine?: string, locale: Locale = 'en'): string => {
-  const exit = code === null ? '' : translate(locale, 'messages.exit', { code: code ?? 0 })
-  const detail = detailLine(lastLine, locale)
+export const backendGaveUp = (code: null | number, lastLine?: string): string => {
+  const detail = detailLine(lastLine)
 
   return [
-    translate(locale, 'messages.gaveUp', { exit }),
+    code === null ? t('userMessages.backend.gaveUpTitle') : t('userMessages.backend.gaveUpTitleWithCode', String(code)),
     detail,
-    translate(locale, 'messages.saved'),
-    translate(locale, 'messages.doctor')
+    t('userMessages.backend.gaveUpReconnect'),
+    t('userMessages.backend.gaveUpLogs')
   ]
     .filter(Boolean)
     .join('\n')
 }
 
-export const BACKEND_GAVE_UP_ACTIVITY = (locale: Locale = 'en') =>
-  translate(locale, 'messages.backend_gave_up_activity')
+export const backendGaveUpActivity = (): string => t('userMessages.backend.gaveUpActivity')
 
 /** Last line of the backend log tail that is not our own [lifecycle]/[startup] bookkeeping. */
 export const lastStderrLine = (tail: string): string | undefined =>
@@ -75,21 +70,17 @@ export const lastStderrLine = (tail: string): string | undefined =>
     .filter(l => l && !/^\[(?:lifecycle|startup|protocol|sidecar|spawn)\]/.test(l))
     .at(-1)
 
-export const backendReconnecting = (
-  attempt: number | undefined,
-  delayMs: number | undefined,
-  locale: Locale = 'en'
-): string => {
+export const backendReconnecting = (attempt: number | undefined, delayMs: number | undefined): string => {
   const secs = Math.max(1, Math.round((delayMs ?? 1000) / 1000))
-  const n = attempt && attempt > 0 ? translate(locale, 'messages.attempt', { attempt }) : ''
 
-  return translate(locale, 'messages.reconnecting', { secs, attempt: n })
+  return attempt && attempt > 0
+    ? t('userMessages.backend.reconnectingAttempt', String(secs), String(attempt))
+    : t('userMessages.backend.reconnecting', String(secs))
 }
 
-export const BACKEND_SLOW_START = (locale: Locale = 'en') => translate(locale, 'messages.backend_slow_start')
+export const backendSlowStart = (): string => t('userMessages.backend.slowStart')
 
-export const BACKEND_SLOW_START_STATUS = (locale: Locale = 'en') =>
-  translate(locale, 'messages.backend_slow_start_status')
+export const backendSlowStartStatus = (): string => t('userMessages.backend.slowStartStatus')
 
 // ── stderr noise ──────────────────────────────────────────────────────────
 
@@ -101,11 +92,10 @@ const STDERR_PROBLEM_RE = /Traceback|\b[A-Z][A-Za-z]*(?:Error|Exception)\b:|CRIT
 /** Only lines that look like a failure earn an activity row; the rest stay in /logs. */
 export const stderrLooksLikeProblem = (line: string): boolean => STDERR_PROBLEM_RE.test(line)
 
-export const stderrProblemActivity = (line: string, locale: Locale = 'en'): string => {
+export const stderrProblemActivity = (line: string): string => {
   const m = /([A-Z][A-Za-z]*(?:Error|Exception)):/.exec(line)
-  const what = m ? ` (${m[1]})` : ''
 
-  return translate(locale, 'messages.stderr', { what })
+  return m ? t('userMessages.backend.stderrProblemNamed', m[1]) : t('userMessages.backend.stderrProblem')
 }
 
 // ── RPC errors ────────────────────────────────────────────────────────────
@@ -123,7 +113,7 @@ export const isVersionSkewError = (err: unknown): boolean => {
   )
 }
 
-export const VERSION_SKEW_MESSAGE = (locale: Locale = 'en') => translate(locale, 'messages.version_skew_message')
+export const versionSkewMessage = (): string => t('userMessages.rpc.versionSkew')
 
 const SESSION_NOT_FOUND_RE = /session not found/i
 const NOT_CONNECTED_RE = /^gateway not (?:connected|running)\b/
@@ -131,7 +121,7 @@ const TIMED_OUT_RE = /^request timed out after (\d+)s/
 
 type RpcErrorRow = [
   matcher: (code: number | undefined, text: string) => RegExpExecArray | boolean | null,
-  render: (m: RegExpExecArray | null, locale: Locale) => string
+  render: (m: RegExpExecArray | null) => string
 ]
 
 // Ordered: first matching row wins. 4001 is reused by the backend for unrelated
@@ -140,13 +130,10 @@ type RpcErrorRow = [
 const RPC_ERROR_ROWS: RpcErrorRow[] = [
   [
     (code, text) => (code === RPC_SESSION_NOT_FOUND || code === undefined) && SESSION_NOT_FOUND_RE.test(text),
-    (_m, locale) => translate(locale, 'messages.sessionMissing')
+    () => t('userMessages.rpc.sessionNotFound')
   ],
-  [(_code, text) => NOT_CONNECTED_RE.test(text), (_m, locale) => translate(locale, 'messages.disconnected')],
-  [
-    (_code, text) => TIMED_OUT_RE.exec(text),
-    (m, locale) => translate(locale, 'messages.timeout', { secs: m?.[1] ?? '?' })
-  ]
+  [(_code, text) => NOT_CONNECTED_RE.test(text), () => t('userMessages.rpc.notConnected')],
+  [(_code, text) => TIMED_OUT_RE.exec(text), m => t('userMessages.rpc.timedOut', m?.[1] ?? '?')]
 ]
 
 let rpcErrorLogSink: ((line: string) => void) | null = null
@@ -161,14 +148,14 @@ const logReplacedWireText = (code: number | undefined, text: string): void => {
 }
 
 /** Rewrite transport/session errors into plain words; other errors pass through. */
-export const describeRpcError = (err: unknown, locale: Locale = 'en'): string => {
+export const describeRpcError = (err: unknown): string => {
   const { code, message } = rpcShape(err)
-  const text = message ?? (typeof err === 'string' && err.trim() ? err : translate(locale, 'messages.requestFailed'))
+  const text = message ?? (typeof err === 'string' && err.trim() ? err : t('rpc.requestFailed'))
 
   if (isVersionSkewError(err)) {
     logReplacedWireText(code, text)
 
-    return VERSION_SKEW_MESSAGE(locale)
+    return versionSkewMessage()
   }
 
   for (const [matcher, render] of RPC_ERROR_ROWS) {
@@ -177,7 +164,7 @@ export const describeRpcError = (err: unknown, locale: Locale = 'en'): string =>
     if (m) {
       logReplacedWireText(code, text)
 
-      return render(m === true ? null : m, locale)
+      return render(m === true ? null : m)
     }
   }
 
@@ -185,21 +172,21 @@ export const describeRpcError = (err: unknown, locale: Locale = 'en'): string =>
 }
 
 /** The slash worker (built-in command helper) failed; name the command, not the helper. */
-export const describeSlashExecError = (command: string, err: unknown, locale: Locale = 'en'): string => {
+export const describeSlashExecError = (command: string, err: unknown): string => {
   const { message } = rpcShape(err)
   const text = message ?? ''
 
   if (/slash worker timed out/.test(text)) {
-    return translate(locale, 'messages.slashTimeout', { command })
+    return t('userMessages.rpc.slashTimedOut', command)
   }
 
   if (/slash worker (?:exited|closed pipe|start failed)/.test(text)) {
-    const detail = detailLine(text.replace(/^slash worker (?:exited|closed pipe:?|start failed:?)\s*/, ''), locale)
+    const detail = detailLine(text.replace(/^slash worker (?:exited|closed pipe:?|start failed:?)\s*/, ''))
 
-    return [translate(locale, 'messages.slashCrashed', { command }), detail].filter(Boolean).join('\n')
+    return [t('userMessages.rpc.slashCrashed', command), detail].filter(Boolean).join('\n')
   }
 
-  return describeRpcError(err, locale)
+  return describeRpcError(err)
 }
 
 // slash.exec answers 4018 with exactly these texts when it does NOT own the
@@ -227,46 +214,37 @@ export const shouldFallbackToDispatch = (err: unknown): boolean => {
 
 // ── Turn failures (message.complete status=error) ─────────────────────────
 
-const TURN_CODE_COPY: Record<string, [TranslationKey, TranslationKey]> = {
-  auth: ['failure.theModelProviderRejectedTheApiKey', 'failure.fixTheKeyWithModelThenRetry'],
-  auth_permanent: ['failure.theModelProviderRejectedTheApiKey', 'failure.fixTheKeyWithModelThenRetry'],
-  billing: ['failure.theModelProviderReportsNoCreditLeft', 'failure.topUpTheAccountOrSwitchWithModel'],
-  billing_unverified: ['failure.theModelProviderReportsNoCreditLeft', 'failure.topUpTheAccountOrSwitchWithModel'],
-  content_policy_blocked: ['failure.theModelProviderRefusedThisRequestContentPolicy', 'failure.rephraseAndSendAgain'],
-  context_overflow: ['failure.theConversationIsTooLongForThisModel', 'failure.runCompressThenRetry'],
-  format_error: ['failure.theModelProviderRejectedTheRequestFormat', 'failure.tryRetryIfItPersistsSwitchWithModel'],
-  model_not_found: ['failure.theModelProviderDoesNotKnowThisModel', 'failure.pickAnotherModelWithModel'],
-  overloaded: ['failure.theModelProviderIsOverloaded', 'failure.waitAMomentThenRetry'],
-  payload_too_large: ['failure.theRequestWasTooLargeForThisModel', 'failure.runCompressThenRetry'],
-  provider_policy_blocked: ['failure.theModelProviderRefusedThisRequestAccountPolicy', 'failure.switchWithModel'],
-  rate_limit: ['failure.theModelProviderIsRateLimitingRequests', 'failure.waitAMomentThenRetry'],
-  server_error: ['failure.theModelProviderHadAnInternalError', 'failure.waitAMomentThenRetry'],
-  ssl_cert_verification: [
-    'failure.theConnectionToTheModelProviderCouldNotBeVerifiedTls',
-    'failure.checkTheEndpointSCertificateThenRetry'
-  ],
-  timeout: ['failure.theModelProviderDidNotAnswerInTime', 'failure.tryRetryIfItKeepsHappeningSwitchWithModel'],
-  upstream_blocked: [
-    'failure.aFirewallCdnInFrontOfTheModelProviderBlockedTheRequest',
-    'failure.setAUserAgentViaTheProviderSExtraHeadersOrSwitchWithModel'
-  ],
-  upstream_rate_limit: ['failure.theModelProviderIsRateLimitingRequests', 'failure.waitAMomentThenRetry']
+type TurnCopy = { hint: string; hintNoRetry?: string; title: string }
+type TurnCopyTable = Record<string, TurnCopy | undefined>
+
+// error_surface.code (snake_case wire values) → catalog leaf under userMessages.turn.code.
+const TURN_CODE_KEY: Record<string, keyof Translations['userMessages']['turn']['code']> = {
+  auth: 'auth',
+  auth_permanent: 'authPermanent',
+  billing: 'billing',
+  billing_unverified: 'billingUnverified',
+  content_policy_blocked: 'contentPolicyBlocked',
+  context_overflow: 'contextOverflow',
+  format_error: 'formatError',
+  model_not_found: 'modelNotFound',
+  overloaded: 'overloaded',
+  payload_too_large: 'payloadTooLarge',
+  provider_policy_blocked: 'providerPolicyBlocked',
+  rate_limit: 'rateLimit',
+  server_error: 'serverError',
+  ssl_cert_verification: 'sslCertVerification',
+  timeout: 'timeout',
+  upstream_blocked: 'upstreamBlocked',
+  upstream_rate_limit: 'upstreamRateLimit'
 }
 
-const TURN_LAYER_COPY: Record<string, [TranslationKey, TranslationKey]> = {
-  auth: ['failure.theModelProviderRejectedTheCredentials', 'failure.fixThemWithModelThenRetry'],
-  billing: ['failure.theModelProviderReportsNoCreditLeft', 'failure.topUpTheAccountOrSwitchWithModel'],
-  disk: ['failure.theDiskIsFullSoHermesCouldNotSaveTheTurn', 'failure.freeSomeSpaceThenRetry'],
-  endpoint: ['failure.yourCustomModelEndpointDidNotAnswer', 'failure.checkTheEndpointIsRunningThenRetry'],
-  gateway: ['failure.hermesHitAnInternalErrorWhileRunningThisTurn', 'failure.sendRetryTypeLogsForTheTrace'],
-  provider: ['failure.theModelProviderReturnedAnError', 'failure.sendRetryOrSwitchWithModel'],
-  streaming: ['failure.theConnectionToTheModelProviderDroppedMidReply', 'failure.sendRetry']
-}
+const turnCopyFor = (code: string, layer: string): TurnCopy => {
+  const turn = messages().userMessages.turn
+  const codeKey = TURN_CODE_KEY[code]
+  const byCode = codeKey ? (turn.code as TurnCopyTable)[codeKey] : undefined
 
-const TURN_DEFAULT_COPY: [TranslationKey, TranslationKey] = [
-  'failure.theRequestFailed',
-  'failure.sendRetryOrSwitchWithModel'
-]
+  return byCode ?? (turn.layer as TurnCopyTable)[layer] ?? turn.fallback
+}
 
 export interface TurnFailure {
   error?: null | string
@@ -275,34 +253,24 @@ export interface TurnFailure {
 }
 
 /** Plain title + dimmed detail + next step for a failed turn with no reply text. */
-export const describeTurnFailure = (payload: TurnFailure, locale: Locale = 'en'): string => {
+export const describeTurnFailure = (payload: TurnFailure): string => {
   const surface = (payload.error_surface ?? {}) as { code?: unknown; layer?: unknown; provider?: unknown }
   const code = typeof surface.code === 'string' ? surface.code : ''
   const layer = typeof surface.layer === 'string' ? surface.layer : ''
-  const provider = typeof surface.provider === 'string' && surface.provider ? ` (${surface.provider})` : ''
-  const [titleKey, hintKey] = TURN_CODE_COPY[code] ?? TURN_LAYER_COPY[layer] ?? TURN_DEFAULT_COPY
+  const copy = turnCopyFor(code, layer)
+
+  const title =
+    typeof surface.provider === 'string' && surface.provider
+      ? t('userMessages.turn.withProvider', copy.title, surface.provider)
+      : copy.title
+
   // The backend always sets recoverable=true on a turn error; error_surface.retryable
   // is the signal that actually says whether /retry can help.
   const retryable = (surface as { retryable?: unknown }).retryable !== false && payload.recoverable !== false
-  const title = translate(locale, titleKey)
-  const nextStep = translate(
-    locale,
-    !retryable &&
-      [
-        'failure.tryRetryIfItPersistsSwitchWithModel',
-        'failure.tryRetryIfItKeepsHappeningSwitchWithModel',
-        'failure.sendRetryTypeLogsForTheTrace',
-        'failure.sendRetryOrSwitchWithModel',
-        'failure.sendRetry'
-      ].includes(hintKey)
-      ? 'failure.pickAnotherModelWithModel'
-      : hintKey
-  )
+  const nextStep = retryable ? copy.hint : (copy.hintNoRetry ?? copy.hint)
   const raw = (payload.error ?? '').replace(/^Error:\s*/, '')
 
-  return [translate(locale, 'messages.unanswered', { title, provider }), detailLine(raw, locale), nextStep]
-    .filter(Boolean)
-    .join('\n')
+  return [t('userMessages.turn.notAnswered', title), detailLine(raw), nextStep].filter(Boolean).join('\n')
 }
 
 /** True when the assistant slot carries nothing but the backend's "Error: …" fallback text. */
@@ -314,34 +282,36 @@ export const isBareErrorText = (text: string, error: null | string | undefined):
 
 // ── Withdrawn password / secret prompts ───────────────────────────────────
 
-const PROMPT_TIMEOUT_COPY: Record<string, TranslationKey> = {
-  secret: 'timeout.secret',
-  sudo: 'timeout.sudo',
-  'vault.code': 'timeout.vault.code',
-  'vault.save_login': 'timeout.vault.save_login',
-  'vault.unlock_prompt': 'timeout.vault.unlock_prompt'
+// server-request method → catalog leaf under userMessages.promptTimeout.
+const PROMPT_TIMEOUT_KEY: Record<string, keyof Translations['userMessages']['promptTimeout']> = {
+  secret: 'secret',
+  sudo: 'sudo',
+  'vault.code': 'vaultCode',
+  'vault.save_login': 'vaultSaveLogin',
+  'vault.unlock_prompt': 'vaultUnlockPrompt'
 }
 
-export const promptTimeoutNotice = (
-  method: string | undefined,
-  reason: string | undefined,
-  locale: Locale = 'en'
-): null | string =>
-  reason === 'timeout' && method && PROMPT_TIMEOUT_COPY[method] ? translate(locale, PROMPT_TIMEOUT_COPY[method]) : null
+export const promptTimeoutNotice = (method: string | undefined, reason: string | undefined): null | string => {
+  const key = reason === 'timeout' && method ? PROMPT_TIMEOUT_KEY[method] : undefined
+
+  return key ? messages().userMessages.promptTimeout[key] : null
+}
 
 // ── session.info warnings ─────────────────────────────────────────────────
 
 const MISSING_KEY_RE = /^No API key configured for provider '([^']*)'/
 
 /** The backend's credential warning names the break; add the fix (/model saves a key in place). */
-export const describeCredentialWarning = (warning: string, locale: Locale = 'en'): string => {
+export const describeCredentialWarning = (warning: string): string => {
   const m = MISSING_KEY_RE.exec(warning)
 
   if (!m) {
     return warning
   }
 
-  const provider = m[1] || translate(locale, 'messages.currentProvider')
-
-  return translate(locale, 'messages.missingKey', { provider })
+  return t('userMessages.credential.missingKey', m[1] || t('userMessages.credential.currentProvider'))
 }
+
+// ── Empty states ──────────────────────────────────────────────────────────
+
+export const noSkillsInstalled = (): string => t('userMessages.skills.noneInstalled')

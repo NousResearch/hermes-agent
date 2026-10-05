@@ -2,7 +2,7 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
-import { useI18n } from '../i18n/index.js'
+import { useT } from '../i18n/useT.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
@@ -42,7 +42,7 @@ const GLYPH: Record<string, string> = {
 }
 
 export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
-  const { t: ti } = useI18n()
+  const { list: L, plugins: T } = useT().hubs
   const [rows, setRows] = useState<PluginRow[]>([])
   const [bundledCount, setBundledCount] = useState(0)
   const [userCount, setUserCount] = useState(0)
@@ -155,14 +155,14 @@ export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
   })
 
   if (loading) {
-    return <Text color={t.color.muted}>{ti('plugins.loading')}</Text>
+    return <Text color={t.color.muted}>{T.loading}</Text>
   }
 
   if (err && !rows.length) {
     return (
       <Box flexDirection="column" width={width}>
-        <Text color={t.color.label}>{ti('common.errorWithMessage', { message: err })}</Text>
-        <OverlayHint t={t}>{ti('common.escQClose')}</OverlayHint>
+        <Text color={t.color.label}>{L.errorLine(err)}</Text>
+        <OverlayHint t={t}>{T.hintClose}</OverlayHint>
       </Box>
     )
   }
@@ -171,24 +171,22 @@ export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
     return (
       <Box flexDirection="column" width={width}>
         <Text bold color={t.color.accent}>
-          {ti('plugins.title')}
+          {T.title}
         </Text>
-        <Text color={t.color.muted}>{ti('plugins.noneInstalled')}</Text>
-        <Text color={t.color.muted}>{ti('plugins.installHint')}</Text>
-        <OverlayHint t={t}>{ti('common.escQClose')}</OverlayHint>
+        <Text color={t.color.muted}>{T.empty}</Text>
+        <Text color={t.color.muted}>{T.installHint}</Text>
+        <OverlayHint t={t}>{T.hintClose}</OverlayHint>
       </Box>
     )
   }
 
   const labels = effectiveRows.map(r => {
-    const status = r.status ?? 'not enabled'
-    const glyph = GLYPH[status] ?? '○'
+    const status = r.status
+    const glyph = (status && GLYPH[status]) ?? '○'
     const ver = r.version ? ` v${r.version}` : ''
-    const src = effectiveScope === 'all' && r.source === 'bundled' ? ti('plugins.bundledTag') : ''
-
-    const statusLabel =
-      status === 'not enabled' ? ti('plugins.notEnabled') : status === 'disabled' ? ti('plugins.disabled') : status
-
+    const src = effectiveScope === 'all' && r.source === 'bundled' ? T.bundledTag : ''
+    // Status values come from the backend; only the known ones get a label.
+    const statusLabel = status == null ? T.status.notEnabled : status === 'disabled' ? T.status.disabled : status
     const state = status === 'enabled' ? '' : ` (${statusLabel})`
 
     return `${glyph} ${r.name}${ver}${src}${state}`
@@ -198,20 +196,17 @@ export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
 
   const scopeLabel =
     effectiveScope === 'user'
-      ? ti('plugins.userScope', {
-          bundled: bundledCount ? ` · ${ti('plugins.bundledAvailable', { count: bundledCount })}` : '',
-          count: userCount
-        })
-      : ti('plugins.allScope', { count: rows.length })
+      ? `${T.userScope(userCount)}${bundledCount ? T.bundledSuffix(bundledCount) : ''}`
+      : T.allScope(rows.length)
 
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.accent}>
-        {ti('plugins.title')}
+        {T.title}
       </Text>
 
       <Text color={t.color.muted}>{scopeLabel}</Text>
-      {offset > 0 && <Text color={t.color.muted}>{ti('sys.moreAbove', { count: offset })}</Text>}
+      {offset > 0 && <Text color={t.color.muted}>{L.moreAbove(offset)}</Text>}
 
       {items.map((row, i) => {
         const lineIdx = offset + i
@@ -231,13 +226,13 @@ export function PluginsHub({ gw, maxWidth, onClose, t }: PluginsHubProps) {
       })}
 
       {offset + VISIBLE < labels.length && (
-        <Text color={t.color.muted}>{ti('sys.moreBelow', { count: labels.length - offset - VISIBLE })}</Text>
+        <Text color={t.color.muted}>{L.moreBelow(labels.length - offset - VISIBLE)}</Text>
       )}
 
-      {err ? <Text color={t.color.label}>{ti('common.errorWithMessage', { message: err })}</Text> : null}
-      {busy ? <Text color={t.color.accent}>{ti('plugins.updating')}</Text> : null}
+      {err ? <Text color={t.color.label}>{L.errorLine(err)}</Text> : null}
+      {busy ? <Text color={t.color.accent}>{T.updating}</Text> : null}
 
-      <OverlayHint t={t}>{ti('plugins.hint')}</OverlayHint>
+      <OverlayHint t={t}>{T.hintList}</OverlayHint>
     </Box>
   )
 }

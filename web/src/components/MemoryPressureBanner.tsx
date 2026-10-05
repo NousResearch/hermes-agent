@@ -1,7 +1,7 @@
-import { useState } from "react";
-import { AlertTriangle, X } from "lucide-react";
-import type { StatusResponse } from "@/lib/api";
-import { useI18n } from "@/i18n";
+import { useState } from 'react'
+import { AlertTriangle, X } from 'lucide-react'
+import type { StatusResponse } from '@/lib/api'
+import { useI18n } from '@/i18n'
 
 /**
  * App-wide warning banner for resource trouble (NS-656): memory pressure
@@ -36,50 +36,41 @@ import { useI18n } from "@/i18n";
  *   again.
  */
 
-const STORAGE_KEY = "memoryBannerDismissed";
-const MEMORY_LIVE_TRIGGERS = ["critical", "elevated"];
-const DISK_LIVE_TRIGGERS = ["disk_critical", "disk_elevated"];
+const STORAGE_KEY = 'memoryBannerDismissed'
+const MEMORY_LIVE_TRIGGERS = ['critical', 'elevated']
+const DISK_LIVE_TRIGGERS = ['disk_critical', 'disk_elevated']
 
 function readDismissed(): string[] {
   try {
-    const parsed: unknown = JSON.parse(
-      sessionStorage.getItem(STORAGE_KEY) ?? "[]",
-    );
+    const parsed: unknown = JSON.parse(sessionStorage.getItem(STORAGE_KEY) ?? '[]')
     // Pre-incident-key builds stored a bare trigger string; JSON.parse
     // throws on those, landing in the catch — a clean reset, not a crash.
-    return Array.isArray(parsed)
-      ? parsed.filter((entry): entry is string => typeof entry === "string")
-      : [];
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string') : []
   } catch {
-    return [];
+    return []
   }
 }
 
 function writeDismissed(entries: string[]) {
   try {
-    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(entries))
   } catch {
     /* ignore */
   }
 }
 
 function entryMatches(triggers: string[]) {
-  return (entry: string) =>
-    triggers.some((sev) => entry === sev || entry.startsWith(`${sev}:`));
+  return (entry: string) => triggers.some(sev => entry === sev || entry.startsWith(`${sev}:`))
 }
 
-export function MemoryPressureBanner({
-  status,
-}: {
-  status: StatusResponse | null;
-}) {
-  const { t } = useI18n();
-  const memory = status?.memory;
-  const disk = status?.disk;
-  const pressure = memory?.pressure;
-  const diskPressure = disk?.pressure;
+export function MemoryPressureBanner({ status }: { status: StatusResponse | null }) {
+  const { t } = useI18n()
+  const memory = status?.memory
+  const disk = status?.disk
+  const pressure = memory?.pressure
+  const diskPressure = disk?.pressure
 
-  const [dismissed, setDismissed] = useState<string[]>(readDismissed);
+  const [dismissed, setDismissed] = useState<string[]>(readDismissed)
 
   // Recovery reset (render-time state adjustment — the sanctioned React
   // pattern for reacting to prop changes without an effect): once a
@@ -90,21 +81,20 @@ export function MemoryPressureBanner({
   // recovers independently: a fixed disk must not un-dismiss a memory
   // warning or vice versa. Cross-boot invalidation doesn't need handling
   // here: boot_id is part of every dismissal key.
-  const [prevPressure, setPrevPressure] = useState(pressure);
-  const [prevDiskPressure, setPrevDiskPressure] = useState(diskPressure);
+  const [prevPressure, setPrevPressure] = useState(pressure)
+  const [prevDiskPressure, setPrevDiskPressure] = useState(diskPressure)
   if (pressure !== prevPressure || diskPressure !== prevDiskPressure) {
-    setPrevPressure(pressure);
-    setPrevDiskPressure(diskPressure);
-    const recovered: Array<(entry: string) => boolean> = [];
-    if (pressure === "ok") recovered.push(entryMatches(MEMORY_LIVE_TRIGGERS));
-    if (diskPressure === "ok") recovered.push(entryMatches(DISK_LIVE_TRIGGERS));
+    setPrevPressure(pressure)
+    setPrevDiskPressure(diskPressure)
+    const recovered: Array<(entry: string) => boolean> = []
+    if (pressure === 'ok') recovered.push(entryMatches(MEMORY_LIVE_TRIGGERS))
+    if (diskPressure === 'ok') recovered.push(entryMatches(DISK_LIVE_TRIGGERS))
     if (recovered.length > 0) {
-      const isRecovered = (entry: string) =>
-        recovered.some((match) => match(entry));
+      const isRecovered = (entry: string) => recovered.some(match => match(entry))
       if (dismissed.some(isRecovered)) {
-        const next = dismissed.filter((entry) => !isRecovered(entry));
-        writeDismissed(next);
-        setDismissed(next);
+        const next = dismissed.filter(entry => !isRecovered(entry))
+        writeDismissed(next)
+        setDismissed(next)
       }
     }
   }
@@ -112,58 +102,50 @@ export function MemoryPressureBanner({
   // Active triggers, worst-first. Disk critical outranks memory critical:
   // imminent data loss beats imminent restart. Dismissal cascades — hiding
   // the top trigger surfaces the next one rather than silencing everything.
-  const activeTriggers: string[] = [];
-  if (diskPressure === "critical") activeTriggers.push("disk_critical");
-  if (memory?.pressure === "critical") activeTriggers.push("critical");
-  if (memory?.last_boot_suspected_oom) activeTriggers.push("oom_restart");
-  if (diskPressure === "elevated") activeTriggers.push("disk_elevated");
-  if (memory?.pressure === "elevated") activeTriggers.push("elevated");
+  const activeTriggers: string[] = []
+  if (diskPressure === 'critical') activeTriggers.push('disk_critical')
+  if (memory?.pressure === 'critical') activeTriggers.push('critical')
+  if (memory?.last_boot_suspected_oom) activeTriggers.push('oom_restart')
+  if (diskPressure === 'elevated') activeTriggers.push('disk_elevated')
+  if (memory?.pressure === 'elevated') activeTriggers.push('elevated')
 
   // Every dismissal is scoped to the reporting boot: `boot_id` changes on
   // each gateway life, so restarts invalidate prior dismissals of ANY kind.
   // A missing boot_id (degraded payload / pre-NS-656 image) degrades to a
   // shared per-severity bucket — old behavior, never a crash.
-  const keyFor = (trig: string) => `${trig}:${memory?.boot_id ?? "unknown"}`;
-  const trigger =
-    activeTriggers.find((trig) => !dismissed.includes(keyFor(trig))) ?? null;
-  const dismissKey = trigger ? keyFor(trigger) : null;
+  const keyFor = (trig: string) => `${trig}:${memory?.boot_id ?? 'unknown'}`
+  const trigger = activeTriggers.find(trig => !dismissed.includes(keyFor(trig))) ?? null
+  const dismissKey = trigger ? keyFor(trigger) : null
 
-  if (!trigger || !dismissKey) return null;
+  if (!trigger || !dismissKey) return null
 
   const dismiss = () => {
-    setDismissed((prev) => {
-      const next = prev.includes(dismissKey) ? prev : [...prev, dismissKey];
-      writeDismissed(next);
-      return next;
-    });
-  };
+    setDismissed(prev => {
+      const next = prev.includes(dismissKey) ? prev : [...prev, dismissKey]
+      writeDismissed(next)
+      return next
+    })
+  }
 
-  const critical = trigger === "critical" || trigger === "disk_critical";
-  const diskFreeLabel =
-    disk?.free_mb != null ? ` (${Math.round(disk.free_mb)} MB free)` : "";
+  const critical = trigger === 'critical' || trigger === 'disk_critical'
+  const diskFreeLabel = disk?.free_mb != null ? ` (${Math.round(disk.free_mb)} MB free)` : ''
   const message =
-    trigger === "disk_critical"
-      ? `${
-          t.app.diskCriticalBanner
-        }${diskFreeLabel}`
-      : trigger === "disk_elevated"
-        ? `${
-            t.app.diskElevatedBanner
-          }${diskFreeLabel}`
-        : trigger === "oom_restart"
-          ? (t.app.memoryOomRestartBanner)
+    trigger === 'disk_critical'
+      ? `${t.app.diskCriticalBanner}${diskFreeLabel}`
+      : trigger === 'disk_elevated'
+        ? `${t.app.diskElevatedBanner}${diskFreeLabel}`
+        : trigger === 'oom_restart'
+          ? t.app.memoryOomRestartBanner
           : critical
-            ? (t.app.memoryCriticalBanner)
-            : (t.app.memoryElevatedBanner);
+            ? t.app.memoryCriticalBanner
+            : t.app.memoryElevatedBanner
 
   return (
     <div
       role="alert"
       data-testid="memory-pressure-banner"
       className={`flex items-center gap-2 border-b px-4 py-1.5 text-xs ${
-        critical
-          ? "border-red-500/40 bg-red-500/10 text-red-300"
-          : "border-amber-500/40 bg-amber-500/10 text-amber-300"
+        critical ? 'border-red-500/40 bg-red-500/10 text-red-300' : 'border-amber-500/40 bg-amber-500/10 text-amber-300'
       }`}
     >
       <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
@@ -177,5 +159,5 @@ export function MemoryPressureBanner({
         <X className="h-3.5 w-3.5" />
       </button>
     </div>
-  );
+  )
 }

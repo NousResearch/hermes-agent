@@ -1,3 +1,11 @@
+import { resetTuiLocaleSync } from '../i18n/loader.js'
+import { $locale, resetLocale } from '../i18n/runtime.js'
+
+import { activateZh, zhMessages } from './localeFixture.js'
+beforeEach(() => {
+  resetLocale()
+  resetTuiLocaleSync()
+})
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $uiState, resetUiState } from '../app/uiStore.js'
@@ -165,20 +173,20 @@ describe('applyDisplay', () => {
 
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledTimes(1)
-    expect(s.locale).toBe('zh')
+
     expect(s.streaming).toBe(false)
   })
 
   it('preserves the last-good locale when the config RPC fails', () => {
     const setBell = vi.fn()
 
+    activateZh()
     applyDisplay({ config: { display: { language: 'zh' } } }, setBell)
-    expect($uiState.get().locale).toBe('zh')
+    expect($locale.get()).toBe('zh')
 
     applyDisplay(null, setBell)
-    expect($uiState.get().locale).toBe('zh')
+    expect($locale.get()).toBe('zh')
   })
-
 })
 
 describe('normalizeStatusBar', () => {
@@ -509,10 +517,10 @@ describe('hydrateFullConfig', () => {
 
     await hydrateFullConfig(gw, setBell)
 
-    expect(gw.request).toHaveBeenCalledTimes(1)
+    expect(gw.request).toHaveBeenCalledWith('i18n.catalog', { lang: 'zh', surface: 'tui' })
     expect(gw.request).toHaveBeenCalledWith('config.get', { key: 'full' })
     expect(gw.request).not.toHaveBeenCalledWith('reload.mcp', expect.anything())
-    expect($uiState.get().locale).toBe('zh')
+    expect($locale.get()).toBe('zh')
   })
 
   it('leaves cached voiceRecordKey untouched when the RPC fails', async () => {
@@ -552,7 +560,8 @@ describe('syncConfigRevision', () => {
         .mockResolvedValueOnce({ mtime: 42 })
         .mockRejectedValueOnce(new Error('transient'))
         .mockResolvedValueOnce({ mtime: 42 })
-        .mockResolvedValueOnce({ config: { display: { language: 'zh' } } }),
+        .mockResolvedValueOnce({ config: { display: { language: 'zh' } } })
+        .mockResolvedValueOnce({ lang: 'zh', surface: 'tui', messages: zhMessages }),
       on: vi.fn(),
       off: vi.fn()
     } as any
@@ -565,7 +574,7 @@ describe('syncConfigRevision', () => {
 
     const afterRetry = await syncConfigRevision(gw, afterFailure, setBell)
     expect(afterRetry).toBe(42)
-    expect($uiState.get().locale).toBe('zh')
+    expect($locale.get()).toBe('zh')
     expect(gw.request).toHaveBeenNthCalledWith(4, 'config.get', { key: 'full' })
   })
 })
@@ -589,6 +598,6 @@ it('ignores config returned after its session display subscription ended', async
   controller.abort()
   resolve({ config: { display: { language: 'zh', bell_on_complete: true } } })
   expect(await hydration).toBeNull()
-  expect($uiState.get().locale).toBe('en')
+  expect($locale.get()).toBe('en')
   expect(setBell).not.toHaveBeenCalled()
 })

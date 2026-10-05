@@ -14,7 +14,6 @@ import type {
   SubscriptionUpgradeResponse
 } from '../gatewayTypes.js'
 import type { QueueItem } from '../hooks/useQueue.js'
-import type { Locale } from '../i18n/index.js'
 import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { ActiveWidget } from '../sdk/types.js'
@@ -342,7 +341,6 @@ export interface UiState {
   info: null | SessionInfo
   liveSessionCount: number
   inlineDiffs: boolean
-  locale: Locale
   mouseTracking: MouseTrackingMode
   notice: Notice | null
   pasteCollapseLines: number
@@ -445,8 +443,8 @@ export interface UseComposerStateResult {
 }
 
 export interface InputHandlerActions {
-  answerClarify: (answer: string) => void
   appendMessage: (msg: Msg) => void
+  cancelClarify: () => void
   die: () => void
   dispatchSubmission: (full: string) => void
   guardBusySessionSwitch: (what?: string) => boolean
@@ -574,11 +572,11 @@ export interface SlashHandlerContext {
 
 export interface AppLayoutActions {
   answerApproval: (choice: string) => void
-  answerClarify: (answer: string) => void
   answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   answerVaultUnlock: (password: string) => void
+  cancelClarify: () => void
   clearSelection: () => void
   activateLiveSession: (id: string) => void
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
@@ -619,10 +617,7 @@ export interface AppLayoutStatusProps {
   statusColor: string
   stickyPrompt: string
   turnStartedAt: null | number
-  voiceRecording: boolean
-  voiceProcessing: boolean
-  voiceEnabled: boolean
-  voiceTts: boolean
+  voiceLabel: string
 }
 
 export interface AppLayoutTranscriptProps {
@@ -646,7 +641,7 @@ export interface AppOverlaysProps {
   compIdx: number
   completions: CompletionItem[]
   onApprovalChoice: (choice: string) => void
-  onClarifyAnswer: (value: string) => void
+  onClarifyCancel: () => void
   onClarifyQuestionAnswer: (qid: string, value: string) => void
   onActiveSessionSelect: (sessionId: string) => void
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>

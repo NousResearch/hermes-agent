@@ -3,8 +3,8 @@ import { useStore } from '@nanostores/react'
 import { Component, type ReactNode } from 'react'
 
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
-import { $uiTheme, getUiState } from '../app/uiStore.js'
-import { translate } from '../i18n/index.js'
+import { $uiTheme } from '../app/uiStore.js'
+import { getLocale, t as tr } from '../i18n/index.js'
 import { recordParentLifecycle } from '../lib/parentLog.js'
 
 import { getWidgetApp, widgetUsage } from './registry.js'
@@ -46,7 +46,7 @@ export function launchWidget(id: string, arg = ''): null | string {
   const app = getWidgetApp(id)
 
   if (!app) {
-    return translate(getUiState().locale, 'widget.unknownApp', { id })
+    return tr('widget.unknownApp', id)
   }
 
   if (isAmbient(app)) {
@@ -62,7 +62,7 @@ export function launchWidget(id: string, arg = ''): null | string {
   const state = app.init(arg)
 
   if (state === null) {
-    return widgetUsage(app, getUiState().locale)
+    return widgetUsage(app, getLocale())
   }
 
   place(app, state)

@@ -1,4 +1,3 @@
-"""Plural Firecrawl credentials participate in the existing secret configuration boundary."""
 import pytest
 
 

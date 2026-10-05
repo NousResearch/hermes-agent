@@ -1,4 +1,3 @@
-"""Compatibility and simultaneous first-use contracts for the optional Firecrawl pool."""
 import asyncio
 from types import SimpleNamespace
 

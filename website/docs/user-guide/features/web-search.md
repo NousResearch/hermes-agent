@@ -124,55 +124,26 @@ FIRECRAWL_API_KEY=fc-your-key-here
 
 Get a key at [firecrawl.dev](https://firecrawl.dev). The free tier includes 500 credits/month.
 
-#### Ordered API key failover (search and extract)
+#### API key failover
 
-Configure any number of keys as a **JSON array** in the active profile's secret `.env`,
-not in `config.yaml`:
-
-```bash
-# ~/.hermes/.env (or $HERMES_HOME/.env for a profile)
-FIRECRAWL_API_KEYS='["fc-primary", "fc-backup", "fc-another-backup"]'
-```
-
-The existing config command also writes this secret to the profile's `.env` and masks it
-on normal `get` output (avoid putting real secrets in shared shell history):
+Set `FIRECRAWL_API_KEYS` to a JSON array in the profile's `.env`, or use:
 
 ```bash
 hermes config set FIRECRAWL_API_KEYS '["fc-primary", "fc-backup"]'
-hermes config get FIRECRAWL_API_KEYS
-hermes config unset FIRECRAWL_API_KEYS
 ```
 
-- A non-empty plural array **replaces** `FIRECRAWL_API_KEY` for web search/extract; the
-  singular key is not implicitly appended. With plural unset, blank, or `[]`, the legacy
-  single-key/self-hosted configuration remains available. Elements must be non-empty strings;
-  surrounding whitespace is stripped, duplicates are removed while preserving first occurrence.
-  Malformed JSON or invalid elements return a configuration error without echoing credentials.
-- Keys are tried in array order. Only an **API HTTP 402** (payment required / insufficient
-  credits) skips a key and retries the same search or scrape with the next one. There is no
-  rotation on 401, 403, 429, timeouts, network/server errors, or payment-related text inside
-  a page. In particular, 403 may mean a blocked website or missing data terms, and 429 normally
-  means rate/concurrency limits—not an empty credit balance. See [Firecrawl's error catalog](https://docs.firecrawl.dev/api-reference/errors).
-- Each distinct key is attempted at most once per operation; SDK retries are disabled in pool
-  mode. Calls sharing a pool are serialized for thread safety. Once a key works, subsequent
-  search/extract calls keep using it. Keys that returned 402 remain skipped in that process;
-  if all are exhausted, later calls fail immediately without another request.
-- State is **in memory, per profile and effective ordered key list/endpoint**. Profiles remain
-  independent even if they use identical keys. Restart Hermes after topping up credits to reset
-  exhaustion, or change the effective list/order/endpoint. No background re-probe or cross-process
-  sharing occurs. Running calls retain their configuration snapshot. A changed credential/endpoint
-  configuration also gets a fresh Firecrawl result-cache namespace.
-- A configured pool never silently downgrades a failed call to the anonymous keyless rescue
-  ring or the Nous gateway. An explicitly selected **Nous Subscription** still uses only its
-  own managed token and ignores the direct key pool. Other explicitly selected web providers
-  retain their normal routing; a pool participates in the usual credential autodetection order.
+There is no key-count limit. A nonempty list replaces `FIRECRAWL_API_KEY` for
+`web_search` and `web_extract`. Empty or unset lists use the existing configuration.
+Keys must be nonempty strings; whitespace and duplicates are removed.
 
-**Scope:** this pool covers the Firecrawl web plugin used by `web_search` and `web_extract`
-(`search` and `scrape`). Firecrawl cloud **browser sessions** and `read_file` **hosted OCR/Parse**
-are separate integrations and still use only `FIRECRAWL_API_KEY`; they do not rotate or inherit
-plural keys. Stateful browser sessions must stay bound to their creating credential.
-Existing single-key self-hosted and managed-gateway behavior is unchanged. An explicit pool
-uses the configured `FIRECRAWL_API_URL` for every key, so only put keys for that endpoint in it.
+HTTP 402 retries the request with the next key. Other errors do not switch keys.
+The working key is reused; exhausted keys are skipped until restart or a change to
+the list/order/endpoint. After topping up credits, restart Hermes. Each process
+tracks exhaustion separately for each profile; requests within a pool are serialized.
+
+All keys use `FIRECRAWL_API_URL` when set. Explicit Nous routing is unchanged;
+a failed pool does not fall back to anonymous access. Browser sessions and hosted
+OCR/Parse still use `FIRECRAWL_API_KEY` only.
 
 **Self-hosted Firecrawl:** Point at your own instance instead of the cloud API:
 

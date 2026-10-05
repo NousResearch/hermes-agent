@@ -117,7 +117,7 @@ class SearchMemo:
         if not cache_enabled() or not isinstance(response, dict) or not response.get("success"):
             return
         if namespace is not None and namespace != _credential_namespace(provider):
-            return  # Credentials changed during the paid request; do not cache its response.
+            return
         key = self._key(provider, query, limit, namespace)
         with self._store_lock:
             now = time.monotonic()  # opportunistic expiry sweep bounds memory
@@ -301,7 +301,7 @@ def extract_cache_put(
     if not content or not _cacheable(url):
         return
     if namespace is not None and namespace != _credential_namespace(provider):
-        return  # Never publish an old-account response under newly edited credentials.
+        return
     try:
         from tools.web_tools_truncate import MAX_STORED_TEXT_CHARS
         namespace = _credential_namespace(provider) if namespace is None else namespace

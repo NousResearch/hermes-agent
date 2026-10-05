@@ -1,4 +1,3 @@
-"""Ordered credential failover contracts; HTTP fixtures are not live billing verification."""
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor

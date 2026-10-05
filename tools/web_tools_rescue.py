@@ -60,7 +60,6 @@ def _rescue_eligible(provider) -> bool:
         from plugins.web.firecrawl.key_pool import key_pool_configured
         from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
         if read_selection("web") != NOUS_MANAGED_PROVIDER and key_pool_configured():
-            # An explicit key pool opts into credential failover, not anonymous vendor routing.
             return False
     try:
         from plugins.web.keyless_mcp import _KEYLESS_RING

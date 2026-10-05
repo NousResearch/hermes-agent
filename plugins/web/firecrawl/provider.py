@@ -1,8 +1,7 @@
 """Firecrawl web search + extract provider (direct SDK, keyless cloud, or Nous tool-gateway).
 
 Config: ``web.backend`` / ``web.search_backend`` / ``web.extract_backend: firecrawl``.
-Env: FIRECRAWL_API_KEY / FIRECRAWL_API_KEYS (JSON array), FIRECRAWL_API_URL (self-hosted),
-FIRECRAWL_GATEWAY_URL / TOOL_GATEWAY_*.
+Env: FIRECRAWL_API_KEY, FIRECRAWL_API_URL (self-hosted), FIRECRAWL_GATEWAY_URL / TOOL_GATEWAY_*.
 """
 
 from __future__ import annotations
@@ -29,7 +28,6 @@ _FIRECRAWL_CLOUD_API_URL = "https://api.firecrawl.dev"
 # The SDK costs ~200ms of imports on a cold CLI; defer to first use (tests patch ``Firecrawl`` here).
 _FIRECRAWL_CLS_CACHE: Optional[type] = None
 _CLIENT_LOCK = threading.Lock()
-# One current pool per profile: changing its ordered keys or endpoint drops stale exhaustion state.
 _KEY_POOLS: dict = {}
 
 
@@ -73,9 +71,6 @@ def _env(name: str) -> str:
 
 
 def _get_direct_firecrawl_config() -> Optional[tuple[str, Dict[str, Any], tuple]]:
-    """Direct ``(mode, kwargs, cache_key)`` or None: ``pool`` (ordered keys), ``sdk``
-    (legacy key / self-hosted), or ``keyless`` (explicit selection + no credentials).
-    Explicit selection is required so an unconfigured install never silently routes to cloud."""
     api_url = _env("FIRECRAWL_API_URL").rstrip("/")
     keys = configured_key_pool()
     if keys:
@@ -157,7 +152,6 @@ def _get_firecrawl_client() -> Any:
     wt = _wt()
     from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_error
     selected = read_selection("web")
-    # Explicit Nous selection must not parse or use unrelated direct credentials.
     direct_config = None if selected == NOUS_MANAGED_PROVIDER else _get_direct_firecrawl_config()
 
     def _managed() -> Optional[tuple[str, Dict[str, Any], tuple]]:

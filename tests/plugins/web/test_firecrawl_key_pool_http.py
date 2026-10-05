@@ -1,4 +1,3 @@
-"""Real plugin/SDK over loopback HTTP: synthetic API responses, no live subscriptions."""
 import asyncio
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -157,7 +156,7 @@ def test_cache_identity_survives_inflight_key_edit(api, tmp_path, monkeypatch, o
     assert invoke() == "Bearer new-account"
     count = len(calls)
     assert invoke() == "Bearer new-account"
-    assert len(calls) == count  # Unchanged config still caches.
+    assert len(calls) == count
     set_key("old-account")
     assert invoke() == "Bearer old-account"
     assert {c[0] for c in calls} == {"Bearer old-account", "Bearer new-account"}
@@ -168,7 +167,6 @@ def test_all_keys_tried_once_then_no_network_and_no_rescue(api, tmp_path, monkey
     url, calls = api
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("web:\n  backend: firecrawl\n  cache_enabled: false\n")
-    # No hard pool size limit; duplicates must not cause another billed attempt.
     keys = [f"key-{i}-empty" for i in range(40)]
     monkeypatch.setenv("FIRECRAWL_API_KEYS", json.dumps(keys + keys))
     monkeypatch.setenv("FIRECRAWL_API_URL", url)

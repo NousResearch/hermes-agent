@@ -218,9 +218,6 @@ _PREFIX_PATTERNS = [
 # and a bare ``password=…`` in a form body must not be swallowed greedily by ``\S+``. See #77484.
 _SECRET_ENV_NAMES = r"(?:API_?KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS|PW|CREDENTIAL|AUTH)"
 _ENV_ASSIGN_RE = re.compile(rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2")
-# A serialized credential list is ONE secret field, not a whitespace-delimited token.
-# Consume quoted JSON/.env/Python-repr strings (including escaped quotes), or a raw
-# array spanning lines. Mask before scalar passes so later list members cannot escape.
 _QUOTED_SECRET_LIST_VALUE = r'''(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')'''
 _FIRECRAWL_KEYS_FIELD_RE = re.compile(
     r'''((?<![\w])["']?FIRECRAWL_API_KEYS["']?\s*[:=]\s*)'''

@@ -2783,7 +2783,7 @@ export const ko = defineLocale({
       },
       TELEGRAM_ALLOWED_USERS: {
         label: '허용된 Telegram 사용자 ID',
-        help: '권장. @userinfobot에서 받은 숫자 ID를 쉼표로 구분합니다. 설정하지 않으면 누구나 봇에 DM할 수 있습니다.'
+        help: '권장. @userinfobot에서 받은 숫자 ID를 한 칸에 하나씩 입력하세요. 비워 두면 누구나 봇에 DM을 보낼 수 있습니다.'
       },
       TELEGRAM_PROXY: {
         label: '프록시 URL',
@@ -2795,7 +2795,7 @@ export const ko = defineLocale({
       },
       DISCORD_ALLOWED_USERS: {
         label: '허용된 Discord 사용자 ID',
-        help: '권장. 쉼표로 구분된 Discord 사용자 ID.'
+        help: '권장. Discord 사용자 ID를 한 칸에 하나씩 입력하세요.'
       },
       DISCORD_REPLY_TO_MODE: {
         label: '답글 스타일',
@@ -2845,7 +2845,7 @@ export const ko = defineLocale({
       },
       SLACK_ALLOWED_USERS: {
         label: '허용된 Slack 사용자 ID',
-        help: '권장. 쉼표로 구분된 Slack 사용자 ID.'
+        help: '권장. Slack 사용자 ID를 한 칸에 하나씩 입력하세요.'
       },
       MATTERMOST_URL: {
         label: '서버 URL',
@@ -2856,7 +2856,7 @@ export const ko = defineLocale({
       },
       MATTERMOST_ALLOWED_USERS: {
         label: '허용된 사용자 ID',
-        help: '권장. 쉼표로 구분된 Mattermost 사용자 ID.'
+        help: '권장. Mattermost 사용자 ID를 한 칸에 하나씩 입력하세요.'
       },
       MATRIX_HOMESERVER: {
         label: '홈서버 URL',
@@ -2871,7 +2871,7 @@ export const ko = defineLocale({
       },
       MATRIX_ALLOWED_USERS: {
         label: '허용된 Matrix 사용자 ID',
-        help: '권장. @user:server 형식의 사용자 ID를 쉼표로 구분.'
+        help: '권장. @user:server 형식의 사용자 ID를 한 칸에 하나씩 입력하세요.'
       },
       SIGNAL_HTTP_URL: {
         label: 'Signal 브리지 URL',
@@ -2884,7 +2884,7 @@ export const ko = defineLocale({
       },
       SIGNAL_ALLOWED_USERS: {
         label: '허용된 Signal 사용자',
-        help: '권장. 쉼표로 구분된 Signal 식별자.'
+        help: '권장. Signal 식별자를 한 칸에 하나씩 입력하세요.'
       },
       WHATSAPP_ENABLED: {
         label: 'WhatsApp 브리지 활성화',
@@ -2895,7 +2895,7 @@ export const ko = defineLocale({
       },
       WHATSAPP_ALLOWED_USERS: {
         label: '허용된 WhatsApp 사용자',
-        help: '권장. 쉼표로 구분된 전화번호 또는 WhatsApp ID.'
+        help: '권장. 전화번호 또는 WhatsApp ID를 한 칸에 하나씩 입력하세요.'
       }
     },
     platformIntro: {},

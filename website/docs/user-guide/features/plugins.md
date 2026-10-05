@@ -203,7 +203,12 @@ Hermes checks out the commit detached, verifies that `HEAD` exactly matches the
 requested SHA, and records the canonical source, installed revision, and pin
 status in the current profile. `hermes plugins update` refuses to move a pinned
 plugin; choose a new exact commit explicitly with
-`hermes plugins install <source> --force --ref <new-commit>`. The
+`hermes plugins install <source> --force --ref <new-commit>`. Like an
+update, a forced reinstall from the source the plugin was installed from
+replaces its code but keeps your files: untracked and git-ignored files stay in
+place, and edits to tracked files are copied to
+`~/.hermes/plugins-backup/<name>-<sha>/`. A reinstall from a different source
+starts clean; to reset a plugin completely, `hermes plugins remove` it first. The
 profile-local install metadata contains no config values, environment values,
 secrets, or capability grants.
 
@@ -322,7 +327,7 @@ Plugins can register the 27 lifecycle events currently accepted by `hermes_cli.p
 |---|---|
 | **Directive/control** | `pre_tool_call`, `pre_llm_call`, `pre_verify`, `pre_gateway_dispatch` |
 | **Transform** | `transform_tool_result`, `transform_terminal_output`, `transform_llm_output`, `pre_transcription` |
-| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `pre_auxiliary_call`, `post_auxiliary_call`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `agent_loop_stopped`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `pre_command`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
+| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `pre_auxiliary_call`, `post_auxiliary_call`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `agent_loop_stopped`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `on_human_input_request`, `on_human_input_resolved`, `pre_command`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
 
 These categories describe current behavior rather than defining future naming rules. Plugin middleware remains a separate registry/surface.
 ## Plugin types
@@ -787,6 +792,57 @@ Scanning is on by default; disable it in `config.yaml`:
 plugins:
   scan_on_install: false
 ```
+
+### Running plugins out of process (`plugins.isolation`)
+
+By default third-party Python plugins are imported into the Hermes process, as they always have been.
+Setting `plugins.isolation: host` moves them into a **plugin host**: one separate Python process per
+profile, started on demand, that imports the profile's user-installed plugins and talks to Hermes over a
+private pipe.
+
+```yaml
+plugins:
+  isolation: host        # default: in_process
+  host:
+    launcher: []         # optional argv prefix for the host, e.g. a sandbox runner
+```
+
+Plugins do not change. They receive the same `ctx` and register tools, hooks, slash commands, skills and
+provider objects (image/video generation, web search, browser, TTS/STT, memory, context engines,
+model-provider profiles) exactly as before; Hermes registers matching entries on its side that call into
+the host. Dashboard plugin APIs are served by the host too. Bundled plugins keep running in-process.
+
+What changes in `host` mode:
+
+- **No shared interpreter.** A plugin's module never enters the Hermes process, so it cannot read
+  another profile's data from memory or patch Hermes internals. Under the multiplex gateway every
+  profile gets its own host, started with only that profile's environment and secrets.
+- **Crashes stay contained.** A plugin that crashes or exits kills its host, not Hermes; the call in
+  flight returns a tool error and Hermes restarts the host and reloads its plugins (bounded retries).
+- **A few surfaces need in-process code** and fail that plugin with a clear reason instead of loading:
+  gateway platform adapters (`register_platform`), approval transports, Telegram/platform handlers,
+  model-provider profiles that build their own SDK client (`create_client`), streaming dashboard
+  endpoints, and plugins that monkeypatch Hermes modules. Run those with `isolation: in_process`.
+
+**Locking it for a shared deployment.** `plugins.isolation` is ordinary profile config, so whoever can
+edit a profile's `config.yaml` can turn it off. When the profiles belong to people you are isolating from
+each other, pin it in the [managed scope](../managed-scope.md) instead; the managed value wins over every
+profile's own config and `hermes config set` refuses to change it:
+
+```yaml
+# /etc/hermes/config.yaml (root-owned, read by every profile on the machine)
+plugins:
+  isolation: host
+  host:
+    launcher: [...]      # pin the sandbox runner too, if you use one
+```
+
+Run the agents' terminal on an isolated backend (Docker, SSH, ...) as well, so the agent itself cannot
+reach the operator's files.
+
+`hermes plugins validate <dir>` and `hermes plugins show <name>` report whether a plugin runs in the host
+and, if not, why. Across the plugin catalog at the time of writing, 299 of 348 entries run in the host
+unchanged.
 
 ### Interactive UI
 

@@ -75,6 +75,7 @@ export function ModelOverrideField({
   const [open, setOpen] = useState(false)
 
   const controller: ModelMenuController = {
+    allowSpeed: false,
     // Picking a model seeds the depth from what the user last used for it, so
     // the board behaves like the composer. We only READ presets — a per-task
     // choice must never rewrite what the composer opens at.

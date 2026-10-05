@@ -186,7 +186,7 @@ export default {
 
           for (const profile of offered) {
             const handle = botHandle(profile.name, profile)
-            const display = displayName(profile, $botMeta.get()[profile.name])
+            const display = displayName(profile, botRosterMeta(profile, $botMeta.get()))
             // Renamed bots complete on their friendly name — the tag is the
             // renamed slug when one exists, the profile handle otherwise.
             const tag = botMentionTag(profile)

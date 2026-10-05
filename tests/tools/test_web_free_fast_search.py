@@ -1,8 +1,7 @@
-"""Free managed Perplexity fast search for a REGISTERED Nous Portal identity with no usable credits
-and no tool pool. The gateway serves ``POST /search`` + ``search_type: "fast"`` without funding
-checks, so the local paid-tool gate must not block this one route while every other managed vendor
-keeps it. The anonymous guest tier is excluded — it has no Portal account behind it, so it keeps the
-keyless ring. Real config, real auth store, real selection-to-provider dispatch over local HTTP."""
+"""Free managed Perplexity fast search for any Nous identity: anonymous guest, or signed in with no
+usable credits and no tool pool. The gateway serves ``POST /search`` + ``search_type: "fast"`` without
+funding checks, so the local paid-tool gate must not block this one route while every other managed
+vendor keeps it. Real config, real auth store, real selection-to-provider dispatch over local HTTP."""
 
 import base64
 import json
@@ -18,13 +17,12 @@ ANON = {"sub": "anon-1", "account_tier": "anonymous", "paid_access": False}
 EXHAUSTED = {"sub": "user-1", "paid_access": False, "tool_access": {"enabled": False, "coverage": {}}}
 
 
-def _nous_state(claims: dict, auth_method: str, exp_offset: int = 3600) -> dict:
+def _nous_state(claims: dict, auth_method: str) -> dict:
     def seg(obj):
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
-    token = f"{seg({'alg': 'none'})}.{seg({**claims, 'exp': int(time.time()) + exp_offset})}.sig"
+    token = f"{seg({'alg': 'none'})}.{seg({**claims, 'exp': int(time.time()) + 3600})}.sig"
     state = {"auth_method": auth_method, "access_token": token, "expires_at": "2099-01-01T00:00:00Z"}
-    # anon_auth persists the tier alongside the token, and it is what survives a failed lookup
-    # (the JWT claim is unreachable once the token is inside its refresh window).
+    # anon_auth persists the tier alongside the token.
     if claims.get("account_tier"):
         state["account_tier"] = claims["account_tier"]
     return state
@@ -96,13 +94,18 @@ def _calls(log):
     return [(path, headers["Authorization"], body.get("search_type")) for path, headers, body in log]
 
 
-def test_zero_credit_portal_identity_autodetects_free_fast_search(monkeypatch, tmp_path, gateway_server):
+@pytest.mark.parametrize("state", [_nous_state(ANON, "anonymous"), _nous_state(EXHAUSTED, "oauth")])
+def test_unentitled_nous_identity_autodetects_free_fast_search(monkeypatch, tmp_path, gateway_server, state):
+    """Guests are the users this route exists for: an anonymous identity and a zero-credit account
+    both reach the gateway, while the paid gate stays closed for extract and every other vendor."""
+    from hermes_cli.nous_account import get_nous_portal_account_info
     from tools import web_tools
     from tools.tool_backend_helpers import managed_nous_tools_enabled
 
-    state = _nous_state(EXHAUSTED, "oauth")
     _write_home(tmp_path / "home", monkeypatch, nous_state=state)
-    # Premise: the paid-tool gate is closed for this identity and stays closed for extract.
+    # Premise: the guest case really reads as the anonymous tier, and the paid-tool gate is closed
+    # for this identity and stays closed for extract.
+    assert get_nous_portal_account_info().is_anonymous_tier is (state["auth_method"] == "anonymous")
     assert managed_nous_tools_enabled() is False
     assert web_tools.check_firecrawl_api_key() is False
     assert web_tools._get_extract_backend() != "perplexity"
@@ -113,88 +116,10 @@ def test_zero_credit_portal_identity_autodetects_free_fast_search(monkeypatch, t
     assert _calls(gateway_server) == [("/perplexity/search", f"Bearer {state['access_token']}", "fast")]
 
 
-def test_anonymous_guest_keeps_the_keyless_ring(monkeypatch, tmp_path, gateway_server):
-    """The guest tier holds a usable Nous token, so the exclusion must come from the tier itself."""
-    from tools import web_tools
-    from tools.managed_tool_gateway import peek_nous_access_token, resolve_free_search_gateway
-    from tools.tool_backend_helpers import fast_search_entitled
-
-    _write_home(tmp_path / "home", monkeypatch, nous_state=_nous_state(ANON, "anonymous"))
-    # Premise: a token IS present — anonymous is refused by entitlement, not by a missing credential.
-    assert peek_nous_access_token()
-    assert fast_search_entitled() is False
-    assert resolve_free_search_gateway(token_reader=peek_nous_access_token) is None
-
-    assert web_tools._managed_web_search() is False
-    assert web_tools._get_search_backend() != "perplexity"
-
-
-@pytest.mark.parametrize("tier", ["anonymous", "Anonymous", "ANONYMOUS", " anonymous "])
-def test_anonymous_tier_is_matched_case_and_whitespace_insensitively(monkeypatch, tmp_path, gateway_server, tier):
-    """The tier claim arrives verbatim from the JWT or account payload; casing must never promote
-    the guest tier to the registered route."""
-    from tools.managed_tool_gateway import peek_nous_access_token, resolve_free_search_gateway
-    from tools.tool_backend_helpers import fast_search_entitled
-
-    _write_home(tmp_path / "home", monkeypatch,
-                nous_state=_nous_state({**ANON, "account_tier": tier}, "anonymous"))
-
-    assert fast_search_entitled() is False
-    assert resolve_free_search_gateway(token_reader=peek_nous_access_token) is None
-
-
-def test_degraded_portal_lookup_does_not_grant_free_fast_search(monkeypatch, tmp_path, gateway_server):
-    """A token inside the JWT freshness window drops to the account API; when that lookup fails the
-    snapshot is still stamped ``logged_in=True``, so entitlement must key on the error, not on
-    ``logged_in`` alone."""
-    from hermes_cli.nous_account import get_nous_portal_account_info
-    from tools.tool_backend_helpers import fast_search_entitled
-
-    state = _nous_state(EXHAUSTED, "oauth", exp_offset=30)
-    state["portal_base_url"] = "http://127.0.0.1:9"  # closed port: the lookup cannot succeed
-    _write_home(tmp_path / "home", monkeypatch, nous_state=state)
-
-    info = get_nous_portal_account_info()
-    # Premise: the degraded snapshot claims a login, so `logged_in` alone would have granted it.
-    assert info.logged_in is True and info.error is not None
-    assert fast_search_entitled() is False
-
-
-def test_guest_on_a_stored_nous_selection_is_told_it_needs_an_account(monkeypatch, tmp_path, gateway_server):
-    """A guest holds a real Nous identity, so the refusal must not claim it has none."""
-    _write_home(tmp_path / "home", monkeypatch, nous_state=_nous_state(ANON, "anonymous"),
-                config={"web": {"backend": "nous", "keyless_rescue": False}})
-
-    result = _search()
-
-    assert result["success"] is False
-    assert "needs a Nous account" in result["error"]
-    assert "no Nous identity" not in result["error"]
-
-
-def test_guest_whose_lookup_fails_is_still_told_it_needs_an_account(monkeypatch, tmp_path, gateway_server):
-    """A failed lookup must not make a guest look like a registered identity in the refusal."""
-    from hermes_cli.nous_account import get_nous_portal_account_info
-
-    state = _nous_state(ANON, "anonymous", exp_offset=30)
-    state["portal_base_url"] = "http://127.0.0.1:9"  # closed port: the lookup cannot succeed
-    _write_home(tmp_path / "home", monkeypatch, nous_state=state,
-                config={"web": {"backend": "nous", "keyless_rescue": False}})
-
-    info = get_nous_portal_account_info()
-    # Premise: the snapshot carries the error AND the tier it could not re-read.
-    assert info.error is not None and info.is_anonymous_tier is True
-
-    result = _search()
-
-    assert result["success"] is False
-    assert "needs a Nous account" in result["error"]
-
-
 def test_free_fast_search_failure_skips_paid_firecrawl_but_keeps_keyless_rescue(monkeypatch, tmp_path, gateway_server):
     from plugins.web import keyless_mcp
 
-    state = _nous_state(EXHAUSTED, "oauth")
+    state = _nous_state(ANON, "anonymous")
     _write_home(tmp_path / "home", monkeypatch, nous_state=state, config={"web": {"keyless_rescue": True}})
     monkeypatch.setenv("PERPLEXITY_GATEWAY_URL", gateway_server.base + "/down")
     rescued = {"success": True, "data": {"web": [{"title": "ring", "url": "https://ring.test", "description": "", "position": 1}]}}

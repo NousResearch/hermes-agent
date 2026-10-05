@@ -11391,7 +11391,10 @@
           "last_delivery_unverified": {
             "anyOf": [
               {
-                "type": "boolean"
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
@@ -18443,6 +18446,18 @@
             "default": null,
             "title": "Response Previewed"
           },
+          "response_reused": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Response Reused"
+          },
           "response_transformed": {
             "anyOf": [
               {
@@ -18880,6 +18895,11 @@
             "title": "Fast",
             "type": "boolean"
           },
+          "ultrafast": {
+            "default": false,
+            "title": "Ultrafast",
+            "type": "boolean"
+          },
           "reasoning": {
             "title": "Reasoning",
             "type": "boolean"
@@ -19203,6 +19223,28 @@
             ],
             "default": null,
             "title": "Unavailable Models"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderLimit"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderUsage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -21964,6 +22006,7 @@
           "no_interactive_session",
           "version_too_old",
           "missing_app",
+          "unsupported_gpu",
           "unknown"
         ],
         "title": "PluginServerState",
@@ -24434,7 +24477,7 @@
       },
       "ProfilesListResult": {
         "additionalProperties": false,
-        "description": "``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself.",
+        "description": "``bot_mode_protocol`` tells clients this backend injects the teammate protocol itself;\n``install_id`` (as on ``/api/status``) names the machine that answered.",
         "properties": {
           "profiles": {
             "items": {
@@ -24447,6 +24490,11 @@
             "default": true,
             "title": "Bot Mode Protocol",
             "type": "boolean"
+          },
+          "install_id": {
+            "default": "",
+            "title": "Install Id",
+            "type": "string"
           }
         },
         "title": "ProfilesListResult",
@@ -26442,6 +26490,102 @@
         ],
         "title": "PromptSubmitStatus",
         "type": "string"
+      },
+      "ProviderLimit": {
+        "additionalProperties": false,
+        "description": "``hermes_cli/inventory.py::_apply_limits`` \u2014 ``account``: the whole login is rate-limited until\n``resets_at`` (ISO, absent when unknown); ``models``: only these models are, each until its time.",
+        "properties": {
+          "scope": {
+            "enum": [
+              "account",
+              "models"
+            ],
+            "title": "Scope",
+            "type": "string"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resets At"
+          },
+          "models": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Models"
+          }
+        },
+        "required": [
+          "scope"
+        ],
+        "title": "ProviderLimit",
+        "type": "object"
+      },
+      "ProviderUsage": {
+        "additionalProperties": false,
+        "description": "``hermes_cli/inventory.py::_apply_usage`` \u2014 the provider's account usage windows, from cache.",
+        "properties": {
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderUsageWindow"
+            },
+            "title": "Windows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "windows"
+        ],
+        "title": "ProviderUsage",
+        "type": "object"
+      },
+      "ProviderUsageWindow": {
+        "additionalProperties": false,
+        "description": "One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour\nsession or the weekly cap, with how much of it is spent and when it rolls over (ISO).",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "used_percent": {
+            "title": "Used Percent",
+            "type": "number"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resets At"
+          }
+        },
+        "required": [
+          "label",
+          "used_percent"
+        ],
+        "title": "ProviderUsageWindow",
+        "type": "object"
       },
       "QueuedPrompt": {
         "additionalProperties": false,
@@ -29760,6 +29904,18 @@
             ],
             "default": null,
             "title": "Fast"
+          },
+          "service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Service Tier"
           },
           "close_on_disconnect": {
             "default": false,

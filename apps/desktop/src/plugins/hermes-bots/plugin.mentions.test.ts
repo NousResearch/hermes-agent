@@ -383,6 +383,21 @@ describe('@-mention completions', () => {
     expect(eva?.handles).toEqual(['@eva-2'])
   })
 
+  it('claims its own text when a bot tags as its raw profile name', async () => {
+    // No title on the profile, so the mention tag IS the profile name. The
+    // picker still needs the claim (it retires the gateway's twin row for
+    // that name), and the merge treats a handle matching the row's own text
+    // as naming no alias — so this shape must keep offering the bot.
+    const { provide } = await contributions({
+      focused: 'default',
+      profiles: [{ name: 'curio' }, { name: 'default' }]
+    })
+
+    const curio = provide('cur').find(item => item.insert === '@curio')
+
+    expect(curio?.handles).toEqual(['@curio'])
+  })
+
   it("never claims a remote row's name — the local gateway's twin is a different bot", async () => {
     const { provide } = await contributions({ profiles: [{ name: 'default' }, REMOTE_DEFAULTS[0]] })
 

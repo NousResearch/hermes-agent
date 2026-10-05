@@ -1912,6 +1912,12 @@ DEFAULT_CONFIG = {
         # Assignee when the orchestrator can't match one to an installed profile; "" = default
         # profile. A task never ends up with assignee=None.
         "default_assignee": "",
+        # Routing guard fallback lane (hermes_cli/kanban_routing_guard.py): a card that edits a
+        # profile's own instruction surface (SOUL.md / USER.md / MEMORY.md) is never assigned to
+        # that profile - the guard reroutes it here. "" disables this lane so the guard falls
+        # straight through to default_assignee (and leaves the card unassigned if that is also
+        # not a legal alternative).
+        "routing_guard_fallback_assignee": "devops",
         # Global cap: positive int = the HOST never has more than N tasks 'running' across all
         # boards and both dispatch lanes. None = ~MemTotal / 512 MiB clamped to [2, 8]; where
         # MemTotal is unreadable (macOS/Windows) None means no cap.

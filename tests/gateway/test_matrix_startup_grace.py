@@ -6,16 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
-from tests.gateway.test_matrix import _make_fake_mautrix
+from tests.gateway.test_matrix import _make_adapter, _make_fake_mautrix
 
 _LOGGER = "plugins.platforms.matrix.adapter"
 
 
 def _adapter():
-    from plugins.platforms.matrix.adapter import MatrixAdapter
-    adapter = MatrixAdapter(PlatformConfig(enabled=True, token="syt_test_token", extra={
-        "homeserver": "https://matrix.example.org", "user_id": "@bot:example.org"}))
+    adapter = _make_adapter()
     adapter._encryption = False
     adapter._handle_text_message = AsyncMock()
     adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)

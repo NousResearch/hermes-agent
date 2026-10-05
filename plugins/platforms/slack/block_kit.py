@@ -76,13 +76,33 @@ def _indent_level(spaces: str) -> int:
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^()\s]+(?:\([^()]*\)[^()\s]*)*)\)")
 # Slack mrkdwn autolink: <scheme:target> or <scheme:target|label>.
-# Mentions (<@U…>, <#C…>, <!here>) have no scheme: and stay as text.
 _SLACK_LINK_RE = re.compile(
     r"<([a-zA-Z][a-zA-Z0-9+.\-]*:[^>|]+)(?:\|([^>]+))?>"
+)
+# Slack mention tokens carry no scheme: <@U…> (user), <#C…> (channel, with an
+# optional |name label) and <!here|!channel|!everyone> (broadcast). rich_text
+# does not interpret mrkdwn, so these must become user/channel/broadcast
+# elements — as plain text Slack renders the token literally.
+_SLACK_MENTION_RE = re.compile(
+    r"<(@[A-Z0-9]+|#[A-Z0-9]+|!(?:here|channel|everyone))(?:\|[^>]*)?>"
 )
 _BOLD_RE = re.compile(r"(?:\*\*|__)(.+?)(?:\*\*|__)")
 _ITALIC_RE = re.compile(r"(?<![\*_])(?:\*|_)(?![\*_\s])(.+?)(?<![\*_\s])(?:\*|_)(?![\*_])")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
+
+
+def _mention_element(body: str) -> Optional[Dict[str, Any]]:
+    """Map a Slack mention token body (without the angle brackets) to a rich_text element.
+
+    ``@U…`` -> user, ``#C…`` -> channel, ``!here``/``!channel``/``!everyone`` -> broadcast.
+    Returns None for anything else, so the caller can emit the raw token as text."""
+    if body.startswith("@"):
+        return {"type": "user", "user_id": body[1:]}
+    if body.startswith("#"):
+        return {"type": "channel", "channel_id": body[1:]}
+    if body.startswith("!"):
+        return {"type": "broadcast", "range": body[1:]}
+    return None
 
 
 def _inline_elements(text: str) -> List[Dict[str, Any]]:
@@ -129,11 +149,29 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
         # (works in section/mrkdwn; was literal in lists/quotes/table cells).
         pos = 0
         for m in _SLACK_LINK_RE.finditer(s):
-            _walk_emphasis(s[pos : m.start()], style)
+            _walk_mentions(s[pos : m.start()], style)
             url = m.group(1)
             _emit_link(url, m.group(2) or url, style)
             pos = m.end()
+        _walk_mentions(s[pos:], style)
+
+    def _walk_mentions(s: str, style: Dict[str, bool]) -> None:
+        # Same reason as _walk_slack_links: <@U…> / <#C…> / <!here> are mrkdwn
+        # that rich_text renders literally unless they become mention elements.
+        # Unmatched tokens fall through to the text walker verbatim.
+        pos = 0
+        for m in _SLACK_MENTION_RE.finditer(s):
+            _walk_emphasis(s[pos : m.start()], style)
+            element = _mention_element(m.group(1))
+            if element is None:  # pragma: no cover - regex only matches known forms
+                _walk_emphasis(m.group(0), style)
+            else:
+                # Mentions are atomic and take no style key (Slack rejects
+                # styled user/channel/broadcast elements).
+                elements.append(element)
+            pos = m.end()
         _walk_emphasis(s[pos:], style)
+
     def _walk_emphasis(s: str, style: Dict[str, bool]) -> None:
         if not s:
             return

@@ -330,6 +330,13 @@ def request_elicitation_consent(message: str, description: str, *,
             return "cancel"  # nobody answered (timeout / prompt withdrawn) — not a user refusal
         return _consent(decision.get("choice"), "decline")
 
+    # Nobody can answer a -q, cron or unattended-platform worker. A `hermes chat -q` turn still has the CLI's
+    # panel callback registered, which would wait the full approval timeout before failing closed.
+    if (_ctx._is_single_query_approval_context() or _ctx._is_cron_approval_context()
+            or _ctx._is_unattended_platform_approval_context()):
+        logger.info("Elicitation consent (%s) declined: no user can answer in this session", surface)
+        return "decline"
+
     # Same observer payload as the gateway branch (#131876); post fires in a finally so the
     # wait settles for observers on the early fail-closed return too.
     hook_kwargs = dict(command=message, description=description, pattern_key="mcp_elicitation",

@@ -35,6 +35,17 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Before any project import: a foreign interpreter (conda/Homebrew/system Python, or an alias
+# outranking the activated PATH) would otherwise fail later on a missing dependency or, worse,
+# run against the wrong dependency set. See tests/_interpreter_guard.py for what is judged.
+from tests._interpreter_guard import foreign_interpreter_message  # noqa: E402
+
+_FOREIGN_INTERPRETER = foreign_interpreter_message(PROJECT_ROOT.resolve())
+if _FOREIGN_INTERPRETER:
+    # Not pytest.exit(): raised while loading a conftest, pytest reports that as an ImportError.
+    print(_FOREIGN_INTERPRETER, file=sys.stderr)
+    raise SystemExit(int(pytest.ExitCode.USAGE_ERROR))
+
 # Every test file runs in its own process, and in a checkout without an install stamp
 # get_version_info() shells out to git 7 times (~0.55 s per process in a large local
 # clone; a whole local suite run spent ~48 CPU-minutes there). Seed the shape a shallow

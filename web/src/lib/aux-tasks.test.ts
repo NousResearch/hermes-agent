@@ -39,4 +39,18 @@ describe("auxTaskRows", () => {
     expect(auxTaskLabel(rows.length ? [] : [], "vision")).toBe("Vision");
     expect(auxTaskLabel([{ task: "x_task", provider: "auto", model: "", base_url: "", label: "X" }], "x_task")).toBe("X");
   });
+
+  it("carries a plugin task's inherited base slot", () => {
+    const rows = auxTaskRows([
+      {
+        task: "side_task",
+        provider: "auto",
+        model: "",
+        base_url: "",
+        label: "Side",
+        inherit_from: "compression",
+      },
+    ]);
+    expect(rows.at(-1)).toEqual({ key: "side_task", label: "Side", hint: "", inheritFrom: "compression" });
+  });
 });

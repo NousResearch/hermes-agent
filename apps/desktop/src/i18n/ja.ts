@@ -1335,6 +1335,8 @@ export const ja = defineLocale({
       change: '変更',
       autoUseMain: '自動 · メインモデルを使用',
       inheritMainEffort: '継承 · メインモデルの推論強度',
+      inheritsFrom: task => `${task} を継承`,
+      followTask: task => `${task} に従う`,
       providerDefault: '(プロバイダーのデフォルト)',
       tasks: {
         vision: { label: 'ビジョン', hint: '画像分析' },

@@ -623,6 +623,11 @@ function AuxiliaryTasksModal({
             const cur = aux?.tasks.find((a) => a.task === t.key);
             const isAuto =
               !cur || cur.provider === "auto" || !cur.provider;
+            const eff = cur?.effective;
+            const effRoute =
+              eff?.provider && eff.provider !== "auto"
+                ? `${eff.provider} · ${eff.model || "(provider default)"}`
+                : "auto (use main model)";
             return (
               <div
                 key={t.key}
@@ -636,11 +641,31 @@ function AuxiliaryTasksModal({
                     </span>
                   </div>
                   <div className="text-xs font-mono text-text-secondary truncate">
-                    {isAuto
-                      ? "auto (use main model)"
-                      : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
+                    {isAuto && t.inheritFrom
+                      ? `inherits ${auxTaskLabel(aux?.tasks, t.inheritFrom)} · ${effRoute}`
+                      : isAuto
+                        ? "auto (use main model)"
+                        : `${cur?.provider} · ${cur?.model || "(provider default)"}`}
                   </div>
                 </div>
+                {t.inheritFrom && !isAuto && (
+                  <Button
+                    size="sm"
+                    outlined
+                    onClick={async () => {
+                      await api.setModelAssignment({
+                        scope: "auxiliary",
+                        task: t.key,
+                        provider: "auto",
+                        model: "",
+                      });
+                      onSaved();
+                    }}
+                    className="h-6 text-xs uppercase"
+                  >
+                    Follow {auxTaskLabel(aux?.tasks, t.inheritFrom)}
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   outlined

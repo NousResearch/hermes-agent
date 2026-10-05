@@ -2131,6 +2131,8 @@ export const frOverrides = {
       change: 'Modifier',
       autoUseMain: 'auto · utiliser le modèle principal',
       inheritMainEffort: 'hériter · effort du modèle principal',
+      inheritsFrom: task => `hérite de ${task}`,
+      followTask: task => `Suivre ${task}`,
       providerDefault: '(par défaut du fournisseur)',
       fallbackAdd: 'Ajouter un secours',
       fallbackEmpty: "Aucun modèle de secours — le modèle par défaut est utilisé sauf en cas d'échec.",

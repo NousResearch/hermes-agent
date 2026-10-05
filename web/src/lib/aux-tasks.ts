@@ -4,6 +4,8 @@ export interface AuxTaskMeta {
   key: string;
   label: string;
   hint: string;
+  /** Plugin task that follows this slot until it is pinned itself. */
+  inheritFrom?: string;
 }
 
 // Built-in auxiliary tasks, in the order `_AUX_TASK_SLOTS`
@@ -41,6 +43,7 @@ export function auxTaskRows(
       key: entry.task,
       label: entry.label || entry.task,
       hint: entry.hint || "",
+      ...(entry.inherit_from ? { inheritFrom: entry.inherit_from } : {}),
     }));
   return extra.length ? [...BUILTIN_AUX_TASKS, ...extra] : [...BUILTIN_AUX_TASKS];
 }

@@ -2608,6 +2608,10 @@ export interface AuxiliaryTaskAssignment {
   label?: string;
   hint?: string;
   plugin?: string;
+  /** Plugin tasks only: the slot this one follows until it is pinned itself. */
+  inherit_from?: string | null;
+  /** Inheriting plugin tasks only: the route the task resolves to right now. */
+  effective?: { provider: string; model: string; base_url: string };
 }
 
 export interface AuxiliaryModelsResponse {

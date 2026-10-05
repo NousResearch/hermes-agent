@@ -6,50 +6,62 @@ Settings → Models page enumerated only the built-in ``_AUX_TASK_SLOTS``: ``GET
 /api/model/auxiliary`` never listed the task, ``POST /api/model/set`` rejected it with
 ``unknown auxiliary task``, ``__reset__`` skipped it and the stale-pin nudge ignored it.
 
-These tests load a real plugin from a temp ``HERMES_HOME`` through ``PluginManager`` discovery
-(no fake registry) and cover the profile seam the reviewer of #40922 flagged: two profiles with
-different plugins must each see their own tasks from one ``hermes serve`` process.
-Regression for #40880.
+These tests load real plugins from temp homes through ``PluginManager`` discovery (no fake
+registry) and cover the profile seam: one ``hermes serve`` process, two profiles with their own
+plugins and their own config. Regression for #40880 / #129189.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
-import yaml
 from fastapi import HTTPException
 
 import hermes_cli.plugins as plugins_mod
+from agent.auxiliary_client import _get_auxiliary_task_config
 from hermes_cli.plugins import PluginManager
 from hermes_cli.web_server_config import (
-    _AUX_TASK_SLOTS, _apply_aux_assignment_sync, _aux_task_slots, _stale_aux_pins,
+    _AUX_TASK_SLOTS, _apply_aux_assignment_sync, _apply_model_assignment_sync, _aux_task_slots,
+    _stale_aux_pins,
 )
+from hermes_cli.web_server_profiles import _profile_scope
 from hermes_cli.web_routers.models import get_auxiliary_models
 
 
-def _write_aux_plugin(home: Path, name: str, task_key: str, *, display: str) -> None:
+def _write_plugin(home: Path, name: str, register_call: str) -> None:
     plugin_dir = home / "plugins" / name
     plugin_dir.mkdir(parents=True)
+    # JSON is valid YAML; keeps the test free of a yaml dependency.
     (plugin_dir / "plugin.yaml").write_text(
-        yaml.safe_dump({"name": name, "version": "0.1.0", "description": f"{name} probe"})
-    )
-    (plugin_dir / "__init__.py").write_text(
-        "def register(ctx):\n"
-        f"    ctx.register_auxiliary_task({task_key!r}, display_name={display!r},\n"
-        f"                                description='side model for {name}', defaults={{'timeout': 7}})\n"
-    )
-    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": [name]}}))
+        json.dumps({"name": name, "version": "0.1.0", "description": f"{name} probe"}))
+    (plugin_dir / "__init__.py").write_text(f"def register(ctx):\n    ctx.{register_call}\n")
+
+
+def _write_home(home: Path, plugins: dict, compression_model: str) -> None:
+    for name, call in plugins.items():
+        _write_plugin(home, name, call)
+    (home / "config.yaml").write_text(json.dumps({
+        "plugins": {"enabled": list(plugins)},
+        "auxiliary": {"compression": {"provider": "openrouter", "model": compression_model}},
+    }))
+
+
+_SIDE = ("register_auxiliary_task('side_task', display_name='Side model', "
+         "description='side model for side', inherit_from='compression')")
+_ALPHA = ("register_auxiliary_task('alpha_task', display_name='Alpha side model', "
+          "description='side model for alpha_plugin', defaults={'timeout': 7})")
 
 
 @pytest.fixture
 def two_profile_homes(tmp_path, monkeypatch):
-    """Process home ``a`` with plugin task ``alpha_task``; named profile ``b`` with ``beta_task``."""
-    root = tmp_path / ".hermes"
-    home_a = root
-    home_b = root / "profiles" / "b"
-    _write_aux_plugin(home_a, "alpha_plugin", "alpha_task", display="Alpha side model")
-    _write_aux_plugin(home_b, "beta_plugin", "beta_task", display="Beta side model")
+    """Process home ``a`` (plugins side + alpha) and named profile ``b`` (plugin side only), each
+    with its own ``auxiliary.compression`` model."""
+    home_a = tmp_path / ".hermes"
+    home_b = home_a / "profiles" / "b"
+    _write_home(home_a, {"side": _SIDE, "alpha_plugin": _ALPHA}, "vendor/model-a")
+    _write_home(home_b, {"side": _SIDE}, "vendor/model-b")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home_a))
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: tmp_path / "empty-bundled")
@@ -59,31 +71,49 @@ def two_profile_homes(tmp_path, monkeypatch):
     plugins_mod._reset_plugin_managers_for_tests()
 
 
-def test_slots_and_listing_include_the_active_profiles_plugin_task(two_profile_homes):
-    slots = _aux_task_slots()
-    assert slots[: len(_AUX_TASK_SLOTS)] == _AUX_TASK_SLOTS
-    assert "alpha_task" in slots and "beta_task" not in slots
-
-    listing = get_auxiliary_models(profile=None)
-    by_task = {row["task"]: row for row in listing["tasks"]}
-    assert set(_AUX_TASK_SLOTS) <= set(by_task)
-    alpha = by_task["alpha_task"]
-    assert alpha["label"] == "Alpha side model"
-    assert alpha["hint"] == "side model for alpha_plugin"
-    assert alpha["plugin"] == "alpha_plugin"
-    assert alpha["provider"] == "auto" and alpha["model"] == ""
-    # Built-in rows keep their pre-existing shape: no plugin fields.
-    assert "label" not in by_task["vision"] and "plugin" not in by_task["vision"]
-    # Plugin rows come after every built-in so the UI order stays stable.
-    assert [row["task"] for row in listing["tasks"]][: len(_AUX_TASK_SLOTS)] == list(_AUX_TASK_SLOTS)
+def _rows(profile):
+    return {row["task"]: row for row in get_auxiliary_models(profile=profile)["tasks"]}
 
 
-def test_listing_scopes_plugin_tasks_to_the_requested_profile(two_profile_homes):
-    """One serve process, two profiles: each request enumerates ITS profile's plugins."""
-    tasks_a = {row["task"] for row in get_auxiliary_models(profile=None)["tasks"]}
-    tasks_b = {row["task"] for row in get_auxiliary_models(profile="b")["tasks"]}
-    assert "alpha_task" in tasks_a and "beta_task" not in tasks_a
-    assert "beta_task" in tasks_b and "alpha_task" not in tasks_b
+def _resolved_model(profile):
+    with _profile_scope(profile):
+        return _get_auxiliary_task_config("side_task").get("model")
+
+
+def test_listing_is_per_profile_and_carries_inheritance(two_profile_homes):
+    listing = get_auxiliary_models(profile=None)["tasks"]
+    # Built-ins first, in their fixed order and pre-existing shape; plugin rows appended.
+    assert [row["task"] for row in listing][: len(_AUX_TASK_SLOTS)] == list(_AUX_TASK_SLOTS)
+    assert "label" not in listing[0] and "plugin" not in listing[0]
+
+    rows_a, rows_b = _rows(None), _rows("b")
+    assert "alpha_task" in rows_a and "alpha_task" not in rows_b
+    side_a, side_b = rows_a["side_task"], rows_b["side_task"]
+    assert (side_a["label"], side_a["hint"], side_a["plugin"]) == ("Side model", "side model for side", "side")
+    assert side_a["inherit_from"] == "compression" and rows_a["alpha_task"]["inherit_from"] is None
+    # Unpinned: own provider stays "auto"; ``effective`` is the base slot of THAT profile.
+    assert side_a["provider"] == "auto"
+    assert side_a["effective"] == {"provider": "openrouter", "model": "vendor/model-a", "base_url": ""}
+    assert side_b["effective"]["model"] == "vendor/model-b"
+
+
+def test_pin_persists_per_profile_and_is_honored_by_resolution(two_profile_homes):
+    home_a, home_b = two_profile_homes
+    with _profile_scope("b"):
+        _apply_model_assignment_sync("auxiliary", "nous", "hermes-4", "side_task", "", "")
+    assert _rows("b")["side_task"]["provider"] == "nous"
+    assert "side_task" not in (home_a / "config.yaml").read_text()
+    assert (_resolved_model("b"), _resolved_model(None)) == ("hermes-4", "vendor/model-a")
+
+    # "auto" on an inheriting slot (Desktop's "Follow <base>") goes back to the base.
+    with _profile_scope("b"):
+        _apply_model_assignment_sync("auxiliary", "auto", "", "side_task", "", "")
+    assert _resolved_model("b") == "vendor/model-b"
+
+    # A base-slot change in B reaches B's plugin slot, never A's.
+    with _profile_scope("b"):
+        _apply_model_assignment_sync("auxiliary", "openrouter", "vendor/model-b2", "compression", "", "")
+    assert (_resolved_model("b"), _resolved_model(None)) == ("vendor/model-b2", "vendor/model-a")
 
 
 def test_assignment_reset_and_stale_pins_cover_plugin_tasks(two_profile_homes, monkeypatch):
@@ -107,8 +137,10 @@ def test_assignment_reset_and_stale_pins_cover_plugin_tasks(two_profile_homes, m
     assert cfg["auxiliary"]["alpha_task"] == {"provider": "auto", "model": ""}
 
     # Another profile's task is still unknown here — the validation is per-profile, not global.
-    with pytest.raises(HTTPException) as exc:
-        _apply_aux_assignment_sync(cfg, "openrouter", "m", "beta_task", "", "")
+    with _profile_scope("b"):
+        _apply_aux_assignment_sync({"auxiliary": {}}, "openrouter", "m", "side_task", "", "")
+        with pytest.raises(HTTPException) as exc:
+            _apply_aux_assignment_sync({"auxiliary": {}}, "openrouter", "m", "alpha_task", "", "")
     assert exc.value.status_code == 400 and "unknown auxiliary task" in exc.value.detail
 
 

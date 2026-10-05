@@ -381,6 +381,51 @@ describe('ModelSettings', () => {
     expect(vision && grill && vision.compareDocumentPosition(grill) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('shows an unpinned inheriting plugin task as following its base, and offers Follow once pinned', async () => {
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'nous', model: 'hermes-4' },
+      tasks: [
+        { task: 'compression', provider: 'openrouter', model: 'vendor/fast', base_url: '' },
+        {
+          task: 'side_task',
+          provider: 'auto',
+          model: '',
+          base_url: '',
+          label: 'Side model',
+          hint: 'side model for side',
+          plugin: 'side',
+          inherit_from: 'compression',
+          effective: { provider: 'openrouter', model: 'vendor/fast', base_url: '' }
+        },
+        {
+          task: 'pinned_task',
+          provider: 'nous',
+          model: 'hermes-4',
+          base_url: '',
+          label: 'Pinned side',
+          hint: 'pinned',
+          plugin: 'side',
+          inherit_from: 'compression',
+          effective: { provider: 'nous', model: 'hermes-4', base_url: '' }
+        }
+      ]
+    })
+    await renderModelSettings()
+
+    expect(await screen.findByText('inherits Compression · openrouter · vendor/fast')).toBeTruthy()
+    // Only the pinned inheriting row offers the way back to its base.
+    const follow = screen.getAllByRole('button', { name: 'Follow Compression' })
+    expect(follow).toHaveLength(1)
+    expect(document.getElementById('aux-task-pinned_task')?.contains(follow[0])).toBe(true)
+
+    fireEvent.click(follow[0])
+    await waitFor(() =>
+      expect(setModelAssignment).toHaveBeenCalledWith(
+        { model: '', provider: 'auto', reasoning_effort: null, scope: 'auxiliary', task: 'pinned_task' }
+      )
+    )
+  })
+
   it('edits auxiliary reasoning effort and applies it with the assignment', async () => {
     getAuxiliaryModels.mockResolvedValueOnce({
       main: { provider: 'nous', model: 'hermes-4' },

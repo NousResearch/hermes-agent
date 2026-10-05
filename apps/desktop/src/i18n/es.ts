@@ -2119,6 +2119,8 @@ export const esOverrides = {
       change: 'Cambiar',
       autoUseMain: 'auto · usar modelo principal',
       inheritMainEffort: 'heredar · esfuerzo del modelo principal',
+      inheritsFrom: task => `hereda de ${task}`,
+      followTask: task => `Seguir ${task}`,
       providerDefault: '(predeterminado del proveedor)',
       fallbackAdd: 'Añadir respaldo',
       fallbackEmpty: 'No hay modelos de respaldo; se usa el modelo predeterminado salvo que falle.',

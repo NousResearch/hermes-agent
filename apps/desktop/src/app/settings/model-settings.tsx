@@ -104,6 +104,8 @@ interface AuxTaskMeta {
   /** Server-declared copy for a plugin task; built-ins resolve through i18n instead. */
   label?: string
   hint?: string
+  /** Plugin task that follows this slot until it is pinned itself. */
+  inheritFrom?: string
 }
 
 const AUX_TASKS: readonly AuxTaskMeta[] = [
@@ -124,14 +126,19 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
 
 // Rows to render: the built-ins above, then every task the backend reported that is not a
 // built-in — i.e. plugin-registered auxiliary tasks (PluginContext.register_auxiliary_task),
-// which arrive with the plugin's own label/hint. Older backends never send extra rows, so
-// this is a no-op against them. Built-ins stay first so the layout is stable across profiles.
+// which arrive with the plugin's own label/hint and inherited base. Older backends never send
+// extra rows, so this is a no-op against them. Built-ins stay first so the layout is stable.
 export function auxTaskRows(tasks: readonly AuxiliaryTaskAssignment[] | undefined): AuxTaskMeta[] {
   const builtin = new Set(AUX_TASKS.map(meta => meta.key))
 
   const extra = (tasks ?? [])
     .filter(entry => !builtin.has(entry.task))
-    .map(entry => ({ key: entry.task, label: entry.label || entry.task, hint: entry.hint || '' }))
+    .map(entry => ({
+      key: entry.task,
+      label: entry.label || entry.task,
+      hint: entry.hint || '',
+      inheritFrom: entry.inherit_from || undefined
+    }))
 
   return extra.length ? [...AUX_TASKS, ...extra] : [...AUX_TASKS]
 }
@@ -853,6 +860,28 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     [endpointForProvider, m.loadFailed, mainModel, refresh, scopeProfile, setCaughtError]
   )
 
+  // An inheriting plugin slot pinned by the user goes back to following its base: "auto" on such a
+  // slot means "no preference here" (agent/auxiliary_client.py::_layer_over_inherited).
+  const followAuxiliaryBase = useCallback(
+    async (task: string) => {
+      setApplying(true)
+      setError('')
+
+      try {
+        await setModelAssignment(
+          { model: '', provider: 'auto', reasoning_effort: null, scope: 'auxiliary', task },
+          scopeProfile
+        )
+        await refresh()
+      } catch (err) {
+        setCaughtError(err, m.loadFailed)
+      } finally {
+        setApplying(false)
+      }
+    },
+    [m.loadFailed, refresh, scopeProfile, setCaughtError]
+  )
+
   const applyAuxiliaryDraft = useCallback(
     async (task: string) => {
       if (!auxDraft.provider || !auxDraft.model) {
@@ -1147,6 +1176,13 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
               const current = auxiliary?.tasks.find(entry => entry.task === meta.key)
               const isAuto = !current || !current.provider || current.provider === 'auto'
               const isEditing = editingAuxTask === meta.key
+              const effective = current?.effective
+              const followsBase = isAuto && !!meta.inheritFrom
+
+              const effectiveRoute =
+                effective?.provider && effective.provider !== 'auto'
+                  ? `${effective.provider} · ${effective.model || m.providerDefault}`
+                  : m.autoUseMain
 
               return (
                 <div className="scroll-mt-6 rounded-lg" id={`aux-task-${meta.key}`} key={meta.key}>
@@ -1154,6 +1190,16 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                     action={
                       !isEditing && (
                         <div className="flex shrink-0 items-center gap-1.5">
+                          {meta.inheritFrom && !isAuto && (
+                            <Button
+                              disabled={applying}
+                              onClick={() => void followAuxiliaryBase(meta.key)}
+                              size="sm"
+                              variant="text"
+                            >
+                              {m.followTask(auxiliaryTaskLabel(meta.inheritFrom))}
+                            </Button>
+                          )}
                           <Button
                             disabled={!mainModel || applying}
                             onClick={() => void setAuxiliaryToMain(meta.key)}
@@ -1244,7 +1290,11 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                     }
                     description={
                       <span className="font-mono text-[0.68rem]">
-                        {isAuto ? m.autoUseMain : `${current.provider} · ${current.model || m.providerDefault}`}
+                        {followsBase
+                          ? `${m.inheritsFrom(auxiliaryTaskLabel(meta.inheritFrom ?? ''))} · ${effectiveRoute}`
+                          : isAuto
+                            ? m.autoUseMain
+                            : `${current.provider} · ${current.model || m.providerDefault}`}
                         {!isAuto && current.base_url && (
                           <span className="text-muted-foreground"> · {current.base_url}</span>
                         )}

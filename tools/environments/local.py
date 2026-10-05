@@ -1218,22 +1218,21 @@ class LocalEnvironment(BaseEnvironment):
         after the parent was signalled (tools/AGENTS.md teardown order), and still when the
         group kill raised something that is not an ``OSError`` — a leaked transient unit
         outlives the command. See #70716."""
-        failure = None
         try:
             (_kill_process_windows if _IS_WINDOWS else _kill_process_group_posix)(proc)
-        except Exception as exc:  # OSError (ProcessLookupError / PermissionError) is expected
+        except Exception as exc:
             with contextlib.suppress(Exception):
                 proc.kill()
-            failure = None if isinstance(exc, OSError) else exc
-        unit = getattr(proc, "_hermes_scope_unit", None)
-        if unit:
-            from tools.process_registry_systemd import _stop_systemd_unit
-            if not _stop_systemd_unit(unit):
-                logger.debug(
-                    "foreground scope %s could not be reaped; the unit may "
-                    "outlive the command (its cgroup still holds survivors)", unit)
-        if failure is not None:
-            raise failure
+            if not isinstance(exc, OSError):  # ProcessLookupError / PermissionError are expected
+                raise
+        finally:
+            unit = getattr(proc, "_hermes_scope_unit", None)
+            if unit:
+                from tools.process_registry_systemd import _stop_systemd_unit
+                if not _stop_systemd_unit(unit):
+                    logger.debug(
+                        "foreground scope %s could not be reaped; the unit may "
+                        "outlive the command (its cgroup still holds survivors)", unit)
 
     def _force_kill_process(self, proc):
         """SIGKILL the whole group with no TERM grace or wait: the caller os._exit()s next."""

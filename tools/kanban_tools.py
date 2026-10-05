@@ -822,16 +822,18 @@ def _handle_request_review(args: dict, **kw) -> str:
         "was verified so the reviewer has context"))
     metadata = args.get("metadata")
     _require_dict_metadata(metadata)
-    # A handoff names its deliverables in the top-level ``artifacts`` param ONLY; an
-    # ``artifacts`` key inside metadata used to return ok with zero rows stored.
-    _check(not (metadata and "artifacts" in metadata),
-           "metadata.artifacts is not accepted by kanban_request_review — pass the file "
-           "paths in the top-level `artifacts` param instead (no state change)")
     if metadata is not None:
         metadata = _redact_metadata(metadata)
         _check(metadata is not None, "metadata could not be safely serialized")
     artifacts = _coerce_str_list(args.get("artifacts"), "artifacts", "file paths", strip=True)
-    missing = [a for a in artifacts or () if not os.path.exists(os.path.expanduser(a))]
+    # A handoff may name deliverables in the top-level ``artifacts`` param or inside
+    # ``metadata.artifacts`` (the DB layer stages either). Check existence over the
+    # union of both, so neither path can park the card in review naming a missing file.
+    declared = list(artifacts or ())
+    declared += _coerce_str_list(
+        metadata.get("artifacts") if isinstance(metadata, dict) else None,
+        "metadata.artifacts", "file paths", strip=True) or []
+    missing = [a for a in declared if not os.path.exists(os.path.expanduser(a))]
     _check(not missing, f"kanban_request_review artifacts do not exist: {', '.join(missing)}. "
                         f"Your task is still in-flight (no state change); fix the paths and retry.")
     if artifacts:

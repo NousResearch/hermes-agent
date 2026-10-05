@@ -847,11 +847,10 @@ class TelegramAdapter(BasePlatformAdapter):
     def adopt_held_inbound(self, predecessor: "TelegramAdapter") -> None:
         """Take over the hold queue of the instance the runner just replaced with us (#132829): it only
         drains on its own ``_mark_connected``, which never comes; later holds there forward here."""
-        if predecessor is self or not isinstance(predecessor, TelegramAdapter):
-            return
         predecessor._held_inbound_successor = weakref.ref(self)
         held = getattr(predecessor, "_held_inbound_events", None) or []
-        events, held[:] = list(held), []
+        events = list(held)
+        held.clear()
         for event in events:
             self._adopt_held_event(event, where="adopted", schedule=False)
         self._schedule_held_inbound_redispatch()

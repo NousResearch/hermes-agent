@@ -63,7 +63,20 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
     ("profile_describer", "Profile describer", "auto profile descriptions"),
-    ("curator", "Curator", "skill-usage review pass")]
+    ("curator", "Curator", "skill-usage review pass"),
+    ("goal_judge", "Goal judge", "/goal contract drafting + satisfaction judge"),
+    ("background_review", "Background review", "post-turn memory/skill self-improvement"),
+    ("monitor", "Monitor", "important-mail 0-10 scorer"),
+    ("moa_reference", "MoA reference", "mixture-of-agents reference models"),
+    ("moa_aggregator", "MoA aggregator", "mixture-of-agents aggregation step")]
+
+# Slots that bulk operations must never sweep. Mirrors
+# ``hermes_cli.web_server_config._BULK_EXCLUDED_AUX_SLOTS``: the MoA reference/aggregator
+# pins are MoA topology (deliberately different models from main), and the CLI
+# "Reset all to auto" must not collapse them just like the dashboard's ``__reset__``
+# does not. Kept as an independent literal so the two modules stay import-light;
+# ``test_aux_task_registries_cover_default_config`` asserts they cannot drift apart.
+_BULK_EXCLUDED_AUX_TASKS: frozenset = frozenset({"moa_reference", "moa_aggregator"})
 
 # Special non-auxiliary task surfaced in the same picker: subagent delegation. Routing lives
 # under top-level `delegation.*` (NOT `auxiliary.delegation`) because delegate_task spawns full
@@ -184,7 +197,11 @@ def _prompt_aux_reasoning_effort(task: str, current: str) -> Optional[str]:
 
 
 def _reset_aux_to_auto() -> int:
-    """Reset every known aux task (built-in + plugin) back to auto/empty. Returns number reset."""
+    """Reset every known aux task (built-in + plugin) back to auto/empty. Returns number reset.
+
+    MoA slots are exempt (``_BULK_EXCLUDED_AUX_TASKS``): their pins define the MoA
+    topology and are reset only individually from the task menu.
+    """
     from hermes_cli.config import load_config, save_config
     def _clear(entry: dict, auto: str) -> bool:
         # Only the routing fields; timeout/download_timeout (aux) and max_concurrent_children
@@ -202,7 +219,11 @@ def _reset_aux_to_auto() -> int:
 
     cfg = load_config()
     aux = _ensure_dict_section(cfg, "auxiliary")
-    count = sum(_clear(_ensure_dict_section(aux, task), "auto") for task, _name, _desc in _all_aux_tasks())
+    count = sum(
+        _clear(_ensure_dict_section(aux, task), "auto")
+        for task, _name, _desc in _all_aux_tasks()
+        if task not in _BULK_EXCLUDED_AUX_TASKS
+    )
     dele = cfg.get("delegation")
     if isinstance(dele, dict):
         count += _clear(dele, "")

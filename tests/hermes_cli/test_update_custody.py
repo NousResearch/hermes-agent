@@ -362,6 +362,88 @@ def test_no_build_descendant_outlives_the_build_call(repo, tmp_path, monkeypatch
     assert not late.exists(), "a build descendant kept writing after the build call returned"
 
 
+def _late_writer(late: Path, *, detach: bool = False, delay: float = 2.0) -> str:
+    """Python source for a build descendant that writes ``late`` after ``delay`` seconds, holding
+    no inherited fd and no pipe (so nothing but a kill stops it); ``detach`` starts its own session."""
+    detach_code = "os.setsid(); " if detach else ""  # windows-footgun: ok - the callers are POSIX-only
+    return (f"import os, pathlib, time; {detach_code}os.closerange(3, 4096); "
+            f"time.sleep({delay}); pathlib.Path({str(late)!r}).touch()")
+
+
+def _node_starting(writer: str, *, then: str) -> list[str]:
+    """A stand-in for node: starts ``writer`` (stdio detached), then runs ``then``."""
+    return [sys.executable, "-c",
+            "import subprocess, sys, time; d = subprocess.DEVNULL; "
+            f"subprocess.Popen([sys.executable, '-c', {writer!r}], stdin=d, stdout=d, stderr=d); {then}"]
+
+
+def _launch_in_custody(repo: Path, tmp_path: Path, command: list[str], *, platform: str | None = None,
+                       **popen) -> subprocess.Popen:
+    """Start ``command`` the way the build runner does (contained_command under a held checkout
+    lock); ``platform`` makes the launcher see another ``sys.platform`` (its no-subreaper path)."""
+    from hermes_cli.update_custody import contained_command
+
+    lock = ul.UpdateLock(path=tmp_path / "marker", install_root=repo)
+    assert lock.acquire()
+    try:
+        with contained_command(command, root=repo) as (argv, custody):
+            assert argv[3] == "-c", argv
+            if platform is not None:
+                argv[4] = f"import sys; sys.platform = {platform!r}\n" + argv[4]
+            return subprocess.Popen(argv, stdin=subprocess.DEVNULL, **custody, **popen)
+    finally:
+        lock.release()
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="POSIX process groups + /proc")
+def test_a_group_kill_of_the_caller_stops_the_whole_build(repo, tmp_path):
+    """L1: the completion child's Ctrl-C path ``killpg``s its own group and Desktop kills the
+    backend's group; the build (node and what it starts) must be inside that group. A build
+    moved into a session of its own outlived the kill and kept writing after the lock was free."""
+    import signal
+
+    late_node, late_child = tmp_path / "late-node", tmp_path / "late-child"
+    node = _node_starting(_late_writer(late_child), then=f"time.sleep(2); __import__('pathlib').Path({str(late_node)!r}).touch()")
+    # The launcher leads a fresh group here, as the completion child does for its build.
+    launcher = _launch_in_custody(repo, tmp_path, node, start_new_session=True)
+    time.sleep(1)
+    os.killpg(launcher.pid, signal.SIGKILL)  # windows-footgun: ok - Linux-only test
+    launcher.wait(timeout=10)
+    time.sleep(3)
+    assert not late_node.exists(), "node survived a group kill of its caller"
+    assert not late_child.exists(), "a build descendant survived a group kill of its caller"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="POSIX sessions + /proc")
+@pytest.mark.parametrize("platform", [None, "darwin"], ids=["subreaper", "ps-walk"])
+def test_a_detached_grandchild_outliving_node_dies_before_the_build_returns(repo, tmp_path, platform):
+    """N13/L1: a descendant that left node's process group (its own session) and outlives node
+    is still killed before the build call returns: Linux through the subreaper, elsewhere
+    through the recorded descendant tree."""
+    late = tmp_path / "late"
+    node = _node_starting(_late_writer(late, detach=True), then="time.sleep(1.2)")
+    launcher = _launch_in_custody(repo, tmp_path, node, platform=platform)
+    assert launcher.wait(timeout=30) == 0
+    time.sleep(3)
+    assert not late.exists(), "a detached build descendant kept writing after the build call returned"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="POSIX signals + /proc")
+def test_a_terminated_launcher_takes_node_and_its_descendants_with_it(repo, tmp_path):
+    """L1: SIGTERM to the launcher (a service manager, the caller's polite stop) is forwarded to
+    node, and what node started is killed too, before the launcher exits."""
+    import signal
+
+    late = tmp_path / "late"
+    node = _node_starting(_late_writer(late), then="time.sleep(30)")
+    launcher = _launch_in_custody(repo, tmp_path, node, start_new_session=True)
+    time.sleep(1)
+    launcher.send_signal(signal.SIGTERM)
+    assert launcher.wait(timeout=20) == 128 + signal.SIGTERM
+    time.sleep(3)
+    assert not late.exists(), "a build descendant kept writing after its launcher was terminated"
+
+
 @pytest.mark.skipif(not Path("/proc/self/fd").is_dir(), reason="needs /proc fd listing")
 def test_the_desktop_build_runs_in_checkout_custody(repo, tmp_path, monkeypatch):
     """F04: the desktop app build (npm run build / builder) writes the checkout like the other

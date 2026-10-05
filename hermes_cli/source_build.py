@@ -48,10 +48,10 @@ def source_build_env(base_env: dict | None = None, *, explicit: bool = False) ->
 
 def run_in_custody(project_root: Path, command: list, label: str, **kwargs):
     """``pm.progress.run_contained`` for a build command that writes the checkout (node, npm):
-    it and everything it starts stay in the update's custody (POSIX: the checkout lock fd and
-    its own process group, killed when it exits; Windows: the owner's kill-on-close job), so the
-    checkout is never handed to a contender while one of them still writes. Outside an update it
-    is ``run_contained`` as is."""
+    it and everything it starts stay in the update's custody (POSIX: the checkout lock fd, the
+    caller's process group, and every descendant killed when it exits; Windows: the owner's
+    kill-on-close job), so the checkout is never handed to a contender while one of them still
+    writes. Outside an update it is ``run_contained`` as is."""
     from pm.progress import run_contained
     from hermes_cli.update_custody import contained_command
 

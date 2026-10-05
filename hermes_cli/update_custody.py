@@ -477,30 +477,133 @@ def _join_launcher_python() -> str:
     return sys.executable
 
 
-# POSIX twin of the launcher: Node marks the donated lock fd close-on-exec, so nothing node
-# starts (npm, esbuild, sh) keeps the checkout locked. The command runs as its own process group
-# under this stdlib parent, which holds the fd too and, once the command exits (or this parent is
-# interrupted), kills the whole group: no descendant outlives the custodial command (N13).
-_OWN_GROUP = (
-    "import os, signal, subprocess, sys\n"
-    "fds = tuple(int(fd) for fd in sys.argv[1].split(','))\n"
-    "p = subprocess.Popen(sys.argv[2:], pass_fds=fds, start_new_session=True)\n"
-    "try:\n"
-    "    code = p.wait()\n"
-    "finally:\n"
-    "    try:\n"
-    "        os.killpg(p.pid, signal.SIGKILL)\n"  # windows-footgun: ok — POSIX-only launcher
-    "    except OSError:\n"
-    "        pass\n"
-    "sys.exit(code if code >= 0 else 128 - code)\n"
-)
+# POSIX twin of the launcher (N13, review L1/L6). Node marks the donated lock fd close-on-exec,
+# so nothing node starts (npm, esbuild, sh) keeps the checkout locked: custody of them rests on
+# this stdlib parent, which holds the fd until no descendant of the command is left.
+# * The command stays in the CALLER's process group: every group kill that stops a build (a
+#   Ctrl-C'd completion child's ``killpg``, Desktop's ``kill(-pid)``) reaches this launcher,
+#   node and everything under it that did not start a session of its own.
+# * Linux: the launcher is a child subreaper, so a descendant orphaned by node's exit (or by any
+#   intermediate's) is re-parented to it, never to init. Once node exits it SIGKILLs and reaps
+#   its children until none is left; it only signals its own unreaped children, so no pid it
+#   kills can have been reused (never a ``killpg`` of an already reaped leader's group).
+# * Elsewhere (macOS has no subreaper) it records node's descendant tree from ``ps`` while node
+#   runs and, once node exits, kills every recorded process whose start time still matches,
+#   plus what they started. Best effort: a process born and orphaned between two samples escapes.
+# * SIGINT/SIGTERM/SIGHUP are forwarded to node (a node still running 10 s later is killed); the
+#   descendants are then killed as above.
+_REAP_TREE = r"""
+import os, signal, subprocess, sys, time
+KILL = signal.SIGKILL  # windows-footgun: ok - POSIX-only launcher
+fds = tuple(int(fd) for fd in sys.argv[1].split(','))
+me = os.getpid()
+reaper = False
+if sys.platform.startswith('linux'):
+    try:
+        import ctypes
+        reaper = ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0  # PR_SET_CHILD_SUBREAPER
+    except (OSError, AttributeError):
+        reaper = False
+
+def children():
+    found = []
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit():
+            continue
+        try:
+            with open('/proc/%s/stat' % entry, 'rb') as fh:
+                stat = fh.read()
+            if int(stat[stat.rindex(b')') + 2:].split()[1]) == me:
+                found.append(int(entry))
+        except (OSError, ValueError, IndexError):
+            continue
+    return found
+
+def table():
+    try:
+        out = subprocess.run(['ps', '-A', '-o', 'pid=,ppid=,stat=,lstart='], stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, errors='replace', timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    rows = {}
+    for line in out.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) == 4 and parts[0].isdigit() and parts[1].isdigit() and not parts[2].startswith('Z'):
+            rows[int(parts[0])] = (int(parts[1]), parts[3].strip())
+    return rows
+
+seen = {}
+
+def sample(root):
+    rows = table()
+    tree = {pid for pid, start in seen.items() if rows.get(pid, (0, None))[1] == start}
+    if root is not None:
+        tree.add(root)
+    grew = True
+    while grew:
+        grew = False
+        for pid, (ppid, start) in rows.items():
+            if ppid in tree and pid not in tree:
+                tree.add(pid)
+                seen[pid] = start
+                grew = True
+    return [pid for pid, start in seen.items() if rows.get(pid, (0, None))[1] == start]
+
+def kill(pids):
+    for pid in pids:
+        try:
+            os.kill(pid, KILL)
+        except OSError:
+            pass
+
+p = subprocess.Popen(sys.argv[2:], pass_fds=fds)
+got = []
+
+def forward(signum, frame):
+    got.append(signum)
+    try:
+        p.send_signal(signum)
+    except OSError:
+        pass
+
+for name in ('SIGINT', 'SIGTERM', 'SIGHUP'):
+    signal.signal(getattr(signal, name), forward)
+deadline = None
+while True:
+    try:
+        code = p.wait(timeout=0.5)
+        break
+    except subprocess.TimeoutExpired:
+        pass
+    if not reaper:
+        sample(p.pid)
+    if got:
+        deadline = deadline or time.monotonic() + 10
+        if time.monotonic() > deadline:
+            p.kill()
+end = time.monotonic() + 10
+while time.monotonic() < end:
+    live = children() if reaper else sample(None)
+    if not live:
+        break
+    kill(live)
+    while reaper:
+        try:
+            if not os.waitpid(-1, os.WNOHANG)[0]:
+                break
+        except ChildProcessError:
+            break
+    time.sleep(0.02)
+sys.exit(code if code >= 0 else 128 - code)
+"""
 
 
 @contextlib.contextmanager
 def contained_command(argv: Sequence[str], *, inherit_lock: bool = True, root=None):
     """``(argv, kwargs)`` for a checkout writer started by a runner that hides its Popen (the Node
     build in ``pm.progress.run_contained``). POSIX: the lock fd (this process's, or one it
-    inherited for checkout ``root``), with the command's process group killed when it exits.
+    inherited for checkout ``root``), under a launcher that keeps the command in the caller's
+    process group and kills every descendant left when it exits (:data:`_REAP_TREE`).
     Windows inside an update: the command runs under a launcher that joins the update's
     kill-on-close job first; when the job cannot be handed over or the join is refused, the
     command never runs and :class:`CustodyRefused` is raised (D2)."""
@@ -510,7 +613,7 @@ def contained_command(argv: Sequence[str], *, inherit_lock: bool = True, root=No
 
         fds = tuple(checkout_lock_fds(root)) if inherit_lock and root is not None else _lock_fds(inherit_lock)
         if fds:
-            argv = [sys.executable, "-I", "-S", "-c", _OWN_GROUP, ",".join(map(str, fds)), *argv]
+            argv = [sys.executable, "-I", "-S", "-c", _REAP_TREE, ",".join(map(str, fds)), *argv]
         yield argv, ({"pass_fds": fds} if fds else {})
         return
     try:

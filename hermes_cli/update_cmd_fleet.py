@@ -325,6 +325,11 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
         return False
 
 
+# A gateway the restart phase stopped without knowing its profile: no live row can be matched to it,
+# so only a live, current gateway of this checkout settles it, never an empty host (""=no profile).
+_UNMAPPED_GATEWAY = ("gateway", "")
+
+
 def _marker_owed_gateways(inventory: object) -> set[tuple[str, str]] | None:
     """The ``("gateway", profile)`` set a marker's inventory owes; None when it recorded none.
 
@@ -344,6 +349,9 @@ def _marker_owed_gateways(inventory: object) -> set[tuple[str, str]] | None:
         if not isinstance(runtime, dict):
             raise ValueError("fleet-restart inventory row is not an object")
         if runtime_outside_gateway_evidence(runtime):
+            continue
+        if runtime.get("kind") == "gateway" and runtime.get("stopped_unmapped"):
+            owed.add(_UNMAPPED_GATEWAY)
             continue
         profile = runtime.get("profile")
         if runtime.get("kind") != "gateway" or not isinstance(profile, str) or not profile.strip() or profile == "unknown":
@@ -447,8 +455,10 @@ def _marker_only_restart_obsolete() -> bool:
             continue
         if row.get("state") != "current" or str(row.get("code_sha")) != target_sha:
             return False  # stale / down / unknown-identity row still owes the restart
-    if owed is not None and not owed <= covered:
+    if owed is not None and not owed - {_UNMAPPED_GATEWAY} <= covered:
         return False  # A gateway this marker owns is absent (down) or unidentifiable.
+    if owed and _UNMAPPED_GATEWAY in owed and all(row_is_external(row) for row in fleet):
+        return False  # another checkout's gateway is no successor for the one the update stopped
     _clear_fleet_restart_pending_marker()
     logger.debug(
         "Fleet-restart-pending marker discharged: %d gateway(s) already serve %s",

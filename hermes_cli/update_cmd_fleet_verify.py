@@ -128,17 +128,17 @@ def _live_gateway_pids_from_fleet(fleet_rows: list) -> dict:
     return live
 
 
-def _record_owed_gateway_inventory(plan) -> None:
+def _record_owed_gateway_inventory(plan, stopped_unmapped_pids=()) -> None:
     """Name the pre-update gateways on an inventory-less obligation once their restart is owed.
 
     The pull arms the obligation before the restart phase knows what it owes. An inventory-less
     record on a host whose gateway then died at boot is settled by the gateway-less discharge
     (nothing live, nothing named), which would silence the owed-restart warning that replaces a
     failed update under contract C3. A named inventory keeps it until those gateways run HEAD.
+    A gateway stopped with no known profile is recorded as an unmapped row for the same reason: it
+    has no ``gateway_state.json`` the gateway-less probe could see, so absence would settle it.
     """
     from hermes_cli import update_cmd_fleet as fleet
-    if plan is None:
-        return
     armed = fleet._fleet_restart_obligation_armed()
     fields = fleet._obligation_fields() if armed else {}
     if fields is None or fields.get("inventory") not in (None, "", "null"):
@@ -149,7 +149,8 @@ def _record_owed_gateway_inventory(plan) -> None:
         if getattr(runtime, "kind", None) == "gateway"
         and isinstance(getattr(runtime, "profile", None), str)
         and runtime.profile.strip() and runtime.profile != "unknown"
-    ]
+    ] + [{"kind": "gateway", "profile": None, "pid": pid, "stopped_unmapped": True}
+         for pid in sorted(stopped_unmapped_pids)]
     if rows:
         # Not armed any more (a pre-restart probe settled an inventory-less record): re-arm, the
         # restart is owed. The SHA is the code the fleet must be proven current on.
@@ -324,7 +325,7 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
             + "; recover with `hermes gateway restart`",
         )
         with _best_effort('Fleet restart inventory not recorded: %s'):
-            _record_owed_gateway_inventory(_pre_update_plan)
+            _record_owed_gateway_inventory(_pre_update_plan, stopped)
     with _best_effort('Update receipt finalize failed: %s'):
         from hermes_cli.update_receipt import finalize_update_receipt
         # A False ``update_complete`` (unsafe SQLite runtime, owed tail work) never fails the

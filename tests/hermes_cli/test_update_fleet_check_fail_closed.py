@@ -138,3 +138,38 @@ def test_unmapped_stop_keeps_the_restart_owed(monkeypatch, tmp_path):
     assert [f["step"] for f in receipt["followups"]] == ["gateway_restart"]
     assert "101" in receipt["followups"][0]["reason"]
     assert cleared == []
+
+
+def test_unmapped_stop_debt_survives_startup_until_a_current_gateway_runs(monkeypatch, tmp_path):
+    # An unmapped gateway leaves no gateway_state.json, so on the next start the empty host looked
+    # gateway-less and the inventory-less obligation was discharged: the stopped gateway's restart
+    # debt vanished. Only a live gateway serving the checkout may settle it.
+    from hermes_cli import update_cmd, update_cmd_fleet as fleet, update_cmd_fleet_verify as fleet_verify
+    from hermes_cli import update_cmd_fleet_gatewayless as gatewayless, update_host_obligation as host, update_receipt
+
+    monkeypatch.setattr(host, "host_obligation_path", lambda: tmp_path / "host-update-restart.json")
+    monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "head")
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: "head")
+    monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
+    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **kw: None)
+    monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
+    monkeypatch.setattr(gatewayless, "host_owes_no_gateway_restart", lambda: True)
+    fleet_rows: list = []
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **kw: list(fleet_rows))
+    fleet._write_fleet_restart_pending_marker(expected_sha="head")  # armed by the pull, inventory-less
+    out = fleet._GatewayRestartOutcome(
+        incomplete=False, phase_errors=[], pre_restart_gateway_pids=[101], restarted_services=[],
+        failed_or_stale_units=[], relaunched_profiles=[], externally_supervised_profiles=[],
+        killed_pids={101}, stopped_unmapped_pids={101},
+    )
+    update_receipt.begin_update_receipt()
+    fleet_verify._verify_fleet_after_update(out, _pre_update_plan=_plan([]), _windows_gateway_resume=None,
+                                            update_complete=True)
+
+    assert fleet._update_owes_fleet_restart(receipt={}, pending_manual=[]) is True
+    assert fleet._pending_fleet_restart_needed(receipt={}, pending_manual=[]) is True  # already-current update
+    assert fleet._fleet_restart_obligation_armed()
+
+    fleet_rows.append({"profile": "default", "state": "current", "code_sha": "head"})  # `hermes gateway run`
+    assert fleet._update_owes_fleet_restart(receipt={}, pending_manual=[]) is False
+    assert not fleet._fleet_restart_obligation_armed()

@@ -756,7 +756,11 @@ def _cmd_prune_or_archive(db, args, action):
     if prune:
         print(f"Pruned {db.prune_sessions(sessions_dir=_sessions_dir(), exclude_active_write_guards=True, **filters)} session(s).")
     else:
-        print(f"Archived {db.archive_sessions(**filters)} session(s). They're hidden from listings "
+        from hermes_cli.lifecycle import archive_session
+
+        count = db.archive_sessions(
+            archive=lambda store, sid: archive_session(store, sid, True, surface="cli"), **filters)
+        print(f"Archived {count} session(s). They're hidden from listings "
               "but fully recoverable (nothing was deleted).")
 
 

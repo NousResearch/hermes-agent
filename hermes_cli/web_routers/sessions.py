@@ -837,12 +837,19 @@ async def backfill_session_owner_profiles(body: SessionOwnerBackfill):
     return {"ok": True, "stamped": stamped, "profile": stamp}
 
 
-# PATCH /api/sessions/{id} flag -> SessionDB setter, applied in this order.
+def _archive_via_rest(db, sid, value, profile=None):
+    """Deliberate archive from Desktop/dashboard: fires ``on_session_archived`` on a real transition."""
+    from hermes_cli.lifecycle import archive_session
+
+    return archive_session(db, sid, value, surface="dashboard", profile=profile)
+
+
+# PATCH /api/sessions/{id} flag -> SessionDB setter(db, sid, value, profile), applied in this order.
 _RENAME_FLAG_SETTERS = (
-    ("archived", lambda db, sid, v: db.set_session_archived(sid, v)),
-    ("hidden", lambda db, sid, v: db.set_session_hidden(sid, v)),
-    ("pinned", lambda db, sid, v: db.set_session_pinned(sid, v)),
-    ("unread", lambda db, sid, v: db.set_session_read(sid, read=not v)),
+    ("archived", _archive_via_rest),
+    ("hidden", lambda db, sid, v, _profile=None: db.set_session_hidden(sid, v)),
+    ("pinned", lambda db, sid, v, _profile=None: db.set_session_pinned(sid, v)),
+    ("unread", lambda db, sid, v, _profile=None: db.set_session_read(sid, read=not v)),
 )
 
 
@@ -871,7 +878,7 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         for flag, setter in _RENAME_FLAG_SETTERS:
             value = getattr(body, flag)
             if value is not None:
-                setter(db, sid, value)
+                setter(db, sid, value, body.profile)
                 result[flag] = bool(value)
         result["title"] = db.get_session_title(sid) or ""
         return result

@@ -7149,14 +7149,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction (set_message_reaction
-        replaces, not adds); CANCELLED explicitly clears the 👀."""
+        replaces, not adds); CANCELLED and SKIPPED explicitly clear the 👀 — a hook-dropped
+        message (#133475) must not read as answered (👍) or failed (👎)."""
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if not (chat_id and message_id):
             return
-        if outcome == ProcessingOutcome.CANCELLED:
+        if outcome in (ProcessingOutcome.CANCELLED, ProcessingOutcome.SKIPPED):
             await self._clear_reactions(chat_id, message_id)
         else:
             await self._set_reaction(chat_id, message_id, "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e")

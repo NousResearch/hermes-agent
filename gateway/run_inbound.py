@@ -228,9 +228,14 @@ class GatewayInboundMixin:
         # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
         # counting internal/system events would keep a genuinely idle gateway awake.
         self._scale_to_zero_note_real_inbound()
-        event = await self._hm_pre_gateway_dispatch_hook(event, source)
-        if event is None:
+        _hooked = await self._hm_pre_gateway_dispatch_hook(event, source)
+        if _hooked is None:
+            # A plugin dropped the message (#133475). Mark the ORIGINAL event object — the one
+            # the adapter's _process_message_background still holds — so its lifecycle hook can
+            # report SKIPPED instead of scoring the empty response as a successful turn.
+            event._hermes_pre_gateway_skip = True
             return None
+        event = _hooked
         source = event.source
 
         if not self._is_user_authorized_for_source(source):

@@ -4636,14 +4636,20 @@ class BasePlatformAdapter(ABC):
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
             await self._release_turn_marker(event)
-            processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            if getattr(event, "_hermes_pre_gateway_skip", False):
+                # A pre_gateway_dispatch hook dropped this message (#133475); ``response is None``
+                # here means "dropped", not "streamed/queued". Adapters retract the in-progress
+                # marker and add no outcome ack, so a dropped message never reads as answered.
+                _outcome = ProcessingOutcome.SKIPPED
+            else:
+                processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+                _outcome = ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
                 event=event) or "")
             await self._run_processing_hook(
-                "on_processing_complete", event,
-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE)
+                "on_processing_complete", event, _outcome)
             # Force-flush an unfired debounce timer so this task hands off to a fresh drain task.
             # Clear the Event BEFORE the stop-typing await so concurrent inbound sees a live guard.
             await self._flush_text_debounce_now(session_key)

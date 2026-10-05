@@ -1,15 +1,49 @@
-"""The Windows crash cells' oracles, judged on this OS: a verdict the cells can only reach on a
-Windows runner must still say pass exactly when the user's update was what the cell claims."""
+"""The Windows update E2E, judged on this OS: the workflow's selection runs every cell, and a
+verdict the crash cells can only reach on a Windows runner says pass exactly when the user's
+update was what the cell claims."""
 
+import importlib
+import inspect
 import os
+import shlex
 import subprocess
 import time
 from pathlib import Path
 
 import psutil
 import pytest
+from _pytest.mark.expression import Expression
 
 import tests.e2e.core.windows_update.test_crash_cells as crash
+
+_REPO = Path(__file__).resolve().parents[2]
+_SUITE = "tests/e2e/core/windows_update"
+
+
+def _workflow_selection() -> str:
+    """The ``-m`` expression the Windows install + update E2E workflow runs its suite with."""
+    yaml = pytest.importorskip("hermes_yaml")
+    wf = yaml.safe_load((_REPO / ".github/workflows/windows-install-update-e2e.yml").read_text(encoding="utf-8-sig"))
+    step = next(s for s in wf["jobs"]["install-update"]["steps"] if s.get("name") == "Run Windows install + update E2E")
+    argv = shlex.split(step["run"].replace("\\\n", " "))
+    assert f"{_SUITE}/" in argv, f"the workflow no longer runs {_SUITE}/: {argv}"
+    return argv[argv.index("-m") + 1]
+
+
+# run_tests.sh reports a file whose every test the -m expression deselects as passed with 0
+# tests run, so a dropped platforms("windows") marker would silently run zero cells.
+@pytest.mark.parametrize("path", sorted(p.name for p in (_REPO / _SUITE).glob("test_*.py")))
+def test_windows_update_workflow_selects_every_test_of_the_suite(path):
+    selection = Expression.compile(_workflow_selection())
+    module = importlib.import_module(f"{_SUITE.replace('/', '.')}.{Path(path).stem}")
+    tests = [fn for name, fn in inspect.getmembers(module, inspect.isfunction) if name.startswith("test")]
+    assert tests, f"{path}: no module-level test functions to select"
+    for fn in tests:
+        marks = [getattr(m, "mark", m) for m in [*getattr(module, "pytestmark", []), *getattr(fn, "pytestmark", [])]]
+        names = {m.name for m in marks}
+        assert selection.evaluate(lambda name, **_: name in names), f"{path}::{fn.__name__}: the workflow deselects it"
+        windows = any(m.name == "platforms" and "windows" in m.args for m in marks)
+        assert windows, f"{path}::{fn.__name__}: not marked platforms('windows'), so the Windows runner skips it"
 
 
 class _Machine:

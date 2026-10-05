@@ -1,6 +1,11 @@
 """Tests for hermes_cli.logs — log viewing and filtering."""
 
+import logging
+import logging.handlers
 from datetime import datetime, timedelta
+from types import SimpleNamespace
+
+import pytest
 
 from hermes_cli.logs import (
     LOG_FILES,
@@ -228,3 +233,99 @@ def test_every_log_file_writes_a_stamp_hermes_logs_since_can_read():
     # gateway.error.log (launchd stderr, not in LOG_FILES) uses the shared stamper.
     from hermes_cli.stderr_timestamp import stamp_line
     assert _parse_line_timestamp(stamp_line("raw gateway stderr")) is not None
+
+
+# ---------------------------------------------------------------------------
+# hermes logs -f
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def agent_log():
+    """``agent.log`` under the test HERMES_HOME, written by a real rotating handler."""
+    from hermes_constants import get_hermes_home
+    path = get_hermes_home() / "logs" / "agent.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(path, maxBytes=1_000_000, backupCount=2, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logger = logging.getLogger("test_logs_follow")
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+    logger.info("seed")
+    yield path, handler, logger
+    logger.removeHandler(handler)
+    handler.close()
+
+
+def _follow(monkeypatch, capsys, writer_steps):
+    """Run ``hermes logs agent -f``: each idle poll performs the next writer step, and once they
+    (plus a couple of spare polls) are used up the follower is stopped the way Ctrl+C stops it."""
+    import hermes_cli.logs as logs_mod
+
+    pending = list(writer_steps) + [lambda: None, lambda: None]
+
+    def idle_poll(_seconds):
+        if not pending:
+            raise KeyboardInterrupt
+        pending.pop(0)()
+
+    monkeypatch.setattr(logs_mod, "time", SimpleNamespace(sleep=idle_poll))
+    logs_mod.tail_log("agent", num_lines=1, follow=True)
+    return capsys.readouterr().out
+
+
+def test_follow_keeps_printing_after_the_log_rotates(agent_log, monkeypatch, capsys):
+    path, handler, log = agent_log
+    out = _follow(monkeypatch, capsys, [
+        lambda: log.info("MARK-1 before rollover"),
+        lambda: (handler.doRollover(), log.info("MARK-2 after rollover")),
+    ])
+    assert path.with_name("agent.log.1").exists()  # the rollover really renamed the file
+    assert "MARK-1" in out and "MARK-2" in out
+    assert out.index("MARK-1") < out.index("MARK-2")
+
+
+def test_follow_resumes_after_the_log_is_truncated_in_place(agent_log, monkeypatch, capsys):
+    path, _handler, log = agent_log
+
+    def truncate_then_log():
+        path.write_bytes(b"")  # copytruncate-style rotation; the handler appends at the new end
+        log.info("MARK-2")
+
+    out = _follow(monkeypatch, capsys, [lambda: log.info("MARK-1 before truncation"), truncate_then_log])
+    assert "MARK-1" in out and "MARK-2" in out
+
+
+@pytest.mark.platforms("windows")
+def test_follow_does_not_block_the_writers_rollover(monkeypatch, capsys):
+    """An attached ``hermes logs -f`` must neither stop Hermes' own writer from rotating the log
+    nor lose the entries written after the rotation.
+
+    Windows-only: only a Windows handle opened without FILE_SHARE_DELETE refuses the rename, and
+    only there is the writer concurrent-log-handler, which swallows the failed rename.
+    """
+    import hermes_logging
+    from hermes_constants import get_hermes_home
+
+    path = get_hermes_home() / "logs" / "agent.log"
+    handler = hermes_logging._new_file_handler(
+        path, level=logging.INFO, max_bytes=1_000_000, backup_count=1,
+        formatter=logging.Formatter("%(message)s"),
+    )
+
+    def log(message):
+        handler.handle(logging.LogRecord("test", logging.INFO, "", 0, message, (), None))
+
+    log("seed")
+    try:
+        out = _follow(monkeypatch, capsys, [
+            lambda: log("MARK-1 before the rollover"),
+            lambda: (handler.doRollover(), log("MARK-2 after the rollover")),
+        ])
+    finally:
+        handler.close()
+
+    backup = path.with_name("agent.log.1")
+    assert backup.exists(), "the rollover's rename was refused while the follower held agent.log"
+    assert "MARK-1" in backup.read_text(encoding="utf-8-sig")
+    assert "MARK-1" in out and "MARK-2" in out

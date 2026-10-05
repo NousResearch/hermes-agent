@@ -125,7 +125,10 @@ def _run_child(request: dict) -> tuple[int, dict]:
     env.setdefault("HERMES_UPDATE_HANDOFF_PID", str(os.getpid()))
     # Everything the user saw so far came from the OLD updater; say so before the
     # new one (package manager) takes over, so logs show where the switch happened.
-    print("→ Handing off to the new updater (package manager) for the rest of this update...", flush=True)
+    # ASCII only, like every line printed before the child starts: a Windows pipe encodes this
+    # process's stdout in the ANSI code page, and a non-cp1252 character raised here, before the
+    # takeover ever ran (review S1).
+    print("-> Handing off to the new updater (package manager) for the rest of this update...", flush=True)
     with tempfile.TemporaryDirectory(prefix="hermes-update-takeover-") as directory:
         context = Path(directory) / "request.json"
         result = Path(directory) / "result.json"
@@ -158,7 +161,7 @@ def _run_in_custody(argv: list, root: Path, **kwargs) -> int:
     try:
         refusal = bind(proc)
         if refusal is not None:
-            print(f"  ⚠ The update's job would not take the takeover ({refusal}); it runs outside the job, "
+            print(f"  ! The update's job would not take the takeover ({refusal}); it runs outside the job, "
                   "holding its own checkout lease.", flush=True)
         resume(proc)
         # The takeover is the rest of a committed update (sync + build): a bound would abandon it

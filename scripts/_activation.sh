@@ -34,6 +34,9 @@ hermes_sync() {
 # any dependency is importable. It only emits the environment; it installs nothing.
 hermes_bootstrap_python() {
     local repo="$1" store candidate
+    # zsh fails the whole loop on a pattern that matches nothing (NOMATCH);
+    # bash keeps the literal word, which `-x` rejects. Function-local in zsh.
+    [ -z "${ZSH_VERSION:-}" ] || setopt local_options null_glob
     for candidate in "$repo/.venv/bin/python" "$repo/.venv/Scripts/python.exe" \
                      "$repo/venv/bin/python" "$repo/venv/Scripts/python.exe"; do
         [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }

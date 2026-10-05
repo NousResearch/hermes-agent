@@ -45,12 +45,14 @@ def prompt_dangerous_approval(command: str, description: str, timeout_seconds: i
     """
     if timeout_seconds is None:
         timeout_seconds = _ctx._get_approval_timeout()
+    from tools.human_input_hooks import human_input_request
     # Everything below is a human prompt (callback panel or input() fallback, both bounded by the approval deadline):
     # record it as human-wait time so the concurrent batch deadline excludes it.
     # See #79719.
-    with human_wait_window():
-        return _ask_human(command, description, timeout_seconds, allow_permanent,
-                          approval_callback, allow_session, smart_denied, title=title)
+    with human_input_request("approval", prompt=command) as human, human_wait_window():
+        human.outcome = choice = _ask_human(command, description, timeout_seconds, allow_permanent,
+                                            approval_callback, allow_session, smart_denied, title=title)
+        return choice
 
 
 class Unanswered(str):
@@ -239,14 +241,16 @@ def _present_with_selected_transport(*, command: str, description: str, pattern_
         request_id=request.request_id, request_digest=request.digest,
     )
     _ctx._fire_approval_hook("pre_approval_request", **hook_kwargs)
-    with human_wait_window(session_key):
+    from tools.human_input_hooks import human_input_request
+    with human_input_request("approval", prompt=request.command, session_key=session_key) as human, \
+            human_wait_window(session_key):
         result = invoke_approval_transport(
             registered.present, request, timeout_seconds=timeout_seconds,
             on_poll=activity_heartbeat("waiting for plugin approval transport"),
             is_interrupted=is_interrupted,
         )
-    hook_choice = result.choice if result.failure is None else f"transport_{result.failure}"
-    _ctx._fire_approval_hook("post_approval_response", **hook_kwargs, choice=hook_choice)
+        human.outcome = result.choice if result.failure is None else f"transport_{result.failure}"
+    _ctx._fire_approval_hook("post_approval_response", **hook_kwargs, choice=human.outcome)
     return _attempt(name, result.choice, result.failure, fallback)
 
 

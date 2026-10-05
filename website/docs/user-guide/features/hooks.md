@@ -480,6 +480,8 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `pre_command` | Observer | Recognized slash command about to be dispatched, before the handler runs, on CLI and gateway cold-path dispatch; return ignored in v1 (directive-shaped dicts are logged at debug). Gateway running-agent intercept commands (`/stop`, `/approve` during an active run) are deliberately excluded — control-plane escape hatches must stay outside plugin reach. | `surface` (`"cli"` \| `"gateway"`), `command` (canonical name), `alias_used`, `args_raw`, `session_key`, `platform` | `args_raw` may contain user content or secrets typed after the command. |
 | `pre_approval_request` | Observer | Before prompted or smart approval; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | Command may contain secrets; smart observer preparation force-redacts, but surfaces do not all have identical redaction. |
 | `post_approval_response` | Observer | After a decision, timeout, or gateway notification failure; return ignored. | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`; smart path may add `decided_by` | Same command sensitivity plus decision metadata. |
+| `on_human_input_request` | Observer | The agent is about to block on a person — sudo password prompt, `clarify` question, or dangerous-command approval — on CLI, Ink TUI/Desktop, ACP and gateway platforms; return ignored. | `kind` (`"sudo"` \| `"clarify"` \| `"approval"`), `request_id`, `session_id`, `session_key`, `platform`, `prompt` | `prompt` is always force-redacted; the typed password or answer is never passed. |
+| `on_human_input_resolved` | Observer | Exactly once per `on_human_input_request`, when the wait ends (answered, skipped, timed out, withdrawn, or failed); return ignored. | Same as the request plus `outcome` | Outcome only — never the answer itself. |
 | `on_room_member_activity` | Observer | While a hosted Group Chat member turn runs on the Bot Mode gateway, once per runtime event the member session emits (tool start/complete, approval request, message/reasoning deltas, errors); queued per consumer off the token path; return ignored. | `room_id`, `thread_id`, `member_id`, `turn_id`, `task_id`, `execution_generation`, `kind`, `seq`, `payload` | `payload` is the client-safe session event body: tool args and results, redacted approval commands, streamed member text. |
 | `kanban_task_claimed` | Observer | After claim commit, in dispatcher process before worker spawn; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee identifiers. |
 | `kanban_task_completed` | Observer | After completion and cleanup, usually in worker process; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `summary` | Summary may contain project/user content. |
@@ -1401,6 +1403,70 @@ def log_decision(command, choice, session_key, **kwargs):
 
 def register(ctx):
     ctx.register_hook("post_approval_response", log_decision)
+```
+
+---
+
+### `on_human_input_request`
+
+Fires right before Hermes blocks waiting for a person to type or click something, whatever the prompt is and wherever it shows up. One hook pair covers every blocking prompt, so a notifier ("Hermes is waiting on you") does not have to subscribe to a separate hook per prompt type or pattern-match tool arguments:
+
+| `kind` | Prompt | Surfaces |
+|--------|--------|----------|
+| `"sudo"` | Masked sudo password prompt before a `sudo` command runs | Interactive CLI, Ink TUI / Desktop (`sudo.request` card), `/dev/tty` fallback |
+| `"clarify"` | A `clarify` tool question | CLI, Ink TUI / Desktop, gateway platforms |
+| `"approval"` | Dangerous-command / write approval, MCP elicitation consent, plugin approval transports | CLI, Ink TUI / Desktop, ACP, gateway platforms, `ctx.register_approval_transport` plugins |
+
+`approvals.mode=smart` decisions made by the auxiliary LLM do not fire it, because no person is asked; neither do gateway approvals that join an identical prompt already pending (the person sees one prompt, and the pair fires once for it). New kinds can be added later, so ignore kinds you don't handle.
+
+**Callback signature:**
+
+```python
+def my_callback(kind: str, request_id: str, session_id: str, session_key: str,
+                platform: str, prompt: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `kind` | `str` | `"sudo"`, `"clarify"` or `"approval"` |
+| `request_id` | `str` | Unique per prompt; the matching `on_human_input_resolved` carries the same value |
+| `session_id` | `str` | Hermes session id when known, else `""` |
+| `session_key` | `str` | Session/chat routing key, useful for scoping notifications per chat |
+| `platform` | `str` | Gateway platform (`"telegram"`, `"discord"`, ...) or local source (`"cli"`, `"tui"`, `"desktop"`, ...) |
+| `prompt` | `str` | What the person is asked about: the command for `sudo`/`approval`, the question text for `clarify`. Always redacted with the secret redactor, even when `security.redact_secrets` is off |
+
+The sudo password and clarify answers are **never** passed to either hook. **Return value:** ignored; a raising callback is logged and the prompt proceeds. Callbacks run on the thread that is about to block, so keep them fast — hand network calls (push services, webhooks) to a background thread.
+
+### `on_human_input_resolved`
+
+Fires exactly once for every `on_human_input_request`, after the wait ends. Same kwargs plus `outcome`:
+
+| `kind` | `outcome` values |
+|--------|------------------|
+| `"sudo"` | `"provided"`, `"skipped"` (empty answer), `"timeout"`, `"cancelled"`, `"error"` |
+| `"clarify"` | The surface's outcome: `"submitted"`, `"timed_out"`, `"cancelled"`, `"undelivered"`, `"terminated"`, or `"error"` |
+| `"approval"` | `"once"`, `"session"`, `"always"`, `"deny"`, `"timeout"`, `"cancelled"`, `"notify_failed"`, or `"transport_<failure>"` for a failed plugin transport |
+
+```python
+import threading
+
+def push_notification(text):
+    ...  # call your push service here
+
+def register(ctx):
+    pending = {}
+
+    def on_request(kind, request_id, prompt, session_key, **kwargs):
+        pending[request_id] = threading.Timer(30, push_notification, (f"Hermes needs you ({kind}): {prompt[:80]}",))
+        pending[request_id].start()  # only page if nobody answers within 30s
+
+    def on_resolved(request_id, **kwargs):
+        timer = pending.pop(request_id, None)
+        if timer:
+            timer.cancel()
+
+    ctx.register_hook("on_human_input_request", on_request)
+    ctx.register_hook("on_human_input_resolved", on_resolved)
 ```
 
 ---

@@ -279,7 +279,7 @@ it.each(['ok', 'auth', 'cached-ok'] as const)('does not retry %s or extend a cac
   if (mode === 'cached-ok') expect(probeCache.get(key)?.at).toBe(at)
 })
 
-it.each(['disconnect', 'profile', 'stop'] as const)('drops a late confirmation on %s', async change => {
+it.each(['disconnect', 'reconnect', 'profile', 'stop'] as const)('drops a late confirmation on %s', async change => {
   const name = `late-${change}`
   const server = { url: 'http://127.0.0.1:9999/mcp' }
   const key = probeKey(name, server, 'default')
@@ -299,6 +299,11 @@ it.each(['disconnect', 'profile', 'stop'] as const)('drops a late confirmation o
   expect(mocks.testMcpServer).toHaveBeenCalledTimes(2)
 
   if (change === 'disconnect') mocks.gatewayState.set('closed')
+  if (change === 'reconnect') {
+    mocks.getHermesConfigRecord.mockResolvedValue({ mcp_servers: {} })
+    mocks.gatewayState.set('closed')
+    mocks.gatewayState.set('open')
+  }
   if (change === 'stop') stopMcpHealthChecker()
   if (change === 'profile') {
     mocks.getHermesConfigRecord.mockResolvedValue({ mcp_servers: {} })

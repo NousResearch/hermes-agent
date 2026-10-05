@@ -275,6 +275,8 @@ export function startMcpHealthChecker(): void {
     if (state === 'open') {
       arm()
     } else {
+      // A reconnect must not accept a confirmation from the previous socket.
+      sweepEpoch += 1
       disarm()
     }
   })

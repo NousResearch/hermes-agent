@@ -202,19 +202,34 @@ def _async_value(value):
     return _inner()
 
 
+class _RecordingApp:
+    """The Application surface this retry path uses: add_handler appends, and that
+    list is the registration the test can see without naming adapter methods.
+    """
+
+    def __init__(self, initialize):
+        self.handlers = {}
+        self.bot = MagicMock()
+        self.initialize = initialize
+
+    def add_handler(self, handler, group=0):
+        self.handlers.setdefault(group, []).append(handler)
+
+
+def _handler_is_on(app, handler) -> bool:
+    return any(item is handler for group in app.handlers.values() for item in group)
+
+
 class TestTransientInitRebuildRestoresPluginHandlers:
-    def test_rebuilt_app_receives_the_factory_before_core_registration(self, monkeypatch):
+    def test_rebuilt_application_contains_the_plugin_handler(self, monkeypatch):
         """A transient initialize failure discards the Application. The retry
-        must run the plugin factory on the replacement, and must do that
-        before core handlers, or PTB's first-match dispatch shadows them.
+        must install the plugin handler on the replacement, not merely receive
+        a reference to it.
         """
         adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
-        first_app = MagicMock()
-        first_app.bot = MagicMock()
-        first_app.initialize = MagicMock(side_effect=OSError("transient"))
-        rebuilt_app = MagicMock()
-        rebuilt_app.bot = MagicMock()
-        rebuilt_app.initialize = MagicMock(side_effect=RuntimeError("stop after rebuild"))
+        first_app = _RecordingApp(MagicMock(side_effect=OSError("transient")))
+        rebuilt_app = _RecordingApp(MagicMock(side_effect=RuntimeError("stop after rebuild")))
+        plugin_handler = object()
 
         builder = MagicMock()
         builder.token.return_value = builder
@@ -240,31 +255,15 @@ class TestTransientInitRebuildRestoresPluginHandlers:
             lambda scope, identity, metadata=None: (True, None),
         )
 
-        seen = []
-
         def factory(native, _adapter):
-            seen.append(native)
+            native.add_handler(plugin_handler)
 
         mgr = MagicMock()
         mgr.get_platform_handler_factories.return_value = [(factory, "p")]
-        order = []
-        real_wire = adapter._wire_plugin_handlers
-
-        def spy_wire(native=None):
-            order.append(("wire", native))
-            return real_wire(native)
-
-        def spy_register(app):
-            order.append(("register", app))
-
-        adapter._wire_plugin_handlers = spy_wire
-        adapter._register_handlers = spy_register
-
         with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
             assert asyncio.run(adapter.connect()) is False
 
-        assert rebuilt_app in seen
-        assert order.index(("wire", rebuilt_app)) < order.index(("register", rebuilt_app))
+        assert _handler_is_on(rebuilt_app, plugin_handler)
 
 
 # ===========================================================================

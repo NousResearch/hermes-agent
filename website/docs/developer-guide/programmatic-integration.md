@@ -99,6 +99,39 @@ Methods: `approval` → `{choice}`; `clarify` → `{answers}` keyed by question 
 
 When the gateway withdraws a question (timeout, interrupt, answered from another surface) it emits `request.cancel` `{ id, method, reason }`; clear only the matching prompt. `session.resume` / `session.activate` results and `session.events.since` carry `open_requests` — the still-open frames — so a reconnecting client re-renders (and can still answer) them.
 
+### Authenticated creation provenance
+
+`session.create` and `session.branch_stored` may return `creation_binding`:
+`session_id`, `stored_session_id`, `authenticated_owner`, `runtime_incarnation`
+and `profile_store_scope`. The owner is the gateway-authenticated
+`<provider>:<user id>`, not the model provider. Anonymous/legacy transports and
+unbounded identity values receive no binding. The incarnation is minted for the
+new live record independently of its short runtime ID and process replay epoch;
+a new record created through these methods mints another incarnation even under
+the same runtime ID. Other creation/resume paths do not acquire this provenance.
+
+The scope token names that runtime's captured resolved profile and `state.db`
+location without exposing a host path. It is an opaque per-origin identifier,
+not a lookup key for comparing independently created sessions or proving the
+physical database file has not been replaced. It does not grant authentication
+or access. No extra durable store is introduced.
+
+An idempotent creation retry returns the original binding only to the same
+authenticated creator requesting the same resolved profile/store scope. The
+binding never restamps origin from a later compression segment, profile or login
+on the mutable runtime. Consequently its original `stored_session_id` may differ
+from a retry's current top-level `stored_session_id`; a client must not interpret
+that as permission to follow a descendant. Each response carries a fresh copy.
+
+This metadata establishes creation provenance only. It does **not** prove current
+registry membership, safe conditional subscription, complete replay/history,
+request outcomes, or writable recovery. Legacy `session.activate` is unchanged
+and does not compare these fields. Clients must not send invented preconditions
+to it or adopt a runtime from event/discovery metadata. A conditional activation
+contract still needs atomic owner/scope/segment/incarnation comparison, an
+accepted-binding receipt, and fencing of subsequent session-targeted operations
+when identity changes. Do not automatically replay prompts or responses.
+
 ### Rebuilding the in-flight turn on reconnect
 
 `session.resume` / `session.activate` results carry `inflight` — the turn still running (or the retained failed one) that history does not hold yet: `user`, `assistant` streamed so far, `streaming`, mid-turn `corrections`, and error fields. When the turn was started by the gateway rather than typed by a person (a background-process completion, an async delegation result, a hidden scaffolding prompt) `inflight` also carries the same `display_kind` / `display_metadata` the persisted `messages` row will get, so a client renders the live prompt exactly as it will render history after the turn lands — a `process_complete` timeline marker with `display_metadata.display_text`, nothing at all for `hidden`. Both fields are absent for genuine user input; never infer origin from the prompt text (a user quoting a marker string is still a user).

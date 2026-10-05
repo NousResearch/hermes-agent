@@ -140,7 +140,18 @@ class SessionCreateParams(ProfileParams):
     idempotency_key: str | None = None
 
 
+class SessionCreationBinding(Result):
+    """Authenticated origin of one create. Not current membership or control authority."""
+
+    session_id: str = Field(min_length=1, max_length=256)
+    stored_session_id: str = Field(min_length=1, max_length=256)
+    authenticated_owner: str = Field(min_length=1, max_length=256)
+    runtime_incarnation: str = Field(min_length=1, max_length=256)
+    profile_store_scope: str = Field(min_length=1, max_length=256)
+
+
 class SessionCreateResult(Result):
+    creation_binding: SessionCreationBinding | None = None
     session_id: str
     stored_session_id: str
     message_count: int
@@ -164,6 +175,7 @@ class SessionBranchStoredParams(ProfileParams):
 
 
 class SessionBranchStoredResult(Result):
+    creation_binding: SessionCreationBinding | None = None
     session_id: str
     stored_session_id: str
     message_count: int

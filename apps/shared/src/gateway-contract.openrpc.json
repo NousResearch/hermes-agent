@@ -29355,6 +29355,17 @@
       "SessionBranchStoredResult": {
         "additionalProperties": false,
         "properties": {
+          "creation_binding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionCreationBinding"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -30349,6 +30360,17 @@
       "SessionCreateResult": {
         "additionalProperties": false,
         "properties": {
+          "creation_binding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionCreationBinding"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -30380,6 +30402,51 @@
           "info"
         ],
         "title": "SessionCreateResult",
+        "type": "object"
+      },
+      "SessionCreationBinding": {
+        "additionalProperties": false,
+        "description": "Authenticated origin of one create. Not current membership or control authority.",
+        "properties": {
+          "session_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "authenticated_owner": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Authenticated Owner",
+            "type": "string"
+          },
+          "runtime_incarnation": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Runtime Incarnation",
+            "type": "string"
+          },
+          "profile_store_scope": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Profile Store Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "stored_session_id",
+          "authenticated_owner",
+          "runtime_incarnation",
+          "profile_store_scope"
+        ],
+        "title": "SessionCreationBinding",
         "type": "object"
       },
       "SessionCwdSetParams": {

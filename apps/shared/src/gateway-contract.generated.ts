@@ -3029,11 +3029,20 @@ export interface SeedMessage {
   [key: string]: unknown
 }
 export interface SessionCreateResult {
+  creation_binding?: SessionCreationBinding | null
   session_id: string
   stored_session_id: string
   message_count: number
   messages: TranscriptMessage[]
   info: SessionLiveInfo
+}
+/** Authenticated origin of one create. Not current membership or control authority. */
+export interface SessionCreationBinding {
+  session_id: string
+  stored_session_id: string
+  authenticated_owner: string
+  runtime_incarnation: string
+  profile_store_scope: string
 }
 /** One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``): ``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id`` rewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``. Assistant detail sidecars (``reasoning``, …) ride as extra keys. */
 export interface TranscriptMessage {
@@ -3073,6 +3082,7 @@ export interface SessionBranchStoredParams {
   idempotency_key?: string | null
 }
 export interface SessionBranchStoredResult {
+  creation_binding?: SessionCreationBinding | null
   session_id: string
   stored_session_id: string
   message_count: number

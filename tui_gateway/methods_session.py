@@ -335,6 +335,14 @@ def _seed_row(record: dict) -> None:
         logger.debug("seeded-session title write failed for %s; pending_title stays queued", key, exc_info=True)
 
 
+def _creation_binding_fields(session: dict, profile_home) -> dict:
+    origin = session.get("creation_binding")
+    if origin is None:
+        return {}
+    store_path = str((Path(profile_home or _hermes_home) / "state.db").resolve())
+    return origin.fields_for(_transport_auth_user_id(current_transport()), store_path)
+
+
 def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
     """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
     transcript server-side and omits it from the reply."""
@@ -372,6 +380,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
                     # renderer is exactly what the method exists to avoid.
                     return _ok(rid, {
                         "session_id": existing_sid, "stored_session_id": session["session_key"],
+                        **_creation_binding_fields(session, profile_home),
                         "message_count": len(history),
                         **({"messages_omitted": True} if copy_parent_history
                            else {"messages": _history_to_messages(history, profile_home=session.get("profile_home"))}),
@@ -441,7 +450,12 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "slash_worker": None, "tool_progress_mode": _load_tool_progress_mode(), "tool_started_at": {},
             "transport": current_transport() or _stdio_transport,
             "auth_user_id": _transport_auth_user_id(current_transport())}
-        _register_session_cwd(_sessions[sid])
+        from .session_creation_binding import CreationBinding
+        _sessions[sid]["creation_binding"] = CreationBinding.mint(
+            sid, key, _sessions[sid]["auth_user_id"],
+            str((Path(profile_home or _hermes_home) / "state.db").resolve()))
+        created_session = _sessions[sid]
+        _register_session_cwd(created_session)
         if idem_key is not None:
             _idempotency_keys[idem_key] = (sid, now)
     if session_model_override:
@@ -483,6 +497,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     messages = _history_to_messages(history, profile_home=profile_home)  # hidden seed rows are not on the wire; count what is (as resume does)
     return _ok(rid, {
         "session_id": sid, "stored_session_id": key, "message_count": len(messages),
+        **_creation_binding_fields(created_session, profile_home),
         **({"messages_omitted": True} if copy_parent_history else {"messages": messages}),
         "info": {**_lazy_info_route(_sessions[sid], override), "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
                  "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,

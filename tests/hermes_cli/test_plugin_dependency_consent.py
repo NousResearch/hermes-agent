@@ -96,7 +96,7 @@ def test_yes_deps_carries_consent_through_non_interactive_install(admission_env,
     assert 'dependency install skipped (non-interactive)' not in output
 
 
-def test_dashboard_install_publishes_a_plugin_the_config_already_selects(admission_env, monkeypatch):
+def test_dashboard_install_publishes_a_plugin_the_config_already_selects(admission_env, monkeypatch):  # health: allow F811 -- pytest injects the imported admission_env fixture by parameter name
     """The Desktop/dashboard Install click on a plugin memory.provider already names (a provider that
     left core, a synced config, a re-install after remove) publishes like any fresh install instead of
     the non-interactive 'Install declined' that a retry can never get past. A forced replacement of an

@@ -1329,6 +1329,15 @@ class SessionSearchMixin:
                     except sqlite3.OperationalError as exc:
                         self._conn.rollback()
                         logger.warning("FTS rebuild failed for %s: %s", tbl, exc)
+                    except sqlite3.DatabaseError as exc:
+                        # SQLITE_CORRUPT ("database disk image is malformed") is a DatabaseError,
+                        # not an OperationalError — the corruption class this recovery exists for.
+                        # Without this arm the error escaped the loop un-rolled-back and callers
+                        # lost the 0-means-no-progress signal they route on (#133375).
+                        self._conn.rollback()
+                        logger.error(
+                            "FTS rebuild failed with a corruption-class error for %s: %s; "
+                            "the index needs the offline repair path (repair_state_db_schema)", tbl, exc)
         return rebuilt
 
     def _merge_fts_incrementally(self, *, max_pages: int, max_commands: Optional[int] = None) -> int:

@@ -265,7 +265,8 @@ class ElicitationHandler:
     _ANSWER_RESULTS = {"accept": ("accept", "accepted"), "cancel": ("cancel", "errors")}
 
     def __init__(self, server_name: str, config: dict,
-                 call_context: Callable[[], Optional[Context]] = lambda: None):
+                 call_context: Callable[[], Optional[Context]] = lambda: None,
+                 call_runner: Callable[[], Optional[Callable[[Callable[[], str]], str]]] = lambda: None):
         self.server_name = server_name
         # 5 min mirrors the gateway approval default so async surfaces (Telegram, Slack) can respond.
         self.timeout = _safe_numeric(config.get("timeout", 300), 300, float)
@@ -273,6 +274,7 @@ class ElicitationHandler:
         # between calls). A thunk, not the task: mcp_tool_server_run imports this module, so
         # MCPServerTask cannot be named here.
         self._call_context = call_context
+        self._call_runner = call_runner
         self.metrics = {"requests": 0, "accepted": 0, "declined": 0, "errors": 0}
 
     def session_kwargs(self) -> dict:
@@ -297,6 +299,9 @@ class ElicitationHandler:
         if captured is not None:
             base_consent = consent
             consent = lambda: captured.copy().run(base_consent)
+        runner = self._call_runner()
+        if runner is not None:
+            return functools.partial(runner, consent)
         from tools.thread_context import propagate_context_to_thread
         return propagate_context_to_thread(consent)
 

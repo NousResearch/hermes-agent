@@ -462,86 +462,6 @@ def restart_safe_gateway_child_argv(
     return GatewayChildDispatch("scoped", scoped)
 
 
-def list_systemd_user_scope_units(pattern: str) -> list[str]:
-    """Unit names the user manager currently has loaded as scopes matching ``pattern``.
-
-    Fail-closed, like the other systemd seams here: no ``systemctl``, an unreachable
-    manager, or a failed call returns ``[]``, which callers read as "nothing to do".
-    ``--all`` is deliberate — a scope whose processes are gone can still be loaded.
-    """
-    import shutil
-
-    binary = shutil.which("systemctl")
-    if binary is None:
-        return []
-    try:
-        result = subprocess.run(
-            [
-                binary,
-                "--user",
-                "list-units",
-                "--type=scope",
-                "--all",
-                "--plain",
-                "--no-legend",
-                "--no-pager",
-                pattern,
-            ],
-            capture_output=True,
-            timeout=15,
-            stdin=subprocess.DEVNULL,
-            env=systemd_user_bus_env(),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return []
-    if result.returncode != 0:
-        return []
-    units: list[str] = []
-    for line in (result.stdout or b"").decode(errors="replace").splitlines():
-        fields = line.split()
-        if fields and fields[0].endswith(".scope"):
-            units.append(fields[0])
-    return units
-
-
-def _stop_systemd_unit(unit_name: str, *, no_block: bool = False) -> bool:
-    """Stop a transient systemd user scope by unit name.
-    Reaps the *entire* cgroup — catching double-forked descendants reparented to init
-    inside the scope that survive a plain PID signal (SIGTERM all, SIGKILL after
-    ``TimeoutStopSec``). True if stopped or already gone; False if ``systemctl`` is
-    unavailable or the stop failed.
-
-    ``no_block`` enqueues the job and returns without waiting for it (``systemctl
-    --no-block``), for shutdown and restart paths that must not spend the unit's
-    ``TimeoutStopSec`` on an escapee that ignores SIGTERM.
-
-    See #70716.
-    """
-    import shutil
-
-    binary = shutil.which("systemctl")
-    if binary is None:
-        return False
-    try:
-        result = subprocess.run(
-            [binary, "--user", *(("--no-block",) if no_block else ()), "stop", unit_name],
-            capture_output=True,
-            timeout=15,
-            stdin=subprocess.DEVNULL,
-            env=systemd_user_bus_env(),
-        )
-        if result.returncode != 0:
-            stderr = (result.stderr or b"").decode(errors="replace").strip()
-            if any(marker in stderr.lower() for marker in ("not loaded", "not found", "does not exist")):
-                return True
-            logger.debug("systemctl --user stop %s exited %d: %s", unit_name, result.returncode, stderr)
-            return False
-        return True
-    except Exception as exc:
-        logger.debug("systemctl --user stop %s failed: %s", unit_name, exc)
-        return False
-
-
 def format_uptime_short(seconds: int) -> str:
     s = max(0, int(seconds))
     if s < 60:
@@ -1403,6 +1323,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing.
         ``persist_on_release`` keeps the process out of agent-lifecycle kill sweeps (#41225)."""
+        from tools.process_registry_systemd import _stop_systemd_unit
         # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds our stdout
         # pipe open forever when B is a long-running server. The rewriter turns it into
         # ``A && { B & }``. Lazy import: terminal_tool imports this module.
@@ -1457,6 +1378,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def _reap_untracked(self, session: ProcessSession, proc: subprocess.Popen) -> None:
         """Post-Popen setup failed: kill the orphaned subprocess (and any setsid
         descendants) so nothing leaks untracked."""
+        from tools.process_registry_systemd import _stop_systemd_unit
         with suppress(Exception):
             if session.systemd_unit:
                 # Scope teardown is the authoritative cleanup for the worker cgroup
@@ -2367,6 +2289,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         output). Bulk cleanup passes false so it doesn't suppress an autonomous
         completion notification — except abandoned-turn reaping (``kill_started_since``),
         which passes true so a killed abandoned process can't revive stopped work."""
+        from tools.process_registry_systemd import _stop_systemd_unit
         session = self.get(session_id)
         if session is None:
             return _not_found(session_id)
@@ -2445,6 +2368,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """Deliver the kill via PTY, local Popen tree, sandbox exec or recovered host
         PID. Returns a final result dict when the kill cannot proceed (recycled/dead
         recovered PID, or no runtime handle), else None."""
+        from tools.process_registry_systemd import _stop_systemd_unit
         if session._pty:
             try:
                 session._pty.terminate(force=True)

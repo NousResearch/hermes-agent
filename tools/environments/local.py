@@ -1058,7 +1058,7 @@ def sweep_dead_foreground_scopes() -> int:
     stop is not proof the scope is gone.
     """
     from gateway.status import _pid_exists
-    from tools.process_registry import _stop_systemd_unit, list_systemd_user_scope_units
+    from tools.process_registry_systemd import _stop_systemd_unit, list_systemd_user_scope_units
 
     swept = 0
     for unit in list_systemd_user_scope_units(f"{_FOREGROUND_SCOPE_PREFIX}-*.scope"):
@@ -1081,7 +1081,7 @@ def stop_foreground_scopes() -> None:
     """
     if not _foreground_scope_issued:
         return
-    from tools.process_registry import _stop_systemd_unit
+    from tools.process_registry_systemd import _stop_systemd_unit
     _stop_systemd_unit(f"{_FOREGROUND_SCOPE_PREFIX}-{os.getpid()}-*.scope", no_block=True)
 
 
@@ -1227,7 +1227,7 @@ class LocalEnvironment(BaseEnvironment):
             failure = None if isinstance(exc, OSError) else exc
         unit = getattr(proc, "_hermes_scope_unit", None)
         if unit:
-            from tools.process_registry import _stop_systemd_unit
+            from tools.process_registry_systemd import _stop_systemd_unit
             if not _stop_systemd_unit(unit):
                 logger.debug(
                     "foreground scope %s could not be reaped; the unit may "

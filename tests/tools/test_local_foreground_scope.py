@@ -17,7 +17,7 @@ from typing import cast
 
 import pytest
 
-from tools import process_registry
+from tools import process_registry, process_registry_systemd
 from tools.environments import local as local_env
 
 # systemd transient scopes only exist on Linux (the code is gated on that host fact).
@@ -77,7 +77,7 @@ def test_gateway_command_is_wrapped_recorded_and_given_the_bus_env(monkeypatch, 
     # No real snapshot bootstrap (it would wait out its timeouts against the fake Popen) and
     # never a real `systemctl --user stop` from the kill path.
     monkeypatch.setattr(local_env.LocalEnvironment, "init_session", lambda self: None)
-    monkeypatch.setattr(process_registry, "_stop_systemd_unit", lambda unit, **kw: True)
+    monkeypatch.setattr(process_registry_systemd, "_stop_systemd_unit", lambda unit, **kw: True)
     env = local_env.LocalEnvironment()
     caplog.set_level("WARNING", logger=local_env.logger.name)
     monkeypatch.setattr(local_env, "_foreground_scope_issued", False)
@@ -124,7 +124,7 @@ def test_scope_is_stopped_even_when_the_group_kill_raises_and_survives_adoption(
         raise RuntimeError("group kill blew up")
 
     monkeypatch.setattr(local_env, "_kill_process_group_posix", boom)
-    monkeypatch.setattr(process_registry, "_stop_systemd_unit",
+    monkeypatch.setattr(process_registry_systemd, "_stop_systemd_unit",
                         lambda unit, **kw: stopped.append(unit) or True)
     monkeypatch.setattr(local_env.LocalEnvironment, "init_session", lambda self: None)
     env = local_env.LocalEnvironment()
@@ -160,7 +160,7 @@ def test_scope_is_stopped_even_when_the_group_kill_raises_and_survives_adoption(
     monkeypatch.setattr(terminal_tool_lifecycle, "_scratch_paths", lambda: [])
     monkeypatch.setattr(local_env, "_foreground_scope_issued", True)
     exit_stops: list = []
-    monkeypatch.setattr(process_registry, "_stop_systemd_unit",
+    monkeypatch.setattr(process_registry_systemd, "_stop_systemd_unit",
                         lambda unit, **kw: exit_stops.append((unit, kw)) or True)
     terminal_tool_lifecycle.cleanup_all_environments()
     assert len(exit_stops) == 1

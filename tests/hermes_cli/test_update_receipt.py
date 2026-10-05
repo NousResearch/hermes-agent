@@ -503,7 +503,7 @@ class TestGatewayStatusStamping:
 class TestCodeIdentity:
 
     def test_get_code_identity_cached(self):
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
 
         first = get_code_identity(refresh=True)
         second = get_code_identity()

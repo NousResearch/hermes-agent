@@ -114,7 +114,7 @@ def test_collect_fleet_versions_classifies_separate_checkout_gateway(tmp_path, m
         "code_sha": "f" * 40, "code_version": "0.0.1",
     }), encoding="utf-8")
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "a" * 40, "short_sha": "a" * 8, "version": "1.0", "source": "git"},
     )
     monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)

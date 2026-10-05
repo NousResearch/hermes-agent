@@ -148,13 +148,22 @@ def reprobe_tool_availability() -> None:
     _clear_tool_defs_cache()
 
 
-def tool_pin_version() -> str:
-    """The code identity a tools[] pin was built by (checkout/build sha, else the release version).
-    Cached per process: an updated checkout only reaches a process through a restart."""
-    from hermes_cli import __version__
-    from hermes_cli.build_info import get_code_identity
+def tool_pin_version() -> str | None:
+    """The code identity a tools[] pin was built by (checkout/build sha), or ``None`` when
+    the tree carries no identity (no install stamp, no git). Cached per process: an
+    updated checkout only reaches a process through a restart.
+
+    ``None`` disables same-code replay: without identity the pin cannot prove its tools[]
+    bytes were built by THIS code, and replaying them across an update is the exact
+    staleness d956f0ae57 set out to fix — so an identity-less tree always takes the
+    fresh definitions. The reader's ``version`` field is never used as a fallback: it is
+    only populated on stamped builds, which always carry the sha, and on an identity-less
+    tree it is the placeholder ``"unknown"`` — a truthy constant that compared equal on
+    both sides of an update and silently re-enabled the stale replay."""
+    from hermes_cli.version_info import get_code_identity
     identity = get_code_identity()
-    return identity.get("sha") or identity.get("version") or __version__
+    sha = identity.get("sha")
+    return sha or None
 
 
 def persist_agent_tool_names(agent) -> None:

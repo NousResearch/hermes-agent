@@ -10,6 +10,13 @@ class DiagnosticText(str):
     Durable carriers must serialize their own category, not this in-memory marker.
     """
 
+    def __new__(cls, value=""):
+        text = super().__new__(cls, value)
+        # Keep a LocalizedText's catalog key so the presentation sink can still localize it.
+        if getattr(value, "i18n_key", None):
+            text.i18n_key, text.i18n_kwargs = value.i18n_key, value.i18n_kwargs
+        return text
+
 
 def is_warning_status(event_type: str, message: str) -> bool:
     return event_type == "warn" or isinstance(message, DiagnosticText)

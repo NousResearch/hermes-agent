@@ -13,20 +13,28 @@ time is positive proof the turn never finished. Contract pinned here:
 * ``_maybe_schedule_auto_continue`` re-submits a fresh interrupted prompt as
   a continuation note (display_kind ``auto_continue``), refuses stale /
   disabled / crash-looping / already-running cases, and bounds attempts via
-  the marker's attempt counter.
+  the marker's attempt counter;
+* a marker whose writer is still alive is ownership evidence, not crash
+  evidence: a second backend resuming the same session over one HERMES_HOME
+  schedules nothing and leaves the marker for its owner to clear (#94778).
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import threading
 import time
 import types
+from pathlib import Path
 
 import pytest
 
 from tui_gateway import server
 from tui_gateway.turn_marker import (
     clear_turn_marker,
+    marker_writer_state,
     read_turn_marker,
     record_turn_start,
 )
@@ -35,7 +43,7 @@ from tui_gateway.turn_marker import (
 class _InlineThread:
     """Run threads synchronously so tests observe final state."""
 
-    def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+    def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
         self._target = target
         self._args = args
         self._kwargs = kwargs or {}
@@ -127,6 +135,76 @@ def test_marker_survives_corrupt_sidecar(tmp_path):
     assert read_turn_marker(tmp_path, "abc")["prompt"] == "prompt"
 
 
+def _patch_local_interrupt(monkeypatch, session):
+    monkeypatch.setattr(server, "_tts_stream_stop", lambda: None)
+    monkeypatch.setattr(server, "_sess_nowait", lambda params, rid: (session, None))
+    monkeypatch.setattr(server, "_sess", lambda params, rid: (session, None))
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda current: False)
+    monkeypatch.setattr(server, "_clear_pending", lambda sid=None: None)
+
+
+def test_interrupt_ack_retires_marker_before_run_thread_exits(monkeypatch, marker_home):
+    """A confirmed Stop must not auto-continue if the backend dies afterward."""
+
+    class _AliveThread:
+        def is_alive(self):
+            return True
+
+    interrupted = []
+    agent = types.SimpleNamespace(interrupt=lambda: interrupted.append(True))
+    session = _session(
+        agent=agent,
+        running=True,
+        _run_thread=_AliveThread(),
+        _active_turn_marker_key="original-key",
+    )
+    session["session_key"] = "rotated-key"
+    session_home = marker_home / "remote-profile"
+    session["profile_home"] = str(session_home)
+    record_turn_start(session_home, "original-key", "do not resume me")
+
+    _patch_local_interrupt(monkeypatch, session)
+
+    response = server._methods["session.interrupt"]("request-1", {"session_id": "runtime-1"})
+
+    assert response["result"]["status"] == "interrupted"
+    assert interrupted == [True]
+    assert read_turn_marker(session_home, "original-key") is None
+    assert read_turn_marker(session_home, "rotated-key") is None
+    assert "_active_turn_marker_key" not in session
+
+
+def test_interrupt_racing_marker_write_cannot_leave_recovery_state(
+    monkeypatch, emits, turn_env, marker_home
+):
+    """Stop before the disk write must still prevent later auto-continue."""
+
+    interrupted = []
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        clear_interrupt=lambda: None,
+        interrupt=lambda: interrupted.append(True),
+        run_conversation=lambda message, **kwargs: {"final_response": "stopped"},
+    )
+    session = _session(agent=agent, running=True)
+    _patch_local_interrupt(monkeypatch, session)
+
+    def write_after_stop(home, key, prompt, *, attempts=0, auto_continue=True):
+        response = server._methods["session.interrupt"](
+            "stop-during-write", {"session_id": "runtime-race"}
+        )
+        assert response["result"]["status"] == "interrupted"
+        record_turn_start(home, key, prompt, attempts=attempts, auto_continue=auto_continue)
+
+    monkeypatch.setattr(server, "record_turn_start", write_after_stop)
+
+    server._run_prompt_submit("request-race", "runtime-race", session, "race me")
+
+    assert interrupted == [True]
+    assert read_turn_marker(marker_home, "session-key") is None
+    assert "_active_turn_marker_key" not in session
+
+
 # ── Turn lifecycle owns the marker ─────────────────────────────────────
 
 
@@ -167,6 +245,60 @@ def test_handled_failure_still_clears_marker(emits, turn_env, marker_home):
     server._run_prompt_submit("rid", "sid", session, "do the thing")
 
     assert read_turn_marker(marker_home, "session-key") is None
+
+
+def test_hosted_terminal_receipt_commits_before_marker_retire(
+    emits, turn_env, marker_home
+):
+    observed = []
+
+    def _run(message, **kwargs):
+        return {"final_response": "done"}
+
+    def _terminal(receipt):
+        observed.append((receipt, read_turn_marker(marker_home, "session-key")))
+
+    agent = types.SimpleNamespace(
+        session_id="session-key", run_conversation=_run, clear_interrupt=lambda: None
+    )
+    session = _session(agent=agent, running=True, source="bot_room")
+
+    server._run_prompt_submit(
+        "rid",
+        "sid",
+        session,
+        "do the thing",
+        terminal_callback=_terminal,
+    )
+
+    assert observed[0][0]["status"] == "settled"
+    assert observed[0][1] is not None
+    assert read_turn_marker(marker_home, "session-key") is None
+
+
+def test_hosted_terminal_receipt_failure_keeps_crash_marker(
+    emits, turn_env, marker_home
+):
+    def _run(message, **kwargs):
+        return {"final_response": "done"}
+
+    def _terminal(_receipt):
+        raise RuntimeError("state store unavailable")
+
+    agent = types.SimpleNamespace(
+        session_id="session-key", run_conversation=_run, clear_interrupt=lambda: None
+    )
+    session = _session(agent=agent, running=True, source="bot_room")
+
+    server._run_prompt_submit(
+        "rid",
+        "sid",
+        session,
+        "do the thing",
+        terminal_callback=_terminal,
+    )
+
+    assert read_turn_marker(marker_home, "session-key") is not None
 
 
 def test_continuation_turn_records_attempt_and_original_prompt(
@@ -261,6 +393,20 @@ def test_fresh_marker_schedules_continuation(emits, schedule_env, marker_home):
     assert "fix the flaky test" in text
     assert kwargs["display_kind"] == "auto_continue"
     assert ("message.start", "sid", None) in [(e, s, p) for e, s, p in emits]
+
+
+def test_hosted_room_marker_is_left_to_the_driver(schedule_env, marker_home):
+    record_turn_start(marker_home, "session-key", "hosted prompt")
+
+    result = server._maybe_schedule_auto_continue(
+        "sid",
+        _session(source="bot_room"),
+        "session-key",
+    )
+
+    assert result is None
+    assert not schedule_env
+    assert read_turn_marker(marker_home, "session-key") is not None
 
 
 def test_stale_marker_is_cleared_not_continued(schedule_env, marker_home, monkeypatch):
@@ -374,3 +520,106 @@ def test_failed_agent_build_leaves_marker_for_retry(
 # ── End to end: continuation runs a real turn and clears the marker ────
 
 
+# ── Marker writer identity: a live writer is an owner, not a corpse ────
+#
+# The scheduler used to treat every marker it found as proof the writing
+# process died. Two backends over one HERMES_HOME break that assumption: A is
+# mid-turn on session S while B resumes S — B read A's live marker as a crash
+# and started a second turn over it (#94778). Ownership now comes from the
+# writer's pid + create time.
+
+_CHILD_WRITER = """
+import os, sys, time
+from pathlib import Path
+from tui_gateway.turn_marker import record_turn_start
+
+home = Path(sys.argv[1])
+record_turn_start(home, "session-key", "interrupted prompt")
+print(f"ready {os.getpid()}", flush=True)
+# Linger until the test drops a sentinel. Self-exit, not terminate(): a venv
+# python.exe on Windows re-execs the real interpreter, so Popen.pid is the
+# launcher and killing it does not reliably reach the process that holds the
+# marker.
+deadline = time.time() + 120
+while not (home / "writer-exit").exists() and time.time() < deadline:
+    time.sleep(0.05)
+"""
+
+
+def _wait_for_marker(home, key, timeout=30.0):
+    """Bounded poll — the marker is written by another process, so a fixed
+    sleep in the parent would just be a flaky test."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if read_turn_marker(home, key) is not None:
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"child writer produced no marker within {timeout}s")
+
+
+def test_marker_writer_state_rejects_a_recycled_pid():
+    """Same pid, different process: the create time is what makes the pid an
+    identity. A start time from yesterday cannot be this process."""
+    assert marker_writer_state(
+        {"writer_pid": os.getpid(), "writer_start_time": time.time() - 86400}
+    ) != "alive"
+
+
+def test_second_backend_defers_to_a_live_marker_writer(emits, schedule_env, marker_home):
+    """Two backends, one HERMES_HOME, one session: A is mid-turn (alive writer)
+
+    B resumes S and must read the marker as ownership evidence, not crash
+    evidence — no continuation, no misleading "Resuming interrupted turn…"
+    frame, no duplicate turn, and A's marker left for A to clear. Once A is
+    really gone the same call does schedule, so the live-writer gate is what
+    held B back and not some other switch.
+    """
+    repo_root = Path(server.__file__).resolve().parents[1]
+    child = subprocess.Popen(
+        [sys.executable, "-c", _CHILD_WRITER, str(marker_home)],
+        cwd=str(repo_root),
+        env={**os.environ, "PYTHONPATH": str(repo_root)},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        ready = child.stdout.readline().strip()
+        if not ready.startswith("ready "):
+            child.kill()
+            _, stderr = child.communicate(timeout=10)
+            raise AssertionError(f"child writer never started: {ready!r} / {stderr!r}")
+        writer_pid = int(ready.split()[1])
+        _wait_for_marker(marker_home, "session-key")
+        assert writer_pid != os.getpid()
+
+        written = read_turn_marker(marker_home, "session-key")
+        assert written["writer_pid"] == writer_pid
+        assert marker_writer_state(written) == "alive"
+
+        session = _session()
+        assert server._maybe_schedule_auto_continue("sid", session, "session-key") is None
+        assert not schedule_env  # nothing queued behind the live writer
+        assert session.get("_auto_continue_scheduled") is None  # not even claimed
+        assert not [e for e in emits if e[0] in ("status.update", "message.start")]
+        assert read_turn_marker(marker_home, "session-key") is not None  # A's marker intact
+
+        child.terminate()  # the launcher; the real writer exits on the sentinel below
+        child.wait(timeout=10)
+        (marker_home / "writer-exit").write_text("go", encoding="utf-8")
+        deadline = time.time() + 30
+        while time.time() < deadline and marker_writer_state(
+            read_turn_marker(marker_home, "session-key")
+        ) != "dead":
+            time.sleep(0.05)
+        assert marker_writer_state(read_turn_marker(marker_home, "session-key")) == "dead", (
+            f"writer pid {writer_pid} (child pid {child.pid}) still reads live"
+        )
+
+        assert server._maybe_schedule_auto_continue("sid", _session(), "session-key") is not None
+        assert len(schedule_env) == 1
+    finally:
+        (marker_home / "writer-exit").touch()  # release the child even on an early failure
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=10)

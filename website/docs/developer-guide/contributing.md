@@ -20,6 +20,123 @@ We value contributions in this order:
 6. **New tools** — rarely needed; most capabilities should be skills
 7. **Documentation** — fixes, clarifications, new examples
 
+## Contribution rubric
+
+The project's intent layer, summarised in the root `AGENTS.md`; this is the long form with the
+examples. Hermes ships a lot: most merges are bug fixes and the product surface (platforms,
+providers, models, desktop/TUI features) expands on purpose. The restraint targets the core agent
+and the model tool schema, where every addition is paid for on every API call: expansive at the
+edges, conservative at the waist.
+
+### What we want
+
+- **Fix real bugs, well.** Reproduce the symptom on current `main`, point to the exact line
+  where it manifests, and fix the whole bug class — sibling call paths included.
+- **Expand reach at the edges.** New adapters, channels, providers, models, desktop/TUI/
+  dashboard features land routinely, including large ones — as long as they integrate with
+  the existing setup/config UX (`hermes tools`, `hermes setup`, auto-install) rather than
+  bolting on a raw env var.
+- **Refactor god-files into clean modules.** Huge mechanical `+N/-N` extraction PRs are
+  wanted work. "Every line traces to the request" applies to *feature* PRs; a declared
+  refactor's request IS the extraction.
+- **Keep the core narrow.** Prefer, in order: extend existing code → CLI command + skill →
+  service-gated tool (`check_fn`) → plugin → MCP server in the catalog → new core tool (last
+  resort). See the Footprint Ladder below.
+- **Extend, don't duplicate.** Check whether existing infrastructure covers the use case
+  before adding a module/manager/hook. When 3+ open PRs integrate the same *category*
+  (memory backends, providers, notifiers), design an ABC + orchestrator, wrap the existing
+  built-in as the first provider, and turn the competing PRs into plugins against it.
+- **Behavior contracts over snapshots.** Tests assert how two pieces of data relate, never
+  freeze a current value (see `tests/AGENTS.md`).
+- **E2E validation, not just green unit mocks.** Anything touching resolution chains, config
+  propagation, security boundaries, remote backends, or file/network I/O must exercise the
+  real path with real imports against a temp `HERMES_HOME` — two of them (A→B→A) when the
+  change touches profile scope. Mocks hide integration bugs.
+- **Cache-, alternation-, and invariant-safe.** Preserve prompt caching, strict role
+  alternation (never two same-role messages in a row; never a synthetic user message injected
+  mid-loop), and a system prompt byte-stable for the life of a conversation.
+- **Contributor credit preserved.** Salvage external work by cherry-picking (rebase-merge) so
+  authorship survives; build on top rather than reimplementing.
+
+### What we don't want (rejected even when well-built)
+
+- **Speculative infrastructure.** Hooks/callbacks/extension points with no concrete consumer.
+  Adding a hook is easy; removing one after plugins depend on it is hard. A hook with a real,
+  stated use case is NOT speculative even if the consumer ships separately.
+- **New `HERMES_*` env vars for non-secret config.** `.env` is for secrets only. Behavioral
+  settings (timeouts, thresholds, flags, display prefs) go in `config.yaml`; bridge to an
+  internal env var in code if the mechanism needs one. Reject "set X in your .env" docs
+  unless X is a credential.
+- **A new core tool when terminal + file (or a skill) already do the job.** If the only
+  barrier is file visibility on a remote backend, fix the mount, not the toolset.
+- **Lazy-reading escape hatches on instructional tools.** No `offset`/`limit` pagination on
+  tools that load content the agent must read fully (skills, prompts, playbooks) — models
+  read page 1 and skip the rest.
+- **"Fixes" that destroy the feature they secure.** Read the original intent
+  (`git log -p -S`) before restricting behavior; find a fix that preserves the feature.
+- **Outbound telemetry / usage attribution without opt-in gating.** No analytics,
+  third-party identifier tagging, or attribution tags until a generic user-facing opt-in
+  (config gate + setup prompt + `hermes tools` toggle) exists. Park behind a label.
+- **Change-detector tests, cache-breaking mid-conversation, dead code wired in without E2E
+  proof, plugins that touch core files.** Plugins work within the ABCs/hooks we provide; if
+  one needs more, widen the generic plugin surface, never special-case it in core.
+- **Third-party products integrated into the core tree.** Observability backends, vendor
+  SaaS connectors, analytics dashboards, and other "someone else's product" plugins do NOT
+  land under `plugins/` — every one becomes our burden against a fast-moving core for a
+  backend we don't own. Ship as a **standalone plugin repo** (`~/.hermes/plugins/` or pip
+  entry point), promoted in the Nous Research Discord `#plugins-skills-and-skins`. This is a
+  coupling decision, not a quality bar; such PRs are closed with a pointer to publish.
+
+### Before you call it a bug — verify the premise (and when NOT to close)
+
+The most common reason a well-written PR is closed is a **wrong premise** or treating an
+**intentional design as a gap**. These patterns tell a reviewer what to scrutinize and tell
+the sweeper when a PR is NOT safe to close (when in doubt, leave it open for a human):
+
+- **"Intentional design, not a gap."** Ask whether the isolation IS the design. Profiles are
+  independent islands on purpose: a PR adding live config inheritance from the default
+  profile was closed because coupling profiles is exactly what the design prevents (`--clone`
+  already covers "start from my default"). Read `git log -p -S "<symbol>"` before assuming
+  something is unfinished.
+- **"The premise doesn't hold against how X actually works."** Trace the real runtime before
+  accepting a rationale. Real closes: a rate-limit "re-probe during cooldown" PR (the breaker
+  trips only on a *confirmed-empty* bucket, so re-probing hammers a bucket proven empty); a
+  usage fix whose new branch **never executes** because an earlier guard already popped the
+  state. If you can't point to the exact line where the bug manifests AND show the fix changes
+  that line's behavior, the premise is unverified.
+- **"The absence was deliberate."** Restoring "missing" `__init__.py` files made a test tree
+  importable as a dotted package that shadowed the real plugin and deleted its `register()`
+  at import time. The omission was load-bearing.
+- **"Overreached / resurrected an approach we moved past."** Scope creep beyond the agreed
+  base, or reviving a direction maintainers closed, is rejected even when it works. Offer the
+  rest as a focused follow-up.
+
+Throughline: **verify the claim AND the intent against the codebase before writing or merging
+a fix.** A reproduction on current `main` plus a line-level account beats a plausible
+rationale. When unsure about intent, asking is cheaper than shipping a fix that fights the
+design.
+
+### The Footprint Ladder (new capability decision)
+
+Choose the highest (least-footprint) rung that correctly solves the problem:
+
+1. **Extend existing code** — a variation of something that exists. Zero new surface.
+2. **CLI command + skill** — config/state/infra expressible as shell commands; the agent runs
+   `hermes <subcommand>` guided by a skill. Default for subscriptions, scheduled tasks,
+   service setup (`hermes webhook`, `hermes cron`, `hermes tools`).
+3. **Service-gated tool (`check_fn`)** — needs structured params/returns AND only appears when
+   a prerequisite is configured (Home Assistant tools, memory-provider tools). This rung gates
+   reachability/opt-in process-wide; a capability that varies per SESSION (who is watching) is
+   a named toolset folded in by the toolset resolver, not a `check_fn` — see `tools/AGENTS.md` § "Surface
+   capability is a property of the SESSION".
+4. **Plugin** — third-party/niche/user-specific; lives in `~/.hermes/plugins/` or a pip
+   package, discovered at runtime.
+5. **MCP server (in the catalog)** — genuinely a tool but not core-fundamental. Zero permanent
+   core-schema footprint, reusable by any MCP host, reached via the built-in MCP client.
+6. **New core tool** — only when fundamental, broadly useful to nearly every user, and
+   unreachable via terminal + file or an MCP server (terminal, read_file, web_search,
+   browser_navigate).
+
 ## Common contribution paths
 
 - Building a custom/local tool without modifying Hermes core? Start with [Build a Hermes Plugin](../developer-guide/plugins/index.md)
@@ -34,108 +151,116 @@ We value contributions in this order:
 | Requirement          | Notes                                                                                         |
 | -------------------- | --------------------------------------------------------------------------------------------- |
 | **Git**              | With the `git-lfs` extension installed                                                        |
-| **Python 3.11–3.13** | uv will install it if missing                                                                 |
-| **uv**               | Fast Python package manager ([install](https://docs.astral.sh/uv/))                           |
-| **Node.js 26+**      | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
+| **Python 3.14** | Current development uses PM's pinned interpreter. The broader `>=3.11,<3.15` package metadata keeps old updaters working, not the current runtime on older Python. |
+| **Node.js** | Use the PM pin or a version accepted by root `package.json` engines |
 
-### Install with the standard installer
+### PM developer environment
 
-For most contributors, the best development bootstrap is the same path users
-take: run the standard installer, then work inside the repository it cloned.
-The installer creates the Hermes venv, wires the `hermes` command, stamps the
-install method for `hermes update`, and clones the full git project into
-`$HERMES_HOME/hermes-agent` (usually `~/.hermes/hermes-agent`). That keeps your
-development environment on the same layout the CLI, updater, lazy dependency
-installer, gateway, and docs assume.
+Use the [PM developer workflow](../reference/package-management.md#developer-workflow) for preparation, activation, everyday commands,
+dependency changes, and test environments. Select your development
+home before setup so experimental code does not migrate production data.
 
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
+Activate from the repository root in each new shell. Activation prepares the
+checkout through PM and syncs stale dependencies.
 
-# Add dev/test extras on top of the standard install.
-uv pip install -e ".[all,dev]"
-
-# Optional: browser tools / docs site dependencies.
-npm install
-```
-
-After that, create branches and run tests from that checkout:
+Bash:
 
 ```bash
-git checkout -b fix/description
-scripts/run_tests.sh
+source ./activate
+hermes --version
 ```
 
-You can also run a fully isolated Hermes instance (throwaway HERMES_HOME, separate Electron
-userData, distinct Electron app name to avoid the single-instance lock):
+PowerShell:
+
+```powershell
+. .\activate.ps1
+hermes --version
+```
+
+Run `hermes` for this checkout. Activation defines it as a function for this
+worktree, so it hides a global `hermes` alias and refuses outside the worktree.
+PM activation syncs tools and Python dependencies before adding them to the shell. It does
+not install JS workspaces or rewrite launchers and shell configuration. `deactivate` restores the prior shell environment and removes the function.
+
+### Manual development and test environment {#manual-development-and-test-environment}
+
+Use the [PM developer workflow](../reference/package-management.md#developer-workflow) to prepare Python 3.14 first.
+Run these commands from that checkout with its prepared Python. Keep the same
+development `HERMES_HOME`. PM must be able to start before it can build another
+environment. On Windows, initialize the native C++ build environment for your
+architecture before building source dependencies.
+
+Build an independent interpreter for tests and editor tools:
 
 ```bash
-scripts/dev-sandbox.sh python -m hermes_cli.main
-scripts/dev-sandbox.sh --persistent python -m hermes_cli.main desktop  # state survives restarts, but lives in the worktree :)
+python -m pm.build_env --source . --out .venv --group dev --group test
 ```
 
-### Manual clone fallback
+PM builds from the committed lock and checks dependency consistency before
+returning the new interpreter. The `test` group includes native launcher test
+dependencies and does not enter the application runtime. If tests require
+another declared feature, add its `--extra`.
 
-Use this only if you intentionally do not want Hermes' managed install layout
-(for example, a throwaway clone inside a container or CI job). If you install
-this way, make sure you run the `hermes` entrypoint from this venv; running the
-system `python3 -m hermes_cli.main` can pick up unrelated system Python
-packages.
+The output must not exist, even as an empty directory or symlink. To regenerate
+it after a dependency change, stop its processes and intentionally remove only
+that disposable environment first. PM does not delete an existing destination.
+Do not run raw pip or uv commands to change a PM-built environment.
 
-Create the venv **outside** the cloned source tree. A venv that lives inside
-the directory the agent operates from can be wiped by a relative-path command
-the agent runs against its own checkout (`rm -rf venv`, `uv venv venv`, etc.),
-which silently destroys the running runtime mid-session. Keeping it outside the
-tree means no relative path from the workspace resolves to it.
+To keep the test environment outside the checkout, replace `.venv` with a fresh absolute
+path. Set `HERMES_PYTHON` to that environment's interpreter:
+
+- POSIX: `export HERMES_PYTHON="/absolute/path/to/hermes-dev/bin/python"`
+- PowerShell: `$env:HERMES_PYTHON = 'C:\absolute\path\to\hermes-dev\Scripts\python.exe'`
+
+The canonical runner discovers repository `.venv` automatically. It clears
+`PYTHONPATH`, so pytest must be installed in the interpreter's own environment.
+This test environment does not replace PM's application selection or tool
+store. Do not point a bundled app at it or install into an MSIX payload.
+
+For an isolated development instance, select a disposable `HERMES_HOME` before
+starting the source command. Use `hermes setup` to configure it rather
+than copying production credentials into the checkout.
+
+### JavaScript workspaces and website
+
+From the repository root, run `npm ci` for the desktop, TUI, dashboard, and
+shared JS workspaces. The website is separate:
 
 ```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-
-# Create venv with Python 3.11, OUTSIDE the source tree
-uv venv ~/.hermes/venvs/hermes-dev --python 3.11
-export VIRTUAL_ENV="$HOME/.hermes/venvs/hermes-dev"
-export PATH="$VIRTUAL_ENV/bin:$PATH"
-
-# Install with all extras (messaging, cron, CLI menus, dev tools)
-uv pip install -e ".[all,dev]"
-
-# Optional: browser tools
-npm install
+npm ci --prefix website
+npm run build:fast --prefix website
 ```
 
-### Configure for Development
+Use a Node/npm version accepted by the corresponding `package.json` engines.
+Native desktop dependencies can also require the platform build toolchain.
 
-```bash
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills}
-cp cli-config.yaml.example ~/.hermes/config.yaml
-touch ~/.hermes/.env
+Logos and icons are generated from `assets/nous-girl-*.svg` and
+`assets/backgrounds/`. `node scripts/generate-icons.mjs` renders them with the
+Hermes runtime Python (`HERMES_PYTHON`, else `python` on PATH): Pillow and
+resvg-py are core dependencies. Do not commit generated PNG/ICO/ICNS outputs.
 
-# Add at minimum an LLM provider key:
-echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
-```
+### Run tests
 
-### Run
-
-```bash
-# The standard installer already put `hermes` on PATH.
-hermes doctor
-hermes chat -q "Hello"
-```
-
-If you used the manual clone fallback, run `./hermes` from the checkout or
-symlink this clone's venv explicitly:
-
-```bash
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
-```
-
-### Run Tests
+Use the canonical runner on every host:
 
 ```bash
 scripts/run_tests.sh
+scripts/run_tests.sh tests/agent/ -v
 ```
+
+On Windows, run the script through Bash. When no local `.venv` or `venv`
+contains pytest, the runner accepts the explicit `HERMES_PYTHON` above. It
+clears credentials, isolates `HERMES_HOME`, and runs each test file in a separate
+subprocess through `scripts/run_tests_parallel.py`. It does not use xdist.
+When `tests/conftest.py` redirects a production `HERMES_HOME` to a temporary
+session home, it sets the internal `HERMES_TEST_SANDBOX_HOME` marker. This lets
+re-imported test fixtures recognize their own sandbox instead of flagging it as
+real-home I/O. Do not set this marker yourself; set `HERMES_HOME` for a
+disposable development home and let the test runner isolate it.
+
+Run the relevant JS workspace checks for JS changes. Native install/update
+E2E runs on disposable CI hosts, never against the developer's live app.
+See [Package management](../reference/package-management.md) for PM commands and runtime ownership.
 
 ## Code Style
 
@@ -147,14 +272,14 @@ scripts/run_tests.sh
 
 ## Cross-Platform Compatibility
 
-See **[Platform Support](../getting-started/platform-support.md)**. Native Windows uses Git Bash (from [Git for Windows](https://git-scm.com/download/win)) for shell commands. A few features require POSIX kernel primitives and are gated: the dashboard's embedded PTY terminal pane (`/chat` tab) needs a POSIX PTY (Linux, macOS, or WSL2). If you're doing Windows-heavy dev, run the Windows-footgun lint (`scripts/check-windows-footguns.py`) before pushing.
+See **[Platform Support](../getting-started/platform-support.md)**. Native Windows uses Git Bash (from [Git for Windows](https://git-scm.com/download/win)) for shell commands. The dashboard uses POSIX PTYs on Unix and the `pywinpty`/ConPTY bridge on Windows. Availability depends on that host's native dependency support. If you're doing Windows-heavy dev, run the Windows-footgun lint (`scripts/check-windows-footguns.py`) before pushing.
 
 When contributing code, keep these rules in mind:
 
 - **Don't add unguarded `signal.SIGKILL` references.** It's not defined on Windows. Either route through `gateway.status.terminate_pid(pid, force=True)` (the centralized primitive that does `taskkill /T /F` on Windows and SIGKILL on POSIX), or fall back with `getattr(signal, "SIGKILL", signal.SIGTERM)`.
-- **Catch `OSError` alongside `ProcessLookupError` on `os.kill(pid, 0)` probes.** Windows raises `OSError` (WinError 87, "parameter is incorrect") for an already-gone PID instead of `ProcessLookupError`.
+- **Use `psutil.pid_exists()` for process liveness.** Do not use `os.kill(pid, 0)` on Windows; it is not a safe probe.
 - **Don't force the terminal to POSIX semantics.** `os.setsid`, `os.killpg`, `os.getpgid`, `os.fork` all raise on Windows — gate them with `if sys.platform != "win32":` or `if os.name != "nt":`.
-- **Open files with an explicit `encoding="utf-8"`.** The Python default on Windows is the system locale (often cp1252), which mojibakes or crashes on non-Latin text.
+- **Use explicit text encodings.** User-authored UTF-8 reads use `utf-8-sig` to accept a leading BOM. Writes use `utf-8` without adding a BOM.
 - **Use `pathlib.Path` / `os.path.join` — never manually concat with `/`.** This matters less for strings the OS gives us back and more for strings we construct to hand to subprocesses.
 
 Key patterns:
@@ -287,7 +412,7 @@ When you ask Hermes to review a PR in a repository that has `.agents/checks/`, t
 ## Reporting Issues
 
 - Use [GitHub Issues](https://github.com/NousResearch/hermes-agent/issues)
-- Include: OS, Python version, Hermes version (`hermes version`), full error traceback
+- Include: OS, Python version, Hermes version (`hermes --version`), full error traceback
 - Include steps to reproduce
 - Check existing issues before creating duplicates
 - For security vulnerabilities, please report privately

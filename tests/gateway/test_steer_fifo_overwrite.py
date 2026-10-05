@@ -25,7 +25,7 @@ from unittest.mock import MagicMock
 
 def _prequeue(runner, adapter, sk):
     """Pre-stage Q1 in the pending slot and Q2 in the overflow tail."""
-    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.platforms.event import MessageEvent, MessageType
 
     # Ensure _queued_events is initialized (mirrors GatewayRunner.__init__)
     if not hasattr(runner, "_queued_events"):

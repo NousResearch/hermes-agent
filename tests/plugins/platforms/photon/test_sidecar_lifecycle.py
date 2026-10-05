@@ -15,12 +15,15 @@ import pytest
 
 from gateway.config import PlatformConfig
 from plugins.platforms.photon import adapter as photon_adapter
+from plugins.platforms.photon import sidecar_paths
 from plugins.platforms.photon.adapter import PhotonAdapter
 
 
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
+    # Stand-in for PM's node; the user's PATH node is never picked up.
+    monkeypatch.setattr(photon_adapter, "find_node_executable", lambda _name: "/pm/node")
     cfg = PlatformConfig(enabled=True, token="", extra={})
     return PhotonAdapter(cfg)
 
@@ -86,7 +89,7 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
 
     monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
     (tmp_path / "node_modules" / "spectrum-ts").mkdir(parents=True)
-    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
 
     spawned: Dict[str, Any] = {}
     hidden_flags = 0x08000000

@@ -1,59 +1,26 @@
+import type { GatewayEvent } from '@hermes/shared'
 // A turn that ends WITHOUT its message.complete (turn crash, reconnect gap,
 // steer race) used to leave its streaming bubble pending:true forever. The
 // next user message then landed after it, stranding a live thinking indicator
 // mid-transcript — the dither block anywhere but the tail. session.info
 // running=false is the turn's finally-block signal and the only settle edge
 // those paths still emit, so it must finalize the bubble.
-import { QueryClient } from '@tanstack/react-query'
-import { act, cleanup, render } from '@testing-library/react'
-import { useEffect, useRef } from 'react'
+import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ClientSessionState } from '@/app/types'
-import { createClientSessionState } from '@/lib/chat-runtime'
-import type { RpcEvent } from '@/types/hermes'
+import { clearAllPrompts, sessionApprovalRequest, setApprovalRequest } from '@/store/prompts'
 
+import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 import { STREAM_DELTA_FLUSH_MS } from './utils'
 
-import { useMessageStream } from './index'
-
 const SID = 'stale-pending-session'
+const OTHER_SID = 'other-session'
 
-let handleEvent: ((event: RpcEvent) => void) | null = null
-let states: Map<string, ClientSessionState>
-
-function Harness() {
-  const activeSessionIdRef = useRef<string | null>(SID)
-  const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
-  const queryClientRef = useRef(new QueryClient())
-
-  const stream = useMessageStream({
-    activeSessionIdRef,
-    hydrateFromStoredSession: vi.fn(async () => undefined),
-    queryClient: queryClientRef.current,
-    refreshHermesConfig: vi.fn(async () => undefined),
-    refreshSessions: vi.fn(async () => undefined),
-    sessionStateByRuntimeIdRef,
-    updateSessionState: (sessionId, updater) => {
-      const current = sessionStateByRuntimeIdRef.current.get(sessionId) ?? createClientSessionState()
-      const next = updater(current)
-      sessionStateByRuntimeIdRef.current.set(sessionId, next)
-
-      return next
-    }
-  })
-
-  useEffect(() => {
-    handleEvent = stream.handleGatewayEvent
-    states = sessionStateByRuntimeIdRef.current
-  }, [stream.handleGatewayEvent])
-
-  return null
-}
+let stream: MessageStreamHarness
 
 async function mountHarness() {
   vi.useFakeTimers()
-  render(<Harness />)
+  stream = renderMessageStream(SID)
   await act(async () => {
     await Promise.resolve()
   })
@@ -65,16 +32,16 @@ const flushDeltas = async () => {
   })
 }
 
-const emit = (event: RpcEvent) => act(() => handleEvent?.(event))
+const emit = (event: GatewayEvent) => act(() => stream.handleEvent(event))
 
 describe('turn end without message.complete (session.info running=false)', () => {
   beforeEach(() => {
-    handleEvent = null
-    states = new Map()
+    clearAllPrompts()
   })
 
   afterEach(() => {
     cleanup()
+    clearAllPrompts()
     vi.useRealTimers()
     vi.restoreAllMocks()
   })
@@ -86,11 +53,11 @@ describe('turn end without message.complete (session.info running=false)', () =>
     emit({ payload: { text: 'partial answer' }, session_id: SID, type: 'message.delta' })
     await flushDeltas()
 
-    expect(states.get(SID)?.messages.at(-1)?.pending).toBe(true)
+    expect(stream.state()?.messages.at(-1)?.pending).toBe(true)
 
     emit({ payload: { running: false }, session_id: SID, type: 'session.info' })
 
-    const state = states.get(SID)
+    const state = stream.state()
     const tail = state?.messages.at(-1)
 
     expect(tail?.role).toBe('assistant')
@@ -118,11 +85,56 @@ describe('turn end without message.complete (session.info running=false)', () =>
 
     emit({ payload: { running: false }, session_id: SID, type: 'session.info' })
 
-    const state = states.get(SID)
+    const state = stream.state()
 
     // Same math as Stop: an empty-text placeholder is dropped, nothing stays
     // pending, and the stream binding is released.
     expect(state?.messages.every(message => !message.pending)).toBe(true)
     expect(state?.streamId).toBeNull()
+  })
+
+  // A turn whose message.complete was swallowed (reconnect gap, provider
+  // crash) used to leave its approval entry parked: the floating "needs
+  // approval" bar kept reappearing on a session the sidebar already showed
+  // as finished. running=false is the agent loop's finally-block edge — it
+  // must clear the turn's prompts just like message.complete does (#86577).
+  it('retires the finished session approval when message.complete was missed', async () => {
+    await mountHarness()
+
+    emit({ session_id: SID, type: 'message.start', payload: {} })
+    await act(async () => {
+      stream.handleRequest('approval', {
+        command: 'rm -rf stale',
+        description: 'stale request',
+        session_id: SID
+      })
+    })
+    setApprovalRequest({ command: 'rm other', description: 'other request', sessionId: OTHER_SID })
+
+    expect(sessionApprovalRequest(SID).get()?.command).toBe('rm -rf stale')
+
+    emit({ payload: { running: false }, session_id: SID, type: 'session.info' })
+
+    expect(sessionApprovalRequest(SID).get()).toBeNull()
+    // Bystander sessions keep their prompts: only the finished turn clears.
+    expect(sessionApprovalRequest(OTHER_SID).get()?.command).toBe('rm other')
+  })
+
+  // An idle session's running=false heartbeat carries no turn edge, so it
+  // must not retire a prompt another session's turn just raised.
+  it('does not clear prompts on a running=false heartbeat for a session that was never busy', async () => {
+    await mountHarness()
+
+    await act(async () => {
+      stream.handleRequest('approval', {
+        command: 'tail -f log',
+        description: 'live request',
+        session_id: SID
+      })
+    })
+
+    emit({ payload: { running: false }, session_id: SID, type: 'session.info' })
+
+    expect(sessionApprovalRequest(SID).get()?.command).toBe('tail -f log')
   })
 })

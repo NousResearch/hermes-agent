@@ -2,39 +2,26 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { EnvVarInfo } from '@/types/hermes'
+import { stubResizeObserver } from '@/test/jsdom'
+
+import { envVar } from './test-utils'
 
 const getEnvVars = vi.fn()
 
-class TestResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-
-vi.stubGlobal('ResizeObserver', TestResizeObserver)
+stubResizeObserver()
 
 vi.mock('@/hermes', () => ({
   deleteEnvVar: vi.fn(),
-  getEnvVars: () => getEnvVars(),
+  getEnvVars: (profile?: null | string) => getEnvVars(profile),
   revealEnvVar: vi.fn(),
   setApiRequestProfile: () => undefined,
   setEnvVar: vi.fn()
 }))
 
-function envVar(category: string, patch: Partial<EnvVarInfo> = {}): EnvVarInfo {
-  return {
-    advanced: false,
-    category,
-    description: '',
-    is_password: true,
-    is_set: false,
-    redacted_value: null,
-    tools: [],
-    url: '',
-    ...patch
-  }
-}
+// Load once at module scope so no test's 15s budget pays the heavy transform
+// + import (the first-test timeout flake under CI load).
+const { KeysSettings } = await import('./keys-settings')
+const { $settingsScopeOverride } = await import('@/store/settings-scope')
 
 beforeEach(() => {
   getEnvVars.mockResolvedValue({})
@@ -50,8 +37,6 @@ afterEach(() => {
 })
 
 async function renderKeysSettings(view: 'settings' | 'tools', route = '/settings') {
-  const { KeysSettings } = await import('./keys-settings')
-
   await act(async () => {
     render(
       <MemoryRouter initialEntries={[route]}>
@@ -71,50 +56,40 @@ function DeepLinkButton({ target }: { target: string }) {
   )
 }
 
-describe('KeysSettings scoped command search', () => {
-  it('curates tool results by label, description, env key, URL, and tool name', async () => {
+describe('KeysSettings', () => {
+  it('fetches env vars for the displayed profile (the concrete key, never null) when unscoped', async () => {
+    // #90549 class: getEnvVars(null) targets the primary profile's env store,
+    // so a non-default profile's Keys page would read (and edit) the wrong
+    // profile. #118432: `undefined` is equally wrong — profileScoped() then
+    // drops `?profile=` entirely and the backend falls back to the home it was
+    // LAUNCHED under, which need not be the profile this page displays. Send
+    // the concrete key the page names.
+    await renderKeysSettings('tools')
+
+    await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith('default'))
+  })
+
+  it('lists tools and excludes settings / channel-managed credentials', async () => {
     getEnvVars.mockResolvedValue({
-      BRAVE_SEARCH_API_KEY: envVar('tool', {
-        description: 'Search the web with Brave.',
-        url: 'https://brave.com/search/api/'
-      }),
-      FIRECRAWL_API_KEY: envVar('tool', {
-        description: 'Crawl and extract websites.',
-        tools: ['browser_navigate']
-      }),
-      GATEWAY_PROXY: envVar('setting', { description: 'Gateway reverse proxy.' })
+      BRAVE_SEARCH_API_KEY: envVar('tool', { description: 'Search the web with Brave.' }),
+      FIRECRAWL_API_KEY: envVar('tool', { description: 'Crawl and extract websites.' }),
+      GATEWAY_PROXY: envVar('setting', { description: 'Gateway reverse proxy.' }),
+      TELEGRAM_BOT_TOKEN: envVar('messaging', {
+        channel_managed: true,
+        description: 'Telegram bot token.'
+      })
     })
 
     await renderKeysSettings('tools')
 
-    const search = await screen.findByRole('combobox', { name: 'Search tools…' })
     expect(screen.getByText('BRAVE SEARCH')).toBeTruthy()
     expect(screen.getByText('FIRECRAWL')).toBeTruthy()
     expect(screen.queryByText('GATEWAY PROXY')).toBeNull()
-    expect(screen.queryByRole('option')).toBeNull()
-    expect(search.getAttribute('aria-expanded')).toBe('false')
-
-    fireEvent.change(search, { target: { value: 'crawl and extract' } })
-    const firecrawlResult = await screen.findByRole('option', { name: /FIRECRAWL/ })
-    expect(firecrawlResult.getAttribute('data-selected')).toBe('true')
-    expect(screen.queryByRole('option', { name: /BRAVE SEARCH/ })).toBeNull()
-
-    fireEvent.change(search, { target: { value: 'brave_search_api' } })
-    expect(await screen.findByRole('option', { name: /BRAVE SEARCH/ })).toBeTruthy()
-    expect(screen.queryByRole('option', { name: /FIRECRAWL/ })).toBeNull()
-
-    fireEvent.change(search, { target: { value: 'brave.com' } })
-    expect(await screen.findByRole('option', { name: /BRAVE SEARCH/ })).toBeTruthy()
-
-    fireEvent.change(search, { target: { value: 'browser_navigate' } })
-    expect(await screen.findByRole('option', { name: /FIRECRAWL/ })).toBeTruthy()
-    expect(screen.queryByRole('option', { name: /BRAVE SEARCH/ })).toBeNull()
-
-    fireEvent.change(search, { target: { value: 'does-not-exist' } })
-    expect(await screen.findByText('No entries match your search.')).toBeTruthy()
+    expect(screen.queryByText('TELEGRAM BOT')).toBeNull()
+    expect(screen.queryByRole('combobox')).toBeNull()
   })
 
-  it('scopes settings results and excludes channel-managed credentials', async () => {
+  it('lists settings rows and excludes tools / channel-managed credentials', async () => {
     getEnvVars.mockResolvedValue({
       API_SERVER_TOKEN: envVar('setting', { description: 'Protect the local API server.' }),
       GATEWAY_PROXY: envVar('messaging', { description: 'Gateway reverse proxy address.' }),
@@ -127,34 +102,28 @@ describe('KeysSettings scoped command search', () => {
 
     await renderKeysSettings('settings')
 
-    const search = await screen.findByRole('combobox', { name: 'Search settings…' })
     expect(screen.getByText('API SERVER')).toBeTruthy()
     expect(screen.getByText('GATEWAY PROXY')).toBeTruthy()
     expect(screen.queryByText('TELEGRAM BOT')).toBeNull()
     expect(screen.queryByText('BRAVE SEARCH')).toBeNull()
-
-    fireEvent.change(search, { target: { value: 'reverse proxy' } })
-    expect(await screen.findByRole('option', { name: /GATEWAY PROXY/ })).toBeTruthy()
-    expect(screen.queryByRole('option', { name: /API SERVER/ })).toBeNull()
   })
 
-  it('selects a command result, then expands and highlights its credential card', async () => {
+  it('expands and highlights a deep-linked credential card', async () => {
     getEnvVars.mockResolvedValue({
       BRAVE_SEARCH_API_KEY: envVar('tool', { description: 'Search the web with Brave.' }),
-      FIRECRAWL_API_KEY: envVar('tool', {
-        description: 'Crawl and extract websites.',
-        tools: ['browser_navigate']
-      })
+      FIRECRAWL_API_KEY: envVar('tool', { description: 'Crawl and extract websites.' })
     })
 
-    await renderKeysSettings('tools', '/settings?tab=keys&kview=tools')
+    render(
+      <MemoryRouter initialEntries={['/settings?tab=keys']}>
+        <KeysSettings view="tools" />
+        <DeepLinkButton target="FIRECRAWL_API_KEY" />
+      </MemoryRouter>
+    )
 
-    const search = await screen.findByRole('combobox', { name: 'Search tools…' })
-    fireEvent.change(search, { target: { value: 'browser_navigate' } })
-    await screen.findByRole('option', { name: /FIRECRAWL/ })
-    fireEvent.keyDown(search, { key: 'Enter' })
+    expect(await screen.findByText('BRAVE SEARCH')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Open key' }))
 
-    await waitFor(() => expect((search as HTMLInputElement).value).toBe(''))
     await waitFor(() => {
       const target = globalThis.document.getElementById('credential-key-FIRECRAWL_API_KEY')
       expect(target?.classList).toContain('setting-field-highlight')
@@ -162,65 +131,50 @@ describe('KeysSettings scoped command search', () => {
     expect(screen.getByText('Crawl and extract websites.')).toBeTruthy()
   })
 
-  it('dismisses outside and reopens on focus while Escape clears the query', async () => {
+  it('drops an unsaved credential edit when the settings target switches profile', async () => {
+    // Regression: `vars` is re-fetched when the shared "Applies to" target
+    // changes, but the in-flight edit map was not reset with it. A value typed
+    // while targeting profile-b survived the switch to profile-c, where the
+    // still-live Save would persist it into the WRONG profile.
+    $settingsScopeOverride.set('profile-b')
     getEnvVars.mockResolvedValue({
-      BRAVE_SEARCH_API_KEY: envVar('tool', { description: 'Search the web with Brave.' })
+      WIDGET_API_KEY: envVar('tool', { description: 'Widget key.', is_set: true, redacted_value: '••••••' })
     })
 
-    await renderKeysSettings('tools')
+    try {
+      const { container } = render(
+        <MemoryRouter initialEntries={['/settings']}>
+          <KeysSettings view="tools" />
+        </MemoryRouter>
+      )
 
-    const search = await screen.findByRole('combobox', { name: 'Search tools…' })
-    fireEvent.change(search, { target: { value: 'brave' } })
-    expect(await screen.findByRole('option', { name: /BRAVE SEARCH/ })).toBeTruthy()
-    expect(search.getAttribute('aria-expanded')).toBe('true')
+      expect(await screen.findByText('WIDGET')).toBeTruthy()
+      await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith('profile-b'))
 
-    fireEvent.pointerDown(globalThis.document.body)
-    await waitFor(() => expect(search.getAttribute('aria-expanded')).toBe('false'))
-    expect((search as HTMLInputElement).value).toBe('brave')
+      // Open the field and type a value without saving it.
+      fireEvent.focus(container.querySelector('input[readonly]') as HTMLInputElement)
+      fireEvent.change(container.querySelector('input[type="password"]') as HTMLInputElement, {
+        target: { value: 'typed-secret' }
+      })
 
-    fireEvent.focus(search)
-    await waitFor(() => expect(search.getAttribute('aria-expanded')).toBe('true'))
-    fireEvent.keyDown(search, { key: 'Escape' })
-    expect((search as HTMLInputElement).value).toBe('')
-    expect(search.getAttribute('aria-expanded')).toBe('false')
-  })
+      expect(screen.getByDisplayValue('typed-secret')).toBeTruthy()
 
-  it('clears the scoped query when a deep link opens a key in the active view', async () => {
-    getEnvVars.mockResolvedValue({
-      BRAVE_SEARCH_API_KEY: envVar('tool', { description: 'Search the web with Brave.' }),
-      FIRECRAWL_API_KEY: envVar('tool', { description: 'Crawl and extract websites.' })
-    })
-    const { KeysSettings } = await import('./keys-settings')
+      // Re-target Settings at another profile. This is where the leak
+      // manifested: the draft stayed live, so the (still-rendered) Save would
+      // dispatch it through setEnvVar against the NEW target.
+      await act(async () => {
+        $settingsScopeOverride.set('profile-c')
+      })
+      await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith('profile-c'))
 
-    render(
-      <MemoryRouter initialEntries={['/settings?tab=keys']}>
-        <KeysSettings view="tools" />
-        <DeepLinkButton target="BRAVE_SEARCH_API_KEY" />
-      </MemoryRouter>
-    )
-
-    const search = await screen.findByRole('combobox', { name: 'Search tools…' })
-    fireEvent.change(search, { target: { value: 'firecrawl' } })
-    expect(await screen.findByRole('option', { name: /FIRECRAWL/ })).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: 'Open key' }))
-
-    await waitFor(() => expect((search as HTMLInputElement).value).toBe(''))
-    expect(await screen.findByText('Search the web with Brave.')).toBeTruthy()
-  })
-
-  it('does not clear a query for a deep link owned by the other sub-view', async () => {
-    getEnvVars.mockResolvedValue({
-      BRAVE_SEARCH_API_KEY: envVar('tool', { description: 'Search the web with Brave.' }),
-      GATEWAY_PROXY: envVar('setting', { description: 'Gateway reverse proxy address.' })
-    })
-
-    await renderKeysSettings('settings', '/settings?tab=keys&kview=settings&key=BRAVE_SEARCH_API_KEY')
-
-    const search = await screen.findByRole('combobox', { name: 'Search settings…' })
-    fireEvent.change(search, { target: { value: 'reverse proxy' } })
-
-    expect((search as HTMLInputElement).value).toBe('reverse proxy')
-    expect(await screen.findByRole('option', { name: /GATEWAY PROXY/ })).toBeTruthy()
+      // The draft belonged to the previous target: it is gone, and so is the
+      // Save control that would have dispatched it — no path is left that can
+      // write the stale value into the profile now being targeted.
+      expect(screen.queryByDisplayValue('typed-secret')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+    } finally {
+      cleanup()
+      $settingsScopeOverride.set(null)
+    }
   })
 })

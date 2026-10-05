@@ -10,7 +10,8 @@ import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
 import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
-import { MaskedPrompt } from './maskedPrompt.js'
+import { ConnectionSetupOverlay } from './connectionSetupOverlay.js'
+import { SecretPrompt, SudoPrompt, VaultCodePrompt, VaultSaveLoginPrompt, VaultUnlockPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
@@ -58,10 +59,25 @@ function PromptCell({ children, cols, id }: { children: ReactNode; cols: number;
 export function PromptZone({
   cols,
   onApprovalChoice,
-  onClarifyAnswer,
+  onClarifyCancel,
+  onClarifyQuestionAnswer,
   onSecretSubmit,
-  onSudoSubmit
-}: Pick<AppOverlaysProps, 'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onSecretSubmit' | 'onSudoSubmit'>) {
+  onSudoSubmit,
+  onVaultCodeSubmit,
+  onVaultSaveLoginSubmit,
+  onVaultUnlockSubmit
+}: Pick<
+  AppOverlaysProps,
+  | 'cols'
+  | 'onApprovalChoice'
+  | 'onClarifyCancel'
+  | 'onClarifyQuestionAnswer'
+  | 'onSecretSubmit'
+  | 'onSudoSubmit'
+  | 'onVaultCodeSubmit'
+  | 'onVaultSaveLoginSubmit'
+  | 'onVaultUnlockSubmit'
+>) {
   const overlay = useStore($overlayState)
   const theme = useStore($uiTheme)
 
@@ -105,6 +121,14 @@ export function PromptZone({
     )
   }
 
+  if (overlay.connection) {
+    return (
+      <PromptCell cols={cols} id="connection">
+        <ConnectionSetupOverlay cols={cols} t={theme} />
+      </PromptCell>
+    )
+  }
+
   if (overlay.confirm) {
     const req = overlay.confirm
 
@@ -127,8 +151,8 @@ export function PromptZone({
       <PromptCell cols={cols} id="clarify">
         <ClarifyPrompt
           cols={cols}
-          onAnswer={onClarifyAnswer}
-          onCancel={() => onClarifyAnswer('')}
+          onCancel={onClarifyCancel}
+          onQuestionAnswer={onClarifyQuestionAnswer}
           req={overlay.clarify}
           t={theme}
         />
@@ -139,7 +163,7 @@ export function PromptZone({
   if (overlay.sudo) {
     return (
       <PromptCell cols={cols} id="sudo">
-        <MaskedPrompt cols={cols} icon="🔐" label="sudo password required" onSubmit={onSudoSubmit} t={theme} />
+        <SudoPrompt cols={cols} onSubmit={onSudoSubmit} t={theme} />
       </PromptCell>
     )
   }
@@ -147,12 +171,51 @@ export function PromptZone({
   if (overlay.secret) {
     return (
       <PromptCell cols={cols} id="secret">
-        <MaskedPrompt
+        <SecretPrompt
           cols={cols}
-          icon="🔑"
-          label={overlay.secret.prompt}
+          envVar={overlay.secret.envVar}
           onSubmit={onSecretSubmit}
-          sub={`for ${overlay.secret.envVar}`}
+          prompt={overlay.secret.prompt}
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.vaultUnlock) {
+    return (
+      <PromptCell cols={cols} id="vault-unlock">
+        <VaultUnlockPrompt
+          cols={cols}
+          displayName={overlay.vaultUnlock.displayName}
+          onSubmit={onVaultUnlockSubmit}
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.vaultSaveLogin) {
+    return (
+      <PromptCell cols={cols} id="vault-save-login">
+        <VaultSaveLoginPrompt
+          cols={cols}
+          onReady={onVaultSaveLoginSubmit}
+          site={overlay.vaultSaveLogin.site}
+          t={theme}
+        />
+      </PromptCell>
+    )
+  }
+
+  if (overlay.vaultCode) {
+    return (
+      <PromptCell cols={cols} id="vault-code">
+        <VaultCodePrompt
+          cols={cols}
+          hint={overlay.vaultCode.hint}
+          onSubmit={onVaultCodeSubmit}
+          site={overlay.vaultCode.site}
           t={theme}
         />
       </PromptCell>
@@ -166,6 +229,7 @@ export function FloatingOverlays({
   cols,
   compIdx,
   completions,
+  nativeMode = false,
   onActiveSessionSelect,
   onActiveSessionClose,
   onModelSelect,
@@ -185,7 +249,7 @@ export function FloatingOverlays({
   | 'onNewPromptSession'
   | 'onResumeSelect'
   | 'pagerPageSize'
->) {
+> & { nativeMode?: boolean }) {
   const { gw } = useGateway()
   const overlay = useStore($overlayState)
   const sid = useStore($uiSessionId)
@@ -376,9 +440,15 @@ export function FloatingOverlays({
     })
   }
 
-  return (
+  const grid = <WidgetGrid cols={cols} columns={1} gap={0} paddingX={0} paddingY={0} rowGap={0} widgets={widgets} />
+
+  return nativeMode ? (
+    <Box alignItems="flex-start" flexDirection="column" marginBottom={1} width="100%">
+      {grid}
+    </Box>
+  ) : (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
-      <WidgetGrid cols={cols} columns={1} gap={0} paddingX={0} paddingY={0} rowGap={0} widgets={widgets} />
+      {grid}
     </Box>
   )
 }

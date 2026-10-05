@@ -1,4 +1,4 @@
-from hermes_cli.web_server import _display_system_platform
+from hermes_cli.web_server_gateway import _display_system_platform
 
 
 def test_windows_11_build_displays_as_windows_11():

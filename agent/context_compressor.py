@@ -696,7 +696,7 @@ _HISTORICAL_SUMMARY_PREFIXES = (
 _HANDOFF_MARKER_PREFIX = "[CONTEXT COMPACTION — REFERENCE ONLY]"
 # Opening window the confirmation tokens must land in, and the tokens themselves.
 _PARAPHRASED_HANDOFF_WINDOW = 400
-_PARAPHRASED_HANDOFF_TOKENS = ("compact", "summary", "handoff")
+_PARAPHRASED_HANDOFF_TOKENS = ("compacted", "handoff")
 
 # Bounded probe: catch the restored head plus a few stacked handoff/ack turns
 # without treating arbitrary summary-looking live-tail rows as proof of a resume.
@@ -4406,17 +4406,17 @@ Write only the summary body. Do not include any preamble or prefix."""
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
     @classmethod
-    def _starts_with_summary_prefix(cls, text: str) -> bool:
-        """Return True if *text* begins with any known handoff prefix, or with the
-        bracketed compaction marker followed by compaction vocabulary in the opening
-        window (model-paraphrased handoff, #132934)."""
+    def _starts_with_summary_prefix(cls, text: str, paraphrased: bool = True) -> bool:
+        """Return True if *text* begins with any known handoff prefix, or (when
+        *paraphrased*) with the bracketed compaction marker followed by compaction
+        vocabulary in the opening window (model-paraphrased handoff, #132934)."""
         if text.startswith((
             SUMMARY_PREFIX,
             LEGACY_SUMMARY_PREFIX,
             *_HISTORICAL_SUMMARY_PREFIXES,
         )):
             return True
-        return cls._is_paraphrased_handoff_head(text)
+        return paraphrased and cls._is_paraphrased_handoff_head(text)
 
     @staticmethod
     def _is_paraphrased_handoff_head(text: str) -> bool:
@@ -4433,20 +4433,20 @@ Write only the summary body. Do not include any preamble or prefix."""
         return any(token in window for token in _PARAPHRASED_HANDOFF_TOKENS)
 
     @classmethod
-    def classify_summary_content(cls, content: Any) -> Optional[str]:
+    def classify_summary_content(cls, content: Any, paraphrased: bool = True) -> Optional[str]:
         """Classify how *content* relates to a compaction summary.
         Returns ``"standalone"`` (whole message is a handoff), ``"merged"`` (preserved content +
-        delimiter + summary body), or None."""
+        delimiter + summary body), or None. *paraphrased* enables the marker+vocabulary fallback."""
         text = _content_text_for_contains(content).lstrip()
         # Merged summaries carry the handoff prefix after the delimiter; detect it there too.
         if _MERGED_SUMMARY_DELIMITER in text:
             after = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
-            return "merged" if cls._starts_with_summary_prefix(after) else None
-        return "standalone" if cls._starts_with_summary_prefix(text) else None
+            return "merged" if cls._starts_with_summary_prefix(after, paraphrased) else None
+        return "standalone" if cls._starts_with_summary_prefix(text, paraphrased) else None
 
     @classmethod
-    def _is_context_summary_content(cls, content: Any) -> bool:
-        return cls.classify_summary_content(content) is not None
+    def _is_context_summary_content(cls, content: Any, paraphrased: bool = True) -> bool:
+        return cls.classify_summary_content(content, paraphrased) is not None
 
     @staticmethod
     def _has_compressed_summary_metadata(message: Any) -> bool:
@@ -4505,7 +4505,10 @@ Write only the summary body. Do not include any preamble or prefix."""
         """Return True for summary handoff messages by metadata or content."""
         if not isinstance(message, dict):
             return False
-        return cls._has_compressed_summary_metadata(message) or cls._is_context_summary_content(message.get("content"))
+        # Paraphrased echoes are model output; a user pasting the marker stays a user turn.
+        return cls._has_compressed_summary_metadata(message) or cls._is_context_summary_content(
+            message.get("content"), paraphrased=message.get("role") != "user"
+        )
 
     @classmethod
     def _is_blank_user_turn(cls, message: Any) -> bool:

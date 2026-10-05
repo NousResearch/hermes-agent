@@ -401,7 +401,8 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
 
         def _capturing_popen(args, **kwargs):
             proc = real_popen(args, **kwargs)
-            spawned.append((proc, list(args)))
+            argv = list(args)  # on Linux the kernel starts as ``… landlock_exec.py … -- ARGV``
+            spawned.append((proc, argv[argv.index("--") + 1:] if "--" in argv else argv))
             return proc
 
         results = []

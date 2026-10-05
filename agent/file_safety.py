@@ -414,6 +414,37 @@ def get_read_block_error(path: str) -> Optional[str]:
     return f"Access denied: {path} {reason}" if reason else None
 
 
+# OS-enforced protection for agent-driven children (terminal, background, PTY,
+# execute_code, cron scripts) — see tools/environments/secret_isolation.py. Unlike the file-tool
+# guards above, these lists are enforced by the kernel, so they are a real boundary.
+# Whole directories that hold credential material (OAuth stores, MCP tokens, vault key +
+# ciphertext, copied browser cookies, platform pairing state).
+_TERMINAL_NO_ACCESS_DIRS = ("auth", "mcp-tokens", "vault", "browser-profile", "pairing")
+# Readable but never writable by children: the security policy itself (approvals.mode etc.).
+_TERMINAL_READ_ONLY_FILES = ("config.yaml",)
+
+
+def terminal_protected_paths() -> tuple[list[str], list[str]]:
+    """``(no_access, read_only)`` absolute paths the kernel must enforce for agent-driven children.
+
+    Covers the active HERMES_HOME, the global root and every profile under it, so one profile's
+    shell cannot read another's ``.env``. Paths need not exist: a missing ``.env`` still freezes its
+    parent directory, so a child cannot create one there.
+    """
+    homes: list[Path] = list(_hermes_dirs())
+    for base in list(homes):
+        with suppress(OSError):
+            homes.extend(p.resolve() for p in (base / "profiles").iterdir() if p.is_dir())
+    no_access: dict[str, None] = {}
+    read_only: dict[str, None] = {}
+    for home in dict.fromkeys(homes):
+        for name in (*_CREDENTIAL_FILE_NAMES, *_TERMINAL_NO_ACCESS_DIRS):
+            no_access[str(home / name)] = None
+        for name in _TERMINAL_READ_ONLY_FILES:
+            read_only[str(home / name)] = None
+    return list(no_access), [p for p in read_only if p not in no_access]
+
+
 def raise_if_read_blocked(path: str) -> None:
     """Raise ``ValueError`` if ``path`` is a denied Hermes read (see ``get_read_block_error``).
 

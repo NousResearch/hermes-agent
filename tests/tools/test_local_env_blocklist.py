@@ -946,7 +946,8 @@ class TestNativeEnvironmentContracts:
 
         def _fake_popen(cmd, **kwargs):
             captured["env"] = kwargs.get("env", {})
-            captured["staging"] = os.path.dirname(cmd[1])
+            real = cmd[cmd.index("--") + 1:] if "--" in cmd else cmd  # Linux: Landlock helper prefix
+            captured["staging"] = os.path.dirname(real[1])
             proc = MagicMock()
             # The kernel's reader threads drain with read1(); a bare MagicMock never returns
             # EOF there, so the stderr thread spins forever appending mocks (a 1 GB/min leak

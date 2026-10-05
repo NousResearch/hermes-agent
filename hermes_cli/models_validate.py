@@ -242,8 +242,10 @@ def offered_row_model_ids(row: dict, models=None) -> list:
     but the switch validates it as ``custom:<slug>`` — filter with that same token, else every spaced
     id of a user endpoint on a public host is dropped."""
     provider = row.get("slug")
-    if row.get("is_user_defined") and provider and not str(provider).startswith("custom"):
-        provider = f"custom:{provider}"
+    if row.get("is_user_defined") and provider:
+        from hermes_cli.providers import custom_provider_slug
+
+        provider = custom_provider_slug("", str(provider))
     base_url = row.get("api_url") or row.get("base_url")
     return offered_model_ids(row.get("models") if models is None else models, provider, base_url)
 

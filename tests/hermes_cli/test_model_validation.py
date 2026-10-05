@@ -982,34 +982,42 @@ def test_picker_payload_omits_ids_the_validator_rejects_for_whitespace():
     assert "Meta Llama 3.1 8B" in by_slug["lmstudio"]
 
 
-def test_picker_payload_keeps_spaced_ids_of_user_provider_on_public_host():
+# Keys that merely start with "custom" are still bare slugs, not ``custom:`` tokens.
+_USER_PROVIDER_KEYS = ["litellm", "customgpt", "custom-router"]
+
+
+@pytest.mark.parametrize("key", _USER_PROVIDER_KEYS)
+def test_picker_payload_keeps_spaced_ids_of_user_provider_on_public_host(key):
     """A ``providers:`` row carries its bare slug, yet the switch validates it as ``custom:<slug>``,
     which accepts spaced ids. On a public host the bare slug has no stock host to compare against,
     so filtering by it emptied the row: "LiteLLM (0 models)" while ``/model <id>`` still worked."""
     from hermes_cli.inventory import ConfigContext, build_models_payload
 
     rows = [{
-        "slug": "litellm", "name": "LiteLLM", "is_current": True,
+        "slug": key, "name": "LiteLLM", "is_current": True,
         "is_user_defined": True, "models": ["Claude Sonnet (Latest)", "Qwen3 Flash (TensorX)"],
+        "featured_models": ["Claude Sonnet (Latest)"],
         "total_models": 2, "source": "user-config",
         "api_url": "https://litellm.example.com/v1",
     }]
     ctx = ConfigContext(
-        current_provider="custom:litellm", current_model="Claude Sonnet (Latest)",
+        current_provider=f"custom:{key}", current_model="Claude Sonnet (Latest)",
         current_base_url="", user_providers={}, custom_providers=[])
     with patch("hermes_cli.model_switch.list_authenticated_providers", return_value=rows), \
          patch("hermes_cli.inventory._local_runtime_row", return_value=None), \
          patch("hermes_cli.inventory._moa_provider_row", return_value=None):
         payload = build_models_payload(ctx)
-    row = next(r for r in payload["providers"] if r["slug"] == "litellm")
+    row = next(r for r in payload["providers"] if r["slug"] == key)
     assert row["models"] == ["Claude Sonnet (Latest)", "Qwen3 Flash (TensorX)"]
+    assert row["featured_models"] == ["Claude Sonnet (Latest)"]
     assert row["total_models"] == 2
-    assert _validate("Claude Sonnet (Latest)", provider="custom:litellm",
+    assert _validate("Claude Sonnet (Latest)", provider=f"custom:{key}",
                      base_url="https://litellm.example.com/v1",
                      api_models=row["models"])["accepted"] is True
 
 
-def test_cli_picker_model_stage_keeps_spaced_ids_of_user_provider_on_public_host():
+@pytest.mark.parametrize("key", _USER_PROVIDER_KEYS)
+def test_cli_picker_model_stage_keeps_spaced_ids_of_user_provider_on_public_host(key):
     """Selecting that row re-filters its models; the same bare-slug mismatch left the model stage
     empty ("No models listed for this provider") although the row header counted them."""
     from types import SimpleNamespace
@@ -1018,7 +1026,7 @@ def test_cli_picker_model_stage_keeps_spaced_ids_of_user_provider_on_public_host
     models = ["Claude Sonnet (Latest)", "Qwen3 Flash (TensorX)"]
     self_ = SimpleNamespace(
         _model_picker_state={"stage": "provider", "selected": 0, "providers": [{
-            "slug": "litellm", "name": "LiteLLM", "is_user_defined": True,
+            "slug": key, "name": "LiteLLM", "is_user_defined": True,
             "models": list(models), "api_url": "https://litellm.example.com/v1"}]},
         _invalidate=lambda **_k: None,
         _close_model_picker=lambda: pytest.fail("picker closed"),

@@ -145,8 +145,9 @@ class GatewayAgentCacheMixin:
 
     def _rehydrate_session_model_override(self, session_key: str) -> None:
         """Lazily restore a persisted /model override after a gateway restart: non-secret parts
-        (model/provider/base_url) are written through on /model and read back on first use; api_key
-        is never persisted and is re-resolved. No-op when an in-memory override or nothing exists."""
+        (model/provider/base_url, plus the per-user ``list_by_provider`` cap) are written through on
+        /model and read back on first use; api_key is never persisted and is re-resolved. No-op when
+        an in-memory override or nothing exists."""
         from gateway.run import _resolve_runtime_agent_kwargs_for_provider
         store = getattr(self, "session_store", None)
         if self._session_model_override(session_key) is not None or store is None:
@@ -158,7 +159,16 @@ class GatewayAgentCacheMixin:
             return
         if not persisted:
             return
-        override: Dict[str, Any] = {k: persisted.get(k) for k in ("model", "provider", "base_url")}
+        # Only the route keys that carry a value. A cap-only override (``/model --list-by-provider``
+        # with no switch, and what a --global switch leaves behind) has no model to restore, and
+        # copying the keys as None would make the next turn read ``model=None`` — the key exists, so
+        # the configured default never gets its turn.
+        override: Dict[str, Any] = {k: v for k, v in persisted.items()
+                                     if k in ("model", "provider", "base_url") and v not in (None, "")}
+        # The per-user list cap rides the same persisted dict; reading only the route keys here would
+        # drop it on the first turn after a restart, which is the one thing the flag promises to survive.
+        if persisted.get("list_by_provider") not in (None, ""):
+            override["list_by_provider"] = persisted["list_by_provider"]
         provider = persisted.get("provider")
         from hermes_cli.runtime_provider import is_foreign_provider_endpoint
         if is_foreign_provider_endpoint(provider, override.get("base_url")):
@@ -200,7 +210,7 @@ class GatewayAgentCacheMixin:
         override = self._session_model_override(session_key)
         if not override:
             return model, runtime_kwargs
-        model = override.get("model", model)
+        model = override.get("model") or model
         for key in _OVERRIDE_APPLY_KEYS:
             val = override.get(key)
             if val is not None:

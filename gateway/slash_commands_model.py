@@ -68,6 +68,14 @@ async def _persist_model_switch_to_config(result, config_path) -> None:
     await asyncio.to_thread(persist_model_selection, result, config_path)
 
 
+# Built-in per-provider cap for the /model list. The text list shipped at 5, which hides most of
+# the ids on a self-hosted router serving a fixed set under one provider; 50 shows them. Tunable
+# by the operator (model.max_models_per_provider) and per user (/model --list-by-provider). One
+# number sizes the listing call, the text preview slice and the picker; Discord renders at most 75
+# per provider, so a larger value is clipped there.
+_DEFAULT_LIST_CAP = 50
+
+
 @dataclasses.dataclass
 class _ModelSwitchContext:
     """Everything a /model switch needs beyond the target: current route + persistence policy."""
@@ -86,6 +94,7 @@ class _ModelSwitchContext:
     route_provider: Optional[str] = None
     current_base_url: str = ""
     current_api_key: str = ""
+    list_cap: int = _DEFAULT_LIST_CAP  # per-provider cap for the /model list (config/per-user tunable)
     user_provs: Any = None
     custom_provs: Any = None
     excluded_provs: list = dataclasses.field(default_factory=list)
@@ -103,6 +112,9 @@ class _ModelSwitchContext:
                 self.current_provider = model_cfg.get("provider", self.current_provider)
                 self.route_provider = model_cfg.get("provider")
                 self.current_base_url = model_cfg.get("base_url", "")
+                _cap_raw = model_cfg.get("max_models_per_provider")
+                if isinstance(_cap_raw, int) and not isinstance(_cap_raw, bool) and _cap_raw >= 1:
+                    self.list_cap = _cap_raw
             self.user_provs = cfg.get("providers")
             try:
                 from hermes_cli.config import get_compatible_custom_providers
@@ -123,20 +135,25 @@ class _ModelSwitchContext:
             self.route_provider = override.get("provider", self.route_provider)
             self.current_base_url = override.get("base_url", self.current_base_url)
             self.current_api_key = override.get("api_key", self.current_api_key)
+            _cap_ov = override.get("list_by_provider")
+            if _cap_ov:
+                try:
+                    self.list_cap = int(_cap_ov)
+                except (TypeError, ValueError):
+                    pass
 
 
 
-_TEXT_LISTING_MODELS = 5
-
-
-def _model_provider_listing_lines(providers) -> list[str]:
-    """Text-list body for ``/model`` with no args on platforms without a picker."""
+def _model_provider_listing_lines(providers, max_models: int = _DEFAULT_LIST_CAP) -> list[str]:
+    """Text-list body for ``/model`` with no args on platforms without a picker. *max_models* is the
+    caller's cap: the preview slice must honour it, or a cap set on the listing call is thrown away
+    by the renderer that prints the list."""
     lines: list[str] = []
     for p in providers:
         tag = t("gateway.model.current_tag") if p["is_current"] else ""
         lines.append(f"**{p['name']}** `--provider {p['slug']}`{tag}:")
         if p["models"]:
-            shown = p["models"][:_TEXT_LISTING_MODELS]  # uncapped rows arrive full; this is a preview
+            shown = p["models"][:max_models]  # uncapped rows arrive full; this is a preview
             model_strs = ", ".join(f"`{m}`" for m in shown)
             hidden = p["total_models"] - len(shown)
             extra = t("gateway.model.more_models_suffix", count=hidden) if hidden > 0 else ""
@@ -246,12 +263,20 @@ class GatewayModelCommandsMixin:
             f"{'This override applies to the next turn only. ' if one_turn else ''}"
             f"Adjust your self-identification accordingly.]"
         )
-        self._session_model_overrides[ctx.session_key] = {
+        # The per-user list cap (``/model --list-by-provider``) is not part of the model route, so a
+        # switch must not silently drop it. This literal REPLACES the override dict and the write-through
+        # below persists the replacement, so leaving the key out erased the user's cap from memory AND
+        # from sessions.json on the next model switch — exactly when someone tunes the list.
+        _prior_cap = (self._session_model_overrides.get(ctx.session_key) or {}).get("list_by_provider")
+        _new_override = {
             "model": result.new_model, "provider": result.target_provider, "api_key": result.api_key,
             "base_url": result.base_url, "api_mode": result.api_mode,
             "request_overrides": dict(result.request_overrides or {}),
             "capabilities": dict(result.runtime_capabilities or {}),
         }
+        if _prior_cap not in (None, ""):
+            _new_override["list_by_provider"] = _prior_cap
+        self._session_model_overrides[ctx.session_key] = _new_override
         if one_turn:
             # A repeated --once before the turn runs must keep the EARLIEST snapshot: the later
             # command's snapshot is the first temporary model, not the user's standing override.
@@ -272,14 +297,21 @@ class GatewayModelCommandsMixin:
         # Precedence is session > channel_overrides > config.yaml: in a chat with a channel_overrides
         # model/provider the session override must stay, or the next turn runs the channel model.
         if ctx.persist_global and global_error is None and self._channel_override_for(source) is None:
+            # config.yaml is the one durable authority for the MODEL route, so the model/provider copy
+            # goes. The per-user list cap is never written to config.yaml, so it has no durable home
+            # but this override — clearing it here would discard a setting the global switch is not about.
+            _keep_cap = {"list_by_provider": _prior_cap} if _prior_cap not in (None, "") else None
             try:
-                await self.async_session_store.set_model_override(ctx.session_key, None)
+                await self.async_session_store.set_model_override(ctx.session_key, _keep_cap)
             except Exception as e:
                 # Store still holds the stale copy: keep memory in agreement and report it (#100314).
                 logger.warning("Failed to clear persisted session model override: %s", e)
                 global_error = t("gateway.model.err_stale_override", error=e)
             else:
-                self._session_model_overrides.pop(ctx.session_key, None)
+                if _keep_cap:
+                    self._session_model_overrides[ctx.session_key] = dict(_keep_cap)
+                else:
+                    self._session_model_overrides.pop(ctx.session_key, None)
         # Non-secret write-through so the override survives a restart (api_key/api_mode are
         # re-resolved on rehydration); a --once override must NOT outlive a restart.
         # Write-through the non-secret parts (model/provider/base_url) to the session store so the override
@@ -430,13 +462,16 @@ class GatewayModelCommandsMixin:
                 persist_global=ctx.persist_global and global_error is None)
         return reply
 
-    async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
+    async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected, max_models: int = _DEFAULT_LIST_CAP) -> bool:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
-        is session-key-normalized so the picker's thread metadata lands where the next turn reads."""
+        is session-key-normalized so the picker's thread metadata lands where the next turn reads.
+        *max_models* is the caller's per-provider cap (``ctx.list_cap``): the picker and the text
+        fallback are the SAME listing with a different renderer, so ``/model --list-by-provider`` and
+        ``model.max_models_per_provider`` must size both, not just the fallback."""
         from hermes_cli.model_switch_providers import list_picker_providers
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
             providers = await asyncio.to_thread(
-                list_picker_providers, max_models=50, include_moa=True, **listing_kwargs
+                list_picker_providers, max_models=max_models, include_moa=True, **listing_kwargs
             )
         except Exception:
             providers = []
@@ -483,19 +518,21 @@ class GatewayModelCommandsMixin:
                 with _profile_runtime_scope(profile_home):
                     return await _picker_switch(model_id, provider_slug)
 
-            if await self._send_model_picker(event, ctx.source, adapter, ctx.session_key, listing_kwargs, _on_model_selected):
+            if await self._send_model_picker(event, ctx.source, adapter, ctx.session_key, listing_kwargs,
+                                             _on_model_selected, max_models=ctx.list_cap):
                 return None  # Picker sent — adapter handles the response
 
         lines = [t("gateway.model.current_label", model=ctx.current_model or t("gateway.shared.unknown_value"),
                    provider=get_label(ctx.current_provider)), ""]
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
-            providers = await asyncio.to_thread(list_authenticated_providers, max_models=_TEXT_LISTING_MODELS, **listing_kwargs)
-            lines.extend(_model_provider_listing_lines(providers))
+            providers = await asyncio.to_thread(list_authenticated_providers, max_models=ctx.list_cap, **listing_kwargs)
+            lines.extend(_model_provider_listing_lines(providers, ctx.list_cap))
         except Exception:
             pass
         lines.append(t("gateway.model.usage_switch_model"))
         lines.append(t("gateway.model.usage_switch_provider"))
         lines.append(t("gateway.model.usage_persist"))
+        lines.append(t("gateway.model.usage_list_cap"))
         return "\n".join(lines)
 
     async def _model_selection_guard_reply(
@@ -584,6 +621,25 @@ class GatewayModelCommandsMixin:
         )
         ctx.read_config()
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
+        # Per-user /model --list-by-provider cap. Precedence: this call's flag > this
+        # session's stored value > global config > 50. The stored value lives in the
+        # per-session override store (keyed by user+channel) and is never written to
+        # config.yaml, so one user's choice cannot change another user's list.
+        if request.list_by_provider is not None:
+            ctx.list_cap = request.list_by_provider
+            _new_override = dict(self._session_model_overrides.get(session_key, {}))
+            _new_override["list_by_provider"] = str(request.list_by_provider)
+            self._session_model_overrides[session_key] = _new_override
+            if ctx.restore_snapshot is not None:
+                # --once snapshots the pre-command override, then reverts to it after the turn. The
+                # cap was set by THIS command, so the snapshot must carry it: reverting the model is
+                # not a revert of the list size, and dropping it here would leave memory disagreeing
+                # with the store (which keeps the cap across a restart).
+                ctx.restore_snapshot = {"had_override": True, "override": dict(_new_override)}
+            try:
+                await self.async_session_store.set_model_override(session_key, _new_override)
+            except Exception:
+                pass
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)
         result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)

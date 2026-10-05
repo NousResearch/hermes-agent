@@ -392,6 +392,23 @@ _GATEWAY_AUTH_ERROR_RE = re.compile(
 _GATEWAY_RATE_LIMIT_RE = re.compile(
     r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)", re.IGNORECASE)
 
+_GATEWAY_MODEL_NOT_FOUND_RE = re.compile(
+    r"("
+    r"model['\"`]?\s+\S+?\s+not\s+found"
+    r"|\"model\"\s*:\s*\S+?\s*not\s+found"
+    r"|\bmodel\s+not\s+found"
+    r"|(?:the\s+)?model\s*['\"`]\s*\S[^'\"`]{0,80}?\s*['\"`]\s+does\s+not\s+exist"
+    r")",
+    re.IGNORECASE,
+)
+# llama.cpp's 400 envelope: {"error": {"message": "model 'x' not found", ...}} - a
+# configured model the serving endpoint does not have. Distinct from auth (fix: /login),
+# rate-limit (fix: wait) and policy (fix: rephrase): the fix is picking an available model, so the
+# generic "kept failing - use /retry" reply points at the one action that cannot work. Bare
+# "model not found" (llama.cpp /v1/models) and "The model 'x' does not exist" (OpenAI SDK, vLLM)
+# are the same diagnosis in other words. Quoted forms are required for "does not exist" so a plain
+# "the file does not exist" stays unclaimed.
+
 # Connection-failure markers: the first 8 also anchor the provider-failure envelope shape below.
 _CONNECTION_ERROR_MARKERS = (
     r"(?:\w+\.)?(?:api\s*)?connection\s*(?:error|timeout)", r"(?:\w+\.)?connect\s*(?:error|timeout)",
@@ -636,10 +653,10 @@ _PROVIDER_ERROR_REPLIES = (
     (_GATEWAY_RATE_LIMIT_RE, "gateway.errors.rate_limited"),
     (_GATEWAY_AUTH_ERROR_RE, "gateway.errors.auth_failed"),
     (_GATEWAY_PROVIDER_POLICY_RE, "gateway.errors.bad_request"),
+    (_GATEWAY_MODEL_NOT_FOUND_RE, "gateway.errors.model_not_found"),
     (_GATEWAY_CONNECTION_INTERRUPTED_RE, "gateway.errors.connection_interrupted"),
     (_GATEWAY_ENDPOINT_UNREACHABLE_RE, "gateway.errors.unreachable"),
     (_GATEWAY_CONNECTION_ERROR_RE, "gateway.errors.connection_unknown"))
-
 
 def _context_overflow_reply() -> str:
     """Shared by the failed-turn normalizer and ``run_turn._hmwa_agent_error_reply``; canonical

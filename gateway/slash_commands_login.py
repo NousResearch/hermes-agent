@@ -191,9 +191,14 @@ class GatewayLoginCommandsMixin:
             overrides = self._session_model_overrides
             override = overrides.get(key) or {}
             if str(override.get("model") or "") == anon_auth.GUEST_MODEL:
+                # Clear the free-tier ROUTE. The per-user list cap is not a route and the user
+                # never asked for it to go, so it rides through the clear (same rule as a
+                # --global model switch in _record_model_switch).
+                _cap = override.get("list_by_provider")
+                _keep = {"list_by_provider": _cap} if _cap not in (None, "") else None
                 for attempt in range(2):
                     try:
-                        await self.async_session_store.set_model_override(key, None)
+                        await self.async_session_store.set_model_override(key, _keep)
                         break
                     except Exception:
                         if attempt == 1:
@@ -204,6 +209,8 @@ class GatewayLoginCommandsMixin:
                     failed += 1
                     continue
                 overrides.pop(key, None)
+                if _keep:
+                    overrides[key] = dict(_keep)
             try:
                 self._evict_cached_agent(key)
             except Exception:

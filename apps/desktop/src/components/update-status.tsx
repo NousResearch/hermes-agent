@@ -8,7 +8,7 @@ import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle, CheckCircle2, ExternalLink, Loader2, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { shortVersion } from '@/lib/version-label'
+import { displayVersion } from '@/lib/version-label'
 import {
   $backendUpdateApply,
   $backendUpdateChecking,
@@ -182,7 +182,7 @@ export function VersionHero({
           <h2 className="text-lg font-semibold tracking-tight">{u.appName}</h2>
         )}
         <p className="mt-1 text-xs text-muted-foreground">
-          {version?.appVersion ? u.version(shortVersion(version.appVersion)) : u.versionUnavailable}
+          {version?.appVersion ? u.version(displayVersion(version.appVersion)) : u.versionUnavailable}
           {version?.channel
             ? ` · ${Object.entries(u.channels).find(([name]: [string, string]): boolean => name === version.channel)?.[1] ?? version.channel}`
             : ''}

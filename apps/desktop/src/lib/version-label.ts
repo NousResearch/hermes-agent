@@ -8,3 +8,12 @@
 export function shortVersion(version: string): string {
   return version.replace(/^v/, '').replace(/(\+\d+)\.g[0-9a-f]+(?:\.dirty)?$/i, '$1')
 }
+
+/** Source checkouts report `git.<sha>`. The About page shows a product version. */
+export const PRODUCT_VERSION = '1.0.0'
+
+export function displayVersion(version: string): string {
+  const short = shortVersion(version)
+
+  return /^git\.[0-9a-f]+(?:\.dirty)?$/i.test(short) ? PRODUCT_VERSION : short
+}

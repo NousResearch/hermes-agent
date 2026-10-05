@@ -4437,7 +4437,7 @@ export const en: Translations = {
     versionDetailsRuntime: 'Runtime',
     versionDetailsRuntimeEmbedded: 'Embedded runtime',
     versionDetailsRuntimeExternal: 'External (uses the machine runtime)',
-    versionDetailsInstallId: 'Install ID',
+    versionDetailsInstallId: 'Location',
     versionDetailsUncommittedChanges: 'uncommitted changes'
   },
 

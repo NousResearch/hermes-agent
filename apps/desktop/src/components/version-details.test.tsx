@@ -1,9 +1,9 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, type Mock, vi } from 'vitest'
+import { cleanup, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopVersionInfo } from '@/global'
 import { I18nProvider } from '@/i18n'
-import { $previewTabs, closeRightRail } from '@/store/preview'
+import { closeRightRail } from '@/store/preview'
 
 import { VersionDetails } from './version-details'
 
@@ -110,26 +110,23 @@ describe('VersionDetails', () => {
     }
   })
 
-  it('opens the commit URL via the system-browser bridge without opening a preview tab', async () => {
-    const openExternal: Mock<Window['hermesDesktop']['openExternal']> = vi
-      .fn<Window['hermesDesktop']['openExternal']>()
-      .mockResolvedValue(undefined)
-
-    vi.stubGlobal('hermesDesktop', { openExternal } satisfies Pick<Window['hermesDesktop'], 'openExternal'>)
-
+  it('hides the commit and shows the install folder', () => {
     render(
       <I18nProvider configClient={null} initialLocale="en">
-        <VersionDetails version={{ ...baseVersion, commit: 'd233b6d7a9c5b79288e48dfb3b29e2ead106ac73' }} />
+        <VersionDetails
+          version={{
+            ...baseVersion,
+            appVersion: 'git.69b4e09',
+            commit: 'd233b6d7a9c5b79288e48dfb3b29e2ead106ac73',
+            installId: '499bb437258c4155'
+          }}
+        />
       </I18nProvider>
     )
 
-    fireEvent.click(screen.getByText('d233b6d7a9c5b7'))
-
-    await waitFor(() => {
-      expect(openExternal).toHaveBeenCalledWith(
-        'https://github.com/intelli-verse-x/IVX-desktop/commit/d233b6d7a9c5b79288e48dfb3b29e2ead106ac73'
-      )
-    })
-    expect($previewTabs.get()).toHaveLength(0)
+    expect(screen.getByText('v1.0.0')).toBeTruthy()
+    expect(screen.queryByText('Commit')).toBeNull()
+    expect(screen.queryByText(/499bb437258c4155/)).toBeNull()
+    expect(screen.getByText('/tmp/hermes')).toBeTruthy()
   })
 })

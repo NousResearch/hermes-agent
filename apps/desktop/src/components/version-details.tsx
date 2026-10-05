@@ -1,8 +1,7 @@
 import type { DesktopVersionInfo, RuntimeSource } from '@/global'
 import { useI18n } from '@/i18n'
 import { distributionLabelKey } from '@/lib/distribution-label'
-import { ExternalLink } from '@/lib/external-link'
-import { shortVersion } from '@/lib/version-label'
+import { displayVersion } from '@/lib/version-label'
 
 /**
  * Human label for an external build's runtime source: the resolution rung
@@ -56,25 +55,10 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
       <div className="flex justify-between gap-4">
         <dt className="text-muted-foreground">{u.versionDetailsVersion}</dt>
         <dd>
-          {version.appVersion ? `v${shortVersion(version.appVersion)}` : u.versionUnavailable}
+          {version.appVersion ? `v${displayVersion(version.appVersion)}` : u.versionUnavailable}
           {version.dirty && <span className="text-warning"> (!)</span>}
         </dd>
       </div>
-      {version.commit && (
-        <div className="flex justify-between gap-4">
-          <dt className="text-muted-foreground">{u.versionDetailsCommit}</dt>
-          <dd className="break-all text-right">
-            <ExternalLink
-              className="break-all font-mono text-xs"
-              href={`https://github.com/intelli-verse-x/IVX-desktop/commit/${version.commit}`}
-              native
-            >
-              {version.commit.slice(0, 14)}
-            </ExternalLink>
-            {version.dirty && <span className="text-warning"> {u.versionDetailsUncommittedChanges}</span>}
-          </dd>
-        </div>
-      )}
       {source && (
         <div className="flex justify-between gap-4">
           <dt className="text-muted-foreground">{u.versionDetailsBuildOrigin}</dt>
@@ -96,12 +80,10 @@ export function VersionDetails({ version }: { version: DesktopVersionInfo }) {
           <dd className="break-all text-right">{runtime}</dd>
         </div>
       )}
-      {version.installId && (
+      {version.hermesRoot && (
         <div className="flex justify-between gap-4">
           <dt className="text-muted-foreground">{u.versionDetailsInstallId}</dt>
-          <dd className="break-all text-right font-mono text-xs">
-            {version.installId} ({version.hermesRoot})
-          </dd>
+          <dd className="break-all text-right">{version.hermesRoot}</dd>
         </div>
       )}
     </dl>

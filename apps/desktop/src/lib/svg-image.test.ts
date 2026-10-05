@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { normalizeSvgSize, svgSize } from './svg-image'
+import { normalizeSvgSize, svgSize, xmlWellFormedSvg } from './svg-image'
 
 // Real mermaid 11.16 render output shape (verified against the installed
 // package): width="100%" + inline style="max-width: Npx" + viewBox.
@@ -62,5 +62,43 @@ describe('normalizeSvgSize', () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="100%"><rect/></svg>'
 
     expect(normalizeSvgSize(svg)).toBe(svg)
+  })
+})
+
+// A mermaid label keeps HTML void tags open: `<br/>` in the source comes back
+// from `mermaid.render()` as `<br>`. That makes the string malformed XML, so
+// every strict `image/svg+xml` parse below degrades — and Blink fails the same
+// way when the string is handed to an <img> as a data: URI, which is how a
+// diagram silently stops rendering (broken image, no error anywhere).
+describe('xmlWellFormedSvg', () => {
+  const rootOf = (svg: string) => new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement.tagName
+
+  it('closes a void tag mermaid left open inside a label', () => {
+    expect(xmlWellFormedSvg('<text><tspan><br>x</tspan></text>')).toBe('<text><tspan><br/>x</tspan></text>')
+  })
+
+  it('closes an open void tag that carries attributes', () => {
+    expect(xmlWellFormedSvg('<br class="label">')).toBe('<br class="label"/>')
+  })
+
+  it('leaves already-closed void tags untouched', () => {
+    const svg = '<text><br/><hr /></text>'
+
+    expect(xmlWellFormedSvg(svg)).toBe(svg)
+  })
+
+  it('leaves non-void tags and void-tag lookalikes untouched', () => {
+    const svg = '<blockquote><break>x</break><bring>y</bring><image href="a"/></blockquote>'
+
+    expect(xmlWellFormedSvg(svg)).toBe(svg)
+  })
+
+  it('makes a label with <br> parse as an <svg> instead of a parsererror page', () => {
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 260.34375 70"><text><tspan><br>x</tspan></text></svg>'
+
+    expect(rootOf(svg)).not.toBe('svg')
+    expect(rootOf(xmlWellFormedSvg(svg))).toBe('svg')
+    expect(normalizeSvgSize(xmlWellFormedSvg(svg))).toContain('width="260.34375"')
   })
 })

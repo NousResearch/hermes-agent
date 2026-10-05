@@ -16,6 +16,24 @@ function viewBoxSize(el: Element): { height: number; width: number } | null {
   return vbW > 0 && vbH > 0 ? { height: vbH, width: vbW } : null
 }
 
+// Mermaid emits SVG aimed at inline HTML: its labels keep HTML void tags
+// unclosed, so a `<br/>` in the source comes back from `mermaid.render()` as
+// `<br>`. Everything below parses that string as strict XML
+// (`image/svg+xml`) — and so does Blink when the same string reaches an <img>
+// as a data: URI — where an open void tag is a malformed document: the parse
+// yields a parsererror page rather than an <svg> and the diagram silently stops
+// rendering. Close void tags before anything XML-parses the markup. Already
+// closed tags, and names that merely start with a void tag (`<break>`), pass
+// through untouched.
+const VOID_TAGS = 'area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr'
+const VOID_TAG_RE = new RegExp(`<(${VOID_TAGS})((?:\\s[^<>]*?)?)(/?)>`, 'gi')
+
+export function xmlWellFormedSvg(svg: string): string {
+  return svg.replace(VOID_TAG_RE, (match, tag: string, attrs: string, slash: string) =>
+    slash ? match : `<${tag}${attrs}/>`
+  )
+}
+
 export function normalizeSvgSize(svg: string): string {
   const el = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement
 

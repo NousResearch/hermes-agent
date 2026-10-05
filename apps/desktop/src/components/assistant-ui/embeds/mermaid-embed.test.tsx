@@ -46,4 +46,22 @@ describe('MermaidRenderer', () => {
     ])
     expect(decodeURIComponent(images[0]?.src.split(',')[1] ?? '')).toContain('marker-end="url(#arrow)"')
   })
+
+  it('repairs a label mermaid returned with an open <br>, so the image stays loadable', async () => {
+    // `A[x<br/>y]` comes back from mermaid as `<br>` — malformed XML, so the
+    // data: URI fails to decode and the message shows a broken image with the
+    // alt text instead of the diagram (#133089).
+    renderMermaid.mockResolvedValueOnce({
+      svg: '<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 260.34375 70"><text><tspan><br>x</tspan></text></svg>'
+    })
+
+    const { container } = render(<MermaidRenderer code="graph TD; A[x<br/>y] --> B" />)
+
+    await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
+
+    const src = decodeURIComponent([...container.querySelectorAll('img')][0]?.src.split(',')[1] ?? '')
+
+    expect(src).toContain('<br/>')
+    expect(new DOMParser().parseFromString(src, 'image/svg+xml').documentElement.tagName).toBe('svg')
+  })
 })

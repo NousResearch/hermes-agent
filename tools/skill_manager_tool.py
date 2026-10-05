@@ -209,8 +209,12 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
 
 
 def _iter_skill_dirs(root: Path):
-    from agent.skill_utils import is_excluded_skill_path
-    for skill_md in root.rglob("SKILL.md"):
+    # Walk with followlinks=True (iter_skill_index_files, the same primitive skills_tool's
+    # view side uses): Path.rglob does not follow directory symlinks, so a skill behind a
+    # symlinked category dir was invisible here — create's dedup passed and the duplicate
+    # then poisoned skill_view with "Ambiguous skill name" for both copies.
+    from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
+    for skill_md in iter_skill_index_files(root, "SKILL.md"):
         if not is_excluded_skill_path(skill_md):
             yield skill_md.parent
 

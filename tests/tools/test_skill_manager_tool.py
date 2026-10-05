@@ -295,6 +295,33 @@ class TestEditSkill:
         assert found is not None
         assert found["path"] == tmp_path / "mlops" / "my-skill"
 
+    def test_find_skill_sees_skill_behind_symlinked_category_dir(self, tmp_path):
+        """skill_manage(create) dedups with the same view skills_tool uses.
+
+        ``Path.rglob`` does not follow directory symlinks, so a category dir
+        symlinked into the active profile hid its skills from ``_find_skill``:
+        create's duplicate check passed, the duplicate was written, and
+        skill_view then refused BOTH copies with "Ambiguous skill name"
+        (issue #125425). The scan must follow directory symlinks, matching
+        skills_tool's iter_skill_index_files view.
+        """
+        if not hasattr(os, "symlink"):
+            pytest.skip("symlinks are not supported on this platform")
+        source_root = tmp_path / "other-profile" / "skills"
+        skill_dir = source_root / "evm-audit" / "evm-audit-erc4626"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: evm-audit-erc4626\ndescription: dedup probe.\n---\n\nBody.\n")
+        link = tmp_path / "evm-audit"
+        try:
+            link.symlink_to(source_root / "evm-audit", target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+        with _skill_dir(tmp_path):
+            found = _find_skill("evm-audit-erc4626")
+        assert found is not None
+        assert found["path"] == link / "evm-audit-erc4626"
+
     def test_edit_invalid_content_rejected(self, tmp_path):
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)

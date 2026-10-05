@@ -4702,7 +4702,10 @@ class TestMatrixReactions:
         await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
         self.adapter._redact_reaction.assert_not_awaited()
         self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "\u2705")
-        await asyncio.sleep(0.03)
+        await asyncio.wait_for(
+            asyncio.gather(*self.adapter._reaction_redaction_tasks),
+            timeout=2,
+        )
         self.adapter._redact_reaction.assert_awaited_once_with(
             "!room:ex",
             "$eyes_reaction_123",
@@ -4712,8 +4715,6 @@ class TestMatrixReactions:
 
     @pytest.mark.asyncio
     async def test_approval_reaction_cleanup_is_delayed(self):
-        """Bot approval reaction redactions should not run inline."""
-
         self.adapter._reaction_redaction_delay_seconds = 0.01
         self.adapter._redact_reaction = AsyncMock(return_value=True)
         prompt = MagicMock()
@@ -4725,17 +4726,14 @@ class TestMatrixReactions:
         await self.adapter._redact_bot_approval_reactions("!room:ex", prompt)
 
         self.adapter._redact_reaction.assert_not_awaited()
-        await asyncio.sleep(0.03)
-        self.adapter._redact_reaction.assert_any_await(
-            "!room:ex",
-            "$allow_reaction",
-            "approval resolved",
+        await asyncio.wait_for(
+            asyncio.gather(*self.adapter._reaction_redaction_tasks),
+            timeout=2,
         )
-        self.adapter._redact_reaction.assert_any_await(
-            "!room:ex",
-            "$deny_reaction",
-            "approval resolved",
-        )
+        assert self.adapter._redact_reaction.await_args_list == [
+            call("!room:ex", "$allow_reaction", "approval resolved"),
+            call("!room:ex", "$deny_reaction", "approval resolved"),
+        ]
 
 
 # ---------------------------------------------------------------------------

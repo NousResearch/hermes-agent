@@ -23,12 +23,17 @@ jobs:
 
       - name: Check for unmapped contributor emails
         id: check-emails
+        if: github.event_name == 'pull_request'
+        env:
+          PR_BASE_REF: ${{ github.base_ref }}
         run: |
-          # Get the merge base between this PR and main
-          MERGE_BASE=$(git merge-base origin/main HEAD)
+          # Scope attribution to the actual PR target, including deployment branches.
+          set -euo pipefail
+          : "${PR_BASE_REF:?pull request base ref is required}"
+          MERGE_BASE=$(git merge-base "refs/remotes/origin/$PR_BASE_REF" HEAD)
 
           # Find any new author emails in this PR's commits
-          NEW_EMAILS=$(git log ${MERGE_BASE}..HEAD --format='%ae' --no-merges | sort -u)
+          NEW_EMAILS=$(git log "${MERGE_BASE}..HEAD" --format='%ae' --no-merges | sort -u)
 
           if [ -z "$NEW_EMAILS" ]; then
             echo "No new commits to check."

@@ -12,17 +12,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  plan:
+    name: Plan complete Python suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Allocate every discovered file once
+        id: plan
+        # One immutable plan prevents cache changes between queued jobs from
+        # moving files across shards. The planner only needs the stdlib.
+        run: |
+          python3 scripts/run_tests_parallel.py --generate-slices 8 > test-matrix.json
+          echo "matrix=$(cat test-matrix.json)" >> "$GITHUB_OUTPUT"
+
   test:
-    name: Run tests
-    # One 96-core runner for the whole suite. There is no slicing. Slicing
-    # existed to spread the suite over 4-core runners. It cost a matrix job, a
-    # duration cache, a per-slice artifact and a merge job to do it.
-    #
-    # 96 cores clear the floor that the slowest single test file sets (about
-    # 82s). A second slice divides work that is already at that floor, and
-    # adds a second setup.
-    runs-on: ubuntu-latest-96-core
-    timeout-minutes: 30
+    name: Run tests (${{ matrix.slice.index }})
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -99,8 +113,9 @@ jobs:
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: test_durations.json
-          key: test-durations-never-exact
+          key: test-durations-never-exact-${{ matrix.slice.index }}
           restore-keys: |
+            test-durations-shard-${{ matrix.slice.index }}-
             test-durations-
 
       - name: Run tests
@@ -109,33 +124,15 @@ jobs:
         # with bounded parallelism. No xdist, no shared workers, no
         # module-level state leakage between files.
         #
-        # No --files: the runner discovers the suite itself. The discovered
-        # set is identical to the list the removed matrix job used to pass in.
+        # The plan uses the same discovery as an unsliced run. Passing a
+        # file avoids argv size limits; cache restores only affect timeouts.
         run: |
           source .venv/bin/activate
-          scripts/run_tests.sh
+          printf '%s' "$TEST_FILES" | tr ':' '\n' > test-files.txt
+          scripts/run_tests.sh --files-from test-files.txt
         env:
-          # This is the maximum number of test FILES that run together.
-          # run_tests_parallel.py starts one pytest subprocess for each file
-          # from a single ThreadPoolExecutor, so this value IS the limit. The
-          # default is cpu_count*2, which is 192 here.
-          #
-          # Measured on this runner (96-core EPYC 7763, 377GB). Whole suite,
-          # two repetitions for each value. See run 32549672063:
-          #
-          #     workers   x cores   mean
-          #        48       0.5x    138s
-          #        96       1.0x    126s   <- fastest
-          #       144       1.5x    132s
-          #       192       2.0x    132s
-          #       240       2.5x    140s
-          #       288       3.0x    142s
-          #
-          # One worker for each core wins. The curve is shallow: 126s to 142s
-          # across a 6x range. The suite has sufficient concurrency at this
-          # size. The remaining time is the slowest files plus the setup.
-          # Workers above the core count only add contention.
-          HERMES_TEST_WORKERS: 96
+          TEST_FILES: ${{ matrix.slice.files }}
+          HERMES_TEST_WORKERS: 2
           # Ensure tests don't accidentally call real APIs
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
@@ -148,7 +145,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: test_durations.json
-          key: test-durations-${{ github.run_id }}
+          key: test-durations-shard-${{ matrix.slice.index }}-${{ github.run_id }}
 
   e2e:
     runs-on: ubuntu-latest

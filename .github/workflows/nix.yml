@@ -50,12 +50,10 @@ jobs:
     name: nix flake check
     needs: [detect]
     if: needs.detect.outputs.nix == 'true'
-    # The build compiles the package and its whole dependency closure, so this
-    # takes minutes and not seconds when the cache misses. `nix flake check`
-    # builds 21 checks, and --max-jobs defaults to the core count. It uses the
-    # wider runner with no more configuration.
-    runs-on: ubuntu-latest-32-core
-    timeout-minutes: 60
+    # Bound simultaneous builds and each build's cores on the hosted runner.
+    # Keep the whole flake check, including cold dependency-closure builds.
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -116,4 +114,4 @@ jobs:
       - name: nix flake check
         # --print-build-logs: a check that fails then prints the assertion
         # that failed, and not only the derivation that failed to build.
-        run: nix flake check --print-build-logs
+        run: nix flake check --print-build-logs --max-jobs 2 --cores 2

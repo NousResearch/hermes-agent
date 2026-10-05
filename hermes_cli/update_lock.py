@@ -590,13 +590,13 @@ def _parse_marker(raw: bytes, *, mtime: float | None = None) -> _Marker:
     started_at = _bounded_int(lines[1], _U64_MAX) if pid is not None else None
     pid = -1 if pid is None else pid
     ct = _CT_LINE.fullmatch(lines[2])
-    delegate = next((m for m in map(_DELEGATE_LINE.fullmatch, lines[3:])
-                     if m and _bounded_int(m.group(1), _U32_MAX) is not None), None)
+    delegates = ((m, _bounded_int(m.group(1), _U32_MAX)) for m in map(_DELEGATE_LINE.fullmatch, lines[3:]) if m)
+    delegate, delegate_pid = next(((m, d) for m, d in delegates if d is not None), (None, None))
     runs = tuple(m.group(1) for m in map(_RUN_LINE.fullmatch, lines[3:]) if m)
     in_flight = not raw and mtime is not None and time.time() - mtime < EMPTY_MARKER_GRACE_SECONDS
     return _Marker(
         raw=raw, pid=pid, started_at=started_at, create_time=float(ct.group(1)) if ct else None,
-        delegate_pid=int(delegate.group(1)) if delegate else None,
+        delegate_pid=delegate_pid,
         delegate_create_time=float(delegate.group(2)) if delegate else None, in_flight=in_flight,
         ct_text=ct.group(1) if ct else None, delegate_ct_text=delegate.group(2) if delegate else None,
         runs=runs,

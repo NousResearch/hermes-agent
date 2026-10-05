@@ -942,6 +942,29 @@ gateway:
     hint: "Bakiye yükleme ve faturalandırma işlemlerini tarayıcıda yapın — bakiyeniz ardından burada güncellenir."
   login:
     free_tier_remaining: "\nBazı sohbetler hâlâ ücretsiz katmanda; o sohbetlerde geçiş yapmak için /model kullanın."
+  cron:
+    failure:
+      provider: "⚠️ '{job_name}' cron işi başarısız oldu: {cause}. {action} Çalıştırma günlüğü: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} Bir sonraki planlanan zamanında yeniden çalışacak; hemen denemek için `hermes cron run {job_id}` kullanın."
+      action_billing: "Bakiye yükleyin veya limitin sıfırlanmasını bekleyin ya da `hermes cron edit {job_id} --provider <name>` ile başka bir sağlayıcı sabitleyin."
+      action_auth: "/login ile (veya bir terminalde `{relogin}` ile) yeniden oturum açın ya da `hermes cron edit {job_id} --provider <name>` ile çalışan bir sağlayıcı sabitleyin, ardından yeniden denemek için `hermes cron run {job_id}` çalıştırın."
+      action_model_not_found: "`hermes cron edit {job_id} --model <name>` ile başka bir model seçin."
+      action_upstream_blocked: "Sağlayıcının önündeki bir güvenlik duvarı isteği engelledi (sorun anahtarınızda değil): sağlayıcının custom_providers girdisinde `extra_headers` ile bir User-Agent ayarlayın ya da `hermes cron edit {job_id} --provider <name>` ile başka bir sağlayıcı sabitleyin."
+      action_context_overflow: "İşin istemini `hermes cron edit {job_id} --prompt <text>` ile kısaltın."
+      action_content_policy: "İşin istemini `hermes cron edit {job_id} --prompt <text>` ile yeniden ifade edin ya da `hermes cron edit {job_id} --model <name>` ile başka bir model seçin."
+      action_provider_policy: "Yeniden denemek işe yaramaz: hesabın durumunu ve veri/gizlilik ayarlarını sağlayıcı tarafında kontrol edin ya da `hermes cron edit {job_id} --model <name>` ile başka bir model sabitleyin."
+      action_default: "`hermes cron run {job_id}` ile yeniden çalıştırın veya `hermes cron edit {job_id}` ile düzenleyin."
+      generic: "⚠️ '{job_name}' cron işi başarısız oldu: {error}. Çalıştırmanın tamamını `hermes cron runs {job_id}` ile görün (çıktı {output_dir} altına kaydedildi); `hermes cron run {job_id}` ile yeniden çalıştırın, `hermes cron edit {job_id}` ile düzenleyin veya `hermes cron pause {job_id}` ile duraklatın."
+      script_timeout: "⚠️ '{job_name}' cron işi başarısız oldu: betiği zaman aşımına uğradı. Hiçbir model çağrılmadı. Betiğin {output_dir} altındaki çıktısını veya `hermes cron runs {job_id}` sonucunu kontrol edin, ardından `hermes cron run {job_id}` ile yeniden çalıştırın."
+      inactivity: "⚠️ '{job_name}' cron işi başarısız oldu: iş takıldı — çok uzun süre hiçbir şey yapmadı ve durduruldu. Ne yaptığını {output_dir} altındaki kayıtlı çıktıda (`hermes cron runs {job_id}`) kontrol edin, ardından `hermes cron run {job_id}` ile yeniden çalıştırın."
+      blocked_config: "⛔ '{job_name}' cron işi çalışmadı: {reason} Herhangi bir ücret alınmadı. Hermes bir sonraki planlanan zamanda yeniden deneyecek ve bu uyarıyı tekrarlamayacak; `hermes cron doctor` ile kontrol edin."
+      backup_pinned: "Bu iş kendi sağlayıcısına/modeline sabitlendiği için `fallback_providers` listesine geçmez; `hermes cron edit {job_id} --unpin` ile ana modeli ve onun yedek zincirini izlemesini sağlayabilirsiniz."
+      backup_failed: "Hiçbir yedek sağlayıcı da başarılı olmadı."
+      backup_none: "Yapılandırılmış yedek sağlayıcı yok — `hermes fallback add` ile bir tane ekleyin veya config.yaml içinde `cron.model` + `cron.model_provider` ile tüm cron işleri için bir varsayılan ayarlayın."
+      streak_nudge: "\nBu iş art arda {streak} çalıştırmada başarısız oldu — gözden geçirmeye değer. İstemini/yapılandırmasını düzeltin ya da gürültüyü kesmek için `hermes cron pause {job_ref}` ile duraklatın (resume/remove da kullanılabilir)."
+      stale_code_hint: " Olası neden: gateway eski kodu çalıştırıyor ({boot_rev} ile başlatıldı, diskte {disk_rev} var) — düzeltmek için `hermes gateway restart` çalıştırın."
+      quota_hold: "\nSağlayıcının kullanım penceresi yaklaşık {hours} saat boyunca kapalı. Bu iş {until} zamanına kadar bekletiliyor ve sonrasındaki ilk güvenli fırsatta devam ediyor; sağlayıcı kullanılamadığı sürece başka uyarı gönderilmez."
+    registration_pending: "'{label}' cron işi kaydedildi, ancak henüz harici zamanlayıcıya kaydettirilemedi. İş korunuyor — yeniden oluşturmayın; kaydı yeniden denemek için duraklatıp sürdürün veya düzenleyin (ör. /cron ile)."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Diğer"

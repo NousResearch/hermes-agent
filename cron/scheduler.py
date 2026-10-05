@@ -44,6 +44,7 @@ from hermes_cli.config import (
     load_config, load_config_readonly)
 from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
 from hermes_time import now as _hermes_now, safe_strftime
+from agent.i18n import t
 from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
@@ -126,22 +127,15 @@ def _fallback_chain_phrase(job: Optional[dict] = None) -> str:
     config can't be read — never crash delivery.
     """
     if job is not None and _job_route_pinned(job):
-        return (
-            "This job is pinned to its own provider/model, so it does not fall back to "
-            f"`fallback_providers`; `hermes cron edit {job.get('id')} --unpin` lets it follow the "
-            "main model and its fallback chain."
-        )
+        return t("gateway.cron.failure.backup_pinned", job_id=job.get("id"))
     try:
         cfg = load_config() or {}
         chain = get_fallback_chain(cfg)
     except Exception:
-        return "No backup provider succeeded either."
+        return t("gateway.cron.failure.backup_failed")
     if chain:
-        return "No backup provider succeeded either."
-    return (
-        "No backup provider is configured — add one with `hermes fallback add`, "
-        "or set a cron-wide default via `cron.model` + `cron.model_provider` in config.yaml."
-    )
+        return t("gateway.cron.failure.backup_failed")
+    return t("gateway.cron.failure.backup_none")
 
 
 def _failure_streak_nudge(job: dict) -> str:
@@ -166,11 +160,7 @@ def _failure_streak_nudge(job: dict) -> str:
     if streak < threshold:
         return ""
     job_ref = job.get("name") or job.get("id") or "this job"
-    return (
-        f"\nThis job has failed {streak} runs in a row — worth a review. "
-        f"Fix its prompt/config, or pause it with `hermes cron pause {job_ref}` "
-        "(resume/remove also available) to stop the noise."
-    )
+    return t("gateway.cron.failure.streak_nudge", streak=streak, job_ref=job_ref)
 
 
 def _detect_gateway_code_skew() -> tuple[str, str] | None:
@@ -347,11 +337,7 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             skew = None  # delivery must never die on a diagnostics probe
         if skew is not None:
             boot_rev, disk_rev = skew
-            message += (
-                f" Likely cause: the gateway is running stale code (booted "
-                f"on {boot_rev}, disk is at {disk_rev}) — run "
-                "`hermes gateway restart` to fix it."
-            )
+            message += t("gateway.cron.failure.stale_code_hint", boot_rev=boot_rev, disk_rev=disk_rev)
 
     return message
 
@@ -4039,11 +4025,7 @@ class CronSchedulerRegistrationError(RuntimeError):
     def user_message(self) -> str:
         """Human-facing variant for chat/CLI surfaces (no exception class name)."""
         label = self.job.get("name") or self.job["id"]
-        return (
-            f"Saved cron job '{label}', but couldn't register it with the "
-            "external scheduler yet. The job is kept — don't re-create it; "
-            "pause/resume or edit it (e.g. via /cron) to retry registration."
-        )
+        return t("gateway.cron.registration_pending", label=label)
 
     def to_dict(self) -> dict:
         """Return the public partial-failure contract without provider details."""

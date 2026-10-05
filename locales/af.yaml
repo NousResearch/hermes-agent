@@ -942,6 +942,29 @@ gateway:
     hint: "Laai op en bestuur fakturering in die blaaier — jou saldo word daarna hier opgedateer."
   login:
     free_tier_remaining: "\nSommige geselsies is nog op die gratis vlak; gebruik /model in daardie geselsies om oor te skakel."
+  cron:
+    failure:
+      provider: "⚠️ Cron '{job_name}' het misluk: {cause}. {action} Lopielog: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} Dit sal weer op sy volgende geskeduleerde tyd loop; `hermes cron run {job_id}` probeer dit nou."
+      action_billing: "Laai jou saldo aan of wag dat die limiet herstel, of pen 'n ander verskaffer vas met `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Meld weer aan met /login (of `{relogin}` in 'n terminaal), of pen 'n werkende verskaffer vas met `hermes cron edit {job_id} --provider <name>`, en gebruik dan `hermes cron run {job_id}` om weer te probeer."
+      action_model_not_found: "Kies 'n ander model met `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "'n Brandmuur voor die verskaffer het die versoek geblokkeer (nie jou sleutel nie): stel 'n User-Agent via `extra_headers` in die verskaffer se custom_providers-inskrywing, of pen 'n ander verskaffer vas met `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Verkort die taak se prompt met `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Herformuleer die taak se prompt met `hermes cron edit {job_id} --prompt <text>`, of kies 'n ander model met `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Weer probeer sal nie help nie: kontroleer die rekening se status en data-/privaatheidsinstellings by die verskaffer, of pen 'n ander model vas met `hermes cron edit {job_id} --model <name>`."
+      action_default: "Voer dit weer uit met `hermes cron run {job_id}`, of wysig dit met `hermes cron edit {job_id}`."
+      generic: "⚠️ Cron '{job_name}' het misluk: {error}. Sien die volledige lopie met `hermes cron runs {job_id}` (uitvoer gestoor onder {output_dir}); voer dit weer uit met `hermes cron run {job_id}`, wysig dit met `hermes cron edit {job_id}`, of pouseer dit met `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ Cron '{job_name}' het misluk: sy skrip het uitgetel. Geen model is aangeroep nie. Kontroleer die skrip se uitvoer onder {output_dir} of `hermes cron runs {job_id}`, en voer dit dan weer uit met `hermes cron run {job_id}`."
+      inactivity: "⚠️ Cron '{job_name}' het misluk: die taak het vasgehaak — dit het te lank niks gedoen nie en is afgesny. Kyk wat dit gedoen het in die gestoorde uitvoer onder {output_dir} (`hermes cron runs {job_id}`), en voer dit dan weer uit met `hermes cron run {job_id}`."
+      blocked_config: "⛔ Cron '{job_name}' het nie geloop nie: {reason} Niks is gehef nie. Hermes sal by die volgende geskeduleerde tyd weer probeer en sal nie hierdie waarskuwing herhaal nie; kontroleer met `hermes cron doctor`."
+      backup_pinned: "Hierdie taak is aan sy eie verskaffer/model vasgepen, so dit val nie terug op `fallback_providers` nie; met `hermes cron edit {job_id} --unpin` volg dit die hoofmodel en sy terugvalketting."
+      backup_failed: "Geen terugvalverskaffer het ook geslaag nie."
+      backup_none: "Geen terugvalverskaffer is opgestel nie — voeg een by met `hermes fallback add`, of stel 'n cron-wye verstek via `cron.model` + `cron.model_provider` in config.yaml."
+      streak_nudge: "\nHierdie taak het {streak} lopies agtereenvolgens misluk — die moeite werd om na te gaan. Herstel sy prompt/konfigurasie, of pouseer dit met `hermes cron pause {job_ref}` (resume/remove is ook beskikbaar) om die geraas te stop."
+      stale_code_hint: " Waarskynlike oorsaak: die gateway loop verouderde kode (begin op {boot_rev}, skyf is op {disk_rev}) — voer `hermes gateway restart` uit om dit reg te stel."
+      quota_hold: "\nDie verskaffer se gebruiksvenster is vir ongeveer {hours} uur gesluit. Hierdie taak word tot {until} teruggehou en hervat by die eerste veilige geleentheid daarna; geen verdere waarskuwings word gestuur terwyl die verskaffer onbeskikbaar is nie."
+    registration_pending: "Cron-taak '{label}' is gestoor, maar kon nog nie by die eksterne skeduleerder geregistreer word nie. Die taak word behou — moenie dit weer skep nie; pouseer/hervat of wysig dit (bv. via /cron) om registrasie weer te probeer."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Ander"

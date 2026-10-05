@@ -942,6 +942,29 @@ gateway:
     hint: "在浏览器中充值并管理账单——之后余额会在此处更新。"
   login:
     free_tier_remaining: "\n部分聊天仍在使用免费套餐；请在那些聊天中用 /model 切换。"
+  cron:
+    failure:
+      provider: "⚠️ 定时任务 '{job_name}' 失败：{cause}。{action} 运行日志：`hermes cron runs {job_id}`。"
+      action_transient: "{backup_phrase}它会在下一个计划时间再次运行；运行 `hermes cron run {job_id}` 可立即重试。"
+      action_billing: "请充值或等待额度重置，或用 `hermes cron edit {job_id} --provider <name>` 指定其他提供方。"
+      action_auth: "请用 /login 重新登录（或在终端中运行 `{relogin}`），或用 `hermes cron edit {job_id} --provider <name>` 指定一个可用的提供方，然后运行 `hermes cron run {job_id}` 重试。"
+      action_model_not_found: "请用 `hermes cron edit {job_id} --model <name>` 选择其他模型。"
+      action_upstream_blocked: "提供方前端的防火墙拦截了该请求（与你的密钥无关）：请在该提供方的 custom_providers 条目中通过 `extra_headers` 设置 User-Agent，或用 `hermes cron edit {job_id} --provider <name>` 指定其他提供方。"
+      action_context_overflow: "请用 `hermes cron edit {job_id} --prompt <text>` 缩短该任务的提示词。"
+      action_content_policy: "请用 `hermes cron edit {job_id} --prompt <text>` 改写该任务的提示词，或用 `hermes cron edit {job_id} --model <name>` 选择其他模型。"
+      action_provider_policy: "重试无济于事：请在提供方处检查账户状态及数据/隐私设置，或用 `hermes cron edit {job_id} --model <name>` 指定其他模型。"
+      action_default: "可用 `hermes cron run {job_id}` 再次运行，或用 `hermes cron edit {job_id}` 编辑它。"
+      generic: "⚠️ 定时任务 '{job_name}' 失败：{error}。用 `hermes cron runs {job_id}` 查看完整运行记录（输出保存在 {output_dir}）；用 `hermes cron run {job_id}` 再次运行，用 `hermes cron edit {job_id}` 编辑，或用 `hermes cron pause {job_id}` 暂停。"
+      script_timeout: "⚠️ 定时任务 '{job_name}' 失败：脚本运行超时。未调用任何模型。请查看 {output_dir} 下的脚本输出或 `hermes cron runs {job_id}`，然后用 `hermes cron run {job_id}` 再次运行。"
+      inactivity: "⚠️ 定时任务 '{job_name}' 失败：任务卡住了——长时间没有任何活动，已被终止。请在 {output_dir} 下保存的输出中查看它当时在做什么（`hermes cron runs {job_id}`），然后用 `hermes cron run {job_id}` 再次运行。"
+      blocked_config: "⛔ 定时任务 '{job_name}' 未运行：{reason} 未产生任何费用。Hermes 会在下一个计划时间重试，且不会重复发送此警报；可用 `hermes cron doctor` 检查。"
+      backup_pinned: "该任务固定使用自己的提供方/模型，因此不会回退到 `fallback_providers`；运行 `hermes cron edit {job_id} --unpin` 可让它跟随主模型及其备用链。"
+      backup_failed: "备用提供方也都没有成功。"
+      backup_none: "未配置备用提供方——可用 `hermes fallback add` 添加，或在 config.yaml 中通过 `cron.model` + `cron.model_provider` 为所有定时任务设置默认值。"
+      streak_nudge: "\n该任务已连续失败 {streak} 次——建议检查一下。请修正它的提示词/配置，或用 `hermes cron pause {job_ref}` 暂停它（也可使用 resume/remove），以免继续打扰。"
+      stale_code_hint: " 可能原因：网关正在运行过时的代码（启动时为 {boot_rev}，磁盘上为 {disk_rev}）——运行 `hermes gateway restart` 即可修复。"
+      quota_hold: "\n提供方的用量窗口已关闭，约 {hours} 小时后重开。该任务将暂停至 {until}，之后在第一个安全时机恢复；提供方不可用期间不会再发送警报。"
+    registration_pending: "已保存定时任务 '{label}'，但暂时无法将其注册到外部调度器。任务已保留——请勿重新创建；可暂停/恢复或编辑它（例如通过 /cron）来重试注册。"
 platform:
   whatsapp:
     clarify_other_title: "✏️ 其他"

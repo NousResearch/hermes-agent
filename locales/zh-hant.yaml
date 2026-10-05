@@ -942,6 +942,29 @@ gateway:
     hint: "請在瀏覽器中儲值並管理帳務 — 完成後你的餘額會在此更新。"
   login:
     free_tier_remaining: "\n部分聊天仍在使用免費方案；請在那些聊天中使用 /model 切換。"
+  cron:
+    failure:
+      provider: "⚠️ 排程任務 '{job_name}' 失敗：{cause}。{action} 執行記錄：`hermes cron runs {job_id}`。"
+      action_transient: "{backup_phrase}它會在下一個排定時間再次執行；執行 `hermes cron run {job_id}` 可立即重試。"
+      action_billing: "請儲值或等待額度重設，或使用 `hermes cron edit {job_id} --provider <name>` 指定其他提供方。"
+      action_auth: "請使用 /login 重新登入（或在終端機執行 `{relogin}`），或使用 `hermes cron edit {job_id} --provider <name>` 指定可正常運作的提供方，然後執行 `hermes cron run {job_id}` 重試。"
+      action_model_not_found: "請使用 `hermes cron edit {job_id} --model <name>` 選擇其他模型。"
+      action_upstream_blocked: "提供方前端的防火牆擋下了這個請求（不是你的金鑰問題）：請在該提供方的 custom_providers 項目中透過 `extra_headers` 設定 User-Agent，或使用 `hermes cron edit {job_id} --provider <name>` 指定其他提供方。"
+      action_context_overflow: "請使用 `hermes cron edit {job_id} --prompt <text>` 縮短此任務的提示。"
+      action_content_policy: "請使用 `hermes cron edit {job_id} --prompt <text>` 改寫此任務的提示，或使用 `hermes cron edit {job_id} --model <name>` 選擇其他模型。"
+      action_provider_policy: "重試也沒有用：請向提供方確認帳戶狀態及資料／隱私設定，或使用 `hermes cron edit {job_id} --model <name>` 指定其他模型。"
+      action_default: "可使用 `hermes cron run {job_id}` 再次執行，或使用 `hermes cron edit {job_id}` 編輯它。"
+      generic: "⚠️ 排程任務 '{job_name}' 失敗：{error}。使用 `hermes cron runs {job_id}` 查看完整執行記錄（輸出儲存在 {output_dir}）；使用 `hermes cron run {job_id}` 再次執行、`hermes cron edit {job_id}` 編輯，或 `hermes cron pause {job_id}` 暫停。"
+      script_timeout: "⚠️ 排程任務 '{job_name}' 失敗：腳本執行逾時。未呼叫任何模型。請查看 {output_dir} 下的腳本輸出或 `hermes cron runs {job_id}`，然後使用 `hermes cron run {job_id}` 再次執行。"
+      inactivity: "⚠️ 排程任務 '{job_name}' 失敗：任務停滯 — 太久沒有任何動作，已被中止。請在 {output_dir} 下儲存的輸出中查看它當時在做什麼（`hermes cron runs {job_id}`），然後使用 `hermes cron run {job_id}` 再次執行。"
+      blocked_config: "⛔ 排程任務 '{job_name}' 未執行：{reason} 未產生任何費用。Hermes 會在下一個排定時間再試一次，且不會重複發送此警示；可使用 `hermes cron doctor` 檢查。"
+      backup_pinned: "此任務固定使用自己的提供方／模型，因此不會改用 `fallback_providers`；執行 `hermes cron edit {job_id} --unpin` 可讓它跟隨主要模型及其備援鏈。"
+      backup_failed: "備援提供方也都沒有成功。"
+      backup_none: "尚未設定備援提供方 — 可使用 `hermes fallback add` 新增，或在 config.yaml 中透過 `cron.model` + `cron.model_provider` 為所有排程任務設定預設值。"
+      streak_nudge: "\n此任務已連續失敗 {streak} 次 — 建議檢查一下。請修正它的提示／設定，或使用 `hermes cron pause {job_ref}` 暫停它（也可使用 resume/remove），避免持續打擾。"
+      stale_code_hint: " 可能原因：閘道正在執行過時的程式碼（啟動時為 {boot_rev}，磁碟上為 {disk_rev}）— 執行 `hermes gateway restart` 即可修正。"
+      quota_hold: "\n提供方的用量時段已關閉，約 {hours} 小時後重新開放。此任務將暫停至 {until}，之後在第一個安全時機恢復；提供方無法使用期間不會再發送警示。"
+    registration_pending: "已儲存排程任務 '{label}'，但暫時無法向外部排程器註冊。任務已保留 — 請勿重新建立；可暫停／恢復或編輯它（例如透過 /cron）來重試註冊。"
 platform:
   whatsapp:
     clarify_other_title: "✏️ 其他"

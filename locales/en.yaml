@@ -985,6 +985,29 @@ gateway:
 
   login:
     free_tier_remaining: "\nSome chats are still on the free tier; use /model in those chats to switch."
+  cron:
+    failure:
+      provider: "⚠️ Cron '{job_name}' failed: {cause}. {action} Run log: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} It will run again at its next scheduled time; `hermes cron run {job_id}` tries now."
+      action_billing: "Top up or wait for the limit to reset, or pin another provider with `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Sign in again with /login (or `{relogin}` in a terminal), or pin a working provider with `hermes cron edit {job_id} --provider <name>`, then `hermes cron run {job_id}` to retry."
+      action_model_not_found: "Pick another model with `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "A firewall in front of the provider blocked the request (not your key): set a User-Agent via `extra_headers` on the provider's custom_providers entry, or pin another provider with `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Shorten the job's prompt with `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Reword the job's prompt with `hermes cron edit {job_id} --prompt <text>`, or pick another model with `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Retrying won't help: check the account's status and data/privacy settings with the provider, or pin another model with `hermes cron edit {job_id} --model <name>`."
+      action_default: "Run it again with `hermes cron run {job_id}`, or edit it with `hermes cron edit {job_id}`."
+      generic: "⚠️ Cron '{job_name}' failed: {error}. See the full run with `hermes cron runs {job_id}` (output saved under {output_dir}); run it again with `hermes cron run {job_id}`, edit it with `hermes cron edit {job_id}`, or pause it with `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ Cron '{job_name}' failed: its script timed out. No model was invoked. Check the script's output under {output_dir} or `hermes cron runs {job_id}`, then run it again with `hermes cron run {job_id}`."
+      inactivity: "⚠️ Cron '{job_name}' failed: the job stalled — it stopped doing anything for too long and was cut off. Check what it was doing in the saved output under {output_dir} (`hermes cron runs {job_id}`), then run it again with `hermes cron run {job_id}`."
+      blocked_config: "⛔ Cron '{job_name}' did not run: {reason} Nothing was charged. Hermes will try again at the next scheduled time and will not repeat this alert; check with `hermes cron doctor`."
+      backup_pinned: "This job is pinned to its own provider/model, so it does not fall back to `fallback_providers`; `hermes cron edit {job_id} --unpin` lets it follow the main model and its fallback chain."
+      backup_failed: "No backup provider succeeded either."
+      backup_none: "No backup provider is configured — add one with `hermes fallback add`, or set a cron-wide default via `cron.model` + `cron.model_provider` in config.yaml."
+      streak_nudge: "\nThis job has failed {streak} runs in a row — worth a review. Fix its prompt/config, or pause it with `hermes cron pause {job_ref}` (resume/remove also available) to stop the noise."
+      stale_code_hint: " Likely cause: the gateway is running stale code (booted on {boot_rev}, disk is at {disk_rev}) — run `hermes gateway restart` to fix it."
+      quota_hold: "\nThe provider's usage window is closed for about {hours}h. This job is held through {until} and resumes at the first safe opportunity afterwards; no further alerts are sent while the provider is unavailable."
+    registration_pending: "Saved cron job '{label}', but couldn't register it with the external scheduler yet. The job is kept — don't re-create it; pause/resume or edit it (e.g. via /cron) to retry registration."
 
 platform:
   whatsapp:

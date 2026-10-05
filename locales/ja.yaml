@@ -942,6 +942,29 @@ gateway:
     hint: "チャージと請求の管理はブラウザで行ってください — 完了後、ここの残高が更新されます。"
   login:
     free_tier_remaining: "\n一部のチャットはまだ無料プランのままです。それらのチャットでは /model で切り替えてください。"
+  cron:
+    failure:
+      provider: "⚠️ スケジュールジョブ '{job_name}' が失敗しました: {cause}。{action} 実行ログ: `hermes cron runs {job_id}`。"
+      action_transient: "{backup_phrase}次回のスケジュール時刻に再実行されます。今すぐ試すには `hermes cron run {job_id}` を実行してください。"
+      action_billing: "チャージするか上限のリセットを待つか、`hermes cron edit {job_id} --provider <name>` で別のプロバイダーを固定してください。"
+      action_auth: "/login で再ログインする (またはターミナルで `{relogin}` を実行する) か、`hermes cron edit {job_id} --provider <name>` で動作するプロバイダーを固定し、`hermes cron run {job_id}` で再試行してください。"
+      action_model_not_found: "`hermes cron edit {job_id} --model <name>` で別のモデルを選んでください。"
+      action_upstream_blocked: "プロバイダーの手前にあるファイアウォールがリクエストをブロックしました (キーの問題ではありません)。プロバイダーの custom_providers エントリで `extra_headers` を使って User-Agent を設定するか、`hermes cron edit {job_id} --provider <name>` で別のプロバイダーを固定してください。"
+      action_context_overflow: "`hermes cron edit {job_id} --prompt <text>` でジョブのプロンプトを短くしてください。"
+      action_content_policy: "`hermes cron edit {job_id} --prompt <text>` でジョブのプロンプトを言い換えるか、`hermes cron edit {job_id} --model <name>` で別のモデルを選んでください。"
+      action_provider_policy: "再試行しても解決しません。プロバイダー側でアカウントの状態とデータ/プライバシー設定を確認するか、`hermes cron edit {job_id} --model <name>` で別のモデルを固定してください。"
+      action_default: "`hermes cron run {job_id}` で再実行するか、`hermes cron edit {job_id}` で編集してください。"
+      generic: "⚠️ スケジュールジョブ '{job_name}' が失敗しました: {error}。実行の詳細は `hermes cron runs {job_id}` で確認できます (出力は {output_dir} に保存されています)。`hermes cron run {job_id}` で再実行、`hermes cron edit {job_id}` で編集、`hermes cron pause {job_id}` で一時停止できます。"
+      script_timeout: "⚠️ スケジュールジョブ '{job_name}' が失敗しました: スクリプトがタイムアウトしました。モデルは呼び出されていません。{output_dir} にあるスクリプトの出力または `hermes cron runs {job_id}` を確認してから、`hermes cron run {job_id}` で再実行してください。"
+      inactivity: "⚠️ スケジュールジョブ '{job_name}' が失敗しました: ジョブが停止しました — 長時間何も動作しなかったため打ち切られました。{output_dir} に保存された出力 (`hermes cron runs {job_id}`) で何をしていたかを確認してから、`hermes cron run {job_id}` で再実行してください。"
+      blocked_config: "⛔ スケジュールジョブ '{job_name}' は実行されませんでした: {reason} 料金は発生していません。Hermes は次回のスケジュール時刻に再試行し、このアラートを繰り返し送ることはありません。`hermes cron doctor` で確認してください。"
+      backup_pinned: "このジョブは独自のプロバイダー/モデルに固定されているため、`fallback_providers` にはフォールバックしません。`hermes cron edit {job_id} --unpin` を実行すると、メインモデルとそのフォールバックチェーンに従うようになります。"
+      backup_failed: "バックアッププロバイダーもすべて失敗しました。"
+      backup_none: "バックアッププロバイダーが設定されていません — `hermes fallback add` で追加するか、config.yaml の `cron.model` + `cron.model_provider` で cron 全体のデフォルトを設定してください。"
+      streak_nudge: "\nこのジョブは {streak} 回連続で失敗しています — 見直しをおすすめします。プロンプト/設定を修正するか、`hermes cron pause {job_ref}` で一時停止して (resume/remove も使えます) 通知を止めてください。"
+      stale_code_hint: " 考えられる原因: ゲートウェイが古いコードで動作しています (起動時 {boot_rev}、ディスク上 {disk_rev})。`hermes gateway restart` を実行すると解消します。"
+      quota_hold: "\nプロバイダーの利用枠は約 {hours} 時間閉じています。このジョブは {until} まで保留され、その後最初の安全なタイミングで再開します。プロバイダーが利用できない間、追加のアラートは送信されません。"
+    registration_pending: "スケジュールジョブ '{label}' を保存しましたが、外部スケジューラーへの登録はまだできていません。ジョブは保持されているので作り直さないでください。登録を再試行するには、一時停止/再開するか編集してください (例: /cron から)。"
 platform:
   whatsapp:
     clarify_other_title: "✏️ その他"

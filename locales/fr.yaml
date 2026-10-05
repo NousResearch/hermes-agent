@@ -1133,6 +1133,29 @@ gateway:
     free_tier_remaining: |2-
 
       Certaines discussions sont encore sur l'offre gratuite ; utilisez /model dans ces discussions pour changer de modèle.
+  cron:
+    failure:
+      provider: "⚠️ Échec de la tâche cron '{job_name}' : {cause}. {action} Journal des exécutions : `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} La tâche s'exécutera de nouveau à sa prochaine heure planifiée ; `hermes cron run {job_id}` la relance tout de suite."
+      action_billing: "Rechargez votre crédit ou attendez la réinitialisation de la limite, ou épinglez un autre fournisseur avec `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Reconnectez-vous avec /login (ou `{relogin}` dans un terminal), ou épinglez un fournisseur fonctionnel avec `hermes cron edit {job_id} --provider <name>`, puis relancez avec `hermes cron run {job_id}`."
+      action_model_not_found: "Choisissez un autre modèle avec `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "Un pare-feu placé devant le fournisseur a bloqué la requête (votre clé n'est pas en cause) : définissez un User-Agent via `extra_headers` dans l'entrée custom_providers du fournisseur, ou épinglez un autre fournisseur avec `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Raccourcissez le prompt de la tâche avec `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Reformulez le prompt de la tâche avec `hermes cron edit {job_id} --prompt <text>`, ou choisissez un autre modèle avec `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Réessayer ne servira à rien : vérifiez auprès du fournisseur le statut du compte et ses paramètres de données et de confidentialité, ou épinglez un autre modèle avec `hermes cron edit {job_id} --model <name>`."
+      action_default: "Relancez-la avec `hermes cron run {job_id}` ou modifiez-la avec `hermes cron edit {job_id}`."
+      generic: "⚠️ Échec de la tâche cron '{job_name}' : {error}. Consultez l'exécution complète avec `hermes cron runs {job_id}` (sortie enregistrée dans {output_dir}) ; relancez-la avec `hermes cron run {job_id}`, modifiez-la avec `hermes cron edit {job_id}` ou mettez-la en pause avec `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ Échec de la tâche cron '{job_name}' : son script a dépassé le délai imparti. Aucun modèle n'a été appelé. Vérifiez la sortie du script dans {output_dir} ou avec `hermes cron runs {job_id}`, puis relancez-la avec `hermes cron run {job_id}`."
+      inactivity: "⚠️ Échec de la tâche cron '{job_name}' : la tâche s'est figée — elle n'a rien fait pendant trop longtemps et a été interrompue. Regardez ce qu'elle faisait dans la sortie enregistrée dans {output_dir} (`hermes cron runs {job_id}`), puis relancez-la avec `hermes cron run {job_id}`."
+      blocked_config: "⛔ La tâche cron '{job_name}' ne s'est pas exécutée : {reason} Rien n'a été facturé. Hermes réessaiera à la prochaine heure planifiée et ne répétera pas cette alerte ; vérifiez la configuration avec `hermes cron doctor`."
+      backup_pinned: "Cette tâche est épinglée à son propre fournisseur/modèle, elle ne bascule donc pas sur `fallback_providers` ; `hermes cron edit {job_id} --unpin` lui permet de suivre le modèle principal et sa chaîne de secours."
+      backup_failed: "Aucun fournisseur de secours n'a réussi non plus."
+      backup_none: "Aucun fournisseur de secours n'est configuré — ajoutez-en un avec `hermes fallback add`, ou définissez un modèle par défaut pour toutes les tâches cron via `cron.model` + `cron.model_provider` dans config.yaml."
+      streak_nudge: "\nCette tâche a échoué {streak} fois de suite — elle mérite un examen. Corrigez son prompt ou sa configuration, ou mettez-la en pause avec `hermes cron pause {job_ref}` (resume/remove sont aussi disponibles) pour faire cesser les alertes."
+      stale_code_hint: " Cause probable : le gateway exécute du code obsolète (démarré sur {boot_rev}, alors que le disque est à {disk_rev}) — lancez `hermes gateway restart` pour corriger le problème."
+      quota_hold: "\nLa fenêtre d'utilisation du fournisseur est fermée pour environ {hours} h. Cette tâche est suspendue jusqu'à {until} et reprendra ensuite à la première occasion sûre ; aucune autre alerte ne sera envoyée tant que le fournisseur est indisponible."
+    registration_pending: "Tâche cron '{label}' enregistrée, mais elle n'a pas encore pu être inscrite auprès du planificateur externe. La tâche est conservée — ne la recréez pas ; mettez-la en pause puis reprenez-la, ou modifiez-la (par ex. via /cron) pour relancer l'inscription."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Autre"

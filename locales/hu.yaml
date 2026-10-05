@@ -956,6 +956,29 @@ gateway:
     hint: "Feltöltés és számlázás a böngészőben — az egyenleged utána itt is frissül."
   login:
     free_tier_remaining: "\nNéhány csevegés még az ingyenes szinten van; ott a /model paranccsal válthatsz."
+  cron:
+    failure:
+      provider: "⚠️ A(z) '{job_name}' cron-feladat sikertelen: {cause}. {action} Futási napló: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} A következő ütemezett időpontban újra lefut; a `hermes cron run {job_id}` azonnal megpróbálja."
+      action_billing: "Töltsd fel az egyenleget, vagy várd meg, amíg a limit visszaáll, esetleg rögzíts egy másik szolgáltatót: `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Jelentkezz be újra a /login paranccsal (vagy terminálban: `{relogin}`), vagy rögzíts egy működő szolgáltatót: `hermes cron edit {job_id} --provider <name>`, majd próbáld újra: `hermes cron run {job_id}`."
+      action_model_not_found: "Válassz másik modellt: `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "A szolgáltató előtti tűzfal blokkolta a kérést (nem a kulcsoddal van baj): állíts be User-Agentet az `extra_headers` segítségével a szolgáltató custom_providers bejegyzésében, vagy rögzíts egy másik szolgáltatót: `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Rövidítsd le a feladat promptját: `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Fogalmazd át a feladat promptját: `hermes cron edit {job_id} --prompt <text>`, vagy válassz másik modellt: `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Az újrapróbálás nem segít: ellenőrizd a fiók állapotát és az adat-/adatvédelmi beállításokat a szolgáltatónál, vagy rögzíts egy másik modellt: `hermes cron edit {job_id} --model <name>`."
+      action_default: "Futtasd újra: `hermes cron run {job_id}`, vagy szerkeszd: `hermes cron edit {job_id}`."
+      generic: "⚠️ A(z) '{job_name}' cron-feladat sikertelen: {error}. A teljes futást a `hermes cron runs {job_id}` mutatja meg (a kimenet ide mentve: {output_dir}); futtasd újra: `hermes cron run {job_id}`, szerkeszd: `hermes cron edit {job_id}`, vagy szüneteltesd: `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ A(z) '{job_name}' cron-feladat sikertelen: a szkriptje túllépte az időkorlátot. Egyetlen modell sem lett meghívva. Nézd meg a szkript kimenetét itt: {output_dir}, vagy: `hermes cron runs {job_id}`, majd futtasd újra: `hermes cron run {job_id}`."
+      inactivity: "⚠️ A(z) '{job_name}' cron-feladat sikertelen: a feladat elakadt — túl sokáig nem csinált semmit, ezért leállítottuk. Nézd meg, mit csinált, a mentett kimenetben itt: {output_dir} (`hermes cron runs {job_id}`), majd futtasd újra: `hermes cron run {job_id}`."
+      blocked_config: "⛔ A(z) '{job_name}' cron-feladat nem futott le: {reason} Semmilyen terhelés nem történt. A Hermes a következő ütemezett időpontban újra próbálkozik, és ezt a figyelmeztetést nem ismétli meg; ellenőrzés: `hermes cron doctor`."
+      backup_pinned: "Ez a feladat saját szolgáltatóhoz/modellhez van rögzítve, ezért nem vált át a `fallback_providers` listára; a `hermes cron edit {job_id} --unpin` után a fő modellt és annak tartalékláncát követi."
+      backup_failed: "Egyik tartalék szolgáltató sem járt sikerrel."
+      backup_none: "Nincs tartalék szolgáltató beállítva — adj hozzá egyet a `hermes fallback add` paranccsal, vagy állíts be minden cron-feladatra érvényes alapértelmezést a config.yaml `cron.model` + `cron.model_provider` kulcsaival."
+      streak_nudge: "\nEz a feladat {streak} egymást követő futás során hibázott — érdemes átnézni. Javítsd a promptját/konfigurációját, vagy a zaj megszüntetéséhez szüneteltesd: `hermes cron pause {job_ref}` (resume/remove is elérhető)."
+      stale_code_hint: " Valószínű ok: az átjáró elavult kódot futtat (indításkor: {boot_rev}, a lemezen: {disk_rev}) — a javításhoz futtasd: `hermes gateway restart`."
+      quota_hold: "\nA szolgáltató használati ablaka nagyjából {hours} órára lezárult. Ez a feladat eddig várakozik: {until}, utána az első biztonságos alkalommal folytatódik; amíg a szolgáltató nem érhető el, további figyelmeztetést nem küldünk."
+    registration_pending: "A(z) '{label}' cron-feladat mentve, de a külső ütemezőnél még nem sikerült regisztrálni. A feladat megmarad — ne hozd létre újra; a regisztráció újrapróbálásához szüneteltesd és folytasd, vagy szerkeszd (pl. a /cron paranccsal)."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Egyéb"

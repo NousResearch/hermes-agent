@@ -942,6 +942,29 @@ gateway:
     hint: "Recarregue e gerencie o faturamento no navegador — seu saldo é atualizado aqui depois."
   login:
     free_tier_remaining: "\nAlguns chats ainda estão no nível gratuito; use /model nesses chats para trocar."
+  cron:
+    failure:
+      provider: "⚠️ A tarefa cron '{job_name}' falhou: {cause}. {action} Log de execuções: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} Ela será executada novamente no próximo horário agendado; `hermes cron run {job_id}` tenta agora."
+      action_billing: "Recarregue o saldo ou aguarde a redefinição do limite, ou fixe outro fornecedor com `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Faça login novamente com /login (ou `{relogin}` em um terminal), ou fixe um fornecedor que funcione com `hermes cron edit {job_id} --provider <name>` e depois execute `hermes cron run {job_id}` para tentar de novo."
+      action_model_not_found: "Escolha outro modelo com `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "Um firewall na frente do fornecedor bloqueou a solicitação (o problema não é a sua chave): defina um User-Agent via `extra_headers` na entrada custom_providers do fornecedor, ou fixe outro fornecedor com `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Encurte o prompt da tarefa com `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Reformule o prompt da tarefa com `hermes cron edit {job_id} --prompt <text>`, ou escolha outro modelo com `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Tentar de novo não vai adiantar: verifique com o fornecedor o status da conta e as configurações de dados/privacidade, ou fixe outro modelo com `hermes cron edit {job_id} --model <name>`."
+      action_default: "Execute-a novamente com `hermes cron run {job_id}` ou edite-a com `hermes cron edit {job_id}`."
+      generic: "⚠️ A tarefa cron '{job_name}' falhou: {error}. Veja a execução completa com `hermes cron runs {job_id}` (saída salva em {output_dir}); execute-a novamente com `hermes cron run {job_id}`, edite-a com `hermes cron edit {job_id}` ou pause-a com `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ A tarefa cron '{job_name}' falhou: o script dela excedeu o tempo limite. Nenhum modelo foi invocado. Verifique a saída do script em {output_dir} ou `hermes cron runs {job_id}` e depois execute-a novamente com `hermes cron run {job_id}`."
+      inactivity: "⚠️ A tarefa cron '{job_name}' falhou: a tarefa travou — ficou tempo demais sem fazer nada e foi interrompida. Veja o que ela estava fazendo na saída salva em {output_dir} (`hermes cron runs {job_id}`) e depois execute-a novamente com `hermes cron run {job_id}`."
+      blocked_config: "⛔ A tarefa cron '{job_name}' não foi executada: {reason} Nada foi cobrado. O Hermes tentará novamente no próximo horário agendado e não repetirá este alerta; verifique com `hermes cron doctor`."
+      backup_pinned: "Esta tarefa está fixada no próprio fornecedor/modelo, por isso não recorre a `fallback_providers`; `hermes cron edit {job_id} --unpin` faz com que ela siga o modelo principal e a sua cadeia de reserva."
+      backup_failed: "Nenhum fornecedor de reserva funcionou também."
+      backup_none: "Nenhum fornecedor de reserva está configurado — adicione um com `hermes fallback add` ou defina um padrão para todo o cron via `cron.model` + `cron.model_provider` em config.yaml."
+      streak_nudge: "\nEsta tarefa falhou {streak} execuções seguidas — vale a pena revisá-la. Corrija o prompt/configuração dela ou pause-a com `hermes cron pause {job_ref}` (também é possível retomá-la ou removê-la) para acabar com o ruído."
+      stale_code_hint: " Causa provável: o gateway está executando código desatualizado (iniciado em {boot_rev}, o disco está em {disk_rev}) — execute `hermes gateway restart` para corrigir."
+      quota_hold: "\nA janela de uso do fornecedor está fechada por cerca de {hours} h. Esta tarefa fica retida até {until} e será retomada na primeira oportunidade segura depois disso; nenhum outro alerta será enviado enquanto o fornecedor estiver indisponível."
+    registration_pending: "A tarefa cron '{label}' foi salva, mas ainda não foi possível registrá-la no agendador externo. A tarefa foi mantida — não a recrie; pause/retome ou edite-a (por exemplo, via /cron) para tentar o registro novamente."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Outro"

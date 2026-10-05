@@ -942,6 +942,29 @@ gateway:
     hint: "Cuir breis leis agus bainistigh billeáil sa bhrabhsálaí — nuashonrófar d'iarmhéid anseo ina dhiaidh sin."
   login:
     free_tier_remaining: "\nTá roinnt comhráite fós ar an bplean saor in aisce; úsáid /model sna comhráite sin chun athrú."
+  cron:
+    failure:
+      provider: "⚠️ Theip ar an tasc cron '{job_name}': {cause}. {action} Loga na rití: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} Rithfidh sé arís ag an gcéad am sceidealta eile; le `hermes cron run {job_id}` déantar iarracht anois."
+      action_billing: "Cuir creidmheas leis nó fan go n-athshocrófar an teorainn, nó ceangail soláthraí eile leis le `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Sínigh isteach arís le /login (nó `{relogin}` i dteirminéal), nó ceangail soláthraí a oibríonn leis le `hermes cron edit {job_id} --provider <name>`, ansin rith `hermes cron run {job_id}` chun triail eile a bhaint as."
+      action_model_not_found: "Roghnaigh samhail eile le `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "Chuir balla dóiteáin os comhair an tsoláthraí bac ar an iarratas (ní le d'eochair atá an fhadhb): socraigh User-Agent trí `extra_headers` in iontráil custom_providers an tsoláthraí, nó ceangail soláthraí eile leis le `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Giorraigh leid an taisc le `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Athfhoclaigh leid an taisc le `hermes cron edit {job_id} --prompt <text>`, nó roghnaigh samhail eile le `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Ní chabhróidh triail eile: seiceáil stádas an chuntais agus na socruithe sonraí/príobháideachais leis an soláthraí, nó ceangail samhail eile leis le `hermes cron edit {job_id} --model <name>`."
+      action_default: "Rith arís é le `hermes cron run {job_id}`, nó cuir in eagar é le `hermes cron edit {job_id}`."
+      generic: "⚠️ Theip ar an tasc cron '{job_name}': {error}. Féach an rith iomlán le `hermes cron runs {job_id}` (aschur sábháilte faoi {output_dir}); rith arís é le `hermes cron run {job_id}`, cuir in eagar é le `hermes cron edit {job_id}`, nó cuir ar sos é le `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ Theip ar an tasc cron '{job_name}': chuaigh a script thar am. Níor glaodh ar aon samhail. Seiceáil aschur na scripte faoi {output_dir} nó `hermes cron runs {job_id}`, ansin rith arís é le `hermes cron run {job_id}`."
+      inactivity: "⚠️ Theip ar an tasc cron '{job_name}': chuaigh an tasc i bhfostú — ní dhearna sé faic ar feadh rófhada agus gearradh é. Seiceáil cad a bhí ar siúl aige san aschur sábháilte faoi {output_dir} (`hermes cron runs {job_id}`), ansin rith arís é le `hermes cron run {job_id}`."
+      blocked_config: "⛔ Níor ritheadh an tasc cron '{job_name}': {reason} Níor gearradh aon táille. Déanfaidh Hermes iarracht arís ag an gcéad am sceidealta eile agus ní athdhéanfaidh sé an rabhadh seo; seiceáil le `hermes cron doctor`."
+      backup_pinned: "Tá an tasc seo ceangailte dá sholáthraí/shamhail féin, mar sin ní théann sé ar ais ar `fallback_providers`; le `hermes cron edit {job_id} --unpin` leanfaidh sé an phríomhshamhail agus a slabhra cúltaca."
+      backup_failed: "Níor éirigh le haon soláthraí cúltaca ach oiread."
+      backup_none: "Níl aon soláthraí cúltaca cumraithe — cuir ceann leis le `hermes fallback add`, nó socraigh réamhshocrú do gach tasc cron trí `cron.model` + `cron.model_provider` in config.yaml."
+      streak_nudge: "\nTá teipthe ar an tasc seo {streak} rith as a chéile — is fiú féachaint air. Ceartaigh a leid/chumraíocht, nó cuir ar sos é le `hermes cron pause {job_ref}` (is féidir é a atosú nó a bhaint freisin) chun deireadh a chur leis an torann."
+      stale_code_hint: " Cúis dhóchúil: tá an gateway ag rith cód as dáta (tosaithe ar {boot_rev}, tá an diosca ag {disk_rev}) — rith `hermes gateway restart` chun é a réiteach."
+      quota_hold: "\nTá fuinneog úsáide an tsoláthraí dúnta ar feadh thart ar {hours} uair an chloig. Coinnítear an tasc seo siar go dtí {until} agus atosóidh sé ag an gcéad deis shábháilte ina dhiaidh sin; ní sheolfar a thuilleadh rabhadh fad nach bhfuil an soláthraí ar fáil."
+    registration_pending: "Sábháladh an tasc cron '{label}', ach níorbh fhéidir é a chlárú leis an sceidealóir seachtrach fós. Coinníodh an tasc — ná cruthaigh arís é; cuir ar sos/atosaigh nó cuir in eagar é (m.sh. trí /cron) chun an clárú a thriail arís."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Eile"

@@ -942,6 +942,29 @@ gateway:
     hint: "브라우저에서 충전과 결제 관리를 하면 잔액이 여기에도 곧 반영돼요."
   login:
     free_tier_remaining: "\n일부 채팅은 아직 무료 등급을 사용 중이에요. 해당 채팅에서 /model로 전환하세요."
+  cron:
+    failure:
+      provider: "⚠️ 예약 작업 '{job_name}'이(가) 실패했어요: {cause}. {action} 실행 로그: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} 다음 예약 시간에 다시 실행돼요. 지금 바로 시도하려면 `hermes cron run {job_id}`를 실행하세요."
+      action_billing: "충전하거나 한도가 초기화될 때까지 기다리세요. 또는 `hermes cron edit {job_id} --provider <name>`로 다른 제공자를 고정하세요."
+      action_auth: "/login으로 다시 로그인하거나(터미널에서는 `{relogin}`) `hermes cron edit {job_id} --provider <name>`로 정상 작동하는 제공자를 고정한 뒤, `hermes cron run {job_id}`로 다시 시도하세요."
+      action_model_not_found: "`hermes cron edit {job_id} --model <name>`로 다른 모델을 선택하세요."
+      action_upstream_blocked: "제공자 앞단의 방화벽이 요청을 차단했어요 (키 문제가 아니에요). 제공자의 custom_providers 항목에서 `extra_headers`로 User-Agent를 설정하거나, `hermes cron edit {job_id} --provider <name>`로 다른 제공자를 고정하세요."
+      action_context_overflow: "`hermes cron edit {job_id} --prompt <text>`로 작업 프롬프트를 줄이세요."
+      action_content_policy: "`hermes cron edit {job_id} --prompt <text>`로 작업 프롬프트를 바꿔 쓰거나, `hermes cron edit {job_id} --model <name>`로 다른 모델을 선택하세요."
+      action_provider_policy: "다시 시도해도 해결되지 않아요. 제공자 쪽에서 계정 상태와 데이터/개인정보 설정을 확인하거나, `hermes cron edit {job_id} --model <name>`로 다른 모델을 고정하세요."
+      action_default: "`hermes cron run {job_id}`로 다시 실행하거나 `hermes cron edit {job_id}`로 편집하세요."
+      generic: "⚠️ 예약 작업 '{job_name}'이(가) 실패했어요: {error}. 전체 실행 내역은 `hermes cron runs {job_id}`에서 볼 수 있어요 (출력은 {output_dir}에 저장됨). `hermes cron run {job_id}`로 다시 실행하거나, `hermes cron edit {job_id}`로 편집하거나, `hermes cron pause {job_id}`로 일시 중지하세요."
+      script_timeout: "⚠️ 예약 작업 '{job_name}'이(가) 실패했어요: 스크립트 시간이 초과되었어요. 모델은 호출되지 않았어요. {output_dir}의 스크립트 출력이나 `hermes cron runs {job_id}`를 확인한 뒤 `hermes cron run {job_id}`로 다시 실행하세요."
+      inactivity: "⚠️ 예약 작업 '{job_name}'이(가) 실패했어요: 작업이 멈췄어요 — 너무 오랫동안 아무 활동이 없어서 중단되었어요. {output_dir}에 저장된 출력(`hermes cron runs {job_id}`)에서 무엇을 하고 있었는지 확인한 뒤 `hermes cron run {job_id}`로 다시 실행하세요."
+      blocked_config: "⛔ 예약 작업 '{job_name}'이(가) 실행되지 않았어요: {reason} 요금은 청구되지 않았어요. Hermes는 다음 예약 시간에 다시 시도하며 이 알림을 반복해서 보내지 않아요. `hermes cron doctor`로 확인하세요."
+      backup_pinned: "이 작업은 자체 제공자/모델에 고정되어 있어서 `fallback_providers`로 폴백하지 않아요. `hermes cron edit {job_id} --unpin`을 실행하면 기본 모델과 그 폴백 체인을 따르게 돼요."
+      backup_failed: "백업 제공자도 모두 실패했어요."
+      backup_none: "백업 제공자가 설정되어 있지 않아요 — `hermes fallback add`로 추가하거나, config.yaml에서 `cron.model` + `cron.model_provider`로 예약 작업 전체의 기본값을 설정하세요."
+      streak_nudge: "\n이 작업이 {streak}회 연속으로 실패했어요 — 한번 점검해 보세요. 프롬프트/설정을 고치거나, 알림이 계속 오지 않도록 `hermes cron pause {job_ref}`로 일시 중지하세요 (resume/remove도 사용할 수 있어요)."
+      stale_code_hint: " 가능한 원인: 게이트웨이가 오래된 코드로 실행 중이에요 (부팅 시 {boot_rev}, 디스크는 {disk_rev}) — `hermes gateway restart`를 실행하면 해결돼요."
+      quota_hold: "\n제공자의 사용량 창이 약 {hours}시간 동안 닫혀 있어요. 이 작업은 {until}까지 보류되었다가 그 이후 처음으로 안전한 시점에 재개돼요. 제공자를 사용할 수 없는 동안에는 추가 알림을 보내지 않아요."
+    registration_pending: "예약 작업 '{label}'을(를) 저장했지만, 아직 외부 스케줄러에 등록하지 못했어요. 작업은 유지되니 다시 만들지 마세요. 등록을 다시 시도하려면 일시 중지/재개하거나 편집하세요 (예: /cron 사용)."
 platform:
   whatsapp:
     clarify_other_title: "✏️ 기타"

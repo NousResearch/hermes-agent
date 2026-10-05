@@ -942,6 +942,29 @@ gateway:
     hint: "Laden Sie Guthaben auf und verwalten Sie die Abrechnung im Browser — Ihr Guthaben wird hier anschließend aktualisiert."
   login:
     free_tier_remaining: "\nEinige Chats sind noch auf der kostenlosen Stufe; verwenden Sie /model in diesen Chats zum Wechseln."
+  cron:
+    failure:
+      provider: "⚠️ Cron-Job '{job_name}' fehlgeschlagen: {cause}. {action} Lauf-Protokoll: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} Der Job läuft zum nächsten geplanten Zeitpunkt erneut; `hermes cron run {job_id}` startet ihn sofort."
+      action_billing: "Laden Sie Guthaben auf oder warten Sie, bis das Limit zurückgesetzt wird, oder legen Sie mit `hermes cron edit {job_id} --provider <name>` einen anderen Anbieter fest."
+      action_auth: "Melden Sie sich mit /login erneut an (oder im Terminal mit `{relogin}`) oder legen Sie mit `hermes cron edit {job_id} --provider <name>` einen funktionierenden Anbieter fest; anschließend versucht `hermes cron run {job_id}` es erneut."
+      action_model_not_found: "Wählen Sie mit `hermes cron edit {job_id} --model <name>` ein anderes Modell."
+      action_upstream_blocked: "Eine Firewall vor dem Anbieter hat die Anfrage blockiert (nicht Ihr Schlüssel): Setzen Sie über `extra_headers` im custom_providers-Eintrag des Anbieters einen User-Agent oder legen Sie mit `hermes cron edit {job_id} --provider <name>` einen anderen Anbieter fest."
+      action_context_overflow: "Kürzen Sie den Prompt des Jobs mit `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Formulieren Sie den Prompt des Jobs mit `hermes cron edit {job_id} --prompt <text>` um oder wählen Sie mit `hermes cron edit {job_id} --model <name>` ein anderes Modell."
+      action_provider_policy: "Ein erneuter Versuch hilft nicht: Prüfen Sie beim Anbieter den Kontostatus und die Daten-/Datenschutzeinstellungen oder legen Sie mit `hermes cron edit {job_id} --model <name>` ein anderes Modell fest."
+      action_default: "Starten Sie ihn mit `hermes cron run {job_id}` erneut oder bearbeiten Sie ihn mit `hermes cron edit {job_id}`."
+      generic: "⚠️ Cron-Job '{job_name}' fehlgeschlagen: {error}. Den vollständigen Lauf zeigt `hermes cron runs {job_id}` (Ausgabe gespeichert unter {output_dir}); erneut starten mit `hermes cron run {job_id}`, bearbeiten mit `hermes cron edit {job_id}` oder pausieren mit `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ Cron-Job '{job_name}' fehlgeschlagen: Sein Skript hat das Zeitlimit überschritten. Es wurde kein Modell aufgerufen. Prüfen Sie die Ausgabe des Skripts unter {output_dir} oder mit `hermes cron runs {job_id}` und starten Sie den Job dann mit `hermes cron run {job_id}` erneut."
+      inactivity: "⚠️ Cron-Job '{job_name}' fehlgeschlagen: Der Job ist hängen geblieben — er hat zu lange nichts getan und wurde abgebrochen. Was er zuletzt getan hat, sehen Sie in der gespeicherten Ausgabe unter {output_dir} (`hermes cron runs {job_id}`); starten Sie ihn dann mit `hermes cron run {job_id}` erneut."
+      blocked_config: "⛔ Cron-Job '{job_name}' wurde nicht ausgeführt: {reason} Es wurde nichts berechnet. Hermes versucht es zum nächsten geplanten Zeitpunkt erneut und wiederholt diese Meldung nicht; prüfen Sie die Einrichtung mit `hermes cron doctor`."
+      backup_pinned: "Dieser Job ist fest an einen eigenen Anbieter bzw. ein eigenes Modell gebunden und weicht daher nicht auf `fallback_providers` aus; mit `hermes cron edit {job_id} --unpin` folgt er dem Hauptmodell und dessen Fallback-Kette."
+      backup_failed: "Auch kein Ausweichanbieter war erfolgreich."
+      backup_none: "Es ist kein Ausweichanbieter konfiguriert — fügen Sie mit `hermes fallback add` einen hinzu oder legen Sie über `cron.model` + `cron.model_provider` in config.yaml einen Standard für alle Cron-Jobs fest."
+      streak_nudge: "\nDieser Job ist {streak}-mal in Folge fehlgeschlagen — ein Blick darauf lohnt sich. Korrigieren Sie Prompt/Konfiguration oder pausieren Sie ihn mit `hermes cron pause {job_ref}` (resume/remove gibt es ebenfalls), um die Meldungen zu stoppen."
+      stale_code_hint: " Wahrscheinliche Ursache: Das Gateway führt veralteten Code aus (gestartet mit {boot_rev}, auf der Festplatte liegt {disk_rev}) — führen Sie `hermes gateway restart` aus, um das zu beheben."
+      quota_hold: "\nDas Nutzungsfenster des Anbieters ist für etwa {hours} h geschlossen. Dieser Job wird bis {until} zurückgehalten und danach bei der ersten sicheren Gelegenheit fortgesetzt; solange der Anbieter nicht verfügbar ist, werden keine weiteren Meldungen gesendet."
+    registration_pending: "Cron-Job '{label}' gespeichert, konnte aber noch nicht beim externen Scheduler registriert werden. Der Job bleibt erhalten — legen Sie ihn nicht neu an; pausieren und fortsetzen oder bearbeiten Sie ihn (z. B. über /cron), um die Registrierung erneut zu versuchen."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Sonstiges"

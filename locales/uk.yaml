@@ -942,6 +942,29 @@ gateway:
     hint: "Поповніть баланс і керуйте оплатою у браузері — після цього баланс тут оновиться."
   login:
     free_tier_remaining: "\nДеякі чати все ще на безкоштовному тарифі; використайте /model у тих чатах, щоб перемкнутися."
+  cron:
+    failure:
+      provider: "⚠️ Cron-завдання '{job_name}' завершилося з помилкою: {cause}. {action} Журнал запусків: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} Завдання знову запуститься в наступний запланований час; `hermes cron run {job_id}` запустить його просто зараз."
+      action_billing: "Поповніть баланс або дочекайтеся скидання ліміту, або закріпіть за завданням іншого провайдера командою `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Увійдіть знову через /login (або `{relogin}` у терміналі) чи закріпіть робочого провайдера командою `hermes cron edit {job_id} --provider <name>`, а потім повторіть запуск командою `hermes cron run {job_id}`."
+      action_model_not_found: "Виберіть іншу модель командою `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "Запит заблокував файрвол перед провайдером (справа не у вашому ключі): задайте User-Agent через `extra_headers` у записі цього провайдера в custom_providers або закріпіть іншого провайдера командою `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Скоротіть промпт завдання командою `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Переформулюйте промпт завдання командою `hermes cron edit {job_id} --prompt <text>` або виберіть іншу модель командою `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Повторний запуск не допоможе: перевірте в провайдера статус облікового запису та налаштування даних і конфіденційності або закріпіть іншу модель командою `hermes cron edit {job_id} --model <name>`."
+      action_default: "Запустіть його знову командою `hermes cron run {job_id}` або змініть командою `hermes cron edit {job_id}`."
+      generic: "⚠️ Cron-завдання '{job_name}' завершилося з помилкою: {error}. Подробиці запуску: `hermes cron runs {job_id}` (вивід збережено в {output_dir}); запустити знову — `hermes cron run {job_id}`, змінити — `hermes cron edit {job_id}`, призупинити — `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ Cron-завдання '{job_name}' завершилося з помилкою: його скрипт перевищив ліміт часу. Модель не викликалася. Перевірте вивід скрипта в {output_dir} або через `hermes cron runs {job_id}`, а потім запустіть завдання знову командою `hermes cron run {job_id}`."
+      inactivity: "⚠️ Cron-завдання '{job_name}' завершилося з помилкою: завдання зависло — надто довго нічого не робило й було перерване. Подивіться, чим воно займалося, у збереженому виводі в {output_dir} (`hermes cron runs {job_id}`), а потім запустіть його знову командою `hermes cron run {job_id}`."
+      blocked_config: "⛔ Cron-завдання '{job_name}' не запущено: {reason} Нічого не списано. Hermes спробує знову в наступний запланований час і не повторюватиме це сповіщення; перевірте налаштування командою `hermes cron doctor`."
+      backup_pinned: "Це завдання закріплено за власним провайдером/моделлю, тому воно не перемикається на `fallback_providers`; команда `hermes cron edit {job_id} --unpin` дозволить йому використовувати основну модель та її ланцюжок резервних провайдерів."
+      backup_failed: "Резервні провайдери теж не спрацювали."
+      backup_none: "Резервного провайдера не налаштовано — додайте його командою `hermes fallback add` або задайте типову модель для всіх cron-завдань через `cron.model` + `cron.model_provider` у config.yaml."
+      streak_nudge: "\nНевдалих запусків цього завдання поспіль: {streak} — варто розібратися. Виправте його промпт/конфігурацію або призупиніть його командою `hermes cron pause {job_ref}` (також доступні resume/remove), щоб припинити сповіщення."
+      stale_code_hint: " Імовірна причина: шлюз виконує застарілий код (запущено на ревізії {boot_rev}, на диску вже {disk_rev}) — виконайте `hermes gateway restart`, щоб це виправити."
+      quota_hold: "\nЛіміт провайдера вичерпано, вікно використання відкриється приблизно через {hours} год. Завдання відкладено до {until}, після чого воно відновиться за першої безпечної нагоди; поки провайдер недоступний, нових сповіщень не буде."
+    registration_pending: "Cron-завдання '{label}' збережено, але зареєструвати його в зовнішньому планувальнику поки не вдалося. Завдання не втрачено — не створюйте його заново; призупиніть і відновіть його або змініть (наприклад, через /cron), щоб повторити реєстрацію."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Інше"

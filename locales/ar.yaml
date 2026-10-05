@@ -942,6 +942,29 @@ gateway:
     hint: "أعد تعبئة الرصيد وأدِر الفوترة في المتصفح — سيتحدّث رصيدك هنا بعد ذلك."
   login:
     free_tier_remaining: "\nما زالت بعض المحادثات على المستوى المجاني؛ استخدم /model في تلك المحادثات للتبديل."
+  cron:
+    failure:
+      provider: "⚠️ فشلت مهمة cron '{job_name}': {cause}. {action} سجل التشغيل: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} ستعمل مجددًا في موعدها المجدول التالي؛ ويحاول `hermes cron run {job_id}` تشغيلها الآن."
+      action_billing: "اشحن رصيدك أو انتظر حتى يُعاد ضبط الحد، أو ثبّت مزوّدًا آخر باستخدام `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "سجّل الدخول مجددًا عبر /login (أو `{relogin}` في الطرفية)، أو ثبّت مزوّدًا يعمل باستخدام `hermes cron edit {job_id} --provider <name>`، ثم شغّل `hermes cron run {job_id}` لإعادة المحاولة."
+      action_model_not_found: "اختر نموذجًا آخر باستخدام `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "حظر جدار حماية أمام المزوّد الطلب (وليس مفتاحك): اضبط User-Agent عبر `extra_headers` في إدخال المزوّد ضمن custom_providers، أو ثبّت مزوّدًا آخر باستخدام `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "اختصر مطالبة المهمة باستخدام `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "أعد صياغة مطالبة المهمة باستخدام `hermes cron edit {job_id} --prompt <text>`، أو اختر نموذجًا آخر باستخدام `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "لن تفيد إعادة المحاولة: تحقّق من حالة الحساب وإعدادات البيانات/الخصوصية لدى المزوّد، أو ثبّت نموذجًا آخر باستخدام `hermes cron edit {job_id} --model <name>`."
+      action_default: "شغّلها مجددًا باستخدام `hermes cron run {job_id}`، أو عدّلها باستخدام `hermes cron edit {job_id}`."
+      generic: "⚠️ فشلت مهمة cron '{job_name}': {error}. اطّلع على التشغيل كاملًا باستخدام `hermes cron runs {job_id}` (المخرجات محفوظة في {output_dir})؛ شغّلها مجددًا باستخدام `hermes cron run {job_id}`، أو عدّلها باستخدام `hermes cron edit {job_id}`، أو أوقفها مؤقتًا باستخدام `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ فشلت مهمة cron '{job_name}': انتهت مهلة السكربت الخاص بها. لم يُستدعَ أي نموذج. تحقّق من مخرجات السكربت في {output_dir} أو `hermes cron runs {job_id}`، ثم شغّلها مجددًا باستخدام `hermes cron run {job_id}`."
+      inactivity: "⚠️ فشلت مهمة cron '{job_name}': تعطّلت المهمة — توقفت عن أي نشاط لمدة طويلة جدًا فأُوقفت. تحقّق مما كانت تفعله في المخرجات المحفوظة في {output_dir} (`hermes cron runs {job_id}`)، ثم شغّلها مجددًا باستخدام `hermes cron run {job_id}`."
+      blocked_config: "⛔ لم تُشغَّل مهمة cron '{job_name}': {reason} لم يُحتسب أي رسوم. سيحاول Hermes مجددًا في الموعد المجدول التالي ولن يكرّر هذا التنبيه؛ تحقّق باستخدام `hermes cron doctor`."
+      backup_pinned: "هذه المهمة مثبّتة على مزوّدها/نموذجها الخاص، لذا لا تنتقل إلى `fallback_providers`؛ ويتيح لها `hermes cron edit {job_id} --unpin` اتباع النموذج الرئيسي وسلسلة البدائل الخاصة به."
+      backup_failed: "ولم ينجح أي مزوّد احتياطي كذلك."
+      backup_none: "لا يوجد مزوّد احتياطي مُهيّأ — أضف واحدًا باستخدام `hermes fallback add`، أو اضبط افتراضيًا لجميع مهام cron عبر `cron.model` + `cron.model_provider` في config.yaml."
+      streak_nudge: "\nفشلت هذه المهمة في {streak} تشغيلات متتالية — تستحق المراجعة. أصلح مطالبتها/إعداداتها، أو أوقفها مؤقتًا باستخدام `hermes cron pause {job_ref}` (يتوفر أيضًا resume/remove) لإيقاف الإزعاج."
+      stale_code_hint: " السبب المرجّح: البوّابة تشغّل كودًا قديمًا (بدأت على {boot_rev}، والقرص على {disk_rev}) — شغّل `hermes gateway restart` لإصلاح ذلك."
+      quota_hold: "\nنافذة الاستخدام لدى المزوّد مغلقة لنحو {hours} ساعة. هذه المهمة معلّقة حتى {until} وتُستأنف عند أول فرصة آمنة بعد ذلك؛ ولن تُرسَل تنبيهات أخرى ما دام المزوّد غير متاح."
+    registration_pending: "حُفظت مهمة cron '{label}'، لكن تعذّر تسجيلها لدى المُجدوِل الخارجي حتى الآن. المهمة محفوظة — لا تُعِد إنشاءها؛ أوقفها مؤقتًا ثم استأنفها أو عدّلها (مثلًا عبر /cron) لإعادة محاولة التسجيل."
 platform:
   whatsapp:
     clarify_other_title: "✏️ أخرى"

@@ -942,6 +942,29 @@ gateway:
     hint: "Ricarica e gestisci la fatturazione nel browser — il saldo qui si aggiornerà subito dopo."
   login:
     free_tier_remaining: "\nAlcune chat sono ancora sul piano gratuito; usa /model in quelle chat per cambiare."
+  cron:
+    failure:
+      provider: "⚠️ Il cron job '{job_name}' non è riuscito: {cause}. {action} Log delle esecuzioni: `hermes cron runs {job_id}`."
+      action_transient: "{backup_phrase} Verrà eseguito di nuovo al prossimo orario pianificato; `hermes cron run {job_id}` lo riprova subito."
+      action_billing: "Ricarica il credito o attendi il ripristino del limite, oppure fissa un altro provider con `hermes cron edit {job_id} --provider <name>`."
+      action_auth: "Accedi di nuovo con /login (o `{relogin}` in un terminale), oppure fissa un provider funzionante con `hermes cron edit {job_id} --provider <name>`, poi esegui `hermes cron run {job_id}` per riprovare."
+      action_model_not_found: "Scegli un altro modello con `hermes cron edit {job_id} --model <name>`."
+      action_upstream_blocked: "Un firewall davanti al provider ha bloccato la richiesta (la tua chiave non c'entra): imposta uno User-Agent tramite `extra_headers` nella voce custom_providers del provider, oppure fissa un altro provider con `hermes cron edit {job_id} --provider <name>`."
+      action_context_overflow: "Accorcia il prompt del job con `hermes cron edit {job_id} --prompt <text>`."
+      action_content_policy: "Riformula il prompt del job con `hermes cron edit {job_id} --prompt <text>`, oppure scegli un altro modello con `hermes cron edit {job_id} --model <name>`."
+      action_provider_policy: "Riprovare non servirà: verifica con il provider lo stato dell'account e le impostazioni di dati/privacy, oppure fissa un altro modello con `hermes cron edit {job_id} --model <name>`."
+      action_default: "Eseguilo di nuovo con `hermes cron run {job_id}` oppure modificalo con `hermes cron edit {job_id}`."
+      generic: "⚠️ Il cron job '{job_name}' non è riuscito: {error}. Consulta l'esecuzione completa con `hermes cron runs {job_id}` (output salvato in {output_dir}); eseguilo di nuovo con `hermes cron run {job_id}`, modificalo con `hermes cron edit {job_id}` o mettilo in pausa con `hermes cron pause {job_id}`."
+      script_timeout: "⚠️ Il cron job '{job_name}' non è riuscito: il suo script è andato in timeout. Nessun modello è stato invocato. Controlla l'output dello script in {output_dir} o `hermes cron runs {job_id}`, poi eseguilo di nuovo con `hermes cron run {job_id}`."
+      inactivity: "⚠️ Il cron job '{job_name}' non è riuscito: il job si è bloccato — è rimasto inattivo troppo a lungo ed è stato interrotto. Controlla cosa stava facendo nell'output salvato in {output_dir} (`hermes cron runs {job_id}`), poi eseguilo di nuovo con `hermes cron run {job_id}`."
+      blocked_config: "⛔ Il cron job '{job_name}' non è stato eseguito: {reason} Non è stato addebitato nulla. Hermes riproverà al prossimo orario pianificato e non ripeterà questo avviso; verifica con `hermes cron doctor`."
+      backup_pinned: "Questo job è fissato al proprio provider/modello, quindi non ricorre a `fallback_providers`; `hermes cron edit {job_id} --unpin` gli fa seguire il modello principale e la sua catena di fallback."
+      backup_failed: "Nemmeno un provider di riserva è riuscito."
+      backup_none: "Nessun provider di riserva configurato — aggiungine uno con `hermes fallback add`, oppure imposta un valore predefinito per tutti i cron tramite `cron.model` + `cron.model_provider` in config.yaml."
+      streak_nudge: "\nQuesto job non è riuscito per {streak} esecuzioni di fila — vale la pena controllarlo. Correggi il prompt/la configurazione, oppure mettilo in pausa con `hermes cron pause {job_ref}` (puoi anche riprenderlo o rimuoverlo) per fermare il rumore."
+      stale_code_hint: " Causa probabile: il gateway sta eseguendo codice non aggiornato (avviato su {boot_rev}, il disco è a {disk_rev}) — esegui `hermes gateway restart` per risolvere."
+      quota_hold: "\nLa finestra di utilizzo del provider è chiusa per circa {hours} h. Questo job resta sospeso fino a {until} e riprende alla prima occasione sicura successiva; non verranno inviati altri avvisi finché il provider non sarà disponibile."
+    registration_pending: "Cron job '{label}' salvato, ma non è stato ancora possibile registrarlo nello scheduler esterno. Il job è conservato — non ricrearlo; mettilo in pausa/riprendilo o modificalo (ad es. tramite /cron) per riprovare la registrazione."
 platform:
   whatsapp:
     clarify_other_title: "✏️ Altro"

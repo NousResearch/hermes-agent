@@ -25,11 +25,11 @@ from agent.context_compressor import (
     history_before_user_originated_turn,
     is_compaction_summary_message,
     is_user_originated_turn,
-    reference_handoff_would_drive_next_model_call,
     retryable_user_text,
     split_user_originated_turn,
     user_originated_turn_view,
 )
+from agent.context_compressor_handoff_drive import reference_handoff_would_drive_next_model_call
 from agent.conversation_loop import (
     _should_skip_model_call_for_reference_handoff,
 )

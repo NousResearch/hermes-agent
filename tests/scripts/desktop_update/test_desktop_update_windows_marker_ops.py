@@ -152,8 +152,9 @@ _CHECKOUT_HOLDER = """
 import msvcrt, os, sys, time
 from pathlib import Path
 fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT | os.O_BINARY, 0o644)
-os.lseek(fd, 1 << 20, os.SEEK_SET)
-msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)   # exactly hermes_cli/update_lock.py::_try_lock
+# offset 1 MiB: exactly hermes_cli/update_lock.py::_try_lock; 1 MiB + 1..16: one R5b lease byte
+os.lseek(fd, (1 << 20) + (int(sys.argv[3]) if len(sys.argv) > 3 else 0), os.SEEK_SET)
+msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
 Path(sys.argv[2] + '.ready').write_text('1', encoding='utf-8')
 while not Path(sys.argv[2]).exists():
     time.sleep(0.05)
@@ -182,6 +183,43 @@ def test_marker_op_reclaim_reports_held_while_a_survivor_holds_the_checkout_lock
         holder.wait(timeout=30)
     assert _op(tmp_path, '-MarkerOp', 'reclaim')[:2] == (0, 'reclaimed\n')
     assert not (tmp_path / MARKER).exists()
+
+
+@pytest.mark.platforms('windows')
+@pytest.mark.parametrize('lease', [1, 16])
+def test_marker_op_reclaim_reports_held_while_a_leased_child_outlives_its_owner(tmp_path: Path, lease: int) -> None:
+    """R5b: the owner died (its byte at 1 MiB is free) but a completion child the job refused
+    still holds its lease byte. The checkout is busy until it exits: reclaim answers `held`."""
+    install = tmp_path / 'hermes-agent'
+    install.mkdir()
+    dead = f'{_dead_pid()}\n{int(time.time())}\nct:5.000\n'.encode()
+    (tmp_path / MARKER).write_bytes(dead)
+    release = tmp_path / 'release-holder'
+    holder = subprocess.Popen([sys.executable, '-c', _CHECKOUT_HOLDER, str(install / '.hermes-update.lock'),
+                               str(release), str(lease)])
+    try:
+        deadline = time.monotonic() + 30
+        while not Path(str(release) + '.ready').exists():
+            assert time.monotonic() < deadline and holder.poll() is None
+            time.sleep(0.05)
+        assert _op(tmp_path, '-MarkerOp', 'reclaim')[:2] == (0, 'held\n')
+        assert (tmp_path / MARKER).read_bytes() == dead
+    finally:
+        release.touch()
+        holder.wait(timeout=30)
+
+
+def test_checkout_lock_probe_covers_the_owner_byte_and_every_lease_byte() -> None:
+    """Runs everywhere (the live cells above need Windows): Test-CheckoutLockHeld must lock
+    and unlock the same range hermes_cli/update_lock.py::_try_lock judges -- the owner byte at
+    1 MiB plus the 16 R5b lease bytes after it -- or a leased survivor reads as a free checkout."""
+    import re
+
+    text = MARKER_PS1.read_text(encoding='utf-8-sig')
+    body = text[text.index('function Test-CheckoutLockHeld'):]
+    ranges = re.findall(r'\$fs\.(Lock|Unlock)\((\d+), (\d+)\)', body)
+    assert ranges and {(int(o), int(n)) for _, o, n in ranges} == {(1 << 20, 1 + 16)}, ranges
+    assert {kind for kind, _, _ in ranges} == {'Lock', 'Unlock'}
 
 
 @pytest.mark.platforms('windows')

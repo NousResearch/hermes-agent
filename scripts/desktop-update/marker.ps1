@@ -377,8 +377,10 @@ function Get-CheckoutLockPath {
 
 function Test-CheckoutLockHeld {
     # R6: does some process hold the checkout lock right now? Python takes it with
-    # msvcrt.locking on one byte at offset 1 MiB (LockFile); probe the same byte and
-    # give it straight back.
+    # msvcrt.locking on one byte at offset 1 MiB (LockFile), and every joiner the job
+    # could not bind also locks one of the 16 lease bytes just past it (R5b): a leased
+    # child outlives a killed owner and keeps the checkout busy. Probe all 1+16 bytes
+    # in one LockFile (it fails if ANY of them is held) and give them straight back.
     $path = Get-CheckoutLockPath
     if (-not $path -or -not [System.IO.File]::Exists($path)) { return $false }
     $fs = $null
@@ -387,8 +389,8 @@ function Test-CheckoutLockHeld {
             ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
     } catch { return $false }
     try {
-        try { $fs.Lock(1048576, 1) } catch [System.IO.IOException] { return $true }
-        try { $fs.Unlock(1048576, 1) } catch {}
+        try { $fs.Lock(1048576, 17) } catch [System.IO.IOException] { return $true }
+        try { $fs.Unlock(1048576, 17) } catch {}
         return $false
     } finally {
         $fs.Dispose()

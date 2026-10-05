@@ -265,18 +265,7 @@ class MCPServerRunMixin:
         self._auth_type = (config.get("auth") or "").lower().strip()
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
         self._max_lifetime_seconds = _get_lifecycle_seconds(config, "max_lifetime_seconds")
-        # The _MCP_*_TYPES flags are False until the lazy SDK import runs.
-        _core._ensure_mcp_sdk()
-        sampling_config = config.get("sampling", {})
-        self._sampling = (_sampling.SamplingHandler(self.name, sampling_config, self._redaction_values)
-                          if sampling_config.get("enabled", True) and _core._MCP_SAMPLING_TYPES else None)
-        # elicitation/create lets a server ask for structured input mid-call; the handler
-        # routes it through Hermes' approval system.
-        elicitation_config = config.get("elicitation", {})
-        self._elicitation = (_sampling.ElicitationHandler(self.name, elicitation_config,
-                                                       call_context=lambda: self._pending_call_context,
-                                                       redaction_values=self._redaction_values)
-                             if elicitation_config.get("enabled", True) and _core._MCP_ELICITATION_TYPES else None)
+        self._build_callback_handlers(config)
         if "url" in config and "command" in config:
             logger.warning("MCP server '%s' has both 'url' and 'command' in config. Using HTTP transport "
                            "('url'). Remove 'command' to silence this warning.", self.name)
@@ -301,6 +290,26 @@ class MCPServerRunMixin:
             self._publish_error(exc)  # fail fast and non-retryably
             return False
         return True
+
+    def _build_callback_handlers(self, config: dict, replaced: Optional[dict] = None) -> None:
+        """Sampling/elicitation handlers the next SDK session is created with, per *config*'s
+        policy. With *replaced* (an adopted definition), only a callback whose policy section
+        changed is rebuilt, so an unchanged one keeps its rate-limit and metrics state."""
+        # The _MCP_*_TYPES flags are False until the lazy SDK import runs.
+        _core._ensure_mcp_sdk()
+        sampling_config = config.get("sampling", {})
+        if replaced is None or replaced.get("sampling") != config.get("sampling"):
+            self._sampling = (_sampling.SamplingHandler(self.name, sampling_config, self._redaction_values)
+                              if sampling_config.get("enabled", True) and _core._MCP_SAMPLING_TYPES else None)
+        # elicitation/create lets a server ask for structured input mid-call; the handler
+        # routes it through Hermes' approval system.
+        elicitation_config = config.get("elicitation", {})
+        if replaced is None or replaced.get("elicitation") != config.get("elicitation"):
+            self._elicitation = (_sampling.ElicitationHandler(self.name, elicitation_config,
+                                                           call_context=lambda: self._pending_call_context,
+                                                           redaction_values=self._redaction_values)
+                                 if elicitation_config.get("enabled", True) and _core._MCP_ELICITATION_TYPES
+                                 else None)
 
     def _bind_redaction_values(self, values) -> None:
         """One credential generation for the task and the handlers it hands to the SDK session."""
@@ -339,6 +348,9 @@ class MCPServerRunMixin:
         self._config = fresh
         self._auth_type = (fresh.get("auth") or "").lower().strip()
         self._sse_fallback = False  # latched for the old endpoint
+        # The rebuilt session is created with these handlers: the adopted definition's
+        # sampling/elicitation policy must govern it, not the replaced one's.
+        self._build_callback_handlers(fresh, replaced=config)
         return fresh
 
     async def run(self, config: dict):

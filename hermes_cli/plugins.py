@@ -249,10 +249,7 @@ class PluginContext:
 
     def has_plugin(self, plugin_id: str) -> bool:
         """Return True when another plugin is loaded and enabled (runtime probe for advisory
-        ``requires_plugins``). Matches on registry key or manifest name.
-
-        See #64165.
-        """
+        ``requires_plugins``, #64165). Matches on registry key or manifest name."""
         return any(
             loaded.enabled and (key == plugin_id or loaded.manifest.name == plugin_id)
             for key, loaded in self._manager._plugins.items()
@@ -311,8 +308,7 @@ class PluginContext:
     def _track(
         self, kind: str, key: str, release: Callable[[], None], *, persistent: bool = False,
     ) -> PluginRegistration:
-        """Record host-owned cleanup for a successful registration (see
-        :meth:`PluginManager._track_registration` for ``persistent``)."""
+        """Record host-owned cleanup for a registration (``persistent``: see ``_track_registration``)."""
         return self._manager._track_registration(self.manifest, kind, key, release, persistent=persistent)
 
     def _track_replacement(
@@ -341,8 +337,7 @@ class PluginContext:
         self, kind: str, key: str, mapping: Dict[str, Any], entry: Any, log_fmt: str, *log_args: Any,
         previous: Any = _UNSET,
     ) -> PluginRegistration:
-        """Shared tail of the manager-mapping registrars: store + lease the entry, then log
-        ``log_fmt % (plugin name, *log_args)`` at debug."""
+        """Store + lease a manager-mapping entry, then debug-log ``log_fmt % (plugin name, *log_args)``."""
         handle = self._track_mapping_entry(kind, key, mapping, entry, previous)
         logger.debug(log_fmt, self.manifest.name, *log_args)
         return handle
@@ -405,6 +400,11 @@ class PluginContext:
             return get_active_profile_name()
         except Exception:
             return "default"
+
+    def current_cron_execution(self) -> Any:
+        """The cron run executing now (``cron.execution_identity.CronExecution``), else ``None``."""
+        from cron.execution_identity import current_cron_execution
+        return current_cron_execution()
 
     def on_unload(self, callback: Callable[[], None]) -> PluginRegistration:
         """Register a cleanup callback for unload: runs in reverse acquisition order interleaved

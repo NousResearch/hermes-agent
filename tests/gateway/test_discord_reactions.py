@@ -144,6 +144,22 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("configured", [False, None, "", "   ", 123])
+async def test_invalid_processing_emoji_falls_back_to_default(configured):
+    config = PlatformConfig(enabled=True, token="***", extra={"processing_emoji": configured})
+    adapter = DiscordAdapter(config)
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=99999))
+    raw_message = SimpleNamespace(add_reaction=AsyncMock(), remove_reaction=AsyncMock())
+    event = _make_event("invalid-processing-emoji", raw_message)
+
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    assert raw_message.add_reaction.await_args_list[0].args == ("👀",)
+    assert raw_message.remove_reaction.await_args_list[0].args == ("👀", adapter._client.user)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("outcome,final_emoji", [
     (ProcessingOutcome.SUCCESS, "✅"),
     (ProcessingOutcome.FAILURE, "❌"),

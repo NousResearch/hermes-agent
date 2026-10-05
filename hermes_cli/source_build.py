@@ -180,7 +180,7 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         from hermes_cli.memory_provider_migration import migrate_all_homes
 
         migrate_all_homes()
-    except Exception as exc:  # health: allow BLE001 -- post-commit boundary: the failure is reported as a follow-up, never fails the committed update
+    except Exception as exc:  # health: allow BLE001 -- post-commit boundary: printed as ⚠, never fails the committed update; every later update/tail re-runs it
         print(f"  ⚠ Memory provider migration skipped: {exc}")
     # Same for a gateway platform / toolset that left core (Home Assistant): every home that used
     # it gets its catalog plugin (hermes_cli/left_core_migration.py).
@@ -188,7 +188,7 @@ def build_update_products(project_root: Path, *, desktop: bool) -> None:
         from hermes_cli.left_core_migration import migrate_all_homes as migrate_left_core
 
         migrate_left_core()
-    except Exception as exc:  # health: allow BLE001 -- post-commit boundary: the failure is reported as a follow-up, never fails the committed update
+    except Exception as exc:  # health: allow BLE001 -- post-commit boundary: printed as ⚠, never fails the committed update; every later update/tail re-runs it
         print(f"  ⚠ Plugin migration skipped: {exc}")
     if failures:
         raise ProductBuildError(failures)

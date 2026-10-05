@@ -368,7 +368,12 @@ export const arChrome = {
           ? `بلغ ${provider} حد الاستخدام. يُعاد ضبطه في ${time}، ويمكنك اختيار نموذج لما بعد ذلك من الآن.`
           : `بلغ ${provider} حد الاستخدام. يمكنك اختيار نموذج لما بعد إعادة الضبط من الآن.`,
       modelResets: (time: string) => `يعود ${time}`,
-      modelLimitedTip: (time: string) => `بلغ هذا النموذج حده الخاص ويعود في ${time}. النماذج الأخرى هنا ما زالت تعمل.`
+      modelLimitedTip: (time: string) => `بلغ هذا النموذج حده الخاص ويعود في ${time}. النماذج الأخرى هنا ما زالت تعمل.`,
+      usageLeft: (percent: number, time: null | string) =>
+        time ? `متبقٍ ${percent}% · يُعاد الضبط ${time}` : `متبقٍ ${percent}%`,
+      usageTip: (provider: string) => `${provider} يقترب من حد الاستخدام.`,
+      usageWindow: (label: string, percent: number, time: null | string) =>
+        time ? `${label}: متبقٍ ${percent}%، يُعاد الضبط ${time}` : `${label}: متبقٍ ${percent}%`
     },
     modelOptions: {
       noOptions: 'لا توجد خيارات لهذا النموذج',

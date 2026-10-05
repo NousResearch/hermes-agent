@@ -25,6 +25,7 @@ import type { HermesGateway } from '../hermes'
 import { startManualOnboarding } from '../store/onboarding'
 
 import { InlineNotice } from './notifications'
+import { ProviderStatusChip } from './provider-status-chip'
 import { Badge } from './ui/badge'
 import { Button } from './ui/button'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './ui/command'
@@ -612,9 +613,6 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
       </span>
     ) : null
 
-  const resetMs = accountResetMs(provider)
-  const resetTime = resetMs === null ? null : formatReset(resetMs)
-
   return (
     <span className="flex min-w-0 items-center gap-2">
       <span className="truncate">{provider.name}</span>
@@ -622,16 +620,7 @@ function ProviderHeading({ provider }: { provider: ModelOptionProvider }) {
         {provider.slug} · {provider.total_models ?? provider.models?.length ?? 0}
       </span>
       {tierBadge}
-      {resetMs !== null && (
-        <Badge
-          className="normal-case tracking-normal tabular-nums"
-          size="xs"
-          title={t.shell.modelMenu.limitedTip(provider.name, resetTime)}
-          variant="warn"
-        >
-          {resetTime ? t.shell.modelMenu.limitedUntil(resetTime) : t.shell.modelMenu.limited}
-        </Badge>
-      )}
+      <ProviderStatusChip provider={provider} />
     </span>
   )
 }

@@ -14,6 +14,7 @@ import {
   useState
 } from 'react'
 
+import { ProviderStatusChip } from '@/components/provider-status-chip'
 import { Badge } from '@/components/ui/badge'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -792,7 +793,7 @@ export function ModelCatalogMenu({
                     open={!collapsed}
                     size="0.625rem"
                   />
-                  <ProviderLimitBadge provider={group.provider} />
+                  <ProviderStatusChip className="ml-auto mr-0.5" provider={group.provider} />
                 </DropdownMenuItem>
                 {!collapsed &&
                   group.families.map(family => (
@@ -1233,28 +1234,6 @@ function ModelResetBadge({ time }: { time: null | string }): null | ReactElement
       </Badge>
     </Tip>
   ) : null
-}
-
-/** Trailing tag on a provider heading while its whole login is rate-limited.
- *  Per-model cooldowns tag their own rows instead. */
-function ProviderLimitBadge({ provider }: { provider: ModelOptionProvider }): null | ReactElement {
-  const { t } = useI18n()
-  const copy = t.shell.modelMenu
-  const resetMs = accountResetMs(provider)
-
-  if (resetMs === null) {
-    return null
-  }
-
-  const time = formatReset(resetMs)
-
-  return (
-    <Tip label={copy.limitedTip(provider.name, time)}>
-      <Badge className="ml-auto mr-0.5 shrink-0 normal-case tracking-normal tabular-nums" size="xs" variant="warn">
-        {time ? copy.limitedUntil(time) : copy.limited}
-      </Badge>
-    </Tip>
-  )
 }
 
 // A model still downloading: visible so the user knows it's coming (and

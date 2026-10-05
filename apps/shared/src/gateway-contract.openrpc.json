@@ -19234,6 +19234,17 @@
               }
             ],
             "default": null
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderUsage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -26524,6 +26535,56 @@
           "scope"
         ],
         "title": "ProviderLimit",
+        "type": "object"
+      },
+      "ProviderUsage": {
+        "additionalProperties": false,
+        "description": "``hermes_cli/inventory.py::_apply_usage`` \u2014 the provider's account usage windows, from cache.",
+        "properties": {
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderUsageWindow"
+            },
+            "title": "Windows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "windows"
+        ],
+        "title": "ProviderUsage",
+        "type": "object"
+      },
+      "ProviderUsageWindow": {
+        "additionalProperties": false,
+        "description": "One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour\nsession or the weekly cap, with how much of it is spent and when it rolls over (ISO).",
+        "properties": {
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "used_percent": {
+            "title": "Used Percent",
+            "type": "number"
+          },
+          "resets_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resets At"
+          }
+        },
+        "required": [
+          "label",
+          "used_percent"
+        ],
+        "title": "ProviderUsageWindow",
         "type": "object"
       },
       "QueuedPrompt": {

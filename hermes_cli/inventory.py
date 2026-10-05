@@ -247,6 +247,7 @@ def build_model_options_payload(
         non_blocking_catalogs=not refresh,
     )
     _apply_limits(payload["providers"])
+    _apply_usage(payload["providers"])
     if not refresh:
         _prewarm_pricing_async(payload["providers"], current_provider=ctx.current_provider,
                                current_base_url=ctx.current_base_url)
@@ -282,6 +283,29 @@ def _apply_limits(rows: list[dict]) -> None:
             row["limit"] = {"scope": "account", "resets_at": iso(state["resets_at"])}
         else:
             row["limit"] = {"scope": "models", "models": {m: iso(at) for m, at in state["models"].items()}}
+
+
+def _apply_usage(rows: list[dict]) -> None:
+    """Attach ``usage`` (subscription windows: % spent + reset) to signed-in rows that can report it,
+    from the cache only, and ask for a background refresh, so the picker never waits on a usage API
+    and a chip can warn before the wall instead of at it."""
+    from agent.account_usage_cache import cached_account_usage, has_account_usage, refresh_account_usage_async
+
+    wanted: list[str] = []
+    for row in rows:
+        slug = str(row.get("slug") or "")
+        if not slug or row.get("is_user_defined") or row.get("authenticated") is False or not has_account_usage(slug):
+            continue
+        wanted.append(slug)
+        snapshot = cached_account_usage(slug)
+        windows = [
+            {"label": w.label, "used_percent": float(w.used_percent),
+             "resets_at": w.reset_at.isoformat() if w.reset_at else None}
+            for w in (snapshot.windows if snapshot else ()) if w.used_percent is not None
+        ]
+        if windows:
+            row["usage"] = {"windows": windows}
+    refresh_account_usage_async(wanted)
 
 
 # ─── Public: auxiliary-task pickers ─────────────────────────────────────

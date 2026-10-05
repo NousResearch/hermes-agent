@@ -43,6 +43,31 @@ export function modelResetMs(provider: ModelOptionProvider, model: string, nowMs
   return limit?.scope === 'models' ? parseMs(limit.models?.[model]) : null
 }
 
+/** Remaining share at or under which a picker shows the usage chip, and turns it amber. */
+export const USAGE_NOTICE_PERCENT = 20
+export const USAGE_WARN_PERCENT = 10
+
+export interface UsageWindowView {
+  label: string
+  remaining: number
+  resetMs: null | number
+}
+
+/** The provider's live usage windows (rolled-over ones dropped), tightest first, or null when it
+ *  reports none. The first is the one you'll hit first, so it's the one the chip shows. */
+export function usageWindows(provider: ModelOptionProvider, nowMs = Date.now()): null | UsageWindowView[] {
+  const windows = (provider.usage?.windows ?? [])
+    .map(w => ({
+      label: w.label,
+      remaining: Math.max(0, Math.min(100, Math.round(100 - w.used_percent))),
+      resetMs: parseMs(w.resets_at)
+    }))
+    .filter(w => w.resetMs === null || w.resetMs > nowMs)
+    .sort((a, b) => a.remaining - b.remaining)
+
+  return windows.length > 0 ? windows : null
+}
+
 /** `4:30 PM` today, `Oct 6, 9:00 AM` on another day. Infinity = unknown. */
 export function formatReset(ms: number, nowMs = Date.now()): null | string {
   if (!Number.isFinite(ms)) {

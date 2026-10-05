@@ -21,5 +21,10 @@ export const frModelMenu = {
       : `${provider} a atteint sa limite d’utilisation. Vous pouvez déjà choisir un modèle pour après sa réinitialisation.`,
   modelResets: (time: string) => `de retour à ${time}`,
   modelLimitedTip: (time: string) =>
-    `Ce modèle a atteint sa propre limite et revient à ${time}. Les autres modèles ici fonctionnent toujours.`
+    `Ce modèle a atteint sa propre limite et revient à ${time}. Les autres modèles ici fonctionnent toujours.`,
+  usageLeft: (percent: number, time: null | string) =>
+    time ? `${percent} % restant · réinit. ${time}` : `${percent} % restant`,
+  usageTip: (provider: string) => `${provider} approche de sa limite d’utilisation.`,
+  usageWindow: (label: string, percent: number, time: null | string) =>
+    time ? `${label} : ${percent} % restant, réinitialisation ${time}` : `${label} : ${percent} % restant`
 }

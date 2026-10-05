@@ -21,5 +21,10 @@ export const jaModelMenu = {
       : `${provider} が利用上限に達しました。リセット後に使うモデルは今のうちに選べます。`,
   modelResets: (time: string) => `${time} に再開`,
   modelLimitedTip: (time: string) =>
-    `このモデルは個別の上限に達しており、${time} に再開します。ここにある他のモデルは引き続き使えます。`
+    `このモデルは個別の上限に達しており、${time} に再開します。ここにある他のモデルは引き続き使えます。`,
+  usageLeft: (percent: number, time: null | string) =>
+    time ? `残り ${percent}% · ${time} にリセット` : `残り ${percent}%`,
+  usageTip: (provider: string) => `${provider} は利用上限に近づいています。`,
+  usageWindow: (label: string, percent: number, time: null | string) =>
+    time ? `${label}: 残り ${percent}%、${time} にリセット` : `${label}: 残り ${percent}%`
 }

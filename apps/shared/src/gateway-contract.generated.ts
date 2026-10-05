@@ -782,6 +782,7 @@ export interface ModelOptionProvider {
   free_tier_row?: boolean | null
   unavailable_models?: string[] | null
   limit?: ProviderLimit | null
+  usage?: ProviderUsage | null
   [key: string]: unknown
 }
 /** ``hermes_cli/inventory.py::_apply_capabilities``. */
@@ -806,6 +807,16 @@ export interface ProviderLimit {
   scope: 'account' | 'models'
   resets_at?: string | null
   models?: Record<string, string> | null
+}
+/** ``hermes_cli/inventory.py::_apply_usage`` — the provider's account usage windows, from cache. */
+export interface ProviderUsage {
+  windows: ProviderUsageWindow[]
+}
+/** One subscription usage window (``agent/account_usage.py::AccountUsageWindow``): e.g. the 5-hour session or the weekly cap, with how much of it is spent and when it rolls over (ISO). */
+export interface ProviderUsageWindow {
+  label: string
+  used_percent: number
+  resets_at?: string | null
 }
 export interface ImageGenerateParams {
   prompt?: string | null

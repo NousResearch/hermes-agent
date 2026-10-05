@@ -21,5 +21,10 @@ export const deModelMenu = {
       : `${provider} hat sein Nutzungslimit erreicht. Du kannst schon jetzt ein Modell für die Zeit nach dem Zurücksetzen wählen.`,
   modelResets: (time: string) => `wieder ab ${time}`,
   modelLimitedTip: (time: string) =>
-    `Dieses Modell hat sein eigenes Limit erreicht und ist ab ${time} wieder verfügbar. Andere Modelle hier funktionieren weiterhin.`
+    `Dieses Modell hat sein eigenes Limit erreicht und ist ab ${time} wieder verfügbar. Andere Modelle hier funktionieren weiterhin.`,
+  usageLeft: (percent: number, time: null | string) =>
+    time ? `${percent} % übrig · zurückgesetzt ${time}` : `${percent} % übrig`,
+  usageTip: (provider: string) => `${provider} ist fast am Nutzungslimit.`,
+  usageWindow: (label: string, percent: number, time: null | string) =>
+    time ? `${label}: ${percent} % übrig, zurückgesetzt ${time}` : `${label}: ${percent} % übrig`
 }

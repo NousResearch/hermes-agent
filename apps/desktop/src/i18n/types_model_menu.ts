@@ -17,4 +17,7 @@ export interface ModelMenuTranslations {
   limitedTip: (provider: string, time: null | string) => string
   modelResets: (time: string) => string
   modelLimitedTip: (time: string) => string
+  usageLeft: (percent: number, time: null | string) => string
+  usageTip: (provider: string) => string
+  usageWindow: (label: string, percent: number, time: null | string) => string
 }

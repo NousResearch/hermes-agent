@@ -20,5 +20,9 @@ export const zhModelMenu = {
       ? `${provider} 已达到用量上限，将于 ${time} 重置；现在就可以先选好之后要用的模型。`
       : `${provider} 已达到用量上限；现在就可以先选好重置后要用的模型。`,
   modelResets: (time: string) => `${time} 恢复`,
-  modelLimitedTip: (time: string) => `该模型已达到自身上限，将于 ${time} 恢复。这里的其他模型仍可使用。`
+  modelLimitedTip: (time: string) => `该模型已达到自身上限，将于 ${time} 恢复。这里的其他模型仍可使用。`,
+  usageLeft: (percent: number, time: null | string) => (time ? `剩余 ${percent}% · ${time} 重置` : `剩余 ${percent}%`),
+  usageTip: (provider: string) => `${provider} 即将达到用量上限。`,
+  usageWindow: (label: string, percent: number, time: null | string) =>
+    time ? `${label}：剩余 ${percent}%，${time} 重置` : `${label}：剩余 ${percent}%`
 }

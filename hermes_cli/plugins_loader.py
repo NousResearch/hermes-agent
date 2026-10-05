@@ -265,6 +265,21 @@ class PluginLoaderMixin:
             return
         self._register_deferred_platform_tools(manifest, loaded)
 
+    def rearm_failed_platform(self, platform_name: str) -> bool:
+        """Re-lease the deferred loader of a platform plugin whose load failed, so the next registry lookup
+        retries the import. A failed load disposes its lease (the registry forgets the platform), so without
+        this a load that raised or overran its deadline at startup stays down until a forced re-discovery
+        (#126356). True when a loader was re-armed."""
+        with self._discovery_lock:
+            failed = next((p.manifest for p in self._plugins.values()
+                           if p.error and not p.enabled and p.manifest.kind == "platform"
+                           and self._platform_name_from_manifest(p.manifest) == platform_name), None)
+            if failed is None:
+                return False
+            logger.info("Re-arming failed platform plugin load: %s", platform_name)
+            self._register_deferred_platform(failed)
+            return True
+
     @_serialized_replacement
     def _lease_deferred_platform(self, manifest: PluginManifest, lookup_key: str) -> bool:
         """Publish the deferred loader as a ledger-owned lease; False when the registry refused it."""

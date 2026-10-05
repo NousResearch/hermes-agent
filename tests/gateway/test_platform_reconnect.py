@@ -359,6 +359,36 @@ class TestPlatformReconnectWatcher:
         assert info["next_retry"] > time.monotonic()
 
 
+    @pytest.mark.asyncio
+    async def test_failed_plugin_load_is_rearmed_by_the_watcher(self, monkeypatch):
+        """An unregistered plugin platform (its deferred load failed at startup) heals on the next watcher
+        tick: the adapter_unavailable branch re-arms the failed load instead of waiting for a manual
+        reload-plugins or restart (#126356)."""
+        import hermes_cli.plugins as plugins_mod
+
+        runner = _make_runner()
+        runner._update_platform_runtime_status = MagicMock()
+        runner._install_reconnected_adapter = AsyncMock()
+        platform = Platform("irc")  # bundled plugin platform (not a builtin adapter)
+        monkeypatch.setattr(runner, "_adapter_may_heal", lambda p, c: True)
+        runner._failed_platforms[platform] = {
+            "config": PlatformConfig(enabled=True), "attempts": 0, "next_retry": 0,
+        }
+        rearmed = []
+        manager = MagicMock()
+        manager.rearm_failed_platform.side_effect = lambda name: rearmed.append(name) or True
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: manager)
+        adapter = StubAdapter(platform=platform)
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: adapter if rearmed else None)
+
+        for _ in range(2):
+            runner._failed_platforms.get(platform, {})["next_retry"] = 0
+            await runner._reconnect_failed_platform(platform, time.monotonic())
+
+        assert rearmed == ["irc"]
+        runner._install_reconnected_adapter.assert_awaited_once_with(platform, adapter)
+
+
 # --- Runtime disconnection queueing ---
 
 class TestRuntimeDisconnectQueuing:

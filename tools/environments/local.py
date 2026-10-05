@@ -1071,7 +1071,7 @@ def sweep_dead_foreground_scopes(*, no_block: bool = False) -> int:
     effort: an unreachable manager, an unnameable unit, or a liveness answer that cannot be
     resolved means no stop, and enqueuing a stop is not proof the scope is gone.
     """
-    from tools.process_registry import _stop_systemd_unit, list_systemd_user_scope_units
+    from tools.process_registry_systemd import _stop_systemd_unit, list_systemd_user_scope_units
 
     swept = 0
     for unit in list_systemd_user_scope_units(f"{_FOREGROUND_SCOPE_PREFIX}-*.scope"):
@@ -1084,22 +1084,18 @@ def sweep_dead_foreground_scopes(*, no_block: bool = False) -> int:
 
 
 def stop_foreground_scopes(pid: int | None = None, *, no_block: bool = False) -> None:
-    """Stop foreground scopes: this process's at host exit, or a dead gateway's (crash sweep).
+    """Stop this process's foreground scopes at host exit, once any was issued.
 
-    ``pid`` names the gateway that *issued* the scopes. The host-exit funnel passes
-    nothing and therefore only runs once a scope was issued; the ExecStopPost sweep
-    passes the PID of the gateway that just died, because systemd unsets ``$MAINPID``
-    before that hook runs (``man systemd.service``: it is unset if the main process
-    exited by the time the stop commands are called). The PID stays in the glob either
-    way, so profiles sharing one user manager never stop each other's commands, and a
-    glob that matches nothing is a no-op (``systemctl stop`` exits 0).
+    The PID stays in the glob, so profiles sharing one user manager never stop each
+    other's commands, and a glob that matches nothing is a no-op (``systemctl stop``
+    exits 0). A dead gateway's scopes are swept by ``sweep_dead_foreground_scopes``.
+    The stop is enqueued, not awaited: a SIGTERM-ignoring escapee must not hold gateway
+    shutdown for the stop job's timeout.
     """
-    if pid is None:
-        if not _foreground_scope_issued:
-            return
-        pid = os.getpid()
-    from tools.process_registry import _stop_systemd_unit
-    _stop_systemd_unit(f"{_FOREGROUND_SCOPE_PREFIX}-{pid}-*.scope", no_block=no_block)
+    if not _foreground_scope_issued:
+        return
+    from tools.process_registry_systemd import _stop_systemd_unit
+    _stop_systemd_unit(f"{_FOREGROUND_SCOPE_PREFIX}-{os.getpid()}-*.scope", no_block=True)
 
 
 class LocalEnvironment(BaseEnvironment):
@@ -1244,7 +1240,7 @@ class LocalEnvironment(BaseEnvironment):
             failure = None if isinstance(exc, OSError) else exc
         unit = getattr(proc, "_hermes_scope_unit", None)
         if unit:
-            from tools.process_registry import _stop_systemd_unit
+            from tools.process_registry_systemd import _stop_systemd_unit
             if not _stop_systemd_unit(unit):
                 logger.debug(
                     "foreground scope %s could not be reaped; the unit may "

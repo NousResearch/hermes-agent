@@ -1263,7 +1263,7 @@ class TestCheckpoint:
         monkeypatch.setattr(registry, "_is_host_pid_alive", lambda *_args: False)
 
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), patch(
-            "tools.process_registry._stop_systemd_unit", return_value=False
+            "tools.process_registry_systemd._stop_systemd_unit", return_value=False
         ) as stop_unit:
             assert registry.recover_from_checkpoint() == 0
 
@@ -1287,7 +1287,7 @@ class TestCheckpoint:
         monkeypatch.setattr(registry, "_is_host_pid_alive", lambda *_args: False)
 
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint), patch(
-            "tools.process_registry._stop_systemd_unit", return_value=True
+            "tools.process_registry_systemd._stop_systemd_unit", return_value=True
         ) as stop_unit:
             assert registry.recover_from_checkpoint() == 0
 
@@ -2412,7 +2412,7 @@ class TestSystemdCgroupIsolation:
 
         with patch("subprocess.Popen", return_value=fake_proc), \
             patch("threading.Thread", return_value=broken_reader), \
-            patch("tools.process_registry._stop_systemd_unit", return_value=True) as stop_unit, \
+            patch("tools.process_registry_systemd._stop_systemd_unit", return_value=True) as stop_unit, \
             patch("os.killpg") as killpg, \
             patch.object(registry, "_write_checkpoint"):
             with pytest.raises(RuntimeError, match="reader failed"):
@@ -2494,7 +2494,7 @@ class TestSystemdCgroupIsolation:
 
         with patch.object(PtyProcess, "spawn", side_effect=fail_pty), \
             patch("subprocess.Popen", side_effect=fake_popen), \
-            patch("tools.process_registry._stop_systemd_unit", side_effect=fake_stop), \
+            patch("tools.process_registry_systemd._stop_systemd_unit", side_effect=fake_stop), \
             patch("threading.Thread", return_value=MagicMock()), \
             patch.object(registry, "_write_checkpoint"):
             session = registry.spawn_local("codex", cwd="/tmp", use_pty=True)
@@ -2534,7 +2534,7 @@ class TestSystemdCgroupIsolation:
             "spawn",
             side_effect=RuntimeError("PTY wrapper failed after scope creation"),
         ), patch("subprocess.Popen") as pipe_spawn, patch(
-            "tools.process_registry._stop_systemd_unit", return_value=False
+            "tools.process_registry_systemd._stop_systemd_unit", return_value=False
         ) as stop_unit:
             with pytest.raises(RuntimeError, match="could not be reaped"):
                 registry.spawn_local("codex", cwd="/tmp", use_pty=True)
@@ -2592,7 +2592,7 @@ class TestSystemdCgroupIsolation:
         terminated = []
         monkeypatch.setattr(registry, "_host_pid_is_ours", lambda pid, start: False)
         monkeypatch.setattr(registry, "_terminate_host_pid", lambda pid, start: terminated.append((pid, start)))
-        monkeypatch.setattr("tools.process_registry._stop_systemd_unit", lambda unit: stopped.append(unit) or True)
+        monkeypatch.setattr("tools.process_registry_systemd._stop_systemd_unit", lambda unit: stopped.append(unit) or True)
 
         with patch.object(registry, "_write_checkpoint"):
             result = registry.kill_process(session.id)
@@ -2877,7 +2877,7 @@ class TestSystemdCgroupIsolation:
         assert len(probe_calls) == 2
 
     def test_stop_systemd_unit_treats_absent_unit_as_clean(self, monkeypatch):
-        import tools.process_registry as pr
+        import tools.process_registry_systemd as process_registry_systemd
 
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemctl")
         monkeypatch.setattr(
@@ -2889,7 +2889,7 @@ class TestSystemdCgroupIsolation:
             ),
         )
 
-        assert pr._stop_systemd_unit("hermes-worker-gone.scope") is True
+        assert process_registry_systemd._stop_systemd_unit("hermes-worker-gone.scope") is True
 
 
 

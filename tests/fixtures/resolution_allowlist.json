@@ -555,7 +555,7 @@
     "kind": "bare_which"
   },
   {
-    "path": "tools/process_registry.py",
+    "path": "tools/process_registry_systemd.py",
     "symbol": "_stop_systemd_unit",
     "kind": "bare_which"
   },
@@ -565,7 +565,7 @@
     "kind": "bare_which"
   },
   {
-    "path": "tools/process_registry.py",
+    "path": "tools/process_registry_systemd.py",
     "symbol": "list_systemd_user_scope_units",
     "kind": "bare_which"
   },

@@ -52,8 +52,9 @@ class ProcessCheckpointMixin:
         were recovered as detached sessions."""
         from tools.process_registry import (
             ProcessSession, _CHECKPOINT_FIELDS, _checkpoint_path,
-            _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
+            _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS,
         )
+        from tools.process_registry_systemd import _stop_systemd_unit
 
         checkpoint_path = _checkpoint_path()
         if not checkpoint_path.exists():

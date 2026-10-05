@@ -1626,6 +1626,8 @@ class TestExecuteToolCalls:
         assert post_calls[0]["status"] == "cancelled"
         assert post_calls[0]["error_type"] == "keyboard_interrupt"
         assert json.loads(post_calls[0]["result"])["status"] == "cancelled"
+        # The hook sees the user-interrupt attribution, not the generic "Turn interrupted".
+        assert post_calls[0]["error_message"] == "Tool execution cancelled. User interrupt"
 
     def test_interrupt_skips_remaining(self, agent, monkeypatch):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")

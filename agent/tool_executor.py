@@ -1760,9 +1760,10 @@ def _run_sequential_call(
     except KeyboardInterrupt:
         if not dispatch.handles_keyboard_interrupt:
             raise
-        _spinner_result = ref.emit_cancelled(agent, tool_start_time)
+        # Publish the user-interrupt reason BEFORE emitting, so the hook sees it (as the concurrent path does).
         with contextlib.suppress(Exception):
             agent.interrupt("keyboard interrupt", tool_reason=_REASON_USER_INTERRUPT)
+        _spinner_result = ref.emit_cancelled(agent, tool_start_time)
         _append_skipped_tool_results(
             agent, messages, remaining_calls, ref.task_id,
             content=f"[Tool execution cancelled — {{name}} was skipped. {interrupt_skip_wording(agent)}]",

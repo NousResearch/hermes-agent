@@ -93,13 +93,15 @@ def _is_streamable_http_rejection(exc: BaseException) -> bool:
 _HTTP_REJECTION_BODY_CHARS = 300
 
 
-def _make_http_rejection_recorder(sink: dict):
+def _make_http_rejection_recorder(sink: dict, redaction_values=()):
     """httpx response hook for the owned Streamable HTTP client: remembers the last 4xx/5xx the server
     sent (status, method, URL, head of the body). mcp >= 2.0 folds a non-2xx whose body it cannot
     parse as a JSON-RPC error into the opaque ``-32603 Server returned an error response`` — the
     status and the server's own words (e.g. ``400 {"code":-32020,"message":"Unsupported
     MCP-Protocol-Version"}``) never reach the exception, so this is the only place they can be
-    observed. SSE bodies are never read (a stream would block the hook)."""
+    observed. SSE bodies are never read (a stream would block the hook). The URL and the whole
+    (transport-capped) body are redacted with the attempt's values BEFORE the excerpt is cut or its
+    whitespace collapsed: a reflected credential split by the cut could no longer be matched."""
 
     async def _record(response):
         if response.status_code < 400:
@@ -108,11 +110,13 @@ def _make_http_rejection_recorder(sink: dict):
         if response.headers.get("content-type", "").split(";")[0].strip().lower() != "text/event-stream":
             try:
                 raw = await response.aread()  # buffered: the SDK's own aread() afterwards sees the same bytes
-                body = " ".join(raw[:_HTTP_REJECTION_BODY_CHARS * 4].decode("utf-8", "replace").split())
+                text = _sanitize_error(raw.decode("utf-8", "replace"), redaction_values)
+                body = " ".join(text[:_HTTP_REJECTION_BODY_CHARS * 4].split())
             except Exception:  # the failure itself is still reported, just without the body
                 body = ""
         sink.update(status=response.status_code, method=response.request.method,
-                    url=str(response.request.url), body=body[:_HTTP_REJECTION_BODY_CHARS])
+                    url=_sanitize_error(str(response.request.url), redaction_values),
+                    body=body[:_HTTP_REJECTION_BODY_CHARS])
 
     return _record
 

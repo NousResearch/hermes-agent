@@ -577,7 +577,7 @@ class MCPServerTransportMixin:
         inner_transport = httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                **({"headers": headers} if headers else {}),
-                               "event_hooks": {"response": [_make_http_rejection_recorder(self._http_rejection)]},
+                               "event_hooks": {"response": [_make_http_rejection_recorder(self._http_rejection, self._redaction_values)]},
                                "transport": _make_mcp_body_cap_transport(httpx, inner_transport),
                                **_present(mounts=_mcp_proxy_mounts(httpx, url, ssl_verify, client_cert, self.name),
                                           auth=oauth_auth)}
@@ -603,7 +603,7 @@ class MCPServerTransportMixin:
         # publish another endpoint's identity alongside this session.
         self._resolved_identity = _registration._identity_digest(inputs)
         url, headers = inputs
-        logger.debug("MCP server '%s': connecting to %s", self.name, url)
+        logger.debug("MCP server '%s': connecting to %s", self.name, _sanitize_error(url, self._redaction_values))
         self._http_rejection = {}  # last 4xx/5xx the owned client saw this attempt (recorder hook)
         # Seed MCP-Protocol-Version (user override wins) from the HANDSHAKE version, not the latest: a
         # 2026-07-28 header routes the handshake-era ``initialize()`` onto the envelope ladder, which rejects it.
@@ -626,7 +626,10 @@ class MCPServerTransportMixin:
         except Exception as exc:
             # The SDK folds a non-2xx it cannot parse into ``-32603 Server returned an error response``;
             # the recorder hook kept the status/URL/body the server actually sent (#114350, #113359).
-            http_detail = _describe_http_failure(exc, self._http_rejection)
+            # The recorded URL and body can carry a credential rendered into the URL or reflected by
+            # the server: redact before it reaches a log line or a composed ConnectionError.
+            raw_detail = _describe_http_failure(exc, self._http_rejection)
+            http_detail = _sanitize_error(raw_detail, self._redaction_values)
             # SSE-only servers (or their load balancers) reject the Streamable HTTP chunked
             # ``initialize`` POST — with a 400-family status or an opaque SDK INTERNAL_ERROR —
             # previously a permanent failure with 0 active tools unless the user set
@@ -637,7 +640,7 @@ class MCPServerTransportMixin:
             # transport mismatch — ``_is_streamable_http_rejection`` matches neither), and never
             # with ``strict_redirect_headers`` (SSE cannot enforce that boundary).
             if (self._ever_connected or common[-1] or not _is_streamable_http_rejection(exc)):
-                if http_detail != str(_unwrap_exception_group(exc)):  # opaque SDK error + a recorded rejection
+                if raw_detail != str(_unwrap_exception_group(exc)):  # opaque SDK error + a recorded rejection
                     raise ConnectionError(f"MCP server '{self.name}': Streamable HTTP connect failed "
                                           f"({http_detail})") from exc
                 raise
@@ -656,7 +659,8 @@ class MCPServerTransportMixin:
                 raise ConnectionError(
                     f"MCP server '{self.name}': both Streamable HTTP and SSE transports failed "
                     f"(Streamable HTTP: {http_detail}; SSE: "
-                    f"{_unwrap_exception_group(sse_exc)}). Check the URL points at an MCP "
+                    f"{_sanitize_error(str(_unwrap_exception_group(sse_exc)), self._redaction_values)}). "
+                    "Check the URL points at an MCP "
                     "endpoint, or pin `transport: sse` if the server is SSE-only.") from sse_exc
 
     # -------------------------------------------------------------- discovery

@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { Arch, Packager, Platform, WinPackager } from 'app-builder-lib'
-import { afterEach, test } from 'vitest'
+import { afterEach, test, vi } from 'vitest'
 
 import builderConfig from '../electron-builder.config.cjs'
 
@@ -28,6 +28,30 @@ function tmpTree() {
   tmpDirs.push(dir)
   return dir
 }
+
+test('batch phase logs arrive before execution and completion logs only after success', async () => {
+  const root = tmpTree()
+  fs.writeFileSync(path.join(root, 'binary.exe'), 'inert signing fixture')
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+  try {
+    await batchSignAppTree(root, null, {
+      env: { AZURE_SIGN_ENDPOINT: 'https://test.invalid', AZURE_SIGN_ACCOUNT: 'account', AZURE_SIGN_PROFILE: 'profile' },
+      signtool: 'signtool.exe', dlib: 'dlib.dll', cache: null, mkdtemp: () => root,
+      exec: async (tool, args) => {
+        const messages = log.mock.calls.map(([message]) => message)
+        const phase = args[0] === 'sign' ? 'signing' : 'timestamping'
+        const completed = args[0] === 'sign' ? 'signed' : 'timestamped'
+        assert.ok(messages.some(message => message.includes(`${phase} batch 1/1`)))
+        assert.ok(!messages.some(message => message.includes(`${completed} batch 1/1`)))
+      }
+    })
+    const messages = log.mock.calls.map(([message]) => message)
+    assert.ok(messages.some(message => message.includes('signed batch 1/1')))
+    assert.ok(messages.some(message => message.includes('timestamped batch 1/1')))
+  } finally {
+    log.mockRestore()
+  }
+})
 
 test('getBinaries collects .exe and .dll recursively, case-insensitive, sorted', () => {
   const root = tmpTree()

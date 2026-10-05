@@ -2,9 +2,27 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import { sanitizeTree } from './sanitize-pe-signatures.mjs'
+
+test('a slow header scan reports its current file without logging every file', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pe-progress-'))
+  const times = [0, 4999, 5000, 5001, 9999, 10000]
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => times.shift())
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+  try {
+    for (let i = 0; i < 5; i++) fs.writeFileSync(path.join(root, `${i}.txt`), 'not PE')
+    assert.deepEqual(sanitizeTree(root), { scanned: 0, repaired: [] })
+    assert.equal(log.mock.calls.length, 2, 'report at each five-second boundary, not for each file')
+    assert.match(log.mock.calls[0][0], /checked 1 files .*checking 1\.txt/)
+    assert.match(log.mock.calls[1][0], /checked 4 files .*checking 4\.txt/)
+  } finally {
+    clock.mockRestore()
+    log.mockRestore()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
 
 for (const [magic, countOffset, securityOffset] of [[0x10b, 244, 280], [0x20b, 260, 296]]) {
   test(`tree sanitization preserves all bytes except dangling PE ${magic.toString(16)} directories`, () => {

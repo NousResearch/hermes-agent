@@ -207,6 +207,7 @@ export const tr: Translations = {
   },
 
   models: {
+    lastUsedModels: "Last 5 Models",
     modelsUsed: "Kullanılan Modeller",
     estimatedCost: "Tahmini Maliyet",
     tokens: "token",

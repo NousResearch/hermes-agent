@@ -207,6 +207,7 @@ export const it: Translations = {
   },
 
   models: {
+    lastUsedModels: "Last 5 Models",
     modelsUsed: "Modelli utilizzati",
     estimatedCost: "Costo stim.",
     tokens: "token",

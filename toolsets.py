@@ -70,6 +70,9 @@ _CODING_TOOLS = _core_without("image_generate", "text_to_speech", "cronjob_manag
 # Toolsets a CLIENT adds to its own sessions (tui_gateway/server.py::_gui_surface_toolsets), never
 # config: another surface lacking them made no configuration choice.
 CLIENT_SURFACE_TOOLSETS = frozenset({"project", "desktop_ui"})
+# Client-surface toolsets that cannot be disabled through configuration because they are required
+# for the client UI itself. Other client-surface toolsets, such as ``project``, remain governable.
+ALWAYS_ON_TOOLSETS = frozenset({"desktop_ui"})
 
 # Core toolset definitions: individual tools or references to other toolsets.
 TOOLSETS = {

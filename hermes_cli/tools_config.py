@@ -12,6 +12,7 @@ from hermes_cli.config import cfg_get, load_config, save_config, get_env_value
 from hermes_cli.nous_subscription import (
     NousSubscriptionFeatures, apply_nous_managed_defaults, get_nous_subscription_features)
 from hermes_cli.platforms import PLATFORMS as _PLATFORMS_REGISTRY
+from toolsets import ALWAYS_ON_TOOLSETS
 from hermes_cli.toolset_scope import (
     _TOOLSET_PLATFORM_RESTRICTIONS, toolset_allowed_for_platform as _toolset_allowed_for_platform)
 from hermes_cli.toolset_validation import parse_platform_toolsets_value
@@ -147,6 +148,8 @@ def _get_effective_configurable_toolsets():
         from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
         discover_plugins()  # idempotent — ensures plugins are loaded
         for entry in get_plugin_toolsets():
+            if entry[0] in ALWAYS_ON_TOOLSETS:
+                continue
             if entry[0] not in seen:
                 seen.add(entry[0])
                 result.append(entry)

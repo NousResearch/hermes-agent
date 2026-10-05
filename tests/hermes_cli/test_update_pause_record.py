@@ -713,3 +713,33 @@ def test_a_moved_head_holds_gateways_for_dependencies_only_where_a_launch_syncs_
     whole, why = pause_record.tree_is_whole(token, root)
     assert whole is not holds, why
     assert not holds or "dependencies" in why
+
+
+def test_an_unmoved_head_holds_gateways_only_for_paths_the_updates_move_could_write(tmp_path):
+    """Review 5411136378 decision (same HEAD): a tracked file a build/sync step rewrote is not git's
+    half-written checkout; holding the set for it kept gateways stopped on every later launch."""
+    origin, root = tmp_path / "origin", tmp_path / "checkout"
+    origin.mkdir()
+    _git(origin, "init", "-q")
+    for name in ("a.py", "b.lock"):
+        (origin / name).write_text("v1\n", encoding="utf-8")
+    _git(origin, "add", ".")
+    _git(origin, "commit", "-qm", "v1")
+    _git(tmp_path, "clone", "-q", str(origin), str(root))
+    (origin / "a.py").write_text("v2\n", encoding="utf-8")
+    _git(origin, "commit", "-qam", "v2")  # the update's target changes a.py only
+    token = pause_record.stamp_tree({"resume_needed": True}, root)
+    _git(root, "fetch", "-q", "origin")
+
+    (root / "b.lock").write_text("rewritten by the dependency sync\n", encoding="utf-8")
+    assert pause_record.tree_is_whole(token, root) == (True, ""), "a build rewrite held the set"
+    (root / "a.py").write_text("v2 half\n", encoding="utf-8")  # git wrote a path of the move, died before HEAD
+    whole, why = pause_record.tree_is_whole(token, root)
+    assert not whole and "a.py" in why, why
+
+    # A no-op update (HEAD already at the target) that ran its build: nothing git could write.
+    _git(root, "checkout", "-q", "--", "a.py", "b.lock")
+    _git(root, "merge", "-q", "--ff-only", "origin/HEAD")
+    token = pause_record.stamp_tree({"resume_needed": True}, root)
+    (root / "b.lock").write_text("rewritten by the dependency sync\n", encoding="utf-8")
+    assert pause_record.tree_is_whole(token, root) == (True, "")

@@ -210,6 +210,54 @@ def stamp_tree(token: dict, root: Path | None = None) -> dict:
     return token
 
 
+_MAX_MOVE_TARGETS = 16
+
+
+def _paths_a_move_could_write(root: Path) -> set[str] | None:
+    """Tracked paths an update's checkout move could have written while HEAD stayed put: the ones
+    that differ between HEAD and a commit the checkout fetched (``FETCH_HEAD``) or tracks
+    (``refs/remotes``) — a fast-forward, reset or merge only writes those. ``None`` when git cannot
+    say or nothing was fetched (the move's target is then unknown)."""
+    where = _git(root, "rev-parse", "--git-path", "FETCH_HEAD")
+    refs = _git(root, "for-each-ref", "--format=%(objectname)", "refs/remotes")
+    if where is None or where.returncode != 0 or refs is None or refs.returncode != 0:
+        return None
+    try:
+        fetched = (root / where.stdout.strip()).read_text(encoding="utf-8-sig", errors="replace").split("\n")
+    except FileNotFoundError:
+        fetched = []
+    except OSError:
+        return None
+    targets = {line.split()[0] for line in fetched if line.split()} | set(refs.stdout.split())
+    if not targets or len(targets) > _MAX_MOVE_TARGETS:
+        return None
+    paths: set[str] = set()
+    for target in sorted(targets):
+        diff = _git(root, "diff", "--name-only", "-z", "--no-renames", "HEAD", target, "--")
+        if diff is None or diff.returncode != 0:
+            return None
+        paths.update(filter(None, diff.stdout.split("\0")))
+    return paths
+
+
+def _half_written(root: Path, changes: list[str], at_head: list[dict]) -> list[str]:
+    """Tracked changes at an unmoved HEAD that git may have left half-written, for the first
+    baseline that has any. A change the pause did not see counts only on a path the update's move
+    could write: a build/sync step (or the user) rewriting any other tracked file is not git's
+    doing, and holding the set for it would keep gateways stopped until someone cleans the file.
+    When the move's target is unknown every unseen change still counts."""
+    writable: set[str] | None = None
+    probed = False
+    for baseline in at_head:
+        unexpected = sorted(set(changes) - set(baseline.get("dirty_at_pause") or []))
+        if unexpected and not probed:
+            writable, probed = _paths_a_move_could_write(root), True
+        torn = unexpected if writable is None else [path for path in unexpected if path in writable]
+        if torn:
+            return torn
+    return []
+
+
 def _deps_hold_resume(root: Path) -> bool:
     """At a moved HEAD: are stale dependencies a reason to keep the paused set stopped?
 
@@ -251,10 +299,9 @@ def tree_is_whole(token: dict, root: Path | None = None) -> tuple[bool, str]:
             changes = tracked_changes(root)
             if changes is None:
                 return False, "git cannot read the checkout state"
-            for baseline in at_head:
-                unexpected = sorted(set(changes) - set(baseline.get("dirty_at_pause") or []))
-                if unexpected:
-                    return False, f"the checkout has {len(unexpected)} file(s) git left half-written (e.g. {unexpected[0]})"
+            torn = _half_written(root, changes, at_head)
+            if torn:
+                return False, f"the checkout has {len(torn)} file(s) git left half-written (e.g. {torn[0]})"
             return True, ""
     if _deps_hold_resume(root):
         return False, "dependencies are not current for the updated code yet"

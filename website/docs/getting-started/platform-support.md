@@ -43,7 +43,7 @@ That coverage does not change the Tier 1 priority assigned to Apple Silicon.
 The `Hermes-Setup.dmg` bootstrap installer is the exception: it is built for
 Apple Silicon (`arm64`) only, so on an Intel Mac it reports "not supported on
 this Mac". Intel Macs use the `darwin-x64` desktop bundle instead, or install
-the [CLI](./installation.md#linux--macos--wsl2--android-termux) and run
+the [CLI](./installation.md#linux--macos--wsl2) and run
 `hermes desktop`.
 Linux desktop packaging is disabled in the release workflow, although local
 AppImage builds and native Linux PM bundle checks exist.

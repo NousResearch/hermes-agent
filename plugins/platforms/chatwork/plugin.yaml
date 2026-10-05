@@ -1,0 +1,51 @@
+name: chatwork-platform
+label: Chatwork
+kind: platform
+version: 1.0.0
+description: >
+  Chatwork gateway adapter for Hermes Agent. Receives signature-verified
+  Chatwork Webhook events and sends replies through Chatwork API v2.
+author: Hermes Agent contributors
+requires_env:
+  - name: CHATWORK_API_TOKEN
+    description: "Chatwork API token used to read account/room metadata and send messages"
+    prompt: "Chatwork API token"
+    url: "https://www.chatwork.com/service/packages/chatwork/subpackages/api/token.php"
+    password: true
+  - name: CHATWORK_WEBHOOK_TOKEN
+    description: "Webhook token shown in Chatwork's webhook settings; used for HMAC-SHA256 verification"
+    prompt: "Chatwork webhook token"
+    password: true
+optional_env:
+  - name: CHATWORK_ALLOWED_USERS
+    description: "Comma-separated Chatwork account IDs allowed to use Hermes"
+    prompt: "Allowed account IDs (comma-separated)"
+    password: false
+  - name: CHATWORK_ALLOW_ALL_USERS
+    description: "Allow any Chatwork account to use Hermes (development only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: CHATWORK_ALLOWED_ROOMS
+    description: "Optional comma-separated room IDs whose webhook messages are accepted"
+    prompt: "Allowed room IDs (comma-separated)"
+    password: false
+  - name: CHATWORK_HOME_CHANNEL
+    description: "Default Chatwork room ID for cron and proactive delivery"
+    prompt: "Home room ID"
+    password: false
+  - name: CHATWORK_HOME_CHANNEL_NAME
+    description: "Display name for the Chatwork home room"
+    prompt: "Home room name"
+    password: false
+  - name: CHATWORK_HOST
+    description: "Webhook bind host (default: 0.0.0.0)"
+    prompt: "Webhook host"
+    password: false
+  - name: CHATWORK_PORT
+    description: "Webhook listen port (default: 8647)"
+    prompt: "Webhook port"
+    password: false
+  - name: CHATWORK_WEBHOOK_PATH
+    description: "Webhook URL path (default: /chatwork/webhook)"
+    prompt: "Webhook path"
+    password: false

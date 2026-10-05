@@ -777,6 +777,7 @@ class TestSecondaryProfileConfigHandling:
             "bluebubbles",
             "sms",
             "whatsapp_cloud",
+            "chatwork",
             "line",
         ):
             assert p in _PORT_BINDING_PLATFORM_VALUES

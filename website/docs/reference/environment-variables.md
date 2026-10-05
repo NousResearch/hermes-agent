@@ -572,6 +572,24 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 | `LINE_DELIVERED_TEXT` | Reply when an already-delivered postback is tapped again (default: `Already replied ✅`). |
 | `LINE_INTERRUPTED_TEXT` | Reply when a `/stop`-orphaned postback button is tapped (default: `Run was interrupted before completion.`). |
 
+### Chatwork
+
+Used by the bundled Chatwork platform plugin (`plugins/platforms/chatwork/`). See [Messaging Gateway → Chatwork](/user-guide/messaging/chatwork) for full setup.
+
+| Variable | Description |
+|----------|-------------|
+| `CHATWORK_API_TOKEN` | Chatwork API v2 token. Required. |
+| `CHATWORK_WEBHOOK_TOKEN` | Base64 webhook token used to verify `x-chatworkwebhooksignature`. Required. |
+| `CHATWORK_ALLOWED_USERS` | Comma-separated Chatwork account IDs allowed to use Hermes. |
+| `CHATWORK_ALLOW_ALL_USERS` | Allow any Chatwork account to use Hermes (development only). |
+| `CHATWORK_ALLOWED_ROOMS` | Optional comma-separated room IDs whose webhook events are accepted. |
+| `CHATWORK_HOME_CHANNEL` | Default room ID for cron and proactive delivery. |
+| `CHATWORK_HOME_CHANNEL_NAME` | Display name for the home room. |
+| `CHATWORK_HOST` | Webhook bind host (default: `0.0.0.0`). |
+| `CHATWORK_PORT` | Webhook bind port (default: `8647`). |
+| `CHATWORK_WEBHOOK_PATH` | Webhook path (default: `/chatwork/webhook`). |
+| `CHATWORK_API_BASE` | Chatwork API base override for tests or private proxies. |
+
 ### ntfy (push notifications)
 
 [ntfy](https://ntfy.sh/) is a lightweight HTTP-based push notification service. Subscribe to a topic from the [ntfy mobile app](https://ntfy.sh/docs/subscribe/phone/), publish to that topic to talk to the agent.

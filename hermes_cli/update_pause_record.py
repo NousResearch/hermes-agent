@@ -13,7 +13,7 @@ says nothing about the other tree.
 
 Resuming is gated on a whole tree: no interrupted-pull marker; at the pre-update HEAD, no tracked
 change beyond the ones present at pause time (git died before moving HEAD); at a moved HEAD,
-dependencies current for it (a build step may rewrite tracked files there). Every pause folded into
+dependencies current for it where a launch syncs them (a build step may rewrite tracked files there). Every pause folded into
 a record keeps its own baseline (``baselines``): each one taken at the current HEAD must hold.
 Otherwise the record stays for the next launch, which runs after the interrupted-pull restore and
 the dependency sync.
@@ -210,11 +210,26 @@ def stamp_tree(token: dict, root: Path | None = None) -> dict:
     return token
 
 
-def _venv_is_current(root: Path) -> bool:
+def _deps_hold_resume(root: Path) -> bool:
+    """At a moved HEAD: are stale dependencies a reason to keep the paused set stopped?
+
+    Only where waiting converges. A self-managed install (``updateMechanism: self``) syncs its
+    dependencies at the start of every launch (``venv_sync.prepare_launch``), before startup
+    recovery runs, so a deferred set comes back on the next launch. Anywhere else nothing a launch
+    does makes them current (a developer checkout owns its own venv): the set resumes now, as it
+    did before the pause was durable, and a currency the probe cannot establish never holds it
+    either — the restarted gateway's own launch syncs or reports the remedy.
+    """
+    if (os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")
+            or not (root / ".git").exists() or not (root / "pyproject.toml").is_file()):
+        return False  # prepare_launch skips the sync: waiting would never end
     try:
+        from hermes_cli.steward import read_install_stamp
+        if read_install_stamp(root).get("updateMechanism") != "self":
+            return False
         import pm
-        return bool(pm.venv_is_current(project_root=root))
-    except Exception:  # health: allow BLE001 -- fail closed: any error reading the venv state means "not current", so paused gateways stay stopped
+        return not pm.venv_is_current(project_root=root)
+    except Exception:  # health: allow BLE001 -- unknown currency must not strand the set: resume, the gateway's own launch syncs or names the remedy
         return False
 
 
@@ -241,7 +256,7 @@ def tree_is_whole(token: dict, root: Path | None = None) -> tuple[bool, str]:
                 if unexpected:
                     return False, f"the checkout has {len(unexpected)} file(s) git left half-written (e.g. {unexpected[0]})"
             return True, ""
-    if not _venv_is_current(root):
+    if _deps_hold_resume(root):
         return False, "dependencies are not current for the updated code yet"
     return True, ""
 

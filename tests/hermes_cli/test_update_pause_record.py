@@ -106,12 +106,12 @@ def test_resume_waits_for_a_whole_tree(tmp_path):
     assert pause_record.tree_is_whole(token, root)[0] is False
     marker.unlink()
 
-    _git(root, "commit", "-qam", "v2")  # HEAD moved: only a dependency sync for it makes it whole
+    _git(root, "commit", "-qam", "v2")  # HEAD moved: judged on its dependencies alone
     (root / "b.py").write_text("rewritten by a build step\n", encoding="utf-8")
-    whole, why = pause_record.tree_is_whole(token, root)
-    # A committed update is judged on its dependencies alone; a tracked file the build rewrote
-    # must not keep the gateways stopped on every later launch.
-    assert not whole and "dependencies" in why, why
+    # A committed update: a tracked file the build rewrote must not keep the gateways stopped on
+    # every later launch, and on a checkout whose launches never sync dependencies (this one has
+    # no install stamp) waiting for them would never end either (review 5411136378).
+    assert pause_record.tree_is_whole(token, root) == (True, "")
 
 
 def test_an_update_adopting_an_orphan_never_certifies_the_tree_it_left_torn(tmp_path, monkeypatch):
@@ -149,7 +149,7 @@ def test_an_adopted_baseline_never_replaces_this_runs_own(tmp_path, monkeypatch)
                        owner=pause_record.UNOWNED)
     (root / "a.py").write_text("v2\n", encoding="utf-8")
     _git(root, "commit", "-qam", "Y")  # the killed update moved HEAD, synced Y's dependencies, then died
-    monkeypatch.setattr(pause_record, "_venv_is_current", lambda root: True)
+    monkeypatch.setattr(pause_record, "_deps_hold_resume", lambda root: False)
 
     adopted, claims = pause_record.adopt_orphans()
     token = pause_record.record_pause({"resume_needed": True, "profiles": {"beta": 99}}, adopted, claims)
@@ -685,3 +685,31 @@ def test_the_tree_gate_finds_pm_git_and_runs_it_in_the_updaters_custody(tmp_path
     monkeypatch.setenv("PATH", str(tmp_path / "no-git"))
     assert pause_record.head_sha(root) == head
     assert ran == [pm_git], "the gate's git bypassed update_custody.run_git"
+
+
+@pytest.mark.parametrize("mechanism, probe, holds", [
+    ("self", lambda **kw: False, True),  # the next launch syncs first: deferring converges
+    ("self", lambda **kw: True, False),
+    ("self", lambda **kw: (_ for _ in ()).throw(ValueError("invalid recorded dependency state")), False),
+    (None, lambda **kw: False, False),  # nothing a launch does makes them current: main resumed
+])
+def test_a_moved_head_holds_gateways_for_dependencies_only_where_a_launch_syncs_them(
+        tmp_path, monkeypatch, mechanism, probe, holds):
+    """Review 5411136378 decision (moved HEAD): stale dependencies defer the resume only where the
+    next launch makes them current; an unknown currency never strands a committed update's set."""
+    import pm
+    from hermes_cli import steward
+    root = tmp_path / "checkout"
+    root.mkdir()
+    _git(root, "init", "-q")
+    (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "v1")
+    token = pause_record.stamp_tree({"resume_needed": True}, root)
+    _git(root, "commit", "-q", "--allow-empty", "-m", "v2")  # the update moved HEAD
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setattr(steward, "read_install_stamp", lambda r: {"updateMechanism": mechanism} if mechanism else {})
+    monkeypatch.setattr(pm, "venv_is_current", probe)
+    whole, why = pause_record.tree_is_whole(token, root)
+    assert whole is not holds, why
+    assert not holds or "dependencies" in why

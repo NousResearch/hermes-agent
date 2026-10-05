@@ -714,8 +714,8 @@ def _transcript_tool_call(raw: Any) -> tuple[dict[str, Any], bool]:
     fn = raw.get("function") if isinstance(raw.get("function"), dict) else raw
     arguments, truncated = _transcript_text(fn.get("arguments"), _TRANSCRIPT_TOOL_CAP)
     return {
-        "id": str(raw.get("id") or ""),
-        "name": str(fn.get("name") or ""),
+        "id": _sanitize_log(str(raw.get("id") or "")),
+        "name": _sanitize_log(str(fn.get("name") or "")),
         "arguments": arguments or "",
     }, truncated
 
@@ -744,8 +744,8 @@ def _transcript_message(msg: dict[str, Any]) -> dict[str, Any]:
         "content": content,
         "reasoning": reasoning,
         "tool_calls": tool_calls,
-        "tool_name": msg.get("tool_name"),
-        "tool_call_id": msg.get("tool_call_id"),
+        "tool_name": _transcript_text(msg.get("tool_name"), _TRANSCRIPT_TOOL_CAP)[0],
+        "tool_call_id": _transcript_text(msg.get("tool_call_id"), _TRANSCRIPT_TOOL_CAP)[0],
         "timestamp": msg.get("timestamp"),
         "truncated": truncated,
     }

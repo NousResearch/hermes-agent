@@ -808,3 +808,19 @@ def test_transcript_steps_keep_their_uid_when_compaction_renumbers_them(
     again = client.get(url, params={"after_id": first["next_after_id"]}).json()["messages"]
     repeat = [m for m in again if m["content"] == "step 2"]
     assert repeat and seen[repeat[0]["uid"]] == "step 2"
+
+
+def test_task_list_reports_links_and_a_cut_page(client: TestClient) -> None:
+    parent = _create(client, idempotency_key="list-parent")["task"]["id"]
+    child = _create(client, idempotency_key="list-child", parents=[parent])["task"]["id"]
+
+    full = client.get("/api/plugins/kanban/v1/tasks").json()
+    assert full["has_more"] is False
+    # The list and the single-task read describe the same graph.
+    for task in full["tasks"]:
+        assert task["links"] == client.get(
+            f"/api/plugins/kanban/v1/tasks/{task['id']}").json()["task"]["links"]
+    assert {t["id"]: t["links"] for t in full["tasks"]}[parent]["children"] == [child]
+
+    cut = client.get("/api/plugins/kanban/v1/tasks", params={"limit": 1}).json()
+    assert cut["count"] == 1 and cut["has_more"] is True

@@ -217,7 +217,12 @@ def _board_dto(meta: dict[str, Any], *, current: str) -> dict[str, Any]:
     }
 
 
-def _task_dto(conn: sqlite3.Connection, task: kanban_db.Task) -> dict[str, Any]:
+def _task_dto(
+    conn: sqlite3.Connection, task: kanban_db.Task, graph: Optional[dict[str, dict]] = None,
+) -> dict[str, Any]:
+    """``graph``: ``task_graph_contexts`` for a whole page, so a list costs two link queries
+    instead of two per task."""
+    links = (graph or kanban_db.task_graph_contexts(conn, [task.id]))[task.id]
     return {
         "id": task.id,
         "title": task.title,
@@ -237,8 +242,8 @@ def _task_dto(conn: sqlite3.Connection, task: kanban_db.Task) -> dict[str, Any]:
         "current_step_key": task.current_step_key,
         "block_kind": task.block_kind,
         "links": {
-            "parents": kanban_db.parent_ids(conn, task.id),
-            "children": kanban_db.child_ids(conn, task.id),
+            "parents": [link["id"] for link in links["parents"]],
+            "children": [link["id"] for link in links["children"]],
         },
     }
 
@@ -388,12 +393,15 @@ def list_tasks(
                 assignee=assignee,
                 tenant=tenant,
                 include_archived=include_archived,
-                limit=limit,
+                limit=limit + 1,
             )
-            items = [_task_dto(conn, task) for task in tasks]
+            has_more = len(tasks) > limit
+            tasks = tasks[:limit]
+            graph = kanban_db.task_graph_contexts(conn, [task.id for task in tasks])
+            items = [_task_dto(conn, task, graph) for task in tasks]
     except ValueError as exc:
         raise _client_error(exc, fallback="invalid task filter") from exc
-    return {"tasks": items, "count": len(items), "limit": limit}
+    return {"tasks": items, "count": len(items), "limit": limit, "has_more": has_more}
 
 
 @router.post("/tasks", status_code=201)

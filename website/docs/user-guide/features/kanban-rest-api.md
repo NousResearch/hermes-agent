@@ -91,7 +91,10 @@ operator note.
 
 All task endpoints accept `?board=<board-id>`. Omit it to use the current board.
 `GET /tasks` also supports `status`, `assignee`, `tenant`, `include_archived`,
-and `limit` filters.
+and `limit` filters. `limit` is at most 200 and there is no cursor: when the
+response says `has_more: true`, more tasks match than were returned, so narrow
+the filters. For totals, use the per-status `counts` on `GET /boards`, not the
+length of this list.
 
 `POST /tasks` accepts an `Idempotency-Key` header or an `idempotency_key` JSON
 field. Repeating a request with the same key returns the existing non-archived

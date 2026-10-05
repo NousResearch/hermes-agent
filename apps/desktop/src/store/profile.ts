@@ -56,6 +56,10 @@ export function profileLabel(profile: Pick<ProfileInfo, 'display_name' | 'name'>
 // preference (which may be unset) lives in the Electron main process.
 export const $activeProfile = atom<string>('default')
 
+// #132185 companion: the explicit profile-switch path stamps this before the
+// teardown+reload; the boot-time connection restore reads and consumes it.
+const PROFILE_SWITCH_STAMP_KEY = 'hermes.desktop.profileSwitch'
+
 // Cached profile list for the picker. Refreshed lazily; the dropdown also
 // re-fetches on open so a profile created elsewhere shows up.
 const NO_PROFILES: ProfileInfo[] = []
@@ -279,6 +283,18 @@ export async function switchProfile(name: string): Promise<void> {
     return
   }
 
+  // #132185: the explicit profile switch tears down the primary backend and
+  // reloads the window. When the primary is the remote (VPS) connection, the
+  // boot-time restore in initializeConnectionsRegistry then re-selects it and
+  // the user is thrown back to the VPS — discarding the local gateway they
+  // just chose. Stamp the reload so the restore can see this reload is a
+  // profile switch on the connection the user is ALREADY on, and keep it.
+  try {
+    sessionStorage.setItem(PROFILE_SWITCH_STAMP_KEY, String(Date.now()))
+  } catch {
+    // No storage (private mode etc.): restore behaves exactly as before.
+  }
+
   setActiveProfile(name)
   await window.hermesDesktop.profile.set(name)
 }
@@ -325,6 +341,30 @@ export const $newChatConnectionId = atom<null | string>(null)
 // a remote source is still active. Ordinary profile picks retain their existing
 // source policy; only this pinned intent suppresses the ambient fallback.
 let legacyNewChatProfile: null | string = null
+
+// #132185: consume the switch stamp written by switchProfile() before the
+// teardown+reload. One read-and-clear = exactly one protected restore, and a
+// stamp older than the reload tolerance is ignored as stale.
+const PROFILE_SWITCH_STAMP_MAX_AGE_MS = 60_000
+
+export function wasJustProfileSwitched(): boolean {
+  let raw: string | null = null
+
+  try {
+    raw = sessionStorage.getItem(PROFILE_SWITCH_STAMP_KEY)
+    sessionStorage.removeItem(PROFILE_SWITCH_STAMP_KEY)
+  } catch {
+    return false
+  }
+
+  const ts = Number(raw)
+
+  return (
+    Number.isFinite(ts) &&
+    ts > 0 &&
+    Date.now() - ts <= PROFILE_SWITCH_STAMP_MAX_AGE_MS
+  )
+}
 
 // Bumped by every new-chat owner intent (each one captures its source). Async
 // work that re-homes the draft late compares it to tell a newer intent from

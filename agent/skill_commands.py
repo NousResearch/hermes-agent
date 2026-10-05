@@ -447,7 +447,11 @@ def _warn_scan_once(key: tuple, msg: str, *args: Any) -> None:
 
     Skill scans re-run on every session start and index rebuild, so a per-scan warning repeats
     for the lifetime of the process. The first occurrence keeps its WARNING — the condition is
-    still real and actionable — repeats are dropped."""
+    still real and actionable — repeats are dropped.
+
+    *key* must cover every fact the message states, or a changed fact is swallowed as a repeat:
+    when the skill that owns a slug changes between scans, "already claimed by Y" is new
+    information the operator needs, so the incumbent is part of that key."""
     if key not in _SCAN_WARNED:
         _SCAN_WARNED.add(key)
         logger.warning(msg, *args)
@@ -487,7 +491,9 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dic
     cmd_key = f"/{cmd_name}"
     if cmd_key in commands:
         _warn_scan_once(
-            ("slug", cmd_key, name),
+            # Incumbent in the key: the message names the skill that owns the slug, so a new
+            # owner between scans is a new fact and must warn again.
+            ("slug", cmd_key, name, commands[cmd_key]["name"]),
             "Skill %r maps to slash command %s already claimed by %r; keeping the first and skipping this one.",
             name, cmd_key, commands[cmd_key]["name"],
         )

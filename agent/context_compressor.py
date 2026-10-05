@@ -4406,7 +4406,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
     @classmethod
-    def _starts_with_summary_prefix(cls, text: str, paraphrased: bool = True) -> bool:
+    def _starts_with_summary_prefix(cls, text: str, paraphrased: bool = False) -> bool:
         """Return True if *text* begins with any known handoff prefix, or (when
         *paraphrased*) with the bracketed compaction marker followed by compaction
         vocabulary in the opening window (model-paraphrased handoff, #132934)."""
@@ -4433,10 +4433,11 @@ Write only the summary body. Do not include any preamble or prefix."""
         return any(token in window for token in _PARAPHRASED_HANDOFF_TOKENS)
 
     @classmethod
-    def classify_summary_content(cls, content: Any, paraphrased: bool = True) -> Optional[str]:
+    def classify_summary_content(cls, content: Any, paraphrased: bool = False) -> Optional[str]:
         """Classify how *content* relates to a compaction summary.
         Returns ``"standalone"`` (whole message is a handoff), ``"merged"`` (preserved content +
-        delimiter + summary body), or None. *paraphrased* enables the marker+vocabulary fallback."""
+        delimiter + summary body), or None. *paraphrased* enables the marker+vocabulary fallback;
+        pass it only for rows known to be model output (a user may paste the marker)."""
         text = _content_text_for_contains(content).lstrip()
         # Merged summaries carry the handoff prefix after the delimiter; detect it there too.
         if _MERGED_SUMMARY_DELIMITER in text:
@@ -4445,7 +4446,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         return "standalone" if cls._starts_with_summary_prefix(text, paraphrased) else None
 
     @classmethod
-    def _is_context_summary_content(cls, content: Any, paraphrased: bool = True) -> bool:
+    def _is_context_summary_content(cls, content: Any, paraphrased: bool = False) -> bool:
         return cls.classify_summary_content(content, paraphrased) is not None
 
     @staticmethod
@@ -5982,7 +5983,7 @@ def reference_handoff_would_drive_next_model_call(messages: Optional[List[Dict[s
             continue
         merged_completed_assistant = (
             isinstance(message, dict) and message.get("role") == "assistant"
-            and ContextCompressor.classify_summary_content(message.get("content")) == "merged"
+            and ContextCompressor.classify_summary_content(message.get("content"), paraphrased=True) == "merged"
             and message.get("finish_reason") == "stop" and not message.get("tool_calls")
         )
         # Embedded live ask or pending tool_calls -> not a sole-handoff driver.

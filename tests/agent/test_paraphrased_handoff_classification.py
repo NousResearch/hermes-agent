@@ -3,6 +3,7 @@ classify as a summary row instead of being published as an ordinary assistant re
 
 import pytest
 
+from acp_adapter.server import _history_summary_meta
 from agent.context_compressor import (
     _HANDOFF_MARKER_PREFIX,
     _MERGED_SUMMARY_DELIMITER,
@@ -21,20 +22,26 @@ PARAPHRASED_HANDOFF = (
 )
 
 
+def _acp_tags_summary(message):
+    return _history_summary_meta(message, message["content"]) is not None
+
+
 @pytest.mark.parametrize(
-    ("role", "content", "expected"),
+    ("is_summary", "role", "content", "expected"),
     [
-        ("assistant", PARAPHRASED_HANDOFF, True),
-        ("assistant", "live tail " + _MERGED_SUMMARY_DELIMITER + "\n" + PARAPHRASED_HANDOFF, True),
-        ("assistant", _HANDOFF_MARKER_PREFIX + " is the header string; formatting only.", False),
-        ("assistant", _HANDOFF_MARKER_PREFIX + " is the marker; the summary follows it.", False),
+        (is_compaction_summary_message, "assistant", PARAPHRASED_HANDOFF, True),
+        (is_compaction_summary_message, "assistant", "live tail " + _MERGED_SUMMARY_DELIMITER + "\n" + PARAPHRASED_HANDOFF, True),
+        (is_compaction_summary_message, "assistant", _HANDOFF_MARKER_PREFIX + " is the header string; formatting only.", False),
+        (is_compaction_summary_message, "assistant", _HANDOFF_MARKER_PREFIX + " is the marker; the summary follows it.", False),
         # A user pasting a handoff is still a real user turn, not a synthetic summary row.
-        ("user", PARAPHRASED_HANDOFF, False),
+        (is_compaction_summary_message, "user", PARAPHRASED_HANDOFF, False),
+        # ...including on ACP history replay, which classifies content without the message helper.
+        (_acp_tags_summary, "user", PARAPHRASED_HANDOFF, False),
     ],
-    ids=["paraphrased", "merged", "quoted-no-vocab", "quoted-generic-vocab", "user-paste"],
+    ids=["paraphrased", "merged", "quoted-no-vocab", "quoted-generic-vocab", "user-paste", "acp-user-paste"],
 )
-def test_paraphrased_handoff_classification(role, content, expected):
-    assert is_compaction_summary_message({"role": role, "content": content}) is expected
+def test_paraphrased_handoff_classification(is_summary, role, content, expected):
+    assert is_summary({"role": role, "content": content}) is expected
 
 
 def test_adopted_paraphrased_echo_is_not_double_wrapped():

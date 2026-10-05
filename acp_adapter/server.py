@@ -86,7 +86,7 @@ def _history_summary_meta(message: dict[str, Any], text: str) -> dict[str, Any] 
     preserved tail message. Two keys so clients can't hide real content: ``compactionSummary``
     (whole chunk; safe to collapse) vs ``containsCompactionSummary`` (real content + summary).
     Uses the in-process flag, falling back to content classification for DB-reloaded sessions."""
-    kind = ContextCompressor.classify_summary_content(text)
+    kind = ContextCompressor.classify_summary_content(text, paraphrased=message.get("role") != "user")
     if kind is None and message.get(COMPRESSED_SUMMARY_METADATA_KEY):
         # Flagged but unclassified (prefix drift): the flag only marks summaries -> standalone.
         kind = "standalone"

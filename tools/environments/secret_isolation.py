@@ -34,8 +34,14 @@ _PARENT_HARDENED = False
 
 
 def _security_config() -> dict:
-    from hermes_cli.config import load_config_readonly
-    return load_config_readonly().get("security") or {}
+    """The ``security`` section; pinned to ``require`` when config cannot be read, so an
+    unreadable config fails closed instead of weakening isolation."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        return load_config_readonly().get("security") or {}
+    except Exception:
+        logger.warning("terminal secret isolation: config unreadable, enforcing 'require'", exc_info=True)
+        return {"terminal_secret_isolation": "require"}
 
 
 def isolation_mode() -> str:
@@ -64,15 +70,21 @@ def _harden_parent() -> None:
 
 def wrap_argv(argv: list[str]) -> list[str]:
     """Return *argv* wrapped in the Landlock helper per the configured mode."""
-    mode = isolation_mode()
-    if mode == "off":
-        return list(argv)
     if not sys.platform.startswith("linux"):
         if sys.platform not in _WARNED:
             _WARNED.add(sys.platform)
             logger.warning("terminal secret isolation is not implemented on %s: the agent's shell can "
                            "read Hermes secrets on this host", sys.platform)
         return list(argv)
+    mode = isolation_mode()
+    if mode == "off":
+        return list(argv)
+    if mode == "auto" and "landlock" not in _WARNED:
+        _WARNED.add("landlock")
+        from tools.environments.landlock_exec import abi_version
+        if abi_version() < 1:
+            logger.warning("terminal secret isolation: Landlock is unavailable on this host, so agent commands "
+                           "run unprotected; set security.terminal_secret_isolation: require to refuse them")
     from agent.file_safety import terminal_protected_paths
     _harden_parent()
     no_access, read_only = terminal_protected_paths()

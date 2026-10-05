@@ -1264,7 +1264,9 @@ def _service_gateway_ready(name: str, profile: str | None, timeout_s: float | No
             return []
         owned = []
         for pid in pids:
-            with suppress(Exception):
+            # A gateway that exited or a process tree psutil cannot read is not the service's; any
+            # other error is a bug the resume boundary reports, not a silent "not under service".
+            with suppress(psutil.Error, OSError):
                 if service_pid and service_pid in {int(p.pid) for p in psutil.Process(int(pid)).parents()}:
                     owned.append(int(pid))
         return owned

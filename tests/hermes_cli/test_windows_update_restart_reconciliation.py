@@ -100,3 +100,37 @@ def test_resume_unregisters_its_own_atexit_fallback_before_running(monkeypatch):
 
     assert calls == [update_cmd_windows._resume_windows_gateways_after_update]
     assert token["resume_needed"] is False
+
+
+def test_service_readiness_filter_skips_vanished_gateways_but_never_swallows_bugs(monkeypatch):
+    """Review W2: the service-ownership filter reads real process parents; a vanished pid is just
+    not the service's, but an unexpected error must surface instead of reading as "not ready"."""
+    import os
+    import subprocess
+    import sys
+
+    import psutil
+
+    from hermes_cli import update_cmd_windows
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], stdin=subprocess.DEVNULL)
+    gone = subprocess.Popen([sys.executable, "-c", "pass"], stdin=subprocess.DEVNULL)
+    gone.wait(timeout=30)
+    service = type("Svc", (), {"pid": staticmethod(lambda: os.getpid())})()  # the "service" is this process
+    monkeypatch.setattr(update_cmd_windows, "_win_service", lambda _name: (psutil, service))
+    monkeypatch.setattr(gateway_windows, "_wait_for_gateway_ready",
+                        lambda **kw: kw["pid_filter"]([child.pid, gone.pid]))
+    try:
+        assert update_cmd_windows._service_gateway_ready("svc", None, timeout_s=0) == [child.pid]
+    finally:
+        child.kill()
+        child.wait(timeout=30)
+
+    def broken(self):
+        raise RuntimeError("bug in the parent walk")
+
+    with monkeypatch.context() as m:  # scoped: the conftest kill guard walks parents too
+        m.setattr(psutil.Process, "parents", broken)
+        m.setattr(gateway_windows, "_wait_for_gateway_ready", lambda **kw: kw["pid_filter"]([os.getpid()]))
+        with pytest.raises(RuntimeError, match="parent walk"):
+            update_cmd_windows._service_gateway_ready("svc", None, timeout_s=0)

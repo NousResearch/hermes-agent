@@ -445,11 +445,15 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
     return None
 
 
-def _interpolate_env_vars(value, env_overrides: Optional[Dict[str, str]] = None):
+def _interpolate_env_vars(value, env_overrides: Optional[Dict[str, str]] = None,
+                          secrets_used: Optional[List[str]] = None):
     """Recursively resolve ``${VAR}`` / Cursor ``${env:VAR}`` placeholders and context vars. Env
     refs resolve from the active profile's secret scope when multiplexing (the routed profile's
-    value, not another profile's in ``os.environ``). Unset vars keep the literal placeholder."""
-    from agent.secret_scope import get_secret as _get_secret
+    value, not another profile's in ``os.environ``). Unset vars keep the literal placeholder.
+    *secrets_used* collects each value a profile/process secret actually substituted (never a
+    context var, a process-global setting or an unresolved placeholder): it may land only in a
+    ``url`` with no header/env literal to redact it by."""
+    from agent.secret_scope import _is_global_env, get_secret as _get_secret
     if isinstance(value, str):
         def _replace(m):
             resolver = _CONTEXT_VAR_RESOLVERS.get(m.group(1).strip())
@@ -458,12 +462,17 @@ def _interpolate_env_vars(value, env_overrides: Optional[Dict[str, str]] = None)
             name = _env_ref_name(m.group(1))
             if env_overrides is not None and name in env_overrides:
                 return env_overrides[name]
-            return _get_secret(name, m.group(0)) or m.group(0)
+            secret = _get_secret(name, m.group(0))
+            if not secret:
+                return m.group(0)
+            if secrets_used is not None and secret != m.group(0) and not _is_global_env(name):
+                secrets_used.append(secret)
+            return secret
         return _ENV_VAR_PATTERN.sub(_replace, value)
     if isinstance(value, dict):
-        return {k: _interpolate_env_vars(v, env_overrides) for k, v in value.items()}
+        return {k: _interpolate_env_vars(v, env_overrides, secrets_used) for k, v in value.items()}
     if isinstance(value, list):
-        return [_interpolate_env_vars(v, env_overrides) for v in value]
+        return [_interpolate_env_vars(v, env_overrides, secrets_used) for v in value]
     return value
 
 
@@ -592,9 +601,11 @@ def _mcp_redaction_values(config: dict) -> tuple[str, ...]:
 def _rerender_resolved(config: dict) -> dict:
     """Re-render ``${VAR}`` refs (under the caller's secret scope) without dropping the resolving
     snapshot: a secret rendered only into the ``url`` has no header literal to fall back on."""
-    rendered = _interpolate_env_vars(config)
+    secrets_used: List[str] = []
+    rendered = _interpolate_env_vars(config, secrets_used=secrets_used)
     if isinstance(config, _ResolvedMCPServerConfig):
-        return _ResolvedMCPServerConfig(rendered, config._redaction_values + _mcp_redaction_values(rendered))
+        return _ResolvedMCPServerConfig(
+            rendered, config._redaction_values + tuple(secrets_used) + _mcp_redaction_values(rendered))
     return rendered
 
 
@@ -603,9 +614,10 @@ def _resolve_mcp_server_config(config: dict) -> dict:
     if isinstance(config, _ResolvedMCPServerConfig):
         return config
     server_env = _load_mcp_server_env(config)
-    resolved = _interpolate_env_vars(config, server_env)
+    secrets_used: List[str] = []
+    resolved = _interpolate_env_vars(config, server_env, secrets_used)
     return _ResolvedMCPServerConfig(
-        resolved, tuple(server_env.values()) + _mcp_redaction_values(resolved),
+        resolved, tuple(server_env.values()) + tuple(secrets_used) + _mcp_redaction_values(resolved),
     )
 
 

@@ -92,6 +92,19 @@ def peek_cached_pricing(base_url: str) -> dict[str, dict[str, Any]]:
     return _cached_catalog(root) or {}
 
 
+def pricing_fetch_suppressed(base_url: str) -> bool:
+    """A fetch for *base_url* failed recently and its empty result is still cached, so re-fetching now
+    returns that ``{}`` without dialing (see ``_cache_catalog``). Lets a caller that would otherwise
+    start a background refresh on a cold peek skip it for the rest of the failure window."""
+    root = _strip_v1((base_url or "").rstrip("/"))
+    now = time.monotonic()
+    return any(
+        _pricing_cache.get(key) == {} and _pricing_cache_retry_after.get(key, 0.0) > now
+        for key in list(_pricing_cache)
+        if key == root or key.startswith(root + _PRICING_AUTH_KEY_PREFIX)
+    )
+
+
 def _strip_v1(url: str) -> str:
     return url[:-3].rstrip("/") if url.endswith("/v1") else url
 
@@ -243,6 +256,9 @@ def fetch_models_with_pricing(
                               if original.get(key) not in (None, "")}
                 if orig_entry.get("prompt") or orig_entry.get("completion"):
                     entry["original"] = orig_entry
+            # Nous Portal-only: the gateway bills this row to a subscription the account holds, not to credits.
+            if include_sale_original and item.get("billing_mode") == "subscription":
+                entry["billing_mode"] = "subscription"
             result[mid] = entry
 
     return _cache_catalog(cache_key, result, cache_ttl_seconds)
@@ -440,12 +456,46 @@ _STATIC_PRICING_SCOPES = {
 }
 
 
-def pricing_cache_scope(provider: str, *, current_provider: str = "", current_base_url: str = "") -> str:
+def resolve_pricing_provider(provider: str, *, base_url: str = "") -> str:
+    """Return the canonical pricing source for a provider, or ``""`` when unproven.
+
+    A ``custom:<name>`` inventory slug identifies a user configuration entry, not its upstream.
+    It can deliberately shadow a canonical name while pointing at a proxy, so custom entries may
+    use pricing only when their concrete endpoint is recognized as that canonical upstream.
+    """
+    from hermes_cli.models import normalize_provider
+
+    normalized = normalize_provider(provider)
+    if not normalized.startswith("custom:"):
+        return normalized
+    if not base_url:
+        return ""
+    try:
+        from agent.model_metadata import _URL_TO_PROVIDER, _infer_provider_from_url
+        from utils import base_url_host_matches
+
+        inferred = _infer_provider_from_url(base_url)
+    except Exception:
+        return ""
+    # ``_infer_provider_from_url`` is deliberately broad for user-facing hints. Pricing is a
+    # trust boundary: require an exact official hostname (or one of its explicit subdomains),
+    # never a mere substring such as ``openrouter.ai.attacker.invalid``.
+    if not inferred or not any(
+        provider == inferred and not host.startswith(".") and base_url_host_matches(base_url, host)
+        for host, provider in _URL_TO_PROVIDER.items()
+    ):
+        return ""
+    return normalize_provider(inferred)
+
+
+def pricing_cache_scope(
+    provider: str, *, base_url: str = "", current_provider: str = "", current_base_url: str = ""
+) -> str:
     """The current endpoint identity a provider's pricing cache is keyed on. Resolves local configuration
     only, never fetches: picker prewarm single-flight uses it so an endpoint rotation can start a new
     worker while the previous endpoint is still slow or unreachable."""
     from hermes_cli.models import _deepinfra_catalog_url, _pricing_profile_key, normalize_provider
-    normalized = normalize_provider(provider)
+    normalized = resolve_pricing_provider(provider, base_url=base_url)
     static = _STATIC_PRICING_SCOPES.get(normalized)
     if static:
         return static()
@@ -482,14 +532,13 @@ def _cached_only_pricing(normalized: str) -> dict[str, dict[str, str]]:
 
 
 def get_pricing_for_provider(
-    provider: str, *, force_refresh: bool = False, cached_only: bool = False
+    provider: str, *, base_url: str = "", force_refresh: bool = False, cached_only: bool = False
 ) -> dict[str, dict[str, str]]:
     """Return live pricing for providers that support it (openrouter, nous, ai-gateway, novita,
     deepinfra, fireworks); ``{}`` for everything else. ``cached_only`` never starts provider I/O:
     normal picker opens use it so cold endpoints cannot hold the response path, while a background
     prewarm fills the same caches for later opens."""
-    from hermes_cli.models import normalize_provider
-    normalized = normalize_provider(provider)
+    normalized = resolve_pricing_provider(provider, base_url=base_url)
     if cached_only:
         return _cached_only_pricing(normalized)
     fetcher = _PRICING_FETCHERS.get(normalized)

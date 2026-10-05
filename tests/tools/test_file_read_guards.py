@@ -616,7 +616,8 @@ class TestOverlappingReadDedup(unittest.TestCase):
         _read_tracker.clear()
         self._tmpdir = _make_safe_tempdir("hermes-overlap-")
         self._tmpfile = os.path.join(self._tmpdir, "big.txt")
-        with open(self._tmpfile, "w", encoding="utf-8") as f:
+        # LF on every platform: text mode would write CRLF on Windows, and patch matching is byte-exact.
+        with open(self._tmpfile, "w", encoding="utf-8", newline="\n") as f:
             f.write("".join(f"line {i}\n" for i in range(1, 3001)))
 
     def tearDown(self):

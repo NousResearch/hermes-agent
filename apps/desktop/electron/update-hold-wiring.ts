@@ -8,12 +8,13 @@ import path from 'node:path'
 import type { IpcMain, IpcMainInvokeEvent } from 'electron'
 
 import { type UpdateGateDeps, waitForUpdateClearance, type WaitForUpdateClearanceOptions } from './update-gate'
+import type { UpdateHoldWire } from './update-hold-types'
 import { cachedCreateTimeProbe } from './update-marker'
 import {
   allowStartOverHold,
   type HeldState,
   heldWaitMessage,
-  HOLD_SCREEN_GRACE_MS,
+  holdTicker,
   liveMarkerProbe,
   PRIMARY_HOLD_OWNER,
   requestHoldRecheck,
@@ -21,17 +22,6 @@ import {
   UpdateHoldBoard
 } from './update-marker-gate'
 import { runMarkerHelper } from './updater/marker-helper'
-
-// What the blocked boot screen shows (R8 D3). The renderer mirrors this as
-// `DesktopUpdateHold` in src/global.d.ts.
-export interface UpdateHoldWire {
-  holdId: string
-  verdict: 'held' | 'busy' | 'error'
-  ownerPid: number | null
-  since: number
-  checkedAt: number
-  logPath: string
-}
 
 export interface MarkerGateCallbacks {
   onLiveMarker?: (marker: { startedAt: number | null }) => void
@@ -73,21 +63,6 @@ export function markerGateProbe(host: MarkerGateHost, { onLiveMarker, onHeld, on
         isWindows: host.isWindows
       })
   })
-}
-
-/**
- * A wait's blocked-screen clock: the hold to show once a blocking marker hold
- * has lasted HOLD_SCREEN_GRACE_MS without a break, else null. Never a timeout:
- * past the grace the wait stays parked behind the screen.
- */
-export function holdGraceClock(now: () => number = Date.now) {
-  let blockedSince: number | null = null
-
-  return (reason: string | null, held: HeldState | null): HeldState | null => {
-    blockedSince = reason === 'marker' && held?.blocking ? (blockedSince ?? now()) : null
-
-    return held && blockedSince !== null && now() - blockedSince >= HOLD_SCREEN_GRACE_MS ? held : null
-  }
 }
 
 export interface UpdateHoldScreenHost {
@@ -276,13 +251,16 @@ export async function waitForPoolUpdateClearance(host: PoolUpdateWaitHost): Prom
   const { profile } = host
   let poolAnnounced = false
   let poolHoldLogged: string | null = null
-  let poolHeld: HeldState | null = null
-  const poolBlockedHold = holdGraceClock()
   const holdOwner = `pool:${host.poolKey}`
+
+  const hold = holdTicker({
+    show: state => host.showHold(state, holdOwner),
+    clear: () => host.clearHold(holdOwner)
+  })
 
   const poolGateDeps = host.gateDeps({
     onHeld: state => {
-      poolHeld = state
+      hold.onHeld(state)
 
       if (state.blocking && poolHoldLogged !== state.holdId) {
         poolHoldLogged = state.holdId
@@ -304,14 +282,7 @@ export async function waitForPoolUpdateClearance(host: PoolUpdateWaitHost): Prom
           host.log(`[updates] update in progress (${reason}); deferring pool backend start for profile "${profile}"`)
         }
 
-        const blocked = poolBlockedHold(reason, poolHeld)
-        poolHeld = null
-
-        if (blocked) {
-          host.showHold(blocked, holdOwner)
-        } else {
-          host.clearHold(holdOwner)
-        }
+        hold.tick(reason)
       },
       pollMs: host.pollMs,
       timeoutMs: host.timeoutMs

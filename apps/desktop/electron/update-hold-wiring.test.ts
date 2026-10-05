@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { registerUpdateHoldIpc, type UpdateHoldWire } from './update-hold-wiring'
+import type { UpdateHoldWire } from './update-hold-types'
+import { registerUpdateHoldIpc } from './update-hold-wiring'
 
 const HOLD: UpdateHoldWire = {
   holdId: 'hold-1',

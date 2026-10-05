@@ -8,6 +8,7 @@ import type { MachineProfile } from '../electron/machine-profile'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
 import type { KeepAwakeMode } from '../electron/power-save'
+import type { UpdateHoldWire } from '../electron/update-hold-types'
 import type { UpdateRunReport } from '../electron/updater/update-metrics'
 import type { GrowRequest } from '../electron/window-growth'
 
@@ -1401,22 +1402,11 @@ export interface DesktopBootProgress {
   statusCode?: number | null
   timestamp: number
   /** Set while an earlier update's hold keeps the local backend from starting (blocked boot screen). */
-  updateHold?: DesktopUpdateHold | null
+  updateHold?: UpdateHoldWire | null
 }
 
-/** What holds the install while the boot is blocked (electron/update-hold-wiring.ts UpdateHoldWire). */
-export interface DesktopUpdateHold {
-  holdId: string
-  /** `held`: a leftover process holds the checkout lock; `busy`/`error`: ownership could not be verified. */
-  verdict: 'held' | 'busy' | 'error'
-  /** The update process that wrote the marker (exited), when known. */
-  ownerPid: number | null
-  /** Epoch ms the hold was first seen. */
-  since: number
-  /** Epoch ms of the latest check. */
-  checkedAt: number
-  logPath: string
-}
+/** What holds the install while the boot is blocked: one definition, shared with the main process. */
+export type { UpdateHoldWire } from '../electron/update-hold-types'
 
 // First-launch install ("bootstrap") event types -- emitted by
 // electron/bootstrap-runner.ts and observed by the renderer install overlay.

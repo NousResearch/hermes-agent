@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useId, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import type { DesktopUpdateHold } from '@/global'
+import type { UpdateHoldWire } from '@/global'
 import { useI18n } from '@/i18n'
 import { AlertTriangle, FileText, Loader2, Power, RefreshCw } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
@@ -27,7 +27,7 @@ export function UpdateHoldOverlay() {
   const [busy, setBusy] = useState<Busy>(null)
   const [confirming, setConfirming] = useState(false)
   const [refused, setRefused] = useState(false)
-  const hold: DesktopUpdateHold | null = boot.error ? null : (boot.updateHold ?? null)
+  const hold: UpdateHoldWire | null = boot.error ? null : (boot.updateHold ?? null)
   const holdId = hold?.holdId ?? null
   const checkedAt = hold?.checkedAt ?? null
 

@@ -16,6 +16,8 @@ import {
   allowStartOverHold,
   type HeldState,
   heldWaitMessage,
+  HOLD_SCREEN_GRACE_MS,
+  holdTicker,
   liveMarkerProbe,
   PRIMARY_HOLD_OWNER,
   requestHoldRecheck,
@@ -303,4 +305,61 @@ test('without a protocol-2 script the gate judges dead = not running and deletes
 
   assert.equal(await liveMarkerProbe({ hermesHome: home, reclaim: null })(), false)
   assert.equal(fs.readFileSync(markerPath(home), 'utf8'), body)
+})
+
+// Review 5411222842 (shape): the boot and pool waits share one hold state
+// machine. A blocking hold shows only after an unbroken grace, any break
+// restarts the grace and clears this wait's hold, and nothing ever times out.
+describe('holdTicker', () => {
+  const state = (blocking: boolean): HeldState => ({
+    verdict: 'held',
+    ownerPid: 7,
+    livePid: null,
+    holdId: 'h1',
+    since: 0,
+    checkedAt: 0,
+    blocking
+  })
+
+  test('shows a blocking hold after an unbroken grace and clears on any break', () => {
+    let clock = 0
+    const shown: string[] = []
+
+    const hold = holdTicker({
+      show: s => shown.push(`show:${s.holdId}`),
+      clear: () => shown.push('clear'),
+      now: () => clock
+    })
+
+    hold.onHeld(state(true))
+    assert.deepEqual(hold.tick('marker'), { held: state(true), shown: false })
+    clock += HOLD_SCREEN_GRACE_MS
+    hold.onHeld(state(true))
+    assert.equal(hold.tick('marker').shown, true)
+    // A poll with no held verdict (the probe saw a live owner) breaks the hold.
+    assert.deepEqual(hold.tick('marker'), { held: null, shown: false })
+    hold.onHeld(state(true))
+    clock += HOLD_SCREEN_GRACE_MS - 1
+    assert.equal(hold.tick('marker').shown, false, 'the grace restarts after a break')
+    clock += 10 * OLD_HELD_CEILING_MS
+    hold.onHeld(state(true))
+    assert.equal(hold.tick('marker').shown, true, 'never a timeout: still parked behind the screen')
+    assert.deepEqual(shown, ['clear', 'show:h1', 'clear', 'clear', 'show:h1'])
+  })
+
+  test('a non-blocking hold or a non-marker reason never shows the screen', () => {
+    let clock = 0
+    const hold = holdTicker({ show: () => assert.fail('shown'), clear: () => {}, now: () => clock })
+
+    for (const [reason, blocking] of [
+      ['marker', false],
+      ['in-flight', true]
+    ] as const) {
+      hold.onHeld(state(blocking))
+      hold.tick(reason)
+      clock += HOLD_SCREEN_GRACE_MS * 2
+      hold.onHeld(state(blocking))
+      assert.equal(hold.tick(reason).shown, false)
+    }
+  })
 })

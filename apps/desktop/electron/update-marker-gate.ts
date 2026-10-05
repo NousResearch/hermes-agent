@@ -144,6 +144,40 @@ export class UpdateHoldBoard {
 }
 
 /**
+ * One wait's hold state machine, shared by the boot and pool/profile waits:
+ * `onHeld` keeps the probe's latest held state, and `tick` (once per wait
+ * poll) consumes it, shows it once a blocking hold has lasted
+ * HOLD_SCREEN_GRACE_MS without a break, and clears this wait's hold
+ * otherwise. Never a timeout: past the grace the wait stays parked behind
+ * the blocked screen (R8 D3).
+ */
+export function holdTicker(screen: { show: (state: HeldState) => void; clear: () => void; now?: () => number }) {
+  const now = screen.now ?? Date.now
+  let held: HeldState | null = null
+  let blockedSince: number | null = null
+
+  return {
+    onHeld(state: HeldState) {
+      held = state
+    },
+    tick(reason: string | null): { held: HeldState | null; shown: boolean } {
+      const seen = held
+      held = null
+      blockedSince = reason === 'marker' && seen?.blocking ? (blockedSince ?? now()) : null
+      const shown = seen !== null && blockedSince !== null && now() - blockedSince >= HOLD_SCREEN_GRACE_MS
+
+      if (shown) {
+        screen.show(seen)
+      } else {
+        screen.clear()
+      }
+
+      return { held: seen, shown }
+    }
+  }
+}
+
+/**
  * The user confirmed "Start anyway" over this exact held marker body. The
  * caller logs the override; the marker is left in place.
  */
@@ -205,7 +239,9 @@ async function refreshVerdict(
   }
 
   if (!previous || STILL_RUNNING.has(previous.verdict.kind) !== STILL_RUNNING.has(verdict.kind)) {
-    log?.(`[updates] dead update marker: script helper says ${verdict.kind}${'pid' in verdict ? ` ${verdict.pid}` : ''}`)
+    log?.(
+      `[updates] dead update marker: script helper says ${verdict.kind}${'pid' in verdict ? ` ${verdict.pid}` : ''}`
+    )
   }
 
   return { ...previous, verdict, at: now(), generation }

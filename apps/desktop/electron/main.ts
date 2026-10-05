@@ -602,17 +602,16 @@ import {
   waitForUpdateClearance
 } from './update-gate'
 import { reportHandoffResult } from './update-handoff-report'
+import type { UpdateHoldWire } from './update-hold-types'
 import {
   createUpdateHoldScreen,
-  holdGraceClock,
   type MarkerGateCallbacks,
   markerGateProbe,
   registerUpdateHoldIpc,
-  type UpdateHoldWire,
   waitForPoolUpdateClearance
 } from './update-hold-wiring'
 import { describeSkippedPrewrite, markerPath, updateHandoffConflict, writeUpdateMarker } from './update-marker'
-import { type HeldState, heldWaitMessage } from './update-marker-gate'
+import { heldWaitMessage, holdTicker } from './update-marker-gate'
 import { updateConnectionsBeforeLocal } from './update-order'
 import {
   resolveUpdaterMechanism,
@@ -3031,10 +3030,8 @@ async function waitForUpdateToFinish() {
   // run's, never an older one (C2 started_at match).
   let parkedRunStartedAt: number | null = null
   // A dead marker whose checkout a leftover process still holds (R6), or whose
-  // ownership the helper could not establish: its state this poll, and since
-  // when it has blocked this wait (the blocked screen's grace, R8 D3).
-  let held: HeldState | null = null
-  const blockedHold = holdGraceClock()
+  // ownership the helper could not establish (the blocked screen, R8 D3).
+  const hold = holdTicker({ show: state => showUpdateHold(state), clear: () => clearUpdateHold() })
   // The wait ended because the user chose Start anyway, not because the
   // update finished (R8 m7): no bundle-swap relaunch mid-hold.
   let overridden = false
@@ -3044,9 +3041,7 @@ async function waitForUpdateToFinish() {
       parkedRunStartedAt = marker.startedAt
       overridden = false
     },
-    onHeld: state => {
-      held = state
-    },
+    onHeld: hold.onHeld,
     onOverride: () => {
       overridden = true
     }
@@ -3060,21 +3055,14 @@ async function waitForUpdateToFinish() {
         rememberLog(`[updates] update in progress (${reason}); deferring backend start until it finishes`)
       }
 
-      const heldNow: HeldState | null = held
-      held = null
-
-      const blocked = blockedHold(reason, heldNow)
-
       // Never a timeout (R8 D3): past the grace the boot shows the blocked
       // screen and stays parked until the hold ends, the user quits, or the
       // user confirms Start anyway (registerUpdateHoldIpc).
-      if (blocked) {
-        showUpdateHold(blocked)
+      const { held: heldNow, shown } = hold.tick(reason)
 
+      if (shown) {
         return
       }
-
-      clearUpdateHold()
 
       if (reason === 'marker' && heldNow) {
         await advanceBootProgress('backend.update-wait', heldWaitMessage(heldNow), 12)

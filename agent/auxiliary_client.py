@@ -1133,10 +1133,7 @@ def _parse_codex_final_response(
     final: Any, *, issuer_kind: Optional[str] = None, issuer_model: Optional[str] = None,
 ) -> Tuple[List[str], List[Any], Any, str]:
     """Normalize Responses output without losing phase or completion state for aux callers."""
-    from agent.codex_responses_adapter import (
-        _INCOMPLETE_STATUSES, _SERVER_SIDE_TOOL_CALL_TYPES, _extract_responses_message_text, _leaked_tool_call_text,
-        _lower_or_none, _normalize_codex_response,
-    )
+    from agent.codex_responses_adapter import _lower_or_none, _normalize_codex_response
 
     # The shared normalizer reads SDK-style items. Keep support for compatible hosts
     # returning dict items, and the aux adapter's legacy empty completed response.
@@ -1151,32 +1148,17 @@ def _parse_codex_final_response(
         incomplete_details=getattr(final, "incomplete_details", None),
         error=getattr(final, "error", None),
     )
+    # Aux has no continuation to re-elicit a leaked tool call, so tool-call-shaped text stays content
+    # and goes through the normalizer's own phase/completion gates (no clear, no WARNING).
     message, finish_reason = _normalize_codex_response(
-        normalized_final, issuer_kind=issuer_kind, issuer_model=issuer_model,
+        normalized_final, issuer_kind=issuer_kind, issuer_model=issuer_model, recover_leaked_tool_call=False,
     )
-    status = _lower_or_none(normalized_final.status)
-    reason = str(_field(normalized_final.incomplete_details, "reason", "") or "").strip().lower()
-    # The main loop's leaked-tool-call recovery clears the text so its continuation can re-elicit a
-    # real call; aux has no continuation, so a completed answer quoting such text keeps it.
-    # Only a fully completed response qualifies: any unfinished (non-server-side) item is still a partial.
-    if finish_reason == "incomplete" and status == "completed" and not message.tool_calls \
-            and message.codex_message_items is None and not any(
-                _field(item, "type") not in _SERVER_SIDE_TOOL_CALL_TYPES
-                and _lower_or_none(_field(item, "status")) in _INCOMPLETE_STATUSES
-                for item in output):
-        # Same gate as the normalizer: commentary/analysis is never the answer, nor is output_text alongside it.
-        narration = {"commentary", "analysis"}
-        phases = {_lower_or_none(_field(item, "phase")) for item in output if _field(item, "type") == "message"}
-        answer = "\n".join(filter(None, (
-            _extract_responses_message_text(item) for item in output
-            if _field(item, "type") == "message" and _lower_or_none(_field(item, "phase")) not in narration
-        ))).strip() or ("" if phases & narration else (normalized_final.output_text or "").strip())
-        if answer and _leaked_tool_call_text(answer):
-            message.content, finish_reason = answer, "stop"
     # Aux consumers speak Chat Completions: "length" activates their existing
     # partial-summary rejection/fallback, whereas Codex's "incomplete" does not.
     # A final_answer phase cannot override the provider's incomplete status, but completed
     # tool calls stay "tool_calls" so dispatchers (e.g. MCP sampling) still run them.
+    status = _lower_or_none(normalized_final.status)
+    reason = str(_field(normalized_final.incomplete_details, "reason", "") or "").strip().lower()
     if finish_reason != "tool_calls" and (
         finish_reason == "incomplete" or (status == "incomplete" and reason != "content_filter")
     ):

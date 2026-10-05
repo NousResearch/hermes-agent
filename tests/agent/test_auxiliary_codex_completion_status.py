@@ -90,8 +90,8 @@ _CODEX_REASONING_ONLY = SimpleNamespace(
         pytest.param("", "completed", [_TOOL_CALL], None, None, "tool_calls", id="tool-call"),
         pytest.param("", "completed", [_message(_LEAK_LIKE_ANSWER, phase=None)], None, _LEAK_LIKE_ANSWER, "stop",
                      id="tool-call-like-answer"),
-        pytest.param("", "completed", [_message(_LEAK_LIKE_ANSWER, phase=None), _PARTIAL_TOOL_CALL], None, None,
-                     "length", id="tool-call-like-partial-item"),
+        pytest.param("", "completed", [_message(_LEAK_LIKE_ANSWER, phase=None), _PARTIAL_TOOL_CALL], None,
+                     _LEAK_LIKE_ANSWER, "length", id="tool-call-like-partial-item"),
         # A str ``output`` is delivered only via output_text (empty output list), as streamed Codex answers can be.
         pytest.param("", "completed", _LEAK_LIKE_ANSWER, None, _LEAK_LIKE_ANSWER, "stop", id="tool-call-like-output-text"),
         # (items, text): output_text beside a commentary item is narration, never the rescued answer.
@@ -99,6 +99,9 @@ _CODEX_REASONING_ONLY = SimpleNamespace(
                      id="tool-call-like-output-text-beside-commentary"),
         pytest.param("", "incomplete", [_message("PARTIAL")], "max_output_tokens", "PARTIAL", "length", id="token-cap"),
         pytest.param("", "incomplete", [_TOOL_CALL], "max_output_tokens", None, "tool_calls", id="token-cap-after-tool-call"),
+        # Commentary + unphased text is incomplete whether or not the unphased text looks like a tool call.
+        pytest.param("", "completed", [_message("NOTE", phase="commentary"), _message(_LEAK_LIKE_ANSWER, phase=None)],
+                     None, _LEAK_LIKE_ANSWER, "length", id="tool-call-like-beside-commentary"),
         # Route-sensitive normalization: the issuer comes from the request's route classification.
         pytest.param("https://chatgpt.com/backend-api/codex", "completed", [_CODEX_REASONING_ONLY], None, None, "length",
                      id="codex-reasoning-only"),

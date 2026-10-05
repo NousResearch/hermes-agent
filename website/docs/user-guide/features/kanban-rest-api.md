@@ -40,6 +40,11 @@ surfaces (for example gateway drain control), and other service credentials
 cannot drive this one. It also cannot open the interactive dashboard's own
 routes next to it under `/api/plugins/kanban`.
 
+Within this API the credential is not narrowed further: one secret reads and
+writes every board, and with transcripts enabled it reads the runs of every
+profile that opted in. Hand it only to a control plane you would trust with
+the whole Kanban store.
+
 Note that once the secret is set, this external surface accepts *only* the
 service credential — the dashboard session token no longer authenticates
 here, even on a loopback bind. Without `HERMES_KANBAN_API_SECRET` the

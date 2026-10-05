@@ -271,6 +271,10 @@ def _fleet(monkeypatch, tmp_path, *, current, labels, located,
         gw, "legacy_launchd_labels_for_install", lambda exclude=(): list(legacy_labels)
     )
     monkeypatch.setattr(gw, "_locate_launchd_gateway_service", fake_locate)
+    monkeypatch.setattr(
+        "hermes_cli.gateway_launchd.launchd_gateway_signal_pid", lambda pid: pid, raising=False
+    )
+    monkeypatch.setattr("hermes_cli.gateway_launchd.stop_launchd_gateway_runtime", lambda pid: True)
     monkeypatch.setattr(gw, "_launchd_service_registered", fake_registered)
     monkeypatch.setattr(
         gw,
@@ -310,6 +314,50 @@ def _fleet(monkeypatch, tmp_path, *, current, labels, located,
 
 
 class TestRestartMacosLaunchdGateways:
+    def test_failed_child_stop_never_kickstarts_or_claims_restart(self, monkeypatch, tmp_path):
+        rec = _fleet(
+            monkeypatch, tmp_path, current="ai.hermes.gateway-shadow",
+            labels=["ai.hermes.gateway"],
+            located={"ai.hermes.gateway": (f"gui/{UID}", 100)},
+        )
+        monkeypatch.setattr("hermes_cli.gateway_launchd.stop_launchd_gateway_runtime", lambda pid: False)
+        restarted, failed = [], []
+        _restart_macos_launchd_gateways(restarted, failed, drain_budget=0.0)
+        assert rec.kickstarts == []
+        assert "ai.hermes.gateway" not in restarted
+        assert failed == ["ai.hermes.gateway"]
+
+    def test_restart_signals_gateway_not_osascript_launcher(self, monkeypatch, tmp_path):
+        rec = _fleet(
+            monkeypatch, tmp_path, current="ai.hermes.gateway-shadow",
+            labels=["ai.hermes.gateway"],
+            located={"ai.hermes.gateway": (f"gui/{UID}", 100)},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway_launchd.launchd_gateway_signal_pid", lambda pid: 1234,
+            raising=False,
+        )
+        restarted, failed = [], []
+        _restart_macos_launchd_gateways(restarted, failed, drain_budget=0.0)
+        assert rec.drains == [1234]
+        assert restarted == ["ai.hermes.gateway-shadow", "ai.hermes.gateway"]
+        assert failed == []
+
+    def test_launcher_without_gateway_is_not_sent_sigusr1(self, monkeypatch, tmp_path):
+        rec = _fleet(
+            monkeypatch, tmp_path, current="ai.hermes.gateway-shadow",
+            labels=["ai.hermes.gateway"],
+            located={"ai.hermes.gateway": (f"gui/{UID}", 100)},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.gateway_launchd.launchd_gateway_signal_pid", lambda pid: None,
+            raising=False,
+        )
+        restarted, failed = [], []
+        _restart_macos_launchd_gateways(restarted, failed, drain_budget=0.0)
+        assert rec.drains == []
+        assert rec.kickstarts == [f"gui/{UID}/ai.hermes.gateway"]
+
     def test_current_delegates_and_siblings_kickstart_in_own_domains(
         self, monkeypatch, tmp_path
     ):

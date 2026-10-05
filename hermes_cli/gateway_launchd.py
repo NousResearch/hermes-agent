@@ -745,6 +745,128 @@ def launchd_stop():
     print("✓ Service stopped")
 
 
+def expand_launchd_gateway_service_pids(pids: set[int]) -> set[int]:
+    """Protect service descendants on macOS without changing other platforms."""
+    if _gw().is_macos():
+        for supervisor_pid in tuple(pids):
+            pids.update(launchd_gateway_service_pids(supervisor_pid))
+    return pids
+
+
+def launchd_gateway_service_pids(supervisor_pid: int) -> set[int]:
+    """Protect gateway descendants (including stderr launcher) from manual sweeps.
+
+    launchd records only osascript. Its stderr launcher and runtime both carry
+    gateway argv and otherwise look like unsupervised processes to cleanup.
+    """
+    import psutil
+    from gateway.status import looks_like_gateway_command_line
+
+    try:
+        processes = psutil.Process(supervisor_pid).children(recursive=True)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return set()
+    owned = set()
+    for process in processes:
+        try:
+            if looks_like_gateway_command_line(shlex.join(process.cmdline())):
+                owned.add(process.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return owned
+
+
+def launchd_gateway_signal_pid(supervisor_pid: int) -> int | None:
+    """Resolve the runtime under a launchd launcher before sending SIGUSR1.
+
+    launchctl reports osascript's PID, not the gateway's. SIGUSR1 terminates
+    osascript instead of draining its child and can leave an orphaned gateway.
+    Only a command-validated runtime in this job's process tree is a target.
+    """
+    import psutil
+    from gateway.status import looks_like_gateway_command_line
+
+    try:
+        parent = psutil.Process(supervisor_pid)
+        processes = [parent, *parent.children(recursive=True)]
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return None
+    candidates = []
+    for process in processes:
+        try:
+            argv = process.cmdline()
+            # This launcher carries its child's gateway argv, but cannot
+            # process a gateway drain signal itself (including store bootstrap).
+            if any(
+                argv[index] in ("-m", "--run-module")
+                and argv[index + 1] == "hermes_cli.stderr_timestamp"
+                for index in range(len(argv) - 1)
+            ):
+                continue
+            if looks_like_gateway_command_line(shlex.join(argv)):
+                candidates.append(process.pid)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def stop_launchd_gateway_runtime(pid: int) -> bool:
+    """After the drain deadline, stop the actual child before replacing its launcher.
+
+    kickstart -k kills osascript, not its Python grandchildren. Waiting on the
+    identity-bound Process prevents PID reuse and gives store shutdown a grace.
+    """
+    import psutil
+    from gateway.status import looks_like_gateway_command_line
+
+    try:
+        process = psutil.Process(pid)
+        if not looks_like_gateway_command_line(shlex.join(process.cmdline())):
+            return False
+        process.terminate()
+        try:
+            process.wait(timeout=30)
+        except psutil.TimeoutExpired:
+            print(f"⚠ Gateway PID {pid} exceeded its stop grace; forcing exit before launchd replacement")
+            process.kill()
+            process.wait(timeout=5)
+        return True
+    except psutil.NoSuchProcess:
+        return True
+    except (psutil.AccessDenied, psutil.TimeoutExpired):
+        return False
+
+
+def restart_launchd_gateway_runtime(label: str, domain: str, old_pid: int | None, drain_budget: float) -> bool:
+    """Drain/replace one sibling job, never orphan its actual gateway child."""
+    from hermes_cli.update_cmd_fleet import _gateway_home_for_pid
+    from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+
+    signal_pid = launchd_gateway_signal_pid(old_pid) if old_pid is not None and old_pid > 0 else None
+    if signal_pid is not None:
+        print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")
+        graceful_ok = _gw()._graceful_restart_via_sigusr1(
+            signal_pid, drain_timeout=drain_budget,
+            on_progress=drain_progress_reporter(_gateway_home_for_pid(signal_pid), budget_s=drain_budget))
+        if graceful_ok and _gw()._wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=10.0, domain=domain):
+            return True  # KeepAlive already respawned; do not kill the replacement.
+        if not graceful_ok and not stop_launchd_gateway_runtime(signal_pid):
+            print(f"  ✗ {label}: gateway PID {signal_pid} could not be stopped; refusing to orphan it")
+            return False
+    try:
+        _gw()._launchd_kickstart(label, domain)
+    except subprocess.CalledProcessError as exc:
+        stderr = (getattr(exc, "stderr", "") or "").strip()
+        print(f"  ⚠ Failed to restart {label}: {stderr}\n"
+              f"    Recover manually: launchctl kickstart -k {domain}/{label}")
+        return False
+    if _gw()._wait_for_launchd_service_pid(label, old_pid=old_pid, timeout=15.0, domain=domain):
+        return True
+    print(f"  ✗ {label} failed to come back after restart.\n"
+          f"    Check logs, then: launchctl kickstart -k {domain}/{label}")
+    return False
+
+
 def _launchd_kickstart(label: str, domain: str) -> None:
     """``launchctl kickstart -k domain/label``; raises so callers own per-label failure accounting."""
     subprocess.run(["launchctl", "kickstart", "-k", f"{domain}/{label}"], check=True, timeout=90, **_gw()._CAPTURE_TEXT)
@@ -807,6 +929,8 @@ def launchd_restart():
                 print("⚠ launchd did not revive the gateway after its graceful exit — forcing restart")
             else:
                 print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart")
+                if not stop_launchd_gateway_runtime(pid):
+                    raise RuntimeError(f"Gateway PID {pid} could not be stopped; refusing to orphan it")
         if not refresh_ok and _gw().get_launchd_plist_path().exists() and not _gw().launchd_plist_is_current():
             # The refresh attempted a reload and launchd never re-registered
             # the (rewritten) job: kickstart would hang on the same wall. The

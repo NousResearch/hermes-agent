@@ -1479,13 +1479,18 @@ class SessionMessagesMixin:
 
     def get_messages(self, session_id: str, include_inactive: bool = False, include_compacted: bool = False,
                      limit: Optional[int] = None, offset: int = 0, latest: bool = False,
-                     after_id: Optional[int] = None, include_ancestors: bool = False) -> List[Dict[str, Any]]:
+                     after_id: Optional[int] = None, include_ancestors: bool = False,
+                     before_timestamp: Optional[float] = None) -> List[Dict[str, Any]]:
         """Load messages in insertion order (id, never timestamp: clocks regress). ``include_inactive``:
         rewind rows too; ``include_compacted``: compaction-archived display history (not rewind rows).
         ``latest`` pages back from the newest but returns chronological order; ``after_id``: keyset paging.
         ``include_ancestors``: also load the compression lineage (root → tip, branch sessions exempt),
         mirroring ``get_messages_as_conversation(include_ancestors=True)`` — after a compression rotation
-        the full transcript spans parent sessions, not just the child continuation (#51058)."""
+        the full transcript spans parent sessions, not just the child continuation (#51058).
+        ``before_timestamp``: only rows written up to that time, for a reader entitled to a session's
+        history up to a point and not to what a later resume appended (plain single-session reads only)."""
+        if before_timestamp is not None and (include_compacted or include_ancestors):
+            raise ValueError("before_timestamp is incompatible with include_compacted/include_ancestors")
         if after_id is not None and (latest or offset):
             raise ValueError("after_id is incompatible with latest/offset paging")
         if after_id is not None and include_compacted:
@@ -1515,8 +1520,10 @@ class SessionMessagesMixin:
                 session_id, active_clause=active_clause, limit=limit, offset=offset, latest=latest)
         else:
             sql = (f"SELECT * FROM messages WHERE session_id = ?{active_clause}"
-                f"{' AND id > ?' if after_id is not None else ''} ORDER BY id {'DESC' if latest else 'ASC'}")
-            params: list = [session_id] if after_id is None else [session_id, after_id]
+                f"{' AND id > ?' if after_id is not None else ''}"
+                f"{' AND timestamp <= ?' if before_timestamp is not None else ''}"
+                f" ORDER BY id {'DESC' if latest else 'ASC'}")
+            params: list = [session_id] + [v for v in (after_id, before_timestamp) if v is not None]
             if limit is not None or offset:
                 # SQLite's OFFSET requires LIMIT; -1 means "no limit".
                 sql += " LIMIT ? OFFSET ?"

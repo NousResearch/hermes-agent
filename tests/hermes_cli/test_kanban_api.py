@@ -910,3 +910,29 @@ def test_blocking_a_running_task_stops_its_worker(
     assert client.post(f"{url}/unblock").status_code == 200
     assert client.post(f"{url}/block", json={"reason": "hold"}).status_code == 200
     assert stopped == []  # a task nobody is running has no worker to stop
+
+
+def test_transcript_of_a_finished_run_stops_where_the_run_did(
+    client: TestClient, transcripts_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The session outlives the run: ``hermes --resume`` keeps appending to it, and that later
+    conversation belongs to whoever resumed it, not to the run."""
+    from hermes_state import SessionDB
+
+    profile_home = _worker_home(tmp_path, monkeypatch)
+    task_id = _running_task_with_session(client, "transcript-end", "sess-end")
+    db = SessionDB(profile_home / "state.db")
+    db.create_session("sess-end", "kanban")
+    db.append_message("sess-end", "assistant", content="work done")
+    url = f"/api/plugins/kanban/v1/tasks/{task_id}"
+    assert client.post(f"{url}/complete", json={"summary": "shipped"}).status_code == 200
+    with kbc.connect_closing() as conn:
+        ended_at = kanban_db.latest_run(conn, task_id).ended_at
+    db.append_message("sess-end", "assistant", content="closing remark", timestamp=ended_at + 5)
+    db.append_message("sess-end", "user", content="private follow-up", timestamp=ended_at + 3600)
+    db.close()
+
+    for params in ({}, {"latest": "true"}):
+        body = client.get(f"{url}/transcript", params=params).json()
+        assert [m["content"] for m in body["messages"]] == ["work done", "closing remark"]
+        assert body["has_more"] is False

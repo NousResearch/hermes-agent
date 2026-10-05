@@ -23,6 +23,7 @@ from agent.redact import redact_sensitive_text
 from hermes_cli import kanban_db
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_edit
+from hermes_cli.kanban_db_dispatch import TERMINAL_WORKER_REAP_GRACE_SECONDS as _RUN_TRANSCRIPT_GRACE_SECONDS
 
 log = logging.getLogger(__name__)
 
@@ -793,12 +794,14 @@ def _transcript_message(msg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _read_session_messages(
-    profile: str, session_id: str, after_id: int, limit: int, latest: bool = False
+    profile: str, session_id: str, after_id: int, limit: int, latest: bool = False,
+    until: Optional[float] = None,
 ) -> list[dict[str, Any]]:
     """Read a worker session (plus its compression continuations) from the
     worker profile's own state.db. Message ids are one AUTOINCREMENT per DB,
     so ``after_id`` is a valid cursor across the whole chain. ``latest``
-    returns the newest ``limit`` rows (still oldest-first) instead."""
+    returns the newest ``limit`` rows (still oldest-first) instead. ``until``:
+    nothing written after that time."""
     from pathlib import Path
 
     from hermes_cli.profiles import resolve_profile_env
@@ -821,12 +824,14 @@ def _read_session_messages(
         chain = db.get_compression_chain(session_id)
         if latest:
             for sid in reversed(chain):
-                rows[:0] = db.get_messages(sid, include_inactive=True, latest=True, limit=limit - len(rows))
+                rows[:0] = db.get_messages(
+                    sid, include_inactive=True, latest=True, limit=limit - len(rows), before_timestamp=until)
                 if len(rows) >= limit:
                     break
             return rows
         for sid in chain:
-            rows.extend(db.get_messages(sid, include_inactive=True, after_id=after_id, limit=limit - len(rows)))
+            rows.extend(db.get_messages(
+                sid, include_inactive=True, after_id=after_id, limit=limit - len(rows), before_timestamp=until))
             if len(rows) >= limit:
                 break
         return rows
@@ -869,9 +874,15 @@ def task_transcript(
         profile = run.profile or "default"
         if not _transcripts_enabled(profile):
             raise HTTPException(status_code=404, detail="transcripts are disabled")
+        # The session outlives the run: ``hermes --resume`` appends to it, and that later
+        # conversation is not this run's. A worker may still write for a moment after its own
+        # transition, and is killed once the reaper's grace has passed.
+        # ponytail: wall-clock bound, so a resume inside the grace window still shows; an exact
+        # one needs the worker to stamp its last message id on the run when it exits.
+        until = run.ended_at + _RUN_TRANSCRIPT_GRACE_SECONDS if run.ended_at else None
         try:
             rows = _read_session_messages(
-                profile, str(session_id), 0 if latest else after_id, limit + 1, latest
+                profile, str(session_id), 0 if latest else after_id, limit + 1, latest, until
             )
         except Exception as exc:
             log.warning("kanban transcript read failed for %s: %s", task_id, exc)

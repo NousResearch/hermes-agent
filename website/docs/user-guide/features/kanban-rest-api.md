@@ -254,6 +254,11 @@ its session to the run when it starts, and continuations after context
 compression are followed. A run started before this link existed, or one
 whose worker has not started yet, returns an empty `messages` list.
 
+A finished run's transcript ends with the run. The worker's session can be
+resumed later (`hermes --resume`), and what is said in it then is not part of
+the run: steps written more than two minutes after the run ended are not
+returned.
+
 ```bash
 # Poll a running task: repeat with after_id = the previous next_after_id.
 curl -fsS \

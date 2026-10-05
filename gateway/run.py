@@ -452,6 +452,16 @@ def _ensure_windows_gateway_venv_imports() -> None:
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():
             continue
+        # LOCAL PATCH (gateway-keeper): skip venvs built for a different interpreter
+        # version (stale 3.11 venv poisoning a 3.14 gateway with cp311 binaries).
+        try:
+            venv_pyver = (resolved_venv / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
+            import re as _re
+            _m = _re.search(r"version(?:_info)?\s*=\s*(\d+)\.(\d+)", venv_pyver)
+            if _m and tuple(int(x) for x in _m.groups()) != sys.version_info[:2]:
+                continue
+        except OSError:
+            pass
 
         project_entry = str(project_root)
         site_entry = str(site_packages)

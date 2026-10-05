@@ -86,3 +86,36 @@ class TestUpdateStatusRootLog:
         own = status_after_root_completion(b_id)
         assert own["exit_code"] == 0
         assert own["action_id"] == b_id
+
+    @pytest.mark.parametrize("b_outcome", [None, "failed", "success"])
+    def test_root_latest_receipt_of_another_profile_never_certifies_this_action(self, monkeypatch, tmp_path, b_outcome):
+        # The receipt store is root-wide too: A's later success in latest.json must not become B's
+        # exit 0. Only a receipt naming B's action (found in the archive when A is latest) counts.
+        from hermes_cli import update_receipt
+
+        root = tmp_path / "root"
+        (root / "logs").mkdir(parents=True)
+        b_id, a_id = "b" * 32, "a" * 32
+        for profile, action_id, outcome in (("b", b_id, b_outcome), ("a", a_id, "success")):
+            if outcome:
+                monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / profile))
+                monkeypatch.setenv("HERMES_ACTION_ID", action_id)
+                update_receipt.begin_update_receipt()
+                update_receipt.finalize_update_receipt(outcome)
+        monkeypatch.delenv("HERMES_ACTION_ID")
+        monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "b"))
+        assert update_receipt.read_latest_receipt()["action_id"] == a_id
+        (tmp_path / "hermes-update.log").write_text(
+            f"=== hermes-update started 2026-08-17 11:19:34 {b_id} ===\n", encoding="utf-8")
+        (root / "logs" / "update.log").write_text(f"=== hermes-update completed {a_id} ===\n", encoding="utf-8")
+        monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path)
+        for registry in ("_ACTION_PROCS", "_ACTION_RESULTS", "_ACTION_COMMANDS", "_ACTION_IDS"):
+            monkeypatch.setattr(_web_server_gateway, registry, {})
+
+        data = self.client.get("/api/actions/hermes-update/status?lines=2000").json()
+
+        assert data["exit_code"] == (0 if b_outcome == "success" else None)
+        assert "action_id" not in data  # A's root completion marker is not B's
+        # The attached receipt names its writer: B's own when it exists, else A's (never B's).
+        assert data["receipt"]["action_id"] == (b_id if b_outcome else a_id)
+        assert data["receipt"]["outcome"] == (b_outcome or "success")

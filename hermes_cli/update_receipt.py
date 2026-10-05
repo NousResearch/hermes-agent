@@ -156,6 +156,9 @@ class UpdateReceipt:
         self.correlation_id = uuid.uuid4().hex
         self.data["update_id"] = self.correlation_id
         self.data["correlation_id"] = _launcher_correlation_id()
+        # The dashboard action that spawned this run: the receipt store is root-wide, so the
+        # action-status route certifies an outcome only from a receipt naming ITS action.
+        self.data["action_id"] = os.environ.get("HERMES_ACTION_ID", "").strip() or None
 
     def step(self, name: str, ok: bool, detail: str = "") -> None:
         self.data["steps"].append({"name": name, "ok": bool(ok), "detail": detail, "at": _utc_now_iso()})
@@ -743,6 +746,21 @@ def read_latest_receipt() -> Optional[dict[str, Any]]:
             return None
         payload = json.loads(path.read_text(encoding="utf-8-sig"))
         return payload if isinstance(payload, dict) else None
+    return None
+
+
+def read_receipt_for_action(action_id: str) -> Optional[dict[str, Any]]:
+    """Newest receipt written by the dashboard action ``action_id`` (``latest.json`` first, then
+    the retained archive), or None. Never raises."""
+    latest = read_latest_receipt()
+    if latest and latest.get("action_id") == action_id:
+        return latest
+    with suppress(Exception):
+        for path in sorted(_receipt_dir().glob("update_*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            with suppress(Exception):
+                payload = json.loads(path.read_text(encoding="utf-8-sig"))
+                if isinstance(payload, dict) and payload.get("action_id") == action_id:
+                    return payload
     return None
 
 

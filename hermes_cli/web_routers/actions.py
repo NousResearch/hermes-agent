@@ -346,9 +346,9 @@ def _completed_exit_code(
     if durable_action_id:
         return 0
     if receipt is not None and receipt.get("outcome") in ("success", "partial"):
-        # No in-memory result and no log marker (e.g. log rotated), but the
-        # receipt proves a completed run: report its outcome rather than a
-        # null clients time out on. ``partial`` maps to exit 1 like the CLI.
+        # No in-memory result and no log marker (e.g. log rotated), but THIS
+        # action's receipt proves a completed run: report its outcome rather than
+        # a null clients time out on. ``partial`` maps to exit 1 like the CLI.
         return 0 if receipt["outcome"] == "success" else 1
     return None
 
@@ -365,7 +365,7 @@ async def get_action_status(name: str, lines: int = 200):
     tail = _tail_lines(log_dir / log_file_name, requested_lines)
 
     durable_update_action_id = None
-    update_receipt_summary = None
+    update_receipt_summary = action_receipt_summary = None
     if name == "hermes-update":
         # ``hermes update`` mirrors to the ROOT home's update.log (main_dashboard), never this
         # dashboard's profile home: read it where it is written.
@@ -373,7 +373,9 @@ async def get_action_status(name: str, lines: int = 200):
 
         durable_update_action_id = _durable_completed_update_action_id(
             _tail_lines(get_default_hermes_root() / "logs" / "update.log", 2000))
-        if durable_update_action_id != _latest_spawned_update_action_id(_tail_lines(log_dir / log_file_name, 2000)):
+        spawned_action_id = (_latest_spawned_update_action_id(_tail_lines(log_dir / log_file_name, 2000))
+                             or _ACTION_IDS.get(name))
+        if durable_update_action_id != spawned_action_id:
             # The root log is shared by every profile: another profile's (or an older) run's
             # completion never certifies the action this dashboard started.
             durable_update_action_id = None
@@ -386,14 +388,17 @@ async def get_action_status(name: str, lines: int = 200):
         # dashboard restarting itself mid-action). Surface it so clients READ
         # the outcome instead of inferring it from liveness probes.
         # See #81193, #87359, #91277.
-        update_receipt_summary = _latest_update_receipt_summary()
+        # The store is root-wide (every profile's runs): show THIS action's receipt when one exists.
+        update_receipt_summary = _latest_update_receipt_summary(spawned_action_id)
+        if spawned_action_id and (update_receipt_summary or {}).get("action_id") == spawned_action_id:
+            action_receipt_summary = update_receipt_summary
 
     proc = _ACTION_PROCS.get(name)
     if proc is None:
         result = _ACTION_RESULTS.get(name)
         running = False
         pid = result.get("pid") if result else None
-        exit_code = _completed_exit_code(result, durable_update_action_id, update_receipt_summary)
+        exit_code = _completed_exit_code(result, durable_update_action_id, action_receipt_summary)
     else:
         exit_code = proc.poll()
         running = exit_code is None
@@ -420,22 +425,28 @@ def _read_latest_receipt() -> Optional[Dict[str, Any]]:
         return None
 
 
-def _latest_update_receipt_summary() -> Optional[Dict[str, Any]]:
-    """Compact summary of the latest receipt (written by EVERY ``hermes update`` run,
-    incl. refused/failed), or None; never raises. Steps/skips stay in the full endpoint.
+def _latest_update_receipt_summary(action_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Compact summary of dashboard action ``action_id``'s receipt when one exists, else of the
+    latest receipt (written by EVERY ``hermes update`` run, incl. refused/failed), or None; never
+    raises. Steps/skips stay in the full endpoint. ``action_id`` names the writer so a client
+    never credits another action's run.
 
     Phase-1 bullet 3 (#91277): the receipt (written by EVERY ``hermes update`` run since #91283, including
     refused and failed ones, with a ``latest.json`` pointer) is the durable success signal the Desktop and
     dashboard should read instead of inferring outcomes from liveness probes across the update's stop/start
     gap (#81193, #87359).
     """
-    receipt = _read_latest_receipt()
+    receipt = None
+    if action_id:
+        from hermes_cli.update_receipt import read_receipt_for_action
+        receipt = read_receipt_for_action(action_id)
+    receipt = receipt or _read_latest_receipt()
     if not receipt:
         return None
     try:
         post = receipt.get("post_update") or {}
         return {
-            **{k: receipt.get(k) for k in ("outcome", "started_at", "finished_at")},
+            **{k: receipt.get(k) for k in ("outcome", "started_at", "finished_at", "action_id")},
             "pre_sha": (receipt.get("pre_update") or {}).get("sha"),
             "post_sha": post.get("sha"), "post_version": post.get("version"),
             "fleet_states": sorted({str(e.get("state")) for e in receipt.get("fleet") or [] if isinstance(e, dict)}),

@@ -27,6 +27,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 _IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from tools.environments.secret_isolation import wrap_argv
+from tools.process_stdin_guard import refuse_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, NamedTuple, Optional
@@ -2337,6 +2338,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
 
     def write_stdin(self, session_id: str, data: str) -> dict:
         """Send raw data to a running process's stdin (no newline appended)."""
+        if (session := self.get(session_id)) is not None and (refused := refuse_stdin(session, data)) is not None:
+            return refused
 
         def via_pty(pty):
             # pywinpty expects str on Windows; ptyprocess expects bytes on POSIX.

@@ -211,13 +211,15 @@ class GatewayVoiceMixin:
                               profile=getattr(adapter, "_owner_profile", None))
         self._apply_voice_mode(adapter, key, chat_id, "off")
 
-    def _is_duplicate_voice_transcript(self, guild_id: int, user_id: int, transcript: str) -> bool:
+    def _is_duplicate_voice_transcript(self, binding: tuple, user_id: int, transcript: str) -> bool:
         """Suppress repeated STT outputs for one recent utterance (voice capture can emit it twice a
-        few seconds apart -> a second queued run and overlapping spoken replies)."""
+        few seconds apart -> a second queued run and overlapping spoken replies). ``binding`` is
+        (receiving bot's profile, guild, bound text channel): the store is runner-wide, and another
+        bot's copy of the utterance, or a new binding, is a separate turn."""
         normalized = re.sub(r"[^\w\s]", "", re.sub(r"\s+", " ", transcript).strip().lower())
         if not normalized:
             return False
-        now, key = time.monotonic(), (guild_id, user_id)
+        now, key = time.monotonic(), (*binding, user_id)
         if not isinstance(recent_store := getattr(self, "_recent_voice_transcripts", None), dict):
             recent_store = self._recent_voice_transcripts = {}
         recent = [(ts, txt) for ts, txt in recent_store.get(key, []) if now - ts <= 12.0]
@@ -233,14 +235,31 @@ class GatewayVoiceMixin:
     def _voice_input_source(adapter, guild_id: int, user_id: int, text_ch_id) -> SessionSource:
         """Bound text channel's own source when available (voice shares the text conversation's
         session), else a synthetic one."""
+        # The speaker's display name, as their typed messages carry it: the pinned session-context
+        # prompt renders it, so a bare id here re-rendered it on every spoken/typed switch.
+        client = getattr(adapter, "_client", None)
+        guild = client.get_guild(guild_id) if client else None
+        member = guild.get_member(int(user_id)) if guild else None
+        display_name = getattr(member, "display_name", None)
+        user_name = display_name if isinstance(display_name, str) and display_name else None
         if source_data := getattr(adapter, "_voice_sources", {}).get(guild_id):
             source = SessionSource.from_dict(source_data)
-            source.user_id = source.user_name = str(user_id)
+            # get_member() is cache-only: on a miss the /voice join invoker keeps the name bound at
+            # join, never another participant's.
+            if user_name is None and source.user_id == str(user_id):
+                user_name = source.user_name
+            source.user_id, source.user_name = str(user_id), user_name or str(user_id)
         else:
             source = SessionSource(
                 platform=Platform.DISCORD, chat_id=str(text_ch_id), user_id=str(user_id),
-                user_name=str(user_id), chat_type="channel",
+                user_name=user_name or str(user_id), chat_type="channel",
                 profile=getattr(adapter, "_owner_profile", None))
+        # The stored source is a join-time copy; a typed message reads the channel's current name and
+        # topic, so a rename or topic edit would otherwise flip the pinned prompt on every switch.
+        channel = client.get_channel(int(text_ch_id)) if client else None
+        if channel is not None and callable(labels := getattr(adapter, "_guild_channel_labels", None)):
+            if isinstance(current := labels(channel), tuple):
+                source.chat_name, source.chat_topic = current
         # Serialization drops transport provenance; auth must still follow the receiving bot.
         source._transport_adapter_ref = weakref.ref(adapter)
         return source
@@ -270,7 +289,8 @@ class GatewayVoiceMixin:
         if not self._is_user_authorized_for_source(source):
             logger.debug("Unauthorized voice input from user %d, ignoring", user_id)
             return
-        if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
+        binding = (getattr(adapter, "_owner_profile", None), guild_id, text_ch_id)
+        if self._is_duplicate_voice_transcript(binding, user_id, transcript):
             logger.info("Suppressing duplicate voice transcript for guild=%s user=%s: %s",
                         guild_id, user_id, transcript[:100])
             return
@@ -281,18 +301,24 @@ class GatewayVoiceMixin:
                 safe_text = transcript[:2000].replace("@everyone", "@\u200beveryone")
                 safe_text = safe_text.replace("@here", "@\u200bhere")
                 await channel.send(t("gateway.voice.transcript_echo", user=user_id, text=safe_text))
-        # Bound text channel's channel_prompt: voice input gets the same per-channel context.
-        channel_prompt = None
+        # Bound text channel's channel_prompt and skills: voice input gets the same per-channel
+        # context, and a first spoken turn opens the session, the only point skills load.
+        # A thread inherits its parent's bindings, as its typed messages do.
+        channel_prompt = auto_skill = None
+        parent_id = source.parent_chat_id or None
         if callable(resolver := getattr(adapter, "_resolve_channel_prompt", None)):
             with suppress(Exception):
-                resolved = resolver(str(text_ch_id))
+                resolved = resolver(str(text_ch_id), parent_id)
                 channel_prompt = resolved if isinstance(resolved, str) else None
+        if callable(skills := getattr(adapter, "_resolve_channel_skills", None)):
+            bound = skills(str(text_ch_id), parent_id)
+            auto_skill = bound if isinstance(bound, list) else None
         # Synthetic MessageEvent for the normal pipeline; the SimpleNamespace raw_message lets
         # _get_guild_id() extract guild_id so _send_voice_reply() plays audio in the voice channel.
         event = MessageEvent(
             source=source, text=transcript, message_type=MessageType.VOICE,
             raw_message=SimpleNamespace(guild_id=guild_id, guild=None),
-            channel_prompt=channel_prompt)
+            channel_prompt=channel_prompt, auto_skill=auto_skill)
         await adapter.handle_message(event)
 
     def _should_send_voice_reply(

@@ -155,6 +155,13 @@ def _is_single_query_approval_context() -> bool:
     return is_truthy_value(_session_env("HERMES_SINGLE_QUERY_SESSION"))
 
 
+def _no_user_can_answer() -> bool:
+    """True in single-query (-q), cron and unattended-platform sessions. `hermes chat -q` still registers the
+    CLI panel callback, so a prompt that only checks for a callback would wait the full timeout for nobody."""
+    return (_is_single_query_approval_context() or _is_cron_approval_context()
+            or _is_unattended_platform_approval_context())
+
+
 def _is_gateway_approval_context() -> bool:
     """True inside a gateway/API session that can answer an approval.
 

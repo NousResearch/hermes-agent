@@ -3,7 +3,6 @@ inbound webhooks (text, media attachments, typing indicators, read receipts)."""
 
 import asyncio
 import errno
-import json
 import logging
 import os
 import re
@@ -13,18 +12,25 @@ from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qs, quote
+from urllib.parse import quote
 
 import httpx
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms._shared import extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret
-from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult,
-    cache_image_from_bytes_async, cache_audio_from_bytes_async, cache_document_from_bytes_async,
+from gateway.platforms._shared import (
+    extra_or_secret as _extra_or_secret,
+    get_scoped_secret as _get_scoped_secret,
 )
-from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    SendResult,
+    cache_image_from_bytes_async,
+    cache_audio_from_bytes_async,
+    cache_document_from_bytes_async,
+)
+from gateway.platforms.event import MessageEvent
 from .media_cache import ext_for_mime
+from .bluebubbles_inbound import BlueBubblesInboundMixin
 from gateway.platforms.helpers import (
     MessageDeduplicator,
     compile_mention_patterns,
@@ -35,12 +41,21 @@ from utils import TRUTHY_STRINGS
 # Historical BlueBubbles mime→ext maps, preserved verbatim as overrides for the shared dispatch in
 # gateway.platforms.media_cache. Both maps are CLOSED: unlisted mimes fall back to .jpg / .mp3.
 _BLUEBUBBLES_IMAGE_EXT_OVERRIDES = {
-    "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp",
-    "image/heic": ".jpg", "image/heif": ".jpg", "image/tiff": ".jpg",  # historical mapping
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/heic": ".jpg",
+    "image/heif": ".jpg",
+    "image/tiff": ".jpg",  # historical mapping
 }
 _BLUEBUBBLES_AUDIO_EXT_OVERRIDES = {
-    "audio/mp3": ".mp3", "audio/mpeg": ".mp3", "audio/ogg": ".ogg", "audio/wav": ".wav",
-    "audio/x-caf": ".mp3", "audio/mp4": ".m4a",
+    "audio/mp3": ".mp3",
+    "audio/mpeg": ".mp3",
+    "audio/ogg": ".ogg",
+    "audio/wav": ".wav",
+    "audio/x-caf": ".mp3",
+    "audio/mp4": ".m4a",
     "audio/aac": ".m4a",  # historical mapping (shared table says .aac)
 }
 
@@ -56,17 +71,11 @@ MAX_TEXT_LENGTH = 4000
 
 # iMessage has no stable bot mention identity (unlike <@U...>/@botname/MXID), so
 # `require_mention: true` without custom aliases uses Hermes wake words.
-DEFAULT_MENTION_PATTERNS = [r"(?<![\w@])@?hermes\s+agent\b[,:\-]?", r"(?<![\w@])@?hermes\b[,:\-]?"]
+DEFAULT_MENTION_PATTERNS = [
+    r"(?<![\w@])@?hermes\s+agent\b[,:\-]?",
+    r"(?<![\w@])@?hermes\b[,:\-]?",
+]
 
-# Tapback reaction codes (BlueBubbles associatedMessageType values)
-_TAPBACK_ADDED = {
-    2000: "love", 2001: "like", 2002: "dislike",
-    2003: "laugh", 2004: "emphasize", 2005: "question",
-}
-_TAPBACK_REMOVED = {
-    3000: "love", 3001: "like", 3002: "dislike",
-    3003: "laugh", 3004: "emphasize", 3005: "question",
-}
 _VALID_REACTIONS = {"love", "like", "dislike", "laugh", "emphasize", "question"}
 _REACTION_ALIASES = {
     "loved": "love",
@@ -77,10 +86,6 @@ _REACTION_ALIASES = {
     "questioned": "question",
 }
 
-# Only new-message (plus the legacy message alias) starts an agent turn.
-# BlueBubbles emits updated-message for receipt, delivery, and attachment state
-# changes, often with a different chat GUID shape for the same iMessage.
-_MESSAGE_EVENTS = {"new-message", "message"}
 _WEBHOOK_EVENTS = ["new-message"]
 
 # BlueBubbles sends each webhook once and only logs non-2xx responses. Retry
@@ -129,36 +134,57 @@ def _bool_setting(value: Any, default: bool = False) -> bool:
 
 def _closed_ext(mime: str, overrides: Dict[str, str], fallback: str) -> str:
     """Historical maps were closed: unlisted mimes fall back without consulting mimetypes."""
-    return ext_for_mime(mime, overrides=overrides, use_defaults=False, use_mimetypes=False,
-                        fallback=fallback) or fallback
+    return (
+        ext_for_mime(
+            mime,
+            overrides=overrides,
+            use_defaults=False,
+            use_mimetypes=False,
+            fallback=fallback,
+        )
+        or fallback
+    )
 
 
 def _temp_guid() -> str:
     return f"temp-{datetime.utcnow().timestamp()}"
 
 
-def _ok():
-    """Plain ``ok`` acknowledgement for webhook events we accept but don't process."""
-    from aiohttp import web
-    return web.Response(text="ok")
-
-
-class BlueBubblesAdapter(BasePlatformAdapter):
+class BlueBubblesAdapter(BlueBubblesInboundMixin, BasePlatformAdapter):
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
     platform = Platform.BLUEBUBBLES
     SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_TEXT_LENGTH
-    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    splits_long_messages = (
+        True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
+    )
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.BLUEBUBBLES)
         extra = config.extra or {}
-        self.server_url = _normalize_server_url(_extra_or_secret(extra, "server_url", "BLUEBUBBLES_SERVER_URL"))
-        self.password = extra.get("password") or _get_scoped_secret("BLUEBUBBLES_PASSWORD", "")
-        self.webhook_host = _extra_or_secret(extra, "webhook_host", "BLUEBUBBLES_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
-        self.webhook_port = int(_extra_or_secret(extra, "webhook_port", "BLUEBUBBLES_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT)))
-        path = str(_extra_or_secret(extra, "webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH))
+        self.server_url = _normalize_server_url(
+            _extra_or_secret(extra, "server_url", "BLUEBUBBLES_SERVER_URL")
+        )
+        self.password = extra.get("password") or _get_scoped_secret(
+            "BLUEBUBBLES_PASSWORD", ""
+        )
+        self.webhook_host = _extra_or_secret(
+            extra, "webhook_host", "BLUEBUBBLES_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST
+        )
+        self.webhook_port = int(
+            _extra_or_secret(
+                extra,
+                "webhook_port",
+                "BLUEBUBBLES_WEBHOOK_PORT",
+                str(DEFAULT_WEBHOOK_PORT),
+            )
+        )
+        path = str(
+            _extra_or_secret(
+                extra, "webhook_path", "BLUEBUBBLES_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH
+            )
+        )
         self.webhook_path = path if path.startswith("/") else f"/{path}"
         self.send_read_receipts = _bool_setting(
             extra.get("send_read_receipts"), default=True
@@ -175,7 +201,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         except (TypeError, ValueError):
             self.typing_refresh_interval = 4.0
         self.auto_react = _bool_setting(extra.get("auto_react"), default=True)
-        configured_reaction = str(extra.get("auto_react_type") or "like").strip().lower()
+        configured_reaction = (
+            str(extra.get("auto_react_type") or "like").strip().lower()
+        )
         configured_reaction = _REACTION_ALIASES.get(
             configured_reaction, configured_reaction
         )
@@ -194,7 +222,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             _require_mention = _get_scoped_secret("BLUEBUBBLES_REQUIRE_MENTION")
         self.require_mention = str(_require_mention).strip().lower() in TRUTHY_STRINGS
         self._mention_patterns = self._compile_mention_patterns(
-            extra["mention_patterns"] if "mention_patterns" in extra else _get_scoped_secret("BLUEBUBBLES_MENTION_PATTERNS"))
+            extra["mention_patterns"]
+            if "mention_patterns" in extra
+            else _get_scoped_secret("BLUEBUBBLES_MENTION_PATTERNS")
+        )
         self.client: Optional[httpx.AsyncClient] = None
         self._runner = None
         self._outbound_only = False
@@ -213,11 +244,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     def _compile_mention_patterns(raw: Any) -> List[re.Pattern]:
         """Compile group-mention wake words; ``raw`` is a list, a raw env string (JSON list or
         comma/newline-separated), or None (Hermes defaults)."""
-        return compile_mention_patterns(raw, log_prefix="bluebubbles", defaults=DEFAULT_MENTION_PATTERNS,
-                                        logger_=logger)
+        return compile_mention_patterns(
+            raw,
+            log_prefix="bluebubbles",
+            defaults=DEFAULT_MENTION_PATTERNS,
+            logger_=logger,
+        )
 
     def _message_matches_mention_patterns(self, text: str) -> bool:
-        return bool(text) and any(pattern.search(text) for pattern in self._mention_patterns)
+        return bool(text) and any(
+            pattern.search(text) for pattern in self._mention_patterns
+        )
 
     def _clean_mention_text(self, text: str) -> str:
         """Strip a leading wake word only — patterns are regexes, so stripping anywhere later in the
@@ -225,7 +262,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         stripped = (text or "").lstrip()
         for pattern in self._mention_patterns:
             if match := pattern.match(stripped):
-                return stripped[match.end():].lstrip(" ,:-") or text
+                return stripped[match.end() :].lstrip(" ,:-") or text
         return text
 
     async def _api_json(self, method: str, path: str, **kwargs) -> Dict[str, Any]:
@@ -251,9 +288,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         except Exception as exc:
             return SendResult(success=False, error=str(exc) or type(exc).__name__)
 
-    async def _private_api_chat_call(self, chat_id: str, action: str, method: str) -> bool:
+    async def _private_api_chat_call(
+        self, chat_id: str, action: str, method: str
+    ) -> bool:
         """Fire a private-API chat action (typing/read); True only if the call was made."""
-        if not self._private_api_enabled or not self._helper_connected or not self.client:
+        if (
+            not self._private_api_enabled
+            or not self._helper_connected
+            or not self.client
+        ):
             return False
         with suppress(Exception):
             if guid := await self._resolve_chat_guid(chat_id):
@@ -267,12 +310,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         self._outbound_only = False
         if not self.server_url or not self.password:
-            logger.error("[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required")
+            logger.error(
+                "[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required"
+            )
             return False
         from aiohttp import web
+
         # Tighter keepalive so idle CLOSE_WAIT drains promptly.
         # See #18451.
         from gateway.platforms._http_client_limits import platform_httpx_limits
+
         self.client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
         try:
             await self._api_get("/api/v1/ping")
@@ -280,10 +327,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             server_data = (info or {}).get("data", {})
             self._private_api_enabled = bool(server_data.get("private_api"))
             self._helper_connected = bool(server_data.get("helper_connected"))
-            logger.info("[bluebubbles] connected to %s (private_api=%s, helper=%s)",
-                        self.server_url, self._private_api_enabled, self._helper_connected)
+            logger.info(
+                "[bluebubbles] connected to %s (private_api=%s, helper=%s)",
+                self.server_url,
+                self._private_api_enabled,
+                self._helper_connected,
+            )
         except Exception as exc:
-            logger.error("[bluebubbles] cannot reach server at %s: %s", self.server_url, exc)
+            logger.error(
+                "[bluebubbles] cannot reach server at %s: %s", self.server_url, exc
+            )
             await self._cleanup_local_resources()
             return False
         # Explicit body cap: BlueBubbles webhook events are small JSON (or form-encoded) payloads.
@@ -300,9 +353,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # — keep it out of aiohttp access logs.
         # Shared-listener mode (multiplex secondary): no bind; served at /p/<profile>/<webhook_path>.
         from gateway.platforms.shared_ingress import bind_listener
+
         try:
             self._runner = await bind_listener(
-                self, app, self.webhook_host, self.webhook_port, self.webhook_path, access_log=None)
+                self,
+                app,
+                self.webhook_host,
+                self.webhook_port,
+                self.webhook_path,
+                access_log=None,
+            )
         except asyncio.CancelledError:
             await asyncio.shield(self._cleanup_local_resources())
             raise
@@ -350,14 +410,20 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             try:
                 await client.aclose()
             except Exception as exc:
-                logger.debug("[bluebubbles] HTTP client cleanup failed: %s", exc)
+                logger.debug(
+                    "[bluebubbles] HTTP client cleanup failed: %s", exc, exc_info=True
+                )
 
         runner, self._runner = self._runner, None
         if runner:
             try:
                 await runner.cleanup()
             except Exception as exc:
-                logger.debug("[bluebubbles] webhook runner cleanup failed: %s", exc)
+                logger.debug(
+                    "[bluebubbles] webhook runner cleanup failed: %s",
+                    exc,
+                    exc_info=True,
+                )
         self._mark_disconnected()
 
     @property
@@ -371,7 +437,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return f"http://{host}:{self.webhook_port}{self.webhook_path}"
 
     def _webhook_register_url_with(self, password_param: str) -> str:
-        return f"{self._webhook_url}?password={password_param}" if self.password else self._webhook_url
+        return (
+            f"{self._webhook_url}?password={password_param}"
+            if self.password
+            else self._webhook_url
+        )
 
     @property
     def _webhook_register_url(self) -> str:
@@ -395,12 +465,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return [webhook for webhook in data if webhook.get("url") == url]
             logger.warning("[bluebubbles] webhook lookup returned invalid data")
         except Exception as exc:
-            logger.warning("[bluebubbles] failed to list registered webhooks: %s", exc)
+            logger.warning(
+                "[bluebubbles] failed to list registered webhooks: %s",
+                exc,
+                exc_info=True,
+            )
         return None
 
-    async def _remove_registered_webhooks(
-        self, webhooks: List[Dict[str, Any]]
-    ) -> bool:
+    async def _remove_registered_webhooks(self, webhooks: List[Dict[str, Any]]) -> bool:
         """Best-effort cleanup after a working registration is available."""
         assert self.client is not None
         removed_all = True
@@ -419,6 +491,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 logger.warning(
                     "[bluebubbles] failed to remove stale webhook registration: %s",
                     exc,
+                    exc_info=True,
                 )
         return removed_all
 
@@ -436,6 +509,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 logger.warning(
                     "[bluebubbles] registration failed while connect was cancelled: %s",
                     exc,
+                    exc_info=True,
                 )
             raise cancelled
 
@@ -468,6 +542,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 logger.warning(
                     "[bluebubbles] failed to remove stale webhook registration: %s",
                     exc,
+                    exc_info=True,
                 )
                 if removed:
                     current = await self._find_registered_webhooks(webhook_url)
@@ -485,6 +560,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                                 "[bluebubbles] failed to restore webhook after "
                                 "partial stale cleanup: %s",
                                 rollback_exc,
+                                exc_info=True,
                             )
                 return False
             removed.append(webhook)
@@ -504,6 +580,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             logger.warning(
                 "[bluebubbles] webhook replacement failed; reconciling state: %s",
                 exc,
+                exc_info=True,
             )
             current = await self._find_registered_webhooks(webhook_url)
             if current is None:
@@ -520,9 +597,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 if set(webhook.get("events") or []) == expected_events
             ]
             if exact:
-                logger.info(
-                    "[bluebubbles] replacement committed despite local failure"
-                )
+                logger.info("[bluebubbles] replacement committed despite local failure")
                 return True
 
             if current:
@@ -539,14 +614,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     {"url": webhook_url, "events": rollback_events},
                 )
                 rollback_status = rollback.get("status", 0)
-                if not isinstance(rollback_status, int) or not 200 <= rollback_status < 300:
-                    raise RuntimeError(
-                        f"rollback returned status {rollback_status}"
-                    )
+                if (
+                    not isinstance(rollback_status, int)
+                    or not 200 <= rollback_status < 300
+                ):
+                    raise RuntimeError(f"rollback returned status {rollback_status}")
             except Exception as rollback_exc:
                 logger.error(
                     "[bluebubbles] failed to restore prior webhook registration: %s",
                     rollback_exc,
+                    exc_info=True,
                 )
             return False
 
@@ -573,7 +650,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 await migration
             except Exception as exc:
                 logger.warning(
-                    "[bluebubbles] migration failed during cancellation: %s", exc
+                    "[bluebubbles] migration failed during cancellation: %s",
+                    exc,
+                    exc_info=True,
                 )
             raise cancelled
 
@@ -673,23 +752,34 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 if len(chats) < limit:
                     break
         except Exception:
-            pass
+            # Failed discovery leaves the existing new-DM fallback available.
+            logger.exception("[bluebubbles] recipient lookup failed")
         return None
 
     async def _create_chat_for_handle(self, address: str, message: str) -> SendResult:
         """Create a new chat by sending the first message to *address*."""
         return await self._post_message(
-            "/api/v1/chat/new", {"addresses": [address], "message": message, "tempGuid": _temp_guid()})
+            "/api/v1/chat/new",
+            {"addresses": [address], "message": message, "tempGuid": _temp_guid()},
+        )
 
     # --- Text sending ---
 
     @staticmethod
     def truncate_message(content: str, max_length: int = MAX_TEXT_LENGTH) -> List[str]:
         # Base splitter minus "(1/3)" pagination suffixes — iMessage bubbles flow naturally.
-        return [_PAGINATION_SUFFIX_RE.sub("", c) for c in BasePlatformAdapter.truncate_message(content, max_length)]
+        return [
+            _PAGINATION_SUFFIX_RE.sub("", c)
+            for c in BasePlatformAdapter.truncate_message(content, max_length)
+        ]
 
-    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
-                   metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
         text = self.format_message(content)
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
@@ -697,25 +787,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # splitting made one answer look like duplicate replies. It remains an
         # explicit opt-in, while over-limit messages are always chunked.
         if self.split_paragraph_replies:
-            paragraphs = [
-                p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()
-            ]
+            paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
             chunks: List[str] = []
             for para in paragraphs or [text]:
                 if len(para) <= self.MAX_MESSAGE_LENGTH:
                     chunks.append(para)
                 else:
                     chunks.extend(
-                        self.truncate_message(
-                            para, max_length=self.MAX_MESSAGE_LENGTH
-                        )
+                        self.truncate_message(para, max_length=self.MAX_MESSAGE_LENGTH)
                     )
         elif len(text) <= self.MAX_MESSAGE_LENGTH:
             chunks = [text]
         else:
-            chunks = self.truncate_message(
-                text, max_length=self.MAX_MESSAGE_LENGTH
-            )
+            chunks = self.truncate_message(text, max_length=self.MAX_MESSAGE_LENGTH)
         last = SendResult(success=True)
         guid: Optional[str] = None
         for index, chunk in enumerate(chunks):
@@ -731,7 +815,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     if not created.success or index == len(chunks) - 1:
                         return created
                     last = created
-                    raw = created.raw_response if isinstance(created.raw_response, dict) else {}
+                    raw = (
+                        created.raw_response
+                        if isinstance(created.raw_response, dict)
+                        else {}
+                    )
                     data = raw.get("data") if isinstance(raw, dict) else {}
                     if isinstance(data, dict):
                         guid = data.get("chatGuid") or data.get("chatGUID")
@@ -763,15 +851,25 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 "message": chunk,
             }
             if reply_to and self._private_api_enabled and self._helper_connected:
-                payload.update(method="private-api", selectedMessageGuid=reply_to, partIndex=0)
-            if not (last := await self._post_message("/api/v1/message/text", payload)).success:
+                payload.update(
+                    method="private-api", selectedMessageGuid=reply_to, partIndex=0
+                )
+            if not (
+                last := await self._post_message("/api/v1/message/text", payload)
+            ).success:
                 return last
         return last
 
     # --- Media sending (outbound) ---
 
-    async def _send_attachment(self, chat_id: str, file_path: str, filename: Optional[str] = None,
-                               caption: Optional[str] = None, is_audio_message: bool = False) -> SendResult:
+    async def _send_attachment(
+        self,
+        chat_id: str,
+        file_path: str,
+        filename: Optional[str] = None,
+        caption: Optional[str] = None,
+        is_audio_message: bool = False,
+    ) -> SendResult:
         """Send a file attachment via BlueBubbles multipart upload."""
         if not self.client:
             return SendResult(success=False, error="Not connected")
@@ -785,45 +883,83 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             # httpx's async multipart iterator reads file objects through a sync chunk generator —
             # read the bytes off the event-loop thread first.
             payload = await asyncio.to_thread(Path(file_path).read_bytes)
-            data: Dict[str, str] = {"chatGuid": guid, "name": fname, "tempGuid": uuid.uuid4().hex}
+            data: Dict[str, str] = {
+                "chatGuid": guid,
+                "name": fname,
+                "tempGuid": uuid.uuid4().hex,
+            }
             if is_audio_message:
                 data["isAudioMessage"] = "true"
-            res = await self.client.post(self._api_url("/api/v1/message/attachment"), data=data, timeout=120,
-                                         files={"attachment": (fname, payload, "application/octet-stream")})
+            res = await self.client.post(
+                self._api_url("/api/v1/message/attachment"),
+                data=data,
+                timeout=120,
+                files={"attachment": (fname, payload, "application/octet-stream")},
+            )
             res.raise_for_status()
             result = res.json()
             if caption:
                 await self.send(chat_id, caption)
             if result.get("status") == 200:
                 rdata = result.get("data") or {}
-                return SendResult(success=True, message_id=rdata.get("guid") if isinstance(rdata, dict) else None,
-                                  raw_response=result)
-            return SendResult(success=False, error=result.get("message", "Attachment upload failed"))
+                return SendResult(
+                    success=True,
+                    message_id=rdata.get("guid") if isinstance(rdata, dict) else None,
+                    raw_response=result,
+                )
+            return SendResult(
+                success=False, error=result.get("message", "Attachment upload failed")
+            )
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
-    async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None,
-                         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
         try:
             from gateway.platforms.base import cache_image_from_url
-            return await self._send_attachment(chat_id, await cache_image_from_url(image_url), caption=caption)
+
+            return await self._send_attachment(
+                chat_id, await cache_image_from_url(image_url), caption=caption
+            )
         except Exception:
             return await super().send_image(chat_id, image_url, caption, reply_to)
 
-    async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, **kw) -> SendResult:
+    async def send_image_file(
+        self, chat_id, image_path, caption=None, reply_to=None, **kw
+    ) -> SendResult:
         return await self._send_attachment(chat_id, image_path, caption=caption)
 
-    async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None, **kw) -> SendResult:
-        return await self._send_attachment(chat_id, audio_path, caption=caption, is_audio_message=True)
+    async def send_voice(
+        self, chat_id, audio_path, caption=None, reply_to=None, **kw
+    ) -> SendResult:
+        return await self._send_attachment(
+            chat_id, audio_path, caption=caption, is_audio_message=True
+        )
 
-    async def send_video(self, chat_id, video_path, caption=None, reply_to=None, **kw) -> SendResult:
+    async def send_video(
+        self, chat_id, video_path, caption=None, reply_to=None, **kw
+    ) -> SendResult:
         return await self._send_attachment(chat_id, video_path, caption=caption)
 
-    async def send_document(self, chat_id, file_path, caption=None, file_name=None, reply_to=None, **kw) -> SendResult:
-        return await self._send_attachment(chat_id, file_path, filename=file_name, caption=caption)
+    async def send_document(
+        self, chat_id, file_path, caption=None, file_name=None, reply_to=None, **kw
+    ) -> SendResult:
+        return await self._send_attachment(
+            chat_id, file_path, filename=file_name, caption=caption
+        )
 
-    async def send_animation(self, chat_id, animation_url, caption=None, reply_to=None, metadata=None) -> SendResult:
-        return await self.send_image(chat_id, animation_url, caption, reply_to, metadata)
+    async def send_animation(
+        self, chat_id, animation_url, caption=None, reply_to=None, metadata=None
+    ) -> SendResult:
+        return await self.send_image(
+            chat_id, animation_url, caption, reply_to, metadata
+        )
 
     # --- Typing indicators / read receipts (private API only) ---
 
@@ -879,7 +1015,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return False
             return True
         except Exception as exc:
-            logger.debug("[bluebubbles] reaction failed: %s", exc)
+            logger.debug("[bluebubbles] reaction failed: %s", exc, exc_info=True)
             return False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
@@ -901,38 +1037,64 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         info: Dict[str, Any] = {"name": chat_id, "type": "group" if is_group else "dm"}
         with suppress(Exception):
             if guid := await self._resolve_chat_guid(chat_id):
-                res = await self._api_get(f"/api/v1/chat/{quote(guid, safe='')}?with=participants")
+                res = await self._api_get(
+                    f"/api/v1/chat/{quote(guid, safe='')}?with=participants"
+                )
                 data = (res or {}).get("data", {})
-                info["name"] = data.get("displayName") or data.get("chatIdentifier") or chat_id
-                participants = [addr for p in data.get("participants", []) or []
-                                if (addr := (p.get("address") or "").strip())]
+                info["name"] = (
+                    data.get("displayName") or data.get("chatIdentifier") or chat_id
+                )
+                participants = [
+                    addr
+                    for p in data.get("participants", []) or []
+                    if (addr := (p.get("address") or "").strip())
+                ]
                 if participants:
                     info["participants"] = participants
         return info
 
     def format_message(self, content: str) -> str:
-        return strip_markdown(content, keep_link_targets=True)  # iMessage auto-links bare URLs only
+        return strip_markdown(
+            content, keep_link_targets=True
+        )  # iMessage auto-links bare URLs only
 
     # --- Inbound attachment downloading ---
 
-    async def _download_attachment(self, att_guid: str, att_meta: Dict[str, Any]) -> Optional[str]:
+    async def _download_attachment(
+        self, att_guid: str, att_meta: Dict[str, Any]
+    ) -> Optional[str]:
         """Download an attachment and cache it locally; local path or None on failure."""
         if not self.client:
             return None
         try:
-            resp = await self.client.get(self._api_url(f"/api/v1/attachment/{quote(att_guid, safe='')}/download"),
-                                         timeout=60, follow_redirects=True)
+            resp = await self.client.get(
+                self._api_url(
+                    f"/api/v1/attachment/{quote(att_guid, safe='')}/download"
+                ),
+                timeout=60,
+                follow_redirects=True,
+            )
             resp.raise_for_status()
             data = resp.content
             mime = (att_meta.get("mimeType") or "").lower()
             if mime.startswith("image/"):
-                return await cache_image_from_bytes_async(data, _closed_ext(mime, _BLUEBUBBLES_IMAGE_EXT_OVERRIDES, ".jpg"))
+                return await cache_image_from_bytes_async(
+                    data, _closed_ext(mime, _BLUEBUBBLES_IMAGE_EXT_OVERRIDES, ".jpg")
+                )
             if mime.startswith("audio/"):
-                return await cache_audio_from_bytes_async(data, _closed_ext(mime, _BLUEBUBBLES_AUDIO_EXT_OVERRIDES, ".mp3"))
+                return await cache_audio_from_bytes_async(
+                    data, _closed_ext(mime, _BLUEBUBBLES_AUDIO_EXT_OVERRIDES, ".mp3")
+                )
             # Videos, documents, and everything else
-            return await cache_document_from_bytes_async(data, att_meta.get("transferName", "") or f"file_{uuid.uuid4().hex[:8]}")
+            return await cache_document_from_bytes_async(
+                data, att_meta.get("transferName", "") or f"file_{uuid.uuid4().hex[:8]}"
+            )
         except Exception as exc:
-            logger.warning("[bluebubbles] failed to download attachment %s: %s", _redact(att_guid), exc)
+            logger.warning(
+                "[bluebubbles] failed to download attachment %s: %s",
+                _redact(att_guid),
+                exc,
+            )
             return None
 
     async def _download_attachment_with_retries(
@@ -952,248 +1114,3 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Webhook handling
     # ------------------------------------------------------------------
-
-    def _extract_payload_record(self, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        data = payload.get("data")
-        if isinstance(data, dict):
-            return data
-        if isinstance(data, list) and (first := next((i for i in data if isinstance(i, dict)), None)):
-            return first
-        if isinstance(payload.get("message"), dict):
-            return payload.get("message")
-        return payload if isinstance(payload, dict) else None
-
-    def _claim_inbound_message(
-        self, message_id: str
-    ) -> tuple[Optional[asyncio.Future], bool]:
-        """Reserve a GUID, or return the existing in-flight outcome."""
-        if self._message_dedup.contains(message_id):
-            return None, False
-        existing = self._inflight_message_ids.get(message_id)
-        if existing is not None:
-            return existing, False
-        claim = asyncio.get_running_loop().create_future()
-        self._inflight_message_ids[message_id] = claim
-        return claim, True
-
-    def _finish_inbound_claim(
-        self,
-        message_id: Optional[str],
-        claim: Optional[asyncio.Future],
-        *,
-        accepted: bool,
-    ) -> None:
-        """Commit a successful handoff, or release a failed reservation."""
-        if not message_id or claim is None:
-            return
-        if self._inflight_message_ids.get(message_id) is not claim:
-            return
-        self._inflight_message_ids.pop(message_id, None)
-        if accepted:
-            self._message_dedup.is_duplicate(message_id)
-        if not claim.done():
-            claim.set_result(accepted)
-
-    @staticmethod
-    def _value(*candidates: Any) -> Optional[str]:
-        return next((c.strip() for c in candidates if isinstance(c, str) and c.strip()), None)
-
-    @staticmethod
-    def _parse_webhook_body(raw: bytes) -> Any:
-        """Decode a webhook body: JSON, else form-encoded with a JSON field."""
-        body = raw.decode("utf-8", errors="replace")
-        try:
-            return json.loads(body)
-        except Exception:
-            form = parse_qs(body)
-            payload_str = (form.get("payload") or form.get("data") or form.get("message") or [""])[0]
-            return json.loads(payload_str) if payload_str else {}
-
-    def _webhook_token(self, request) -> Optional[str]:
-        return (request.query.get("password") or request.query.get("guid") or request.headers.get("x-password")
-                or request.headers.get("x-guid") or request.headers.get("x-bluebubbles-guid"))
-
-    def _resolve_chat_and_sender(self, payload: Dict[str, Any], record: Dict[str, Any]):
-        """Returns ``(chat_guid, chat_identifier, sender)`` from the many BlueBubbles payload shapes."""
-        chat_guid = self._value(record.get("chatGuid"), payload.get("chatGuid"), record.get("chat_guid"),
-                                payload.get("chat_guid"), payload.get("guid"))
-        # BlueBubbles v1.9+ payloads omit top-level chatGuid; it's nested under data.chats[0].guid.
-        _chats = record.get("chats") or []
-        if not chat_guid and _chats and isinstance(_chats[0], dict):
-            chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
-        chat_identifier = self._value(record.get("chatIdentifier"), record.get("identifier"),
-                                      payload.get("chatIdentifier"), payload.get("identifier"))
-        handle = record.get("handle")
-        sender = (self._value(handle.get("address") if isinstance(handle, dict) else None, record.get("sender"),
-                              record.get("from"), record.get("address")) or chat_identifier or chat_guid)
-        if not (chat_guid or chat_identifier) and sender:
-            chat_identifier = sender
-        return chat_guid, chat_identifier, sender
-
-    async def _handle_webhook(self, request):
-        from aiohttp import web
-
-        if self._webhook_token(request) != self.password:
-            return web.json_response({"error": "unauthorized"}, status=401)
-        try:
-            payload = self._parse_webhook_body(await request.read())
-        except Exception as exc:
-            logger.error("[bluebubbles] webhook parse error: %s", exc)
-            return web.json_response({"error": "invalid payload"}, status=400)
-        event_type = self._value(payload.get("type"), payload.get("event")) or ""
-        if event_type and event_type not in _MESSAGE_EVENTS:  # ack non-message events silently
-            return _ok()
-        record = self._extract_payload_record(payload) or {}
-        if record.get("isFromMe") or record.get("fromMe") or record.get("is_from_me"):
-            return _ok()
-        assoc_type = record.get("associatedMessageType")
-        if isinstance(assoc_type, int) and (
-            assoc_type in _TAPBACK_ADDED or assoc_type in _TAPBACK_REMOVED
-        ):  # tapback additions/removals delivered as messages
-            return _ok()
-        message_id = self._value(
-            record.get("guid"),
-            record.get("messageGuid"),
-            record.get("id"),
-        )
-        claim: Optional[asyncio.Future] = None
-        if message_id:
-            claim, is_owner = self._claim_inbound_message(message_id)
-            if claim is None:
-                logger.info("[bluebubbles] duplicate inbound message ignored")
-                return web.Response(text="ok")
-            if not is_owner:
-                accepted = await asyncio.shield(claim)
-                return web.Response(
-                    text="ok" if accepted else "handoff unavailable",
-                    status=200 if accepted else 503,
-                )
-
-        text = (
-            self._value(
-                record.get("text"), record.get("message"), record.get("body")
-            )
-            or ""
-        )
-
-        chat_guid, chat_identifier, sender = self._resolve_chat_and_sender(payload, record)
-        is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
-        if is_group and self.require_mention:
-            if not self._message_matches_mention_patterns(text):
-                self._finish_inbound_claim(message_id, claim, accepted=True)
-                return _ok()
-            text = self._clean_mention_text(text)
-
-        # --- Inbound attachment handling ---
-        attachments = record.get("attachments") or []
-        if not isinstance(attachments, list):
-            self._finish_inbound_claim(message_id, claim, accepted=False)
-            return web.json_response({"error": "invalid attachments"}, status=400)
-        media_urls: List[str] = []
-        media_types: List[str] = []
-        msg_type = MessageType.TEXT
-        attachment_failed = False
-
-        for att in attachments:
-            try:
-                if not isinstance(att, dict):
-                    attachment_failed = True
-                    continue
-                att_guid = att.get("guid", "")
-                if not att_guid:
-                    attachment_failed = True
-                    continue
-                cached = await self._download_attachment_with_retries(att_guid, att)
-                if not cached:
-                    attachment_failed = True
-                    continue
-                mime = (att.get("mimeType") or "").lower()
-                media_urls.append(cached)
-                media_types.append(mime)
-                if mime.startswith("image/"):
-                    msg_type = MessageType.PHOTO
-                elif mime.startswith("audio/") or (att.get("uti") or "").endswith(
-                    "caf"
-                ):
-                    msg_type = MessageType.VOICE
-                elif mime.startswith("video/"):
-                    msg_type = MessageType.VIDEO
-                else:
-                    msg_type = MessageType.DOCUMENT
-            except asyncio.CancelledError:
-                self._finish_inbound_claim(message_id, claim, accepted=False)
-                raise
-            except Exception:
-                attachment_failed = True
-                logger.exception(
-                    "[bluebubbles] inbound attachment failed; preserving other content"
-                )
-
-        if attachment_failed:
-            logger.warning(
-                "[bluebubbles] one or more inbound attachments remained unavailable "
-                "after bounded retries; preserving recoverable message content"
-            )
-
-        # With multiple attachments, prefer PHOTO if any images present
-        if len(media_urls) > 1:
-            mime_prefixes = {(m or "").split("/")[0] for m in media_types}
-            if "image" in mime_prefixes:
-                msg_type = MessageType.PHOTO
-
-        if not text and media_urls:
-            text = "(attachment)"
-        if attachments and not text and not media_urls:
-            # BlueBubbles will not redeliver this webhook. Preserve the user
-            # turn even when every attachment remains unavailable so the agent
-            # can acknowledge the failed media instead of silently losing it.
-            text = "(attachment unavailable)"
-        # --- End attachment handling ---
-
-        if not sender or not (chat_guid or chat_identifier) or not text:
-            self._finish_inbound_claim(message_id, claim, accepted=False)
-            return web.json_response({"error": "missing message fields"}, status=400)
-        session_chat_id = chat_guid or chat_identifier
-        event: Optional[MessageEvent] = None
-        try:
-            source = self.build_source(
-                chat_id=session_chat_id,
-                chat_name=chat_identifier or sender,
-                chat_type="group" if is_group else "dm",
-                user_id=sender,
-                user_name=sender,
-                chat_id_alt=chat_identifier,
-            )
-            event = MessageEvent(
-                text=text,
-                message_type=msg_type,
-                source=source,
-                raw_message=payload,
-                message_id=message_id,
-                reply_to_message_id=self._value(
-                    record.get("threadOriginatorGuid"),
-                    record.get("associatedMessageGuid"),
-                ),
-                media_urls=media_urls,
-                media_types=media_types,
-            )
-            # BasePlatformAdapter.handle_message returns after accepting the
-            # handoff and spawning agent work; awaiting it lets us release a
-            # failed claim without waiting for the agent turn itself.
-            await self.handle_message(event)
-        except Exception:
-            logger.exception("[bluebubbles] failed to hand off inbound message")
-            return web.Response(text="handoff unavailable", status=503)
-        finally:
-            # Cancellation can arrive after admission while an inline reply is
-            # sending. Retain that GUID so replay cannot execute the command again.
-            accepted = event is not None and event._gateway_accepted is True
-            self._finish_inbound_claim(message_id, claim, accepted=accepted)
-
-        if not accepted:
-            return web.Response(text="handoff unavailable", status=503)
-
-        # Fire-and-forget read receipt
-        if self.send_read_receipts and session_chat_id:
-            asyncio.create_task(self.mark_read(session_chat_id))
-        return _ok()

@@ -23,7 +23,11 @@ from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
 from agent.message_content import flatten_message_text
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, stamp_message_timestamp
-from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
+from agent.model_metadata import (
+    estimate_messages_tokens_rough,
+    estimate_native_anthropic_request_tokens_rough,
+    estimate_request_tokens_rough,
+)
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 from agent.turn_author import parse_turn_author
@@ -60,9 +64,30 @@ def _preflight_request_tokens(
             "using generic transcript estimate",
             exc_info=True,
         )
+    charge_stale_thinking = _agent_stale_thinking_on_wire(agent)
+    estimate_messages = messages
+    if charge_stale_thinking and getattr(agent, "api_mode", "") == "anthropic_messages":
+        from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+
+        if native_anthropic_preserves_prior_thinking(
+            getattr(agent, "base_url", ""), getattr(agent, "model", "")
+        ):
+            from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
+
+            # Preflight runs on canonical history, while the eventual request is a
+            # filtered copy. Mirror suppression onto shallow message copies before
+            # pricing the exact native replay carriers.
+            estimate_messages = [
+                dict(message) if isinstance(message, dict) else message
+                for message in messages
+            ]
+            apply_rejected_thinking_suppression(agent, estimate_messages)
+            return estimate_native_anthropic_request_tokens_rough(
+                estimate_messages, system_prompt=system_prompt or "", tools=tools
+            )
     return estimate_request_tokens_rough(
-        messages, system_prompt=system_prompt or "", tools=tools,
-        charge_stale_thinking=_agent_stale_thinking_on_wire(agent),
+        estimate_messages, system_prompt=system_prompt or "", tools=tools,
+        charge_stale_thinking=charge_stale_thinking,
     )
 
 
@@ -575,6 +600,7 @@ _PER_TURN_RESET_STATE: Tuple[Tuple[str, Any], ...] = (
     ("_codex_reasoning_only_streak", 0),
     ("_thinking_prefill_retries", 0), ("_post_tool_empty_retried", False),
     ("_last_content_with_tools", None), ("_last_content_tools_all_housekeeping", False),
+    ("_reused_response_text", None),
     ("_mute_post_response", False), ("_unicode_sanitization_passes", 0),
     ("_tool_guardrail_halt_decision", None),
     ("_harness_metrics_turn", None),
@@ -613,6 +639,8 @@ def _reset_per_turn_agent_state(agent: Any) -> None:
     if agent._compression_warning:
         agent._replay_compression_warning()
         agent._compression_warning = None  # send once
+    if getattr(agent, "_pending_startup_notices", None):  # gateway: init ran before its callbacks
+        agent._replay_startup_warnings()
 
     agent.iteration_budget = IterationBudget(agent.max_iterations)
     # Wall-clock run budget: stamped only when configured (one wrap-up notice per run).
@@ -1285,6 +1313,11 @@ def build_api_messages(
         # 'reasoning_details' is kept here; the chat-completions transport drops it on the
         # wire for every route that does not replay it (OpenRouter/Nous do).
         api_messages.append(api_msg)
+
+    # A provider-rejected Anthropic signature is suppressed outside canonical history and
+    # survives fresh request construction / process resume via session model_config.
+    from agent.anthropic_thinking_replay import apply_rejected_thinking_suppression
+    apply_rejected_thinking_suppression(agent, api_messages)
 
     # Final system message = cached prompt + ephemeral additions (API-time only).
     # Plugin/recall context goes into the user message, never the system prompt: the

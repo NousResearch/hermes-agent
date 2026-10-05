@@ -164,6 +164,14 @@ def _ensure_telegram_mock() -> None:
     # Update.ALL_TYPES used in start_polling()
     mod.Update.ALL_TYPES = []
 
+    # PerChatUpdateProcessor subclasses this at import time: a MagicMock base
+    # would turn the subclass itself into a mock that fails on its second call.
+    class SimpleUpdateProcessor:
+        def __init__(self, max_concurrent_updates):
+            self.max_concurrent_updates = max_concurrent_updates
+
+    mod.SimpleUpdateProcessor = SimpleUpdateProcessor
+
     for name in (
         "telegram",
         "telegram.ext",
@@ -605,4 +613,13 @@ def _write_guard_cache_atomic(cache_file: Path, content: str) -> None:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+
+@pytest.fixture()
+def _isolate_bluebubbles_environment(monkeypatch):
+    """Keep host BlueBubbles settings from changing adapter test behavior."""
+    for key in tuple(os.environ):
+        if key.startswith("BLUEBUBBLES_"):
+            monkeypatch.delenv(key, raising=False)
 

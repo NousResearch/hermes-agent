@@ -229,7 +229,10 @@ export function isSttSilenceHallucination(
     return true
   }
 
-  if (filter.phrases.includes(cleaned.replaceAll('!', '').replaceAll('.', ''))) {
+  // Trailing `.!` only — the relay strips `cleaned.rstrip('.!')`, so an
+  // internal period (`thank. you`) stays internal and the transcript stays
+  // a real turn on both paths, never just one.
+  if (filter.phrases.includes(cleaned.replace(/[.!]+$/, ''))) {
     return true
   }
 

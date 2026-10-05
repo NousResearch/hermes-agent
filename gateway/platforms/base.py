@@ -20,6 +20,8 @@ import weakref
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
+from .base_reactions import ProcessingReactionHooksMixin
+
 from utils import normalize_proxy_url
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
@@ -434,6 +436,7 @@ from hermes_cli.observability.shared_metrics_gateway import records_delivery, st
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
+from agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
 
 if TYPE_CHECKING:
     from agent.display import ToolPreview
@@ -588,7 +591,7 @@ async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
 def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_name: str):
     """``(get_<kind>_cache_dir, cleanup_<kind>_cache)`` pair. The getter resolves fresh via
     get_hermes_dir (active profile) unless a test monkeypatched the module constant away from
-    its import-time default, and creates the directory; ``cleanup(max_age_hours=24)`` deletes
+    its import-time default, and creates the directory; ``cleanup(max_age_hours=MEDIA_CACHE_MAX_AGE_HOURS)`` deletes
     older files and returns the count."""
     def get_dir() -> Path:
         d = get_hermes_dir(new_subpath, old_name)
@@ -596,10 +599,10 @@ def _cache_dir_accessors(kind: str, constant_name: str, new_subpath: str, old_na
         default = _CACHE_DIR_IMPORT_DEFAULTS.get(constant_name)
         if current is not None and default is not None and current != default:
             d = Path(current)
-        d.mkdir(parents=True, exist_ok=True)
+        _secure_media_cache_dir(d)
         return d
 
-    def cleanup(max_age_hours: int = 24) -> int:
+    def cleanup(max_age_hours: int = MEDIA_CACHE_MAX_AGE_HOURS) -> int:
         return _cleanup_cache_dir(get_dir(), max_age_hours)
     get_dir.__name__ = get_dir.__qualname__ = f"get_{kind}_cache_dir"
     cleanup.__name__ = cleanup.__qualname__ = f"cleanup_{kind}_cache"
@@ -617,10 +620,60 @@ def _looks_like_image(data: bytes) -> bool:
                or (data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP"))
 
 
+def _secure_media_cache_dir(cache_dir: Path) -> None:
+    """Create/reconcile a gateway media-cache dir owner-only (0700), except managed.
+
+    Inbound media (photos, voice notes, documents a user sent through a
+    messaging platform) is user content, not regenerable cache: the
+    umask-derived 0755 these dirs inherited made them readable by every other
+    local account whenever ``HERMES_HOME`` is traversable — the documented
+    ``HERMES_HOME_MODE=0701`` web-server hatch. The mode is passed to ``mkdir``
+    so it is set at creation, then reconciled by the house policy helper
+    ``hermes_cli.config._secure_dir`` (managed/NixOS installs keep their
+    group-share design: these lazily-created dirs are not covered by the
+    module's ``systemd.tmpfiles`` rules, so the mode is left to the
+    configured umask/setgid). Best-effort: never fails a media write.
+    """
+    try:
+        managed = False
+        try:
+            from hermes_cli.config import is_managed
+
+            managed = bool(is_managed())
+        except Exception:  # pragma: no cover - defensive
+            pass
+        if managed:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            return
+        cache_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            from hermes_cli.config import _secure_dir
+
+            _secure_dir(cache_dir)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("media cache dir chmod skipped: %s", exc)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("media cache dir creation failed for %s: %s", cache_dir, exc)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+
 def _write_cache_file(cache_dir: Path, prefix: str, ext: str, data: bytes) -> str:
-    """Write ``data`` to ``<cache_dir>/<prefix>_<uuid12><ext>``; return the path string."""
+    """Write ``data`` to ``<cache_dir>/<prefix>_<uuid12><ext>``; return the path string.
+
+    The file is written owner-only (0600) — inbound media is private user
+    content and the cache dir is hardened to 0700 by ``_secure_media_cache_dir``;
+    one directory should not carry two file-mode conventions. Best-effort on
+    platforms where POSIX mode bits are advisory (Windows): falls back to a
+    plain write rather than failing the media write.
+    """
     filepath = cache_dir / f"{prefix}_{uuid.uuid4().hex[:12]}{ext}"
-    filepath.write_bytes(data)
+    try:
+        fd = os.open(str(filepath), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    except OSError:
+        filepath.write_bytes(data)
+        return str(filepath)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
     return str(filepath)
 
 
@@ -760,7 +813,8 @@ MEDIA_DELIVERY_TRUST_RECENT_SECONDS_ENV = "HERMES_MEDIA_TRUST_RECENT_SECONDS"
 # credential / system paths). Set true on public-facing gateways.
 MEDIA_DELIVERY_STRICT_ENV = "HERMES_MEDIA_DELIVERY_STRICT"
 # Canonical cache subdirs of deliverable artifacts; also enumerates per-profile cache roots.
-_MEDIA_DELIVERY_CACHE_SUBDIRS = ("images", "audio", "videos", "documents", "screenshots")
+_MEDIA_DELIVERY_CACHE_SUBDIRS = (
+    "images", "audio", "videos", "documents", "screenshots", GENERATED_SUBDIR)
 MEDIA_DELIVERY_SAFE_ROOTS = (
     IMAGE_CACHE_DIR, AUDIO_CACHE_DIR, VIDEO_CACHE_DIR, DOCUMENT_CACHE_DIR, SCREENSHOT_CACHE_DIR,
     *(_HERMES_HOME / d for d in (
@@ -1828,19 +1882,18 @@ def resolve_channel_skills(
     bindings = config_extra.get("channel_skill_bindings") or []
     if not isinstance(bindings, list) or not bindings:
         return None
-    ids_to_check = {str(key) for key in (channel_id, parent_id) if key}
-    if not ids_to_check:
-        return None
-    for entry in bindings:
-        if not isinstance(entry, dict) or str(entry.get("id", "")) not in ids_to_check:
-            continue
-        skills = entry.get("skills") or entry.get("skill")
-        if isinstance(skills, str):
-            return [skills.strip()] if skills.strip() else None
-        if isinstance(skills, list) and skills:
-            seen = dict.fromkeys(
-                nm for name in skills if isinstance(name, str) and (nm := name.strip()))
-            return list(seen) or None
+    # One pass per id, not one pass matching either: the parent's entry may be listed first.
+    for wanted in (str(key) for key in (channel_id, parent_id) if key):
+        for entry in bindings:
+            if not isinstance(entry, dict) or str(entry.get("id", "")) != wanted:
+                continue
+            skills = entry.get("skills") or entry.get("skill")
+            if isinstance(skills, str):
+                return [skills.strip()] if skills.strip() else None
+            if isinstance(skills, list) and skills:
+                seen = dict.fromkeys(
+                    nm for name in skills if isinstance(name, str) and (nm := name.strip()))
+                return list(seen) or None
     return None
 
 
@@ -1863,7 +1916,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(ABC):
+class BasePlatformAdapter(ProcessingReactionHooksMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -3474,36 +3527,8 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks.pop(session_key, None)
         return callback if callable(callback) else None
 
-    # ── Processing lifecycle hooks (Discord 👀/✅/❌ reactions). Adapters exposing
-    # ``_add_reaction(chat_id, message_id, emoji)`` / ``_remove_reaction(chat_id, message_id)``
-    # can just set the emoji attributes; left ``None`` the hook is a no-op.
-    _ACK_EMOJI: Optional[str] = None
-    _OK_EMOJI: Optional[str] = None
-    _FAIL_EMOJI: Optional[str] = None
-
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
-
-    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Hook called when background processing completes. Default: opt-in reaction ack — with
-        ``_OK_EMOJI``/``_FAIL_EMOJI`` set and ``_add_reaction``/``_remove_reaction`` present, swap
-        the in-progress reaction for the outcome one. Remove-then-add is deterministic whether the
-        platform replaces or stacks a sender's reactions. CANCELLED leaves it unreacted."""
-        if self._OK_EMOJI is None and self._FAIL_EMOJI is None:
-            return
-        add: Any = getattr(self, "_add_reaction", None)
-        remove: Any = getattr(self, "_remove_reaction", None)
-        enabled = getattr(self, "_reactions_enabled", None)
-        chat_id = getattr(event.source, "chat_id", None)
-        message_id = getattr(event, "message_id", None)
-        if (not callable(add) or not callable(remove) or (callable(enabled) and not enabled())
-                or not chat_id or not message_id):
-            return
-        await remove(chat_id, message_id)
-        emoji = {ProcessingOutcome.SUCCESS: self._OK_EMOJI,
-                 ProcessingOutcome.FAILURE: self._FAIL_EMOJI}.get(outcome)
-        if emoji:
-            await add(chat_id, message_id, emoji)
 
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
@@ -4093,10 +4118,30 @@ class BasePlatformAdapter(ABC):
             # base path instead (returned False, or raised before storing it) and nothing is
             # queued, start this event.
             if session_key not in self._active_sessions:
-                orphan = self._pending_messages.pop(session_key, None)
-                if orphan is not None:
-                    self._start_session_processing(orphan, session_key)
-                elif not handled:
+                # Busy admission queues through the delivery adapter resolved when it stored the
+                # event; a reconnect during the handler's later awaits can replace that adapter.
+                # Recover from whichever slot actually holds it — this one, or the replacement —
+                # and start it on that slot's owner. A replacement with a live guard drains its
+                # own slot, so leave that one alone.
+                owners = [self]
+                runner = getattr(self, "gateway_runner", None)
+                if runner is not None:
+                    try:
+                        delivery_adapter = runner._delivery_adapter_for(event.source)
+                    except Exception:
+                        delivery_adapter = None
+                        logger.debug("[%s] Delivery-adapter lookup failed during pending recovery",
+                                     self.name, exc_info=True)
+                    if (delivery_adapter is not None and delivery_adapter is not self
+                            and session_key not in delivery_adapter._active_sessions):
+                        owners.append(delivery_adapter)
+                orphan = None
+                for owner in owners:
+                    orphan = owner.get_pending_message(session_key)
+                    if orphan is not None:
+                        owner._start_session_processing(orphan, session_key)
+                        break
+                if orphan is None and not handled:
                     event._gateway_accepted = self._start_session_processing(event, session_key)
                     return
             if handled:

@@ -343,7 +343,8 @@ async def _build_bluebubbles(adapter) -> List[Dict[str, Any]]:
             )
         except Exception as e:
             logger.warning(
-                "Channel directory: failed to query BlueBubbles chats: %s", e
+                "Channel directory: failed to query BlueBubbles chats: %s", e,
+                exc_info=True,
             )
             break
         chats = payload.get("data") or []

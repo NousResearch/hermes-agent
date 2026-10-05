@@ -525,22 +525,109 @@ def _spawn_kind(value: ast.AST | None) -> str | None:
     return _SPAWNS.get(_call_name(value)) if isinstance(value, ast.Call) else None
 
 
-def _process_handles(tree: ast.Module) -> dict[str, str]:
-    """Dotted names that hold a child process (``proc``, ``self._proc``) -> ``sync``/``async``."""
-    handles: dict[str, str] = {}
-    for node in ast.walk(tree):
-        pairs: list[tuple[ast.AST, ast.AST | None]] = []
-        if isinstance(node, ast.Assign):
-            pairs = [(t, node.value) for t in node.targets]
-        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
-            pairs = [(node.target, node.value)]
-        elif isinstance(node, (ast.With, ast.AsyncWith)):
-            pairs = [(i.optional_vars, i.context_expr) for i in node.items if i.optional_vars]
-        for target, value in pairs:
-            kind = _spawn_kind(value)
-            if kind and _dotted(target):
-                handles[_dotted(target)] = kind
-    return handles
+_SCOPES = (*_FUNCS, ast.Lambda, ast.ClassDef)
+
+
+def _own_nodes(scope: ast.AST) -> Iterator[ast.AST]:
+    """Nodes of ``scope`` itself: a nested def/lambda/class is yielded but not entered."""
+    stack = list(ast.iter_child_nodes(scope))
+    while stack:
+        node = stack.pop()
+        yield node
+        if not isinstance(node, _SCOPES):
+            stack.extend(ast.iter_child_nodes(node))
+
+
+def _scopes(tree: ast.Module) -> Iterator[tuple[ast.AST, ast.AST | None, list[ast.AST]]]:
+    """``(scope, enclosing scope, its own nodes)`` for the module and every def/lambda/class."""
+    todo: list[tuple[ast.AST, ast.AST | None]] = [(tree, None)]
+    while todo:
+        scope, parent = todo.pop()
+        own = list(_own_nodes(scope))
+        todo.extend((node, scope) for node in own if isinstance(node, _SCOPES))
+        yield scope, parent, own
+
+
+def _binding_pairs(node: ast.AST) -> list[tuple[ast.AST, ast.AST | None]]:
+    if isinstance(node, ast.Assign):
+        return [(t, node.value) for t in node.targets]
+    if isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
+        return [(node.target, node.value)]
+    if isinstance(node, (ast.With, ast.AsyncWith)):
+        return [(i.optional_vars, i.context_expr) for i in node.items if i.optional_vars]
+    return []
+
+
+def _pos(node: ast.AST, end: bool = False) -> tuple[int, int]:
+    if end:
+        return (getattr(node, "end_lineno", 0) or 0, getattr(node, "end_col_offset", 0) or 0)
+    return (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
+
+
+@dataclass
+class _HandleScope:
+    parent: _HandleScope | None
+    is_class: bool
+    owner: int  # id of the class (or module) whose methods share ``self._proc``-style handles
+    # name -> [(position the binding takes effect, "sync"/"async"/None for anything else)]
+    names: dict[str, list[tuple[tuple[int, int], str | None]]] = field(default_factory=dict)
+
+    def kind(self, name: str, at: tuple[int, int]) -> str | None:
+        """What ``name`` holds at ``at``: the innermost scope that binds it decides (a class
+        body is invisible to its methods), and in it the latest binding before ``at``."""
+        scope: _HandleScope | None = self
+        while scope is not None:
+            if (scope is self or not scope.is_class) and name in scope.names:
+                before = [k for pos, k in sorted(scope.names[name], key=lambda b: b[0]) if pos <= at]
+                return before[-1] if before else None
+            scope = scope.parent
+        return None
+
+
+def _record_bindings(scope: _HandleScope, node: ast.AST, attrs: dict[tuple[int, str], str]) -> None:
+    """Any binding of a plain name clears it (a parameter, a loop variable, ``proc = None``);
+    a spawn makes it a handle once the value is computed. An attribute handle is shared by
+    the class's methods, so it is keyed by the class, not by the function that assigns it."""
+    if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+        scope.names.setdefault(node.id, []).append((_pos(node), None))
+    elif isinstance(node, ast.arg):
+        scope.names.setdefault(node.arg, []).append((_pos(node), None))
+    for target, value in _binding_pairs(node):
+        kind = _spawn_kind(value)
+        if kind is None or value is None:
+            continue
+        if isinstance(target, ast.Name):
+            # takes effect after both sides: `with Popen() as proc` binds after the `as`
+            at = max(_pos(target, end=True), _pos(value, end=True))
+            scope.names.setdefault(target.id, []).append((at, kind))
+        elif _dotted(target):
+            attrs[(scope.owner, _dotted(target))] = kind
+
+
+def _process_kinds(tree: ast.Module) -> dict[int, str]:
+    """id of each ``<receiver>.<method>()`` call whose receiver holds a child process ->
+    ``sync``/``async``. Bindings are per lexical scope, so a ``proc`` in one function never
+    classifies a same-spelled ``proc`` in another, and a reassignment re-classifies it."""
+    built: dict[int, _HandleScope] = {}
+    attrs: dict[tuple[int, str], str] = {}
+    calls: list[tuple[ast.Call, ast.expr, _HandleScope]] = []
+    for node, parent, own in _scopes(tree):
+        outer = built.get(id(parent)) if parent is not None else None
+        owner = id(node) if outer is None or isinstance(node, ast.ClassDef) else outer.owner
+        scope = built[id(node)] = _HandleScope(outer, isinstance(node, ast.ClassDef), owner)
+        for child in own:
+            _record_bindings(scope, child, attrs)
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute):
+                calls.append((child, child.func.value, scope))
+    kinds: dict[int, str] = {}
+    for call, receiver, scope in calls:
+        if isinstance(receiver, ast.Name):
+            kind = scope.kind(receiver.id, _pos(call))
+        else:
+            kind = attrs.get((scope.owner, _dotted(receiver)))
+        if kind:
+            kinds[id(call)] = kind
+    return kinds
 
 
 # Process methods that wait for the child, with the slot of their ``timeout`` (sync Popen);
@@ -548,7 +635,7 @@ def _process_handles(tree: ast.Module) -> dict[str, str]:
 _PROCESS_WAITS = {"communicate": 1, "wait": 0}
 
 
-def _reaped_after_kill(tree: ast.Module, handles: dict[str, str]) -> set[int]:
+def _reaped_after_kill(tree: ast.Module, kinds: dict[int, str]) -> set[int]:
     """ids of a sync ``proc.wait()`` that directly follows ``proc.kill()``: SIGKILL bounds it.
     Not ``communicate()`` (it reads until every grandchild holding the pipe exits) and not the
     asyncio ``Process.wait()`` (it waits for the pipe transports too); both measured to hang."""
@@ -564,15 +651,15 @@ def _reaped_after_kill(tree: ast.Module, handles: dict[str, str]) -> set[int]:
                 if not (isinstance(kill, ast.Call) and isinstance(wait, ast.Call)):
                     continue
                 head, _, leaf = _call_name(kill).rpartition(".")
-                if (leaf == "kill" and handles.get(head) == "sync"
+                if (leaf == "kill" and kinds.get(id(kill)) == "sync"
                         and _call_name(wait) == f"{head}.wait"):
                     reaped.add(id(wait))
     return reaped
 
 
 def missing_timeout(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
-    handles = _process_handles(tree)
-    bounded = _bounded_calls(tree) | _reaped_after_kill(tree, handles)
+    kinds = _process_kinds(tree)
+    bounded = _bounded_calls(tree) | _reaped_after_kill(tree, kinds)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or id(node) in bounded:
             continue
@@ -581,8 +668,8 @@ def missing_timeout(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
             yield node.lineno
         elif leaf == "urlopen" and not _deadline(node, "timeout", 2):
             yield node.lineno
-        elif leaf in _PROCESS_WAITS and head in handles:
-            if handles[head] == "async" or not _deadline(node, "timeout", _PROCESS_WAITS[leaf]):
+        elif leaf in _PROCESS_WAITS and id(node) in kinds:
+            if kinds[id(node)] == "async" or not _deadline(node, "timeout", _PROCESS_WAITS[leaf]):
                 yield node.lineno
 
 

@@ -89,3 +89,50 @@ def test_capture_lines_reports_each_independent_capture_once():
     # a capture nested inside another is the same occurrence
     nested = 'import os\n\nHOME = os.path.expanduser(\n    os.getenv("A", "~")\n)\n'
     assert _hits("HX005", nested) == [3]
+
+
+# --- HX006: process handles are tracked per lexical scope ---
+
+_SYNC_ASYNC = (
+    "import asyncio\nimport subprocess\n\n\n"
+    "def sync(cmd):\n    proc = subprocess.Popen(cmd)\n    return proc.communicate(timeout=1)\n\n\n"
+    "async def asynchronous(cmd):\n    {name} = await asyncio.create_subprocess_exec(*cmd)\n"
+    "    return await asyncio.wait_for({name}.communicate(), timeout=1)\n"
+)
+
+
+@pytest.mark.parametrize("name", ["proc", "child"])
+def test_process_handles_in_different_functions_do_not_collide(name):
+    assert _hits("HX006", _SYNC_ASYNC.format(name=name)) == []
+
+
+def test_adding_a_bounded_async_helper_keeps_the_sync_one_clean(tmp_path, capsys):
+    sync_only = _SYNC_ASYNC.format(name="proc").split("\n\n\nasync def")[0] + "\n"
+    code, out = _judge(tmp_path, capsys, {"pkg/p.py": sync_only},
+                       {"pkg/p.py": _SYNC_ASYNC.format(name="proc")})
+    assert code == 0, out
+
+
+def test_process_handle_follows_reassignment():
+    src = ("import asyncio\nimport subprocess\n\n\nasync def f(c):\n"
+           "    proc = subprocess.Popen(c)\n    proc.wait(timeout=1)\n"
+           "    proc = await asyncio.create_subprocess_exec(*c)\n    await proc.wait()\n"
+           "    proc = None\n    return proc\n")
+    assert _hits("HX006", src) == [9]  # only the asyncio wait, which nothing bounds
+    unbounded = "import subprocess\n\n\ndef f(c):\n    proc = subprocess.Popen(c)\n    return proc.wait()\n"
+    assert _hits("HX006", unbounded) == [6]
+    with_block = "import subprocess\n\n\ndef f(c):\n    with subprocess.Popen(c) as proc:\n        return proc.wait()\n"
+    assert _hits("HX006", with_block) == [6]
+    # a parameter that merely shares the spelling is not the other function's process
+    param = unbounded + "\n\ndef stop(proc):\n    return proc.wait()\n"
+    assert _hits("HX006", param) == [6]
+
+
+def test_process_handle_on_an_attribute_spans_the_class_methods():
+    src = ("import subprocess\n\n\nclass Runner:\n    def start(self, c):\n"
+           "        self._proc = subprocess.Popen(c)\n\n    def stop(self):\n"
+           "        return self._proc.wait()\n")
+    assert _hits("HX006", src) == [9]
+    closure = ("import subprocess\n\n\ndef f(c):\n    proc = subprocess.Popen(c)\n\n"
+               "    def reap():\n        return proc.wait()\n    return reap\n")
+    assert _hits("HX006", closure) == [8]

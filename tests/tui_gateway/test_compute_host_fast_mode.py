@@ -80,6 +80,21 @@ def test_fast_toggle_crosses_turn_frame_and_updates_reused_agent(monkeypatch):
                 assert effective_request_overrides(agent) == {"extra_body": {"keep": True}, **expected}
                 assert adopted["create_service_tier_override"] == (tier or "")
 
+        # Preserve upstream's separate static tier instead of silently downgrading it.
+        parent["_metadata_mirror"]["model"] = agent.model = "gpt-6-astra"
+        with patch.dict(server._sessions, {"fast-sid": parent}, clear=True):
+            response = server.handle_request({
+                "id": "ultrafast", "method": "config.set",
+                "params": {"session_id": "fast-sid", "key": "fast", "value": "ultrafast"},
+            })
+            assert "error" not in response, response
+            frame = server._compute_host_turn_frame("turn", "fast-sid", parent, "hello")
+        with patch.dict(server._sessions, {"fast-sid": child}, clear=True), \
+                patch.object(server, "_persist_live_session_runtime"), patch.object(server, "_emit"):
+            host._ensure_server_session(server, frame)
+            prepare()
+            assert effective_request_overrides(agent) == {"extra_body": {"keep": True}, "service_tier": "ultrafast"}
+
         # Derive the speed parameter only after the queued switch changes the live route.
         def switch(sid, session, raw, **kwargs):
             agent.model, agent.provider = "claude-opus-5", "anthropic"

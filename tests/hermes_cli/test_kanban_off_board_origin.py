@@ -166,6 +166,120 @@ def test_recorded_origin_forces_off_board_without_flag(env):
         # force the off-board path and supply the served model.
         assert kb.complete_task(c, tid, summary="s", require_recorded_origin=False)
     assert _status(kb, tid) == "done"
+    # Strong: the run's TOP-LEVEL metadata carries the origin model, and the
+    # completion emits route_served_model (the on-board path would emit neither).
+    assert _run_metadata(kb, tid).get("served_model") == "gpt-6.1-sol"
+    rows = _events(kb, tid, "route_served_model")
+    assert rows and rows[-1]["served_model"] == "gpt-6.1-sol"
+
+
+def test_invalid_origin_blank_model_refuses_even_without_flag(env):
+    """A present-but-invalid origin must REFUSE, never silently downgrade to
+    on-board (review 2026-10-05 HIGH #1)."""
+    kb = env
+    tid = _card(kb)
+    with _conn() as c:
+        rid = kb._current_run_id(c, tid)
+        c.execute("UPDATE task_runs SET metadata = ? WHERE id = ?",
+                  (json.dumps({"off_board_run": {"schema": "v1", "off_board": True,
+                                                 "served_model": "   "}}), rid))
+        c.commit()
+        with pytest.raises(kb.OffBoardOriginError):
+            kb.complete_task(c, tid, summary="s", require_recorded_origin=False)
+    assert _status(kb, tid) == "running"
+    assert _events(kb, tid, "completion_blocked_off_board_origin")
+
+
+def test_invalid_origin_off_board_false_string_refuses(env):
+    """``off_board="false"`` is truthy — the validity check is identity, not
+    truthiness (review #1)."""
+    kb = env
+    tid = _card(kb)
+    with _conn() as c:
+        rid = kb._current_run_id(c, tid)
+        c.execute("UPDATE task_runs SET metadata = ? WHERE id = ?",
+                  (json.dumps({"off_board_run": {"schema": "v1", "off_board": "false",
+                                                 "served_model": "m"}}), rid))
+        c.commit()
+        with pytest.raises(kb.OffBoardOriginError):
+            kb.complete_task(c, tid, summary="s", require_recorded_origin=False)
+
+
+def test_valid_origin_normalizes_blank_caller_model(env):
+    """Blank caller served_model must be replaced by the origin's validated
+    model, not persisted as-is (review 2026-10-05 MEDIUM #7)."""
+    kb = env
+    tid = _card(kb)
+    with _conn() as c:
+        kb.record_off_board_run(c, tid, served_model="origin-model")
+        assert kb.complete_task(
+            c, tid, summary="s", require_recorded_origin=False,
+            metadata={"served_model": "   "},
+        )
+    assert _run_metadata(kb, tid).get("served_model") == "origin-model"
+
+
+def test_caller_cannot_clobber_recorded_origin(env):
+    """A caller metadata dict carrying ``off_board_run`` must not overwrite the
+    trusted origin at completion (review 2026-10-05 MEDIUM #5)."""
+    kb = env
+    tid = _card(kb)
+    with _conn() as c:
+        kb.record_off_board_run(c, tid, served_model="origin-model")
+        assert kb.complete_task(
+            c, tid, summary="s", require_recorded_origin=False,
+            metadata={"off_board_run": {"schema": "v1", "off_board": True,
+                                        "served_model": "forged"}},
+        )
+    assert _run_metadata(kb, tid)["off_board_run"]["served_model"] == "origin-model"
+
+
+def test_caller_cannot_forge_origin_without_recorded_launch(env):
+    """A caller cannot inject an origin into an unattributed run's metadata: the
+    stripped key must not persist, so the run stays on-board (review #5)."""
+    kb = env
+    tid = _card(kb)
+    with _conn() as c:
+        assert kb.complete_task(
+            c, tid, summary="s",
+            metadata={"off_board_run": {"schema": "v1", "off_board": True,
+                                        "served_model": "forged"}},
+        )
+    assert _status(kb, tid) == "done"
+    assert "off_board_run" not in _run_metadata(kb, tid)
+
+
+def test_force_does_not_bypass_origin_gate(env):
+    kb = env
+    tid = _card(kb)
+    with _conn() as c:
+        with pytest.raises(kb.OffBoardOriginError):
+            kb.complete_task(c, tid, summary="s", off_board=True, force=True,
+                             metadata={"served_model": "m"})
+    assert _status(kb, tid) == "running"
+
+
+def test_previous_run_origin_does_not_cover_current(env):
+    """An origin on an ENDED run must not attribute the current run."""
+    kb = env
+    tid = _card(kb)
+    with _conn() as c:
+        rid = kb._current_run_id(c, tid)
+        # Stamp an origin on the (open) run, then end it and open a new run.
+        kb.record_off_board_run(c, tid, served_model="old")
+        kb._end_run(c, tid, outcome="crashed", status="crashed")
+        c.commit()
+        assert kb.claim_task(c, tid) is None or True  # status now crashed
+        # Re-open a fresh run without origin by moving the card back to ready.
+        c.execute("UPDATE tasks SET status='ready', claim_lock=NULL WHERE id=?", (tid,))
+        c.commit()
+        claimed = kb.claim_task(c, tid)
+    assert claimed is not None
+    with _conn() as c:
+        # New active run has no origin -> a plain on-board completion is fine
+        # and must NOT inherit the old run's served_model.
+        assert kb.complete_task(c, tid, summary="s")
+    assert _run_metadata(kb, tid).get("served_model") is None
 
 
 def test_recorded_origin_survives_completion(env):

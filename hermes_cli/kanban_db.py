@@ -3376,18 +3376,23 @@ def complete_task(
     right after the blocked gate, BEFORE the created-cards gate: the
     parked-gate refusal is the more specific signal.
 
-    OFF-BOARD completions (P4 PARTE 2): the CALLER passes
+    OFF-BOARD completions (P4 PARTE 2/3): the CALLER passes
     ``off_board=True`` when the card was NOT dispatched on-board by this
     dispatcher (the decision is never inferred from ``routing_metadata``;
-    ``None``/falsy default keeps the on-board path byte-for-byte unchanged).
-    Off-board completions REQUIRE a non-blank string
-    ``metadata['served_model']`` naming the model that served the work —
-    its absence raises :class:`OffBoardServedModelError` after an auditable
-    event (task-scoped: no dispatcher-side provenance exists off-board),
-    its presence is recorded as a ``route_served_model`` event on the
-    closing run. ``force=True`` does not bypass the served-model gate either.
-    (The CLI/tool wiring for ``off_board`` is a follow-up outside
-    ``kanban_db.py``.)
+    ``None``/falsy default keeps the on-board path unchanged). A card is ALSO
+    off-board when its active run carries a recorded launch origin written by
+    :func:`record_off_board_run` — a run launched outside the dispatcher can no
+    longer be closed as on-board by omitting the flag. Off-board completions
+    REQUIRE a non-blank string ``metadata['served_model']`` (or the origin's)
+    naming the model that served the work — its absence raises
+    :class:`OffBoardServedModelError` after an auditable event (task-scoped: no
+    dispatcher-side provenance exists off-board), its presence is recorded as a
+    ``route_served_model`` event on the closing run. A caller that DECLARES
+    off-board without a recorded origin raises :class:`OffBoardOriginError`
+    unless ``require_recorded_origin=False``. ``force=True`` does not bypass
+    either gate (it only covers the live-claim fence). Caller metadata may NOT
+    carry the trusted provenance keys (``off_board_run``,
+    ``resolved_route_provenance``).
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
@@ -3417,7 +3422,9 @@ def complete_task(
     # path (off_board falsy) is untouched — no new events.
     if metadata is not None and not isinstance(metadata, dict):
         raise TypeError("metadata must be a dict or None")
-    metadata = _gate_off_board_served_model(
+    metadata = _strip_protected_run_metadata(metadata)
+    _require_origin = True if require_recorded_origin is None else bool(require_recorded_origin)
+    metadata, off_board_effective = _gate_off_board_served_model(
         conn, task_id, metadata, bool(off_board),
         require_recorded_origin=require_recorded_origin,
         expected_run_id=expected_run_id,
@@ -3498,6 +3505,15 @@ def complete_task(
             # card keeps its prior status, nothing staged, no ``completed``
             # event) and turn it into an audible, durable refusal below.
             _recheck_contract_in_txn(conn, task_id)
+            # P4 PARTE 3 TOCTOU: re-classify off-board INSIDE the txn the fence
+            # rides — a concurrent record_off_board_run between gate and lock
+            # must not let the close ride an on-board verdict (review 2026-10-05
+            # HIGH #2/#3). Divergence rolls the whole txn back.
+            off_board_effective, _txn_served = _off_board_state_in_txn(
+                conn, task_id, bool(off_board), _require_origin, metadata, expected_run_id,
+            )
+            if _txn_served is not None and isinstance(metadata, dict):
+                metadata["served_model"] = _txn_served
             if isinstance(metadata, dict):
                 _stage_completion_artifacts(conn, task_id, metadata, now)
             run_id = _end_run(
@@ -3521,12 +3537,12 @@ def complete_task(
                 _completed_event_payload(result, event_summary, verified_cards, metadata),
                 run_id=run_id,
             )
-            if off_board:
-                # P4 PARTE 2: the ONLY record of which model served an
+            if off_board_effective:
+                # P4 PARTE 2/3: the ONLY record of which model served an
                 # off-board completion (no dispatcher-side provenance
-                # exists off-board). run_id is the run this same txn ended
-                # or synthesized (None for a bare completion) — task-scoped
-                # fallback keeps the pair audible either way.
+                # exists off-board). Driven by the EFFECTIVE classification
+                # (flag OR recorded origin), so an origin-forced close without
+                # the flag still gets its completion event (review #8).
                 _append_event(
                     conn, task_id, "route_served_model",
                     {"served_model": (metadata or {}).get("served_model")},
@@ -3541,6 +3557,16 @@ def complete_task(
                 conn, task_id, "completion_blocked_contract_changed", exc.payload,
             )
         raise ContractSpecError(exc.message) from exc
+    except _OffBoardGateChangedInTxn as exc:
+        # P4 PARTE 3: the off-board recheck inside the txn diverged (a
+        # concurrent origin write / run swap). The rollback already restored
+        # the card; record the durable refusal in its own txn, then raise the
+        # typed, recoverable OffBoardOriginError.
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "completion_blocked_off_board_origin", exc.payload,
+            )
+        raise OffBoardOriginError(task_id) from exc
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)
@@ -3694,12 +3720,23 @@ def record_off_board_run(
         "launch_ts": int(time.time()),
     }
     with write_txn(conn):
+        # Resolve the ACTIVE run INSIDE the txn and require it to still be open
+        # (review 2026-10-05 HIGH #3): a run swap between the pre-read and the
+        # lock must never let the origin land on a run that is no longer the
+        # card's active one while the new active run stays unattributed.
+        run_id = _current_run_id(conn, task_id)
+        if run_id is None:
+            raise OffBoardLaunchError(task_id, "no active run")
+        if expected_run_id is not None and int(expected_run_id) != run_id:
+            raise OffBoardLaunchError(
+                task_id, f"active run {run_id} != expected {expected_run_id}",
+            )
         row = conn.execute(
-            "SELECT metadata FROM task_runs WHERE id = ? AND task_id = ?",
+            "SELECT metadata FROM task_runs WHERE id = ? AND task_id = ? AND ended_at IS NULL",
             (run_id, task_id),
         ).fetchone()
         if row is None:
-            raise OffBoardLaunchError(task_id, f"run {run_id} not found")
+            raise OffBoardLaunchError(task_id, f"run {run_id} not open")
         merged: dict = {}
         if row["metadata"]:
             try:
@@ -3709,10 +3746,14 @@ def record_off_board_run(
             except (ValueError, TypeError):
                 merged = {}
         merged["off_board_run"] = origin
-        conn.execute(
-            "UPDATE task_runs SET metadata = ? WHERE id = ? AND task_id = ?",
+        updated = conn.execute(
+            "UPDATE task_runs SET metadata = ? WHERE id = ? AND task_id = ? AND ended_at IS NULL",
             (_json_or_null(merged), run_id, task_id),
-        )
+        ).rowcount
+        if updated != 1:
+            # A concurrent close raced us after the SELECT: the txn rolls back
+            # on the raise (write_txn body), nothing is mis-recorded.
+            raise OffBoardLaunchError(task_id, f"run {run_id} closed during record")
         _append_event(
             conn, task_id, "route_off_board_launch",
             {"run_id": run_id, "served_model": served_model,
@@ -3722,91 +3763,119 @@ def record_off_board_run(
     return run_id
 
 
-def _off_board_run_origin(
-    conn: sqlite3.Connection, task_id: str, expected_run_id: Optional[int],
-) -> Optional[dict]:
-    """P4 PARTE 3: the recorded external-launch origin of the card's ACTIVE run.
+_PROTECTED_RUN_METADATA_KEYS = ("off_board_run", "resolved_route_provenance")
+"""Run-metadata keys owned by TRUSTED writers (the dispatcher's route
+provenance and :func:`record_off_board_run`'s launch origin). A caller-supplied
+``metadata`` dict must never overwrite them at completion (review 2026-10-05
+MEDIUM #5): otherwise a caller could erase an origin (downgrading to on-board)
+or forge one whose launch was never recorded."""
 
-    Returns ``task_runs.metadata['off_board_run']`` (a dict written by
-    :func:`record_off_board_run` at launch time) only when it carries
-    ``off_board`` truthy and a non-blank ``served_model`` string, and only when
-    the run is the card's active run (matching ``expected_run_id`` when the
-    caller names one) — a recorded origin from a previous run can never cover
-    the current completion. Fail-closed: any missing/unparseable/partial shape
-    returns ``None``."""
+
+def _strip_protected_run_metadata(metadata: Optional[dict]) -> Optional[dict]:
+    """Drop trusted provenance keys from CALLER-supplied completion metadata so
+    the merge in :func:`_end_run` cannot clobber or forge them."""
+    if isinstance(metadata, dict):
+        for key in _PROTECTED_RUN_METADATA_KEYS:
+            metadata.pop(key, None)
+    return metadata
+
+
+def _off_board_run_origin_state(
+    conn: sqlite3.Connection, task_id: str, expected_run_id: Optional[int],
+) -> tuple[Optional[dict], bool]:
+    """``(origin, invalid)`` for the card's ACTIVE run.
+
+    ``origin`` is the validated origin dict (``schema == "v1"``, ``off_board is
+    True`` — an identity check, not truthiness — and a non-blank string
+    ``served_model``) recorded by :func:`record_off_board_run`; the active run
+    must match ``expected_run_id`` when the caller names one, so a previous
+    run's origin can never cover the current completion.
+
+    ``invalid`` is **True** when the run carries an ``off_board_run`` key that
+    is *present but malformed or incomplete* — a non-dict, a non-``True``
+    indicator, a wrong/missing schema, or a blank model. That state MUST refuse
+    (review 2026-10-05 HIGH #1): silently dropping a present-but-invalid origin
+    would downgrade an unattributed run to on-board, which is the exact
+    fail-open the gate exists to close.
+
+    ``(None, False)`` means "no origin key at all" — the ordinary on-board run."""
     run_id = _current_run_id(conn, task_id)
     if run_id is None:
-        return None
+        return None, False
     if expected_run_id is not None and int(expected_run_id) != run_id:
-        return None
+        return None, False
     row = conn.execute(
         "SELECT metadata FROM task_runs WHERE id = ?", (run_id,),
     ).fetchone()
     if row is None or not row["metadata"]:
-        return None
+        return None, False
     try:
         meta = json.loads(row["metadata"])
     except (ValueError, TypeError):
-        return None
-    if not isinstance(meta, dict):
-        return None
+        return None, False
+    if not isinstance(meta, dict) or "off_board_run" not in meta:
+        return None, False
     origin = meta.get("off_board_run")
     if not isinstance(origin, dict):
-        return None
-    if not origin.get("off_board"):
-        return None
+        return None, True
+    if origin.get("off_board") is not True:
+        return None, True
+    if origin.get("schema") != "v1":
+        return None, True
     served = origin.get("served_model")
     if not (isinstance(served, str) and served.strip()):
-        return None
-    return origin
+        return None, True
+    return origin, False
+
+
+def _off_board_served_model(metadata: Optional[dict], origin: Optional[dict]) -> Optional[str]:
+    """The effective served model for an off-board completion: the caller's
+    valid ``metadata['served_model']`` first, else the recorded origin's model.
+    ``None`` when neither is a non-blank string (the caller-facing gate raises)."""
+    if isinstance(metadata, dict):
+        raw = metadata.get("served_model")
+        if isinstance(raw, str) and raw.strip():
+            return raw
+    if origin is not None:
+        raw = origin.get("served_model")
+        if isinstance(raw, str) and raw.strip():
+            return raw
+    return None
 
 
 def _gate_off_board_served_model(
     conn: sqlite3.Connection, task_id: str, metadata: Optional[dict], off_board: bool,
     *, require_recorded_origin: Optional[bool] = None, expected_run_id: Optional[int] = None,
-) -> Optional[dict]:
+) -> tuple[Optional[dict], bool]:
     """P4 PARTE 2/3: an off-board completion must name its serving model — and
     a run LAUNCHED off-board cannot be completed as normal dispatched work.
 
-    The card is treated as off-board when EITHER the caller declared it
-    (``off_board=True`` — supplied by the CALLER, never inferred from
-    ``routing_metadata``) OR the active run carries a recorded external-launch
-    origin (:func:`record_off_board_run`, P4 PARTE 3). The second clause closes
-    the real bypass: a run launched outside the dispatcher can no longer be
-    completed as on-board by simply omitting the flag — the persisted origin
-    forces the off-board treatment.
+    The card is off-board when EITHER the caller declared it (``off_board=True``,
+    never inferred from ``routing_metadata``) OR the active run carries a
+    recorded external-launch origin (:func:`record_off_board_run`). A
+    present-but-invalid origin REFUSES (``invalid_origin``) — it is never
+    silently dropped (review 2026-10-05 HIGH #1).
 
-    When off-board (declared or recorded), ``metadata['served_model']`` MUST be
-    a non-blank string, or the recorded origin's ``served_model`` supplies it
-    (the launching surface's observation). Missing both -> auditable
-    ``completion_blocked_served_model`` event (own txn, task-scoped) +
-    :class:`OffBoardServedModelError`.
-
-    A caller that DECLARES off-board but whose active run has no recorded
-    origin is refused with an auditable ``completion_blocked_off_board_origin``
-    event + :class:`OffBoardOriginError` — unless ``require_recorded_origin``
-    is explicitly ``False``: the narrow escape hatch for surfaces that have no
-    launch step (the CLI ``--off-board`` operator action and the
-    ``kanban_complete`` tool, which attest the served model directly). It is
-    never a silent downgrade. ``None`` (default) means REQUIRED.
-
-    The fully on-board path (no flag, no recorded origin) is untouched —
-    no new events, byte-for-byte unchanged. Returns the (possibly extended)
-    ``metadata`` so callers keep a single dict reference."""
-    origin = _off_board_run_origin(conn, task_id, expected_run_id)
+    Returns ``(metadata, effective)``: ``metadata`` is the (possibly extended)
+    dict with a NORMALIZED ``served_model`` (the validated value, so a blank/
+    non-string caller value is replaced by the origin's — review #7); the
+    caller must drive the ``route_served_model`` event off ``effective``, not
+    off the raw flag (review #8). The fully on-board path (no flag, no origin)
+    returns ``(metadata, False)`` untouched."""
+    origin, invalid = _off_board_run_origin_state(conn, task_id, expected_run_id)
     declared = bool(off_board)
+    if invalid:
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "completion_blocked_off_board_origin",
+                {"reason": "invalid_origin", "declared": declared,
+                 "run_id": _current_run_id(conn, task_id)},
+            )
+        raise OffBoardOriginError(task_id)
     effective = declared or (origin is not None)
     if not effective:
-        return metadata
-    served: Optional[str] = None
-    if isinstance(metadata, dict):
-        raw = metadata.get("served_model")
-        if isinstance(raw, str) and raw.strip():
-            served = raw
-    if served is None and origin is not None:
-        raw = origin.get("served_model")
-        if isinstance(raw, str) and raw.strip():
-            served = raw
+        return metadata, False
+    served = _off_board_served_model(metadata, origin)
     if served is None:
         with write_txn(conn):
             _append_event(
@@ -3820,15 +3889,44 @@ def _gate_off_board_served_model(
         with write_txn(conn):
             _append_event(
                 conn, task_id, "completion_blocked_off_board_origin",
-                {"off_board": True, "served_model": served,
-                 "run_id": _current_run_id(conn, task_id)},
+                {"reason": "declared_no_origin", "off_board": True,
+                 "served_model": served, "run_id": _current_run_id(conn, task_id)},
             )
         raise OffBoardOriginError(task_id)
     if metadata is None:
         metadata = {}
-    if not metadata.get("served_model"):
-        metadata["served_model"] = served
-    return metadata
+    # Persist the VALIDATED model (a blank/non-string caller value must not
+    # survive next to a valid origin model — review #7).
+    metadata["served_model"] = served
+    return metadata, True
+
+
+def _off_board_state_in_txn(
+    conn: sqlite3.Connection, task_id: str, declared: bool, require: bool,
+    metadata: Optional[dict], expected_run_id: Optional[int],
+) -> tuple[bool, Optional[str]]:
+    """Re-classify off-board INSIDE the completion txn (review 2026-10-05 HIGH
+    #2/#3). The caller-facing gate read the origin WITHOUT the write lock, so a
+    concurrent :func:`record_off_board_run` could land between gate and txn;
+    this re-read binds the verdict to the run that is about to be closed and
+    raises :class:`_OffBoardGateChangedInTxn` when it diverges — the whole
+    completion txn rolls back, nothing is closed, and the caller turns it into
+    an audible, durable refusal. Returns ``(effective, served)``."""
+    origin, invalid = _off_board_run_origin_state(conn, task_id, expected_run_id)
+    if invalid:
+        raise _OffBoardGateChangedInTxn(
+            "origin_invalid_in_txn", {"reason": "invalid_origin"})
+    effective = declared or (origin is not None)
+    if not effective:
+        return False, None
+    served = _off_board_served_model(metadata, origin)
+    if served is None:
+        raise _OffBoardGateChangedInTxn(
+            "served_model_missing_in_txn", {"reason": "served_model_missing"})
+    if declared and origin is None and require:
+        raise _OffBoardGateChangedInTxn(
+            "origin_missing_in_txn", {"reason": "declared_no_origin"})
+    return True, served
 
 
 def _gate_created_cards(
@@ -4105,6 +4203,20 @@ def _stash_gate_contract(conn: sqlite3.Connection, text: Optional[str]) -> None:
         _GATE_CONTRACT_STASH[id(conn)] = text
     except Exception:  # pragma: no cover - defensive
         pass
+
+
+class _OffBoardGateChangedInTxn(Exception):
+    """INTERNAL: the in-txn off-board recheck refused the completion (review
+    2026-10-05 HIGH #2/#3). Raised INSIDE the completion write txn so the
+    enclosing context manager ROLLS BACK the fence flip (card keeps its prior
+    status, nothing is staged, no ``completed`` event). The caller catches it
+    OUTSIDE the txn, records ``completion_blocked_off_board_origin`` durably in
+    its own txn, then raises :class:`OffBoardOriginError`."""
+
+    def __init__(self, reason: str, payload: dict):
+        self.reason = reason
+        self.payload = payload
+        super().__init__(reason)
 
 
 class _ContractSwappedInTxn(Exception):

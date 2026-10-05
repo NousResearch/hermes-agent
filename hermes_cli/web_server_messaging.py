@@ -71,12 +71,6 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         ),
         "required_env": (),
     },
-    "homeassistant": {
-        "name": "Home Assistant",
-        "description": "Control your smart home from Hermes via Home Assistant.",
-        "docs_url": "https://www.home-assistant.io/docs/authentication/",
-        "env_vars": ("HASS_URL", "HASS_TOKEN"), "required_env": ("HASS_URL", "HASS_TOKEN"),
-    },
     "email": {
         "name": "Email", "description": "Talk to Hermes through an IMAP/SMTP mailbox.",
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/",
@@ -221,7 +215,7 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
 # the end alphabetically.
 _PLATFORM_ORDER: tuple[str, ...] = (
     "telegram", "discord", "slack", "mattermost", "matrix", "whatsapp", "signal", "bluebubbles",
-    "homeassistant", "email", "sms", "dingtalk", "feishu", "google_chat", "wecom", "wecom_callback",
+    "email", "sms", "dingtalk", "feishu", "google_chat", "wecom", "wecom_callback",
     "weixin", "qqbot", "yuanbao", "api_server", "webhook",
 )
 

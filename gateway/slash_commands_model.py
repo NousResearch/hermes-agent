@@ -760,6 +760,7 @@ class GatewayModelCommandsMixin:
         # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
         from agent.reasoning_effort import effort_display_label
         from gateway.run import _load_gateway_config
+        from hermes_cli.codex_runtime_switch import get_current_runtime
         _session_route = ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {})
         _model_cfg = {}
         with contextlib.suppress(Exception):  # fail-open on config read errors, like /model does
@@ -767,6 +768,7 @@ class GatewayModelCommandsMixin:
         _route = (
             _session_route.get("provider") or _model_cfg.get("provider"),
             _session_model or _model_cfg.get("default") or _model_cfg.get("model"),
+            get_current_runtime({"model": _model_cfg}),
         )
         if rc is None:
             level, current_effort = t("gateway.reasoning.level_default"), "medium"

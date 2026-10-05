@@ -12,9 +12,18 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli._subprocess_compat import (
+    NO_LAZY_FETCH_ENV,
+    bounded_probe_run,
+    noninteractive_git_env,
+    windows_hide_flags,
+)
 
 logger = logging.getLogger(__name__)
+
+# Folding ~100 small packs takes seconds, but the checkouts this exists for (thousands of packs,
+# tens of GiB) need a full repack. A killed fold restarts from scratch on every update and never
+# converges, so the bound is generous and a timeout is reported, not swallowed.
 
 # Files younger than this are presumed live (a fetch may be in flight) and are never removed. Lock
 # files live for seconds and a healthy fetch completes in minutes; 10 minutes is abandoned.
@@ -124,6 +133,77 @@ def mark_unmarked_packs_promisor(repo_root: Path) -> int:
     if marked:
         logger.info("Marked %d pack(s) in %s as partial-clone packs", marked, repo_root)
     return marked
+
+
+# In a partial clone whose commit-graph already carries changed-path (Bloom) data, any commit-graph
+# write over commits it has not seen yet needs their trees: one lazy fetch (and one pack) per commit,
+# and each lazy fetch spawns ``git maintenance`` again, which is the unbounded loop of #127711. gc,
+# ``maintenance run --task=commit-graph`` and ``fetch.writeCommitGraph`` all write one (git
+# 2.50.1, 2.53.0 and 2.55.0 alike). So a promisor checkout never writes the graph. Automatic
+# maintenance itself stays on: on git <= 2.53 its post-fetch ``gc --auto`` is what keeps the
+# lazy-fetch packs folded between updates. ``gc.auto`` stays at its default for the same reason
+# (``gc.auto=0`` turns that fold into a no-op).
+_TREE0_MAINTENANCE_OFF = (
+    ("maintenance.commit-graph.enabled", "false"),
+    ("gc.writeCommitGraph", "false"),
+    ("fetch.writeCommitGraph", "false"),
+)
+
+
+def disable_tree0_auto_maintenance(repo_root: Path) -> None:
+    """Keep git from writing a commit-graph in a partial clone, from gc, fetch or maintenance.
+
+    Idempotent (a value already in place is not rewritten, so concurrent git never meets a config
+    lock from this) and never raises: a read-only config must not turn fetch recovery into a
+    traceback, matching mark_unmarked_packs_promisor above.
+    """
+    _migrate_earlier_maintenance_keys(repo_root)
+    for key, value in _TREE0_MAINTENANCE_OFF:
+        try:
+            current = subprocess.run(
+                ["git", "config", "--local", "--get", key],
+                cwd=str(repo_root), capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30,
+                creationflags=windows_hide_flags(),
+            ).stdout.strip()
+            if current == value:
+                continue
+            subprocess.run(
+                ["git", "config", "--local", key, value],
+                cwd=str(repo_root), check=True,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30,
+                creationflags=windows_hide_flags(),
+            )
+        except Exception:
+            logger.warning("Could not set %s=%s in %s", key, value, repo_root)
+
+
+def _migrate_earlier_maintenance_keys(repo_root: Path) -> None:
+    """Undo what earlier cuts of _TREE0_MAINTENANCE_OFF persisted, once.
+
+    ``maintenance.auto=false`` switched off git's own post-fetch fold (git <= 2.53) and the first
+    cut's ``gc.auto=0`` turns ``gc --auto``, the update's own fold, into a no-op. Nothing records
+    who wrote them, so they are removed only under the earlier cuts' fingerprint: both wrote
+    ``maintenance.auto=false`` together with ``fetch.writeCommitGraph=false``, and neither wrote
+    ``maintenance.commit-graph.enabled``. The first pass of disable_tree0_auto_maintenance writes
+    that key, so this runs once; an operator's own lone setting never matches.
+    """
+    try:
+        local = dict(line.split(None, 1) for line in _git_stdout_lines(repo_root, [
+            "config", "--local", "--get-regexp",
+            r"^(maintenance\.auto|maintenance\.commit-graph\.enabled|fetch\.writecommitgraph|gc\.auto)$"]))
+        if (local.get("maintenance.auto") != "false" or local.get("fetch.writecommitgraph") != "false"
+                or "maintenance.commit-graph.enabled" in local):
+            return
+        for key in ("maintenance.auto", "gc.auto") if local.get("gc.auto") == "0" else ("maintenance.auto",):
+            subprocess.run(
+                ["git", "config", "--local", "--unset", key],
+                cwd=str(repo_root), check=True, capture_output=True, timeout=30,
+                creationflags=windows_hide_flags(),
+            )
+    except Exception:
+        logger.warning("Could not migrate earlier maintenance keys in %s", repo_root)
 
 
 def clear_stale_tmp_packs(repo_root: Path, *, min_age_seconds: Optional[int] = None) -> List[str]:
@@ -482,6 +562,7 @@ def fetch_full_commit_graph(repo_root: Path, *extra_refspecs: str, **run_kwargs)
         # git writes the partial-clone config before it fetches, so a failed fetch converts too.
         if converts:
             mark_unmarked_packs_promisor(repo_root)
+            disable_tree0_auto_maintenance(repo_root)
     return shallow
 
 
@@ -525,3 +606,15 @@ def fetch_with_partial_clone_recovery(runner: Callable[..., subprocess.Completed
     mark_unmarked_packs_promisor(repo_root)
     logger.info("pack-objects crash on a partial clone; retrying the fetch")
     return runner(git_cmd, fetch_args)
+
+
+def settle_partial_clone_maintenance(repo_root: Path) -> None:
+    """Persist the commit-graph-off keys on a partial clone; a full clone keeps stock maintenance.
+
+    Runs on every update so checkouts that predate the installer change converge. Never raises.
+    """
+    try:
+        if _partial_clone_filter(repo_root, creationflags=windows_hide_flags()) is not None:
+            disable_tree0_auto_maintenance(repo_root)
+    except Exception:
+        logger.debug("partial-clone maintenance settings failed for %s", repo_root, exc_info=True)

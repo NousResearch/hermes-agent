@@ -30,6 +30,8 @@ import type {
   SessionInfo,
   SlashCatalog,
   SudoReq,
+  VaultCodeReq,
+  VaultSaveLoginReq,
   VaultUnlockReq
 } from '../types.js'
 
@@ -303,6 +305,8 @@ export interface OverlayState {
   petPicker: boolean
   pluginsHub: boolean
   secret: null | SecretReq
+  vaultCode: null | VaultCodeReq
+  vaultSaveLogin: null | VaultSaveLoginReq
   vaultUnlock: null | VaultUnlockReq
   sessions: boolean
   skillsHub: boolean
@@ -575,6 +579,8 @@ export interface AppLayoutActions {
   answerClarifyQuestion: (qid: string, answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
+  answerVaultCode: (code: string) => void
+  answerVaultSaveLogin: (identifier: string, password: string) => void
   answerVaultUnlock: (password: string) => void
   cancelClarify: () => void
   clearSelection: () => void
@@ -651,6 +657,8 @@ export interface AppOverlaysProps {
   onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void
+  onVaultCodeSubmit: (code: string) => void
+  onVaultSaveLoginSubmit: (identifier: string, password: string) => void
   onVaultUnlockSubmit: (password: string) => void
   pagerPageSize: number
 }

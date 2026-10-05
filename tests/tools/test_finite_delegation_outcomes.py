@@ -165,16 +165,28 @@ def test_finite_batch_returns_timeout_while_child_unwinds(harness, monkeypatch):
     assert slow.closed.wait(2)
 
 
-def test_finite_batch_returns_parent_interruption(harness):
+def test_finite_batch_returns_parent_interruption(harness, monkeypatch):
     parent, children, dispatch = harness
     children.extend([_Child(), _Child("slow")])
     slow = children[1]
     stop_errors = []
+    # The child's own close() runs inside its worker before the future resolves, so stopping the
+    # parent then can catch the sibling still pending and report it interrupted. Wait until the
+    # parent has collected the completed sibling instead.
+    from tools import delegate_tool_dispatch as dispatch_mod
+    collected = threading.Event()
+    report = dispatch_mod._report_child_done
+
+    def report_and_signal(*args, **kwargs):
+        report(*args, **kwargs)
+        collected.set()
+
+    monkeypatch.setattr(dispatch_mod, "_report_child_done", report_and_signal)
 
     def stop_parent():
         try:
             assert slow.started.wait(3)
-            assert children[0].closed.wait(3)
+            assert collected.wait(3)
             parent.hard_interrupt("test parent stop")
         except Exception as exc:
             stop_errors.append(exc)

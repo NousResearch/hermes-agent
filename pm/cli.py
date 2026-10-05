@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from pm import termux_libs
-from pm.install import _facts, _lockfile, _store, ensure, stage_only
+from pm.install import _facts, _lockfile, _reclaim_set_aside, _store, ensure, stage_only
 from pm.operations import lock_project
 from pm.package import InstallError
 from pm.paths import repo_root
@@ -490,6 +490,7 @@ def _gc_store(store, facts) -> tuple[int, int]:
         facts.reload()
         keep = facts.entries_in_use()
         collect_partials(partials_dir)
+        removed += _reclaim_set_aside(store)
         for item in sorted(store.root.iterdir()):
             if not item.is_dir():
                 continue

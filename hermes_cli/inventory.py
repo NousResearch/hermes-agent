@@ -319,7 +319,7 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
-    from hermes_cli.models import model_supports_fast_mode
+    from hermes_cli.models import model_supports_ultrafast, resolve_fast_mode_overrides
 
     try:
         from agent.models_dev import get_model_capabilities
@@ -330,7 +330,6 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
         slug = row.get("slug") or ""
         caps: dict[str, dict[str, Any]] = {}
         read_reasoning_catalog = _reasoning_catalog_reader(slug.lower())
-
         for model in row.get("models") or []:
             reasoning = True
             if get_model_capabilities is not None and slug:
@@ -341,7 +340,11 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
                 except Exception:
                     reasoning = True
 
-            entry: dict[str, Any] = {"fast": bool(model_supports_fast_mode(model)), "reasoning": reasoning}
+            fast = resolve_fast_mode_overrides(
+                model, provider=slug, base_url=row.get("api_url")) is not None
+            entry: dict[str, Any] = {"fast": fast, "reasoning": reasoning}
+            if fast and model_supports_ultrafast(model):
+                entry["ultrafast"] = True
 
             if reasoning and read_reasoning_catalog is not None:
                 try:
@@ -366,17 +369,32 @@ _FEATURED_PER_LAB = 5
 
 
 def _apply_featured(rows: list[dict], *, metadata_config: dict | None = None) -> None:
-    """Attach a ``featured_models`` shortlist to each aggregator row: newest ``_FEATURED_PER_LAB`` per
-    vendor by models.dev ``release_date`` (ranked within the row, never vs. today, so it is stable);
-    ties keep curated order. Non-aggregators get an empty list and keep top-N behaviour."""
+    """Attach a ``featured_models`` shortlist to each routing-aggregator row: newest
+    ``_FEATURED_PER_LAB`` per vendor by models.dev ``release_date`` (ranked within the row, never vs.
+    today, so it is stable); ties keep curated order. Non-aggregators — including every user-defined
+    row, whose ``models:`` list is an explicit allow-list — get an empty list and keep top-N
+    behaviour (#120217)."""
     try:
         from agent.models_dev import get_model_info
     except Exception:
         get_model_info = None  # type: ignore[assignment]
 
+    # "Is this row an aggregator?" is answered canonically by is_routing_aggregator() — the same
+    # predicate _strip_aggregator_overlaps() uses. Deriving it from model-id spelling (does any id
+    # contain "/" and span >= 2 prefixes?) misread every Org/Model-shaped user provider as a
+    # multi-lab aggregator and hid the models its owner configured by hand (#120217).
+    try:
+        from hermes_cli.providers import is_routing_aggregator
+    except Exception:
+        is_routing_aggregator = None  # type: ignore[assignment]
+
     for row in rows:
         slug = str(row.get("slug") or "").strip().lower()
         models = row.get("models") or []
+
+        if row.get("is_user_defined") or not (is_routing_aggregator and is_routing_aggregator(slug)):
+            row["featured_models"] = []
+            continue
 
         by_lab: dict[str, list[tuple[int, str, str]]] = {}  # only multi-lab aggregators get a shortlist
         for pos, model in enumerate(models):
@@ -637,6 +655,8 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
             continue
         try:
             pricing_kwargs = {"cached_only": True} if cached_only else {}
+            if slug.startswith("custom:"):
+                pricing_kwargs["base_url"] = str(row.get("api_url") or "")
             raw_pricing = get_pricing_for_provider(slug, **pricing_kwargs) or {}
         except Exception:
             raw_pricing = {}
@@ -741,10 +761,18 @@ def _prewarm_pricing_async(
     from hermes_constants import hermes_home_key
     from hermes_cli.models_pricing import pricing_cache_scope
 
-    slugs = {str(row.get("slug") or "").lower() for row in rows if row.get("slug")}
+    slugs = {
+        (
+            str(row.get("slug") or "").lower(),
+            str(row.get("api_url") or "") if str(row.get("slug") or "").lower().startswith("custom:") else "",
+        )
+        for row in rows if row.get("slug")
+    }
     endpoint_scope = tuple(sorted(
-        (slug, pricing_cache_scope(slug, current_provider=current_provider, current_base_url=current_base_url))
-        for slug in slugs))
+        (slug, pricing_cache_scope(
+            slug, base_url=base_url, current_provider=current_provider, current_base_url=current_base_url,
+        ))
+        for slug, base_url in slugs))
     prewarm_key = (hermes_home_key(), endpoint_scope)
 
     with _pricing_prewarm_lock:

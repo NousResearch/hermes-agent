@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-29T19:47:11Z",
+  "updated_at": "2026-10-02T16:15:09Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -234,6 +234,14 @@
           "description": ""
         },
         {
+          "id": "upstage/solar-pro4",
+          "description": ""
+        },
+        {
+          "id": "upstage/solar-mini4",
+          "description": ""
+        },
+        {
           "id": "openrouter/pareto-code",
           "description": "auto-routes to cheapest coder meeting openrouter.min_coding_score"
         },
@@ -436,6 +444,12 @@
         },
         {
           "id": "sakana/fugu-ultra"
+        },
+        {
+          "id": "upstage/solar-pro4"
+        },
+        {
+          "id": "upstage/solar-mini4"
         },
         {
           "id": "stealth/space-bunny-alpha"

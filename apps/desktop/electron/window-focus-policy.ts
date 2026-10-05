@@ -40,6 +40,6 @@ export function revealAction(windowVisible: boolean): 'showInactive' | 'none' {
  * doesn't already have it. A `.focus()` call on an already-focused window
  * is a foreground pump on Windows and a no-op everywhere else — skip it.
  */
-export function shouldFocusToTakeKeyboard({ isFocused }: FocusPolicyWindow): boolean {
-  return !isFocused()
+export function shouldFocusToTakeKeyboard(window: FocusPolicyWindow): boolean {
+  return !window.isFocused()
 }

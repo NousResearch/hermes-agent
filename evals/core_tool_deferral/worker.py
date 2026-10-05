@@ -34,11 +34,14 @@ for var in list(os.environ):
 os.environ.pop("FAL_KEY", None)
 os.environ.pop("HERMES_PROFILE", None)
 
+from sandbox import isolate_host  # noqa: E402
+
 tmp_root = tempfile.mkdtemp(prefix=f"ab-{ARM}-{TASK_ID}-")
 hermes_home = os.path.join(tmp_root, ".hermes")
 workspace = os.path.join(tmp_root, "ws")
 os.makedirs(hermes_home)
 os.makedirs(workspace)
+isolate_host(tmp_root, hermes_home)
 with open(os.path.join(hermes_home, "config.yaml"), "w", encoding="utf-8") as f:
     f.write("model:\n  provider: openrouter\n  model: %s\n" % MODEL)
 

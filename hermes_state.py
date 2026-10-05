@@ -33,6 +33,7 @@ from hermes_state_common import (
     escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity,
 )
 from hermes_state_holders import read_only_db_uri
+from hermes_state_pidns import holder_pid_checkable
 from hermes_state_health import (
     STORAGE_CORRUPT, mark_storage_corrupt, note_storage_error, storage_corrupt_reason, storage_state,
 )
@@ -64,6 +65,7 @@ from hermes_state_dbfile import (
     RetiredGenerationCaptureError, capture_retired_wal_generation, refuse_deleted_wal_generation,
 )
 from hermes_state_messages import SessionMessagesMixin
+from hermes_state_coverage import SessionCoverageMixin
 from hermes_state_rewind import SessionRewindMixin
 from hermes_state_wal import (
     _WAL_INCOMPAT_MARKERS, _on_disk_journal_mode, apply_database_pragmas, apply_wal_with_fallback,
@@ -115,7 +117,8 @@ class SessionResumeTooLargeError(ValueError):
         self.scope = scope
         super().__init__(
             f"This session is too long to reload safely ({message_count} messages; limit {limit}). "
-            "Start a fresh chat and use `hermes sessions export` to keep a copy, or raise the limit "
+            "Start a fresh chat and keep a copy with the dashboard Sessions page's Export action or "
+            "`hermes sessions export --format md --session-id <id>` (neither is capped), or raise the limit "
             "with `hermes config set sessions.max_resume_messages 0`."
         )
 
@@ -123,9 +126,11 @@ class SessionResumeTooLargeError(ValueError):
 class SessionExportTooLargeError(ValueError):
     def __init__(self, session_id: str, message_count: int, limit: int = _MAX_SAFE_MESSAGES):
         self.session_id, self.message_count, self.limit = session_id, message_count, limit
+        # User-facing refusal shared by every in-memory JSON/JSONL export (CLI and console).
         super().__init__(
-            f"session '{session_id}' has at least {message_count} active messages; "
-            f"safe in-memory export limit is {limit}"
+            f"Session '{session_id}' has more than {limit:,} exportable messages; the JSON/JSONL "
+            "backup is built in memory and capped per session. Use the dashboard Sessions page's streaming "
+            "Export action, or set sessions.max_export_messages: 0 in config.yaml to disable the guard."
         )
 
 
@@ -133,11 +138,14 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     """True only when a ``pid=<n>`` lock holder's local PID is provably gone.
     Reclaim on kernel proof only: unstructured/same-process holders (another
     thread's live lease) and any probe doubt keep the lease until TTL expiry
-    (PID reuse must never steal a live lease; a wrongly-kept one self-heals)."""
+    (PID reuse must never steal a live lease; a wrongly-kept one self-heals).
+    Foreign/unstamped PID namespaces defer to TTL: see ``hermes_state_pidns``."""
     match = re.search(r"(?:^|:)pid=(\d+)(?::|$)", holder or "")
     pid = int(match.group(1)) if match else 0
     if pid <= 0 or pid == os.getpid():
         return False
+    if not holder_pid_checkable(holder):
+        return False  # foreign / unknown namespace: defer to TTL
     if psutil is not None:
         try:
             return not psutil.pid_exists(pid)  # recycled PIDs read as alive (conservative)
@@ -452,7 +460,7 @@ class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-    SessionMessagesMixin, SessionRewindMixin, SessionProfileRepairMixin,
+    SessionMessagesMixin, SessionCoverageMixin, SessionRewindMixin, SessionProfileRepairMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 

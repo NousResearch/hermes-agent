@@ -367,7 +367,7 @@ _GATEWAY_SERVICE_REMOVERS = {
 
 
 def _hermes_path_markers(hermes_home: Path, *, include_managed_bin: bool = False) -> list[str]:
-    """Prefixes identifying Hermes-owned User-PATH entries (prefix match sweeps git\cmd, git\bin,
+    r"""Prefixes identifying Hermes-owned User-PATH entries (prefix match sweeps git\cmd, git\bin,
     node...). ``include_managed_bin`` adds ``<root>\bin`` (launchers + managed uv) — only when that
     dir is about to be deleted, so a keep-data uninstall keeps the working uv resolvable."""
     root = str(hermes_home).rstrip("\\/")
@@ -695,6 +695,7 @@ def run_gui_uninstall(args):
     """
     from hermes_cli.gui_uninstall import (
         agent_is_installed,
+        desktop_install_record,
         gui_install_summary,
         uninstall_gui,
     )
@@ -719,6 +720,8 @@ def run_gui_uninstall(args):
     print(color("Will remove:", Colors.YELLOW, Colors.BOLD))
     for p in (*summary["source_built_artifacts"], *summary["packaged_app_paths"]):
         print(f"  • {p}")
+    if (install_record := desktop_install_record()).exists():
+        print(f"  • {install_record}  (desktop install record)")
     if summary["userdata_exists"]:
         print(f"  • {summary['userdata_dir']}  (desktop app data)")
     print()
@@ -726,7 +729,13 @@ def run_gui_uninstall(args):
         print(color("Kept intact:", Colors.GREEN, Colors.BOLD))
         print(f"  • The Hermes agent at {hermes_home / 'hermes-agent'}")
         print(f"  • Your config, sessions, and secrets under {hermes_home}")
+        if (shared_modules := hermes_home / "hermes-agent" / "node_modules").exists():
+            print(f"  • Shared workspace dependencies at {shared_modules}")
         print()
+
+    if bool(getattr(args, "dry_run", False)):
+        print("Dry run: no files or processes changed.")
+        return
 
     if not skip_confirm and not _confirm_yes("to remove the Chat GUI"):
         return

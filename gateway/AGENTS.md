@@ -58,67 +58,20 @@ MagicMock adapters in older tests auto-create truthy attributes.
 
 ## Background process notifications
 
-`terminal(background=true, notify_on_complete=true)` starts a gateway watcher that detects
-completion and triggers a new agent turn. Verbosity: `display.background_process_notifications`
-(or `HERMES_BACKGROUND_NOTIFICATIONS`): `concise` (default; one line, failures append an output
-tail), `all` (running updates + final raw output), `result` (final raw output only), `error`
-(final raw output only on non-zero exit), `off`.
-
-The watcher is armed on the gateway loop at registration time (`terminal_tool_background.py::
-_register_completion_watcher` → `run_notifications.py::arm_process_watcher`); `pending_watchers`
-is only the fallback for processes registered before the gateway serves (checkpoint recovery) or
-while it stops, drained at startup and post-turn. Agent-notify watchers send no user-facing
-receipt (the agent's next turn is the report) unless the launching turn is still running at exit
-— then the injection only queues a follow-up, so the concise receipt goes out immediately.
-
-The idle completion watcher also drains `watch_match` / `watch_disabled`; no user follow-up is
-required. Notify-off drains these without waking. Transport failures are retried; unavailable
-durable completion owners/transports do not spend delivery attempts. Profile-namespaced process
-events keep their owning adapter, including raw progress/final notices. Adapter acceptance is
-at-least-once admission, not proof that a model turn or final outbound reply completed. API-server
-async completions remain durable delivery rows, never autonomous new model turns. Require the
-`admit_internal_event` receipt for completion/watch injection: a handler returning None is not
-acceptance. Refused admission refunds every claimed batch sibling without spending an attempt;
-actual delivery errors keep their bounded retry policy. Recognized raw API routes resolve after
-persisted messaging origins and defer quietly when unavailable; malformed routes still warn.
-
-Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
-reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,
-or opted-in explicit targets. `all` expansions do not gain home mirror eligibility. Mirrored
-briefs are labelled user turns appended at a turn boundary, preserving role alternation
-(`cron/AGENTS.md`).
+`terminal(background=true, notify_on_complete=true)` arms a watcher on the gateway loop
+(`run_notifications.py::arm_process_watcher`) that starts a new turn on completion; verbosity is
+`display.background_process_notifications`. Injection requires the `admit_internal_event` receipt
+(a handler returning None is not acceptance); refused admission refunds every claimed batch sibling
+without spending an attempt. Long form: `website/docs/developer-guide/gateway-internals.md`
+§ Background process notifications.
 
 ## `/login` (off-turn, paired DM only)
 
-`/login` is registered in `hermes_cli/commands.py` with `busy_policy="dispatch"` and
-`desktop="settings"`, listed in `run_busy.py::_PLAIN_COMMANDS`, and handled by
-`GatewayLoginCommandsMixin` (`gateway/slash_commands_login.py`). It refuses outside a paired DM:
-`chat_type in {"dm","private"}`, a truthy `chat_id`, and a platform whose `"dm"` really is a paired
-conversation — ntfy, raft and a2a all report `chat_type="dm"` for a broadcast topic, a channel and
-an agent peer, so posting a consent link there would publish it.
-
-**It binds the whole install.** The sign-in writes the singleton `providers.nous`, so whoever
-approves the code owns this gateway's inference and connectors for every chat it serves. Slash
-gating is opt-in (`gateway/slash_access.py`): with no `allow_admin_from` set, every user allowed to
-DM the bot can run it. Operators of shared gateways must set it.
-
-The handler returns its ack at once and drains `anon_auth.run_sign_in` on a **private single-worker
-executor** (`_login_executor`), never the shared 10-thread gateway pool — a promotion wait can last
-the code's full expiry, and a live worker in the shared pool makes shutdown skip the SessionDB
-close/checkpoint. One attempt per process, stamped with the identity that started it: the same
-identity's second `/login` supersedes (the loser ends with the superseded copy pushed into its own
-chat); a different identity is refused. `task.cancel()` cannot interrupt a blocking poll inside a
-worker thread, so shutdown and supersede both work through `attempt.cancelled`, which
-`wait_for_promotion` now polls on a ≤1 s tick. A shutdown-cancelled attempt pushes nothing — the
-task is dying and its adapters may already be gone — but if the server had already completed the
-transfer it still persists, because that transfer is irreversible.
-
-On completion the handler **evicts** every cached agent still on `nous/welcome` and clears any
-session model override pinned to it. It does not switch agents in place and does not write a model
-override: `settle_after_upgrade` already moved `model.default`/`model.base_url` in the config, every
-turn re-resolves the config and the credentials, and `_agent_config_signature` already forces a
-rebuild when the route changes — so an in-place swap buys no cache warmth and an override would pin
-an expiring access token that nothing refreshes.
+`GatewayLoginCommandsMixin` refuses outside a real paired DM (ntfy, raft and a2a report `dm` for
+broadcast surfaces) and binds the WHOLE install's `providers.nous`, so shared gateways must set
+`allow_admin_from`. It drains `anon_auth.run_sign_in` on its private single-worker `_login_executor`
+(never the shared pool), allows one attempt per process, and on completion evicts agents still on
+`nous/welcome` instead of writing a model override. Long form: `gateway-internals.md` § `/login`.
 
 ## Gateway lifecycle vs. the Desktop app
 
@@ -234,9 +187,12 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   profile's scope; gate/allowlist reads go through `platform_gate_env`. A `if not os.getenv(X):
   os.environ[X] = …` bridge is first-profile-wins across the process — test two profiles with
   conflicting flags before touching precedence.
-- **Unserved is reported, never silent.** Shared-ingress platforms (WhatsApp bridge, Relay) run on
-  the default profile only; a secondary enabling one is logged once with the remedy and stamped
-  into runtime status (`run_adapters.py::_note_unserved_secondary_platform`). `needs_attention` is
+- **Unserved is reported, never silent.** Shared-ingress platforms (Relay) run on the default
+  profile only; a secondary enabling one is logged once with the remedy and stamped into runtime
+  status (`run_adapters.py::_note_unserved_secondary_platform`). The WhatsApp bridge is per profile:
+  a paired secondary gets its own adapter and port (`plugins/platforms/whatsapp/bridge_ownership.py`),
+  an unpaired one is reported as `whatsapp_unpaired`, and a secondary never adopts or signals a
+  bridge its own pidfile (pid + start time + port) does not identify. `needs_attention` is
   set and cleared at the single writer (`_update_platform_runtime_status`) on the connect path.
 - **One launch-home identity.** "Does this task serve a routed profile?" compares the override
   with `hermes_constants.get_routing_process_hermes_home()` (`agent/secret_scope.py::

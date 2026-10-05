@@ -40,14 +40,17 @@ describe('registerAppLocale', () => {
 
   it('wraps a pack string over a function-valued English entry into a positional formatter', () => {
     registerAppLocale('pl', {
-      translations: { 'catalog.results': '{0} wyników', 'connectorsPage.card.fact.toolsSomeOn': '{1} z {0} narzędzi' }
+      translations: {
+        'connectorsPage.searchPlaceholder': '{0} wyników',
+        'connectorsPage.card.fact.toolsSomeOn': '{1} z {0} narzędzi'
+      }
     })
 
     const pl = resolveTranslations('pl')
 
-    expect(pl.catalog.results(3)).toBe('3 wyników')
+    expect(pl.connectorsPage.searchPlaceholder(3)).toBe('3 wyników')
     expect(pl.connectorsPage.card.fact.toolsSomeOn(10, 4)).toBe('4 z 10 narzędzi')
-    expect(typeof pl.catalog.installTitle).toBe('function')
+    expect(typeof pl.connectorsPage.card.fact.toolsSomeOn).toBe('function')
   })
 
   it('keeps dotted leaf keys (keybinds.actions) addressable from a flat pack', () => {
@@ -176,6 +179,8 @@ describe('translateNow', () => {
     registerAppLocale('en', { translations: { common: { save: 'Keep' } } }, 'backend')
 
     expect(translateNow('common.save')).toBe('Keep')
-    expect(translateNow('catalog.results', 2)).toBe(TRANSLATIONS.en.catalog.results(2))
+    expect(translateNow('connectorsPage.searchPlaceholder', 2)).toBe(
+      TRANSLATIONS.en.connectorsPage.searchPlaceholder(2)
+    )
   })
 })

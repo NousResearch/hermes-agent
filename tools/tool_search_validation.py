@@ -214,7 +214,7 @@ def not_deferrable_error(name: str) -> str:
     """Rejection for a ``tool_call`` naming something that is not a deferred tool.
     Two different mistakes reach here and need opposite corrections: a directly-listed
     tool (call it without the bridge) vs. an unknown name — typically a deferred MCP tool
-    cited by its bare suffix instead of the full ``mcp__<server>__<tool>`` name. Telling
+    cited by its bare suffix instead of the full ``mcp__<server>__{tool}`` name. Telling
     the second group 'call it directly' is the opposite of what they must do."""
     from tools.tool_search import _core_tool_names  # late: tool_search imports this module
     if name in _core_tool_names() or _registry_entry(name) is not None:
@@ -229,4 +229,4 @@ def not_deferrable_error(name: str) -> str:
     hint = (f" Did you mean {', '.join(repr(c) for c in candidates)}?" if candidates
             else " Use tool_search to find the exact name.")
     return (f"'{name}' is not a known tool name. Deferred tools must be invoked through tool_call "
-            f"by the exact name tool_search returns (e.g. mcp__<server>__<tool>).{hint}")
+            f"by the exact name tool_search returns (e.g. mcp__<server>__{{tool}}).{hint}")

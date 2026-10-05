@@ -24,10 +24,8 @@ import pytest
 
 
 HERMES_PYTHON = sys.executable
-SCRIPT = (
-    Path(__file__).resolve().parents[2]
-    / "apps/desktop/scripts/check-appinstaller-update.py"
-)
+REPO = Path(__file__).resolve().parents[2]
+MODULE = "hermes_cli.windows_appinstaller_update"
 
 @pytest.mark.parametrize("state,code,available", [
     ("not-packaged", 0, False), ("AVAILABLE", 2, True), ("REQUIRED", 2, True),
@@ -37,10 +35,10 @@ SCRIPT = (
 ])
 def test_projection_outcomes(monkeypatch, capsys, state, code, available):
     import enum
-    import runpy
+    import importlib
     from types import SimpleNamespace
 
-    main = runpy.run_path(str(SCRIPT))["main"]
+    main = importlib.import_module(MODULE).main
     availability = enum.IntEnum("Availability", "UNKNOWN NO_UPDATES AVAILABLE REQUIRED ERROR", start=0)
     class PackageInstance:
         def get_app_installer_info(self):
@@ -88,10 +86,12 @@ def test_projection_outcomes(monkeypatch, capsys, state, code, available):
 
 
 def test_script_import_failure_json_and_exit(tmp_path):
-    # A real subprocess executes __main__ and imports the absent projection.
+    # A real subprocess runs the entry the desktop spawns (python -P -m) and
+    # imports the absent projection.
     (tmp_path / "winrt.py").write_text("raise ImportError('fixture unavailable')", encoding="utf-8")
-    child = subprocess.run([HERMES_PYTHON, str(SCRIPT)], capture_output=True,
-                           text=True, timeout=30, env={**os.environ, "PYTHONPATH": str(tmp_path)})
+    child = subprocess.run([HERMES_PYTHON, "-P", "-m", MODULE], capture_output=True,
+                           text=True, timeout=30,
+                           env={**os.environ, "PYTHONPATH": os.pathsep.join([str(REPO), str(tmp_path)])})
     assert child.returncode == 1, child.stderr
     payload = json.loads(child.stdout)
     assert payload["available"] is None
@@ -104,12 +104,13 @@ def test_installed_winrt_projects_checker_uri_and_async_types(tmp_path):
     # packaged update call projects only after Package.current succeeds.
     probe = subprocess.run(
         [HERMES_PYTHON, "-I", "-c",
-         "import runpy; "
+         f"import sys; sys.path.insert(0, {str(REPO)!r}); "
+         f"from {MODULE} import _load_projection; "
          "from winrt.windows.foundation import IAsyncOperation, Uri; "
          "uri = Uri('https://example.invalid/updates.appinstaller'); "
          "assert uri.absolute_uri == 'https://example.invalid/updates.appinstaller'; "
          "assert callable(IAsyncOperation.get); "
-         f"runpy.run_path({str(SCRIPT)!r})['_load_projection'](); "
+         "_load_projection(); "
          "print('WINRT_CHECKER_TYPES_OK')"],
         cwd=tmp_path, capture_output=True, text=True, timeout=30,
     )

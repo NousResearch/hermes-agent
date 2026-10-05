@@ -36,14 +36,16 @@ def clear_git_debris(root: Path) -> None:
     A crashed fetch can leave ``.git/shallow.lock`` (or another lock) behind, and every later
     fetch then fails with "File exists". Aborted fetches on flaky lines also strand
     ``tmp_pack_*`` debris: unchecked it reached 6 GB and corrupted the pack dir (#93732).
+    A partial clone also gets its commit-graph-off keys re-applied (#127711).
     """
-    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs
+    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs, settle_partial_clone_maintenance
 
     for lock_path in clear_stale_git_locks(root):
         print(f"  (removed stale git lock: {lock_path})")
     swept = clear_stale_tmp_packs(root)
     if swept:
         print(f"  (removed {len(swept)} aborted-fetch pack temp file(s))")
+    settle_partial_clone_maintenance(root)
 
 
 def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path) -> str | None:

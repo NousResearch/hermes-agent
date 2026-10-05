@@ -3,6 +3,7 @@
 import asyncio
 import threading
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -517,3 +518,64 @@ async def test_compress_command_cleanup_does_not_block_event_loop():
         "event loop was blocked during manual /compress cleanup: only "
         f"{observed.get('ticks_during_block')} ticks while agent.close() was running"
     )
+
+
+@pytest.mark.parametrize("profile", ["main", "fitness"])
+def test_rotated_compress_keeps_atomically_published_foreign_tail(tmp_path, monkeypatch, profile):
+    """A rotated /compress must NOT rewrite the atomically-published child.
+
+    publish_compression_child() writes handoff + cloned foreign tail in one transaction;
+    the second rewrite_transcript(active_only=False) would DELETE the cloned tail (it is not
+    in the in-memory handoff) and its failure surfaced as a false "failed to persist
+    compressed transcript" even though the compression had already committed. The
+    ``fitness`` row is a multiplexed named profile: its child is published in
+    ``profiles/fitness/state.db`` before the routing index knows the child id.
+    """
+    import hermes_state
+    from gateway.slash_commands_session import GatewaySessionCommandsMixin
+    from gateway.session import AsyncSessionStore, SessionStore
+
+    root = tmp_path / "hermes"
+    (root / "profiles" / "fitness").mkdir(parents=True)
+    (root / "profiles" / "fitness" / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    store = SessionStore(sessions_dir=root / "sessions", config=GatewayConfig(multiplex_profiles=True))
+    parent, child = "parent", "child"
+    entry = SessionEntry(
+        session_key=f"agent:{profile}:discord:thread:123:123", session_id=parent,
+        created_at=datetime.now(), updated_at=datetime.now(),
+        platform=Platform.DISCORD, chat_type="thread",
+    )
+    store._entries[entry.session_key] = entry
+    db = store._db_for_key(entry.session_key)
+    db.create_session(parent, "discord")
+    db.append_message(parent, "assistant", "old turn")
+    watermark = db.get_active_message_watermark(parent)
+    db.append_message(parent, "assistant", "concurrent foreign turn")
+    ceiling = db.get_active_message_watermark(parent)
+    handoff = [{"role": "assistant", "content": "compressed summary"}]
+    db.publish_compression_child(
+        parent_session_id=parent, child_session_id=child, source="discord",
+        messages=handoff, watermark=watermark, watermark_ceiling=ceiling,
+        require_compression_lease=False,
+    )
+
+    def _destructive_rewrite(*_args, **_kwargs):
+        raise AssertionError("published child must not be rewritten")
+    store.rewrite_transcript = _destructive_rewrite
+
+    runner = SimpleNamespace(
+        async_session_store=AsyncSessionStore(store),
+        _sync_telegram_topic_binding=MagicMock(),
+    )
+    agent = SimpleNamespace(session_id=child)
+    try:
+        asyncio.run(GatewaySessionCommandsMixin._persist_manual_compression(
+            runner, agent, entry, _make_source(), handoff))
+        assert entry.session_id == child
+        assert [m["content"] for m in db.get_messages(child)] == [
+            "compressed summary", "concurrent foreign turn",
+        ]
+    finally:
+        store.close_all_db_handles()

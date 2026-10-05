@@ -337,8 +337,12 @@ def _lookup_supports_vision(
     """Return True/False if vision capability can be resolved, None if unknown.
 
     Order: config ``supports_vision`` override → :data:`_VISION_PROBES`
-    (managed local runtime → models.dev catalog → Ollama probe → registered
-    ``ProviderProfile.supports_vision`` declaration).
+    (managed local runtime → models.dev catalog → Ollama probe). A plugin's
+    per-model ``ProviderProfile.model_capabilities`` reaches this through the
+    catalog probe. The provider-wide ``ProviderProfile.supports_vision`` flag is
+    deliberately NOT consulted: it declares that tool-result messages may carry
+    images (``tools.vision_tools``), not that every model on the provider can see
+    user attachments — relays such as ``router`` set it for mixed catalogs.
     """
     # Named custom providers are canonicalized to ``provider="custom"``; the
     # original name lives in the context-local main runtime. Borrow it only on an

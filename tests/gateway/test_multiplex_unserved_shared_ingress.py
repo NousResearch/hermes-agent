@@ -1,4 +1,4 @@
-"""Multiplex secondaries that enable shared-ingress platforms (WhatsApp/Relay) must not be
+"""Multiplex secondaries that enable shared-ingress Relay must not be
 silently unserved: one INFO per skipped platform, a stamped ``<profile>:<platform>`` status
 entry, and the loud "not being served" WARNING when no profile (default included) runs it."""
 
@@ -43,7 +43,7 @@ def _install_secondary(monkeypatch, runner, stamps):
         "gateway.config.load_gateway_config",
         lambda: GatewayConfig(
             multiplex_profiles=True,
-            platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)},
+            platforms={Platform.RELAY: PlatformConfig(enabled=True)},
         ),
     )
     monkeypatch.setattr(
@@ -54,7 +54,7 @@ def _install_secondary(monkeypatch, runner, stamps):
 
 
 @pytest.mark.asyncio
-async def test_secondary_whatsapp_without_primary_is_reported_unserved(monkeypatch, caplog):
+async def test_secondary_relay_without_primary_is_reported_unserved(monkeypatch, caplog):
     runner = _runner()
     stamps = []
     _install_secondary(monkeypatch, runner, stamps)
@@ -68,29 +68,29 @@ async def test_secondary_whatsapp_without_primary_is_reported_unserved(monkeypat
     infos = [r for r in caplog.records if r.levelno == logging.INFO and "not served" in r.getMessage()]
     assert infos and "'work'" in infos[0].getMessage() and "default profile" in infos[0].getMessage()
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("whatsapp" in w and "not being served" in w and "work" in w for w in warnings), warnings
+    assert any("relay" in w and "not being served" in w and "work" in w for w in warnings), warnings
     # Stamped so `hermes gateway status --profile work` / the dashboard can show the reason.
-    assert ("work:whatsapp", {
+    assert ("work:relay", {
         "platform_state": "disabled", "error_code": "multiplex_shared_ingress",
         "error_message": "not served under multiplex (shared ingress owned by default)",
     }) in stamps
     # ...and the CLI reader turns that stamp into the status line.
     from gateway.status import write_runtime_status
     from hermes_cli import gateway_multiplex_served as served
-    key, kw = next(s for s in stamps if s[0] == "work:whatsapp")
+    key, kw = next(s for s in stamps if s[0] == "work:relay")
     write_runtime_status(platform=key, **kw)
     monkeypatch.setattr(served, "live_default_gateway_pid", lambda: 4242)
     assert served.served_profile_unserved_platforms("work") == {
-        "whatsapp": "not served under multiplex (shared ingress owned by default)"}
+        "relay": "not served under multiplex (shared ingress owned by default)"}
     assert served.served_profile_unserved_platforms("other") == {}
 
 
 @pytest.mark.asyncio
-async def test_secondary_whatsapp_served_by_default_is_not_warned(monkeypatch, caplog):
-    """The default owns WhatsApp: the secondary IS served through the shared adapter — no WARNING,
+async def test_secondary_relay_served_by_default_is_not_warned(monkeypatch, caplog):
+    """The default owns Relay: the secondary IS served through the shared adapter — no WARNING,
     the INFO line still explains where the channel lives."""
     runner = _runner()
-    runner.adapters[Platform.WHATSAPP] = object()
+    runner.adapters[Platform.RELAY] = object()
     _install_secondary(monkeypatch, runner, [])
 
     with caplog.at_level(logging.INFO, logger="gateway.run"):

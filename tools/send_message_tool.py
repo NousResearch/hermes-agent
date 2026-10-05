@@ -11,7 +11,9 @@ from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
-from tools.send_message_targets import _HOME_CHANNEL_ENV_OVERRIDES, _SLACK_USER_ID_RE, resolve_send_target
+from tools.send_message_targets import (
+    _HOME_CHANNEL_ENV_OVERRIDES, _SLACK_USER_ID_RE, resolve_send_target, unknown_platform_error,
+)
 from tools.send_message_senders import (
     _AUDIO_EXTS, _DEFAULT_CAPTION_LIMIT, _IMAGE_EXTS, _NO_DELIVERABLE, _VIDEO_EXTS, _VOICE_EXTS,
     _adapter_media_method, _error, _live_adapter, _media_caption_split, _plugin_standalone_sender,
@@ -310,7 +312,7 @@ def _resolve_platform_config(platform_name, config):
     from gateway.platform_registry import platform_registry
     entry = platform_registry.get(platform_name)
     if entry is None and platform_name not in {member.value for member in Platform}:
-        return None, None, None, f"Unknown or unregistered plugin platform: {platform_name}"
+        return None, None, None, unknown_platform_error(platform_name)
     platform, err = _platform_enum(platform_name)
     if err:
         return None, None, None, err

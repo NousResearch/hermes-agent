@@ -323,6 +323,8 @@ export interface CustomEndpointValidationResponse {
 export interface MessagingEnvVarInfo {
   advanced: boolean
   description: string
+  /** Comma-separated allowlist rendered one entry per ID (absent on older backends). */
+  is_list?: boolean
   is_password: boolean
   is_set: boolean
   key: string
@@ -330,6 +332,8 @@ export interface MessagingEnvVarInfo {
   redacted_value: null | string
   required: boolean
   url: null | string
+  /** Plain saved value, sent only for allowlists (they are IDs, not secrets). */
+  value?: null | string
 }
 
 export interface MessagingHomeChannel {

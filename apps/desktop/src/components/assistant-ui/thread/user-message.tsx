@@ -8,6 +8,7 @@ import {
   messageContentText,
   PROCESS_NOTIFICATION_RE
 } from '@/components/assistant-ui/thread/content'
+import { MessageHoverTime } from '@/components/assistant-ui/thread/message-hover-time'
 import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { BackgroundResult } from '@/components/assistant-ui/thread/system-message'
 import { threadUserOrdinal } from '@/components/assistant-ui/thread/thread-message-index'
@@ -502,47 +503,48 @@ export const UserMessage: FC<{
                     </button>
                   </ActionBarPrimitive.Edit>
                 )}
-                {(showStop || showRestore) && (
-                  <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
-                    {showStop ? (
+                {/* Hover cluster, bottom-right: when it was sent, then Stop or
+                    Restore. Its fill masks the last line's tail while shown. */}
+                <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center gap-1 rounded-md bg-(--dt-user-bubble) pl-1 opacity-0 transition-opacity group-hover/user-message:opacity-100 group-hover/user-message:transition-none group-focus-within/user-message:opacity-100">
+                  <MessageHoverTime className={cn(!showStop && !showRestore && 'pr-0.5')} />
+                  {showStop ? (
+                    <button
+                      aria-label={copy.stop}
+                      className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
+                      onClick={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        void onCancel?.()
+                      }}
+                      type="button"
+                    >
+                      {StopGlyph}
+                    </button>
+                  ) : showRestore ? (
+                    <Tip label={copy.restoreFromHere}>
                       <button
-                        aria-label={copy.stop}
-                        className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
+                        aria-label={copy.restoreCheckpoint}
+                        className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
                         onClick={event => {
                           event.preventDefault()
                           event.stopPropagation()
-                          void onCancel?.()
+                          triggerHaptic('selection')
+                          onRequestRestoreConfirm?.(messageId, {
+                            text: messageText,
+                            userOrdinal: runtimeUserOrdinal
+                          })
+                        }}
+                        onPointerDown={event => {
+                          event.preventDefault()
+                          event.stopPropagation()
                         }}
                         type="button"
                       >
-                        {StopGlyph}
+                        <Codicon name="discard" size="0.875rem" />
                       </button>
-                    ) : (
-                      <Tip label={copy.restoreFromHere}>
-                        <button
-                          aria-label={copy.restoreCheckpoint}
-                          className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
-                          onClick={event => {
-                            event.preventDefault()
-                            event.stopPropagation()
-                            triggerHaptic('selection')
-                            onRequestRestoreConfirm?.(messageId, {
-                              text: messageText,
-                              userOrdinal: runtimeUserOrdinal
-                            })
-                          }}
-                          onPointerDown={event => {
-                            event.preventDefault()
-                            event.stopPropagation()
-                          }}
-                          type="button"
-                        >
-                          <Codicon name="discard" size="0.875rem" />
-                        </button>
-                      </Tip>
-                    )}
-                  </div>
-                )}
+                    </Tip>
+                  ) : null}
+                </div>
               </div>
             </ReactionPicker>
             {/* Below the bubble, same register as the assistant action row:

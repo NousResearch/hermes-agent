@@ -403,13 +403,16 @@ terminal:
 
 #### Container lifecycle
 
-Every Hermes-managed container is tagged with three labels so subsequent processes (and the orphan reaper) can identify it:
+Hermes-managed containers carry labels so subsequent processes (and the orphan reaper) can identify them:
 
 - `hermes-agent=1` — marks it as Hermes-managed
 - `hermes-task-id=<sanitized task_id>` — keys the per-task reuse probe
 - `hermes-profile=<sanitized profile name>` — scopes reuse and reaping to the active Hermes profile by default; when `docker_shared_container_key` is set, its sanitized value is used instead
+- `hermes-environment=<digest>` — for containers without an explicit shared key, scopes reuse to the requested image, mount arguments, and active `HERMES_HOME`; host paths and volume sources are hashed rather than exposed in this label. Per-process tempdir-sourced mounts (the symlink-safe skills copy) are hashed by their stable container path, not the random host tempdir, so they don't defeat reuse
 
 On startup, Hermes runs `docker ps --filter label=hermes-task-id=<id> --filter label=hermes-profile=<identity>` and **attaches to the existing container** when it finds one. The identity is the active profile unless `docker_shared_container_key` explicitly opts trusted profiles into a common value. If the container is `exited` (e.g. after a Docker daemon restart), it's `docker start`'d and reused — filesystem state and any installed packages survive, but in-container background processes do not.
+
+Without an explicit shared key, the reuse probe also requires a matching `hermes-environment` label. Changing the image, mount arguments, or `HERMES_HOME` starts a fresh container instead of silently using another configuration. Containers created before this label was introduced do not match, so the first session after upgrading starts a fresh container; existing running containers are not removed.
 
 When a Hermes process exits — `/quit`, closing a TUI session, gateway shutdown, even SIGKILL — the cleanup path is a **no-op for the container in default mode**. The container keeps running. The next Hermes process attaches to it in milliseconds via the label probe. This is the behavior the "one long-lived container shared across sessions" contract requires: it's the only way background processes (npm watchers, dev servers, long-running pytest) survive across sessions.
 
@@ -1757,7 +1760,7 @@ auxiliary:
     model: "qwen2.5-vl"
 ```
 
-`base_url` takes precedence over `provider`, so this is the most explicit way to route an auxiliary task to a specific endpoint. For direct endpoint overrides, Hermes uses the configured `api_key` or falls back to `OPENAI_API_KEY`; it does not reuse `OPENROUTER_API_KEY` for that custom endpoint.
+`base_url` takes precedence over `provider`, so this is the most explicit way to route an auxiliary task to a specific endpoint. For direct endpoint overrides, Hermes uses the configured `api_key` or falls back to `OPENAI_API_KEY`; it does not reuse `OPENROUTER_API_KEY` for that custom endpoint. With neither set, the main model's key is reused only when `base_url` has the main endpoint's exact origin (scheme, host and port). The main endpoint is the one the session is running on (after a `/model` switch, that one), paired with its own key, never with a key from a different endpoint.
 
 **Using OpenAI API key for vision:**
 ```yaml
@@ -2384,7 +2387,7 @@ display:
 
 From the CLI, use the canonical path — `hermes config set display.platforms.telegram.streaming false`. The shorthand `hermes config set platforms.telegram.streaming false` is accepted too: because per-platform *display* settings (`streaming`, `show_reasoning`, `tool_progress`, …) are only ever read from `display.platforms`, `config set`/`get`/`unset` redirect that shorthand to the canonical key and print a note. Connection keys under the top-level `platforms.<name>` block (`token`, `enabled`, `reply_to_mode`, `extra`) are not redirected. Writing them under the nested prefix (`hermes config set gateway.platforms.telegram.enabled true`) is redirected to the top-level `platforms.telegram.enabled` with a note: the gateway reads both blocks, but the top-level one wins on shared keys, so a nested write would be silently shadowed by an existing top-level value.
 
-Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
+Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`, plus the name of any plugin platform (e.g. `homeassistant` from the Home Assistant plugin). The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
 
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 

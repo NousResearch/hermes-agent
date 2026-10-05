@@ -711,8 +711,8 @@ def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
 
 def run_oauth_setup_token() -> Optional[str]:
     """Run 'claude setup-token' interactively; the resulting token or None. FileNotFoundError if no 'claude' CLI."""
-    import shutil
-    claude_path = shutil.which("claude")
+    from agent.anthropic_adapter import find_claude_code_cli  # late: the adapter imports this module
+    claude_path = find_claude_code_cli("claude")
     if not claude_path:
         raise FileNotFoundError("The 'claude' CLI is not installed. Install it with: npm install -g @anthropic-ai/claude-code")
     # Interactive: stdio inherited so the user can complete the OAuth prompt.  noqa: subprocess-stdin

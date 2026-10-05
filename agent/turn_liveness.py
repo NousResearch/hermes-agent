@@ -16,6 +16,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
+from agent.session_activity import AwakeIdleMeter
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TURN_LIVENESS_TIMEOUT_S = 600.0
@@ -108,6 +110,8 @@ class TurnLivenessWatchdog:
         self._is_turn_active = is_turn_active
         self._commit_abort = commit_abort
         self._deactivate_turn = deactivate_turn
+        # A sleeping host is not a stalled turn: time asleep never counts toward the bound.
+        self._awake_idle = AwakeIdleMeter()
 
     def schedule(self):
         """Start polling via the shared periodic scheduler; returns the cancel handle.
@@ -123,7 +127,7 @@ class TurnLivenessWatchdog:
         snapshot = self._sample()
         if snapshot is None:
             return False  # turn no longer active
-        if snapshot.idle_seconds < self._timeout_s:
+        if self._awake_idle.measure(snapshot.idle_seconds) < self._timeout_s:
             return None
         # Observational only: the commit below can still veto the abort if progress
         # resumed; the definitive settlement is _surface_committed_abort.
@@ -152,6 +156,43 @@ class TurnLivenessWatchdog:
         idle_seconds = 0.0 if activity_ts is None else max(0.0, time.time() - activity_ts)
         return ActivitySnapshot(generation, activity_ts, idle_seconds)
 
+    def _dump_turn_thread_stack(self) -> None:
+        """Dump the turn thread's stack to the error log when the watchdog fires (#131740).
+
+        A stall this deep cannot be localized from the activity description alone — the
+        reported wedge sat between the ``Turn ended`` log line and ``run_conversation``
+        returning, where no activity stamps exist. The frame at the moment of the stall
+        is the only direct evidence; the turn thread's frame is marked so the log names
+        the wedged call site (in-tree precedent for thread-stack diagnostics:
+        ``tools/delegate_tool_child_run.py``). Best-effort: never raises into the tick.
+        """
+        try:
+            import sys
+            import traceback
+
+            frames = sys._current_frames()
+            lines = ["## All thread stacks at turn stall (watchdog dump)"]
+            by_ident = {t.ident: t for t in threading.enumerate() if t.ident}
+            turn_ident = getattr(self._agent, "_execution_thread_id", None)
+            dumped = 0
+            for ident, frame in frames.items():
+                if dumped >= 40:
+                    lines.append(f"  <{len(frames) - dumped} more threads omitted>")
+                    break
+                dumped += 1
+                thread = by_ident.get(ident)
+                name = thread.name if thread is not None else "?"
+                marker = " <- turn thread" if ident == turn_ident else ""
+                lines.append(f"### thread {name} tid={ident}{marker}")
+                lines.extend(
+                    f"  {sub}"
+                    for frame_line in traceback.format_stack(frame)
+                    for sub in frame_line.rstrip().split("\n")
+                )
+            logger.error("\n".join(lines))
+        except Exception:
+            logger.debug("watchdog stack dump failed", exc_info=True)
+
     def _emit_warning(self, text: str, debug_msg: str) -> None:
         emit_warning = getattr(self._agent, "_emit_warning", None)
         if not callable(emit_warning):
@@ -168,6 +209,7 @@ class TurnLivenessWatchdog:
         if getattr(self, "_last_surfaced_generation", None) == generation:
             return
         self._last_surfaced_generation = generation
+        self._dump_turn_thread_stack()
         logger.error(
             "Turn liveness watchdog fired for session %s: "
             "no progress for %.1fs (last activity: %r). "

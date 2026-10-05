@@ -1,7 +1,7 @@
 """Whether a catalog entry can be offered on this host, from its `app` and `requires` blocks.
 
-`availability` runs `locate` and `inspect` only. It never probes, never spawns, never connects, and holds
-no cache: the callers that need a TTL (the tool registry) already have one.
+`availability` runs `locate`, `inspect` and the host's cached GPU fact only. It never probes, never spawns,
+never connects, and holds no cache: the callers that need a TTL (the tool registry) already have one.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ AvailabilityState = Literal[
     "missing_app",
     "version_too_old",
     "unsupported_os",
+    "unsupported_gpu",
     "no_requirements",
 ]
 
@@ -34,6 +35,9 @@ class _HasRequirements(Protocol):
 
     @property
     def min_version(self) -> str | None: ...
+
+    @property
+    def required_gpu(self) -> str | None: ...
 
     def app_for(self, os_family: str) -> AppDef | None: ...
 
@@ -74,12 +78,19 @@ def version_at_least(found: str, minimum: str) -> bool:
 
 
 def availability(entry: _HasRequirements, *, os_family: str | None = None) -> Availability:
-    if not entry.requires_app:
+    gpu = entry.required_gpu
+    if not entry.requires_app and gpu is None:
         return Availability("no_requirements")
     osf = os_family or facts.os_family()
-    definition = entry.app_for(osf)
-    if definition is None:
+    definition = entry.app_for(osf) if entry.requires_app else None
+    if entry.requires_app and definition is None:
         return Availability("unsupported_os", min_version=entry.min_version)
+    # An unreadable GPU (`unknown`) passes: refusing on a failed registry or sysfs read would lock out
+    # the machines that have the GPU, and the MCP connection check still applies.
+    if gpu is not None and facts.gpu_class() not in (gpu, "unknown"):
+        return Availability("unsupported_gpu", min_version=entry.min_version)
+    if definition is None:
+        return Availability("no_requirements")
     resolver = AppResolver(definition)
     res = resolver.locate()
     looked_at = res.command[0] if res.command else (res.candidates[0].value if res.candidates else None)

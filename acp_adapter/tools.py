@@ -45,7 +45,6 @@ _POLISHED_TOOLS = {
     "vision_analyze", "image_generate", "text_to_speech",
     # Schedulers / platform integrations
     "cronjob", "send_message", "clarify", "discord", "discord_admin",
-    "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     "feishu_doc_read", "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
     "feishu_drive_reply_comment", "feishu_drive_add_comment",
     "kanban_create", "kanban_show", "kanban_comment", "kanban_complete",

@@ -1448,8 +1448,6 @@ platform:
   irc:
     quit_message: "Hermes Agent завершает работу"
     standalone_quit: "доставлено"
-  homeassistant:
-    notification_title: "Hermes Agent"
   relay:
     confirm_approve_once: "Одобрить один раз"
     confirm_always_approve: "Одобрять всегда"
@@ -2355,6 +2353,7 @@ cli:
     removed: "Удалён элемент очереди {index}: {preview}"
     item_not_found: "Элемент очереди {index} не найден. Текущий размер: {size}"
     usage_edit: "Использование: /queue edit <номер> <новый промпт>"
+    usage_remove: "Использование: /queue rm <номер>"
     updated: "Обновлён элемент очереди {index}: {preview}"
     usage_move: "Использование: /queue move <откуда> <куда>"
     move_out_of_range: "Перемещение выходит за границы очереди. Текущий размер: {size}"
@@ -2720,6 +2719,7 @@ cli:
       restored: "Состояние восстановлено из: {snapshot_id}"
       restart_recommended: "Рекомендуется перезапустить процессы шлюза/дашборда, чтобы они подхватили изменения state.db."
       not_found: "Снимок не найден: {snapshot_id}"
+      restore_incomplete: "Снимок {snapshot_id} восстановлен не полностью: некоторые файлы отклонены (см. логи)"
       usage_prune: "Использование: /snapshot prune [сколько-оставить]"
       pruned: "Удалено старых снимков: {deleted} (оставлено {keep})."
     export:

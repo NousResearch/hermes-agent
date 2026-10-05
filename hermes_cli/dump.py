@@ -138,7 +138,7 @@ _PLATFORM_ENV_VARS = {
     "telegram": "TELEGRAM_BOT_TOKEN", "discord": "DISCORD_BOT_TOKEN", "slack": "SLACK_BOT_TOKEN",
     "whatsapp": "WHATSAPP_ENABLED", "signal": "SIGNAL_HTTP_URL", "email": "EMAIL_ADDRESS",
     "sms": "TWILIO_ACCOUNT_SID", "matrix": "MATRIX_HOMESERVER_URL", "mattermost": "MATTERMOST_URL",
-    "homeassistant": "HASS_TOKEN", "dingtalk": "DINGTALK_CLIENT_ID", "feishu": "FEISHU_APP_ID",
+    "dingtalk": "DINGTALK_CLIENT_ID", "feishu": "FEISHU_APP_ID",
     "wecom": "WECOM_BOT_ID", "wecom_callback": "WECOM_CALLBACK_CORP_ID", "weixin": "WEIXIN_ACCOUNT_ID",
     "qqbot": "QQ_APP_ID",
 }
@@ -180,25 +180,50 @@ def _config_overrides(config: dict) -> dict[str, str]:
         overrides["toolsets"] = str(user_toolsets)
     fallbacks = config.get("fallback_providers", [])
     if fallbacks:
-        # Entries carry api_key; the dump is made to be pasted, so it never prints a secret.
-        from agent.redact import redact_sensitive_text
-        overrides["fallback_providers"] = redact_sensitive_text(
-            str(_mask_fallback_keys(fallbacks)), force=True, redact_url_credentials=True
+        from hermes_cli.debug_redaction import redact_debug_support_text
+
+        overrides["fallback_providers"] = redact_debug_support_text(
+            str(_fallback_debug_projection(fallbacks))
         )
     return overrides
 
 
-def _mask_fallback_keys(value):
-    """Mask secret fields (``api_key``, ``token``, ``password``, ... per ``agent.redact``) by field, not
-    by text: the runtime ``str()``s whatever value is there (a YAML int, a mapping, a key containing
-    ``***``), and text redaction only masks quoted strings that don't already look masked."""
-    from agent.redact import is_secret_field_name
+_FALLBACK_DEBUG_FIELDS = (
+    "provider",
+    "model",
+    "base_url",
+    "api_mode",
+    "key_env",
+    "api_key_env",
+    "max_tokens",
+)
 
-    if isinstance(value, dict):
-        return {k: "***" if v and is_secret_field_name(k) else _mask_fallback_keys(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_mask_fallback_keys(v) for v in value]
-    return value
+
+def _fallback_debug_projection(value) -> list[dict]:
+    """Render only route metadata useful to support; omit arbitrary containers.
+
+    Fallback entries are open mappings consumed by provider-specific code, so a
+    denylist cannot make their ``headers``, ``env``, command/argv, or future
+    fields safe to serialize. Credential pointer names remain useful and carry
+    no values; an inline key is represented only as a source status.
+    """
+    entries = [value] if isinstance(value, dict) else value if isinstance(value, list) else []
+    projected: list[dict] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        item: dict = {}
+        for key in _FALLBACK_DEBUG_FIELDS:
+            child = entry.get(key)
+            if key == "max_tokens":
+                if isinstance(child, (int, float)) and not isinstance(child, bool):
+                    item[key] = child
+            elif isinstance(child, str):
+                item[key] = child
+        if entry.get("api_key"):
+            item["credential_source"] = "inline"
+        projected.append(item)
+    return projected
 
 
 # (env var, dump label) in display order.

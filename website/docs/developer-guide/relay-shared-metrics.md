@@ -181,7 +181,16 @@ also carries `call_role` (`primary` or `auxiliary`), `outcome` (`success`,
 `failed`, `cancelled`) and `error_class`: the error classifier's own
 `FailoverReason` value (`rate_limit`, `auth`, `context_overflow`, ...) for the
 last failed attempt of that logical call, or `none`. A `success` row with a
-non-`none` class is a call that recovered after that error. The previous
+non-`none` class is a call that recovered after that error. Auxiliary calls
+(titles, compression, vision, ...) follow the same rules: one row per logical
+call however many fallback attempts it took, classified by the same classifier
+(an HTTP-200 body carrying a provider `error` object is classified from that
+object), `cancelled` with `none` when Hermes aborted it (`/stop`, Ctrl+C, an
+interrupt, shutdown), and `unknown` only when the classifier cannot name the
+failure. An auxiliary call that runs beside the turn (title generation) and
+finishes under the turn's own live scopes is still counted: its result closes
+the scope when the turn drains it. Auxiliary rows report `ttft_bucket`
+`unknown`: most auxiliary calls are not streamed. The previous
 `hermes.model_call.count` contract remains readable only so pending local
 counters created by older builds can be exported without losing data.
 
@@ -217,6 +226,29 @@ ID after a terminal tool result is observed. The outer `AIAgent` execution
 boundary closes the task for normal returns, early returns, exceptions, and
 cancellations. Active task ownership follows the task ID if Hermes rotates its
 conversation session during context compression.
+
+The `entrypoint` dimension (on `hermes.task_run.started`, `hermes.task_run.finished`
+and `hermes.session.count`) says who dispatched the run, from a closed set:
+
+| Value | Meaning |
+|---|---|
+| `interactive` | A person in a chat UI: the `hermes` REPL, a `hermes chat -q` that seeds the REPL on a TTY, `--tui`, Desktop, ACP editors. |
+| `one_shot` | A finite CLI run that answers one prompt and exits: `hermes -z` / `--oneshot`, `hermes chat -q` off a TTY or with `--oneshot`, `-Q` / `--quiet`. A person's shell line and a script looping it look the same, so both read `one_shot`. Bot Chat delivery turns (`hermes -p <profile> chat -c "Bot Chat" -Q`) are one-shot runs too: their author may be a person on another connection. Surface stays `cli`. |
+| `background` | An unattended run a Hermes dispatcher spawned: a kanban worker (`HERMES_SESSION_SOURCE=kanban`) or an A2A forward (`--source a2a`). |
+| `delegated` | A subagent run under a parent task or session (wins over the values above). |
+| `gateway_message` | A messaging-platform message. |
+| `scheduled_task`, `batch`, `api`, `python` | Cron, batch runner, API server, Python embedding. |
+| `other`, `unknown` | Unattributable. |
+
+A run is `one_shot` or `background` when its process carries the
+`HERMES_SINGLE_QUERY_SESSION` marker that the one-shot paths set (the same marker the
+session source and `cache_ttl: auto` read). Engagement (`hermes.engagement.*`) and the
+attended-only rows (task cost, tool usage per session, model friction) treat `one_shot`
+like `interactive`, as they did before the value existed; `background` and `delegated`
+runs are unattended and excluded there. Packages written before `one_shot` existed
+carry these runs as `interactive` and still validate. `hermes -z` leaves through
+`os._exit`, so it closes its metrics session before exiting rather than relying on the
+atexit hook.
 
 Each tool invocation is represented by a Relay tool lifecycle named
 `hermes.tool_call`. The terminal counter contains only bounded tool category,

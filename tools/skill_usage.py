@@ -277,7 +277,7 @@ def _external_read_only_message(skill_name: str) -> str:
 
 def is_curation_eligible(skill_name: str, skill_path: Optional[Path] = None) -> bool:
     """Agent-created: yes. Bundled: only with ``curator.prune_builtins``. Hub / external-dir / protected built-ins:
-    never (external owner). Org-shared skills are eligible here but protected from ARCHIVE/DELETE elsewhere."""
+    never (external owner)."""
     if ((skill_path is not None and is_external_skill_path(skill_path)) or is_protected_builtin(skill_name)
             or is_hub_installed(skill_name)):
         return False
@@ -577,15 +577,6 @@ def set_pinned(skill_name: str, pinned: bool) -> bool:
     return _set_field(skill_name, "pinned", bool(pinned))
 
 
-def set_sync(skill_name: str, sync: bool) -> None:
-    """Opt-in ``sync`` flag (read by ``skills_sync_client``); curation-gated so bundled/hub/external can't be marked."""
-    _set_field(skill_name, "sync", bool(sync))
-
-
-def is_sync_enabled(skill_name: str) -> bool:
-    return get_record(skill_name).get("sync") is True
-
-
 def forget(skill_name: str) -> None:
     if skill_name:
         _locked_update(skill_name, lambda d: (None, d.pop(skill_name, None) is not None), "skill_usage.forget(%s) failed: %s")
@@ -685,7 +676,7 @@ def _match_skill_dir(skill_mds: Iterable[Path], skill_name: str) -> Optional[Pat
 
 
 def _find_skill_dir(skill_name: str) -> Optional[Path]:
-    """Skill dir by frontmatter ``name`` (flat or nested); the gated index iterator sees only the active org mirror."""
+    """Skill dir by frontmatter ``name`` (flat or nested)."""
     from agent.skill_utils import iter_skill_index_files
     base = _skills_dir()
     return _match_skill_dir((p for p in iter_skill_index_files(base, "SKILL.md") if not is_external_skill_path(p)),

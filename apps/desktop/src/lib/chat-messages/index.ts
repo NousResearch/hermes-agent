@@ -11,6 +11,7 @@ export {
   finalizeInterruptedMessages,
   mergeFinalAssistantText,
   normalizeWs,
+  partsText,
   reasoningPart,
   reasoningTextFromDetails,
   renderMediaTags,

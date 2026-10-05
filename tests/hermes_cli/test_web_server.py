@@ -1194,15 +1194,17 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert resp.status_code == 401
 
     def test_media_proxy_rejects_disallowed_hosts_and_schemes(self):
-        for bad in (
-            "https://evil.example.com/img.png",
-            "https://sub.fal.media.evil.com/img.png",
-            "file:///etc/passwd",
-            "not a url",
-            "",
+        for bad, expected_status in (
+            ("https://evil.example.com/img.png", 403),
+            ("https://sub.fal.media.evil.com/img.png", 403),
+            ("file:///etc/passwd", 400),
+            ("not a url", 400),
+            ("", 400),
+            ("https://[::1/img.png", 400),
+            ("https://[not-an-ip]:80/img.png", 400),
         ):
             resp = self.client.get("/api/media/proxy", params={"url": bad})
-            assert resp.status_code in (400, 403), (bad, resp.status_code)
+            assert resp.status_code == expected_status, (bad, resp.status_code)
 
     def test_media_proxy_fetches_allowlisted_image_and_returns_data_url(self, monkeypatch):
         png_bytes = b"\x89PNG\r\n\x1a\n" + b"0" * 8
@@ -2056,6 +2058,27 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert not any(e["id"] == "worker-proxy" for e in default_list["endpoints"])
 
 
+    def test_custom_endpoint_rejects_malformed_url_without_changing_saved_state(self):
+        from hermes_cli.config import get_config_path, get_env_path
+
+        assert self.client.post("/api/providers/custom-endpoints", json={
+            "id": "proxy", "name": "Proxy", "base_url": "https://llm.example.com/v1",
+            "model": "m", "api_key": "sk-original-fixture", "make_default": True,
+        }).status_code == 200
+        saved = {path: path.read_bytes() for path in (get_config_path(), get_env_path())}
+
+        for base_url in (
+            "https://[::1/v1",
+            "https://[not-an-ip]:80/v1",
+        ):
+            response = self.client.post("/api/providers/custom-endpoints", json={
+                "id": "proxy", "name": "Changed Proxy", "base_url": base_url,
+                "model": "replacement", "api_key": "sk-replacement-fixture", "make_default": True,
+            })
+            assert response.status_code == 400, (base_url, response.text)
+            for path, data in saved.items():
+                assert path.read_bytes() == data
+
     def test_custom_endpoint_save_keeps_the_api_key_out_of_config(self):
         """The key belongs in .env behind key_env, never in config.yaml (#69449)."""
         from hermes_cli.config import custom_endpoint_key_env, get_env_value, load_config
@@ -2406,6 +2429,46 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         self.client.post("/api/providers/custom-endpoints/legacy/activate", json={})
         model_cfg = load_config()["model"]
         assert model_cfg["api_key"] == "sk-legacy"
+
+    def test_saving_legacy_custom_provider_keeps_key_env(self):
+        """Save on a legacy row must carry key_env onto providers and drop the list row.
+
+        The panel omits api_key (it only shows ${KEY_ENV}). Resolving only inside
+        providers forked a keyless entry and left the legacy row, so the next
+        request 401s (#126589).
+        """
+        from hermes_cli.config import load_config, save_config, save_env_value
+
+        save_env_value("HERMES_CUSTOM_127_0_0_1_8001_API_KEY", "secret-value")
+        cfg = load_config()
+        cfg["custom_providers"] = [{
+            "name": "Qwen Local",
+            "base_url": "http://127.0.0.1:8001/v1",
+            "key_env": "HERMES_CUSTOM_127_0_0_1_8001_API_KEY",
+            "model": "qwen",
+            "api_mode": "chat_completions",
+        }]
+        save_config(cfg)
+
+        listed = {e["id"]: e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]}
+        assert listed["qwen-local"]["source"] == "custom_providers"
+        assert listed["qwen-local"]["has_api_key"] is True
+
+        response = self.client.post("/api/providers/custom-endpoints", json={
+            "id": "qwen-local",
+            "name": "Qwen Local",
+            "base_url": "http://127.0.0.1:8001/v1",
+            "model": "qwen",
+        })
+        assert response.status_code == 200, response.text
+
+        cfg = load_config()
+        assert cfg.get("custom_providers") == []
+        assert cfg["providers"]["qwen-local"]["key_env"] == "HERMES_CUSTOM_127_0_0_1_8001_API_KEY"
+        rows = {e["id"]: e for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]}
+        assert rows["qwen-local"]["source"] == "providers"
+        assert rows["qwen-local"]["has_api_key"] is True
+        assert rows["qwen-local"]["api_key_preview"] == "${HERMES_CUSTOM_127_0_0_1_8001_API_KEY}"
 
     def test_legacy_custom_providers_entries_get_a_row_and_can_be_deleted(self):
         """A post-migration ``custom_providers:`` list entry is still routed by the

@@ -13,7 +13,7 @@ from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd
 from tools.mcp_tool_errors import NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
-from tools.mcp_tool_lifecycle import _filter_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
+from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
 from tools.mcp_tool_common import _core
 from tools.mcp_tool_node_abi import node_abi_error
 from tools import mcp_tool_config as _config
@@ -295,6 +295,7 @@ class MCPServerTransportMixin:
         """Ledger the freshly spawned stdio children (pids, pgids, machine spawn ledger). pgids are
         captured while alive (getpgid fails after exit; the sweep needs them for reparented descendants)."""
         new_pgids: Dict[int, int] = {}
+        new_starts: Dict[int, int] = {}
         for pid in new_pids:
             try:
                 new_pgids[pid] = os.getpgid(pid)
@@ -306,9 +307,15 @@ class MCPServerTransportMixin:
                 new_pgids[pid] = pid
             except (AttributeError, OSError):  # Windows (os.getpgid is POSIX-only)
                 pass
+            # Record the leader's start time so a later sweep can detect PID/PGID
+            # recycling before signalling (see _stdio_starttimes, #43044).
+            start = _leader_start_time(pid)
+            if start is not None:
+                new_starts[pid] = start
         with _core._lock:
             _stdio_pids.update(dict.fromkeys(new_pids, self.name))
             _stdio_pgids.update(new_pgids)
+            _stdio_starttimes.update(new_starts)
         # Machine spawn ledger (startup sweeps reap orphans after an unclean exit); best-effort.
         for _pid in new_pids:
             try:
@@ -341,6 +348,7 @@ class MCPServerTransportMixin:
                     dropped = _stdio_pgids.pop(pid, None)
                     if dropped is not None:
                         released_pgids.append(dropped)
+                    _stdio_starttimes.pop(pid, None)
         _core._update_death_supervisor("unregister", released_pgids)
 
     async def _run_stdio(self, config: dict):

@@ -447,8 +447,12 @@ describe('round lifecycle', () => {
 
     room.rounds.sendToGroupChat('Failure', members, '@research explicitly retry', thread)
     await settle(room, 'Failure')
-    expect(room.gateway.calls).toHaveLength(2)
+    // Three calls: the retry itself, then the #129443 nudge — the retry send
+    // @-addressed research and its "(pass)" is re-asked once, not retried by
+    // the ambiguous-submit path.
+    expect(room.gateway.calls).toHaveLength(3)
     expect(room.gateway.calls[1].prompt).toMatch(/first[\s\S]*queued same-thread[\s\S]*explicitly retry/)
+    expect(room.gateway.calls[2].prompt).toContain('explicitly addressed')
   })
 
   it('attributes a queued drive failure to the thread whose harvest failed', async () => {
@@ -459,7 +463,11 @@ describe('round lifecycle', () => {
     })
 
     const room = await loadRoom({ turn: () => held })
-    const first = room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@research first')!
+    // First send addresses nobody (@-addressing research would engage the
+    // #129443 nudge on its "(pass)" — noise this attribution test does not
+    // care about), so it drives research alone through the single-member
+    // roster.
+    const first = room.rounds.sendToGroupChat('Failure', [MEMBERS[0]], 'first')!
     await drain(() => room.gateway.calls.length < 1)
     const queued = room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@builder queued')!
     const request = host.request as (...args: unknown[]) => Promise<unknown>
@@ -893,7 +901,10 @@ describe('attachments', () => {
     )
     await settle(room, 'Scoped')
 
-    expect(room.gateway.attaches.map(entry => entry.profile)).toEqual(['builder'])
+    // Two stagings, both for builder: the turn itself, then the #129443 nudge
+    // re-ask (the send @-addressed builder and the default script "(pass)"ed)
+    // — the re-ask carries the same context, attachment included.
+    expect(room.gateway.attaches.map(entry => entry.profile)).toEqual(['builder', 'builder'])
   })
 
   it('accepts an image-only send and carries the attachment on the room entry', async () => {
@@ -1265,7 +1276,9 @@ describe('member holds (#93129)', () => {
     room.rounds.sendToGroupChat('No holds', member, 'stop @research but answer this')
     await settle(room, 'No holds')
 
-    expect(room.gateway.calls).toHaveLength(1)
+    // Two calls: the turn plus the #129443 nudge — the send @-addressed
+    // research, so its default "(pass)" is re-asked once even here.
+    expect(room.gateway.calls).toHaveLength(2)
     expect(room.chat.$groupChats.get()['No holds'].holds).toEqual({})
     await room.rounds.stopGroupThread('No holds', null, member)
     expect(room.chat.$groupChats.get()['No holds'].holds).toEqual({})

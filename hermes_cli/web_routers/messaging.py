@@ -62,7 +62,7 @@ _probe_gateway_health = late("_probe_gateway_health", "hermes_cli.web_server_gat
 get_running_pid_cached = late("get_running_pid_cached", "gateway.status")
 get_runtime_status_running_pid = late("get_runtime_status_running_pid", "gateway.status")
 _GATEWAY_HEALTH_URL = LateState("_GATEWAY_HEALTH_URL")
-# Display labels for env vars not in OPTIONAL_ENV_VARS (bridge toggles, Twilio, HASS, Email, ...)
+# Display labels for env vars not in OPTIONAL_ENV_VARS (bridge toggles, Twilio, Email, ...)
 # so the UI can still render a friendly label. Rows: (key, description, prompt, extra flags).
 _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
     key: {"description": description, "prompt": prompt, **extra}
@@ -74,8 +74,6 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
         ("WHATSAPP_MODE", "WhatsApp bridge mode", "WhatsApp mode", {"advanced": True}),
         ("WHATSAPP_DM_POLICY", "How WhatsApp direct messages are authorized", "WhatsApp DM policy", {"advanced": True}),
         ("WHATSAPP_ALLOWED_USERS", "Comma-separated WhatsApp users allowed to use the bot", "Allowed WhatsApp users", {}),
-        ("HASS_URL", "Home Assistant base URL, e.g. https://homeassistant.local:8123", "Home Assistant URL", {}),
-        ("HASS_TOKEN", "Long-lived access token from Home Assistant (Profile → Security)", "Home Assistant access token", {"password": True}),
         ("EMAIL_ADDRESS", "Email address to send and receive from", "Email address", {}),
         ("EMAIL_PASSWORD", "Email account password or app password", "Email password", {"password": True}),
         ("EMAIL_IMAP_HOST", "IMAP server host (e.g. imap.gmail.com)", "IMAP host", {}),
@@ -141,14 +139,22 @@ def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> Non
         raise HTTPException(status_code=400, detail=rule[1])
 
 
+# Allowlists (``*_ALLOWED_USERS``, ``LINE_ALLOWED_GROUPS``, ``SIMPLEX_GROUP_ALLOWED``) are
+# comma-separated IDs, not secrets: clients render them as one editable entry per ID, which
+# needs the saved value instead of a redacted preview.
+_ALLOWLIST_KEY_RE = re.compile(r"_ALLOWED(?:_[A-Z]+)?$")
+
+
 def _messaging_env_info(key: str) -> dict[str, Any]:
     info = OPTIONAL_ENV_VARS.get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
+    is_password = bool(info.get("password", False))
     return {
         "description": info.get("description", ""),
         "prompt": info.get("prompt", key),
         "help": info.get("help", ""),
         "url": info.get("url"),
-        "is_password": info.get("password", False),
+        "is_password": is_password,
+        "is_list": not is_password and bool(_ALLOWLIST_KEY_RE.search(key)),
         "advanced": info.get("advanced", False),
     }
 
@@ -232,13 +238,14 @@ def _messaging_platform_payload(
         # os.environ carries the ROOT install's .env and would report root credentials as the profile's.
         return env_on_disk.get(key) or ("" if scoped else os.getenv(key, ""))
 
-    env_vars = [
-        {
+    env_vars = []
+    for key in entry["env_vars"]:
+        value, info = env_value(key), _messaging_env_info(key)
+        env_vars.append({
             "key": key, "required": key in entry["required_env"], "is_set": bool(value),
-            "redacted_value": redacted_credential_preview(value), **_messaging_env_info(key),
-        }
-        for key, value in ((key, env_value(key)) for key in entry["env_vars"])
-    ]
+            "redacted_value": redacted_credential_preview(value),
+            "value": value if info["is_list"] else None, **info,
+        })
 
     enabled, configured, home_channel = _platform_enablement(platform_id, entry, env_on_disk, scoped)
     if gateway_running and runtime_platform.get("mirrored_from"):
@@ -879,7 +886,7 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
 
     target_profile = body.profile or profile
     if body.enabled:
-        conflict = _multiplex_port_binding_conflict(platform_id, target_profile)
+        conflict = await asyncio.to_thread(_multiplex_port_binding_conflict, platform_id, target_profile)
         if conflict:
             # Reject BEFORE any .env/config.yaml write so the profile stays
             # loadable by the multiplexed gateway.

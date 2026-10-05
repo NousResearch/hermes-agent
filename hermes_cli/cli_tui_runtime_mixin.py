@@ -355,19 +355,6 @@ class CLITuiRuntimeMixin:
                 on_summary=lambda msg: self._console_print(f"[dim #6b7684]💾 {msg}[/]"),
             )
 
-        # Skill sync (personal, then org-shared): inert unless the access gate is open
-        # and a sync base URL is configured. The org pull is gated on a real org role on
-        # the token (only issued for multi-member orgs), so a solo account never hits
-        # the network here. Both fail-quiet.
-        try:
-            from tools.skills_sync_client import maybe_pull_skills
-            from tools.skills_sync_client_org import maybe_pull_org_skills
-        except Exception:
-            return
-        for pull in (maybe_pull_skills, maybe_pull_org_skills):
-            with suppress(Exception):
-                pull()
-
     def _tui_build_application(self, layout, kb, style):
         """Construct the prompt_toolkit Application for the REPL."""
         from cli import CLI_CONFIG, EditingMode, _STEADY_CURSOR, _select_classic_cli_pt_output

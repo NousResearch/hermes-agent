@@ -840,16 +840,63 @@ def _sweep_escaped_descendants(descendants: list, pgid: int) -> None:
             continue
 
 
+def _leader_is_ours(pgid, expected_start) -> bool:
+    """The setsid group leader's PID == its PGID.  Confirm it is still the process we
+    spawned before signalling the whole group, so a recycled PID/PGID can never take
+    down an unrelated process group (#43044).  The baseline and the current reading
+    come from the same host at different times, so they go through the drift-tolerant
+    fingerprint comparator — same-host readings drift ~1 s on macOS (#117505), and
+    exact equality made the guard refuse to kill live, legitimately-owned groups.
+    When no baseline was captured, or the current reading is unreadable, keep the
+    legacy best-effort behaviour rather than refusing to kill: only a LIVE leader with
+    a different start time proves recycling."""
+    if pgid is None:
+        return False
+    if expected_start is None:
+        return True
+    from gateway.status import get_process_start_time, start_time_fingerprints_match
+    try:
+        current = get_process_start_time(pgid)
+    except Exception:  # noqa: BLE001 — the guard must never break signalling
+        return True
+    if current is None:
+        # Unreadable while alive: best effort. Gone: POSIX never reuses a PGID while any
+        # member of the group lives, so the group (if it still exists) is ours and its
+        # reparented grandchildren still need the signal; an empty group is just ESRCH.
+        return True
+    try:
+        return start_time_fingerprints_match(expected_start, current)
+    except (TypeError, ValueError):  # junk fingerprints: best-effort, never break signalling
+        return True
+
+
 def _kill_process_group_posix(proc) -> None:
     """TERM the group, wait, KILL, then sweep setsid escapees. Descendants are
     snapshotted BEFORE the first signal — once the wrapper dies they reparent to
     init — and we wait on the group, not the wrapper, which can exit before
-    grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller)."""
+    grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller).
+    PID-reuse guard (#43044): the group is only signalled while its leader's start
+    time still matches the spawn-time baseline — a recycled PGID is never killed."""
+    expected_start = getattr(proc, "_hermes_pgid_start", None)
     try:
         pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
         if (pgid := getattr(proc, "_hermes_pgid", None)) is None:
             raise
+    if not _leader_is_ours(pgid, expected_start):
+        # Leader exited and its PID/PGID may have been recycled onto an unrelated
+        # process group; signalling the stale number is unsafe. Bail out — a rare
+        # orphaned grandchild may leak, which is strictly preferable to killing a
+        # stranger. Sweep the snapshotted descendants by PID (identity-checked)
+        # so we still reach escapees that are verifiably ours.
+        descendants = []
+        try:
+            import psutil
+            descendants = psutil.Process(proc.pid).children(recursive=True)
+        except Exception:
+            pass
+        _sweep_escaped_descendants(descendants, pgid)
+        return
     try:  # psutil children snapshot; empty on any failure (must never break the kill)
         import psutil
         descendants = psutil.Process(proc.pid).children(recursive=True)
@@ -863,6 +910,10 @@ def _kill_process_group_posix(proc) -> None:
         try:
             os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
             if not _wait_for_group_exit(proc, pgid, 1.0):
+                if not _leader_is_ours(pgid, expected_start):
+                    # Leader exited during the grace window; do not escalate to
+                    # SIGKILL on a possibly-recycled PGID.
+                    return
                 os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
                 _wait_for_group_exit(proc, pgid, 2.0)
                 with contextlib.suppress(subprocess.TimeoutExpired, OSError):
@@ -1007,6 +1058,12 @@ class LocalEnvironment(BaseEnvironment):
         if not _IS_WINDOWS:
             with contextlib.suppress(ProcessLookupError):
                 proc._hermes_pgid = os.getpgid(proc.pid)
+                # Record the group leader's start-time fingerprint so _kill_process can
+                # detect PID/PGID recycling before signalling the group (#43044). The
+                # psutil fallback in get_process_start_time captures a baseline on every
+                # platform, macOS included.
+                from gateway.status import get_process_start_time
+                proc._hermes_pgid_start = get_process_start_time(proc.pid)
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
@@ -1025,7 +1082,11 @@ class LocalEnvironment(BaseEnvironment):
             return self._kill_process(proc)
         with contextlib.suppress(OSError):
             pgid = getattr(proc, "_hermes_pgid", None) or os.getpgid(proc.pid)
-            if pgid != os.getpgrp():  # never our own group (see _kill_process_group_posix)
+            # PID-reuse guard (#43044): never SIGKILL a group whose leader's start time
+            # no longer matches the spawn-time baseline — the PGID may have been recycled
+            # onto an unrelated process group. Comparison is drift-tolerant (#117505);
+            # without a baseline keep the legacy best-effort behaviour.
+            if pgid != os.getpgrp() and _leader_is_ours(pgid, getattr(proc, "_hermes_pgid_start", None)):
                 os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX only (_IS_WINDOWS returned above)
         with contextlib.suppress(OSError):
             proc.kill()

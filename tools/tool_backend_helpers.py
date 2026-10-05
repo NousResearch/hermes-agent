@@ -15,57 +15,18 @@ _DEFAULT_MODAL_MODE = "auto"
 _VALID_MODAL_MODES = {"auto", "direct", "managed"}
 
 
-def _account_info(force_fresh: bool = False):
-    """The profile's normalized Portal account snapshot, or None when the read itself failed.
-
-    The ``force_fresh`` branch is deliberate, not stylistic: callers stub this reader with a
-    zero-argument lambda, so the falsy path must invoke it without keyword arguments."""
-    try:
-        from hermes_cli.nous_account import get_nous_portal_account_info
-        return (get_nous_portal_account_info(force_fresh=True) if force_fresh
-                else get_nous_portal_account_info())
-    except Exception:
-        return None
-
-
 def managed_nous_tools_enabled(*, force_fresh: bool = False) -> bool:
     """Coarse gate: entitled to the Nous Tool Gateway (paid Portal access OR a live free
     pool). Fails closed on unknown/error — never blocks startup. Callers narrow per category
     via ``tool_gateway_entitled_for``; ``force_fresh`` is for flows needing a just-bought grant."""
-    account_info = _account_info(force_fresh)
-    return bool(account_info is not None and account_info.logged_in and account_info.tool_gateway_entitled)
-
-
-def fast_search_entitled() -> bool:
-    """Eligibility for the managed Perplexity ``search_type: "fast"`` route: a registered Portal
-    identity of ANY tier, with no credit or tool-pool requirement — that route is served without
-    funding checks. The anonymous guest tier is excluded: it has no Portal account behind it, so
-    it keeps the keyless ring.
-
-    Unlike :func:`managed_nous_tools_enabled` this deliberately ignores ``tool_gateway_entitled``
-    (no credit requirement) and so must reject an error snapshot itself: a failed lookup is still
-    stamped ``logged_in=True``, and only ``error`` distinguishes it from a real account."""
-    account_info = _account_info()
-    # ``error`` is load-bearing, not belt-and-braces: a failed lookup is still stamped
-    # ``logged_in=True``, and the error paths that cannot recover the tier from stored state would
-    # otherwise read as a registered identity.
-    return bool(account_info is not None and account_info.logged_in
-                and account_info.error is None and not account_info.is_anonymous_tier)
-
-
-def fast_search_unavailable_message() -> str:
-    """Why the managed Perplexity search route did not resolve, phrased as a clause for
-    :func:`selection_error`'s "but …" template and kept beside :func:`fast_search_entitled` so the
-    predicate and its explanation cannot drift.
-
-    ``FREE_TIER_NEEDS_ACCOUNT`` and ``_CHAT`` are standalone sentences, so the guest case is phrased
-    as the matching clause rather than embedded verbatim."""
-    account_info = _account_info()
-    if account_info is not None and account_info.is_anonymous_tier:
-        return "it needs a Nous account (sign in with `/login`)"
-    if account_info is None or account_info.error is not None or not account_info.logged_in:
-        return "there is no usable Nous identity (sign in with `/login`)"
-    return "the Nous Tool Gateway is unreachable"
+    try:
+        from hermes_cli.nous_account import get_nous_portal_account_info
+        # Branched call, not ``force_fresh=force_fresh``: tests stub the reader with zero-arg lambdas.
+        account_info = (get_nous_portal_account_info(force_fresh=True) if force_fresh
+                        else get_nous_portal_account_info())
+        return bool(account_info.logged_in) and account_info.tool_gateway_entitled
+    except Exception:
+        return False
 
 
 def nous_tool_gateway_unavailable_message(capability: str = "the Nous Tool Gateway", *,

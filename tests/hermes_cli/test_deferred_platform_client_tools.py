@@ -188,7 +188,7 @@ class TestA2AClientToolsInCliProcess:
     def test_a2a_appears_in_the_hermes_tools_checklist(self):
         """`a2a` is in _DEFAULT_OFF_TOOLSETS, so it must be tickable.
 
-        Every other member of that set (homeassistant, spotify, video_gen,
+        Every other member of that set (spotify, video_gen,
         x_search, ...) renders a checkbox; a2a rendered nothing, so the
         documented opt-in path had nothing to tick.
         """

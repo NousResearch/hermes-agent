@@ -47,11 +47,15 @@ class TestIsSkillDisabled:
     @patch("hermes_cli.config.load_config")
     def test_platform_disabled(self, mock_load):
         mock_load.return_value = {"skills": {
-            "disabled": [],
+            "disabled": ["a/one"],
             "platform_disabled": {"telegram": ["tg-skill"]}
         }}
         from tools.skills_tool import _is_skill_disabled
         assert _is_skill_disabled("tg-skill", platform="telegram") is True
+        # Any of several identifiers (declared name, duplicate's load path) disables.
+        assert _is_skill_disabled("other", "tg-skill", platform="telegram") is True
+        assert _is_skill_disabled("dup-demo", "a/one", platform="cli") is True
+        assert _is_skill_disabled("other", "x", platform="telegram") is False
 
 
 

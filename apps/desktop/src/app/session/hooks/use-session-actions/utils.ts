@@ -122,6 +122,29 @@ export function isStrictAnswerTextExtension(next: string, previous: string): boo
 }
 
 /**
+ * Whether a committed bubble already holds the reply a stale live snapshot was
+ * streaming. History folds a tool turn's narration, tools and answer into one
+ * bubble while the snapshot carries the turn's whole text, so compare the
+ * bubble's text with whitespace collapsed. The bubble must end in a reply: a
+ * mid-turn commit ends on a tool call and the turn is still running.
+ */
+function committedReplyCovers(message: ChatMessage, snapshot: string): boolean {
+  const text = message.parts
+    .flatMap(part => (part.type === 'text' ? [part.text] : []))
+    .join(' ')
+    .replace(/\s+/g, ' ')
+
+  return Boolean(replyAfterLastTool(message).trim()) && isStrictAnswerTextExtension(text, snapshot.replace(/\s+/g, ' '))
+}
+
+/** A folded tool-turn bubble's answer: its text after the last tool call. */
+function replyAfterLastTool(message: ChatMessage): string {
+  const lastTool = message.parts.findLastIndex(part => part.type === 'tool-call')
+
+  return chatMessageText({ ...message, parts: message.parts.slice(lastTool + 1) })
+}
+
+/**
  * Carry the durable row id and reactions from a same-turn `previous` row onto
  * `next` when it lacks them — reactions are keyed by row id, so they travel
  * together. Returns `next` itself when there is nothing to carry, else a NEW
@@ -1308,8 +1331,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     liveAssistantOfCurrentTurn &&
     !isLiveTailRow(liveAssistantOfCurrentTurn) &&
     committedDuringTurn(turnStartedAt, committedAt) &&
-    !liveAssistantOfCurrentTurn.parts.some(part => part.type === 'tool-call') &&
-    isStrictAnswerTextExtension(chatMessageText(liveAssistantOfCurrentTurn), inflightAssistant)
+    committedReplyCovers(liveAssistantOfCurrentTurn, inflightAssistant)
   )
 
   const wantsAssistantRow = Boolean(
@@ -1619,11 +1641,60 @@ export function overlayConcurrentMessageChanges(
   const nextIndexById = new Map(nextMessages.map((message, index) => [message.id, index]))
   let changed = false
   const overlaid = [...nextMessages]
+  const dropped = new Set<string>()
 
   let activationStreamIndex = overlaid.findIndex(
     message =>
       message.role === 'assistant' && message.id.startsWith('assistant-stream-') && !baselineById.has(message.id)
   )
+
+  // message.complete settled this stream row while REST was in flight, and
+  // the page already carries the same reply under its committed id (#70209).
+  // Only a row the page newly added counts: one already in the baseline is an
+  // earlier turn's answer (a resent prompt can repeat it word for word). An
+  // errored row carries a failure the committed text cannot show.
+  const committedOnPage = (current: ChatMessage): boolean => {
+    const text = textWithoutReferenceLines(chatMessageText(current)).trim()
+    const lastUser = overlaid.findLastIndex(message => message.role === 'user')
+    const liveRows = transcriptRowIds(current)
+
+    return (
+      Boolean(text) &&
+      overlaid.some((message, index) => {
+        if (
+          !(index > lastUser) ||
+          message.role !== 'assistant' ||
+          baselineById.has(message.id) ||
+          isLiveTailRow(message)
+        ) {
+          return false
+        }
+
+        // The completion bound the reply to its stored row. A tool turn's
+        // history folds that row into the bubble that opened the turn, whose
+        // text also carries the narration, so match the row, not the words.
+        if (liveRows.length && transcriptRowIds(message).some(id => liveRows.includes(id))) {
+          return true
+        }
+
+        // The committed row and the settled live row capture the same reply
+        // at two moments while it kept streaming, so neither side is
+        // guaranteed to be textually identical: accept either as a forward
+        // text-extension of the other, the same trade
+        // removeRepresentedLocalLiveProjection made in 2494b95929. A folded
+        // tool turn is compared by its answer, the text after its last tool.
+        return [chatMessageText(message), replyAfterLastTool(message)].some(full => {
+          const candidate = textWithoutReferenceLines(full).trim()
+
+          return (
+            candidate === text ||
+            isStrictAnswerTextExtension(candidate, text) ||
+            isStrictAnswerTextExtension(text, candidate)
+          )
+        })
+      })
+    )
+  }
 
   for (const current of currentMessages) {
     const baseline = baselineById.get(current.id)
@@ -1635,6 +1706,22 @@ export function overlayConcurrentMessageChanges(
 
     const nextIndex = nextIndexById.get(current.id)
 
+    // The page can still carry the row's older streaming copy by id when it
+    // was composed from the baseline; the committed row replaces both.
+    if (
+      current.role === 'assistant' &&
+      current.pending !== true &&
+      !current.error &&
+      isLiveTailReplyId(current.id) &&
+      committedOnPage(current)
+    ) {
+      if (nextIndex !== undefined) {
+        dropped.add(current.id)
+      }
+
+      continue
+    }
+
     if (nextIndex !== undefined) {
       if (!chatMessagesEquivalent(overlaid[nextIndex], current)) {
         overlaid[nextIndex] = current
@@ -1642,44 +1729,6 @@ export function overlayConcurrentMessageChanges(
       }
 
       continue
-    }
-
-    // message.complete settled this stream row while REST was in flight, and
-    // the page already carries the same reply under its committed id (#70209).
-    // Only a row the page newly added counts: one already in the baseline is an
-    // earlier turn's answer (a resent prompt can repeat it word for word). An
-    // errored row carries a failure the committed text cannot show.
-    if (current.role === 'assistant' && current.pending !== true && !current.error && isLiveTailReplyId(current.id)) {
-      const text = textWithoutReferenceLines(chatMessageText(current)).trim()
-      const lastUser = overlaid.findLastIndex(message => message.role === 'user')
-
-      const committed = overlaid.some((message, index) => {
-        if (
-          !(index > lastUser) ||
-          message.role !== 'assistant' ||
-          baselineById.has(message.id) ||
-          isLiveTailRow(message)
-        ) {
-          return false
-        }
-
-        // The committed row and the settled live row capture the same reply
-        // at two moments while it kept streaming, so neither side is
-        // guaranteed to be textually identical: accept either as a forward
-        // text-extension of the other, the same trade
-        // removeRepresentedLocalLiveProjection made in 2494b95929.
-        const candidate = textWithoutReferenceLines(chatMessageText(message)).trim()
-
-        return (
-          candidate === text ||
-          isStrictAnswerTextExtension(candidate, text) ||
-          isStrictAnswerTextExtension(text, candidate)
-        )
-      })
-
-      if (text && committed) {
-        continue
-      }
     }
 
     if (activationStreamIndex >= 0 && current.role === 'assistant' && current.id.startsWith('assistant-stream-')) {
@@ -1704,6 +1753,18 @@ export function overlayConcurrentMessageChanges(
     nextIndexById.set(current.id, overlaid.length)
     overlaid.push(current)
     changed = true
+  }
+
+  // A live row the store retired while REST was in flight (message.complete
+  // settled it into the committed reply) stays retired: the page was composed
+  // from the older baseline, so it can still carry that row by id.
+  const currentIds = new Set(currentMessages.map(message => message.id))
+
+  const retired = (message: ChatMessage) =>
+    dropped.has(message.id) || (isLiveTailRow(message) && baselineById.has(message.id) && !currentIds.has(message.id))
+
+  if (currentMessages.length && overlaid.some(retired)) {
+    return overlaid.filter(message => !retired(message))
   }
 
   return changed ? overlaid : nextMessages

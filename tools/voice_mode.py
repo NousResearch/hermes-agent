@@ -843,10 +843,13 @@ class AudioRecorder(_RecorderBase):
             if len(audio_data) < int(self._sample_rate * 0.3):
                 logger.debug("Recording too short (%d samples), discarding", len(audio_data))
                 return None
-            # Peak RMS, not the average (which trailing silence dilutes).
-            if self._peak_rms < SILENCE_RMS_THRESHOLD:
+            # Peak RMS, not the average (which trailing silence dilutes). Same
+            # configured floor as the VAD above — the hardcoded module default
+            # here discarded valid speech on low-threshold setups (mic peaking
+            # at RMS ~160 with voice.silence_threshold: 80, #84046).
+            if self._peak_rms < self._silence_threshold:
                 logger.info("Recording too quiet (peak RMS=%d < %d), discarding",
-                            self._peak_rms, SILENCE_RMS_THRESHOLD)
+                            self._peak_rms, self._silence_threshold)
                 return None
             return self._write_wav(audio_data, sample_rate=self._sample_rate)
 

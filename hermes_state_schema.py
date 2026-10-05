@@ -30,6 +30,7 @@ from hermes_state_fts import _drop_orphan_fts_shadow_tables
 from hermes_state_holders import _read_proc_argv
 from hermes_state_search import _delete_meta, _meta_row
 from hermes_state_errors import is_sqlite_lock_error
+from hermes_state_titles import next_title_in_lineage
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -1169,25 +1170,46 @@ class SessionSchemaMixin:
             logger.debug("v22 session_model_usage rebuild skipped: %s", exc)
 
     def _ensure_unique_title_index(self, cursor: sqlite3.Cursor) -> None:
-        """Unique title index. Older DBs may hold duplicate aliases from before the constraint;
-        the newest keeps the alias. Must never abort opening the DB, so the repair is guarded."""
+        """Unique title index. Older DBs may hold duplicate titles from before the constraint.
+        Per title a user-owned (user/NULL) row beats llm > derived (``_title_rank``). User rows are
+        never dropped: the oldest keeps the title and newer ones become ``Title #k`` in started_at
+        order, so the "#N"-preferring lookup still opens the newest (#126764). Among auto titles
+        only, the newest highest-ranked keeps it; lower-ranked auto titles are cleared. Each change
+        is logged. Must never abort opening the DB, so the repair is guarded."""
         try:
             cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
         except sqlite3.IntegrityError:
+            # Savepoint: a failure part-way must not leave a half-repaired store for
+            # _init_schema to commit without the index.
+            cursor.execute("SAVEPOINT title_repair")
             try:
-                cursor.execute("""UPDATE sessions AS older
-                       SET title = NULL
-                       WHERE title IS NOT NULL
-                         AND EXISTS (
-                             SELECT 1 FROM sessions AS newer
-                             WHERE newer.title = older.title
-                               AND newer.rowid > older.rowid
-                         )""")
-                logger.warning(
-                    "Cleared %d duplicate session title(s) while restoring the unique index", cursor.rowcount,
-                )
+                rows = cursor.execute(
+                    "SELECT rowid, title, title_source, started_at FROM sessions WHERE title IN "
+                    "(SELECT title FROM sessions WHERE title IS NOT NULL GROUP BY title HAVING COUNT(*) > 1)"
+                ).fetchall()
+                groups: Dict[str, list] = {}
+                for row in sorted(rows, key=lambda r: (self._title_rank(r[2]), r[3], r[0]), reverse=True):
+                    groups.setdefault(row[1], []).append(row)
+                user_rank = self._TITLE_SOURCE_RANK[self.TITLE_SOURCE_USER]
+                for title, group in groups.items():
+                    # User titles: the OLDEST keeps the base and newer ones get "#k" in
+                    # chronological order, so resolve_session_by_title (which prefers the
+                    # latest "#N") still lands on the newest session.
+                    users = [r for r in reversed(group) if self._title_rank(r[2]) == user_rank]
+                    keep = users[0] if users else group[0]
+                    for rowid, *_ in users[1:]:
+                        renamed = next_title_in_lineage(cursor.connection, title)
+                        cursor.execute("UPDATE sessions SET title = ? WHERE rowid = ?", (renamed, rowid))
+                        logger.warning("Renamed duplicate user session title %r to %r", title, renamed)
+                    for rowid, _title, source, _started in group:
+                        if rowid != keep[0] and self._title_rank(source) != user_rank:
+                            cursor.execute("UPDATE sessions SET title = NULL WHERE rowid = ?", (rowid,))
+                            logger.warning("Cleared duplicate %s session title %r", source, title)
                 cursor.execute(_TITLE_UNIQUE_INDEX_SQL)
+                cursor.execute("RELEASE title_repair")
             except sqlite3.Error:
+                cursor.execute("ROLLBACK TO title_repair")
+                cursor.execute("RELEASE title_repair")
                 logger.exception("Could not repair duplicate session titles; unique title index not created")
         except sqlite3.OperationalError:
             pass  # Index already exists

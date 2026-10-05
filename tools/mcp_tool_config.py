@@ -10,6 +10,7 @@ import re
 import shutil
 import sys
 import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from hermes_cli.stderr_timestamp import stamp_line, timestamp
 from tools.mcp_tool_common import _env_ref_name, _prepend_path
@@ -112,6 +113,32 @@ def _write_stderr_log_header(server_name: str) -> None:
         fh.flush()
     except Exception:
         pass
+
+
+def _tail_server_stderr(server_name: str, *, max_bytes: int = 8192, max_lines: int = 8) -> str:
+    """Trailing lines this server last wrote to the shared stderr log; ``''`` when none.
+
+    A connect failure that only says ``Connection closed`` hides why the child died
+    (#125300: a ``ModuleNotFoundError`` sat in the log while the agent log stayed mute).
+    Best-effort: the segment header must still be inside the read window, and another
+    server's output past that header is fair game — the header lines carry the name."""
+    try:
+        fh = _get_mcp_stderr_log()
+        path = getattr(fh, "name", None)
+        if not path or path == os.devnull:
+            return ""
+        with open(path, "rb") as raw:
+            raw.seek(0, os.SEEK_END)
+            size = raw.tell()
+            raw.seek(max(0, size - max_bytes))
+            chunk = raw.read().decode("utf-8", "replace")
+        cut = chunk.rfind(f"starting MCP server '{server_name}'")
+        if cut < 0:
+            return ""
+        lines = [line for line in chunk[cut:].splitlines() if line.strip()]
+        return "\n".join(lines[-max_lines:]) if lines else ""
+    except Exception:
+        return ""
 
 
 # Env vars safe to pass to stdio subprocesses (no secrets).
@@ -234,6 +261,71 @@ def _managed_launcher(command: str) -> Optional[tuple[str, list[str]]]:
     return executable, dirs
 
 
+def _is_hermes_managed_bin_dir(directory: str) -> bool:
+    """True for the bin dirs Hermes' bootstrap prepends to this process's PATH: anything
+    under the active hermes home (the sealed payload's venv, ``<home>/bin``, PM store
+    runtimes) plus the running interpreter's own bin dir (a repo checkout's venv)."""
+    try:
+        resolved = Path(directory).resolve()
+    except OSError:
+        return False
+    if resolved == Path(sys.executable).resolve().parent:
+        return True
+    from hermes_constants import get_hermes_home
+    try:
+        home = Path(get_hermes_home()).resolve()
+    except Exception:
+        return False
+    return resolved == home / "bin" or home in resolved.parents
+
+
+_WINDOWS_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
+
+
+def _pathext_suffixes(env: Optional[dict] = None, *, windows: Optional[bool] = None) -> list:
+    """Executable suffixes a bare name resolves through, in order. The child env's PATHEXT
+    comes first (``shutil.which`` reads the PARENT's, so a per-profile config value never
+    reaches a plain ``which`` — same source as ``_which_with_config_pathext``), then the
+    parent's, then the OS default. POSIX appends nothing. ``windows`` injectable for the
+    same testability reason as ``_npx_bin_candidates``."""
+    is_windows = os.name == "nt" if windows is None else windows
+    if not is_windows:
+        return [""]
+    for source in (env or {}, os.environ):
+        value = next((v for k, v in source.items()
+                      if k.upper() == "PATHEXT" and isinstance(v, str) and v.strip()), None)
+        if value:
+            exts = [ext for ext in value.split(";") if ext]
+            if exts:
+                return exts
+    return [ext for ext in _WINDOWS_DEFAULT_PATHEXT.split(";") if ext]
+
+
+def _first_user_which_hit(command: str, path_arg: Optional[str],
+                          env: Optional[dict] = None, *, windows: Optional[bool] = None) -> Optional[str]:
+    """First PATH hit for *command* OUTSIDE Hermes-managed bin dirs, or ``None``.
+
+    ``shutil.which`` stops at the first hit, and bootstrap prepends the managed runtime's
+    bin dir, so a bare ``python3`` resolves to the bundled interpreter — which lacks the
+    user's packages and kills the server on import (#125300). Candidates run through
+    ``_pathext_suffixes`` rather than the npx cache layout's ``.cmd``/``.exe`` pair: a user
+    install may only ship a ``.bat``/``.py`` wrapper, and missing it here would silently
+    fall back to the managed hit this exists to step past."""
+    exts = _pathext_suffixes(env, windows=windows)
+    if any(ext and command.lower().endswith(ext.lower()) for ext in exts):
+        names = [command]
+    else:
+        names = [command + ext for ext in exts]
+    for directory in str(path_arg or "").split(os.pathsep):
+        if not directory or _is_hermes_managed_bin_dir(directory):
+            continue
+        for name in names:
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate) and os.access(candidate, os.F_OK | os.X_OK):
+                return candidate
+    return None
+
+
 def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
     """Resolve a stdio command against the exact subprocess env (bare launchers under a filtered PATH).
 
@@ -260,6 +352,14 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
         which_hit = shutil.which(resolved_command, path=path_arg) if path_arg is not None else None
         if which_hit is None and sys.platform == "win32" and resolved_env:
             which_hit = _which_with_config_pathext(resolved_command, path_arg, resolved_env)
+        # A bare command keeps the USER's PATH semantics: bootstrap prepends the managed
+        # runtime's bin dir to this process's PATH, so the first hit for a bare ``python3``
+        # is Hermes' bundled interpreter, which lacks the user's packages and dies on import
+        # (#125300). Step past managed dirs to the user's own hit; the explicit launcher
+        # family keeps the managed-first resolution (that is the point of
+        # ``_launcher_fallback``), and a managed-only PATH keeps the managed hit.
+        if which_hit and resolved_command not in {"npx", "npm", "node", "uv", "uvx"}:
+            which_hit = _first_user_which_hit(resolved_command, path_arg, resolved_env) or which_hit
         if which_hit:
             resolved_command = which_hit
     command_dir = os.path.dirname(resolved_command)

@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from hermes_constants import display_hermes_home
 from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
+from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +246,32 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     return loaded_skill, skill_dir, str(loaded_skill.get("name") or normalized)
 
 
+def ambiguous_skill_label(identifier: str, payload: dict) -> Optional[str]:
+    """``Ambiguous skill name X: use one of <paths>`` when a failed skill_view *payload* is a same-tier
+    name collision, else None — so preload/cron say why instead of "Unknown"/"not found"."""
+    load_names = payload.get("load_names") if isinstance(payload, dict) else None
+    return f"{AMBIGUOUS_SKILL_PREFIX}{identifier}: use one of {', '.join(load_names)}" if load_names else None
+
+
+def _missing_skill_label(identifier: str) -> str:
+    """Display form of an identifier that failed to load (failure path only: re-asks skill_view)."""
+    try:
+        from tools.skills_tool import skill_view
+        from agent.skill_utils import normalize_skill_lookup_name
+        payload = json.loads(skill_view(normalize_skill_lookup_name(identifier), preprocess=False))
+    except Exception:
+        return identifier
+    return ambiguous_skill_label(identifier, payload) or identifier
+
+
+def format_missing_skills(missing: list[str]) -> str:
+    """One error line for unresolved preload identifiers: ambiguous ones keep their own wording,
+    the rest are reported as ``Unknown skill(s): ...``."""
+    ambiguous = [m for m in missing if m.startswith(AMBIGUOUS_SKILL_PREFIX)]
+    unknown = [m for m in missing if m not in ambiguous]
+    return "; ".join(ambiguous + ([f"Unknown skill(s): {', '.join(unknown)}"] if unknown else []))
+
+
 def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None:
     """Append a ``[Skill config: ...]`` block with resolved ``metadata.hermes.config``
     values so the agent needn't read config.yaml. Any failure leaves the message without it."""
@@ -458,28 +485,20 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     # (#74574).
     commands: Dict[str, Dict[str, Any]] = {}
     try:
-        from tools.skills_tool import _skills_dir, _get_disabled_skill_names
-        from agent.skill_utils import (
-            get_external_skills_dirs, get_project_skills_dirs, iter_project_skill_files, iter_skill_index_files,
-        )
+        from tools.skills_tool import _get_disabled_skill_names, _skill_catalog
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
-        # Precedence: project (through the quarantine chokepoint) > local > external.
-        # Resolve the local dir at call time: import-time SKILLS_DIR is frozen to
-        # the launch home, but a multiplexed profile scope may have changed it.
-        # See #67277.
-        skills_dir = _skills_dir()
-        iters = [iter_project_skill_files(d) for d in get_project_skills_dirs()]
-        local = [skills_dir] if skills_dir.exists() else []
-        iters += [iter_skill_index_files(d, "SKILL.md") for d in local + get_external_skills_dirs()]
-        for _iter in iters:
-            for skill_md in _iter:
+        # Only names skill_view resolves to exactly this file get a /command: the shared catalog applies
+        # project > local > create_dir > external precedence (live profile dir, #67277) and leaves
+        # same-tier duplicates to their exact paths (`/skill a/one`), so a bare slug never guesses.
+        for entry in _skill_catalog():
+            if entry["status"] == "unique":
                 try:
-                    _scan_skill_md(skill_md, disabled, seen_names, commands)
+                    _scan_skill_md(Path(entry["path"]), disabled, seen_names, commands)
                 except Exception:
                     continue
     except Exception:
-        pass
+        logger.debug("Skill command scan failed", exc_info=True)
     # Publish the scanned map atomically: a reader must see a consistent
     # (key, map) pair. Only the publish/lookup pair is locked; the scan above
     # (file I/O, deferred imports) stays outside it (#14536, #74574).
@@ -536,6 +555,8 @@ def reload_skills() -> Dict[str, Any]:
         # Clear the entire multi-slot cache: a skill edit could affect any
         # platform/profile combination, so every cached identity must rescan.
         _skill_commands_by_key.clear()
+    from tools.skills_tool import clear_skills_cache
+    clear_skills_cache()  # the scan reads the shared catalog; an explicit reload must not hit its TTL
     before = command_snapshot(before_commands)
     new_commands = scan_skill_commands()
     result = diff_command_snapshots(before, command_snapshot(new_commands))
@@ -683,8 +704,8 @@ def build_preloaded_skills_prompt(
         lambda name: (f'[IMPORTANT: The user launched this CLI session with the "{name}" skill '
                       "preloaded. Treat its instructions as active guidance for the duration of this "
                       "session unless the user overrides them.]"),
-        task_id, disabled_names=_disabled_skill_names(), disabled_as_missing=True,
-        already_loaded=excluded_loaded_names,
+        task_id, missing_label=_missing_skill_label, disabled_names=_disabled_skill_names(),
+        disabled_as_missing=True, already_loaded=excluded_loaded_names,
     )
     return "\n\n".join(prompt_parts), loaded_names, missing
 

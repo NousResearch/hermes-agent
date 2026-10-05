@@ -315,7 +315,17 @@ def _query_unix_socket(home: Path, request: bytes, timeout: float) -> Optional[b
     return None
 
 
-def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[bytes]:  # pragma: no cover - wine2e lane
+def _query_windows_pipe(home: Path, request: bytes, timeout: float) -> Optional[bytes]:
+    """A synchronous pipe handle has no ``settimeout``: ``handle.read`` blocks until the peer answers,
+    so the ``deadline`` in ``_read_response_line`` is only checked between chunks. Run the exchange on
+    an abandoned-at-deadline worker so a peer that never answers costs ``timeout``, never forever —
+    the bound ``_query_unix_socket`` already gets from ``sock.settimeout`` (#132547)."""
+    from agent.deadline import run_bounded_sync
+    outcome = run_bounded_sync(lambda: _windows_pipe_exchange(home, request, timeout), timeout, label="control-pipe")
+    return None if outcome.timed_out else outcome.value
+
+
+def _windows_pipe_exchange(home: Path, request: bytes, timeout: float) -> Optional[bytes]:  # pragma: no cover - wine2e lane
     pipe_name = windows_pipe_name(home)
     deadline = time.monotonic() + timeout
     handle = None

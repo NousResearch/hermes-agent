@@ -134,6 +134,14 @@ def cmd_show(name: str) -> None:
     console.print(f"[dim]Status:[/dim] {status}")
     console.print(f"[dim]Source:[/dim] {source}")
     console.print(f"[dim]Key:[/dim] {key}")
+    if dir_path and source != "bundled":
+        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+        from hermes_cli.plugin_isolation_audit import audit_plugin_dir
+        audit = audit_plugin_dir(Path(dir_path), manifest)
+        runs_in = ("plugin host" if isolation_mode() == ISOLATION_HOST and audit.host_ready
+                   else "refused (plugins.isolation: host)" if isolation_mode() == ISOLATION_HOST
+                   else "Hermes process")
+        console.print(f"[dim]Runs in:[/dim] {runs_in} [dim]— {audit.summary()}[/dim]")
     console.print("[dim]Emits:[/dim] " + (", ".join(emits) if emits else "[dim](none)[/dim]"))
     console.print("[dim]Listens:[/dim] " + (", ".join(listens) if listens else "[dim](none)[/dim]"))
     console.print()

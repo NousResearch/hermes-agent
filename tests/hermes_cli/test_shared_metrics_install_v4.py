@@ -220,7 +220,7 @@ def test_meminfo_total_is_parsed_in_bytes():
 
 @pytest.mark.parametrize(("vendors", "gpu"), [
     (["0x8086", "0x10de"], "nvidia"), (["0x8086", "0x1002"], "amd"), (["0x8086"], "intel"),
-    (["0x1af4"], "none"), ([], "none"), (["10DE"], "nvidia"),
+    (["0x1af4"], "none"), ([], "none"), (["10DE"], "nvidia"), ([""], "unknown"), (["", "0x10de"], "nvidia"),
 ])
 def test_gpu_vendor_priority_prefers_the_discrete_card(vendors, gpu):
     assert facts.classify_gpu_vendors(vendors) == gpu

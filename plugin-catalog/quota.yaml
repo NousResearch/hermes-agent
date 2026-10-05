@@ -1,17 +1,17 @@
 name: quota
 repo: https://github.com/rarf/hermes-quota-plugin
-sha: a57a1f7011c3fc5c8d4b2268f477250e980e564e
-version: "2.4.1"
-description: "Per-provider quota / rate-limit status via /quota command and desktop widget. Reads precomputed quota_cache.json so the widget never does network I/O. Disclosure — refreshes your Gemini OAuth token using the Gemini CLI's client identity and queries Copilot's internal usage endpoint with VS Code client headers; the opt-in (default off) grok.com check reads local browser cookies; the opencode-go check reads the OpenCode CLI's local auth.json (read-only) for its key. The zai check sends your Z.ai API key (from Hermes' credential store or ZAI_API_KEY) to api.z.ai's monitor endpoints; the commandcode check reads ~/.commandcode/auth.json (read-only) and queries api.commandcode.ai with the Command Code CLI's User-Agent; on Linux the opt-in grok check runs secret-tool to read the browser's Safe Storage key and decrypts only grok.com cookies from a temporary copy of the cookie DB."
+sha: 46c047b40fafea8e1baa0f367ad939a1ccd1e731
+version: "2.8.1"
+description: "Per-provider quota / rate-limit status via /quota command and desktop widget. Reads precomputed quota_cache.json so the widget never does network I/O. Disclosure — refreshes your Gemini OAuth token using the Gemini CLI's public client identity, in memory only; queries Copilot's internal usage endpoint with VS Code client headers and Anthropic's OAuth usage endpoint with a Claude Code User-Agent; the cursor check reads the Cursor CLI token from the macOS Keychain or Cursor's auth.json (read-only, never refreshed or rewritten; on expiry it asks you to run cursor-agent login) and queries api2.cursor.sh; the opt-in (default off) antigravity check reads Antigravity's OAuth token from Windows Credential Manager, the macOS Keychain or ~/.gemini/antigravity-cli (read-only), refreshes it in memory with Antigravity's public client identity and sends Antigravity's User-Agent to Google's cloudcode endpoint; the opt-in (default off) grok.com check reads local browser cookies, using secret-tool on Linux or the macOS Keychain for the browser's Safe Storage key and decrypting only grok.com cookies from a temporary copy of the cookie DB; the opencode-go check reads the OpenCode CLI's local auth.json (read-only); the commandcode check reads ~/.commandcode/auth.json (read-only) or Hermes' credential store and uses the Command Code CLI's User-Agent; zai, kimi, minimax, deepseek and openrouter send keys from Hermes' credential store or env only to their own vendor's usage or balance endpoints."
 maintainer: rarf
 tier: community
 category: desktop
 docs_url: https://github.com/rarf/hermes-quota-plugin#readme
 readme: true
-image: https://raw.githubusercontent.com/rarf/hermes-quota-plugin/a57a1f7011c3fc5c8d4b2268f477250e980e564e/docs/images/quota-banner.png
+image: https://raw.githubusercontent.com/rarf/hermes-quota-plugin/46c047b40fafea8e1baa0f367ad939a1ccd1e731/docs/images/quota-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/rarf/hermes-quota-plugin/a57a1f7011c3fc5c8d4b2268f477250e980e564e/docs/images/quota-pane.png
-  - https://raw.githubusercontent.com/rarf/hermes-quota-plugin/a57a1f7011c3fc5c8d4b2268f477250e980e564e/docs/images/quota-app.png
+  - https://raw.githubusercontent.com/rarf/hermes-quota-plugin/46c047b40fafea8e1baa0f367ad939a1ccd1e731/docs/images/quota-pane.png
+  - https://raw.githubusercontent.com/rarf/hermes-quota-plugin/46c047b40fafea8e1baa0f367ad939a1ccd1e731/docs/images/quota-app.png
 capabilities:
   provides_tools: []
   provides_hooks:

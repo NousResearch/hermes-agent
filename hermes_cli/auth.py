@@ -2154,7 +2154,13 @@ def _external_process_spec(
                or str(getattr(profile, "process_command", "") or ""))
     raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
     args = shlex.split(raw_args) if raw_args else list(getattr(profile, "process_args", ()) or [])
-    return command, args, base_url, shutil.which(command) if command else None, command_env_vars
+    resolved = shutil.which(command) if command else None
+    if command and not resolved:
+        # A GUI/service launch (LaunchAgent, Desktop backend) has a bare PATH: probe Claude Code's
+        # install prefixes as the Anthropic adapter does. Any other command stays PATH-only.
+        from agent.anthropic_adapter import find_claude_code_cli
+        resolved = find_claude_code_cli(command)
+    return command, args, base_url, resolved, command_env_vars
 
 
 def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:

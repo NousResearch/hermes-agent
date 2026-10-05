@@ -95,12 +95,22 @@ def finish_text_response(
     # from a real reply on every history surface (#111761). The row keeps ``content``
     # empty with the text in its reasoning fields and carries the promoted text as the
     # ``api_content`` sidecar, so the next turn still replays it byte-identically.
+    # Anthropic thinking (signed ``thinking`` block, or a plugin's ``*.native_assistant`` carrier
+    # of native Claude turns) is a summary written by a separate model, never the answer: it
+    # takes the empty-response continuation below instead.
     _content = assistant_message.content
     _promoted = None
     if (
         finish_reason == "stop"
         and not assistant_message.tool_calls
         and (_content is None or (isinstance(_content, str) and not _content.strip()))
+        and not any(
+            isinstance(d, dict) and (
+                (d.get("type") in ("thinking", "redacted_thinking") and (d.get("signature") or d.get("data")))
+                or str(d.get("type") or "").endswith(".native_assistant")
+            )
+            for d in getattr(assistant_message, "reasoning_details", None) or ()
+        )
     ):
         _promoted = agent._extract_reasoning(assistant_message) or None
         if _promoted:

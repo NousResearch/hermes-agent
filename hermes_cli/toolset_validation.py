@@ -52,8 +52,9 @@ def _platform_default_is_valid(
 
 def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
     """``is_valid_toolset`` for a saved ``platform_toolsets`` list, mirroring what
-    ``tools_config._get_platform_tools`` lets through: registered toolsets, any configured MCP server
-    (a disabled one is inactive, not a typo), ``hermes-<platform>`` plugin-platform bundles and the
+    ``tools_config._get_platform_tools`` lets through: registered toolsets, any configured MCP server by
+    its ``mcp-<server>`` toolset name or bare alias (neither is registered before MCP discovery; a
+    disabled server is inactive, not a typo), ``hermes-<platform>`` plugin-platform bundles and the
     ``no_mcp`` sentinel. The manifest scan and the plugin lookup (which may run plugin discovery)
     happen only for a name the cheaper checks cannot place."""
     from functools import cache
@@ -61,8 +62,8 @@ def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
     from toolsets import validate_toolset
 
     mcp_servers = config.get("mcp_servers")
-    known = {str(name) for name in mcp_servers} if isinstance(mcp_servers, dict) else set()
-    known.add("no_mcp")
+    servers = {str(name) for name in mcp_servers} if isinstance(mcp_servers, dict) else set()
+    known = servers | {f"mcp-{name}" for name in servers} | {"no_mcp"}
 
     @cache
     def platform_bundles() -> frozenset:
@@ -74,7 +75,8 @@ def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
     def plugin_names() -> frozenset:
         from hermes_cli.plugins import get_plugin_toolset_keys_nowait, get_portable_mcp_server_names_nowait
 
-        return frozenset(get_plugin_toolset_keys_nowait() | get_portable_mcp_server_names_nowait())
+        portable = get_portable_mcp_server_names_nowait()
+        return frozenset(get_plugin_toolset_keys_nowait() | portable | {f"mcp-{name}" for name in portable})
 
     return lambda name: (validate_toolset(name) or name in known
                          or name in platform_bundles() or name in plugin_names())

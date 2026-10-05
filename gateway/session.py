@@ -1272,6 +1272,9 @@ class SessionStore(
                 log=lambda e: logger.debug("Session DB end_session failed: %s", e),
             )
         if self._db_for_key(session_key):
+            # An explicit /resume/handoff/branch repoint is real user activity: the row is
+            # reopened (a repoint onto a finalized row must resume it, not write into a dead row).
+            # Mount-time reads (TUI session.resume) no longer reopen (#85303) — only this path does.
             self._reopen_session_row(
                 session_key, target_session_id, log_prefix="Session DB reopen_session failed"
             )

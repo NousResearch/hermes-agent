@@ -292,8 +292,6 @@ def _maybe_run_skill_maintenance(started_at: float) -> None:
         return
 
     from agent.curator import maybe_run_curator
-    from tools.skills_sync_client import maybe_pull_skills
-    from tools.skills_sync_client_org import maybe_pull_org_skills
 
     try:
         idle_for = _skill_maintenance_idle_for(started_at)
@@ -301,11 +299,6 @@ def _maybe_run_skill_maintenance(started_at: float) -> None:
             maybe_run_curator(idle_for_seconds=idle_for)
     except Exception as exc:
         _log.debug("serve curator tick skipped: %s", exc)
-    for pull in (maybe_pull_skills, maybe_pull_org_skills):
-        try:
-            pull()
-        except Exception as exc:
-            _log.debug("serve skill sync tick skipped: %s", exc)
 
 
 async def _auto_archive_ticker_loop(

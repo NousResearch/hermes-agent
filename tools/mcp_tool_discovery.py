@@ -158,7 +158,7 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
         # The config was rendered at load time (a lazy server's at boot): re-render under the
         # owner's fresh scope so a ref left literal before its secret source answered resolves
         # now, and refuse to send one that still does not.
-        config = _config._require_rendered_remote(name, _config._interpolate_env_vars(config))
+        config = _config._require_rendered_remote(name, _config._rerender_resolved(config))
         await server.start(config)
     except asyncio.CancelledError:
         raise  # start() already reaps server._task; shutdown() here could swallow the cancel
@@ -219,7 +219,9 @@ def _resolve_server_lazy(name: str, config: dict) -> bool:
 
 def _note_connect_failure(name: str, exc: BaseException, redaction_values=()) -> str:
     """Record a failed connect (under ``_lock``): error text for status, cooldown stamp."""
-    message = _errors._format_connect_error(exc, redaction_values)
+    # Plus the values of the generation the failed task last adopted (_discover_and_register_server).
+    message = _errors._format_connect_error(
+        exc, (*redaction_values, *exc.__dict__.get("_mcp_redaction_values", ())))
     with _core._lock:
         key = _server_key(name)
         _core._server_connecting.discard(key)
@@ -334,8 +336,12 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     try:
         server = await asyncio.wait_for(_connect_server(name, config),
                                         timeout=config.get("connect_timeout", _core._DEFAULT_CONNECT_TIMEOUT))
-    except BaseException:
+    except BaseException as exc:
         server = claimed[0] if claimed else None
+        if server is not None:
+            # The task may have adopted a newer credential generation than *config*: callers
+            # render this error with *config*'s snapshot, so hand them the task's values too.
+            exc.__dict__.setdefault("_mcp_redaction_values", server._redaction_values)
         task = server._task if server is not None else None
         task_cancelling = task.cancelling() if task is not None and hasattr(task, "cancelling") else 0
         if (server is not None and server._error is not None and task is not None

@@ -394,7 +394,8 @@ def _write_schema_cache(name: str, server: "MCPServerTask", config: dict, should
                           ttl_ms=cache_meta.get("ttl_ms"), cache_scope=cache_meta.get("cache_scope"))
     except Exception as exc:
         logger.debug("MCP schema cache write failed for '%s': %s", name,
-                     _sanitize_error(_exc_str(exc), _mcp_redaction_values(config)))
+                     _sanitize_error(_exc_str(exc), _mcp_redaction_values(config)
+                                     + tuple(getattr(server, "_redaction_values", ()))))
 
 
 def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> List[str]:
@@ -404,7 +405,9 @@ def _register_server_tools(name: str, server: "MCPServerTask", config: dict) -> 
     should_register = _make_tool_filter(name, config)
     key = _server_key_for_task(server)
     _record_tool_trust_metadata(name, config, server._tools, key)
-    redaction_values = _mcp_redaction_values(config)
+    # Plus the task's own generation: a task that adopted a refreshed definition while connecting
+    # serves tools from that generation, while discovery still passes the config it started with.
+    redaction_values = _mcp_redaction_values(config) + tuple(getattr(server, "_redaction_values", ()))
     candidates = _tool_candidates(name, server._tools, should_register, server.tool_timeout, redaction_values)
     candidates += _utility_candidates(name, _select_utility_schemas(name, server, config), server.tool_timeout)
     registered = _register_candidates(

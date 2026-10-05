@@ -227,7 +227,8 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
         if srv is not None and _loop._signal_reconnect_and_wait(
                 server_name, srv, op_description=f"{op_description} after OAuth recovery", timeout=15):
             _core._reset_server_error(server_name)
-        result = _retry_once(server_name, retry_call, op_description, "auth recovery", values)
+        result = _retry_once(server_name, retry_call, op_description, "auth recovery",
+                             tuple(values) + tuple(getattr(srv, "_redaction_values", ())))
         if result is not None:
             return result
     return _strike(server_name, _NEEDS_REAUTH_MSG.format(s=server_name), needs_reauth=True, server=server_name)
@@ -278,7 +279,9 @@ def _handle_session_expired_and_retry(server_name: str, exc: BaseException, retr
         logger.warning("MCP server '%s': reconnect did not ready within 15s after session-expired error; "
                        "falling through to error response.", server_name)
         return None
-    return _retry_once(server_name, retry_call, op_description, "session reconnect", values)
+    # The rebuilt session may serve an adopted credential generation: cover it in the retry log too.
+    return _retry_once(server_name, retry_call, op_description, "session reconnect",
+                       tuple(values) + tuple(getattr(srv, "_redaction_values", ())))
 
 
 class _StdioChildExited(RuntimeError):
@@ -608,7 +611,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, re
                     server._pending_call_context = None
             if getattr(server, "_mark_session_proven", None) is not None:  # round-trip done: transport healthy
                 server._mark_session_proven()
-            return _render_call_tool_result(result, server_name, values)
+            # Read at render time: a retry runs on the session this task rebuilt, possibly with an
+            # adopted credential generation that the tuple captured before the first attempt lacks.
+            return _render_call_tool_result(
+                result, server_name, values + tuple(getattr(server, "_redaction_values", ())))
 
         def _on_failure(exc):
             _core._bump_server_error(server_name)

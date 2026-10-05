@@ -589,6 +589,15 @@ def _mcp_redaction_values(config: dict) -> tuple[str, ...]:
     )
 
 
+def _rerender_resolved(config: dict) -> dict:
+    """Re-render ``${VAR}`` refs (under the caller's secret scope) without dropping the resolving
+    snapshot: a secret rendered only into the ``url`` has no header literal to fall back on."""
+    rendered = _interpolate_env_vars(config)
+    if isinstance(config, _ResolvedMCPServerConfig):
+        return _ResolvedMCPServerConfig(rendered, config._redaction_values + _mcp_redaction_values(rendered))
+    return rendered
+
+
 def _resolve_mcp_server_config(config: dict) -> dict:
     """Resolve once, retaining the exact overlay for the lifetime of this config."""
     if isinstance(config, _ResolvedMCPServerConfig):

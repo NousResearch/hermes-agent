@@ -260,7 +260,7 @@ class MCPServerRunMixin:
         ``_ready`` fired instead of burning the reconnect ladder inside the SDK's httpx layer)."""
         self._config = config
         from tools.mcp_tool_config import _mcp_redaction_values
-        self._redaction_values = _mcp_redaction_values(config)
+        self._bind_redaction_values(_mcp_redaction_values(config))
         self.tool_timeout = _resolve_tool_timeout(config)
         self._auth_type = (config.get("auth") or "").lower().strip()
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
@@ -302,6 +302,13 @@ class MCPServerRunMixin:
             return False
         return True
 
+    def _bind_redaction_values(self, values) -> None:
+        """One credential generation for the task and the handlers it hands to the SDK session."""
+        self._redaction_values = tuple(dict.fromkeys(values))
+        for handler in (self._sampling, self._elicitation):
+            if handler is not None:
+                handler._redaction_values = self._redaction_values
+
     def _publish_error(self, exc: BaseException) -> None:
         """Hand *exc* to the waiting ``start()``."""
         self._error = exc
@@ -322,8 +329,13 @@ class MCPServerRunMixin:
         if not isinstance(fresh, dict) or "url" not in fresh or all(
                 fresh.get(k) == config.get(k) for k in self._REMOTE_REBIND_KEYS):
             return config
+        # The rebuilt transport carries the adopted generation's credentials, so this task and its
+        # sampling/elicitation handlers must redact them too. The replaced generation stays covered
+        # for late output of the old transport; earlier generations are not accumulated.
+        self._bind_redaction_values(_config._mcp_redaction_values(fresh) + _config._mcp_redaction_values(config))
         logger.info("MCP server '%s': definition changed in config.yaml (%s -> %s); rebuilding with the new one",
-                    self.name, config.get("url"), fresh.get("url"))
+                    self.name, _sanitize_error(str(config.get("url")), self._redaction_values),
+                    _sanitize_error(str(fresh.get("url")), self._redaction_values))
         self._config = fresh
         self._auth_type = (fresh.get("auth") or "").lower().strip()
         self._sse_fallback = False  # latched for the old endpoint

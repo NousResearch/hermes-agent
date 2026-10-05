@@ -842,7 +842,7 @@ def drain_launchd_gateway_runtime(pid: int, label: str, drain_budget: float) -> 
     from hermes_cli.update_cmd_fleet import _gateway_home_for_pid
     from hermes_cli.update_cmd_drain_report import drain_progress_reporter
 
-    if _gw().probe_gateway_loop_liveness(pid) == _gw().GATEWAY_LOOP_WEDGED:
+    if _gw().probe_gateway_loop_liveness(pid, home=_gateway_home_for_pid(pid)) == _gw().GATEWAY_LOOP_WEDGED:
         print(f"  ⚠ {label}: gateway event loop is unresponsive — skipping drain, forcing a bounded stop...")
         return False
     print(f"  → {label}: draining (up to {drain_budget:.0f}s)...")

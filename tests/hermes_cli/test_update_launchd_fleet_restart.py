@@ -275,7 +275,7 @@ def _fleet(monkeypatch, tmp_path, *, current, labels, located,
         "hermes_cli.gateway_launchd.launchd_gateway_signal_pid", lambda pid: pid, raising=False
     )
     monkeypatch.setattr("hermes_cli.gateway_launchd.stop_launchd_gateway_runtime", lambda pid: True)
-    monkeypatch.setattr(gw, "probe_gateway_loop_liveness", lambda pid: None)
+    monkeypatch.setattr(gw, "probe_gateway_loop_liveness", lambda pid, **kwargs: None)
     monkeypatch.setattr(gw, "_launchd_service_registered", fake_registered)
     monkeypatch.setattr(
         gw,
@@ -773,13 +773,18 @@ def test_wedged_gateway_skips_long_drain_before_bounded_stop(monkeypatch, tmp_pa
     sibling = "ai.hermes.gateway"
     rec = _fleet(monkeypatch, tmp_path, current=current, labels=[current, sibling],
                  located={current: (f"gui/{UID}", 100), sibling: (f"gui/{UID}", 200)})
-    monkeypatch.setattr(gw, "probe_gateway_loop_liveness", lambda pid: gw.GATEWAY_LOOP_WEDGED)
+    home = tmp_path / "sibling-home"
+    monkeypatch.setattr("hermes_cli.update_cmd_fleet._gateway_home_for_pid", lambda pid: home)
+    probes = []
+    monkeypatch.setattr(gw, "probe_gateway_loop_liveness",
+                        lambda pid, **kwargs: (probes.append((pid, kwargs.get("home"))), gw.GATEWAY_LOOP_WEDGED)[1])
     stopped = []
     monkeypatch.setattr("hermes_cli.gateway_launchd.stop_launchd_gateway_runtime",
                         lambda pid: (stopped.append(pid), True)[1])
     restarted, failed = [], []
     _restart_macos_launchd_gateways(restarted, failed, drain_budget=1905.0)
     assert rec.drains == []
+    assert probes == [(200, home)]
     assert stopped == [200]
     assert rec.kickstarts == [f"gui/{UID}/{sibling}"]
     assert restarted == [current, sibling]

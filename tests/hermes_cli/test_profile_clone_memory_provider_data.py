@@ -36,6 +36,9 @@ def _mnemosyne_source(default_home: Path) -> None:
     db_dir = default_home / "mnemosyne" / "data"
     db_dir.mkdir()
     (db_dir / "mnemosyne.db").write_text("SOURCE-EPISODIC-HISTORY", encoding="utf-8")
+    # A top-level `banks/` is not a path the provider produces (real bank DBs live under
+    # `data/banks/`, already covered by the `data` exclusion) — it stands in for any
+    # non-`data` provider file that must keep copying (#120115).
     (default_home / "mnemosyne" / "banks").mkdir()
     (default_home / "mnemosyne" / "banks" / "notes.md").write_text(
         "bank", encoding="utf-8"

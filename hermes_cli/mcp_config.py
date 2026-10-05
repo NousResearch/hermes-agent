@@ -164,10 +164,14 @@ def redact_mcp_header_display(name: str, value: object) -> str:
     return "***"
 
 
-def _redact_probe_exception(exc: BaseException) -> Exception:
-    """Return a raise-able exception whose ``str()`` is safe to print."""
+def _redact_probe_exception(exc: BaseException, redaction_values=()) -> Exception:
+    """Return a raise-able exception whose ``str()`` is safe to print, including for callers
+    (``hermes doctor``) that print it without this attempt's snapshot."""
+    from tools.mcp_tool_common import _sanitize_error
+
     root = _unwrap_exception_group(exc)
-    safe = redact_mcp_probe_text(root)
+    # Same order as ``_sanitize_mcp_probe_error``; without a snapshot keep the probe redactor's shape.
+    safe = redact_mcp_probe_text(_sanitize_error(str(root), redaction_values) if redaction_values else root)
     if safe == str(root) and isinstance(root, Exception):
         return root
     try:
@@ -535,7 +539,7 @@ def _probe_single_server(
         # Callers still hold the unresolved dict; keep this attempt's tuple on the
         # original exception so its type and structured OAuth/HTTP details survive.
         root._mcp_redaction_values = redaction_values
-        safe = _redact_probe_exception(root)
+        safe = _redact_probe_exception(root, redaction_values)
         safe._mcp_redaction_values = redaction_values
         raise safe from None
     finally:

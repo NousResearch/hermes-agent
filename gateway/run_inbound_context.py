@@ -344,6 +344,7 @@ class GatewayInboundContextMixin:
         else:
             message_text = expanded_authored_text
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
+        # Keep image analysis after expansion so generated references cannot read local files.
         if image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         message_text = self._prepend_inbound_media_file_notes(message_text, audio_file_paths, video_paths)

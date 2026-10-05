@@ -1022,6 +1022,7 @@ class TestHermesIndexSearch:
 
         assert bundle is not None
         assert bundle.identifier == "skills-sh/tencent/wechatreading/weread-skills"
+        assert bundle.name == "weread-skills"  # installs under the slug, not as "skills/"
         github._find_skill_in_repo_tree.assert_called_once_with("tencent/wechatreading", "weread-skills")
 
 class TestProviderFilter:

@@ -358,23 +358,21 @@ class HermesIndexSource(SkillSource):
         repo, path = entry.get("repo", ""), entry.get("path", "")
         github = self._get_github()
         candidates = [entry.get("resolved_github_id")] + ([f"{repo}/{path}"] if repo and path else [])
-        # Older index rows used the skill slug as ``path`` even when the
-        # repository stores the skill directly under a generic directory such
-        # as ``skills/``. Resolve that slug against the repository tree before
-        # declaring the catalog entry stale.
-        if repo and path:
-            skill_token = path.rstrip("/").rsplit("/", 1)[-1]
-            candidates.extend([
-                github._find_skill_in_repo_tree(repo, skill_token),
-                github._find_repo_root_skill(repo),
-            ])
-        for github_id in filter(None, dict.fromkeys(candidates)):
-            bundle = github.fetch(github_id)
-            if bundle:
-                bundle.source = entry.get("source", "hermes-index")
-                bundle.identifier = identifier
-                return bundle
-        return None
+        for github_id in filter(None, candidates):
+            if bundle := github.fetch(github_id):
+                break
+        else:
+            # skills.sh rows carry the slug as ``path``; when no build resolved it, find the skill in
+            # the repo tree (a slug-named dir, a lone generic ``skills/``, or the repo root) instead
+            # of reporting a live skill as a stale entry (#130129).
+            slug = path.rstrip("/").rsplit("/", 1)[-1]
+            found = repo and slug and (github._find_skill_in_repo_tree(repo, slug) or github._find_repo_root_skill(repo))
+            if not (found and (bundle := github.fetch(found))):
+                return None
+            bundle.name = slug  # not "skills" / the repo name: the slug the user asked for
+        bundle.source = entry.get("source", "hermes-index")
+        bundle.identifier = identifier
+        return bundle
 
     def inspect(self, identifier: str) -> Optional[SkillMeta]:
         """Return metadata from the index (zero API calls)."""

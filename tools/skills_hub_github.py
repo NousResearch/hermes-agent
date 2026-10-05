@@ -98,6 +98,10 @@ class GitHubAuth:
     def _resolve_token(self) -> Optional[str]:
         if self._cached_token and (self._cached_method != "github-app" or time.time() < self._app_token_expiry):
             return self._cached_token
+        if self._cached_method == "anonymous":
+            # The chain already came up empty: re-running `gh auth token` (5 s timeout when gh has no
+            # login / no keyring) before every API call stretched one install past four minutes.
+            return None
         for method, resolve in (
             ("pat", self._try_pat), ("gh-cli", self._try_gh_cli), ("github-app", self._try_github_app),
         ):
@@ -521,18 +525,18 @@ class GitHubSource(SkillSource):
         if (cached := self._get_repo_tree(repo)) is None:
             return None
         skill_md_suffix = f"/{skill_name}/SKILL.md"
-        generic_candidates = []
+        skill_dirs = []
         for entry in cached[1]:
             path = entry.get("path", "")
-            if entry.get("type") != "blob" or entry.get("mode") == "120000":
+            if entry.get("type") != "blob" or entry.get("mode") == "120000" or not f"/{path}".endswith("/SKILL.md"):
                 continue
             if path.endswith(skill_md_suffix) or path == skill_md_suffix[1:]:
                 return f"{repo}/{path[: -len('/SKILL.md')]}"
-            # Some older index rows use a public slug even though the repo
-            # exposes one skill from a generic directory such as ``skills/``.
-            if path.endswith("/skills/SKILL.md") or path == "skills/SKILL.md":
-                generic_candidates.append(path[: -len('/SKILL.md')])
-        return f"{repo}/{generic_candidates[0]}" if len(generic_candidates) == 1 else None
+            skill_dirs.append(path[: -len("SKILL.md")].rstrip("/"))
+        # A single-skill repo may keep it in a generically named dir (``skills/SKILL.md``) that no
+        # slug matches; with only one SKILL.md in the tree there is nothing else it could mean
+        # (a lone root SKILL.md is left to ``_find_repo_root_skill``).
+        return f"{repo}/{skill_dirs[0]}" if len(skill_dirs) == 1 and skill_dirs[0] else None
 
     def _find_repo_root_skill(self, repo: str) -> Optional[str]:
         """Identifier for a single-skill repo whose ``SKILL.md`` sits at the repo ROOT (no skill

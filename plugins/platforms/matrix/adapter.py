@@ -1356,6 +1356,7 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_event_handler(IntEvt.INVITE, self._on_invite, wait_sync=True)
         self._startup_ts = time.time()
         self._flush_grace_backlog()  # never discard a previous connect's unreported drops
+        self._grace_skips = _NO_GRACE_SKIPS  # this connect's summary counts only its own drops
         self._reset_clock_skew_detector()  # a reconnect after an NTP fix starts clean
         self._closing = False
         await self._connect_initial_sync(client)
@@ -1880,7 +1881,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 sync_data = await asyncio.wait_for(client.sync(since=next_batch, timeout=30000), timeout=45.0)
                 if isinstance(sync_data, dict):
                     next_batch = await self._absorb_sync(client, sync_data) or next_batch
-                    self._flush_grace_backlog()  # quiet room: the decrypt tasks queued at startup have run
+                    self._flush_grace_backlog()  # quiet room: most startup decrypts are done (a slow one may undercount)
                     await asyncio.sleep(0)  # let fresh invite joins start before the next sync
             except asyncio.CancelledError:
                 return

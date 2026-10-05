@@ -27,7 +27,8 @@ class RecordingProvider:
 
 @pytest.mark.parametrize("fail_builtin_import", [False, True])
 @pytest.mark.parametrize("skip_memory", [False, True])
-def test_public_agent_preserves_provider_selection(monkeypatch, fail_builtin_import, skip_memory):
+@pytest.mark.parametrize("enabled_toolsets", [["memory"], ["web"]], ids=["memory-tools", "without-memory-tools"])
+def test_public_agent_preserves_provider_selection(monkeypatch, fail_builtin_import, skip_memory, enabled_toolsets):
     from run_agent import AIAgent
     from hermes_constants import get_hermes_home
     import run_agent
@@ -61,7 +62,7 @@ def test_public_agent_preserves_provider_selection(monkeypatch, fail_builtin_imp
         agent = AIAgent(model="test-model", provider="openrouter",
                         api_mode="chat_completions", api_key="test-key",
                         base_url="https://openrouter.ai/api/v1",
-                        enabled_toolsets=["memory"], quiet_mode=True,
+                        enabled_toolsets=enabled_toolsets, quiet_mode=True,
                         skip_context_files=True, skip_memory=skip_memory,
                         skip_background_review=True, save_trajectories=False,
                         session_id="bootstrap-session")
@@ -74,12 +75,16 @@ def test_public_agent_preserves_provider_selection(monkeypatch, fail_builtin_imp
                 load.assert_called_once_with(provider.name)
                 assert provider.sessions == ["bootstrap-session"]
                 assert agent._memory_manager.has_tool("bootstrap_recall")
-                assert "bootstrap_recall" in agent.valid_tool_names
-            if fail_builtin_import:
+                assert ("bootstrap_recall" in agent.valid_tool_names) == ("memory" in enabled_toolsets)
+            builtin_requested = not skip_memory or "memory" in enabled_toolsets
+            if fail_builtin_import and builtin_requested:
                 assert attempts
                 assert agent._memory_store is None
-            else:
+            elif builtin_requested:
                 assert agent._memory_store is not None
+            else:
+                assert not attempts
+                assert agent._memory_store is None
         finally:
             agent.close()
 

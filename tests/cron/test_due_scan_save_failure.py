@@ -9,8 +9,8 @@ Observed live on a full /opt/data: repeated ``Cron tick error ... [Errno 28] No 
 device`` from this exact call site, with every job then reporting "missed its scheduled time".
 
 The repairs are already applied in memory — that is what the scan keys off — so the persist is a
-side effect the next tick can retry. These tests pin both halves: a failing persist neither
-propagates nor loses the dispatch, and a writable store still persists as before.
+side effect the next tick can retry. The scan still returns its due jobs; tick() skips recurring
+dispatch (no durable advance) without raising or mutating the store.
 """
 
 import errno
@@ -61,15 +61,14 @@ def _half_paused_job(jid="half-paused"):
     return job
 
 
+def _enospc(*_args, **_kwargs):
+    raise OSError(errno.ENOSPC, "No space left on device")
+
+
 @pytest.fixture()
 def full_disk(monkeypatch):
     """Make the store unwritable the way a full disk does, without ever touching the real store."""
-
-    def _raise(*_args, **_kwargs):
-        raise OSError(errno.ENOSPC, "No space left on device")
-
-    monkeypatch.setattr(cronjobs, "save_jobs", _raise)
-    return _raise
+    monkeypatch.setattr(cronjobs, "save_jobs", _enospc)
 
 
 def test_due_jobs_are_returned_when_the_store_cannot_be_saved(cron_store, full_disk, monkeypatch, caplog):
@@ -108,10 +107,6 @@ def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, m
     monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
     monkeypatch.setattr(scheduler, "_sweep_mcp_orphans", lambda: sweeps.append(1))
     monkeypatch.setattr(cronjobs, "_last_store_warning", {})
-
-    def _enospc(*_args, **_kwargs):
-        raise OSError(errno.ENOSPC, "No space left on device")
-
     monkeypatch.setattr(cronjobs, "_stage_jobs_payload", _enospc)
     with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
         assert scheduler.tick(verbose=False, sync=True) == 0

@@ -29,7 +29,6 @@ def _log_tick_yield_once(reason: str) -> None:
     _last_yield_log = {"reason": reason, "at": now}
 
 
-
 def tick(verbose=True, adapters=None, loop=None, sync=True, *, can_dispatch=None):
     from hermes_cli.backend_retirement import retirement
 

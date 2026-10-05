@@ -1465,6 +1465,18 @@ def register(ctx):
 
 For running a full `hermes <subcommand>` (e.g. `hermes kanban show`), shell out with the `terminal` tool via `ctx.dispatch_tool("terminal", {"command": "hermes kanban show ..."})` — there is no in-process slash-command bridge for headless worker sessions, and tools are the supported way to drive Hermes from a hook.
 
+### Send raw CDP commands to the agent's browser
+
+A plugin that must drive the agent's browser below the browser tools can get a
+CDP handle pinned to a task's live supervisor connection with
+`SUPERVISOR_REGISTRY.capture(task_id)` and send commands with
+`call(method, params=None, *, session_id=None, timeout=10.0)`. The handle
+raises `CapturedCDPInvalid` once that connection is gone and never retargets a
+newer one. Use it instead of reading or writing `CDPSupervisor` private
+attributes, which the catalog rejects. It is trusted in-process transport only:
+it performs no origin, consent or ownership checks for you. Full contract:
+[Browser CDP Supervisor](../browser-supervisor.md#trusted-plugin-cdp-access).
+
 ### Know which cron run you are in
 
 `ctx.current_cron_execution()` returns the scheduled run the current code executes inside, or `None` outside cron. It works from any hook that fires during the run (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, ...) and from tool handlers. The value is a frozen `CronExecution`:

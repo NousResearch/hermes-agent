@@ -6780,8 +6780,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
 
     async def _handle_media_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming media messages, downloading images to local cache."""
-        msg = update.message
+        # The filter matches effective_message, which also covers edited_message deliveries
+        # (a file into a fresh DM topic arrives as an edited_message, #133348); read it the
+        # same way as the text/command/location handlers instead of update.message.
+        msg = self._effective_update_message(update)
         if not msg:
+            logger.debug(
+                "[Telegram] Media update %s carried no message payload",
+                getattr(update, "update_id", None),
+            )
             return
         if not self._is_user_authorized_from_message(msg):
             self._log_blocked_user(msg, level=logging.INFO, what="media from unauthorized user")

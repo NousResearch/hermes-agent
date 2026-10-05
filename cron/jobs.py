@@ -2700,7 +2700,18 @@ def clear_run_claim(job_id: str) -> bool:
 def advance_next_runs(job_ids) -> int:
     """Batch form of :func:`advance_next_run`: one load + at most one save for the whole due set;
     one-shot/unknown ids are skipped. Returns the count advanced. Persisted once at the end, so a
-    crash mid-batch re-fires the whole set on restart rather than a prefix (sub-10ms window)."""
+    crash mid-batch re-fires the whole set on restart rather than a prefix (sub-10ms window).
+
+    The persist is contained the same narrow way as the due scan's: a store that cannot be written
+    right now (ENOSPC on a full disk, read-only mount, permissions) must not abort the tick before
+    dispatch — that is the difference between one profile degrading and every job on it stopping.
+    The in-memory advance still stands, so nothing in THIS process re-fires the set, and the
+    authoritative at-most-once anchor is the run's own durable fire claim: ``claim_job_for_fire``
+    persists this same advance and clears ``pending_slot`` BEFORE any side effect, and fails closed
+    (the run never starts) while the store is still unwritable — so a contained failure here can
+    never let an unowned occurrence execute. Only ``OSError`` (the store being unwritable) is
+    contained; anything else still propagates.
+    """
     ids = set(job_ids)
     if not ids:
         return 0
@@ -2720,7 +2731,18 @@ def advance_next_runs(job_ids) -> int:
                 job["next_run_at"] = new_next
                 advanced += 1
         if advanced:
-            save_jobs(jobs)
+            try:
+                save_jobs(jobs)
+            except OSError as exc:
+                # Same containment as the due scan's persist: the advance above is already applied
+                # in memory, dispatch is what the operator needs, and the run's own fire claim
+                # re-persists that advance before it can perform any side effect. Retried by the
+                # next tick that finds the store writable again.
+                logger.warning(
+                    "cron.schedule_advance.persist_failed jobs=%d errno=%s (%s) — store could "
+                    "not be written; dispatching this tick anyway (the run's durable fire claim "
+                    "re-persists the advance before any side effect)",
+                    advanced, getattr(exc, "errno", None), exc)
         return advanced
 
 

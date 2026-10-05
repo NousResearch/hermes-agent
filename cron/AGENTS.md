@@ -26,6 +26,18 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   finds the stamp with a dead owner restores the instant ONCE (`cron/occurrences.py`), the
   executions ledger's `scheduled_instant` blocks a second fire, `cron.catch_up_missed: false`
   skips past-grace misses with a logged reason. Never drop a slot silently (#107485).
+- **A store that cannot be written degrades the profile; it never stops it.** Both persists the
+  tick performs on the way to dispatch — the due scan's repair save (`jobs.py::_get_due_jobs_locked`)
+  and the schedule advance (`jobs.py::advance_next_runs`) — contain `OSError` narrowly (log it,
+  KEEP the in-memory change, retry next tick) so a full disk / read-only mount / EACCES leaves the
+  other jobs firing instead of aborting the tick before `_submit_with_guard`. Only `OSError` is
+  contained: anything else still propagates. Containing the advance does NOT weaken at-most-once,
+  because the advance's persist is not the gate — `claim_job_for_fire` re-persists that same
+  advance and clears `pending_slot` BEFORE any side effect and fails CLOSED while the store is
+  unwritable, so a contained failure dispatches the occurrence without ever letting it EXECUTE
+  unpersisted; it runs once, after the store accepts writes. Do not "fix" this by dispatching
+  around an unwritable store: removing the fire claim's fail-closed gate is what would actually
+  break the rule.
 - Per-home tick lock `<home>/cron/.tick.lock` prevents duplicate ticks across processes for
   that profile's store; never a `~/.hermes/...` literal.
 - **The ticker binds each served profile's scope for the whole tick, including pre-loop code.**

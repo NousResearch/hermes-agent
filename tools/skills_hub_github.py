@@ -232,6 +232,10 @@ class GitHubSource(SkillSource):
         # repo -> skills.sh.json grouping map; None = fetched, no sidecar.
         self._skillsh_groupings: Dict[str, Optional[Dict[str, str]]] = {}
         self._rate_limited: bool = False
+        # ``fetch()`` otherwise returns None for both an upstream miss and a
+        # deliberately rejected bundle. The CLI needs that distinction for
+        # truthful install guidance.
+        self.last_fetch_failure: str = ""
 
     @property
     def is_rate_limited(self) -> bool:  # whether the GitHub API rate limit was hit during operations
@@ -263,6 +267,7 @@ class GitHubSource(SkillSource):
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
         """Download a skill; identifier format: "owner/repo/path/to/skill-dir"."""
+        self.last_fetch_failure = ""
         if (split := _split_repo_id(identifier)) is None:
             return None
         repo, skill_path = split
@@ -277,11 +282,13 @@ class GitHubSource(SkillSource):
             return None
         referenced = _referenced_support_paths(skill_md)
         if referenced is None:
+            self.last_fetch_failure = "rejected_unsafe_path"
             return None
         files: Dict[str, Union[str, bytes]] = {"SKILL.md": skill_md}
         if tree is not None:
             complete = self._collect_tree_files(repo, skill_dir, tree[1], pinned_ref, referenced, files)
             if complete is None:
+                self.last_fetch_failure = "rejected_unsafe_path"
                 return None
             # A bundle with a transiently failed blob fetch must not record the tree sha: the
             # update check would otherwise see "same revision" and never re-fetch the gap (#101454).

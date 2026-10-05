@@ -199,9 +199,12 @@ def install_from_quarantine(
     # from clobbering each other's staging.
     staging_root = _skills_dir().resolve() / ".hub" / ".replacement-staging"
     staging_root.mkdir(parents=True, exist_ok=True)
+    # mkdtemp guarantees a unique, non-colliding directory name; copytree then populates it.
+    # A per-attempt unique staging dir keeps concurrent same-skill installs from clobbering
+    # each other's staging.
     staging_dir = Path(tempfile.mkdtemp(prefix=f"{safe_skill_name}-", dir=staging_root))
     try:
-        shutil.copytree(str(quarantine_resolved), str(staging_dir))
+        shutil.copytree(str(quarantine_resolved), str(staging_dir), dirs_exist_ok=True)
         staged_hash = content_hash(staging_dir)
     except Exception as exc:
         # Validation/transfer of the new bundle failed — the old skill is untouched and
@@ -216,7 +219,7 @@ def install_from_quarantine(
     # OLD tree aside first, then move the staged replacement in, then remove the old tree
     # ONLY once the new one is in place — so a failure at any point leaves either the old
     # install or the new bundle (at a recovery path), never a vanished skill.
-    recovery_dir = staging_root / f".recovery-{safe_skill_name}-{content_hash(quarantine_resolved)[:8]}"
+    recovery_dir = staging_root / f".recovery-{safe_skill_name}-{content_hash(quarantine_resolved).split(':', 1)[-1][:12]}"
     legacy_recovery = staging_root / f".recovery-{safe_skill_name}"
     try:
         if install_dir.exists():
@@ -237,18 +240,21 @@ def install_from_quarantine(
     except Exception as exc:
         # Swap failed: put the old tree back if we moved it aside, and keep the staged
         # replacement at a recovery path so the operator can complete the swap manually
-        # instead of losing either version.
+        # instead of losing either version. A failed restore is re-raised — we must never
+        # report "restored" when the previous install is actually gone.
+        restored = False
         if not install_dir.exists() and recovery_dir.exists():
-            try:
-                shutil.move(str(recovery_dir), str(install_dir))
-            except Exception:
-                logger.debug("Unable to restore previous install for %s", safe_skill_name, exc_info=True)
+            shutil.move(str(recovery_dir), str(install_dir))  # may raise; surfaced below
+            restored = True
         else:
-            try:
-                if staging_dir.exists():
-                    shutil.move(str(staging_dir), str(legacy_recovery))
-            except Exception:
-                logger.debug("Unable to stage recovery copy for %s", safe_skill_name, exc_info=True)
+            if staging_dir.exists():
+                shutil.move(str(staging_dir), str(legacy_recovery))  # may raise
+        if not restored and not install_dir.exists():
+            raise RuntimeError(
+                f"skill '{safe_skill_name}' replacement FAILED and the previous installation "
+                f"could NOT be restored; staged replacement is at "
+                f"{legacy_recovery if staging_dir.exists() else recovery_dir}. Swap error: {exc}"
+            ) from exc
         raise RuntimeError(
             f"skill '{safe_skill_name}' replacement failed during install; the previous "
             f"installation is restored and the new bundle is staged at "

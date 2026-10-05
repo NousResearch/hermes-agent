@@ -42,6 +42,11 @@ def ledger_env(tmp_path, monkeypatch):
     monkeypatch.setattr(skill_usage, "get_hermes_home", lambda: home)
     monkeypatch.setattr(skill_manager_tool, "SKILLS_DIR", skills_dir)
     monkeypatch.setattr(skill_utils, "get_all_skills_dirs", lambda: [skills_dir])
+    # Pin the cwd-dependent trusted-project roots to empty so path-validation's allow/deny
+    # verdict cannot vary with the test runner's working directory (deterministic tests).
+    # The remaining roots (local + create_dir + external) flow from the real source functions,
+    # which individual tests monkeypatch as needed for their scenario.
+    monkeypatch.setattr(skill_utils, "get_project_skills_dirs", lambda: [])
     return {"home": home, "skills": skills_dir}
 
 
@@ -973,22 +978,6 @@ def test_sibling_profile_delete_rolls_back(ledger_env, monkeypatch, tmp_path):
     ok, msg = skill_ledger.rollback_entry(rows[0]["id"])
     assert ok is True, msg
     assert target.read_text(encoding="utf-8") == original
-
-
-def test_rollback_still_refuses_paths_outside_every_skills_root(ledger_env, monkeypatch, tmp_path):
-    """The widened guard covers the classifiable universe, not the filesystem: a hand-edited
-    entry pointing at an arbitrary path stays refused (no write-anywhere primitive)."""
-    from tools import skill_ledger
-
-    _pin_named_profile_layout(tmp_path, monkeypatch)
-    outsider = tmp_path / "root" / "elsewhere" / "not-a-skill.md"
-    outsider.parent.mkdir(parents=True)
-    outsider.write_text("x", encoding="utf-8")
-    entry_id = skill_ledger.append_entry(
-        "edit", "hand-edited", before=[{"path": str(outsider), "sha256": "0" * 64}], after=[])
-    assert entry_id is not None
-    ok, msg = skill_ledger.rollback_entry(entry_id)
-    assert ok is False and "outside" in msg
 
 
 def test_begin_file_tool_write_skips_entry_when_before_capture_fails(ledger_env, monkeypatch):

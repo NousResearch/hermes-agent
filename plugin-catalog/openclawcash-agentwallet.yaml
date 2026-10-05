@@ -1,12 +1,13 @@
 name: openclawcash-agentwallet
 repo: https://github.com/openclawcash/agentwalletapi-hermes
-sha: 36b39c985f077a2b0dae93c03b94b768b3ff60c0
-version: "1.28.0"
-image: https://raw.githubusercontent.com/openclawcash/agentwalletapi-hermes/bed0cce30e597ce9326a639d950058177f4fef54/assets/catalog-banner.png
+sha: 426987c4df3e638270a0c41e5da4cb09fa82f439
+version: "1.28.1"
+image: https://raw.githubusercontent.com/openclawcash/agentwalletapi-hermes/426987c4df3e638270a0c41e5da4cb09fa82f439/assets/catalog-banner.png
 subdir: agentwalletapi
 description: OpenClawCash managed EVM and Solana wallets for AI agents — thin bridge to the OpenClawCash agent API.
 maintainer: openclawcash
 tier: community
+category: tools
 docs_url: https://openclawcash.com/mcp
 platforms: []
 capabilities:
@@ -15,7 +16,6 @@ capabilities:
     - agentwalletapi_wallet_get
     - agentwalletapi_wallet_rename
     - agentwalletapi_wallet_create
-    - agentwalletapi_wallet_import
     - agentwalletapi_transfer_send
   provides_hooks: []
   provides_middleware: []

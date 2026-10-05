@@ -457,8 +457,11 @@ def _marker_only_restart_obsolete() -> bool:
             return False  # stale / down / unknown-identity row still owes the restart
     if owed is not None and not owed - {_UNMAPPED_GATEWAY} <= covered:
         return False  # A gateway this marker owns is absent (down) or unidentifiable.
-    if owed and _UNMAPPED_GATEWAY in owed and all(row_is_external(row) for row in fleet):
-        return False  # another checkout's gateway is no successor for the one the update stopped
+    if owed and _UNMAPPED_GATEWAY in owed and not (_fleet_covered_gateways(
+            [row for row in fleet if not row_is_external(row)]) or set()) - owed:
+        # An unmapped stopped gateway has no identity to match, so only a local gateway that no
+        # mapped owed one explains can be its successor; another checkout's gateway never is.
+        return False
     _clear_fleet_restart_pending_marker()
     logger.debug(
         "Fleet-restart-pending marker discharged: %d gateway(s) already serve %s",

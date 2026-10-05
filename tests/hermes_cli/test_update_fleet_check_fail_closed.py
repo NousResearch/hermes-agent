@@ -173,3 +173,26 @@ def test_unmapped_stop_debt_survives_startup_until_a_current_gateway_runs(monkey
     fleet_rows.append({"profile": "default", "state": "current", "code_sha": "head"})  # `hermes gateway run`
     assert fleet._update_owes_fleet_restart(receipt={}, pending_manual=[]) is False
     assert not fleet._fleet_restart_obligation_armed()
+
+
+def test_unmapped_stop_debt_is_not_settled_by_the_mapped_gateways_restart(monkeypatch, tmp_path):
+    # The inventory owes `default` AND an unmapped gateway: `default` coming back current is the
+    # successor of `default`, not of the unmapped one, so the debt stays until a further local
+    # gateway (the unmapped one's successor, whatever profile it names) runs the checkout.
+    from hermes_cli import update_cmd_fleet as fleet, update_host_obligation as host, update_receipt
+
+    monkeypatch.setattr(host, "host_obligation_path", lambda: tmp_path / "host-update-restart.json")
+    monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "head")
+    fleet._write_fleet_restart_pending_marker(expected_sha="head", runtimes=[
+        {"kind": "gateway", "profile": "default", "pid": 7},
+        {"kind": "gateway", "profile": None, "pid": 101, "stopped_unmapped": True},
+    ])
+    fleet_rows = [{"profile": "default", "state": "current", "code_sha": "head", "pid": 8}]
+    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **kw: list(fleet_rows))
+
+    assert fleet._update_owes_fleet_restart(receipt={}, pending_manual=[]) is True
+    assert fleet._fleet_restart_obligation_armed()
+
+    fleet_rows.append({"profile": "work", "state": "current", "code_sha": "head", "pid": 9})
+    assert fleet._update_owes_fleet_restart(receipt={}, pending_manual=[]) is False
+    assert not fleet._fleet_restart_obligation_armed()

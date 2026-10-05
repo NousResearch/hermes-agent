@@ -50,9 +50,14 @@ class _Browser:
     # PATH names tried by chromium_executable() when they differ from linux_bins
     # (channel/alias binaries are launch candidates only).
     linux_exec: tuple[str, ...] | None = None
+    # False for builds that serve --remote-debugging-port but never write the
+    # DevToolsActivePort file (Dia). Real-profile launch then claims an explicit free
+    # port and probes the HTTP endpoint instead of watching the file. Default True keeps
+    # every other browser on the file-driven discovery path.
+    writes_devtools_port: bool = True
 
 
-# Launch-candidate order (chrome, chromium, brave, brave-origin, edge) is the tuple
+# Launch-candidate order (chrome, dia, chromium, brave, brave-origin, edge) is the tuple
 # order. ``brave-origin`` is Brave's standalone paid build: same Chromium core but a
 # fully distinct install identity (Brave-Origin product path, ``BraveOHTML`` ProgId,
 # ``com.brave.Browser.origin`` bundle id) that installs side-by-side with Brave. Its
@@ -69,6 +74,15 @@ _BROWSERS = (
         ("google-chrome", "google-chrome-stable"),
         ("/opt/google/chrome/chrome", "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"),
         "google-chrome"),
+    # Dia (The Browser Company) — Chromium-based, macOS-only. Its profile nests one level
+    # deeper than the Chromium standard: the real user-data-dir is ``Dia/User Data``, not
+    # the ``Dia`` product dir itself (which also holds AgentServer/, ToolPromptDescriptors/).
+    # Bundle id ``company.thebrowser.dia`` is a distinct product identity from Arc
+    # (``company.thebrowser.Browser``) and must never be conflated with it.
+    _Browser(
+        "dia", "/Applications/Dia.app/Contents/MacOS/Dia",
+        ("Dia", "User Data"), (), (), (), (), (),
+        "", writes_devtools_port=False),
     _Browser(
         "chromium", "/Applications/Chromium.app/Contents/MacOS/Chromium",
         ("Chromium",), ("chromium.exe", "chromium"),
@@ -163,7 +177,10 @@ _LINUX_SNAP_PROFILE_PARTS = {
 _DARWIN_BUNDLE_MAP = (
     ("com.google.chrome", "chrome"), ("com.microsoft.edgemac", "edge"),
     ("com.brave.browser", "brave"), ("com.brave.browser.origin", "brave-origin"),
-    ("org.chromium.chromium", "chromium"))
+    ("org.chromium.chromium", "chromium"),
+    # Dia (The Browser Company). Exact match, so it never swallows Arc's
+    # ``company.thebrowser.Browser`` — Arc is not supported and must fail closed.
+    ("company.thebrowser.dia", "dia"))
 
 _DARWIN_CHANNEL_BUNDLES = (
     "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",
@@ -189,8 +206,12 @@ def real_profile_data_dir(browser: str, system: str | None = None) -> str | None
     if system == "Darwin":
         return posixpath.join(home, "Library", "Application Support", *b.mac_support)
     if system == "Windows":
+        if not b.win_profile:
+            return None  # no build for this platform: fail closed, never a bare parent dir
         local = os.environ.get("LOCALAPPDATA") or ntpath.join(home, "AppData", "Local")
         return ntpath.join(local, *b.win_profile)
+    if not b.linux_config:
+        return None  # ditto
     config = os.environ.get("XDG_CONFIG_HOME") or posixpath.join(home, ".config")
     linux_parts = b.linux_config.split("/")
     candidates = [posixpath.join(config, *linux_parts)]
@@ -204,6 +225,22 @@ def real_profile_data_dir(browser: str, system: str | None = None) -> str | None
 
 def _first_present(paths) -> str | None:
     return next((p for p in paths if p and os.path.isfile(p)), None)
+
+
+def browser_writes_devtools_port(browser: str | None) -> bool:
+    """False when ``browser`` serves CDP on an explicit port but never writes the
+    ``DevToolsActivePort`` bootstrap file (Dia). Unknown/None defaults True, keeping the
+    file-driven discovery path for every build that honours it."""
+    b = _BROWSER_BY_KEY.get(browser or "")
+    return True if b is None else b.writes_devtools_port
+
+
+def free_tcp_port() -> int:
+    """An unused loopback TCP port. Inherently racy, but the caller confirms the endpoint
+    answers on it before trusting it, and a lost race fails closed rather than mis-attaching."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
 
 
 def chromium_executable(browser: str, system: str | None = None) -> str | None:

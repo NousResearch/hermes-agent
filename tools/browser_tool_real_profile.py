@@ -159,11 +159,12 @@ def _real_profile_unsupported_reason(browser) -> Optional[str]:
     from hermes_cli.browser_connect import UNSUPPORTED_CHANNEL
     if browser is None:
         return (_RP + "your default browser is not a supported Chromium browser (Chrome, Edge, Brave, "
-                "Brave Origin, Chromium). Real-profile browsing requires a Chromium default; set one or turn the toggle off.")
+                "Brave Origin, Chromium, Dia). Real-profile browsing requires a Chromium default; "
+                "set one or turn the toggle off.")
     if browser == UNSUPPORTED_CHANNEL:
         return (_RP + "your default browser is a pre-release Chromium channel (Beta / Dev / Canary), which "
                 "real-profile browsing does not support. Set your default to a "
-                "stable Chrome / Edge / Brave / Brave Origin / Chromium, or turn the toggle off.")
+                "stable Chrome / Edge / Brave / Brave Origin / Chromium / Dia, or turn the toggle off.")
     return None
 
 
@@ -177,7 +178,8 @@ def _real_profile_snapshot_error(err: str) -> str:
     return f"{_RP}{err}"
 
 
-def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Optional[int], Optional[str]]:
+def _launch_real_profile_chrome(real_binary: str, copy_dir: str,
+                                browser: str | None = None) -> Tuple[Optional[int], Optional[str]]:
     """Launch the user's REAL browser binary on the profile COPY; return (debug_port, error).
 
     agent-browser's own launch force-adds --use-mock-keychain / --password-store=basic, which makes
@@ -192,7 +194,17 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Option
         os.unlink(os.path.join(copy_dir, "DevToolsActivePort"))  # stale port confuses reuse probes
     except OSError:
         pass
-    chrome_argv = [real_binary, f"--user-data-dir={copy_dir}", *_REAL_PROFILE_CHROME_FLAGS]
+    from hermes_cli.browser_connect import browser_writes_devtools_port, free_tcp_port
+    # Dia honours --remote-debugging-port but never writes DevToolsActivePort (verified),
+    # so the file-driven bootstrap can never succeed for it. Claim a free port and confirm
+    # the endpoint answers there instead. Every other build keeps the file-driven path.
+    probe_by_http = not browser_writes_devtools_port(browser)
+    flags: list[str] = list(_REAL_PROFILE_CHROME_FLAGS)
+    chosen_port: Optional[int] = None
+    if probe_by_http:
+        chosen_port = free_tcp_port()
+        flags[0] = f"--remote-debugging-port={chosen_port}"
+    chrome_argv = [real_binary, f"--user-data-dir={copy_dir}", *flags]
     _session._ensure_screen_for_headed_chromium()
     browser_env = _bt._build_browser_env()  # carries the Bot Desktop DISPLAY when one is running
     _has_display = bool(browser_env.get("DISPLAY") or browser_env.get("WAYLAND_DISPLAY"))
@@ -207,9 +219,13 @@ def _launch_real_profile_chrome(real_binary: str, copy_dir: str) -> Tuple[Option
 
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
-        line = _read_devtools_port(copy_dir) or ""
-        if line.isdigit():
-            return int(line), None
+        if probe_by_http:
+            if chosen_port is not None and _cdp_http_ready(f"http://127.0.0.1:{chosen_port}"):
+                return chosen_port, None
+        else:
+            line = _read_devtools_port(copy_dir) or ""
+            if line.isdigit():
+                return int(line), None
         if chrome_proc.poll() is not None:
             _terminate_real_profile_chrome()
             return None, _RP + "Chrome exited during startup (another instance may hold the profile copy)."
@@ -331,7 +347,7 @@ def _real_profile_cdp() -> tuple:
         real_binary = chromium_executable(browser)
         if real_binary is None:
             return None, f"{_RP}the real browser binary for '{browser}' could not be found. Reinstall it or turn the toggle off."
-        port, err = _launch_real_profile_chrome(real_binary, copy_dir)
+        port, err = _launch_real_profile_chrome(real_binary, copy_dir, browser)
         if port is None:
             return None, err
         cdp, err = _attach_agent_browser_to_real_profile(port, copy_dir)

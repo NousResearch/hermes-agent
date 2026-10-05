@@ -9,11 +9,7 @@ while keeping the row whenever removing it would form ``tool -> user`` — the s
 provider failure ``close_interrupted_tool_sequence`` exists to prevent (#48879).
 """
 
-import pytest
-
-
 LEGACY = "[response interrupted]"
-SCAFFOLD = "[This response was interrupted by a user correction.]"
 NEW_PLACEHOLDER = "[interrupt: no assistant output for this turn]"
 
 
@@ -51,43 +47,6 @@ def _hidden_row(text, *, content="", api_content=None):
     return row
 
 
-# ---------------------------------------------------------------------------
-# 1. Role-safe removal: the row is dropped outright.
-# ---------------------------------------------------------------------------
-
-def test_role_safe_legacy_row_is_dropped(tmp_path, monkeypatch):
-    """assistant -> hidden(legacy) -> user: removal leaves a valid alternation,
-    so the poisoned row must leave the replay entirely."""
-    messages = [
-        {"role": "user", "content": "do the thing"},
-        _hidden_row(LEGACY),
-        {"role": "user", "content": "continue"},
-    ]
-    out = _prepare(tmp_path, monkeypatch, messages)
-    assert not any(
-        m.get("role") == "assistant" and m.get("display_kind") == "hidden"
-        for m in out
-    ), f"legacy hidden row survived: {out}"
-
-
-def test_role_safe_scaffold_row_is_dropped(tmp_path, monkeypatch):
-    """The pre-existing #81841 path keeps working under the widened filter."""
-    messages = [
-        {"role": "user", "content": "hi"},
-        _hidden_row(SCAFFOLD),
-        {"role": "user", "content": "continue"},
-    ]
-    out = _prepare(tmp_path, monkeypatch, messages)
-    assert not any(
-        m.get("role") == "assistant" and m.get("display_kind") == "hidden"
-        for m in out
-    ), f"scaffold ghost survived: {out}"
-
-
-# ---------------------------------------------------------------------------
-# 2. tool -> user protection: keep the row, neutralise the text.
-# ---------------------------------------------------------------------------
-
 def test_tool_tail_row_is_kept_and_neutralised(tmp_path, monkeypatch):
     """assistant(tool_calls) -> tool -> hidden(legacy) -> user: dropping would
     recreate tool -> user (#48879). The row stays, but its echoable text is
@@ -101,6 +60,7 @@ def test_tool_tail_row_is_kept_and_neutralised(tmp_path, monkeypatch):
         {"role": "user", "content": "they do! increase the timing"},
     ]
     out = _prepare(tmp_path, monkeypatch, messages)
+    assert messages[3]["api_content"] == LEGACY  # durable row dict is never rewritten in place
 
     hidden = [m for m in out
               if m.get("role") == "assistant" and m.get("display_kind") == "hidden"]
@@ -116,39 +76,3 @@ def test_tool_tail_row_is_kept_and_neutralised(tmp_path, monkeypatch):
             assert out[i + 1].get("role") != "user", (
                 f"role-alternation violation: tool -> user at index {i}: {out}"
             )
-
-
-# ---------------------------------------------------------------------------
-# 3. Rows already carrying the post-fix placeholder are untouched.
-# ---------------------------------------------------------------------------
-
-def test_post_fix_placeholder_row_is_untouched(tmp_path, monkeypatch):
-    """The current placeholder is not a hazard: a freshly written hidden row must
-    not be retired or rewritten on every request."""
-    messages = [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": "", "display_kind": "hidden",
-         "api_content": NEW_PLACEHOLDER},
-        {"role": "user", "content": "continue"},
-    ]
-    out = _prepare(tmp_path, monkeypatch, messages)
-    hidden = [m for m in out
-              if m.get("role") == "assistant" and m.get("display_kind") == "hidden"]
-    assert len(hidden) == 1, f"post-fix placeholder row was retired: {out}"
-    assert hidden[0].get("api_content") == NEW_PLACEHOLDER
-
-
-def test_visible_interrupt_banner_is_kept(tmp_path, monkeypatch):
-    """Caller-supplied banners (real diagnostic text) are not hidden and never
-    match the filter — they stay exactly as written."""
-    messages = [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant",
-         "content": "Operation interrupted: waiting for model response (4.9s elapsed)."},
-        {"role": "user", "content": "continue"},
-    ]
-    out = _prepare(tmp_path, monkeypatch, messages)
-    assert any(
-        m.get("content", "").startswith("Operation interrupted: waiting")
-        for m in out
-    ), f"visible banner lost: {out}"

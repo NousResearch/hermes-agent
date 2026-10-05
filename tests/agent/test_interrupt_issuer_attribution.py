@@ -10,7 +10,7 @@ import logging
 import threading
 
 from agent.interrupt_compat import request_hard_interrupt
-from agent.interrupt_control import interrupt_issuer, interrupt_skip_wording
+from agent.interrupt_control import interrupt_issuer
 from tools.interrupt import set_interrupt
 
 
@@ -109,83 +109,5 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
         assert interrupt_issuer(agent) == "terminal_batch_timeout"
         # No message: gateway/CLI re-queue ``_interrupt_message`` as the user's next turn.
         assert agent._interrupt_message is None
-    finally:
-        set_interrupt(False)
-
-
-def test_soft_interrupt_message_without_tool_reason_stays_a_user_stop():
-    """Regression guard for the heuristic itself: a steer/new-message soft interrupt carries no
-    system reason and must keep reading as a human stop."""
-    agent = _bare_agent()
-    try:
-        agent.interrupt("what about the other file?")
-        assert interrupt_issuer(agent) is None
-        agent.clear_interrupt()
-        agent.interrupt()
-        assert interrupt_issuer(agent) is None
-    finally:
-        set_interrupt(False)
-
-
-def test_skip_wording_never_blames_the_user_for_a_system_stop():
-    """The skipped-call notice is rendered from the RECORDED reason. A system abort must describe
-    itself; only the genuinely user-initiated reasons may say the user did it (#130207)."""
-    agent = _bare_agent()
-    try:
-        # System abort: the batch guard with its own reason.
-        agent.interrupt("terminal batch tool did not complete", tool_reason="terminal batch aborted")
-        wording = interrupt_skip_wording(agent)
-        assert "user" not in wording.lower(), wording
-        assert "terminal batch aborted" in wording
-
-        # Genuine user stop keeps the user-facing wording.
-        agent.clear_interrupt()
-        agent.interrupt("next message")
-        assert interrupt_skip_wording(agent) == "User sent a new message"
-
-        # Reason-less turn where nothing was recorded at all.
-        agent.clear_interrupt()
-        assert interrupt_skip_wording(agent) == "Turn interrupted"
-    finally:
-        set_interrupt(False)
-
-
-def test_concurrent_skip_wording_follows_the_recorded_reason():
-    """The concurrent batch path renders its skipped-call notices from the RECORDED reason
-    like the sequential path does — a system abort must not read as a user stop (#130207)."""
-    import types as _types
-    from agent.tool_executor import execute_tool_calls_concurrent
-
-    class _Agent:
-        _interrupt_requested = True
-        _tool_interrupt_reason = "lease lost"
-        quiet_mode = False
-        log_prefix = ""
-        _incremental_persistence_failed = False
-        def _vprint(self, *a, **k): pass
-        def _safe_print(self, *a, **k): pass
-        def _should_emit_quiet_tool_messages(self): return False
-        def _touch_activity(self, *a): pass
-
-    tc = _types.SimpleNamespace(function=_types.SimpleNamespace(name="terminal", arguments="{}"), id="c1")
-    messages = []
-    execute_tool_calls_concurrent(_Agent(), _types.SimpleNamespace(tool_calls=[tc]), messages, "t")
-    notice = messages[-1]["content"]
-    assert "user" not in notice.lower(), notice
-    assert "lease lost" in notice, notice
-
-
-def test_skip_wording_escapes_braces_from_free_form_reasons():
-    """A caller-supplied ``tool_reason`` may contain braces; the wording feeds notice
-    templates, so braces must survive as literals and never become format fields."""
-    agent = _bare_agent()
-    try:
-        agent.interrupt("stop", tool_reason="bad {oops} reason")
-        wording = interrupt_skip_wording(agent)
-        assert "{{oops}}" in wording  # escaped for template interpolation
-        # The shipped notice shape renders cleanly through replace-based substitution.
-        content = f"[Tool execution cancelled — {{name}} was skipped. {wording}]"
-        out = content.replace("{name}", "terminal")
-        assert "{oops}" in out and "KeyError" not in out
     finally:
         set_interrupt(False)

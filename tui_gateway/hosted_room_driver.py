@@ -275,11 +275,9 @@ class HostedRoomRuntime:
             return self._requeue(state.requeue_deferred_task, task, lease, room_id)
         # Resolving the peer transport replays this generation under its own idempotency key and
         # raises, leaving the turn deferred, while the peer is unreachable. Once it succeeds the
-        # peer owns this generation: settle it from the peer's receipt or keep observing it.
+        # peer owns this generation (the replay may have just started it): settle it from the
+        # peer's receipt, or reopen it so the worker watches it until the run ends.
         inspection = self._inspect_recovery_session(binding, task)
-        if inspection.active:
-            raise state.InvalidTaskTransitionError(
-                "cannot retry while the original task attempt is still active")
         reopened = self._fenced(state.reopen_deferred_task, None, task, lease)
         if inspection.terminal is not None:
             return self._resolve_indeterminate(binding, reopened, lease, inspection.terminal)
@@ -868,7 +866,9 @@ class HostedRoomRuntime:
                     binding, task, lease, inspection.terminal, publish=False)
                 inspected.discard(attempt_key)
                 continue
-            if self.clock() < deadline:
+            if self.clock() < deadline or inspection.active:
+                # A peer run that is still going keeps the room waiting, as a local one does:
+                # deferring it would drop its reply.
                 self._set_blocked(binding.room_id, True)
                 return True
             deferred = self._fenced(

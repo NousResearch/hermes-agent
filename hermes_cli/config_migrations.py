@@ -224,38 +224,43 @@ def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
         config, results, quiet, None, "  ✓ Migrated legacy stt.model to provider-specific config")
 
 
+def _fold_display_overrides(config: Dict[str, Any]) -> bool:
+    display = _dict_at(config, "display")
+    if "tool_progress_overrides" not in display:
+        return False
+    old_overrides = display.pop("tool_progress_overrides")
+    if isinstance(old_overrides, dict) and old_overrides:
+        platforms = _dict_at(display, "platforms")
+        for plat, mode in old_overrides.items():
+            target = platforms.get(plat)
+            if not isinstance(target, dict):  # platforms.<plat>: 5 — replace, don't index a scalar
+                target = platforms[plat] = {}
+            if target.get("tool_progress") is None:
+                target["tool_progress"] = mode
+        display["platforms"] = platforms
+    return True
+
+
 def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
     # 15 → 16: display.tool_progress_overrides → display.platforms.<plat>.tool_progress.
     config = read_raw_config()
-    display = _dict_at(config, "display")
-    old_overrides = display.get("tool_progress_overrides")
-    if not (isinstance(old_overrides, dict) and old_overrides):
+    if not _fold_display_overrides(config):
         return
-    platforms = _dict_at(display, "platforms")
-    for plat, mode in old_overrides.items():
-        target = platforms.get(plat)
-        if not isinstance(target, dict):  # platforms.<plat>: 5 — replace, don't index a scalar
-            target = platforms[plat] = {}
-        if "tool_progress" not in target:
-            target["tool_progress"] = mode
-    display["platforms"] = platforms
-    config["display"] = display
-    migrated = ", ".join(f"{p}={m}" for p, m in old_overrides.items())
     _commit(
         config, results, quiet,
         "display.platforms (migrated from tool_progress_overrides)",
-        f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
+        "  ✓ Retired display.tool_progress_overrides")
 
 
-def _migrate_to_17(results: Dict[str, Any], quiet: bool) -> None:
-    # 16 → 17: remove legacy compression.summary_* keys; non-empty, non-default values move to
-    # auxiliary.compression without overriding an explicit (non-"auto") aux value.
-    config = read_raw_config()
+def _fold_compression_summary(config: Dict[str, Any]) -> bool:
     comp = config.get("compression", {})
     if not isinstance(comp, dict):
-        return
-    legacy = {k: comp.pop(f"summary_{k}", None) for k in ("model", "provider", "base_url")}
-    migrated_keys = []
+        return False
+    names = ("model", "provider", "base_url")
+    had_legacy = any(f"summary_{k}" in comp for k in names)
+    if not had_legacy:
+        return False
+    legacy = {k: comp.pop(f"summary_{k}", None) for k in names}
     for k, raw in legacy.items():
         val = str(raw).strip() if raw else ""
         if not val or (k == "provider" and val == "auto"):
@@ -266,17 +271,16 @@ def _migrate_to_17(results: Dict[str, Any], quiet: bool) -> None:
         aux_comp = aux.get("compression")
         if not isinstance(aux_comp, dict):
             aux_comp = aux["compression"] = {}
-        cur = aux_comp.get(k)
-        if not cur or (k == "provider" and cur == "auto"):
+        if k not in aux_comp:
             aux_comp[k] = val
-            migrated_keys.append(f"{k}={raw}")
-    if migrated_keys or any(v is not None for v in legacy.values()):
-        config["compression"] = comp
-        message = (
-            "  ✓ Migrated compression.summary_* → auxiliary.compression: "
-            f"{', '.join(migrated_keys)}"
-            if migrated_keys else "  ✓ Removed unused compression.summary_* keys")
-        _commit(config, results, quiet, None, message)
+    return True
+
+
+def _migrate_to_17(results: Dict[str, Any], quiet: bool) -> None:
+    # 16 → 17: retire compression.summary_* without replacing an explicit auxiliary value.
+    config = read_raw_config()
+    if _fold_compression_summary(config):
+        _commit(config, results, quiet, None, "  ✓ Retired compression.summary_* keys")
 
 
 def _installed_user_plugins(disabled: set) -> List[str]:
@@ -816,6 +820,11 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (49, _migrate_to_49),
 )
 
+#: These two steps also repair already-stamped configs: older runs copied display overrides
+#: without removing the legacy key, or stamped a null compression key without persisting its
+#: removal. Both steps are idempotent once the obsolete keys are gone.
+REAPPLY_LEGACY_KEY_STEPS = frozenset({16, 17})
+
 #: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
 #: toolset, the plugin-era SOUL.md section): they carry its setting to where the runtime reads it
 #: or drop what nothing reads, which is right however old the file is. A config.yaml with no
@@ -830,14 +839,15 @@ LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46})
 
 def run_migrations(
     current_ver: int, results: Dict[str, Any], quiet: bool, *, unversioned: bool = False) -> None:
-    """Apply every registered migration whose target version exceeds *current_ver*; a config
-    with no ``_config_version`` (*unversioned*) gets only :data:`LEGACY_KEY_STEPS`.
+    """Apply pending steps and repairs for already-stamped legacy keys; a config with no
+    ``_config_version`` (*unversioned*) gets only :data:`LEGACY_KEY_STEPS`.
 
     *current_ver* is the on-disk schema version captured ONCE before any step runs and does not
-    advance between steps — each step is gated on the same initial value.
+    advance between steps — pending steps use the same initial version gate.
     """
     for target_ver, migration_fn in MIGRATIONS:
-        if current_ver < target_ver and (target_ver in LEGACY_KEY_STEPS or not unversioned):
+        if ((current_ver < target_ver or target_ver in REAPPLY_LEGACY_KEY_STEPS)
+                and (target_ver in LEGACY_KEY_STEPS or not unversioned)):
             try:
                 migration_fn(results, quiet)
             except Exception as exc:

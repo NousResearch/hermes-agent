@@ -1798,22 +1798,24 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     every reader, present and future, sees a populated ``default`` and the stale alias is migrated out of
     config.yaml on the next save. Precedence: ``default`` > ``model`` > ``name`` (never overrides an
     explicit ``default``, so existing configs are unaffected).
+    Empty root-level aliases are retired without creating an empty ``model`` section; readers
+    treat their values the same as absent keys.
     """
     model_in = config.get("model")
     model_provider = model_in.get("provider") if isinstance(model_in, dict) else None
+    # Presence, not value, opens the gate for the keys retired below: a save keeps an explicit
+    # null, so a null legacy key would otherwise outlive every load/save.
     needs_model_work = (model_provider is not None and not isinstance(model_provider, str)) or (
         isinstance(model_in, dict) and (
-            model_in.get("api_base")
+            "api_base" in model_in
             or model_in.get("model") or model_in.get("name")
             or any(isinstance(model_in.get(k), dict) for k in ("default", "model", "name"))))
-    has_root = any(config.get(k) for k in ("provider", "base_url", "context_length", "api_base"))
+    has_root = any(k in config for k in ("provider", "base_url", "context_length", "api_base"))
     if not has_root and not needs_model_work:
         return config
 
     config = dict(config)
-    model = config.get("model")
-    model = dict(model) if isinstance(model, dict) else {"default": model} if model else {}
-    config["model"] = model
+    model = dict(model_in) if isinstance(model_in, dict) else {"default": model_in} if model_in else {}
 
     # Flatten ``{provider: <p>, model: <m>}``. The nested provider wins over the merged default
     # ``"auto"`` (which runtime resolution treats as authoritative) but never over a configured one.
@@ -1857,6 +1859,8 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
         model.pop("model", None)
         model.pop("name", None)
 
+    if model or model_in is not None:  # retiring a null-only root key must not add an empty ``model``
+        config["model"] = model
     return config
 
 
@@ -1874,8 +1878,19 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _canonicalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The load/save normalization pipeline: max_turns relocation, then model-section canon."""
-    return _normalize_root_model_keys(_normalize_max_turns_config(config))
+    """Normalize legacy aliases for readers and the next save."""
+    from hermes_cli.config_migrations import _fold_compression_summary, _fold_display_overrides
+
+    normalized = _normalize_max_turns_config(config)
+    display = normalized.get("display")
+    compression = normalized.get("compression")
+    if ((isinstance(display, dict) and "tool_progress_overrides" in display)
+            or (isinstance(compression, dict) and any(
+                f"summary_{key}" in compression for key in ("model", "provider", "base_url")))):
+        normalized = copy.deepcopy(normalized)
+    _fold_display_overrides(normalized)
+    _fold_compression_summary(normalized)
+    return _normalize_root_model_keys(normalized)
 
 
 # Sentinel for an unlimited turn budget. ``sys.maxsize`` survives the str->int round-trip through
@@ -2398,7 +2413,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     user_config["agent"] = agent_user_config
                     user_config.pop("max_turns", None)
 
-                config = _deep_merge(config, user_config)
+                # Fold legacy values before defaults supply auxiliary.compression.provider=auto.
+                config = _deep_merge(config, _canonicalize_config(user_config))
                 # A copy of the file that just parsed is what a FRESH process falls back to when the
                 # next edit breaks the YAML (see _last_known_good_fallback). backup_config() skips
                 # byte-identical repeats and keeps a bounded count, so steady-state loads cost one stat.

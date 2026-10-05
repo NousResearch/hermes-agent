@@ -913,7 +913,8 @@ class TestConfigSupportFloor:
     # ── Parity fixtures ──────────────────────────────────────────────
     # Expected outputs captured by running migrate_config from origin/main
     # (commit 28524adb0e, pre-floor) in a subprocess against these exact
-    # fixtures. The floor must not change behavior for v12+ configs.
+    # fixtures, apart from the retired display key. The floor must not change
+    # the other behavior for v12+ configs.
 
     _V12_FIXTURE = {
         "_config_version": 12,
@@ -938,7 +939,6 @@ class TestConfigSupportFloor:
         "delegation": {"max_concurrent_children": 8},
         "display": {
             "platforms": {"telegram": {"tool_progress": "verbose"}},
-            "tool_progress_overrides": {"telegram": "verbose"},
         },
         "memory": {"write_approval": True},
         "model": {"default": "openai/gpt-5.4", "provider": "openrouter"},

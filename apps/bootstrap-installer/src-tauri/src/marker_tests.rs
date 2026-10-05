@@ -466,6 +466,26 @@ fn pid_is_alive_never_interprets_unsigned_pids_as_groups() {
     assert!(!pid_is_alive(u32::MAX - std::process::id() + 1));
 }
 
+#[cfg(windows)]
+#[test]
+fn pid_is_alive_false_for_an_exited_process_whose_exit_code_is_259() {
+    // 259 is STILL_ACTIVE: an exit-code probe reads this exited child as running for as long
+    // as our `Child` keeps its process object open.
+    let mut exited = std::process::Command::new("cmd")
+        .args(["/C", "exit 259"])
+        .spawn()
+        .unwrap();
+    assert_eq!(exited.wait().unwrap().code(), Some(259));
+    assert!(!pid_is_alive(exited.id()), "an exited process is dead");
+    let mut running = std::process::Command::new("cmd")
+        .args(["/C", "ping -n 30 127.0.0.1 >NUL"])
+        .spawn()
+        .unwrap();
+    assert!(pid_is_alive(running.id()), "a running process is alive");
+    let _ = running.kill();
+    let _ = running.wait();
+}
+
 #[test]
 fn pid_is_alive_false_for_pid_zero() {
     // pid 0 means the caller's process GROUP to kill(2), so kill(0, 0)

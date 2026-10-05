@@ -787,9 +787,9 @@ fn liveness_from_open_error(err: u32) -> bool {
 /// True when a process with `pid` currently exists.
 #[cfg(windows)]
 fn pid_is_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, STILL_ACTIVE};
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, WAIT_TIMEOUT};
     use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
     };
 
     // pid 0 is the System Idle Process, never an updater (Python: `pid <= 0` is dead).
@@ -797,14 +797,17 @@ fn pid_is_alive(pid: u32) -> bool {
         return false;
     }
     unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        // A process object is signalled once it exits. Never `GetExitCodeProcess ==
+        // STILL_ACTIVE`: a process that exited with code 259 reads "running" for as long as
+        // any handle keeps its object, and its creation time still matches the v2 marker.
+        // Same probe as `hermes_cli/_early_recovery._pid_is_running`.
+        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
         if handle.is_null() {
             return liveness_from_open_error(GetLastError());
         }
-        let mut code: u32 = 0;
-        let ok = GetExitCodeProcess(handle, &mut code);
+        let alive = WaitForSingleObject(handle, 0) == WAIT_TIMEOUT;
         CloseHandle(handle);
-        ok != 0 && code == STILL_ACTIVE as u32
+        alive
     }
 }
 

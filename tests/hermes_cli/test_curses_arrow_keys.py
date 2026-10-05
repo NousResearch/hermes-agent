@@ -71,7 +71,9 @@ class ExhaustingStdscr(FakeStdscr):
 
     def getch(self):
         if not self.keys:
-            raise AssertionError("menu requested another key after enhanced Enter")
+            raise AssertionError(
+                "menu kept polling for input after its scripted keys were consumed"
+            )
         return self.keys.pop(0)
 
 
@@ -167,7 +169,7 @@ def test_enhanced_control_keys_dispatch_while_search_is_active(
     class NavigationDispatched(Exception):
         pass
 
-    fake = FakeStdscr([ord("/"), ord("g"), *enhanced_keys])
+    fake = ExhaustingStdscr([ord("/"), ord("g"), *enhanced_keys])
     events = []
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(curses, "wrapper", lambda draw: draw(fake))
@@ -225,7 +227,7 @@ def test_numbered_fallback_ctrl_c_dispatches_scoped_cancel(monkeypatch):
 
 
 def test_navigation_handler_programming_error_is_not_hidden_by_fallback(monkeypatch):
-    fake = FakeStdscr([13])
+    fake = ExhaustingStdscr([13])
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(curses, "wrapper", lambda draw: draw(fake))
     monkeypatch.setattr(curses, "curs_set", lambda _value: None)
@@ -247,10 +249,10 @@ def test_navigation_handler_programming_error_is_not_hidden_by_fallback(monkeypa
 def test_standalone_model_flow_renders_previous_and_reopens_provider(monkeypatch):
     from hermes_cli import main as main_mod
 
-    provider_screen = FakeStdscr([13])
-    model_back_screen = FakeStdscr([curses.KEY_LEFT])
-    provider_reselect_screen = FakeStdscr([13])
-    model_select_screen = FakeStdscr([13])
+    provider_screen = ExhaustingStdscr([13])
+    model_back_screen = ExhaustingStdscr([curses.KEY_LEFT])
+    provider_reselect_screen = ExhaustingStdscr([13])
+    model_select_screen = ExhaustingStdscr([13])
     screens = [
         provider_screen,
         model_back_screen,
@@ -298,7 +300,7 @@ def test_radiolist_dispatches_contextual_back_navigation(monkeypatch):
         pass
 
     events = []
-    fake = FakeStdscr([curses.KEY_LEFT])
+    fake = ExhaustingStdscr([curses.KEY_LEFT])
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(curses, "wrapper", lambda draw: draw(fake))
     monkeypatch.setattr(curses, "curs_set", lambda _value: None)
@@ -325,6 +327,8 @@ def test_radiolist_dispatches_contextual_escape_cancellation(monkeypatch):
     class Cancelled(BaseException):
         pass
 
+    # FakeStdscr (not ExhaustingStdscr): lone-ESC detection legitimately polls one
+    # more key and expects the -1 "no continuation byte" answer here.
     fake = FakeStdscr([27])
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(curses, "wrapper", lambda draw: draw(fake))

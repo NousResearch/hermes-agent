@@ -78,8 +78,6 @@ class TestEnvKeysMetadata:
         assert _manifest_env_keys(manifest) == ["X_TOKEN", "X_PLAIN", "X_URL"]
 
     def test_optional_env_parsed_from_manifest_data(self, tmp_path):
-        import yaml
-
         from hermes_cli.plugins_manifest import parse_manifest_file
 
         plugin_dir = tmp_path / "y-platform"

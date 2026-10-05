@@ -38,6 +38,7 @@ _HERMES_CORE_TOOLS = [
     "computer_use",
     # Service-gated connector account status and authorization links.
     "manage_connections",
+    "react_to_message",
 ]
 
 # Webhook payloads are untrusted third-party content: no file/system execution.

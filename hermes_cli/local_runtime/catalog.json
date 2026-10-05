@@ -208,6 +208,45 @@
           "validated": true
         }
       ]
+    },
+    {
+      "id": "tiel-coder-35b-a3b-mtp",
+      "display_name": "Tiel-Coder 35B-A3B (MTP)",
+      "description": "Tiel-Coder 35B-A3B with a grafted multi-token-prediction head for speculative decoding; 256K trained context, sees images. The MTP head is dead weight without --spec-type draft-mtp",
+      "repo": "peculiar-ragdoll/Tiel-Coder-35B-A3B-GGUF-MTP",
+      "n_ctx_train": 262144,
+      "full_layers": 10,
+      "recurrent_layers": 30,
+      "per_layer_f16": 2048,
+      "moe": true,
+      "mtp": true,
+      "mtp_draft_depth": 1,
+      "n_vocab": 248320,
+      "mmproj": {
+        "path": "mmproj-BF16.gguf",
+        "size_bytes": 902822016,
+        "local": "mmproj-Tiel-Coder-35B-A3B-MTP-BF16.gguf"
+      },
+      "sampling": {
+        "temp": "0.6",
+        "top-p": "0.95",
+        "top-k": "20",
+        "min-p": "0.0"
+      },
+      "quality": 85,
+      "decode_fraction": 0.15,
+      "variants": [
+        {
+          "quant": "UD-Q4_K_XL",
+          "files": [
+            {
+              "path": "Tiel-Coder-35B-A3B-MTP-UD-Q4_K_XL.gguf",
+              "size_bytes": 22749880160
+            }
+          ],
+          "validated": true
+        }
+      ]
     }
   ]
 }

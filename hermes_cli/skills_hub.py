@@ -702,7 +702,26 @@ def _confirm_install(c: Console, bundle, category: str) -> bool:
                               cancel="[dim]Installation cancelled.[/]\n")
 
 
-_SKILL_METRIC_SOURCES = {"official": "catalog", "url": "url"}
+_SKILL_METRIC_SOURCES = {"official": "catalog", "url": "url", "bundled": "bundled"}
+
+
+def _install_bundled(c: Console, name: str, invalidate_cache: bool) -> tuple:
+    """``_install_skill`` for a name Hermes ships: point at the active copy, or restore it from the
+    bundled source. The hub copy of a built-in is either a stranger's same-named skill or this
+    repo's files rescanned as community content and refused, so neither is fetched."""
+    from types import SimpleNamespace
+    from tools.skills_sync_bundled_ops import ensure_bundled_skill
+    result = ensure_bundled_skill(name)
+    if not result["ok"]:
+        _print_error(c, result["message"])
+        return None, "failed", False
+    if result["action"] == "present":
+        where = f" at {result['path']}" if result["path"] else ""
+        c.print(f"[green]'{name}' is a built-in skill and is already available{where}.[/]\n")
+        return None, None, None
+    c.print(f"[bold green]Restored built-in skill:[/] {name} [dim]({result['path']})[/]\n")
+    _finish_change(c, invalidate_cache, "Skill will be available", "activate")
+    return SimpleNamespace(name=name, source="bundled"), "success", True
 
 
 def _record_skill_install(identifier: str, bundle, outcome: str) -> None:
@@ -755,6 +774,9 @@ def _install_skill(identifier: str, category: str, force: bool, c: Console, skip
     from tools.skills_hub_install import install_from_quarantine, quarantine_bundle
     from tools.skills_guard import should_allow_install
     ensure_hub_dirs()
+    from tools.skills_sync_bundled_ops import bundled_skill_for_install
+    if not source_id and not name_override and (builtin := bundled_skill_for_install(identifier)):
+        return _install_bundled(c, builtin, invalidate_cache)
     sources = _pinned_sources(c, _sources(), source_id, identifier)
     if sources is None:
         return None, "failed", False

@@ -734,3 +734,25 @@ def test_skills_command_exit_code_follows_install_verdict(monkeypatch, verdict, 
 
     # The router returns the code; `hermes` (main()) turns a handler's int into the exit status.
     assert cli_hub.skills_command(args) == expected_exit
+
+
+@pytest.mark.parametrize("identifier", [
+    "computer-use", "NousResearch/hermes-agent/skills/productivity/pdf",
+    "skills-sh/nousresearch/hermes-agent/google-workspace"])
+def test_install_of_a_bundled_name_restores_it_and_never_touches_the_hub(monkeypatch, identifier):
+    """`hermes skills install <bundled skill>` failed every time: the name resolved to a stranger's
+    same-named hub skill or an ambiguity table, and this repo's own copy was rescanned as community
+    content and refused. It now makes the shipped skill active and fetches nothing."""
+    import hermes_cli.skills_hub as cli_hub
+    from tools import skills_sync
+
+    monkeypatch.setattr(cli_hub, "_sources", lambda: pytest.fail("a bundled skill must not hit the hub"))
+    name = identifier.rsplit("/", 1)[-1]
+    console, sink = _sink_console()
+
+    assert cli_hub.do_install(identifier, console=console, skip_confirm=True) is True
+    assert "Restored built-in skill" in sink.getvalue()
+    assert name in skills_sync._read_manifest()
+    assert any(skills_sync._read_skill_name(md, "") == name for md in skills_sync._iter_active_skill_mds())
+    # Already active now: a no-op the user owns, not a failure (exit 0, no reinstall).
+    assert cli_hub.do_install(identifier, console=console, skip_confirm=True) is None

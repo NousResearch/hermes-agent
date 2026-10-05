@@ -1472,6 +1472,9 @@ def _skills_install(rid, params, query):
     verdict = _tools_mod("hermes_cli.skills_hub").do_install(
         query, skip_confirm=True, console=captured)
     installed = verdict is True
+    bundled = _tools_mod("tools.skills_sync_bundled_ops").bundled_skill_for_install
+    if verdict is None and bundled(query):  # a shipped skill that is already active is no failure
+        return _ok(rid, {"installed": True, "name": query})
     if not installed:
         # The tail carries the reason the CLI user would have seen: the scan-block message,
         # the "Multiple skills named" candidate table, or the fetch failure.

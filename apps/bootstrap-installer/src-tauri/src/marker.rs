@@ -912,11 +912,32 @@ fn sweep_tmp_litter(path: &Path) {
             continue;
         };
         let pid = rest.split('.').next().unwrap_or("");
-        let dead = is_ascii_digits(pid) && !pid.parse::<u32>().is_ok_and(pid_is_alive);
-        if dead {
+        if !is_ascii_digits(pid) {
+            continue;
+        }
+        let gone = match pid.parse::<u32>() {
+            Ok(pid) if pid == std::process::id() => own_pid_tmp_is_stale(&entry),
+            Ok(pid) => !pid_is_alive(pid),
+            Err(_) => true, // past u32: no process has that pid
+        };
+        if gone {
             let _ = std::fs::remove_file(entry.path());
         }
     }
+}
+
+/// Every tmp write of ours publishes or is removed well inside this: an older
+/// tmp under our own pid number is a previous holder's (containers reuse pids
+/// every boot), never ours in flight. Mirrors `OWN_PID_TMP_STALE_SECONDS`.
+const OWN_PID_TMP_STALE: Duration = Duration::from_secs(60);
+
+fn own_pid_tmp_is_stale(entry: &std::fs::DirEntry) -> bool {
+    entry
+        .metadata()
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age > OWN_PID_TMP_STALE)
 }
 
 /// Outcome of one claim attempt.

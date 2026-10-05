@@ -329,6 +329,23 @@ def test_claim_publishes_whole_and_reclaims_dead_writers_tmp_files(marker):
     lock.release()
 
 
+def test_stale_tmp_under_our_own_pid_number_is_reclaimed(marker):
+    """Containers hand out the same pids every boot: a tmp a previous holder of our pid number
+    left is litter once it is older than any write of ours, while a fresh one may be in flight."""
+    stale = marker.with_name(f"{marker.name}.{os.getpid()}.deadbeef.tmp")
+    fresh = marker.with_name(f"{marker.name}.{os.getpid()}.cafe.tmp")
+    stale.write_text("x")
+    fresh.write_text("x")
+    hour_ago = time.time() - 3600
+    os.utime(stale, (hour_ago, hour_ago))
+
+    lock = UpdateLock(path=marker)
+    assert lock.acquire() is True
+    lock.release()
+    assert not stale.exists()
+    assert fresh.exists()
+
+
 @pytest.mark.parametrize("owner", ["\u00b2", "\u2460"], ids=["superscript-two", "circled-one"])
 def test_tmp_litter_with_a_digit_lookalike_pid_never_breaks_admission(marker, owner):
     """A sibling whose pid field is a Unicode digit lookalike is not a pid we can judge: it is

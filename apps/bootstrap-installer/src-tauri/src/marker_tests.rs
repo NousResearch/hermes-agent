@@ -1180,6 +1180,29 @@ fn claim_sweeps_dead_claimants_tmp_litter() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn stale_tmp_under_our_own_pid_number_is_swept() {
+    // Containers reuse pid numbers every boot: a tmp a previous holder of our pid left is
+    // litter once it is older than any write of ours; a fresh one may be in flight.
+    let dir = unique_tmp_dir("marker-own-pid-litter");
+    let marker = dir.join(".hermes-update-in-progress");
+    let me = std::process::id();
+    let stale = dir.join(format!(".hermes-update-in-progress.{me}.deadbeef.tmp"));
+    let fresh = dir.join(format!(".hermes-update-in-progress.{me}.cafe.tmp"));
+    std::fs::write(&fresh, "").unwrap();
+    let file = std::fs::File::create(&stale).unwrap();
+    file.set_modified(SystemTime::now() - Duration::from_secs(3600))
+        .unwrap();
+    drop(file);
+    sweep_tmp_litter(&marker);
+    assert!(
+        !stale.exists(),
+        "a stale tmp under our pid number is litter"
+    );
+    assert!(fresh.exists(), "a fresh tmp under our pid may be in flight");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The live owner a refused acquire reports; panics on any other outcome.
 fn busy(result: Result<UpdateMarkerGuard, AcquireError>) -> MarkerOwner {
     match result {

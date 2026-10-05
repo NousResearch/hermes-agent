@@ -668,6 +668,19 @@ def _tmp_sibling(path: Path) -> Path:
     return path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
 
 
+# Every tmp write of ours publishes or is unlinked well inside this: an older tmp under our own
+# pid number is a previous holder's (containers reuse pids every boot), never ours in flight.
+OWN_PID_TMP_STALE_SECONDS = 60.0
+
+
+def _tmp_writer_gone(owner: int | None, entry: Path) -> bool:
+    if owner is None:
+        return True  # ASCII digits past u32: no process has that pid
+    if owner != os.getpid():
+        return not _pid_alive(owner)
+    return time.time() - entry.stat().st_mtime > OWN_PID_TMP_STALE_SECONDS
+
+
 def _sweep_dead_tmp_siblings(path: Path) -> None:
     """Reclaim ``<marker>.<pid>[.<token>].tmp`` files whose writer died between write and
     publish (contract m10): the pid is the first component after the marker name."""
@@ -675,11 +688,11 @@ def _sweep_dead_tmp_siblings(path: Path) -> None:
     with suppress(OSError):
         for entry in path.parent.iterdir():
             name = entry.name
-            if not (name.startswith(prefix) and name.endswith(".tmp")):
+            owner = name[len(prefix):].split(".", 1)[0]
+            if not (name.startswith(prefix) and name.endswith(".tmp") and _INT_LINE.fullmatch(owner)):
                 continue
-            owner = _bounded_int(name[len(prefix):].split(".", 1)[0], _U32_MAX)
-            if owner is not None and owner != os.getpid() and not _pid_alive(owner):
-                with suppress(OSError):
+            with suppress(OSError):
+                if _tmp_writer_gone(_bounded_int(owner, _U32_MAX), entry):
                     entry.unlink()
 
 

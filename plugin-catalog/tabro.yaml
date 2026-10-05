@@ -1,6 +1,6 @@
 name: tabro
 repo: https://github.com/ohmyskyhigh/tabro
-sha: 908b9e541a3e3394815bcf0bbbbdfad48d3ab135
+sha: 6b0b7e526cb6d85dc3fb3d0eae63d051b5be127a
 subdir: integrations/hermes
 description: >-
   Chromium profiles (Chrome, Chromium or Edge 153+) and session-owned workspaces
@@ -9,9 +9,9 @@ description: >-
 maintainer: ohmyskyhigh
 tier: community
 category: web
-version: "0.4.1"
+version: "0.4.2"
 platforms: [windows]
-docs_url: https://github.com/ohmyskyhigh/tabro/blob/908b9e541a3e3394815bcf0bbbbdfad48d3ab135/integrations/hermes/README.md
+docs_url: https://github.com/ohmyskyhigh/tabro/blob/6b0b7e526cb6d85dc3fb3d0eae63d051b5be127a/integrations/hermes/README.md
 readme: true
 capabilities:
   provides_tools: []

@@ -61,22 +61,39 @@ def test_specify_rejects_blank_title(kanban_home):
 
 
 def test_specify_records_audit_comment_only_when_author_given(kanban_home):
-    # With author → comment added.
+    # With author → audit comment added, plus the preserved original brief.
     with kbc.connect() as conn:
         tid1 = _create_triage(conn, title="a")
         kb.specify_triage_task(
             conn, tid1, title="A-spec", body="b", author="ace"
         )
         comments1 = kb.list_comments(conn, tid1)
-    assert len(comments1) == 1
-    assert "Specified" in comments1[0].body
-    assert comments1[0].author == "ace"
+    audit1 = [c for c in comments1 if c.author == "ace"]
+    assert len(audit1) == 1
+    assert "Specified" in audit1[0].body
+    # The rewrite replaces non-empty content, so the pre-rewrite brief is
+    # snapshotted as a machine-readable comment in the same transaction
+    # (contract added in f44e98fcbe — the author's brief is never lost).
+    brief1 = [c for c in comments1 if c.author == "specifier"]
+    assert len(brief1) == 1
+    assert "kanban-original-brief" in brief1[0].body
 
-    # Without author → no comment (silent).
+    # Without author → no audit comment (silent), but the brief snapshot is
+    # still written: it protects the author's text, not the audit trail.
     with kbc.connect() as conn:
         tid2 = _create_triage(conn, title="b")
         kb.specify_triage_task(conn, tid2, title="B-spec", body="b")
         comments2 = kb.list_comments(conn, tid2)
-    assert comments2 == []
+    assert [c.author for c in comments2] == ["specifier"]
+
+    # Same title and body → nothing rewritten, so nothing snapshotted and
+    # nothing audited.
+    with kbc.connect() as conn:
+        tid3 = _create_triage(conn, title="same", body="unchanged")
+        kb.specify_triage_task(
+            conn, tid3, title="same", body="unchanged", author="ace"
+        )
+        comments3 = kb.list_comments(conn, tid3)
+    assert comments3 == []
 
 

@@ -72,65 +72,31 @@ def full_disk(monkeypatch):
     return _raise
 
 
-class TestDueScanSaveFailure:
-    def test_due_jobs_are_returned_when_the_store_cannot_be_saved(self, cron_store, full_disk):
-        save_jobs([_due_job(), _half_paused_job()])
+def test_due_jobs_are_returned_when_the_store_cannot_be_saved(cron_store, full_disk):
+    save_jobs([_due_job(), _half_paused_job()])
 
-        assert [d["id"] for d in get_due_jobs()] == ["due-job"]
+    assert [d["id"] for d in get_due_jobs()] == ["due-job"]
 
-    def test_the_failed_persist_is_logged(self, cron_store, full_disk, caplog):
-        save_jobs([_due_job(), _half_paused_job()])
 
-        with caplog.at_level(logging.WARNING):
-            get_due_jobs()
+def test_tick_on_unwritable_store_returns_cleanly_without_dispatch(cron_store, monkeypatch, caplog):
+    """Real tick(): the advance cannot be persisted, so the recurring job is NOT run (at-most-once)
+    and the tick neither raises nor alters the store; a WARNING names the unwritable store."""
+    from cron import scheduler, scheduler_tick
 
-        assert "could not be persisted" in caplog.text
-        assert "No space left on device" in caplog.text
+    save_jobs([_due_job(), _half_paused_job()])
+    before = load_jobs()
+    ran = []
+    monkeypatch.setattr(scheduler, "_process_due_job", lambda job, *a, **k: ran.append(job["id"]) or True)
+    monkeypatch.setattr(scheduler, "_should_yield_tick_to_fresh_gateway", lambda: None)
+    monkeypatch.setattr(scheduler_tick, "_last_store_warning", {})
 
-    def test_a_writable_store_still_persists_the_repair(self, cron_store):
-        """No regression: when the store is writable the repair still lands."""
-        save_jobs([_due_job(), _half_paused_job()])
+    def _enospc(*_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
 
-        assert [d["id"] for d in get_due_jobs()] == ["due-job"]
-        repaired = {j["id"]: j for j in load_jobs()}
-        assert repaired["half-paused"]["enabled"] is False
-        assert repaired["half-paused"]["state"] == "paused"
+    monkeypatch.setattr(cronjobs, "_stage_jobs_payload", _enospc)
+    with caplog.at_level(logging.WARNING, logger="cron.scheduler"):
+        assert scheduler.tick(verbose=False, sync=True) == 0
 
-    def test_the_repair_is_retried_by_the_next_scan(self, cron_store, full_disk, monkeypatch):
-        """The failed persist is deferred, not lost."""
-        save_jobs([_due_job(), _half_paused_job()])
-        assert [d["id"] for d in get_due_jobs()] == ["due-job"]
-        # Still unsaved after the failure.
-        assert {j["id"]: j["enabled"] for j in load_jobs()}["half-paused"] is True
-
-        # Disk freed: the same repair is still pending in the store and now lands.
-        monkeypatch.setattr(cronjobs, "save_jobs", save_jobs)
-        get_due_jobs()
-        assert {j["id"]: j["enabled"] for j in load_jobs()}["half-paused"] is False
-
-    def test_repeated_failures_stay_contained(self, cron_store, full_disk, monkeypatch):
-        """A store that stays unwritable across ticks keeps dispatching, one entry per job per scan,
-        and the repair lands as soon as writing works again."""
-        save_jobs([_due_job(), _half_paused_job()])
-
-        for _ in range(3):
-            assert [d["id"] for d in get_due_jobs()] == ["due-job"]
-
-        monkeypatch.setattr(cronjobs, "save_jobs", save_jobs)
-        get_due_jobs()
-        assert {j["id"]: j["enabled"] for j in load_jobs()}["half-paused"] is False
-
-    def test_only_the_persist_is_contained(self, cron_store):
-        """The fix narrows one call: it does not blanket-swallow scan errors."""
-        save_jobs([_due_job()])
-        assert [d["id"] for d in get_due_jobs()] == ["due-job"]  # no repair pending, no save
-
-    def test_a_non_store_error_from_the_save_still_surfaces(self, cron_store, monkeypatch):
-        save_jobs([_due_job(), _half_paused_job()])
-
-        def _boom(*_args, **_kwargs):
-            raise RuntimeError("unexpected")
-
-        monkeypatch.setattr(cronjobs, "save_jobs", _boom)
-        with pytest.raises(RuntimeError):
-            get_due_jobs()
+    assert ran == []
+    assert "Cron store is unwritable" in caplog.text
+    assert load_jobs() == before

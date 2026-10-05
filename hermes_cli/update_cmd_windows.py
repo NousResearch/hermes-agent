@@ -631,13 +631,16 @@ def _desktop_owns_gateway_lifecycle() -> bool:
     ledger; fall back to the venv-holder scan. An orphaned control plane (supervisor gone) does not count;
     without psutil orphanhood is unprovable and a live control plane suffices.
 
+    The ledger rung is the shared, platform-neutral probe (update_cmd_common.desktop_owns_gateway_lifecycle,
+    #126177); the venv-holder fallback below stays Windows-only (it scans the venv's interpreters).
+
     See #76129, #92091.
     """
     from hermes_cli.update_cmd import _m
-    with _best_effort('Desktop-lifecycle ledger probe failed: %s'):
-        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
-        if any(e.get("purpose") in _BACKEND_PURPOSES and spawner_is_dead(e) is False for e in ledger_entries()):
-            return True
+    from hermes_cli.update_cmd_common import desktop_owns_gateway_lifecycle as _ledger_probe
+
+    if _ledger_probe():
+        return True
     psutil = _psutil()
     for pid, _name, cmdline in _try_call(_detect_venv_python_processes, "Desktop-lifecycle holder scan failed: %s") or []:
         if not _looks_like_desktop_control_plane(cmdline):

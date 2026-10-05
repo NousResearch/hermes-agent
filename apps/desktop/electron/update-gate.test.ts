@@ -13,13 +13,16 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
+import { hostRendezvousDirectory } from './host-published-token'
 import { updateGateReason, waitForUpdateClearance } from './update-gate'
+import { HOST_UPDATE_RESTART_RECORD, hostFleetRestartPending } from './update-gate-host-obligation'
 
-function deps(marker: boolean, inFlight: boolean, handoffActive = false) {
+function deps(marker: boolean, inFlight: boolean, handoffActive = false, fleetRestartPending = false) {
   return {
     hasLiveMarker: () => marker,
     isUpdateInFlight: () => inFlight,
-    isHandoffActive: () => handoffActive
+    isHandoffActive: () => handoffActive,
+    hasFleetRestartPending: () => fleetRestartPending
   }
 }
 
@@ -51,7 +54,8 @@ test('handoff remains closed after the detached wrapper exits', async () => {
     {
       hasLiveMarker: () => false,
       isUpdateInFlight: () => false,
-      isHandoffActive: () => handoffActive
+      isHandoffActive: () => handoffActive,
+      hasFleetRestartPending: () => false
     },
     {
       onWaitTick: reason => {
@@ -99,7 +103,7 @@ test('parks on the in-flight flag and finishes when it clears', async () => {
   let ticks = 0
 
   const outcome = await waitForUpdateClearance(
-    { hasLiveMarker: () => false, isUpdateInFlight: () => inFlight, isHandoffActive: () => false },
+    { hasLiveMarker: () => false, isUpdateInFlight: () => inFlight, isHandoffActive: () => false, hasFleetRestartPending: () => false },
     {
       onWaitTick: reason => {
         ticks += 1
@@ -129,7 +133,7 @@ test('parks across the flag→marker handoff without a gap', async () => {
   const reasons: string[] = []
 
   const outcome = await waitForUpdateClearance(
-    { hasLiveMarker: () => marker, isUpdateInFlight: () => inFlight, isHandoffActive: () => false },
+    { hasLiveMarker: () => marker, isUpdateInFlight: () => inFlight, isHandoffActive: () => false, hasFleetRestartPending: () => false },
     {
       onWaitTick: reason => {
         ticks += 1
@@ -247,7 +251,8 @@ test('abandonOn declining keeps the historical parking', async () => {
       hasLiveMarker: () => marker,
       isUpdateInFlight: () => false,
       isHandoffActive: () => false,
-      hasFailedReceipt: () => true
+      hasFailedReceipt: () => true,
+      hasFleetRestartPending: () => false
     },
     {
       abandonOn: () => false,
@@ -266,4 +271,121 @@ test('abandonOn declining keeps the historical parking', async () => {
 
   assert.equal(outcome, 'finished')
   assert.equal(ticks, 2)
+})
+
+// ---------------------------------------------------------------------------
+// host fleet-restart obligation (#126177) — the external-update signal
+// ---------------------------------------------------------------------------
+
+test('fleet-restart-pending alone closes the gate (#126177 — external update, marker released)', () => {
+  // The reported window: an update driven from OUTSIDE this process has
+  // released its live-update marker, this process's flags are all false, and
+  // the fleet restart is still in flight. A gate without the host-obligation
+  // signal let the backend respawn race the bouncing gateway.
+  assert.equal(updateGateReason(deps(false, false, false, true)), 'fleet-restart-pending')
+})
+
+test('parks across the marker→fleet-restart handoff until verification discharges it', async () => {
+  // Sequence of an external `hermes update`: the live marker holds the gate
+  // while the code swaps, then the updater releases it and enters its
+  // fleet-restart tail. The host obligation — armed before the pull and
+  // discharged only after fleet verification — must carry the gate across
+  // that transition instead of letting a respawn slip into the gap.
+  let marker = true
+  let fleetPending = true
+  let ticks = 0
+  const reasons: string[] = []
+
+  const outcome = await waitForUpdateClearance(
+    {
+      hasLiveMarker: () => marker,
+      isUpdateInFlight: () => false,
+      isHandoffActive: () => false,
+      hasFleetRestartPending: () => fleetPending
+    },
+    {
+      onWaitTick: reason => {
+        ticks += 1
+        reasons.push(reason)
+
+        if (ticks === 2) {
+          marker = false // updater released the live marker; restart tail begins
+        }
+
+        if (ticks === 5) {
+          fleetPending = false // fleet verification discharged the obligation
+        }
+      },
+      pollMs: 1,
+      sleep: async () => {},
+      timeoutMs: 10_000
+    }
+  )
+
+  assert.equal(outcome, 'finished')
+  assert.deepEqual(reasons, ['marker', 'marker', 'fleet-restart-pending', 'fleet-restart-pending', 'fleet-restart-pending'])
+})
+
+const HOST_ENV = { home: '/home/tester', platform: 'darwin' }
+
+function hostIo(files: Record<string, string>, existing: Set<string> = new Set()) {
+  return {
+    exists: (target: string) => existing.has(target) || target in files,
+    readFile: (target: string) => {
+      if (target in files) {
+        return files[target]
+      }
+
+      throw new Error('ENOENT')
+    }
+  }
+}
+
+const hostRecordPath = () =>
+  `${hostRendezvousDirectory(HOST_ENV)}/${HOST_UPDATE_RESTART_RECORD}`
+
+test('host obligation record: absent means nothing owed', () => {
+  assert.equal(hostFleetRestartPending(HOST_ENV, hostIo({})), false)
+})
+
+test('host obligation record: present without a restart proof is still owed', () => {
+  // The exact record hermes update writes before pulling (version, sha…):
+  // no `restarted` field yet, so the restart is in flight or still to come.
+  const record = JSON.stringify({ version: 1, started: 1, pid: 7, expected_sha: 'a'.repeat(40) })
+  assert.equal(
+    hostFleetRestartPending(HOST_ENV, hostIo({ [hostRecordPath()]: record })),
+    true
+  )
+})
+
+test('host obligation record: a recorded restart proof discharges the obligation', () => {
+  // _verify_fleet_after_update discharges via mark_host_restart_completed:
+  // the record gains a `restarted` object and stays on disk as proof for
+  // other profiles' CLIs — the gate must read that as "not pending".
+  const record = JSON.stringify({
+    version: 1,
+    started: 1,
+    pid: 7,
+    expected_sha: 'a'.repeat(40),
+    restarted: { sha: 'a'.repeat(40), pid: 8, at: 2 }
+  })
+
+  assert.equal(
+    hostFleetRestartPending(HOST_ENV, hostIo({ [hostRecordPath()]: record })),
+    false
+  )
+})
+
+test('host obligation record: corrupt or unreadable terms fail closed', () => {
+  // Same contract as the Python reader (host_obligation_present): a record
+  // whose terms cannot be read is an obligation still owed, never discharged.
+  assert.equal(
+    hostFleetRestartPending(HOST_ENV, hostIo({ [hostRecordPath()]: 'not json' })),
+    true
+  )
+  // Present on disk but unreadable (permissions): still owed.
+  assert.equal(
+    hostFleetRestartPending(HOST_ENV, hostIo({}, new Set([hostRecordPath()]))),
+    true
+  )
 })

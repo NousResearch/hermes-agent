@@ -8,7 +8,7 @@ import { runBackendStartStep } from './backend-start-cancellation'
  * Pure, dependency-injected gate that parks local backend spawns while an
  * in-app update is running (#73822, #50238).
  *
- * Four independent signals mean "an update owns the local runtime right now":
+ * Five independent signals mean "an update owns the local runtime right now":
  *
  *  - the on-disk marker (`HERMES_HOME/.hermes-update-in-progress`), written
  *    by the updater — and by the desktop itself just before hand-off — and
@@ -16,8 +16,13 @@ import { runBackendStartStep } from './backend-start-cancellation'
  *    `applyUpdates()` critical section, and
  *  - the successful detached hand-off state, which remains true while this
  *    Desktop is waiting to quit after the wrapper has handed control away.
+ *  - the host fleet-restart obligation record, armed by EXTERNAL updates
+ *    (any profile's CLI, a maintenance script, the gateway's own /update)
+ *    before they bounce the gateway fleet and discharged only when
+ *    post-restart verification proves the fleet is on the pulled code
+ *    (#126177).
  *
- * The marker alone is NOT enough (#73822): `applyUpdates` stops its backend
+ * The marker alone is NOT enough (#73822): `applyUpdates` stops its own backend
  * early (`releaseBackendLock`) before committing the hand-off. The renderer
  * reconnects after the WebSocket closes; a marker-only gate can spawn a new
  * backend on the runtime being replaced. Consulting the flag closes that
@@ -25,20 +30,44 @@ import { runBackendStartStep } from './backend-start-cancellation'
  * `finally`, so there is no instant where both signals are false and a
  * waiter could slip through mid-update.
  *
- * The fourth signal is different in kind: `failedReceipt` names a FINISHED,
- * failed update. A failed `hermes update` releases the marker in its `finally`
- * only when the failure happened after the lock was claimed; preparation-stage
- * failures (uv sync network errors) can exit with the marker left pointing at
- * a dead or recycled pid while `readLiveUpdateMarker`'s liveness probe keeps
- * answering true on Windows, and even a cleanly released marker leaves the
- * boot nothing to wait for. Parking the full 20-minute budget on a receipt
- * that already says `failed` strands the window (#122206: 486 polls /
- * 20 minutes after a receipt-marked failure). The gate reports it separately
- * so the boot path can surface the terminal failure instead of silently
- * counting down.
+ * Five independent signals mean "an update owns the local runtime right now":
+ *
+ *  - the on-disk marker (`HERMES_HOME/.hermes-update-in-progress`), written
+ *    by the updater — and by the desktop itself just before hand-off — and
+ *  - the in-process `updateInFlight` flag, true for the whole
+ *    `applyUpdates()` critical section, and
+ *  - the successful detached hand-off state, which remains true while this
+ *    Desktop is waiting to quit after the wrapper has handed control away.
+ *  - the host fleet-restart obligation record, armed by EXTERNAL updates
+ *    (any profile's CLI, a maintenance script, the gateway's own /update)
+ *    before they bounce the gateway fleet and discharged only when
+ *    post-restart verification proves the fleet is on the pulled code
+ *    (#126177). It closes the external-update window the other signals
+ *    cannot see: the updater releases the live-update marker before its
+ *    fleet-restart tail, and an update driven from outside this process
+ *    never sets `updateInFlight`. The record is cross-process by
+ *    construction — it lives in the host gateway-locks state dir, not this
+ *    app's memory or this profile's home.
+ *  - a terminal `failed` receipt naming a FINISHED, failed update (#122206):
+ *    a failed `hermes update` releases the marker in its `finally` only when
+ *    the failure happened after the lock was claimed; preparation-stage
+ *    failures (uv sync network errors) can exit with the marker left pointing
+ *    at a dead or recycled pid while `readLiveUpdateMarker`'s liveness probe
+ *    keeps answering true on Windows, and even a cleanly released marker
+ *    leaves the boot nothing to wait for. Parking the full 20-minute budget
+ *    on a receipt that already says `failed` strands the window (#122206:
+ *    486 polls / 20 minutes after a receipt-marked failure). The gate reports
+ *    it separately so the boot path can surface the terminal failure instead
+ *    of silently counting down.
  */
 
-export type UpdateGateReason = 'marker' | 'update-in-flight' | 'handoff' | 'failed-receipt' | null
+export type UpdateGateReason =
+  | 'marker'
+  | 'update-in-flight'
+  | 'handoff'
+  | 'fleet-restart-pending'
+  | 'failed-receipt'
+  | null
 
 export interface UpdateGateDeps {
   /** True when a live on-disk update marker exists (see update-marker.ts). */
@@ -54,6 +83,8 @@ export interface UpdateGateDeps {
    * live marker keeps the historical parking behavior.
    */
   hasFailedReceipt?: () => boolean
+  /** True when the host still owes the fleet a restart onto freshly pulled code (#126177). */
+  hasFleetRestartPending: () => boolean
 }
 
 /** Why the gate is closed right now, or null when it is open. */
@@ -74,6 +105,10 @@ export function updateGateReason(deps: UpdateGateDeps): UpdateGateReason {
 
   if (deps.isHandoffActive()) {
     return 'handoff'
+  }
+
+  if (deps.hasFleetRestartPending()) {
+    return 'fleet-restart-pending'
   }
 
   return null

@@ -1513,6 +1513,9 @@ class _GatewayRestartOutcome:
     #: (``_drain_or_signal_gateway_for_update`` branch 1): they restart only after this process
     #: exits, so the fleet matrix renders them as pending instead of STALE (#119597).
     self_restart_pending_pids: set = field(default_factory=set)
+    #: Update marker re-held for the fleet-restart tail when a live Desktop supervises
+    #: this install (#126177); released by ``_verify_fleet_after_update``.
+    held_marker_for_desktop: bool = False
 
     def fleet_probe_signals(self) -> tuple:
         """``(pre_restart_pids, killed_pids)`` with the unmapped stops removed — the signals that
@@ -1714,6 +1717,14 @@ def _recover_after_restart_phase_abort(
         if gateway_mode:
             _write_gateway_update_exit_code(False)
     out.record_receipt(phase_error=str(e), fresh_recovery=_recovery_result)
+    # The restart phase aborted: verification (which owns the marker hold release,
+    # #126177) may never run in this process. The obligation record stays armed
+    # (fail-closed), so release the re-held marker here rather than letting the
+    # Desktop wait out the full marker age ceiling.
+    if getattr(out, "held_marker_for_desktop", False):
+        with _best_effort('Could not release the fleet-restart marker hold after abort: %s'):
+            from hermes_cli.update_lock import release_fleet_restart_marker_holds
+            release_fleet_restart_marker_holds()
 
 
 def _gateway_drain_budget() -> float:
@@ -1751,6 +1762,23 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     # afterwards even if that block raises before reaching its own restart bookkeeping — needed to forward
     # already-restarted units to ``_refresh_dashboard_after_update`` (review on #83595).
     restarted_scoped_units: set = set()
+
+    # #126177: a live Desktop instance parks its backend spawns on the update gate, and
+    # this update's own marker is released at the boundary of the completion child —
+    # BEFORE this bounce. Re-hold the marker for the restart + verification tail so the
+    # gate has no marker-less window while the fleet is bouncing; the hold is dropped at
+    # the end of ``_verify_fleet_after_update`` (or left self-healing on the age ceiling
+    # when verification never runs). The Desktop also reads the host obligation record,
+    # which stays armed across this whole tail regardless.
+    held_marker_for_desktop = False
+    with _best_effort('Desktop-lifecycle probe before fleet restart failed: %s'):
+        from hermes_cli.update_cmd_common import desktop_owns_gateway_lifecycle
+        if desktop_owns_gateway_lifecycle():
+            from hermes_cli.update_lock import hold_update_marker_for_fleet_restart
+            held_marker_for_desktop = hold_update_marker_for_fleet_restart()
+            if held_marker_for_desktop:
+                logger.debug("Holding the update marker for the fleet-restart tail (live Desktop instance)")
+    out.held_marker_for_desktop = held_marker_for_desktop
 
     try:
         # Every gateway helper the phase needs is imported up front so a broken gateway
@@ -1925,6 +1953,25 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
     may still be stale; otherwise clears the marker. A failed SQLite verdict also
     exits 1, without retaining a fulfilled fleet-restart obligation.
     """
+    from hermes_cli.update_cmd import (
+        _m, _surviving_pre_update_serve_runtimes, _warn_stale_serve_runtimes,
+    )
+    from hermes_cli.update_cmd_maint import _refresh_dashboard_after_update
+    try:
+        _verify_fleet_after_update_inner(
+            restart, _pre_update_plan=_pre_update_plan,
+            _windows_gateway_resume=_windows_gateway_resume, update_complete=update_complete)
+    finally:
+        # The fleet-restart tail's marker hold (#126177) spans this verification: the
+        # Desktop's gate must not open while the matrix is still being collected, and it
+        # must open the moment verification settles — success, stale-failure, or abort.
+        if getattr(restart, "held_marker_for_desktop", False):
+            with _best_effort('Could not release the fleet-restart marker hold: %s'):
+                from hermes_cli.update_lock import release_fleet_restart_marker_holds
+                release_fleet_restart_marker_holds()
+
+
+def _verify_fleet_after_update_inner(restart, *, _pre_update_plan, _windows_gateway_resume, update_complete):
     from hermes_cli.update_cmd import (
         _m, _surviving_pre_update_serve_runtimes, _warn_stale_serve_runtimes,
     )

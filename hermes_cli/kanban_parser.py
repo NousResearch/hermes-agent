@@ -74,6 +74,17 @@ def _triage_sweep_args(verb: str, Verb: str, noun: str):
     )
 
 
+def _decompose_args(verb: str, Verb: str, noun: str):
+    """``decompose`` arguments: shared triage sweep plus --fanout/--no-fanout."""
+    return _triage_sweep_args(verb, Verb, noun) + (
+        _arg("--fanout", dest="force_fanout", action="store_const", const=True, default=None,
+             help="Force fan-out: produce children even when the model reply describes one task"),
+        _arg("--no-fanout", dest="force_fanout", action="store_const", const=False,
+             help="Force tighten: produce a single tightened card, never children. "
+                  "If the model reply disagrees (returned fanout=true), this is a typed failure."),
+    )
+
+
 def _bulk_ids(verb: str):
     return _arg("--ids", nargs="+", help=f"Additional task ids to {verb} with the same reason (bulk mode)")
 
@@ -429,11 +440,12 @@ _SPECS = [
          help="Flesh out a triage-column task into a concrete spec (title + "
               "body) and promote it to todo. Uses the auxiliary LLM "
               "configured under auxiliary.triage_specifier."),
-    _cmd("decompose", _triage_sweep_args("decompose", "Decompose", "decomposer"),
+    _cmd("decompose", _decompose_args("decompose", "Decompose", "decomposer"),
          help="Decompose a triage-column task into a graph of child tasks "
               "routed to specialist profiles by description. Falls back "
               "to specify-style single-task promotion when the task "
-              "doesn't benefit from fan-out. Uses auxiliary.kanban_decomposer."),
+              "doesn't benefit from fan-out. Uses auxiliary.kanban_decomposer. "
+              "Use --fanout or --no-fanout to force a mode."),
     _cmd("gc", [
         _arg("--event-retention-days", type=_nonnegative_int, default=30,
              help="Delete task_events older than N days for terminal tasks (default: 30; 0 disables)"),

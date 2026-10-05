@@ -1345,18 +1345,24 @@ def _cmd_specify(args: argparse.Namespace) -> int:
 
 
 def _decompose_ok_line(o) -> str:
+    mode_suffix = f" [{o.mode}]" if hasattr(o, "mode") and o.mode else ""
     if o.fanout and o.child_ids:
         return (f"Decomposed {o.task_id} → {len(o.child_ids)} "
-                f"children ({', '.join(o.child_ids)}); root promoted to todo")
-    return f"Specified {o.task_id} → todo (no fanout){_retitled_suffix(o)}"
+                f"children ({', '.join(o.child_ids)}); root promoted to todo{mode_suffix}")
+    return f"Specified {o.task_id} → todo (no fanout){_retitled_suffix(o)}{mode_suffix}"
 
 
 def _cmd_decompose(args: argparse.Namespace) -> int:
     """Fan a triage task (or all) out into child tasks via the auxiliary LLM."""
     from hermes_cli import kanban_decompose as decomp
 
-    return _run_triage_sweep(args, "decompose", decomp, decomp.decompose_task, "decomposed",
-                             ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
+    force_fanout = getattr(args, "force_fanout", None)
+
+    def run_one(task_id: str, *, author: str):
+        return decomp.decompose_task(task_id, author=author, force_fanout=force_fanout)
+
+    return _run_triage_sweep(args, "decompose", decomp, run_one, "decomposed",
+                             ("task_id", "ok", "reason", "fanout", "child_ids", "new_title", "mode"), _decompose_ok_line)
 
 
 _HANDLERS = {

@@ -121,6 +121,7 @@ class DecomposeOutcome:
     fanout: bool = False
     child_ids: list[str] | None = None
     new_title: Optional[str] = None
+    mode: str = "auto"  # "auto", "forced_fanout", "forced_tighten"
 
 
 def _profile_author() -> str:
@@ -220,7 +221,7 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
     )
 
 
-def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
+def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str, mode: str = "auto") -> DecomposeOutcome:
     """``fanout=false``: single-task spec promotion (same effect as specify)."""
     title_val, body_val = _title_body(parsed)
     assignee_val = None
@@ -243,7 +244,7 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
                 task.id, decision.original_assignee, decision.assignee, decision.lane_source,
             )
     if title_val is None and body_val is None:
-        return DecomposeOutcome(task.id, False, "decomposer returned fanout=false with no title/body")
+        return DecomposeOutcome(task.id, False, "decomposer returned fanout=false with no title/body", mode=mode)
     with kbc.connect_closing() as conn:
         ok = kb.specify_triage_task(
             conn, task.id, title=title_val, body=body_val, assignee=assignee_val, author=author,
@@ -256,8 +257,8 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
             except Exception:
                 logger.exception("decompose: failed to record routing guard audit for task %s", task.id)
     if not ok:
-        return DecomposeOutcome(task.id, False, "task moved out of triage before promotion")
-    return DecomposeOutcome(task.id, True, "single task (no fanout)", fanout=False, new_title=title_val)
+        return DecomposeOutcome(task.id, False, "task moved out of triage before promotion", mode=mode)
+    return DecomposeOutcome(task.id, True, "single task (no fanout)", fanout=False, new_title=title_val, mode=mode)
 
 
 def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[list[dict], list[tuple[int, rg.GuardDecision]], str]:
@@ -309,13 +310,13 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
     return children, guard_decisions, ""
 
 
-def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
+def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str, mode: str = "auto") -> DecomposeOutcome:
     raw_tasks = parsed.get("tasks") or []
     if not isinstance(raw_tasks, list) or not raw_tasks:
-        return DecomposeOutcome(task_id, False, "decomposer returned fanout=true with empty tasks list")
+        return DecomposeOutcome(task_id, False, "decomposer returned fanout=true with empty tasks list", mode=mode)
     children, guard_decisions, reason = _clean_children(task_id, raw_tasks, routing)
     if reason:
-        return DecomposeOutcome(task_id, False, reason)
+        return DecomposeOutcome(task_id, False, reason, mode=mode)
     try:
         with kbc.connect_closing() as conn:
             child_ids = decompose_triage_task(
@@ -341,14 +342,14 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
                                 child_task_id, task_id, child_idx,
                             )
     except ValueError as exc:
-        return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")
+        return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}", mode=mode)
     except Exception as exc:
         logger.exception("decompose: DB error on task %s", task_id)
-        return DecomposeOutcome(task_id, False, f"DB error: {type(exc).__name__}")
+        return DecomposeOutcome(task_id, False, f"DB error: {type(exc).__name__}", mode=mode)
     if child_ids is None:
-        return DecomposeOutcome(task_id, False, "task already decomposed or moved out of triage")
+        return DecomposeOutcome(task_id, False, "task already decomposed or moved out of triage", mode=mode)
     return DecomposeOutcome(
-        task_id, True, f"decomposed into {len(child_ids)} children", fanout=True, child_ids=child_ids,
+        task_id, True, f"decomposed into {len(child_ids)} children", fanout=True, child_ids=child_ids, mode=mode,
     )
 
 
@@ -357,10 +358,20 @@ def decompose_task(
     *,
     author: Optional[str] = None,
     timeout: Optional[int] = None,
+    force_fanout: Optional[bool] = None,
 ) -> DecomposeOutcome:
     """Decompose a triage task into a graph of child tasks. Expected failures
     (not in triage, no aux client, API error, malformed/empty reply) surface
-    as ``ok=False``."""
+    as ``ok=False``.
+
+    ``force_fanout``:
+      - ``None`` (default): model chooses the mode (auto).
+      - ``True``: force fan-out — produces children even when the model reply
+        describes one task (wraps the single-task output as one child).
+      - ``False``: force tighten — produces a single tightened card, never
+        children. If the model reply disagrees (returned fanout=true), this is
+        a typed failure, not a silent override.
+    """
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
@@ -383,9 +394,41 @@ def decompose_task(
         return DecomposeOutcome(task_id, False, "LLM returned malformed JSON")
 
     audit_author = author or _profile_author()
-    if not parsed.get("fanout"):
-        return _apply_single(task, parsed, routing, audit_author)
-    return _apply_fanout(task_id, parsed, routing, audit_author)
+    model_fanout = bool(parsed.get("fanout"))
+
+    # Determine effective mode and handle forced-vs-model disagreements.
+    if force_fanout is True:
+        mode = "forced_fanout"
+        if not model_fanout:
+            # Force fan-out: wrap the model's single-task output as one child.
+            title_val, body_val = _title_body(parsed)
+            assignee_val = _normalize_assignee_choice(
+                parsed.get("assignee"), default_assignee=routing.default_assignee, valid_names=routing.valid_names,
+            )
+            synthetic_tasks = [{
+                "title": title_val or task.title or "Tightened task",
+                "body": body_val or "",
+                "assignee": assignee_val,
+                "parents": [],
+            }]
+            parsed = {"fanout": True, "tasks": synthetic_tasks, "rationale": "forced fan-out (model chose tighten)"}
+            logger.info("decompose: task %s forced fan-out over model's tighten reply", task_id)
+        return _apply_fanout(task_id, parsed, routing, audit_author, mode=mode)
+    elif force_fanout is False:
+        mode = "forced_tighten"
+        if model_fanout:
+            # Force tighten but model returned fanout — typed failure, not silent collapse.
+            return DecomposeOutcome(
+                task_id, False,
+                "forced tighten but model returned fanout=true (refusing to silently collapse)",
+                fanout=False, mode=mode,
+            )
+        return _apply_single(task, parsed, routing, audit_author, mode=mode)
+    else:
+        mode = "auto"
+        if not model_fanout:
+            return _apply_single(task, parsed, routing, audit_author, mode=mode)
+        return _apply_fanout(task_id, parsed, routing, audit_author, mode=mode)
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:

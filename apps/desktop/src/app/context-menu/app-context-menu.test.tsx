@@ -94,6 +94,63 @@ describe('resolveDomTarget', () => {
 })
 
 describe('AppContextMenu', () => {
+  // #92500 wrapped every pane body in a ZoneMenu trigger so a header-less
+  // pane keeps a Close on screen. That wrapper also enclosed the composer,
+  // and the coordinator deferred on the trigger marker — so the composer's
+  // Cut/Copy/Paste were unreachable in every pane. The zone body is the one
+  // trigger the app menu must still claim.
+  const inZoneBody = (inner: string) =>
+    attach(
+      `<div data-slot="context-menu-trigger"><div data-zone-body="pane-1" style="display:contents">${inner}</div></div>`
+    )
+
+  it('claims a pane body inside a zone body instead of deferring to the zone menu', async () => {
+    installBridge()
+    mountMenu()
+    // A textarea stands in for the composer: jsdom does not implement
+    // `isContentEditable`, so a contenteditable host never resolves as an
+    // editable here. The guard under test is the zone-body claim, not the
+    // editable resolution — that path is covered by the tests above.
+    const host = inZoneBody('<textarea>some draft text</textarea>')
+
+    fireEvent.contextMenu(host.querySelector('textarea')!)
+
+    expect(await screen.findByText('Paste')).toBeTruthy()
+    expect(screen.getByText('Cut')).toBeTruthy()
+    expect(screen.getByText('Select all')).toBeTruthy()
+    // The zone verbs must NOT be what answered the gesture.
+    expect(screen.queryByText('Command palette')).toBeNull()
+  })
+
+  it('offers Copy on a selection inside a zone body', async () => {
+    installBridge()
+    mountMenu()
+    const host = inZoneBody('<p>transcript text</p>')
+    const para = host.querySelector('p')!
+    const range = document.createRange()
+
+    // A prior test's range would otherwise still be live and win the lookup.
+    range.selectNodeContents(para)
+    window.getSelection()!.removeAllRanges()
+    window.getSelection()!.addRange(range)
+    fireEvent.contextMenu(para)
+
+    expect(await screen.findByText('Copy')).toBeTruthy()
+  })
+
+  it('still defers to a trigger outside a zone body', async () => {
+    installBridge()
+    mountMenu()
+    const host = attach('<div data-slot="context-menu-trigger"><button>chrome</button></div>')
+
+    fireEvent.contextMenu(host.querySelector('button')!)
+
+    // The shell fallback is the coordinator's own menu; a deferred gesture
+    // never opens it, so nothing is rendered.
+    expect(screen.queryByText('New chat')).toBeNull()
+    expect($contextMenu.get()).toBeNull()
+  })
+
   it('opens the link menu on a chat link right-click', async () => {
     installBridge()
     mountMenu()

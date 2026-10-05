@@ -167,7 +167,8 @@ class _UnitCollector(ast.NodeVisitor):
         # A class has no size metrics of its own, but it is a unit so that a renamed or moved
         # class keeps the violations in its body (decorators, attributes) one-to-one.
         self.units[qual] = Unit(qualname=qual, line=node.lineno, metrics={},
-                                body_hash=body_hash(node), parent=self.funcs[-1] if self.funcs else None)
+                                body_hash=body_hash(node), parent=self.funcs[-1] if self.funcs else None,
+                                end_line=node.end_lineno)
         self.spans.append(Span(_first_line(node), node.end_lineno or node.lineno, qual))
         self.stack.append(qual.rsplit(".", 1)[-1])
         self.generic_visit(node)
@@ -184,6 +185,7 @@ class _UnitCollector(ast.NodeVisitor):
             metrics={"FUNC_LINES": end - first + 1, "NESTING": nesting_depth(node.body)},
             body_hash=body_hash(node),
             parent=self.funcs[-1] if self.funcs else None,
+            end_line=end,
         )
         self.spans.append(Span(first, end, qual))
         self.stack.append(qual.rsplit(".", 1)[-1])

@@ -193,4 +193,5 @@ class Measurer:
                 line=unit["line"],
                 metrics={"CC": unit["cc"], "FUNC_LINES": unit["lines"], "NESTING": unit["nesting"]},
                 body_hash=unit["hash"],
+                end_line=unit.get("end"),
             )

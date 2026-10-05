@@ -3,10 +3,7 @@ repo: https://github.com/BrethofAI/brethof-brain-client
 sha: dea65da574b4069db932409e422816fa30990522
 subdir: adapters/hermes
 version: "1.0.0"
-description: brethof-brain long-term memory provider — the memory's briefing in the system prompt at session
-  start, ambient recall on every turn, every turn archived; one memory shared with the user's other agents
-  (Claude Code, Codex, OpenCode and more). Sends each turn to the user's own brethof-brain memory (on their
-  machine at 127.0.0.1:8610, or hosted at memory.brethof.cloud). Needs a brethof-brain account.
+description: "brethof-brain long-term memory provider — the memory's briefing in the system prompt at session start, ambient recall on every turn, every turn archived; one memory shared with the user's other agents (Claude Code, Codex, OpenCode and more). Sends each turn to the user's own brethof-brain memory (on their machine at 127.0.0.1:8610, or hosted at memory.brethof.cloud). Needs a brethof-brain account. Disclosure — sends every user prompt and each turn's user and assistant text, with your API key, to the brethof-brain server you configure (default a local box at 127.0.0.1:8610; hosted at memory.brethof.cloud), and puts the server's returned briefing and recall text into the system prompt and each turn; reads BRETHOF_BRAIN_* from $HERMES_HOME/.env and ~/.brethof-brain/config.json."
 maintainer: BrethofAI
 tier: community
 category: memory

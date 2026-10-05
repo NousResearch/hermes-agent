@@ -110,8 +110,9 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "auth.adopt_external_logins": {
         "type": "boolean",
         "description": (
-            "Borrow and refresh the Codex CLI / Claude Code logins when Hermes has no usable login of its own. "
-            "Off: Hermes uses only its own logins (`hermes auth add <provider>`)."
+            "Borrow and refresh the Codex CLI / Claude Code logins, and fall back to the host gh CLI "
+            "login for Copilot, when Hermes has no usable login of its own. Off: Hermes uses only its "
+            "own logins (`hermes auth add <provider>`)."
         ),
         "category": "security",
     },

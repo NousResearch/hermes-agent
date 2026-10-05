@@ -2719,6 +2719,13 @@ def _seed_copilot_singleton(seed: _Seeder) -> None:
         copilot_sources = ["gh_cli"] + [f"env:{v}" for v in COPILOT_ENV_VARS]
         if all(seed.is_suppressed(seed.provider, s) for s in copilot_sources):
             return
+        from agent.credential_sources import adopt_external_logins_enabled
+        if not adopt_external_logins_enabled():
+            # resolve_copilot_token() refuses the borrowed gh login, so no new gh_cli row is
+            # seeded; this also drops the row an earlier (adopting) process persisted, mirroring
+            # the claude_code prune in _seed_anthropic_singletons. env:* rows are explicit user
+            # configuration and stay.
+            seed.changed |= _retain_sources_not_in(seed.entries, {"gh_cli"})
         token, source = resolve_copilot_token()
         if not token:
             return

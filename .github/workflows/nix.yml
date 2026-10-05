@@ -11,9 +11,8 @@ name: Nix flake check
 # fast required jobs beside it. A separate run reruns and cancels on its own.
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+  # Pull requests and main pushes only started a detect job and then skipped
+  # the flake build. Keep the callable entry for a release that asks for it.
   workflow_call:
     inputs:
       release:

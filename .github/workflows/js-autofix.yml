@@ -35,16 +35,8 @@ name: auto-fix lint issues & formatting
 #      on the current state.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '**/*.js'
-      - '**/*.cjs'
-      - '**/*.mjs'
-      - '**/*.ts'
-      - '**/*.tsx'
-      - 'package.json'
-      - 'package-lock.json'
+  # This org does not allow GitHub Actions to open pull requests, so the
+  # apply-patch job failed on every main push. Run it only by hand.
   workflow_dispatch:
 
 permissions:

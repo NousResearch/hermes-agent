@@ -458,10 +458,15 @@ class TestDeferredPlatformToolPreregistration:
             mgr._gate_manifest(manifest, {"probeplat-platform"}, None)
             assert mgr.rearm_failed_platform("probeplat") is False
 
-        hung = threading.Thread(target=threading.Event().wait, name="plugin-load:probeplat-platform", daemon=True)
+        from hermes_cli import plugins_loader
+        release = threading.Event()
+        hung = threading.Thread(target=release.wait, name=f"{plugins_loader._LOADER_THREAD_PREFIX}probeplat-platform",
+                                daemon=True)
         hung.start()
-        monkeypatch.setattr("hermes_cli.plugins_loader._ABANDONED_LOADERS", [hung])
+        monkeypatch.setattr(plugins_loader, "_ABANDONED_LOADERS", [hung])
         assert mgr.rearm_failed_platform("probeplat") is False  # its hung load is still running
+        release.set()
+        hung.join()
         monkeypatch.setattr("hermes_cli.plugins_loader._ABANDONED_LOADERS", [])
         assert mgr.rearm_failed_platform("probeplat") is True
         assert platform_registry.get("probeplat") is not None

@@ -98,6 +98,10 @@ class GitHubAuth:
     def _resolve_token(self) -> Optional[str]:
         if self._cached_token and (self._cached_method != "github-app" or time.time() < self._app_token_expiry):
             return self._cached_token
+        if self._cached_method == "anonymous":
+            # The chain already came up empty: re-running `gh auth token` (5 s timeout when gh has no
+            # login / no keyring) before every API call stretched one install past four minutes.
+            return None
         for method, resolve in (
             ("pat", self._try_pat), ("gh-cli", self._try_gh_cli), ("github-app", self._try_github_app),
         ):
@@ -521,11 +525,17 @@ class GitHubSource(SkillSource):
         if (cached := self._get_repo_tree(repo)) is None:
             return None
         skill_md_suffix = f"/{skill_name}/SKILL.md"
+        skill_dirs = []
         for entry in cached[1]:
             path = entry.get("path", "")
-            if entry.get("type") == "blob" and (path.endswith(skill_md_suffix) or path == skill_md_suffix[1:]):
+            if entry.get("type") != "blob" or entry.get("mode") == "120000" or not f"/{path}".endswith("/SKILL.md"):
+                continue
+            if path.endswith(skill_md_suffix) or path == skill_md_suffix[1:]:
                 return f"{repo}/{path[: -len('/SKILL.md')]}"
-        return None
+            skill_dirs.append(path[: -len("SKILL.md")].rstrip("/"))
+        # A single-skill repo may keep it in a generic dir (``skills/SKILL.md``) no slug matches; a lone
+        # NAMED dir (``skills/bar``) is another skill, and a lone root SKILL.md is ``_find_repo_root_skill``'s.
+        return f"{repo}/{skill_dirs[0]}" if skill_dirs in (["skills"], [".agents/skills"], [".claude/skills"]) else None
 
     def _find_repo_root_skill(self, repo: str) -> Optional[str]:
         """Identifier for a single-skill repo whose ``SKILL.md`` sits at the repo ROOT (no skill

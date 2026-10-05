@@ -996,7 +996,8 @@ def _append_multimodal_context(
             return
         content = turn_user_msg["content"]
         try:
-            _db.set_user_message_content(agent.session_id, _row_id, content)
+            _in_place_compacted = preflight_compressed and bool(getattr(agent, "_last_compaction_in_place", False))
+            _db.set_user_message_content(agent.session_id, _row_id, content, display=_in_place_compacted)
         except Exception:
             logger.warning("multimodal context backfill failed for session=%s", agent.session_id or "none", exc_info=True)
 

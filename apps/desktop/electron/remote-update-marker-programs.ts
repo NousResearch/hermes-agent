@@ -1,14 +1,13 @@
 /**
- * The update-marker judge as a program that runs ON an SSH remote.
+ * The update-marker judge as programs that run ON an SSH remote.
  *
- * One parser and one identity rule for every Desktop remote reader (the POSIX
- * relaunch gate, the spawn recheck, the managed-update observer), the same as
- * `hermes_cli/update_lock.py::judge_marker` and `tests/fixtures/update_marker_corpus.json`:
+ * Same contract as `update-marker-judge.ts` (`tests/fixtures/update_marker_corpus.json`):
  * an identity (pid, ct) is live when the pid is alive and its creation time is
  * within 2 s of the recorded `ct:`; with no recorded/readable ct it is live only
  * while `now - started_at <= 1200`. Owner or delegate live => LIVE, both dead =>
- * CLEAR, malformed => UNCERTAIN. Only the host's system Python runs it: nothing
- * imports the checkout an updater may be replacing.
+ * CLEAR, malformed => UNCERTAIN. Only the host's system Python (POSIX) or
+ * PowerShell/.NET (Windows relaunch/spawn) runs these: nothing imports the
+ * checkout an updater may be replacing.
  *
  * The Python stays free of double quotes: managed-ssh-update ships it to Windows
  * as a PowerShell native argument, and PowerShell 5.1 does not escape them.
@@ -90,10 +89,9 @@ def marker_ct(pid):
         if sys.platform.startswith('linux'):
             with open('/proc/stat') as stat:btime=next(int(line.split()[1]) for line in stat if line.startswith('btime '))
             return btime+int(marker_stat(pid)[19])/os.sysconf('SC_CLK_TCK')
-        # UTC like update_lock._stdlib_create_time: a local-time lstart is ambiguous in the repeated DST hour.
-        import calendar,subprocess
-        out=subprocess.check_output(['ps','-o','lstart=','-p',str(pid)],env=dict(os.environ,LC_ALL='C',TZ='UTC0'),universal_newlines=True)
-        return float(calendar.timegm(time.strptime(' '.join(out.split()),'%a %b %d %H:%M:%S %Y')))
+        import subprocess
+        out=subprocess.check_output(['ps','-o','lstart=','-p',str(pid)],env=dict(os.environ,LC_ALL='C'),universal_newlines=True)
+        return time.mktime(time.strptime(out.strip(),'%a %b %d %H:%M:%S %Y'))
     except Exception:return None
 
 MARKER_ENV={'our_pid':os.getpid(),'our_ct':lambda:marker_ct(os.getpid()),'alive':marker_alive,'ct':marker_ct,'now':time.time()}
@@ -104,3 +102,77 @@ def marker_verdict(raw):
     verdict,owner=marker_judge(raw.decode('utf-8','replace'),MARKER_ENV)
     return 'CLEAR' if verdict=='dead' else 'UNCERTAIN' if verdict=='malformed' else 'LIVE:%d'%owner
 `
+
+/**
+ * POSIX gate: `python3 -c GATE <marker> [payload]`. Holds the updaters' kernel
+ * lock `<marker>.lock` (A7 rule 1: Python update_lock flock, marker.sh flock)
+ * for a bounded 10 s, judges the marker, unlinks a dead claim inside that hold,
+ * then either prints the verdict (no payload: the relaunch probe) or runs the
+ * payload as `sh -c payload hermes-update-mutex <fd>` still holding the lock.
+ * A refused payload exits 75 with the verdict on stderr. The probe skips the
+ * lock when there is no marker, so it never creates files on a clean host.
+ */
+export const REMOTE_MARKER_GATE_PY = `${REMOTE_MARKER_JUDGE_PY}
+import fcntl,subprocess
+marker=sys.argv[1]
+payload=sys.argv[2] if len(sys.argv)>2 else None
+if payload is None and not os.path.lexists(marker):
+    print('CLEAR');sys.exit(0)
+
+def hold(fd):
+    deadline=time.monotonic()+10
+    while True:
+        try:
+            fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB);return True
+        except BlockingIOError:
+            if time.monotonic()>=deadline:return False
+            time.sleep(0.02)
+
+def read_marker():
+    try:
+        with open(marker,'rb') as stream:return stream.read(4097)
+    except FileNotFoundError:return None
+
+os.makedirs(os.path.dirname(marker),exist_ok=True)
+try:fd=os.open(marker+'.lock',os.O_RDWR|os.O_CREAT|os.O_CLOEXEC,0o644)
+except PermissionError:fd=os.open(marker+'.lock',os.O_RDONLY|os.O_CLOEXEC)
+verdict='UNCERTAIN'
+if hold(fd):
+    raw=read_marker();verdict=marker_verdict(raw)
+    if verdict=='CLEAR' and raw is not None:
+        try:os.unlink(marker)
+        except FileNotFoundError:pass
+if payload is None or verdict!='CLEAR':
+    print(verdict,file=sys.stderr if payload else sys.stdout);sys.exit(75 if payload else 0)
+sys.exit(subprocess.run(['sh','-c',payload,'hermes-update-mutex',str(fd)],pass_fds=(fd,)).returncode)
+`
+
+/**
+ * PowerShell `Get-MarkerVerdict $text` -> CLEAR | LIVE:<pid> | UNCERTAIN, the
+ * same rule via .NET process facts (Process.StartTime = psutil create_time on
+ * Windows; a process we may not query is alive with no ct). Windows runs this
+ * instead of the venv python so a probe never holds the runtime's python.exe
+ * open while an updater replaces it. Our own pid is never a remote owner.
+ */
+export const WINDOWS_MARKER_JUDGE_PS = [
+  'function Test-MarkerIdentity($ownerId,$ct,$started,$now){',
+  'if($ownerId -eq 0 -or $ownerId -eq $PID -or $ownerId -gt [int]::MaxValue){return $false}',
+  'try{$proc=[Diagnostics.Process]::GetProcessById([int]$ownerId)}catch [ArgumentException]{return $false}',
+  '$actual=$null',
+  'try{if($proc.HasExited){return $false};if($null -ne $ct){$actual=([DateTimeOffset]$proc.StartTime).ToUnixTimeMilliseconds()/1000.0}}catch{}finally{$proc.Dispose()}',
+  'if($null -eq $ct -or $null -eq $actual){return ($now-[double]$started) -le 1200}',
+  'return [Math]::Abs($ct-$actual) -le 2.0',
+  '}',
+  'function Get-MarkerCt([string]$digits){$value=0.0;if([double]::TryParse($digits,[Globalization.NumberStyles]::AllowDecimalPoint,[Globalization.CultureInfo]::InvariantCulture,[ref]$value)){return $value};return [double]::PositiveInfinity}',
+  'function Get-MarkerVerdict([string]$text){',
+  '$lines=@(($text -replace "^\\uFEFF","") -split "`n" | ForEach-Object {($_ -replace "`r$","").Trim([char[]]" `t")})',
+  '$style=[Globalization.NumberStyles]::None;$culture=[Globalization.CultureInfo]::InvariantCulture;[uint32]$ownerId=0;[uint64]$started=0',
+  'if($lines.Count -lt 2 -or $lines[0] -cnotmatch "^[0-9]+$" -or $lines[1] -cnotmatch "^[0-9]+$" -or -not [uint32]::TryParse($lines[0],$style,$culture,[ref]$ownerId) -or -not [uint64]::TryParse($lines[1],$style,$culture,[ref]$started)){return "UNCERTAIN"}',
+  '$ct=$null;if($lines.Count -gt 2 -and $lines[2] -cmatch "^ct:([0-9]+(\\.[0-9]+)?)$"){$ct=Get-MarkerCt $Matches[1]}',
+  '$ids=@(,@($ownerId,$ct))',
+  'foreach($line in @($lines | Select-Object -Skip 3)){[uint32]$delegateId=0;if($line -cmatch "^delegate:([0-9]+) ct:([0-9]+(\\.[0-9]+)?)$" -and [uint32]::TryParse($Matches[1],$style,$culture,[ref]$delegateId)){$ids+=,@($delegateId,(Get-MarkerCt $Matches[2]));break}}',
+  '$now=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()',
+  'foreach($id in $ids){if(Test-MarkerIdentity $id[0] $id[1] $started $now){return "LIVE:$($id[0])"}}',
+  'return "CLEAR"',
+  '}'
+].join('\n')

@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 
 import { resolveReadyTimeoutMs } from './remote-lifecycle'
+import { WINDOWS_MARKER_JUDGE_PS } from './remote-update-marker-programs'
 import { assertBootstrapNotSuperseded, redactSecrets, SSH_ERROR } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -125,6 +126,7 @@ public static class HermesMarkerNoFollow {
 }
 '@
 `,
+    WINDOWS_MARKER_JUDGE_PS,
     'function Assert-NoReparse([string]$candidate,[bool]$allowMissing=$false){',
     'if([string]::IsNullOrWhiteSpace($candidate)){return}',
     '$current=[IO.Path]::GetFullPath($candidate);$first=$true',
@@ -146,21 +148,10 @@ public static class HermesMarkerNoFollow {
     'if(-not (Test-Path -LiteralPath $marker -PathType Leaf)){$result="CLEAR"}else{$stream=[HermesMarkerNoFollow]::OpenRead($marker)',
     'Assert-NoReparse $marker $false',
     '$memory=New-Object IO.MemoryStream;$stream.CopyTo($memory);$bytes=$memory.ToArray()',
-    'if($bytes.Length -le 256){',
+    'if($bytes.Length -le 4096){',
     '$utf8=[Text.UTF8Encoding]::new($false,$true)',
     '$text=$utf8.GetString($bytes)',
-    "$match=[regex]::Match($text,'\\A([1-9][0-9]*)\\r?\\n([0-9]+)(?:\\r?\\n)?\\z')",
-    '[uint32]$ownerPid=0',
-    '[uint64]$lease=0',
-    '$valid=$match.Success',
-    'if($valid){$valid=[uint32]::TryParse($match.Groups[1].Value,[Globalization.NumberStyles]::None,[Globalization.CultureInfo]::InvariantCulture,[ref]$ownerPid)}',
-    'if($valid){$valid=[uint64]::TryParse($match.Groups[2].Value,[Globalization.NumberStyles]::None,[Globalization.CultureInfo]::InvariantCulture,[ref]$lease)}',
-    'if($valid -and $lease -le 9007199254740991){',
-    'try{',
-    '$process=[Diagnostics.Process]::GetProcessById([int]$ownerPid)',
-    'try{if($process.HasExited){$result="CLEAR"}else{$result="LIVE:"+[string]$ownerPid}}finally{$process.Dispose()}',
-    '}catch [ArgumentException]{$result="CLEAR"} catch{$result="UNCERTAIN"}',
-    '}',
+    '$result=Get-MarkerVerdict $text',
     '}',
     '}}catch [IO.FileNotFoundException]{$result="CLEAR"}catch{$result="UNCERTAIN"}finally{if($memory){$memory.Dispose()};if($stream){$stream.Dispose()}}',
     'Write-Output $result'
@@ -287,16 +278,19 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
   const script = [
     '$ProgressPreference="SilentlyContinue"',
     '$ErrorActionPreference="Stop"',
+    WINDOWS_MARKER_JUDGE_PS,
     `$hermesHome=${psLiteral(runtime.hermesHome)}`,
     '$installRoot=$hermesHome',
     '$parent=Split-Path -Parent $hermesHome',
     'if((Split-Path -Leaf $parent) -ieq "profiles"){$installRoot=Split-Path -Parent $parent}',
     '$marker=Join-Path $installRoot ".hermes-update-in-progress"',
-    '$mutexPath=$marker+".mutex"',
-    '$mutex=[IO.File]::Open($mutexPath,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::ReadWrite)',
+    // The updaters' kernel lock (A7 rule 1): `<marker>.lock` opened sharing
+    // nothing, like marker.ps1 Open-MarkerLock / update_lock.py, bounded 10 s.
+    // A dead claim is deleted inside the hold; a live/malformed one refuses.
+    '$clock=[Diagnostics.Stopwatch]::StartNew();$mutex=$null',
+    'while(-not $mutex){try{$mutex=[IO.File]::Open($marker+".lock",[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)}catch{if($clock.ElapsedMilliseconds -ge 10000){throw "remote update marker lock is busy"};Start-Sleep -Milliseconds 25}}',
     'try{',
-    '  $mutex.Lock(0,1)',
-    '  if([IO.File]::Exists($marker)){throw "remote update marker is present"}',
+    '  if([IO.File]::Exists($marker)){$verdict=Get-MarkerVerdict ([IO.File]::ReadAllText($marker));if($verdict -ne "CLEAR"){throw "remote update marker is $verdict"};[IO.File]::Delete($marker)}',
     reservation.ownershipId
       ? `  $existingLines=@(& ${helper('read-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)}); $existingExit=$LASTEXITCODE; ` +
         '  if($existingExit -eq 0 -and $existingLines.Count -gt 0){try{$existing=$existingLines[-1]|ConvertFrom-Json}catch{$existing=$null}; ' +
@@ -315,7 +309,7 @@ function atomicWindowsSpawnCommand(runtime, reservation: any = {}) {
         `  $lock | & ${helper('write-lock').map(psLiteral).join(' ')} ${psLiteral(reservation.ownershipId)} | Out-Null; if($LASTEXITCODE -ne 0){exit $LASTEXITCODE}; $spawnLines|Write-Output`
       : '',
     '  if([IO.File]::Exists($marker)){throw "remote update marker claimed during backend spawn"}',
-    '}finally{try{$mutex.Unlock(0,1)}catch{};$mutex.Dispose()}'
+    '}finally{$mutex.Dispose()}'
   ]
     .filter(line => line !== '')
     .join(';')

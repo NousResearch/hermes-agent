@@ -409,7 +409,6 @@ def marker_state():
     try:raw=marker_path.read_bytes()
     except FileNotFoundError:return {'state':'absent'}
     except OSError:return {'state':'unavailable'}
-    # update_lock.judge_marker's parser and identity rule (owner or delegate, pid + creation time).
     verdict=marker_verdict(raw)
     if verdict=='UNCERTAIN':return {'state':'malformed'}
     if verdict=='CLEAR':return {'state':'dead'}

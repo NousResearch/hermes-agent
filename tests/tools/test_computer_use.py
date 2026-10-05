@@ -2228,6 +2228,49 @@ class TestStartupTimeoutPhaseDetail:
         finally:
             bridge.stop()
 
+    def test_lifecycle_import_error_fails_fast_not_unknown_timeout(self):
+        """Import errors in _lifecycle_coro must surface as setup failure,
+        not a 30s 'phase: unknown' hang (uv python + missing pywintypes)."""
+        import time
+
+        from tools.computer_use import cua_backend_session as cbs
+
+        async def _boom(self):
+            raise ModuleNotFoundError("pywintypes")
+
+        bridge = cbs._AsyncBridge()
+        session = cbs._CuaDriverSession(bridge)
+        t0 = time.monotonic()
+        orig = cbs._CuaDriverSession._lifecycle_coro
+        try:
+            cbs._CuaDriverSession._lifecycle_coro = _boom
+            with pytest.raises(RuntimeError) as excinfo:
+                session.start()
+            msg = str(excinfo.value)
+            assert "pywintypes" in msg
+            assert "never reached ready" not in msg
+            assert time.monotonic() - t0 < 8.0
+        finally:
+            cbs._CuaDriverSession._lifecycle_coro = orig
+            try:
+                session.stop()
+            except Exception:
+                pass
+            try:
+                bridge.stop()
+            except Exception:
+                pass
+
+    def test_ensure_windows_pywin32_makes_pywintypes_importable(self):
+        import sys
+
+        from tools.computer_use.cua_backend_session import _ensure_windows_pywin32
+
+        if sys.platform != "win32":
+            return
+        _ensure_windows_pywin32()
+        import pywintypes  # noqa: F401
+
 
 class TestCapturePayloadBudget:
     """Element labels and the aux-vision branch must respect response budgets.

@@ -165,6 +165,7 @@ _SHARED_FIXTURE_CONSUMERS: dict[str, tuple[str, ...]] = {
         "apps/desktop/electron/update-marker-corpus.test.ts",  # Electron: vitest
         "tests/scripts/desktop_update/test_desktop_update_posix_marker_corpus.py",  # marker.sh
         "tests/scripts/desktop_update/test_desktop_update_windows_marker_corpus.py",  # marker.ps1
+        "apps/desktop/electron/remote-update-marker-programs.test.ts",  # SSH remote judge
     ),
 }
 # What a fixture inherits from its consumers: the lanes that run them as tests.
@@ -219,7 +220,9 @@ _TAURI_UPDATE_MARKER = ("apps/bootstrap-installer/src-tauri/src/marker.rs",)
 _UPDATE_PIPELINE = (
     "hermes_cli/main.py",  # cmd_update: lock, pre-update backup, receipt boundary
     "hermes_cli/main_dashboard.py",  # hangup protection + update.log mirror
-    "hermes_cli/main_desktop.py",  # staged Desktop swap / rebuild in the tail
+    # Prefix: main_desktop.py (staged Desktop swap / rebuild in the tail) and the
+    # main_desktop_* siblings it imports (macOS signing identity).
+    "hermes_cli/main_desktop",
     "hermes_cli/_early_recovery.py",  # interrupted pull / shim restore at launch
     "hermes_cli/venv_sync.py",  # completion obligation + launch-time tail
     "hermes_cli/source_",  # source_completion/_build/_releases/_check/_stamp
@@ -241,7 +244,9 @@ _UPDATE_PIPELINE = (
     "hermes_cli/gateway_supervised_restart.py",
     "hermes_bootstrap.py",  # every launch's prepare_launch
     "hermes_constants.py",  # root home = update marker location
-    "gateway/status.py",  # code_sha stamp the fleet verify reads
+    # Prefix: status.py (code_sha stamp the fleet verify reads) and its status_*
+    # siblings (the Windows pause matches gateway argv with status_inline_source).
+    "gateway/status",
     "gateway/control_socket.py",  # pause-for-update verb
     "gateway/code_skew.py",
     "gateway/host_rendezvous.py",
@@ -421,6 +426,7 @@ _E2E_LANES: dict[str, tuple[str, ...]] = {
         "scripts/desktop-update/",
         "scripts/install.sh",
         "hermes_cli/update_",
+        "hermes_cli/main_desktop",  # the entry point and the main_desktop_* siblings it imports
         *_DESKTOP_BUILD_ENTRY_POINTS,
         *_UPDATE_DEPENDENCIES,
         # Pipeline modules the Desktop build entry points import directly.

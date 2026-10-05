@@ -364,6 +364,7 @@ def _tracked_mentions(name: str) -> list[str]:
 # table empties when the siblings land and a later deletion of a consumer turns it red.
 _LANDS_IN_SIBLING_PR: dict[str, str] = {
     "apps/desktop/electron/update-marker-corpus.test.ts": "#132345 desktop update gate",
+    "apps/desktop/electron/remote-update-marker-programs.test.ts": "#132345 desktop update gate",
     "tests/scripts/desktop_update/test_desktop_update_posix_marker_corpus.py": "#132354 hand-off scripts",
     "tests/scripts/desktop_update/test_desktop_update_windows_marker_corpus.py": "#132354 hand-off scripts",
 }

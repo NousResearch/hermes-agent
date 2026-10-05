@@ -45,10 +45,21 @@ class _RecoveringPeerClient(_FakePeerClient):
 
 
 class _UnreachablePeerClient(_RecoveringPeerClient):
+    """Unreachable until ``reachable`` flips; then it returns the run it already holds."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reachable = False
+
     def recover_dispatch(self, **kwargs):
+        if self.reachable:
+            return super().recover_dispatch(**kwargs)
         self.recoveries.append({**kwargs, "dispatch": dict(kwargs["dispatch"])})
         raise PeerRunsHTTPError(
             "peer RoomLink endpoint is unreachable", retryable=True, not_admitted=True)
+
+    def prepare(self, **kwargs):
+        return self.session if self.reachable else super().prepare(**kwargs)
 
 
 def _peer_room(db: Path, peer: _FakePeerClient) -> HostedRoomService:
@@ -129,9 +140,10 @@ def test_peer_recovery_replays_only_indeterminate_generation(tmp_path: Path):
     assert recovered["prompt"] == "Recover the accepted review."
 
 
-def test_uncertain_peer_turn_keeps_its_generation_while_its_peer_is_unreachable(tmp_path: Path):
-    """Past the deferral window, a peer turn whose same-generation recovery keeps failing stays
-    uncertain. Deferring it would let Retry start it again under a new idempotency key."""
+def test_unreachable_peer_turn_is_deferred_and_retried_on_its_own_generation(tmp_path: Path):
+    """A peer turn whose same-generation recovery keeps failing is deferred, so the room moves
+    on. Retry then recovers that same generation first: it fails while the peer is down, and once
+    the peer is back it settles generation 1 and never sends generation 2."""
     now = [100.0]
 
     def clock():
@@ -170,19 +182,26 @@ def test_uncertain_peer_turn_keeps_its_generation_while_its_peer_is_unreachable(
     now[0] = 108.0
     service.runtime._run_room_once(binding)
 
-    waiting = driver.get_task(db, queued["identity"])
-    assert waiting["status"] == "indeterminate"
-    assert waiting["execution_generation"] == 1
-    assert len(peer.recoveries) >= 2
+    deferred = driver.get_task(db, queued["identity"])
+    assert deferred["status"] == "deferred"
+    assert deferred["execution_generation"] == 1
+    assert deferred["result"] == {"reason": "member_unavailable", "retryable": True}
     assert {r["dispatch"]["execution_generation"] for r in peer.recoveries} == {1}
-    assert {d["execution_generation"] for d in peer.dispatches} <= {1}
 
-    # Retry cannot recover generation 1 either, so it starts nothing new.
+    # Retry while the peer is still down keeps the turn deferred at generation 1.
     with pytest.raises(PeerRunsHTTPError):
         service.retry_room_task("room-1", task_id=queued["identity"].task_id)
-    retried = driver.get_task(db, queued["identity"])
-    assert (retried["status"], retried["execution_generation"]) == ("indeterminate", 1)
-    assert {d["execution_generation"] for d in peer.dispatches} <= {1}
+    assert driver.get_task(db, queued["identity"])["status"] == "deferred"
+
+    # Once the peer is back, Retry recovers generation 1 and never sends generation 2.
+    peer.reachable = True
+    retried = service.retry_room_task("room-1", task_id=queued["identity"].task_id)
+    service.runtime._run_room_once(binding)
+
+    assert (retried["status"], retried["execution_generation"]) == ("settled", 1)
+    assert driver.get_task(db, queued["identity"])["status"] == "settled"
+    assert {r["dispatch"]["execution_generation"] for r in peer.recoveries} == {1}
+    assert {d["execution_generation"] for d in peer.dispatches} == {1}
 
 
 def _driver_room(tmp_path: Path) -> Path:

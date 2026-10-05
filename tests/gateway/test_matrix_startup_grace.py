@@ -63,6 +63,8 @@ async def test_cold_boot_grace_drop_logs_one_summary(caplog, tmp_path, monkeypat
         else:
             for fresh in ("$live1", "$live2"):  # the first message past the gate closes the backlog window
                 await adapter._on_room_message(_event(fresh, time.time()))
+        if not encryption:  # a drop after the window closed must not leak into the next connect's summary
+            await _connect(adapter, [], is_reconnect=True)
     assert adapter._handle_text_message.await_count == (0 if quiet_room else 2)
     summaries = [r.getMessage() for r in caplog.records if r.name == _LOGGER and "skipped" in r.getMessage()]
     phases = ["Matrix: initial sync", "Matrix: decrypted backlog"] if encryption else ["Matrix: initial sync"]

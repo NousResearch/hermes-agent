@@ -72,6 +72,7 @@ def test_rollback_serializes_safety_restore_and_completion(rollback_env, monkeyp
         try:
             # A full rewrite is valid both before and after rollback, so failure
             # cannot be explained by a stale patch match.
+            # Note: content-form patch records as 'edit', not 'patch'.
             return mutate(action="patch", name="testing/rollback-probe",
                           content=_CONTENT.replace("Value one.", "Value three."))
         finally:
@@ -97,7 +98,7 @@ def test_rollback_serializes_safety_restore_and_completion(rollback_env, monkeyp
     assert result["success"], result
     assert "Value three." in target.read_text(encoding="utf-8"), "rollback erased a successful edit"
     rows = ledger.list_entries()
-    assert [row["action"] for row in rows[:3]] == ["patch", "rollback", "pre-rollback"]
+    assert [row["action"] for row in rows[:3]] == ["edit", "rollback", "pre-rollback"]
     safety = rows[2]
     assert b"Value two." in ledger.read_blob(safety["before"][0]["sha256"])
     assert b"Value one." in ledger.read_blob(rows[0]["before"][0]["sha256"])

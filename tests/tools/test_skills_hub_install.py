@@ -174,6 +174,48 @@ def test_staging_failure_keeps_old_skill(hub_env, monkeypatch):
         assert not any(staging_root.iterdir())
 
 
+def test_install_hash_mismatch_restores_old_tree(hub_env, monkeypatch):
+    """A post-swap hash mismatch quarantines the unvalidated bundle and restores v1."""
+    from tools import skills_hub, skills_hub_install
+    from tools.skills_guard import content_hash as real_content_hash
+
+    _seed_installed(skills_hub, "v1-skill", "# v1\nOriginal.\n")
+    install_dir = hub_env["skills"] / "v1-skill"
+    before_bytes = (install_dir / "SKILL.md").read_bytes()
+
+    bundle, scan = _make_bundle("v1-skill", "# v1\nPatched.\n")
+    quarantine = skills_hub_install.quarantine_bundle(bundle)
+
+    # Staged hash validates fine; the post-swap read diverges (moved tree differs
+    # from what was validated) so the swap must be unwound, not published.
+    calls = {"n": 0}
+
+    def _flaky_hash(path, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_content_hash(path, *a, **k)
+        return "sha256:divergent-post-swap-hash"
+
+    monkeypatch.setattr(skills_hub_install, "content_hash", _flaky_hash)
+
+    with pytest.raises(RuntimeError) as exc:
+        skills_hub_install.install_from_quarantine(
+            quarantine, "v1-skill", "", bundle, scan)
+    msg = str(exc.value)
+
+    # install_dir holds v1 bytes again, so the message must claim 'restored' — and only then.
+    assert (install_dir / "SKILL.md").read_bytes() == before_bytes
+    assert "restored" in msg
+
+    # The unvalidated new bundle is preserved at the reported orphan path.
+    staging_root = hub_env["hub"] / ".replacement-staging"
+    orphans = [p for p in staging_root.iterdir()
+               if p.name.startswith(".failed-v1-skill-") and (p / "SKILL.md").is_file()]
+    assert len(orphans) == 1, f"expected one quarantined bundle, saw: {[p.name for p in staging_root.iterdir()]}"
+    assert "Patched." in orphans[0].joinpath("SKILL.md").read_text(encoding="utf-8")
+    assert orphans[0].name in msg
+
+
 def test_audit_log_failure_does_not_fail_install(hub_env, monkeypatch):
     """append_audit_log raising is telemetry, not a gate: install still succeeds + provenance recorded."""
     from tools import skills_hub, skills_hub_install

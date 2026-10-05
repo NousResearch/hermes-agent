@@ -738,6 +738,13 @@ def _validate_entry_paths(entry: dict[str, Any]) -> Optional[str]:
     for section in ("before", "after"):
         for item in entry.get(section) or []:
             p = Path(str(item.get("path", "")))
+            # Resolve ONLY for the containment check: symlinked HERMES_HOME / skills
+            # roots would otherwise fail to match their own entries. Rollback output
+            # still goes to the ORIGINAL unresolved path.
+            with suppress(OSError, RuntimeError):
+                cp = Path(str(item.get("path", ""))).resolve()
+                if any(_is_within(root, cp) for root in roots):
+                    continue
             if not any(_is_within(root, p) for root in roots):
                 return f"entry references a path outside {home} and every skills root: {p}"
     return None

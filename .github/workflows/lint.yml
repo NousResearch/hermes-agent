@@ -176,6 +176,16 @@ jobs:
         with:
           command: python -m scripts.ci.python_packages "$(python -m scripts.code_health --print-pins)"
 
+      # The ratchet npm-installs the lockfile's typescript into a cache on first use; do it here,
+      # under retry, so a registry blip on a TypeScript PR is retried, not a red required check.
+      - name: Prefetch pinned TypeScript (TypeScript changes only)
+        uses: ./.github/actions/retry
+        with:
+          command: >-
+            if git diff --name-only HEAD^1 HEAD | grep -qE '[.](ts|tsx|mts|cts)$'; then
+            python -c "from pathlib import Path; from scripts.code_health.ts_measure import resolve_typescript; print(resolve_typescript(Path.cwd()))";
+            fi
+
       - name: Ratchet the PR against the base branch tip
         run: python scripts/check --only health --base HEAD^1
 

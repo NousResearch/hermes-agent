@@ -3,10 +3,11 @@
 Invoked by ``hermes kanban decompose [task_id | --all]`` and the gateway
 dispatcher's auto-decompose path. Reads the profile roster (with
 descriptions), asks the auxiliary LLM for a task graph in JSON, then
-atomically creates the children, links them under the root, and flips the
-root ``triage -> todo``. The root stays alive as parent of every leaf child so
-it wakes back up when the graph completes and its assignee (the orchestrator
-profile) can judge completion and add more work.
+atomically create the children, links them under the root, and flips the
+root ``triage -> todo``. The root stays alive as the *child* (in the link
+table) of every leaf so ``recompute_ready`` keeps it in ``todo`` until the
+graph completes and its assignee (the orchestrator profile) wakes up to
+judge completion and add more work.
 
 Mirrors ``kanban_specify`` (lazy aux import, lenient parse, never raises on
 expected failures). ``fanout=false`` collapses to the ``specify`` behaviour

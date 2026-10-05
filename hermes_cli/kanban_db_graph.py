@@ -137,8 +137,11 @@ def decompose_triage_task(
                 parent_id, child_id = child_ids[p_idx], child_ids[idx]
                 _link(conn, parent_id, child_id)
                 _append_event(conn, child_id, "linked", {"parent": parent_id, "child": child_id})
-        # Root waits for the whole graph: link it under EVERY child (simpler
-        # than computing leaves; cycle-free since the root is only ever a child).
+        # Root waits for the whole graph: link it as the *child* of every leaf
+        # (simpler than computing leaves; cycle-free since the root is only
+        # ever a child in the link table). recompute_ready then keeps the root
+        # in 'todo' until every child is done, at which point it promotes the
+        # root and the orchestrator wakes up to judge completion.
         for cid in child_ids:
             _link(conn, cid, task_id)
         # Flip the root triage -> todo, assignee -> orchestrator.

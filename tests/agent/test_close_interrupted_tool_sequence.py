@@ -66,3 +66,28 @@ def test_user_tail_is_left_untouched():
     assert close_interrupted_tool_sequence(messages, None) is False
     assert len(messages) == 1
 
+
+
+def test_placeholder_close_is_hidden_from_rendered_transcripts():
+    """No real text (or just the bare placeholder) closes silently: content empty,
+    display_kind hidden, LLM still sees the placeholder through api_content."""
+    from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
+    messages = _tool_tail()
+    close_interrupted_tool_sequence(messages, None)
+    row = messages[-1]
+    assert row["role"] == "assistant"
+    assert row["content"] == ""
+    assert row["display_kind"] == "hidden"
+    assert row["api_content"] == _INTERRUPTED_PLACEHOLDER
+
+
+def test_caller_supplied_banner_stays_visible():
+    """Truncation and partial-delivery paths pass a real user-facing banner — it is
+    the turn's only explanation and must NOT be swallowed by the hidden shape."""
+    banner = "Response truncated — tool call arguments were cut off."
+    messages = _tool_tail()
+    close_interrupted_tool_sequence(messages, banner)
+    row = messages[-1]
+    assert row["role"] == "assistant"
+    assert row.get("display_kind") != "hidden"
+    assert row["content"] == banner

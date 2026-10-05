@@ -18,6 +18,7 @@ import os
 import random
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -103,6 +104,53 @@ def _mime_for_ext(ext: str) -> str:
 def _display_name(obj: dict, profile_key: str, default: str = "") -> str:
     """``localDisplayName`` falling back to the nested profile's ``displayName``."""
     return obj.get("localDisplayName", "") or (obj.get(profile_key, {}) or {}).get("displayName", default)
+
+
+@dataclass(frozen=True)
+class _ReplyContext:
+    message_id: Optional[str] = None
+    text: Optional[str] = None
+    author_id: Optional[str] = None
+    author_name: Optional[str] = None
+    is_own_message: bool = False
+
+    @classmethod
+    def from_quote(cls, quote: object, chat_info: dict, incoming_id: Optional[str]) -> "_ReplyContext":
+        if not isinstance(quote, dict):
+            return cls()
+
+        local_id = quote.get("itemId")
+        shared_id = quote.get("sharedMsgId")
+        if local_id is not None:
+            message_id = str(local_id)
+        elif isinstance(shared_id, str) and shared_id:
+            message_id = f"simplex:quote:shared:{shared_id}"
+        else:
+            message_id = f"simplex:quote:item:{incoming_id}" if incoming_id is not None else None
+
+        content = quote.get("content")
+        text = content.get("text") if isinstance(content, dict) else None
+        direction = quote.get("chatDir")
+        direction_type = direction.get("type") if isinstance(direction, dict) else None
+        author_id = author_name = None
+        if direction_type == "directRcv":
+            contact = chat_info.get("contact")
+            if isinstance(contact, dict):
+                contact_id = contact.get("contactId")
+                author_id = str(contact_id) if contact_id is not None else None
+                author_name = _display_name(contact, "profile") or None
+        elif direction_type == "groupRcv" and isinstance(direction, dict):
+            member = direction.get("groupMember")
+            if isinstance(member, dict):
+                member_id = member.get("memberId")
+                author_id = str(member_id) if member_id is not None else None
+                author_name = _display_name(member, "memberProfile") or None
+
+        return cls(
+            message_id=message_id, text=text if isinstance(text, str) else None,
+            author_id=author_id, author_name=author_name,
+            is_own_message=direction_type in ("directSnd", "groupSnd"),
+        )
 
 
 def _send_cmd(chat_id: str, items: list) -> str:
@@ -388,9 +436,15 @@ class SimplexAdapter(BasePlatformAdapter):
             timestamp = datetime.fromisoformat(ts_str) if ts_str else datetime.now(tz=UTC)
         except (ValueError, AttributeError):
             timestamp = datetime.now(tz=UTC)
+        item_id = meta.get("itemId")
+        message_id = str(item_id) if item_id is not None else None
+        reply = _ReplyContext.from_quote(chat_item_data.get("quotedItem"), chat_info, message_id)
         msg_event = MessageEvent(
             source=source, text=text or "", message_type=msg_type, media_urls=media_urls,
-            media_types=media_types, timestamp=timestamp, raw_message=chat_item)
+            media_types=media_types, timestamp=timestamp, raw_message=chat_item,
+            message_id=message_id, reply_to_message_id=reply.message_id, reply_to_text=reply.text,
+            reply_to_author_id=reply.author_id, reply_to_author_name=reply.author_name,
+            reply_to_is_own_message=reply.is_own_message)
         logger.debug("SimpleX: message from %s in %s: %s", _redact_id(sender_id), chat_id[:20], (text or "")[:50])
         if msg_type == MessageType.TEXT and text:  # batch rapid-fire text into one combined message
             self._enqueue_text_event(msg_event)

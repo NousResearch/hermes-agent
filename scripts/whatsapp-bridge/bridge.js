@@ -256,6 +256,9 @@ const logger = pino({ level: 'warn' });
 // Message queue for polling
 const messageQueue = [];
 const MAX_QUEUE_SIZE = 100;
+// Exit code read by the Python adapter (_BRIDGE_LOGGED_OUT_EXIT_CODE): WhatsApp unlinked this device,
+// so only a new pairing recovers the session and the gateway must stop reconnecting.
+const LOGGED_OUT_EXIT_CODE = 78;
 
 // Track recently sent message IDs.  Two purposes:
 //   1. Prevent echo-back loops with media in self-chat mode.
@@ -434,7 +437,7 @@ async function startSocket() {
         if (!PAIR_JSON) {
           console.log('❌ Logged out. Delete session and restart to re-authenticate.');
         }
-        process.exit(1);
+        process.exit(LOGGED_OUT_EXIT_CODE);
       } else {
         // 515 = restart requested (common after pairing). Always reconnect.
         emitPairEvent({ event: 'disconnected', reason });

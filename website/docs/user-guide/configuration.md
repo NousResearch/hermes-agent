@@ -333,9 +333,8 @@ scopes; if it is SIGKILLed (OOM victim, `TimeoutStopSec` escalation, a crash) th
 `ExecStopPost` reaper (`gateway/cgroup_cleanup.py`) enumerates the loaded `hermes-fg-*`
 scopes and stops each one whose PID is no longer alive, so a live gateway's commands are
 never matched and no PID file has to survive the crash. Treat it as a best-effort backstop
-rather than a guarantee: an unreachable systemd manager, an unnameable unit, or a liveness
-answer that cannot be resolved means no stop at all, and the reaper enqueues the stop
-instead of waiting for it.
+rather than a guarantee: an unreachable systemd manager or an unnameable unit means no stop
+at all, and the reaper enqueues the stop instead of waiting for it.
 
 #### `terminal.home_mode`
 

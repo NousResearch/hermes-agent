@@ -3759,8 +3759,7 @@ class GatewayRunner(
         self.hooks = ProfileHookRegistries()
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
-        # Per-(bot, guild, text channel, user) transcript dedup: the voice/STT pipeline can emit one
-        # utterance twice.
+        # Per-(bot, guild, text channel, user) transcript dedup: voice/STT can emit one utterance twice.
         self._recent_voice_transcripts: Dict[tuple, List[tuple[float, str]]] = {}
         # Background tasks kept referenced so they are not garbage-collected mid-execution.
         self._background_tasks: set = set()

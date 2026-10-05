@@ -4,6 +4,7 @@ The runner keeps one dedup store for every Discord bot it serves. Keyed by guild
 second bot (another profile) in the same guild dropped its own copy of an utterance because the first
 bot had just recorded it, and a rebind to another text channel inherited the old binding's history.
 """
+from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -19,7 +20,7 @@ _GUILD, _USER = 1, 42
 class _Bot:
     """What the voice callback reads from a Discord adapter (weakref-able)."""
 
-    def __init__(self, profile):
+    def __init__(self, profile: str | None) -> None:
         self._owner_profile = profile
         self._voice_text_channels, self._voice_sources = {_GUILD: 700}, {}
         self._client = SimpleNamespace(get_channel=lambda _id: None, get_guild=lambda _id: None)
@@ -27,7 +28,7 @@ class _Bot:
 
 
 @pytest.mark.asyncio
-async def test_dedup_is_scoped_to_the_receiving_bot_and_its_binding():
+async def test_dedup_is_scoped_to_the_receiving_bot_and_its_binding() -> None:
     bot_a, bot_b = _Bot(None), _Bot("bot-b")
     runner = object.__new__(gateway_run.GatewayRunner)
     runner.adapters = {Platform.DISCORD: bot_a}
@@ -35,7 +36,7 @@ async def test_dedup_is_scoped_to_the_receiving_bot_and_its_binding():
     runner._canonicalize = lambda source, **_kw: object()
     runner._is_user_authorized = lambda source: True
 
-    async def say(bot, text="what broke on the ingest box"):
+    async def say(bot: _Bot, text: str = "what broke on the ingest box") -> None:
         await runner._handle_voice_channel_input(_GUILD, _USER, text, adapter=bot)
 
     await say(bot_a)

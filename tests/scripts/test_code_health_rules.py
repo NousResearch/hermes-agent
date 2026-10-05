@@ -168,3 +168,23 @@ def test_assignment_refactored_into_return_after_kill_passes(tmp_path, capsys):
     head = _KILL.format("    proc.kill()\n    return proc.wait()\n")
     code, out = _judge(tmp_path, capsys, {"pkg/k.py": base}, {"pkg/k.py": head})
     assert code == 0, out
+
+
+# --- HX009: annotated results and projected loop variables ---
+
+_GATHER = "import asyncio\n\n\nasync def run(awaitables, payloads):\n    results{ann} = await asyncio.gather(\n        *awaitables, return_exceptions=True\n    )\n{loop}"
+
+
+@pytest.mark.parametrize("ann, loop, flagged", [
+    (": list", "    for result in results:\n        if isinstance(result, Exception):\n            raise result\n", True),
+    ("", "    for result in results:\n        if isinstance(result, Exception):\n            raise result\n", True),
+    ("", "    for payload, result in zip(payloads, results):\n        if isinstance(result, Exception):\n            raise result\n", True),
+    ("", "    for payload, result in zip(payloads, results):\n        if isinstance(payload, Exception):\n            raise payload\n", False),
+    ("", "    for payload, result in zip(payloads, results, strict=True):\n        if isinstance(payload, Exception):\n            raise payload\n", False),
+    ("", "    for i, r in enumerate(results):\n        if isinstance(r, Exception):\n            raise r\n", True),
+    ("", "    for i, r in enumerate(results):\n        if isinstance(i, Exception):\n            raise i\n", False),
+    ("", "    return [r for i, r in enumerate(results) if isinstance(i, Exception)]\n", False),
+    (": list", "    return [r for i, r in enumerate(results) if isinstance(r, Exception)]\n", True),
+])
+def test_gather_results_projection(ann, loop, flagged):
+    assert bool(_hits("HX009", _GATHER.format(ann=ann, loop=loop))) is flagged

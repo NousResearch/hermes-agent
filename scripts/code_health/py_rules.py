@@ -721,16 +721,31 @@ def _from_results(node: ast.AST | None, results: set[str]) -> bool:
     return False
 
 
+def _projected(target: ast.AST, iterable: ast.AST, results: set[str]) -> set[str]:
+    """Names in ``target`` that receive a result when it takes one item of ``iterable``.
+
+    ``for payload, result in zip(payloads, results)`` taints only ``result`` and
+    ``for i, r in enumerate(results)`` only ``r``: each position follows its own source."""
+    if isinstance(target, (ast.Tuple, ast.List)) and isinstance(iterable, ast.Call):
+        name, elts, args = _call_name(iterable), target.elts, iterable.args
+        if name == "zip" and len(elts) == len(args):
+            return set().union(*(_projected(e, a, results) for e, a in zip(elts, args, strict=True)))
+        if name == "enumerate" and len(elts) == 2 and args:
+            return _projected(elts[1], args[0], results)
+    return _names(target) if _from_results(iterable, results) else set()
+
+
 def _result_names(func: ast.AST) -> set[str]:
     """Names bound to gather(return_exceptions=True) results in ``func``'s own body."""
     results: set[str] = set()
     nodes = [n for stmt in func.body for n in _eager(stmt)]
     for _ in range(3):  # results -> loop vars -> unpacked loop vars
         for node in nodes:
-            if isinstance(node, ast.Assign) and _from_results(node.value, results):
-                results |= set().union(*(_names(t) for t in node.targets))
-            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)) and _from_results(node.iter, results):
-                results |= _names(node.target)
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and _from_results(node.value, results):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                results |= set().union(*(_names(t) for t in targets))
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                results |= _projected(node.target, node.iter, results)
     return results
 
 

@@ -2166,6 +2166,18 @@ def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) 
 
 _HUMAN_GATE_PENDING_PREFIX = "HUMAN_GATE_PENDING:"
 _HUMAN_GATE_APPROVAL_PREFIX = "HUMAN_GATE_APPROVAL:"
+# P2b CLOSE (operator decision 2026-10-05): an approval marker only RELEASES a
+# gate when (a) its AUTHOR is an authorized approval identity, and (b) the
+# marker carries the approval artifact's sha256 digest — which must MATCH the
+# actual bytes on disk (a stale digest = approval for bytes that changed
+# since = no release). Anything else refuses the release: a worker cannot
+# self-approve by commenting as `operator`, and an approval without a digest
+# (or with a stale one) is noise. The digest binds the approval to EXACT
+# evidence — no replay of an approval after the artifact changed.
+_AUTHORIZED_APPROVAL_AUTHORS = frozenset({
+    "operator", "orchestrator", "hermes-system", "hermes-system-", "hermes",
+    "autopilot",
+})
 
 
 def _parse_gate_marker(body: str) -> Optional[str]:
@@ -2176,21 +2188,49 @@ def _parse_gate_marker(body: str) -> Optional[str]:
     return None
 
 
-def _parse_approval_marker(body: str) -> Optional[tuple[Optional[str], Optional[str]]]:
+def _parse_approval_marker(
+    body: str,
+) -> Optional[tuple[Optional[str], Optional[str], Optional[str]]]:
+    """``(gate_id, artifact_path, artifact_digest)``; digest = ``digest= hex64``
+    when present (P2b CLOSE: the digest binds the approval to exact bytes)."""
     text = (body or "").strip()
     if not text.startswith(_HUMAN_GATE_APPROVAL_PREFIX):
         return None
     rest = text[len(_HUMAN_GATE_APPROVAL_PREFIX):].strip()
     if not rest:
-        return ("", None)
+        return ("", None, None)
     artifact = None
+    digest = None
     if "artifact=" in rest:
         gate_part, _, artifact_part = rest.partition("artifact=")
         gate_id = gate_part.strip()
-        artifact = artifact_part.strip() or None
+        # Digest may follow the artifact (same part, whitespace separated).
+        head, _, tail = artifact_part.partition("digest=")
+        artifact = head.strip() or None
+        if tail:
+            candidate = tail.strip().split()[0] if tail.strip() else ""
+            if len(candidate) == 64 and all(c in "0123456789abcdef" for c in candidate.lower()):
+                digest = candidate.lower()
     else:
         gate_id = rest
-    return (gate_id or None, artifact)
+        # A digest may still be present without an artifact (bound elsewhere)?
+        # No: without a path there is nothing to verify the digest against.
+    return (gate_id or None, artifact, digest)
+
+
+def _artifact_digest_matches(path: Optional[str], digest: Optional[str]) -> bool:
+    """P2b CLOSE: an approval WITH a digest requires the artifact bytes to
+    hash to exactly that digest right now (stale digest = changed bytes = no
+    release). WITHOUT a digest the release is refused (an approval not bound
+    to exact evidence releases nothing — pre-P2b-close noise rule)."""
+    if not path or not digest:
+        return False
+    try:
+        import hashlib
+        h = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return h == digest
 
 
 def _require_task(conn: sqlite3.Connection, task_id: str) -> None:
@@ -3872,7 +3912,7 @@ def _latest_armed_human_gate(
     """
     try:
         rows = conn.execute(
-            "SELECT id, body FROM task_comments WHERE task_id = ? ORDER BY id ASC",
+            "SELECT id, author, body FROM task_comments WHERE task_id = ? ORDER BY id ASC",
             (task_id,),
         ).fetchall()
     except sqlite3.Error:
@@ -3882,6 +3922,7 @@ def _latest_armed_human_gate(
         return (True, [None])
     armed: list[Optional[str]] = []
     for row in rows:
+        author = _row_get(row, "author") if isinstance(row, sqlite3.Row) else None
         body = row["body"] if not isinstance(row, sqlite3.Row) or "body" in row.keys() else row[0]
         if (body or "").strip().startswith(_HUMAN_GATE_PENDING_PREFIX):
             pending = _parse_gate_marker(body)  # None for a blank-id marker
@@ -3892,10 +3933,16 @@ def _latest_armed_human_gate(
         approval = _parse_approval_marker(body)
         if approval is None or not approval[0]:
             continue  # prose or blank-id approval: ignored (blank approves nothing)
-        gate_id, artifact = approval
-        if gate_id in armed and artifact and Path(artifact).is_file():
+        gate_id, artifact, digest = approval
+        # P2b CLOSE: the release requires an AUTHORIZED approval author AND a
+        # digest-bound real artifact — a worker cannot self-approve by
+        # commenting as `operator`, and an approval without exact evidence
+        # (missing file, missing/stale digest) releases nothing.
+        if author not in _AUTHORIZED_APPROVAL_AUTHORS:
+            continue  # unauthenticated identity: noise, keep scanning
+        if gate_id in armed and artifact and _artifact_digest_matches(artifact, digest):
             armed.remove(gate_id)
-        # non-armed id OR missing artifact: noise, keep scanning (N-2)
+        # non-armed id OR unauth'd OR no/stale digest: noise, keep scanning
     return (bool(armed), armed)
 
 

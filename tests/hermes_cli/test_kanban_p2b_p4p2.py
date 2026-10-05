@@ -37,6 +37,14 @@ import tempfile as _tf
 _ART = _tf.NamedTemporaryFile(prefix="p2b_art_", delete=False).name  # N-2: approvals need a real artifact on disk
 
 
+import hashlib as _hashlib_mod
+
+
+def _dig(_p) -> str:
+    """sha256 of the file at _p (bytes) — P2b-close digest binding."""
+    from pathlib import Path as _P
+    return _hashlib_mod.sha256(_P(_p).read_bytes()).hexdigest()
+
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 
@@ -159,7 +167,7 @@ class TestP2bHumanGateAtCompletion:
         by anyone) must NOT trip the gate — completion proceeds."""
         tid = _claimed_task(conn)
         _add_comment(conn, tid, "autopilot", f"{PENDING} g1")
-        _add_comment(conn, tid, "human-operator", f"{APPROVAL} g1 artifact={_ART}")
+        _add_comment(conn, tid, "operator", f"{APPROVAL} g1 artifact={_ART} digest={_dig(_ART)}")
         assert kb.complete_task(conn, tid, result="approved by human") is True
         kinds = _event_kinds(conn, tid)
         assert "completed" in kinds
@@ -172,7 +180,7 @@ class TestP2bHumanGateAtCompletion:
         marker of the trio decides."""
         tid = _claimed_task(conn)
         _add_comment(conn, tid, "autopilot", f"{PENDING} g1")
-        _add_comment(conn, tid, "human", f"{APPROVAL} g1 artifact={_ART}")
+        _add_comment(conn, tid, "operator", f"{APPROVAL} g1 artifact={_ART} digest={_dig(_ART)}")
         _add_comment(conn, tid, "autopilot", f"{PENDING} g1")  # re-armed
         with pytest.raises(kb.HumanGatePendingError):
             kb.complete_task(conn, tid, result="r")
@@ -184,7 +192,7 @@ class TestP2bHumanGateAtCompletion:
         the trail never armed is inert noise, not a sign-off."""
         tid = _claimed_task(conn)
         _add_comment(conn, tid, "autopilot", "regular prose comment")
-        _add_comment(conn, tid, "human", f"{APPROVAL} gx artifact={_ART}")
+        _add_comment(conn, tid, "operator", f"{APPROVAL} gx artifact={_ART} digest={_dig(_ART)}")
         # gx never had a pending marker on its trail: nothing armed, nothing
         # signed off... the gate must not treat noise as approval. The card
         # completes (nothing is armed) — asserted explicitly so the gate's
@@ -197,7 +205,7 @@ class TestP2bHumanGateAtCompletion:
         gate ever armed, no gate IS armed (None == 'not pending'), so the
         card completes — the assertion sibling of the uncoupled-gates test."""
         tid = _claimed_task(conn)
-        _add_comment(conn, tid, "human", f"{APPROVAL} gq artifact={_ART}")
+        _add_comment(conn, tid, "operator", f"{APPROVAL} gq artifact={_ART} digest={_dig(_ART)}")
         assert kb.complete_task(conn, tid, result="r") is True
         assert _status(conn, tid) == "done"
 
@@ -205,7 +213,7 @@ class TestP2bHumanGateAtCompletion:
         """Ambiguity resolution for a lone-approval trail: with NO pending
         gate ever armed, no gate IS armed, so the card completes."""
         tid = _claimed_task(conn)
-        _add_comment(conn, tid, "human", f"{APPROVAL} gq artifact={_ART}")
+        _add_comment(conn, tid, "operator", f"{APPROVAL} gq artifact={_ART} digest={_dig(_ART)}")
         assert kb.complete_task(conn, tid, result="r") is True
         assert _status(conn, tid) == "done"
 
@@ -215,7 +223,7 @@ class TestP2bHumanGateAtCompletion:
         when the approval id MATCHES the armed pending, so g1 stays armed."""
         tid = _claimed_task(conn)
         _add_comment(conn, tid, "autopilot", f"{PENDING} g1")
-        _add_comment(conn, tid, "human", f"{APPROVAL} g2 artifact={_ART}")
+        _add_comment(conn, tid, "operator", f"{APPROVAL} g2 artifact={_ART} digest={_dig(_ART)}")
         with pytest.raises(kb.HumanGatePendingError) as excinfo:
             kb.complete_task(conn, tid, result="r")
         assert excinfo.value.gate_id == "g1"
@@ -224,7 +232,7 @@ class TestP2bHumanGateAtCompletion:
         tid = _claimed_task(conn)
         _add_comment(conn, tid, "autopilot", f"{PENDING} g1")
         _add_comment(conn, tid, "worker", "progress: half done")
-        _add_comment(conn, tid, "human", f"{APPROVAL} g1 artifact={_ART}")
+        _add_comment(conn, tid, "operator", f"{APPROVAL} g1 artifact={_ART} digest={_dig(_ART)}")
         assert kb.complete_task(conn, tid, result="r") is True
 
     def test_gate_blank_pending_id_still_refused_with_none(self, conn):

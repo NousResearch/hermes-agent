@@ -14,6 +14,14 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 
 
+import hashlib as _hashlib_mod
+
+
+def _dig(_p) -> str:
+    """sha256 of the file at _p (bytes) — P2b-close digest binding."""
+    from pathlib import Path as _P
+    return _hashlib_mod.sha256(_P(_p).read_bytes()).hexdigest()
+
 @pytest.fixture()
 def conn(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
@@ -28,7 +36,7 @@ def conn(tmp_path, monkeypatch):
     c.close()
 
 
-def _comment(conn, tid, body, author="worker", ts=100):
+def _comment(conn, tid, body, author="operator", ts=100):
     conn.execute(
         "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?,?,?,?)",
         (tid, author, body, ts),
@@ -48,7 +56,7 @@ def test_complete_refused_when_any_earlier_gate_still_armed(conn, tmp_path):
     art = _artifact(tmp_path, "g2.md")
     _comment(conn, tid, "HUMAN_GATE_PENDING: g1", ts=100)
     _comment(conn, tid, "HUMAN_GATE_PENDING: g2", ts=101)
-    _comment(conn, tid, f"HUMAN_GATE_APPROVAL: g2 artifact={art}", ts=102)
+    _comment(conn, tid, f"HUMAN_GATE_APPROVAL: g2 artifact={art} digest={_dig(art)}", ts=102)
     with pytest.raises(kb.HumanGatePendingError):
         kb.complete_task(conn, tid, force=True, result="ev", summary="s")
     assert kb.get_task(conn, tid).status != "done"
@@ -60,8 +68,8 @@ def test_complete_allowed_when_all_gates_released(conn, tmp_path):
     a2 = _artifact(tmp_path, "g2.md")
     _comment(conn, tid, "HUMAN_GATE_PENDING: g1", ts=100)
     _comment(conn, tid, "HUMAN_GATE_PENDING: g2", ts=101)
-    _comment(conn, tid, f"HUMAN_GATE_APPROVAL: g2 artifact={a2}", ts=102)
-    _comment(conn, tid, f"HUMAN_GATE_APPROVAL: g1 artifact={a1}", ts=103)
+    _comment(conn, tid, f"HUMAN_GATE_APPROVAL: g2 artifact={a2} digest={_dig(a2)}", ts=102)
+    _comment(conn, tid, f"HUMAN_GATE_APPROVAL: g1 artifact={a1} digest={_dig(a1)}", ts=103)
     assert kb.complete_task(conn, tid, force=True, result="ev", summary="s") is True
 
 
@@ -88,7 +96,7 @@ def test_leading_space_pending_marker_still_gates_completion(conn, tmp_path):
     _comment(conn, tid, " HUMAN_GATE_PENDING: g1", ts=100)
     # approval com artefacto real: o trail Scout via parser ACHA o pending (id g1)
     art = _artifact(tmp_path)
-    _comment(conn, tid, f"HUMAN_GATE_APPROVAL: g1 artifact={art}", ts=101)
+    _comment(conn, tid, f"HUMAN_GATE_APPROVAL: g1 artifact={art} digest={_dig(art)}", ts=101)
     # com o N-5 fixed, o approval do MESMO trail fecha o gate (parser-based lookup)
     assert kb.complete_task(conn, tid, force=True, result="ev", summary="s") is True
 

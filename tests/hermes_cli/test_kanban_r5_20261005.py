@@ -34,6 +34,14 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_external_artifacts as kea
 
 
+import hashlib as _hashlib_mod
+
+
+def _dig(_p) -> str:
+    """sha256 of the file at _p (bytes) — P2b-close digest binding."""
+    from pathlib import Path as _P
+    return _hashlib_mod.sha256(_P(_p).read_bytes()).hexdigest()
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     """Isolated HERMES_HOME/kanban home with an empty kanban DB."""
@@ -226,7 +234,7 @@ class TestR502HumanGateArmedBetweenPrecheckAndTxn:
                     "VALUES (?, ?, ?, ?)",
                     (
                         tid, "operator",
-                        f"HUMAN_GATE_APPROVAL: R52 artifact={_ART}",
+                        f"HUMAN_GATE_APPROVAL: R52 artifact={_ART} digest={_dig(_ART)}",
                         int(time.time()),
                     ),
                 )

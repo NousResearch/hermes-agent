@@ -8,6 +8,8 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import os
 import re
 import signal
@@ -116,6 +118,8 @@ class DispatchResult:
     """Task ids auto-blocked by the spawn-failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
+    escalated: list[str] = field(default_factory=list)
+    """Escalation-card ids created or updated from eligible terminal events."""
     stale: list[str] = field(default_factory=list)
     """Task ids reclaimed for no heartbeat within ``dispatch_stale_timeout_seconds``."""
     respawn_guarded: list[tuple[str, str]] = field(default_factory=list)
@@ -1415,6 +1419,99 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
 
 
+def process_handoff_escalations(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str],
+    enabled: bool,
+    routes: Optional[Mapping[str, str]] = None,
+) -> list[str]:
+    """Route eligible failure events to one privacy-safe escalation card.
+
+    The source event id is the durable outbox cursor.  Repeated dispatcher ticks
+    first observe ``handoff_escalated`` and therefore do not duplicate comments
+    or cards.  One stable key per source task lets later failures monotonically
+    update the same escalation identity.
+    """
+    if not enabled:
+        return []
+    board_name = board or "default"
+    route_map = {"maiddee-cmo": "smile", "tech-coe": "tech-cto"}
+    if routes:
+        route_map.update({str(k): str(v) for k, v in routes.items() if v})
+    owner = route_map.get(board_name)
+    if not owner:
+        return []
+
+    rows = conn.execute(
+        """
+        SELECT e.id, e.task_id, e.run_id, e.kind, e.payload, e.created_at,
+               t.status, t.tenant, t.idempotency_key, t.consecutive_failures
+          FROM task_events e
+          JOIN tasks t ON t.id = e.task_id
+         WHERE e.kind IN ('blocked', 'timed_out', 'gave_up')
+           AND (t.idempotency_key IS NULL OR t.idempotency_key NOT LIKE 'escalate:%')
+           AND NOT EXISTS (
+               SELECT 1 FROM task_events x
+                WHERE x.task_id = e.task_id AND x.kind = 'handoff_escalated'
+                  AND json_extract(x.payload, '$.source_event_id') = e.id
+           )
+         ORDER BY e.id
+        """
+    ).fetchall()
+    escalated: list[str] = []
+    for row in rows:
+        source = json.loads(row["payload"] or "{}")
+        failure_class = row["kind"]
+        if failure_class == "blocked":
+            failure_class = source.get("kind")
+            if failure_class not in {"needs_input", "capability"}:
+                continue
+        task_ref = hashlib.sha256(
+            f"{board_name}:{row['task_id']}".encode("utf-8")
+        ).hexdigest()[:20]
+        payload = {
+            "source_event_id": int(row["id"]),
+            "board": board_name,
+            "task_ref": task_ref,
+            "state": row["status"],
+            "failure_class": failure_class,
+            "attempt_count": int(row["consecutive_failures"] or 0),
+            "owner_profile": owner,
+            "timestamp": int(row["created_at"]),
+            "run_id": row["run_id"],
+        }
+        escalation_id = _kb.create_task(
+            conn,
+            title=f"Kanban escalation {task_ref}",
+            body=json.dumps(payload, sort_keys=True),
+            assignee=owner,
+            created_by="kanban-dispatcher",
+            tenant=row["tenant"],
+            idempotency_key=f"escalate:{board_name}:{task_ref}",
+            board=board,
+        )
+        with _kb.write_txn(conn):
+            # Recheck under the write lock: another dispatcher/process may have
+            # handled this outbox row after our initial read.
+            seen = conn.execute(
+                "SELECT 1 FROM task_events WHERE task_id = ? "
+                "AND kind = 'handoff_escalated' "
+                "AND json_extract(payload, '$.source_event_id') = ?",
+                (row["task_id"], int(row["id"])),
+            ).fetchone()
+            if seen:
+                continue
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, 'kanban-dispatcher', ?, ?)",
+                (escalation_id, json.dumps(payload, sort_keys=True), int(time.time())),
+            )
+            _kb._append_event(conn, row["task_id"], "handoff_escalated", payload)
+        escalated.append(escalation_id)
+    return escalated
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -1429,6 +1526,8 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    escalation_enabled: bool = False,
+    escalation_routes: Optional[Mapping[str, str]] = None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -1452,6 +1551,8 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            escalation_enabled=escalation_enabled,
+            escalation_routes=escalation_routes,
         )
 
     try:
@@ -1761,6 +1862,8 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    escalation_enabled: bool = False,
+    escalation_routes: Optional[Mapping[str, str]] = None,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
     todo -> ready, then atomically claim each spawnable ready/review row and
@@ -1772,6 +1875,10 @@ def _dispatch_once_locked(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans,
     )
+    if not dry_run:
+        result.escalated = process_handoff_escalations(
+            conn, board=board, enabled=escalation_enabled, routes=escalation_routes,
+        )
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )

@@ -309,7 +309,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print(
         "\nNext step: start the gateway so ready tasks actually get picked up.\n"
         "  hermes gateway start\n\n"
-        "The gateway hosts an embedded dispatcher that ticks every 60 seconds\n"
+        "The gateway hosts an embedded dispatcher that ticks every 5 seconds\n"
         "by default (config: kanban.dispatch_interval_seconds). Without a\n"
         "running gateway, tasks stay in 'ready' forever."
     )

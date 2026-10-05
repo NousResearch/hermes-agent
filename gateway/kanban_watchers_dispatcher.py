@@ -12,7 +12,7 @@ import os
 import sqlite3
 import time
 from dataclasses import asdict, dataclass
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from gateway.kanban_watchers_common import _board_slugs, _positive_int_setting, logger
 
@@ -41,16 +41,18 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    escalation_enabled: bool
+    escalation_routes: Mapping[str, str]
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
     """Parse and log the dispatcher settings in their established order."""
     try:
-        interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
+        interval = float(kanban_cfg.get("dispatch_interval_seconds", 5) or 5)
     except (ValueError, TypeError):
-        logger.warning("kanban dispatcher: invalid dispatch_interval_seconds=%r, using default 60",
+        logger.warning("kanban dispatcher: invalid dispatch_interval_seconds=%r, using default 5",
                        kanban_cfg.get("dispatch_interval_seconds"))
-        interval = 60.0
+        interval = 5.0
     interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
 
     max_spawn = kanban_cfg.get("max_spawn")
@@ -114,6 +116,8 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        escalation_enabled=bool(kanban_cfg.get("escalation_enabled", False)),
+        escalation_routes=dict(kanban_cfg.get("escalation_routes") or {}),
     )
 
 

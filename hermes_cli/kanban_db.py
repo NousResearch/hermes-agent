@@ -218,7 +218,7 @@ def notify_task_updated(
 # DispatchResult counters whose non-zero value means the tick did something.
 _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "crashed", "stale",
-    "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
+    "timed_out", "auto_blocked", "escalated", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
     "skipped_nonspawnable",
 )
@@ -1268,19 +1268,8 @@ def create_task(
     project_id, project_obj, project_repo, workspace_kind = _resolve_project_link(
         conn, project_id, project_source_task_id, workspace_kind, workspace_path
     )
-    parents = tuple(p for p in parents if p)
+    parents = tuple(dict.fromkeys(p for p in parents if p))
     skills_list = _normalize_task_skills(skills)
-
-    # Idempotency check BEFORE the write txn (no lock held); a concurrent-create
-    # race may insert twice, the next lookup stabilises on the newest.
-    if idempotency_key:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1", (idempotency_key,),
-        ).fetchone()
-        if row:
-            return row["id"]
 
     now = int(time.time())
 
@@ -1298,6 +1287,18 @@ def create_task(
             # allow_nested: graph builders compose create_task under one outer
             # commit so the dispatcher never sees a half-built graph.
             with write_txn(conn, allow_nested=True):
+                if idempotency_key:
+                    winner = conn.execute(
+                        "SELECT id, title, assignee, tenant FROM tasks "
+                        "WHERE idempotency_key = ? AND status != 'archived'",
+                        (idempotency_key,),
+                    ).fetchone()
+                    if winner is not None:
+                        _validate_idempotent_replay(
+                            conn, winner, title=title, assignee=assignee,
+                            tenant=tenant, parents=parents,
+                        )
+                        return winner["id"]
                 task_status = _initial_task_status(conn, parents, initial_status, triage)
                 # Project worktree: fresh dir under the repo + deterministic
                 # branch, instead of the random ``wt/<id>`` worker fallback.
@@ -1357,6 +1358,27 @@ def create_task(
             if attempt == 1:
                 raise
     raise RuntimeError("unreachable")
+
+
+def _validate_idempotent_replay(
+    conn: sqlite3.Connection,
+    winner: sqlite3.Row,
+    *,
+    title: str,
+    assignee: Optional[str],
+    tenant: Optional[str],
+    parents: tuple[str, ...],
+) -> None:
+    """Fail closed when an idempotency key is reused for different intent."""
+    winner_parents = tuple(sorted(parent_ids(conn, winner["id"])))
+    requested = (title.strip(), assignee, tenant, tuple(sorted(parents)))
+    existing = (
+        winner["title"], winner["assignee"], winner["tenant"], winner_parents,
+    )
+    if existing != requested:
+        raise ValueError(
+            "idempotency key conflicts with an existing task's immutable intent"
+        )
 
 
 def _board_meta_for(board: Optional[str]) -> dict:

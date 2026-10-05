@@ -1684,8 +1684,16 @@ DEFAULT_CONFIG = {
         # Auto-claim tasks in the review column and spawn the assigned profile with the bundled
         # sdlc-review skill. Disable where every review is done manually from the dashboard.
         "review_dispatch": True,
-        # Seconds between dispatcher ticks. Lower = snappier pickup; higher = less SQL pressure.
-        "dispatch_interval_seconds": 60,
+        # Seconds between dispatcher ticks. Five seconds bounds normal handoff latency while
+        # preserving the durable polling recovery path (no agent waits or cron dependency).
+        "dispatch_interval_seconds": 5,
+        # Privacy-safe automatic escalation is rollout-gated. When enabled, eligible blocked,
+        # timed-out and gave-up events update one stable escalation card per source task.
+        "escalation_enabled": False,
+        "escalation_routes": {
+            "maiddee-cmo": "smile",
+            "tech-coe": "tech-cto",
+        },
         # Auto-block after this many consecutive non-success attempts (spawn_failed, timed_out,
         # crashed) for the same task/profile. Reassignment resets the streak.
         "failure_limit": 2,

@@ -142,9 +142,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
 _DAEMON_DEPRECATED = (
     "hermes kanban daemon: DEPRECATED — the dispatcher now runs\ninside the gateway. To use "
     "kanban:\n\n    hermes gateway start       # starts the gateway + embedded dispatcher\n\nReady "
-    "tasks will be picked up on the next dispatcher tick\n(default: every 60 seconds). Configure "
+    "tasks will be picked up on the next dispatcher tick\n(default: every 5 seconds). Configure "
     "via config.yaml:\n\n    kanban:\n      dispatch_in_gateway: true      # default\n      "
-    "dispatch_interval_seconds: 60\n      failure_limit: 2              # consecutive non-success "
+    "dispatch_interval_seconds: 5\n      failure_limit: 2              # consecutive non-success "
     "attempts before auto-block\n\nRunning both the gateway AND this standalone daemon will\nrace "
     "for claims. If you truly need the old standalone\ndaemon (no gateway available), rerun with "
     "--force."

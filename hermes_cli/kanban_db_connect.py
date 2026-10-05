@@ -860,7 +860,19 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # init on legacy boards before the ALTER TABLE pass runs. ``IF NOT EXISTS``
     # keeps re-running here cheap and correct on fresh DBs.
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)")
+    # Active task identities are exactly-once.  The old non-unique index made
+    # create_task's read-before-write check racy across processes.  Reusing the
+    # name lets legacy boards migrate in place; latent active duplicates fail
+    # the migration closed so an operator can reconcile/archive them explicitly.
+    conn.execute("DROP INDEX IF EXISTS idx_tasks_idempotency")
+    unique_sql = (
+        "CREATE UNIQUE INDEX idx_tasks_idempotency ON tasks(idempotency_key) "
+        "WHERE idempotency_key IS NOT NULL AND status != 'archived'"
+        if "status" in _column_names(conn, "tasks")
+        else "CREATE UNIQUE INDEX idx_tasks_idempotency ON tasks(idempotency_key) "
+             "WHERE idempotency_key IS NOT NULL"
+    )
+    conn.execute(unique_sql)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)")
 
     # task_events.run_id back-fills as NULL for historical events (they predate

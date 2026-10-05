@@ -215,7 +215,17 @@ def _is_external_requirement(item: str, own_workspace: Optional[Path] = None) ->
     except OSError:
         return True
     if own_root is not None and p.is_relative_to(own_root):
-        return False  # own scratch: the in-txn staging preserves it
+        # F5-FINAL-02: OWN only when the workspace itself is MANAGED scratch —
+        # judged by the workspace's STORED spelling (exactly the spelling the
+        # staging's ``_managed_scratch_path_info`` guard sees, which accepts a
+        # lexical spelling through a symlinked root but rejects a physical one
+        # that no managed root's lexical form covers). Judging the RESOLVED
+        # workspace would re-create the R5-06 double-claim (capture external +
+        # staging coverage) for lexical-spelled symlinked workspaces.
+        managed, _board = _kb._managed_scratch_path_info(own_workspace or Path())
+        if managed:
+            return False  # own MANAGED scratch: the in-txn staging preserves it
+        return True  # unmanaged workspace: nothing owns it but the external lane
     for root in _managed_root_resolved_forms():
         try:
             if p.is_relative_to(root):
@@ -702,6 +712,29 @@ def discard_published_artifacts(
         _unlink_quietly(path)
         with contextlib.suppress(OSError):
             path.parent.rmdir()
+
+
+def _committed_attachment_paths(conn: Optional[sqlite3.Connection], paths: list[str]) -> set[str]:
+    """Resolved paths among *paths* that a COMMITTED attachment row references.
+
+    Fail-closed mirror of the discard probe: an unreadable DB keeps everything
+    (a deleted bound proof is unrecoverable; an un-discarded orphan is
+    cosmetic). F5-FINAL-01: the scratch lane's post-COMMIT protection uses the
+    same predicate as the external lane's ``discard_published_artifacts``."""
+    if conn is None or not paths:
+        return set()
+    try:
+        placeholders = ",".join("?" * len(paths))
+        return {
+            str(Path(row[0]).resolve())
+            for row in conn.execute(
+                f"SELECT stored_path FROM task_attachments "
+                f"WHERE stored_path IN ({placeholders})",
+                paths,
+            ).fetchall()
+        }
+    except sqlite3.Error:
+        return {str(Path(p).resolve()) for p in paths}  # cannot disprove binding: keep all
 
 
 def bind_external_artifacts(

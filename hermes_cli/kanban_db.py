@@ -3812,10 +3812,23 @@ def complete_task(
         # refusal paths alike. ``committed`` is False on all non-commit exits.
         if not committed:
             _kea.discard_published_artifacts(published_external, conn)
-            # R5-08: the scratch staging's own copies go too (rows never
-            # committed; a leaked copy would make the retry stage name_1.ext).
+            # R5-08 (F5-FINAL-01 correction): scratch staging copies go too —
+            # but ONLY when their rows are not part of the COMMITTED database
+            # state. A post-COMMIT invariant failure reaches this finally with
+            # ``committed`` still False (it is set after the context manager
+            # returns) while the transaction HAS committed; the committed-row
+            # probe below (same fail-closed read the external lane uses) keeps
+            # bound scratch proofs, so an invariant failure can never erase a
+            # durable attachment the done card points at.
+            scratch_bound = _kea._committed_attachment_paths(
+                conn, [str(Path(str(p))) for p in staged_scratch_ref],
+            ) if staged_scratch_ref else set()
             if staged_scratch_ref:
-                _discard_staged_copies(staged_scratch_ref, Path(str(staged_scratch_ref[0])).parent)
+                _discard_staged_copies(
+                    [p for p in staged_scratch_ref
+                     if str(Path(str(p)).resolve()) not in scratch_bound],
+                    Path(str(staged_scratch_ref[0])).parent,
+                )
     _flag_phantom_prose_refs(conn, task_id, run_id, summary, result, verified_cards)
     # Success wipes the breaker counter (history stays on the event log).
     _clear_failure_counter(conn, task_id)

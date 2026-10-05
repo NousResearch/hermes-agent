@@ -30,6 +30,33 @@ def _cache_root() -> Path:
     return Path(base) / "hermes-code-health"
 
 
+def _install(repo: Path, prefix: Path, pin: str) -> None:
+    npm = shutil.which("npm")
+    if not npm:
+        raise RuntimeError("code health needs node + npm to measure TypeScript files")
+    prefix.mkdir(parents=True, exist_ok=True)
+    # With --prefix, npm reads <prefix>/.npmrc as the project config and never the repo's, so
+    # the repo's install policy (min-release-age, registry) is copied in to apply here too.
+    npmrc = repo / ".npmrc"
+    if npmrc.is_file():
+        shutil.copyfile(npmrc, prefix / ".npmrc")
+    else:
+        (prefix / ".npmrc").unlink(missing_ok=True)
+    what = f"npm install typescript@{pin} into {prefix}"
+    try:
+        subprocess.run(
+            [npm, "install", "--no-save", "--no-package-lock", "--no-audit", "--no-fund",
+             "--prefix", str(prefix), f"typescript@{pin}"],
+            check=True, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=300, stdin=subprocess.DEVNULL,
+        )
+    # cli.main reports a RuntimeError as a tool failure (exit 2), never as a finding.
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"{what} failed: {(exc.stderr or '').strip()[-2000:]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"{what} timed out after {exc.timeout:.0f}s") from exc
+
+
 def resolve_typescript(repo: Path) -> Path:
     """Directory of the pinned ``typescript`` package, installing it into a cache if absent."""
     pin = pinned_typescript(repo)
@@ -41,14 +68,7 @@ def resolve_typescript(repo: Path) -> Path:
     prefix = _cache_root() / f"typescript-{pin}"
     cand = prefix / "node_modules" / "typescript"
     if _version_at(cand) != pin:
-        npm = shutil.which("npm")
-        if not npm:
-            raise RuntimeError("code health needs node + npm to measure TypeScript files")
-        subprocess.run(
-            [npm, "install", "--no-save", "--no-package-lock", "--no-audit", "--no-fund",
-             "--prefix", str(prefix), f"typescript@{pin}"],
-            check=True, capture_output=True, timeout=300, stdin=subprocess.DEVNULL,
-        )
+        _install(repo, prefix, pin)
     return cand
 
 

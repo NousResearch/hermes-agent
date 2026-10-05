@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import json
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from scripts.code_health.ts_measure import pinned_typescript
-from tests.scripts.test_code_health import REPO, _commit, _repo, _verdict
+from scripts.code_health.ts_measure import pinned_typescript, resolve_typescript
+from tests.scripts.test_code_health import REPO, _commit, _git, _repo, _verdict
 
 
 # --- TypeScript identity ----------------------------------------------------------------
@@ -89,3 +90,28 @@ def test_ts_identity_ignores_comments(tmp_path, capsys, files, blocks):
     repo, base = _ts_base(tmp_path, {"web/l.ts": _TS_LEGACY})
     code, out = _verdict(repo, base, files, capsys)
     assert code == (1 if blocks else 0), out
+
+
+# --- m5: the TypeScript install honours the repo's .npmrc and fails as a RuntimeError -----
+
+def test_typescript_install_uses_repo_npmrc_and_fails_cleanly(tmp_path, monkeypatch):
+    npm = shutil.which("npm")
+    if npm is None:
+        pytest.skip("npm is not installed")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "package-lock.json").write_text(
+        json.dumps({"packages": {"node_modules/typescript": {"version": pinned_typescript(REPO)}}}),
+        encoding="utf-8")
+    # An unreachable registry and an empty npm cache: only the repo's .npmrc can say so.
+    (repo / ".npmrc").write_text(
+        f"registry=http://127.0.0.1:9/\nfetch-retries=0\ncache={tmp_path / 'npm-cache'}\nmin-release-age=14\n",
+        encoding="utf-8")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    with pytest.raises(RuntimeError, match="typescript"):
+        resolve_typescript(repo)
+    prefix = next((tmp_path / "cache" / "hermes-code-health").iterdir())
+    got = subprocess.run([npm, "config", "get", "min-release-age", "--prefix", str(prefix)],
+                         cwd=prefix, capture_output=True, text=True, timeout=60, check=True).stdout.strip()
+    assert got == "14"

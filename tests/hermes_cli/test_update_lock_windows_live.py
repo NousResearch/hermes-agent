@@ -70,6 +70,63 @@ def test_killed_owner_takes_its_tree_down_and_frees_the_lock(tmp_path):
             owner.kill()
 
 
+
+# --- R5b: a child the job refused (it runs outside the job) holds a lease of its own ----------
+
+_JOINING_CHILD = r"""
+import sys, time
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hermes_cli.update_lock import UpdateLock
+assert UpdateLock(path=Path(sys.argv[3]), install_root=sys.argv[2], checkout_first=False).acquire_checkout(sys.argv[2])
+print("joined", flush=True)
+time.sleep(300)
+"""
+
+_UNBOUND_OWNER = r"""
+import subprocess, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from hermes_cli.update_lock import UpdateLock
+assert UpdateLock(path=Path(sys.argv[3]), install_root=sys.argv[2]).acquire()
+# The job refused it: a plain child, outside any kill-on-close job (a refused bind still runs).
+child = subprocess.Popen([sys.executable, "-c", sys.argv[4], *sys.argv[1:4]], stdout=subprocess.PIPE,
+                         stdin=subprocess.DEVNULL, text=True, encoding="utf-8")
+assert child.stdout.readline().strip() == "joined"
+print(child.pid, flush=True)
+child.wait()
+"""
+
+
+def test_a_child_the_job_refused_keeps_the_checkout_busy_after_its_owner_dies(tmp_path):
+    """R5b: never two writers. The owner is killed while its unbound child still runs: the
+    checkout must read held (the child's lease) until that child exits, then free."""
+    install = tmp_path / "checkout"
+    install.mkdir()
+    owner = subprocess.Popen([sys.executable, "-c", _UNBOUND_OWNER, str(REPO_ROOT), str(install), str(tmp_path / "m"),
+                              _JOINING_CHILD], stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True,
+                             encoding="utf-8")
+    child = None
+    try:
+        child = int(owner.stdout.readline().strip())
+        subprocess.run(["taskkill", "/F", "/PID", str(owner.pid)], capture_output=True, check=False)
+        owner.wait(timeout=30)
+        assert _alive(child), "fixture: the unbound child must outlive its owner"
+        assert update_in_progress(install), "the checkout reads free while the refused child still runs"
+        assert UpdateLock(path=tmp_path / "other-home-marker", install_root=install).acquire() is False
+    finally:
+        if child is not None:
+            subprocess.run(["taskkill", "/F", "/PID", str(child)], capture_output=True, check=False)
+        if owner.poll() is None:
+            owner.kill()
+    deadline = time.time() + 15
+    while _alive(child) and time.time() < deadline:
+        time.sleep(0.2)
+    fresh = UpdateLock(path=tmp_path / "other-home-marker", install_root=install)
+    assert fresh.acquire() is True, "the lease outlived the child that held it"
+    fresh.release()
+
+
 # --- R2 on Windows: the updater's git and Node children join the owner's kill-on-close job -----
 
 _GIT_OWNER = r"""

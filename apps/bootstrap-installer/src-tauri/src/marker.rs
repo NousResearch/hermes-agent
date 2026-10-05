@@ -565,6 +565,10 @@ const GIT_CHECKOUT_LOCK_NAME: &str = "hermes-update.lock";
 /// `update_lock.py::_WINDOWS_LOCK_OFFSET`: the byte msvcrt locks, far past the holder record.
 #[cfg(windows)]
 const WINDOWS_LOCK_OFFSET: u32 = 1 << 20;
+/// `update_lock.py::_LEASE_SLOTS`: the lease bytes right after it. A child that joined the lock
+/// holds one (R5b) and may outlive its owner, so any held lease reads as a held lock.
+#[cfg(windows)]
+const LEASE_SLOTS: u32 = 16;
 
 /// `update_lock.py::_git_common_dir`: the repository's common git dir, read from disk. `.git`
 /// is the dir itself, or a `gitdir: <path>` file (linked worktree, submodule) whose target may
@@ -643,7 +647,7 @@ fn checkout_lock_held(install_root: &Path) -> bool {
 
 /// Windows: msvcrt's `LK_NBLCK` is a `LockFile` byte-range lock on one byte at
 /// `WINDOWS_LOCK_OFFSET`; `LockFileEx` on the same byte conflicts with it. As in `_try_lock`,
-/// a lock that cannot be taken is held.
+/// a lock that cannot be taken is held, the lease bytes after it included.
 #[cfg(windows)]
 fn checkout_lock_held(install_root: &Path) -> bool {
     use std::os::windows::fs::OpenOptionsExt;
@@ -670,11 +674,11 @@ fn checkout_lock_held(install_root: &Path) -> bool {
     unsafe {
         let mut overlapped = at_offset();
         let flags = LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY;
-        if LockFileEx(handle, flags, 0, 1, 0, &mut overlapped) == 0 {
+        if LockFileEx(handle, flags, 0, 1 + LEASE_SLOTS, 0, &mut overlapped) == 0 {
             return true;
         }
         let mut overlapped = at_offset();
-        UnlockFileEx(handle, 0, 1, 0, &mut overlapped);
+        UnlockFileEx(handle, 0, 1 + LEASE_SLOTS, 0, &mut overlapped);
     }
     false
 }

@@ -39,16 +39,18 @@ def _bind_and_resume(proc: subprocess.Popen, request: dict, request_path: Path) 
     """Windows: bind the suspended completion child to the update's job, then resume it.
 
     Post-commit, refusing the child would fail a committed update, so a child the job refuses
-    runs unfenced (D2 ruling), never silently: the refusal is printed and recorded as a failed
-    ``update_custody`` step in this run's receipt and, before the child runs (it has not read
-    its request yet), in the receipt it resumes, so the terminal receipt carries it."""
+    still runs, fenced by its own checkout lease instead (R5b: it joins our lock holding a lease
+    byte, which keeps the checkout busy after a killed owner until the child exits). Never
+    silently: the refusal is printed and recorded as a failed ``update_custody`` step in this
+    run's receipt and, before the child runs (it has not read its request yet), in the receipt it
+    resumes, so the terminal receipt carries it."""
     from hermes_cli import update_receipt
     from hermes_cli.update_lock import bind_child_to_update_tree, resume_suspended_child
 
     refusal = bind_child_to_update_tree(proc)
     if refusal is not None:
         detail = (f"the update's job would not take the completion child ({refusal}), so it runs "
-                  "unfenced: a killed update would not stop it")
+                  "outside the job, holding its own checkout lease")
         print(f"  ⚠ Update completion: {detail}")
         update_receipt.record_step("update_custody", False, detail)
         current = update_receipt._current.get()

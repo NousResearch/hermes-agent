@@ -1297,6 +1297,43 @@ fn checkout_lock_path_follows_the_git_common_dir() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// R5b: a completion child the update's job refused joins the lock holding a lease byte past
+/// the owner's and may outlive it; a held lease alone must read as a held checkout.
+#[cfg(windows)]
+#[test]
+fn checkout_lock_held_sees_a_lease_without_its_owner() {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+    };
+    use windows_sys::Win32::System::IO::OVERLAPPED;
+
+    let dir = unique_tmp_dir("checkout-lease-held");
+    let install = dir.join("hermes-agent");
+    std::fs::create_dir_all(install.join(".git")).unwrap();
+    let lock = checkout_lock_path(&install);
+    let lease = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock)
+        .unwrap();
+    let ok = unsafe {
+        let mut overlapped: OVERLAPPED = std::mem::zeroed();
+        overlapped.Anonymous.Anonymous.Offset = WINDOWS_LOCK_OFFSET + LEASE_SLOTS;
+        let flags = LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY;
+        LockFileEx(lease.as_raw_handle(), flags, 0, 1, 0, &mut overlapped)
+    };
+    assert_ne!(ok, 0, "the test takes the last lease byte");
+    assert!(
+        checkout_lock_held(&install),
+        "a held lease read as a free checkout"
+    );
+    release_checkout_lock(lease, &install);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn checkout_lock_held_sees_another_open_file_holding_it() {
     let dir = unique_tmp_dir("checkout-lock-held");

@@ -73,6 +73,11 @@ UPDATE_EXIT_CONCURRENT = 2
 # msvcrt locks a byte range; lock one byte far past the holder record so other processes can
 # still read who holds it (a locked range is unreadable to them on Windows).
 _WINDOWS_LOCK_OFFSET = 1 << 20
+# R5b: the lease bytes just past it. A Windows process that joins its ancestor's lock (it cannot
+# inherit it) also locks one lease byte of its own: a completion child the job refused runs
+# outside the kill-on-close job and outlives a killed owner, and its lease keeps the checkout
+# busy until it exits. Takers and probes treat any held lease as a held lock.
+_LEASE_SLOTS = 16
 
 _FILETIME_UNIX_EPOCH = 116444736000000000
 
@@ -930,13 +935,12 @@ _JOBS: list = []
 
 def _try_lock(fd: int) -> bool:
     if sys.platform == "win32":
-        import msvcrt
-
-        os.lseek(fd, _WINDOWS_LOCK_OFFSET, os.SEEK_SET)
-        try:
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-        except OSError:
+        if not _lock_bytes(fd, _WINDOWS_LOCK_OFFSET):
             return False
+        if not _lock_bytes(fd, _WINDOWS_LOCK_OFFSET + 1, _LEASE_SLOTS):  # a dead owner's leased child
+            _unlock(fd)
+            return False
+        _unlock(fd, _WINDOWS_LOCK_OFFSET + 1, _LEASE_SLOTS)
         return True
     import fcntl
 
@@ -947,13 +951,34 @@ def _try_lock(fd: int) -> bool:
     return True
 
 
-def _unlock(fd: int) -> None:
+def _lock_bytes(fd: int, offset: int, count: int = 1) -> bool:
+    """Windows: lock ``count`` bytes at ``offset`` without waiting (fails if any is held)."""
+    import msvcrt
+
+    os.lseek(fd, offset, os.SEEK_SET)
+    try:
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, count)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock(fd: int, offset: int = _WINDOWS_LOCK_OFFSET, count: int = 1) -> None:
     if sys.platform == "win32":
         import msvcrt
 
         with suppress(OSError):
-            os.lseek(fd, _WINDOWS_LOCK_OFFSET, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            os.lseek(fd, offset, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, count)
+
+
+def _take_lease(fd: int) -> int | None:
+    """Windows: lock a free lease byte (R5b) on ``fd``; its offset, or None when all are held
+    (the tree's other joiners hold them: this one still runs inside their custody)."""
+    for offset in range(_WINDOWS_LOCK_OFFSET + 1, _WINDOWS_LOCK_OFFSET + 1 + _LEASE_SLOTS):
+        if _lock_bytes(fd, offset):
+            return offset
+    return None
 
 
 def _inherited_lock_fd(path: Path) -> int | None:
@@ -1032,12 +1057,21 @@ def _acquire_checkout(install_root: Path) -> UpdateHolder | None:
         return UpdateHolder(pid=0, age_seconds=0.0, reason=f"{path} is not writable ({writable})")
     try:
         if not _lock_with_contention_wait(fd, path):
-            os.close(fd)
             if _held_by_our_windows_ancestor(path):
                 # Windows has no fd inheritance: the update tree's children run in the lock
-                # owner's kill-on-close job (bind_child_to_update_tree) and die with it.
-                _HELD = {"path": str(path), "fd": None, "owned": False, "depth": 1}
-                return None
+                # owner's kill-on-close job (bind_child_to_update_tree) and die with it. One the
+                # job refused does not, so every joiner also holds a lease byte (R5b), taken
+                # while the owner is seen alive: it never covers a writer after a free lock.
+                lease = _take_lease(fd)
+                if _held_by_our_windows_ancestor(path):
+                    _HELD = {"path": str(path), "fd": None, "owned": False, "depth": 1,
+                             "lease": None if lease is None else (fd, lease)}
+                    if lease is None:
+                        os.close(fd)
+                    return None
+                if lease is not None:
+                    _unlock(fd, lease)
+            os.close(fd)
             return _lock_holder(path)
         if writable is True:
             record = f"{os.getpid()}\n{int(time.time())}\n{_identity_line()}\n".encode()
@@ -1090,6 +1124,11 @@ def _release_checkout() -> None:
     if _HELD["depth"] > 0:
         return
     held, _HELD = _HELD, None
+    if held.get("lease"):
+        lease_fd, offset = held["lease"]
+        _unlock(lease_fd, offset)
+        with suppress(OSError):
+            os.close(lease_fd)
     if held["owned"]:
         # Close, never LOCK_UN: flock belongs to the open file description, which completion
         # children share through pass_fds. A survivor keeps the checkout locked until it exits.
@@ -1135,7 +1174,8 @@ def bind_child_to_update_tree(proc: subprocess.Popen) -> OSError | None:
 
     POSIX children inherit the lock fd instead (:func:`checkout_lock_fds`). Returns ``None`` when
     bound, else the refusal (logged): the caller runs post-commit work, which must not fail over
-    a weaker lock, so it records the refusal and runs the child unfenced.
+    a weaker lock, so it records the refusal and runs the child, which joins the lock holding its
+    own lease byte (R5b): the checkout stays busy until it exits, even after the owner's death.
     """
     if sys.platform != "win32":
         return None

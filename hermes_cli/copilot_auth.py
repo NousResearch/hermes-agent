@@ -220,7 +220,10 @@ _JWT_REFRESH_MARGIN_SECONDS = 120  # refresh 2 min before expiry
 _TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
 _EDITOR_VERSION = "vscode/1.104.1"
 _EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
-
+# Empirically observed Copilot-backend version, captured from GitHub's own Copilot CLI.
+# This is NOT a GitHub REST API version: api.github.com may reject it while
+# api.githubcopilot.com uses it to report the current 1M model context ceiling.
+_COPILOT_API_VERSION = "2026-08-01"
 # Transient-failure hardening: gateway startup races network readiness, and a single-shot
 # exchange failing there silently degrades to the RAW GitHub token, whose integrator allowlist
 # omits enterprise-only models → HTTP 400 every turn until restart. Retry, and persist the last
@@ -505,6 +508,7 @@ def copilot_request_headers(
     headers: dict[str, str] = {"Editor-Version": _EDITOR_VERSION, "User-Agent": "HermesAgent/1.0",
                                "Copilot-Integration-Id": "vscode-chat",
                                "Openai-Intent": "conversation-edits",
+                               "X-GitHub-Api-Version": _COPILOT_API_VERSION,
                                "x-initiator": "agent" if is_agent_turn else "user"}
     if is_vision:
         headers["Copilot-Vision-Request"] = "true"

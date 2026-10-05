@@ -127,17 +127,16 @@ class TestRequestHeaders:
         assert "Editor-Version" in headers
 
 
-    def test_does_not_send_rest_api_version_to_copilot_backend(self):
-        """GitHub REST API versions are a different namespace from Copilot backend versions.
+    def test_sends_copilot_backend_api_version(self):
+        """Copilot's context-window ceiling is gated by its own empirically observed version.
 
-        Values accepted by api.github.com (including 2026-03-10) are rejected by
-        api.githubcopilot.com/chat/completions with HTTP 400 ``invalid apiVersion``. Keep the
-        REST-only header off Copilot model and chat requests unless GitHub documents a Copilot
-        backend version that is verified end-to-end against both endpoints.
+        A live capture of GitHub's Copilot CLI showed claude-opus-5.5 reporting 1M/1M with
+        2026-08-01 versus 200k/328k without it. This is a Copilot-backend version, not a GitHub
+        REST version: api.github.com rejecting it does not imply api.githubcopilot.com rejects it.
         """
         from hermes_cli.copilot_auth import copilot_request_headers
         headers = copilot_request_headers()
-        assert "X-GitHub-Api-Version" not in headers
+        assert headers["X-GitHub-Api-Version"] == "2026-08-01"
 
 
     def test_no_vision_header_by_default(self):
@@ -157,19 +156,18 @@ class TestCopilotDefaultHeaders:
             headers = copilot_default_headers(is_agent_turn=is_agent)
             assert headers["x-initiator"] == expected, (
                 f"is_agent_turn={is_agent} should produce x-initiator={expected!r}, "
-                f"got {headers['x-initiator']!r}"
-            )
+                f"got {headers['x-initiator']!r}")
 
 
-    def test_models_headers_do_not_send_rest_api_version(self):
-        """The /models catalog and chat requests share headers; neither Copilot endpoint accepts
-        GitHub REST API version values such as 2026-03-10."""
+    def test_models_headers_send_copilot_backend_api_version(self):
+        """The /models catalog shares the empirically verified Copilot backend version so its
+        reported max_prompt_tokens/context ceiling reaches 1M rather than the legacy limit."""
         from hermes_cli.models import copilot_default_headers
         headers = copilot_default_headers()
-        assert "X-GitHub-Api-Version" not in headers
+        assert headers["X-GitHub-Api-Version"] == "2026-08-01"
 
-    def test_fallback_headers_do_not_send_rest_api_version(self, monkeypatch):
-        """The models.py ImportError fallback must also omit the REST-only header."""
+    def test_fallback_headers_send_copilot_backend_api_version(self, monkeypatch):
+        """The models.py ImportError fallback must carry the same Copilot backend version."""
         import builtins
         real_import = builtins.__import__
 
@@ -182,7 +180,7 @@ class TestCopilotDefaultHeaders:
 
         from hermes_cli.models import copilot_default_headers
         headers = copilot_default_headers()
-        assert "X-GitHub-Api-Version" not in headers
+        assert headers["X-GitHub-Api-Version"] == "2026-08-01"
 
 
 class TestEnvVarOrder:

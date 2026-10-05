@@ -3380,8 +3380,12 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
     """Auto-coerce a ``hermes config set`` string to bool/None/int/float/list/dict.
     String-typed settings (per ``DEFAULT_CONFIG``) are preserved verbatim so enum members such as
     ``approvals.mode="off"`` never become booleans. List/mapping literals are parsed so
-    isinstance-gated readers see real structures; the trigger is conservative."""
-    if isinstance(_default_value_for_key(key), str):
+    isinstance-gated readers see real structures; the trigger is conservative.
+    Bare ``model`` is the exception: its string default is the model-id shorthand, so a structured
+    literal there is parsed for the section guard to gate instead of riding into model.default
+    as a bogus id (#131435)."""
+    if isinstance(_default_value_for_key(key), str) and not (
+            key.strip().lower() == "model" and _looks_structured_value(value)):
         return value
     stripped = value.strip()
     lower = stripped.lower()
@@ -3694,20 +3698,6 @@ def set_config_value(key: str, value: str, force: bool = False):
     config_path = get_config_path()
     user_config = require_readable_config_before_write(config_path)
     value = _coerce_config_set_value(key, value)
-    # ``model`` is seeded as a string in DEFAULT_CONFIG, so the generic coerce above leaves a
-    # mapping/list literal verbatim. Under bare ``model`` that text must not ride the shorthand
-    # into model.default as a bogus model id (#131435): parse it so the section guard below sees
-    # (and gates) the real shape.
-    if key.strip().lower() == "model" and isinstance(value, str) and _looks_structured_value(value):
-        try:
-            parsed = yaml.safe_load(value)
-        except yaml.YAMLError as exc:
-            detail = str(getattr(exc, "problem", None) or exc).splitlines()[0]
-            _exit_invalid(
-                f"✗ Value for 'model' looks like a list/mapping but is not valid YAML/JSON "
-                f"({detail}) — nothing was written.")
-        if isinstance(parsed, (dict, list)):
-            value = parsed
     # A scalar ``model`` shorthand must become a dict before writing sub-keys, or _set_nested
     # replaces it with an empty dict and the model id is lost.
     _model_val = user_config.get("model")

@@ -91,6 +91,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes_async, cache_image_from_bytes_async,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.helpers import MD_LINK_LABEL, unescape_md_link_label
 from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, env_float, env_int
@@ -118,11 +119,11 @@ _MARKDOWN_HINT_RE = re.compile(
     r"|(~~[^~\n].+?~~)"
     r"|(<u>.+?</u>)"
     r"|(\*[^*\n]+\*)"
-    r"|(\[[^\]]+\]\([^)]+\))"
+    r"|(\[" + MD_LINK_LABEL + r"\]\([^)]+\))"
     r"|(^>\s)",
     re.MULTILINE,
 )
-_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_MARKDOWN_LINK_RE = re.compile(r"\[(" + MD_LINK_LABEL + r")\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
@@ -416,7 +417,8 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     """Plain-text fallback: shared strip_markdown plus Feishu extras (blockquote, ~~, <u>, hr, CRLF)."""
     from gateway.platforms.helpers import strip_markdown
     plain = text.replace("\r\n", "\n")
-    plain = _MARKDOWN_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2).strip()})", plain)
+    plain = _MARKDOWN_LINK_RE.sub(
+        lambda m: f"{unescape_md_link_label(m.group(1))} ({m.group(2).strip()})", plain)
     plain = re.sub(r"^>\s?", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s*---+\s*$", "---", plain, flags=re.MULTILINE)
     plain = re.sub(r"~~([^~\n]+)~~", r"\1", plain)

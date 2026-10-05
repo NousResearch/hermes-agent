@@ -290,6 +290,11 @@ class TestFormatMessageLinks:
         # The ) in URL should be escaped
         assert "\\)" in result
 
+    def test_bracketed_label_becomes_link(self, adapter):
+        """``[[Fix] Title](url)`` and ``[\[16\]](url)`` are links whose visible label keeps the brackets."""
+        result = adapter.format_message("[[Fix] Harden tokens](https://e.com/1) and [\\[16\\]](https://e.com/2)")
+        assert result == "[\\[Fix\\] Harden tokens](https://e.com/1) and [\\[16\\]](https://e.com/2)"
+
 
 # =========================================================================
 # format_message - BUG: italic regex spans newlines

@@ -504,7 +504,15 @@ export function ChatBar({
   // composer for the whole hold — the commit is the same submitDraft the
   // keystroke would have called, just later.
   const sendPrefs = useStore($composerSendPrefs)
-  const sendGrace = useComposerSendGrace({ graceMs: sendPrefs.sendGraceMs, onCommit: submitDraft })
+
+  // `ownerKey` is the session whose draft a waiting send would commit: the
+  // composer stays mounted across a session swap, so the hook must know which
+  // one armed it and take the window back when that changes (see the hook).
+  const sendGrace = useComposerSendGrace({
+    graceMs: sendPrefs.sendGraceMs,
+    onCommit: submitDraft,
+    ownerKey: activeQueueSessionKey
+  })
 
   // Released before the timer fires = a tap, not a hold. Nothing to undo: the
   // break the press inserted is exactly what a tap was supposed to leave.
@@ -596,12 +604,16 @@ export function ChatBar({
 
   // A composer that unmounts mid-press must not fire a send into a dead tree —
   // and the idle deadline must not outlive the composer that armed it either.
+  // A session swap keeps this composer mounted but replaces `commitIdleSend`'s
+  // owner (the draft/queue it would submit), so the swap re-runs this cleanup
+  // too: a deadline armed for the old session is cancelled rather than left to
+  // submit the new one's draft.
   useEffect(
     () => () => {
       cancelEnterHold()
       cancelIdleSend()
     },
-    [cancelEnterHold, cancelIdleSend]
+    [activeQueueSessionKey, cancelEnterHold, cancelIdleSend]
   )
 
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
@@ -1710,6 +1722,14 @@ export function ChatBar({
         dir={textDirection}
         onBeforeInput={handleEditorBeforeInput}
         onBlur={() => {
+          // A press in flight belongs to the editor that started it: losing
+          // focus ends the gesture. Cancel the hold timer and drop whatever the
+          // release was deferred to run, so neither can fire after focus has
+          // moved — and a keyup delivered elsewhere cannot revive a stale pause
+          // or commit on a later Enter.
+          cancelEnterHold()
+          pendingPressRef.current = null
+
           // A composition never survives focus loss (Chromium commits the
           // preedit and fires compositionend on blur) — but if that event is
           // missed, the wedged flag would block the Send button's form-submit

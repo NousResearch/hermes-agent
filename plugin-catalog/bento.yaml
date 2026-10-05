@@ -1,0 +1,42 @@
+name: bento
+repo: https://github.com/shagghiesuperstar/hermes-plugin-bento
+sha: "f490ed02c0e377acc9112bf57192bacedbbcd9b1"
+description: >-
+  Bento (bentonow.com) email marketing: subscribers, tags, fields, events incl. $purchase, stats,
+  draft/scheduled broadcasts and transactional email, with dry-run + human-approval gates on every
+  send. Native Python plugin, no dependencies. Disclosure: sends real email and can trigger Bento
+  Flows; calls only app.bentonow.com with your keys from .env; no telemetry; no self-update;
+  the approval gate fails closed under cron/gateway only while approvals.cron_mode is not
+  "approve" (with cron_mode=approve, or YOLO, no human is asked; the token and hard guards
+  still apply). environment=staging does not block sends; only environment=disabled does.
+maintainer: shagghiesuperstar
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/shagghiesuperstar/hermes-plugin-bento#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - bento_subscriber_get
+    - bento_subscriber_upsert
+    - bento_subscriber_tag
+    - bento_subscriber_consent
+    - bento_tag_list
+    - bento_tag_create
+    - bento_field_list
+    - bento_field_create
+    - bento_event_track
+    - bento_purchase_track
+    - bento_broadcast_list
+    - bento_broadcast_create
+    - bento_broadcast_schedule
+    - bento_email_send
+    - bento_stats
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - BENTO_PUBLISHABLE_KEY
+    - BENTO_SECRET_KEY
+    - BENTO_SITE_UUID

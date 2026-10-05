@@ -1,6 +1,6 @@
 name: agora
 repo: https://github.com/yzy806806/agora
-sha: 7e7e27096f43c55c06052e240dffbd6e9fbcd6b2
+sha: c7c2056cbd9177b59a96f4d9038a1e875d1342df
 description: >-
   Self-driving multi-agent development team. Role-based workers (architect, developer,
   reviewer, tester, researcher, writer, devops) are each a real Hermes profile with its

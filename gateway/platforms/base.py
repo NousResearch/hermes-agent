@@ -161,6 +161,17 @@ def _reply_anchor_for_event(event) -> str | None:
         return override  # the turn was redirected onto another message (#115001)
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
+    # A forwarded Discord interaction has two identities: event.message_id is the unique
+    # inbound interaction (dedupe/persistence/ledger), while source.message_id is the attached
+    # Discord message that can actually be replied to/reacted to/pinned. Slash interactions have
+    # no attached message and therefore no reply anchor.
+    metadata = getattr(event, "metadata", None)
+    if (
+        platform == "discord"
+        and isinstance(metadata, dict)
+        and metadata.get("discord_interaction_id")
+    ):
+        return getattr(source, "message_id", None)
     thread_id = getattr(source, "thread_id", None)
     raw_message = getattr(event, "raw_message", None)
     if (platform == "slack" and isinstance(raw_message, dict)
@@ -3862,6 +3873,8 @@ class BasePlatformAdapter(ABC):
                 existing_pending = self._pending_messages.get(session_key)
                 if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
                     merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
+                    # The receipt describes retained work, not an admission attempt.
+                    event._gateway_accepted = True
                 return
         now = time.monotonic()
         if state is None:
@@ -3878,6 +3891,8 @@ class BasePlatformAdapter(ABC):
             if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
                 state.event.reply_to_message_id = str(latest_anchor)
             state.last_ts = now
+        # Both a new buffer and an existing-buffer merge retain this event.
+        event._gateway_accepted = True
         state.cancel_timer()
         delay = self._text_debounce_delay(session_key)
         state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))

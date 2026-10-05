@@ -34,6 +34,7 @@ class StubConnector:
         self.interrupts: List[Dict[str, Any]] = []
         self.follow_ups: List[Dict[str, Any]] = []
         self.follow_up_platforms: List[Optional[str]] = []
+        self.acked_buffer_ids: List[str] = []
         # The fronted (platform, bot_id) identity set (Phase 1.5). Mirrors the real
         # transport's _identities so RelayAdapter.fronts_platform resolves; a
         # single-identity default keeps existing tests' behaviour unchanged.
@@ -77,6 +78,9 @@ class StubConnector:
         bridge here so connector→gateway passthrough_forward frames route to it
         (Phase 5 §5.1)."""
         self._passthrough = handler
+
+    async def ack_inbound(self, buffer_id: str) -> None:
+        self.acked_buffer_ids.append(str(buffer_id))
 
     async def send_outbound(
         self, action: Dict[str, Any], *, platform: Optional[str] = None

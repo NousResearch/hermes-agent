@@ -327,13 +327,15 @@ def _discord_platform_notes(context: SessionContext) -> List[str]:
             lines.append(f"  - Thread: `{src.thread_id}` (use as `channel_id` for fetch_messages etc.)")
         else:
             lines.append(f"  - Channel: `{src.chat_id}`")
-        if src.message_id:
-            # The volatile per-turn message id must stay OUT of this cached block (it would bust the
-            # agent-cache signature every message); run.py injects it into the user message instead.
-            lines.append(
-                "  - Triggering message: provided per-turn in the incoming user message (use it as "
-                "`message_id` for reply/react/pin)"
-            )
+        # Message-target availability is a per-turn fact, not cached system-prompt identity.
+        # When a real Discord message is attached, the user turn carries its exact id. Slash
+        # interactions may have no target at all; tools must then avoid reply/react/pin operations
+        # that require a message id.
+        lines.append(
+            "  - Triggering message: when available, its id is provided per-turn in the incoming "
+            "user message (use it as `message_id` for reply/react/pin); some interactions, such "
+            "as slash commands, have no attached message target"
+        )
     else:
         lines = ["", (
             "**Platform notes:** You are running inside Discord. You do NOT have access to "

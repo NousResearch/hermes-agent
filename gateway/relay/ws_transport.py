@@ -197,7 +197,7 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         chat_id_alt=src.get("chat_id_alt"),
         scope_id=src.get("scope_id"),
         parent_chat_id=src.get("parent_chat_id"),
-        message_id=src.get("message_id"),
+        message_id=src.get("message_id") or raw.get("message_id"),
         # Multiplex mode: the connector stamps the target Hermes profile; None on
         # a single-profile gateway keeps the legacy ``agent:main`` namespace.
         profile=src.get("profile"),
@@ -629,6 +629,10 @@ class WebSocketRelayTransport:
         except Exception:  # noqa: BLE001 - best-effort; the reader still ends + arms reconnect
             logger.debug("relay go_dormant: ws.close() raised or timed out", exc_info=True)
         return acked
+
+    async def ack_inbound(self, buffer_id: str) -> None:
+        """Public RelayTransport ACK seam for handler-owned passthrough settlement."""
+        await self._send_inbound_ack(buffer_id)
 
     async def _send_inbound_ack(self, buffer_id: str) -> None:
         """Ack durable receipt of a replayed buffered inbound; the connector only

@@ -18,16 +18,16 @@ def test_plugin_skills_reach_tui_slash_menu_and_stack_per_profile(tmp_path, monk
     for label, home in homes.items():
         plugin = home / "plugins" / f"probe-{label}"
         plugin.mkdir(parents=True)
-        (plugin / "plugin.yaml").write_text(f"name: probe-{label}\nversion: 0.1.0\n")
+        (plugin / "plugin.yaml").write_text(f"name: probe-{label}\nversion: 0.1.0\n", encoding="utf-8")
         (plugin / "__init__.py").write_text(
             "from pathlib import Path\ndef register(ctx):\n"
             "    for name in ('guide', 'review'):\n"
-            "        ctx.register_skill(name, Path(__file__).parent / 'skills' / name / 'SKILL.md')\n")
+            "        ctx.register_skill(name, Path(__file__).parent / 'skills' / name / 'SKILL.md')\n", encoding="utf-8")
         for name in ("guide", "review"):
             md = plugin / "skills" / name / "SKILL.md"
             md.parent.mkdir(parents=True)
-            md.write_text(f"---\nname: {name}\ndescription: {label} {name}.\n---\n\n{label}-{name}-body\n")
-        (home / "config.yaml").write_text(f"plugins:\n  enabled: [probe-{label}]\n")
+            md.write_text(f"---\nname: {name}\ndescription: {label} {name}.\n---\n\n{label}-{name}-body\n", encoding="utf-8")
+        (home / "config.yaml").write_text(f"plugins:\n  enabled: [probe-{label}]\n", encoding="utf-8")
 
     monkeypatch.setenv("HERMES_HOME", str(homes["alpha"]))
     plugins._reset_plugin_managers_for_tests()

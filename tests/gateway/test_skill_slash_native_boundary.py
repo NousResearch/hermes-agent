@@ -13,21 +13,21 @@ def _make_plugin_skill(home: Path, plugin_name: str, skill: str, body: str) -> N
     plugin = home / "plugins" / plugin_name
     md = plugin / "skills" / skill / "SKILL.md"
     md.parent.mkdir(parents=True, exist_ok=True)
-    (plugin / "plugin.yaml").write_text(f"name: {plugin_name}\nversion: 0.1.0\n")
+    (plugin / "plugin.yaml").write_text(f"name: {plugin_name}\nversion: 0.1.0\n", encoding="utf-8")
     (plugin / "__init__.py").write_text(
         "from pathlib import Path\n"
         f"def register(ctx):\n"
-        f"    ctx.register_skill({skill!r}, Path(__file__).parent / 'skills' / {skill!r} / 'SKILL.md')\n"
+        f"    ctx.register_skill({skill!r}, Path(__file__).parent / 'skills' / {skill!r} / 'SKILL.md')\n", encoding="utf-8"
     )
-    md.write_text(f"---\nname: {skill}\ndescription: Guide\n---\n{body}\n")
-    (home / "config.yaml").write_text(f"plugins:\n  enabled: [{plugin_name}]\n")
+    md.write_text(f"---\nname: {skill}\ndescription: Guide\n---\n{body}\n", encoding="utf-8")
+    (home / "config.yaml").write_text(f"plugins:\n  enabled: [{plugin_name}]\n", encoding="utf-8")
 
 
 def _make_local_skill(tmp_path: Path, name: str, body: str) -> None:
     skills = tmp_path / "skills"
     skills.mkdir(parents=True, exist_ok=True)
     (skills / name).mkdir(exist_ok=True)
-    (skills / name / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {name}\n---\n{body}\n")
+    (skills / name / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {name}\n---\n{body}\n", encoding="utf-8")
 
 
 def _rewrite(event_text: str, tmp_path, monkeypatch, plugin_home):

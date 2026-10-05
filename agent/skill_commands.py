@@ -772,17 +772,12 @@ def split_stacked_skill_commands(rest: str, *, interactive: bool = False) -> tup
 
 
 def build_stacked_skill_invocation_message(
-    cmd_keys: list[str], user_instruction: str = "", task_id: str | None = None, *, table: Mapping[str, Any] | None = None,
+    cmd_keys: list[str], user_instruction: str = "", task_id: str | None = None,
 ) -> Optional[tuple[str, list[str], list[str]]]:
     """Build the user message for a stacked multi-skill slash invocation:
     ``(message, loaded_skill_names, missing_skill_names)``, or ``None`` when no skill loaded.
-
-    *table* overrides the default interactive lookup table; the messaging gateway
-    passes its filesystem-only map so a stacked token can never load a plugin
-    skill (they are interactive-only) and so the per-platform disabled filter
-    sees every loaded skill's real name.
-    """
-    commands = table if table is not None else get_interactive_skill_commands()
+    Keys come from ``split_stacked_skill_commands``; native callers only ever pass filesystem keys."""
+    commands = get_interactive_skill_commands()
     keys = [k for k in cmd_keys if k]
     loaded_names, missing, _disabled, skill_blocks = _load_skill_blocks(
         keys,

@@ -1212,10 +1212,7 @@ class GatewayInboundMixin:
             _plat = source.platform.value if source.platform else None
             user_instruction = event.get_command_args().strip()
             # Stacked slash-skill invocations: `/skill-a /skill-b do XYZ` loads every leading skill
-            # (up to 5), not just the first. Mirrors CLI. The native/messaging surface stays
-            # filesystem-only: plugin skills are interactive-only (CLI/TUI/desktop), so both the
-            # token scan and the loader run against this native map — a stacked `/plugin:skill`
-            # token resolves as unknown here instead of silently loading a plugin skill body.
+            # (up to 5), not just the first. Mirrors CLI. Native split: plugin skills are interactive-only.
             try:
                 from agent.skill_commands import (
                     build_stacked_skill_invocation_message as _build_stacked,
@@ -1230,8 +1227,6 @@ class GatewayInboundMixin:
                 # Per-platform disabled check: get_skill_commands() only applies the *global*
                 # disabled list at scan time (process-global cache across platforms), and
                 # split_stacked_skill_commands() only checks each extra token is a KNOWN skill.
-                # Keyed on the same native map the loader uses, so every stacked skill's real
-                # name is checked (a token that is not in the map is not a skill here).
                 from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
                 _plat_disabled = _get_plat_disabled(platform=_plat)
                 if _skill_name and _skill_name in _plat_disabled:
@@ -1245,7 +1240,7 @@ class GatewayInboundMixin:
                     return t("gateway.skills.stacked_disabled", names=", ".join(_disabled_extra), platform=_plat)
             if extra_keys and _build_stacked is not None:
                 stacked_result = _build_stacked(
-                    [cmd_key, *extra_keys], stacked_instruction, task_id=_quick_key, table=skill_cmds,
+                    [cmd_key, *extra_keys], stacked_instruction, task_id=_quick_key,
                 )
                 if not stacked_result:
                     return t("gateway.skills.stacked_load_failed", command=command)

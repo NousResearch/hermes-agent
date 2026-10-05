@@ -388,6 +388,7 @@ class GatewayInboundContextMixin:
         else:
             message_text = expanded_authored_text
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
+        # Keep image analysis after expansion so generated references cannot read local files.
         authored_images = ()
         if image_paths and context_snapshot is not None:
             from gateway.inbound_context import ImageEnrichment

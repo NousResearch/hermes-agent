@@ -412,13 +412,18 @@ def _cmd_remove(args):
 
 def _cmd_set_enabled(args, *, enabled: bool):
     name = _normalize_subscription_name(args.name)
-    subs = _load_subscriptions()
-    if name not in subs:
+
+    def set_enabled(subscriptions: dict[str, dict]) -> None:
+        if name not in subscriptions:
+            raise KeyError(name)
+        subscriptions[name]["enabled"] = enabled
+
+    try:
+        _mutate_subscriptions(set_enabled)
+    except KeyError:
         print(f"  No subscription named '{name}'.")
         print("  Note: Static routes from config.yaml must be edited in config.yaml.")
-        return
-    subs[name]["enabled"] = enabled
-    _save_subscriptions_unlocked(subs)
+        return 1
     print(f"  {'Enabled' if enabled else 'Disabled'} webhook subscription: {name}")
 
 

@@ -588,6 +588,28 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+_MANAGED_LAUNCHER_SENTINEL = "# hermes:managed-launcher"
+
+
+def _inline_source_is_managed_launcher(cased_tokens: list[str], flag_index: int) -> bool:
+    """True when the ``-c`` operand block is a Hermes *managed-launcher* bootstrap.
+
+    ``hermes_cli._launchers._launcher_script`` mints every store launcher as
+    ``exec <python> -I -c '<bootstrap>' "$@"``, so the live gateway's own command line is
+    ``python -I -c <bootstrap> gateway run``. Unlike the detached restart watcher that
+    ``command_line_runs_inline_source`` was written for (#107002), that inline source is THIS
+    process's real entrypoint, not a command it will spawn later — refusing it makes every store
+    deployment's gateway invisible to liveness (``live_gateway_pid_for_home`` -> None, so
+    ``hermes gateway list`` and the dashboard report "not running" while messages flow). New
+    launchers carry the sentinel; launchers minted before it are recognized by the two stable
+    prologue statements they were generated from.
+    """
+    source = " ".join(cased_tokens[flag_index + 1:])
+    if _MANAGED_LAUNCHER_SENTINEL in source:
+        return True
+    return "import hermes_bootstrap" in source and "from hermes_cli.main import main" in source
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -610,6 +632,17 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
     if command_line_runs_inline_source(cased_tokens):
+        flag_index = inline_source_flag_index(cased_tokens)
+        if flag_index is None or not _inline_source_is_managed_launcher(cased_tokens, flag_index):
+            return None
+        # Managed store launcher: here the inline source IS this process's own entrypoint, so the
+        # trailing argv is its identity, not a later spawn's. The source literal is not one token
+        # (the live cmdline joins argv with spaces and the bootstrap spans many), so peel ``-c``
+        # and try every suffix — the real argv starts at an unknown offset into the source body.
+        for i in range(flag_index + 2, len(cased_tokens)):
+            nested = _gateway_command_subcommand(" ".join(raw_tokens[i:]))
+            if nested is not None:
+                return nested
         return None
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.

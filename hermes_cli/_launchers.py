@@ -23,6 +23,15 @@ if __name__ == "__main__":
 from pm.environments import store_root
 
 
+# First line of every launcher script. ``gateway.status._gateway_command_subcommand`` recognizes a
+# live ``python -I -c <bootstrap> gateway run`` as a gateway by this marker (or the stable prologue
+# below, for launchers minted before it). Keep the literal in sync with
+# ``gateway.status._MANAGED_LAUNCHER_SENTINEL``; it is duplicated rather than imported because the
+# launcher must render before any installation dependencies (gateway.status pulls in ``utils``/
+# ``hermes_yaml``) are guaranteed importable.
+MANAGED_LAUNCHER_SENTINEL = "# hermes:managed-launcher"
+
+
 def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main",
                     code: str | None = None, python: str | Path | None = None,
                     home: str | Path | None = None) -> list[str]:
@@ -271,6 +280,7 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
     # Profile boot repairs shared launchers: their default must stay at the
     # install's dependency root, not whichever profile triggered publication.
     return (
+        f"{MANAGED_LAUNCHER_SENTINEL}\n"
         "import os, re, sys\n"
         "os.environ.pop('PYTHONHOME', None)\n"
         "os.environ.pop('PYTHONPATH', None)\n"

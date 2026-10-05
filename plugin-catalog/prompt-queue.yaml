@@ -1,29 +1,12 @@
-# Nous Hermes plugin catalog entry — prompt-queue
-#
-# OWNER-SUBMITTED (rule 5): the PR author (vectorforge22) owns the repo.
-# Exact-SHA pin (40-hex) at a commit that passed `hermes plugins validate`
-# locally (manifest, loadable desktop/plugin.js, security scan SAFE,
-# desktop surface inside the SDK). No self-updating code: the plugin is a
-# single static ESM file that never fetches, downloads, or replaces itself
-# (rule 3).
-#
-# To submit: fork NousResearch/hermes-agent, add this file as
-# `plugin-catalog/prompt-queue.yaml`, and open a PR with the description in
-# `PR-description.md`.
 name: prompt-queue
 repo: https://github.com/vectorforge22/prompt-queue
-sha: "da41ee7da408afd68e9e26aabb6f157b9fa24481"   # main, 2026-10-03 (v1.1.1, catalog review fixes)
-description: >-
-  Kanban-style prompt queue for the desktop: Play drains cards one at a
-  time, each into a new (or targeted, existing) sidebar session, gated on
-  the global model slot and background-review completion. Queue/Done/
-  Skipped/Failed tabs, resizable composer, per-card target picker, and a
-  trust-aware ::enqueue directive (ask-first by default).
+sha: "da41ee7da408afd68e9e26aabb6f157b9fa24481"
+description: "Kanban-style prompt queue for the desktop: Play drains cards one at a time, each into a new (or targeted, existing) sidebar session, gated on the global model slot and background-review completion. Queue/Done/ Skipped/Failed tabs, resizable composer, per-card target picker, and a trust-aware ::enqueue directive (ask-first by default). Disclosure — Desktop pane that runs queued prompts as full agent turns (all tools the session allows) in new or chosen existing sessions while Play is on; reads the last 1000 agent.log lines to detect background reviews; an opt-in Auto-add setting lets ::enqueue directives in a live assistant reply queue prompts that run without a click."
 maintainer: vectorforge22
 tier: community
 category: desktop
 requires_hermes: ">=0.21.5"
-version: "1.1.0"
+version: "1.1.1"
 docs_url: https://github.com/vectorforge22/prompt-queue
 platforms: []
 screenshots:

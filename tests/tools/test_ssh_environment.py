@@ -149,15 +149,15 @@ class TestControlSocketPath:
         """A realistic macOS $TMPDIR + IPv6 host must still produce a
         control socket path that fits once SSH appends its ControlMaster
         suffix (see issue #11840)."""
+        monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
         # Simulate the macOS $TMPDIR shape from the issue traceback —
         # 48 bytes, the typical length of ``/var/folders/XX/YYYYYYYYY/T``.
         fake_tmp = "/var/folders/2t/wbkw5yb158jc3zhswgl7tz9c0000gn/T"
         monkeypatch.setattr("tools.environments.ssh.tempfile.gettempdir",
                             lambda: fake_tmp)
         # The simulated path doesn't exist on the test host — skip the
-        # real mkdir so __init__ can proceed.
-        from pathlib import Path as _Path
-        monkeypatch.setattr(_Path, "mkdir", lambda *a, **k: None)
+        # real dir creation/ownership check so __init__ can proceed.
+        monkeypatch.setattr(ssh_env, "_ensure_owned_dir", lambda path: path)
 
         env = SSHEnvironment(
             host="9373:9b91:4480:558d:708e:e601:24e8:d8d0",

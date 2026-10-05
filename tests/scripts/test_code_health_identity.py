@@ -94,6 +94,12 @@ _LEGACY_SW = _LEGACY.replace("def legacy(x):\n", "def legacy(x):\n" + _SWALLOW.s
     ({"pkg/a.py": _LEGACY_SW + "\n\n" + _SWALLOW},
      {"pkg/a.py": _SWALLOW, "pkg/a_legacy.py": _LEGACY_SW.replace("return 7\n", "return 77\n")
       + "    try:\n        pass\n    except Exception:\n        pass\n"}, True),
+    # a swallow relocated within the moved function is new, as it is in place
+    ({"pkg/a.py": _LEGACY_SW + "\n\n" + _SWALLOW},
+     {"pkg/a.py": _SWALLOW, "pkg/a_legacy.py": _EDITED + "    try:\n        pass\n    except Exception:\n        pass\n"},
+     True),
+    ({"pkg/a.py": _LEGACY_SW + "\n\n" + _SWALLOW},
+     {"pkg/a.py": _EDITED + "    try:\n        pass\n    except Exception:\n        pass\n\n\n" + _SWALLOW}, True),
 ])
 def test_function_moved_and_edited_keeps_its_cap(tmp_path, capsys, extra_base, files, blocks):
     repo, base = _base(tmp_path, extra_base) if extra_base else _repo(tmp_path)

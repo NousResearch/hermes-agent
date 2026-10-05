@@ -25,11 +25,12 @@ the base file (compared without comments or whitespace, so dropping an allow com
 re-indenting is not new debt). An identical violation re-added on a new line is new, even in
 the same function as one that was removed.
 
-Splitting a file moves lines to ANOTHER file, where they cannot survive in place. A base
-occurrence whose line left its file may pay, once, for an identical occurrence (same rule, same
-code) that arrives in another file in the same diff: at module level (an import guard, a
-module constant), or inside the unit its unit was matched to. A copy is never a move: the
-origin line survives, so nothing departed.
+Splitting a file moves lines to ANOTHER file, where they cannot survive in place. Inside a
+unit matched across files and edited (pass 5), lines are compared with the origin unit's, as
+in an edit in place. At module level, a base occurrence whose line left its file pays, once,
+for an identical occurrence arriving in another file in the same diff, when its whole
+top-level statement moved unchanged (an import guard, a module constant). A copy is never a
+move: the origin line survives, so nothing departed.
 """
 
 from __future__ import annotations
@@ -58,15 +59,18 @@ def _base_name(qual: str) -> str:
     return _ORDINAL.sub("", qual)
 
 
-def _code(fm: FileMeasure, unit: Unit) -> tuple[str, ...] | None:
-    """The unit's code lines (comments and whitespace dropped), for similarity only."""
+def _span(unit: Unit) -> range | None:
     end = unit.end_line
     if end is None and "FUNC_LINES" in unit.metrics:
         # The measurer did not report the end: its own lines from its first line approximate it.
         end = unit.line + unit.metrics["FUNC_LINES"] - 1
-    if end is None:
-        return None
-    return tuple(code for n in range(unit.line, end + 1) if (code := fm.code_line(n)))
+    return None if end is None else range(unit.line, end + 1)
+
+
+def _code(fm: FileMeasure, unit: Unit) -> tuple[str, ...] | None:
+    """The unit's code lines (comments and whitespace dropped), for similarity only."""
+    span = _span(unit)
+    return None if span is None else tuple(code for n in span if (code := fm.code_line(n)))
 
 
 def _similarity(old: tuple[str, ...] | None, new: tuple[str, ...] | None) -> float | None:
@@ -302,52 +306,57 @@ def _module_statement(fm: FileMeasure, line: int) -> tuple[str, ...]:
 
 
 class _Departures:
-    """Base occurrences whose line left its own file, each spendable once by an identical
-    occurrence that arrives in ANOTHER file in the same diff: a split moves code, so a moved
-    module-level guard (or a moved unit's body) carries its existing hits along. A copy is
-    not a move (the origin line survives, so nothing departed), and a re-add in the same file
-    is not one either (that stays new, like any identical violation on a new line).
-
-    A module-level occurrence moves only with its whole top-level statement unchanged, so
-    dropping one `try: import a / except Exception: pass` never pays for a different guard
-    elsewhere. Inside a unit matched across files (same name, similar body) the line is enough:
-    only that unit's own departed occurrences can pay."""
+    """Module-level base occurrences whose line left its own file, each spendable once by an
+    identical occurrence arriving at module level in ANOTHER file in the same diff: a split
+    moves import guards and module constants. A copy is not a move (the origin line
+    survives, so nothing departed), and a re-add in the same file is not one either (that
+    stays new, like any identical violation on a new line). An occurrence moves only with its
+    whole top-level statement unchanged, so dropping one `try: import a / except Exception:
+    pass` never pays for a different guard elsewhere."""
 
     def __init__(self, base: dict[str, FileMeasure], survived: dict[str, set[int]]) -> None:
-        self.pool: Counter[tuple] = Counter()
-        self.module_paths: dict[tuple, list[str]] = defaultdict(list)
+        self.pool: Counter[tuple] = Counter()  # (path, rule, text, statement)
+        self.paths: dict[tuple, list[str]] = defaultdict(list)
         for bpath, bf in sorted(base.items()):
             alive = survived.get(bpath, set())
             for hit, lines in bf.hit_lines.items():
                 for line in lines:
-                    if line not in alive:
-                        self._depart(bpath, bf, hit, line)
+                    if hit.scope == MODULE_SCOPE and line not in alive:
+                        fingerprint = (hit.rule, hit.text, _module_statement(bf, line))
+                        self.pool[(bpath, *fingerprint)] += 1
+                        if bpath not in self.paths[fingerprint]:
+                            self.paths[fingerprint].append(bpath)
 
-    def _depart(self, bpath: str, bf: FileMeasure, hit: Hit, line: int) -> None:
+    def take(self, hit: Hit, hf: FileMeasure, line: int, own_base: str | None) -> str | None:
+        """Spend one departed occurrence for ``hit`` on ``line``; returns its base path."""
         if hit.scope != MODULE_SCOPE:
-            self.pool[(bpath, hit.scope, hit.rule, hit.text)] += 1
-            return
-        fingerprint = (hit.rule, hit.text, _module_statement(bf, line))
-        self.pool[(bpath, MODULE_SCOPE, *fingerprint)] += 1
-        if bpath not in self.module_paths[fingerprint]:
-            self.module_paths[fingerprint].append(bpath)
-
-    def take(self, hit: Hit, hf: FileMeasure, line: int, own_base: str | None,
-             origin: tuple[str, Unit] | None) -> tuple[str, str] | None:
-        """Spend one departed occurrence for ``hit`` on ``line``; returns its base (path, scope)."""
-        if origin is not None and origin[0] != own_base:  # a unit matched across files
-            keys = [(origin[0], origin[1].qualname, hit.rule, hit.text)]
-        elif hit.scope == MODULE_SCOPE and origin is None:
-            fingerprint = (hit.rule, hit.text, _module_statement(hf, line))
-            keys = [(path, MODULE_SCOPE, *fingerprint) for path in self.module_paths.get(fingerprint, [])
-                    if path != own_base]
-        else:
             return None
-        for key in keys:
-            if self.pool[key] > 0:
-                self.pool[key] -= 1
-                return key[0], key[1]
+        fingerprint = (hit.rule, hit.text, _module_statement(hf, line))
+        for bpath in self.paths.get(fingerprint, []):
+            if bpath != own_base and self.pool[(bpath, *fingerprint)] > 0:
+                self.pool[(bpath, *fingerprint)] -= 1
+                return bpath
         return None
+
+
+def _moved_unit_lines(base: dict[str, FileMeasure], head: dict[str, FileMeasure],
+                      base_of: dict[str, str | None], match: dict[Key, tuple[str, Unit]],
+                      same_body: set[Key]) -> dict[str, set[int]]:
+    """Head lines of a unit moved to another file AND edited that are unchanged lines of its
+    origin: its existing hits stay old there, exactly as in an edit in place."""
+    kept: dict[str, set[int]] = defaultdict(set)
+    for (hpath, qual), (opath, origin) in match.items():
+        hf, bf = head[hpath], base[opath]
+        if (hpath, qual) in same_body or opath == base_of.get(hpath, hpath) or not hf.hit_lines:
+            continue
+        new_span, old_span = _span(hf.units[qual]), _span(origin)
+        if new_span is None or old_span is None:
+            continue
+        old = [bf.code_line(n) for n in old_span]
+        new = [hf.code_line(n) for n in new_span]
+        for block in SequenceMatcher(None, old, new, autojunk=False).get_matching_blocks():
+            kept[hpath].update(new_span[block.b + i] for i in range(block.size))
+    return kept
 
 
 Split = dict[Hit, tuple[list[int], list[int]]]  # hit -> (old lines, new lines)
@@ -374,22 +383,22 @@ def _hit_findings(path: str, split: Split, credit: Counter[Hit]) -> list[Finding
     return findings
 
 
-def _spend_departures(head: dict[str, FileMeasure], splits: dict[str, Split], base_of: dict[str, str | None],
-                      match: dict[Key, tuple[str, Unit]], departures: _Departures,
+def _spend_departures(head: dict[str, FileMeasure], splits: dict[str, Split],
+                      base_of: dict[str, str | None], departures: _Departures,
                       owner_of: Callable[[str, str], tuple[str | None, str]],
                       owned: dict[str, Counter[Hit]]) -> None:
-    """New-looking occurrences that are moves pay with a departed occurrence, which then no
-    longer counts as credit where its origin went (one base occurrence pays once)."""
+    """New-looking module-level occurrences that are moves pay with a departed occurrence,
+    which then no longer counts as credit where its origin went (one base occurrence pays once)."""
     for path in sorted(splits):
         own_base = base_of.get(path, path)
         for hit, (old, fresh) in splits[path].items():
             remaining = []
             for line in fresh:
-                source = departures.take(hit, head[path], line, own_base, match.get((path, hit.scope)))
+                source = departures.take(hit, head[path], line, own_base)
                 if source is None:
                     remaining.append(line)
                     continue
-                hpath, scope = owner_of(*source)
+                hpath, scope = owner_of(source, MODULE_SCOPE)
                 spent = Hit(hit.rule, scope, hit.text)
                 if hpath is not None and owned[hpath][spent] > 0:
                     owned[hpath][spent] -= 1
@@ -404,6 +413,7 @@ def compare(base: dict[str, FileMeasure], head: dict[str, FileMeasure],
     match = matcher.run()
     owner_of = _owners(head_of, match)
     owned = _owned_base_hits(base, owner_of)
+    moved_kept = _moved_unit_lines(base, head, base_of, match, matcher.same_body)
     splits: dict[str, Split] = {}
     survived: dict[str, set[int]] = {}
     for path, hf in head.items():
@@ -412,8 +422,8 @@ def compare(base: dict[str, FileMeasure], head: dict[str, FileMeasure],
         if bpath:
             survived[bpath] = survived_lines
         unchanged = {qual for hpath, qual in matcher.same_body if hpath == path}
-        splits[path] = _split_hits(hf, kept, unchanged)
-    _spend_departures(head, splits, base_of, match, _Departures(base, survived), owner_of, owned)
+        splits[path] = _split_hits(hf, kept | moved_kept.get(path, set()), unchanged)
+    _spend_departures(head, splits, base_of, _Departures(base, survived), owner_of, owned)
     findings: list[Finding] = []
     for path in sorted(head):
         hf = head[path]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from gateway.platforms.event import MessageEvent
@@ -14,7 +15,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger("plugins.platforms.telegram.adapter")
 
 
+@dataclass
+class _TextBoundaryBuffer:
+    pending: dict[str, MessageEvent] = field(default_factory=dict)
+    tasks: dict[str, asyncio.Task] = field(default_factory=dict)
+
+
 class TelegramTextBatchingMixin:
+    def _text_boundary_buffer(self: TelegramAdapter) -> _TextBoundaryBuffer:
+        from gateway.platforms.base import _lazy_attr
+
+        return _lazy_attr(self, "_pending_text_boundary", _TextBoundaryBuffer)
+
     def _text_batch_key(self: TelegramAdapter, event: MessageEvent) -> str:
         """Session-scoped batching key; topic recovery first so DM-topic batches coalesce on the recovered lane."""
         self._apply_topic_recovery(event)
@@ -45,9 +57,15 @@ class TelegramTextBatchingMixin:
                 "[Telegram] Flushing text batch %s before incompatible reply context",
                 key,
             )
+            boundary = self._text_boundary_buffer()
+            boundary_key = str(id(existing))
+            boundary.pending[boundary_key] = existing
             task = asyncio.create_task(
-                self._flush_buffered({key: existing}, {}, key, 0, "text-boundary")
+                self._flush_buffered(
+                    boundary.pending, boundary.tasks, boundary_key, 0, "text-boundary"
+                )
             )
+            boundary.tasks[boundary_key] = task
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
             return None

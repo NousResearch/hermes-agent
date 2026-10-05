@@ -83,7 +83,6 @@ def _adapter() -> DiscordAdapter:
     a.platform = Platform.DISCORD
     a.config = SimpleNamespace(extra={})
     a.gateway_runner = None
-    a._semantic_thread_renames = {}
     return a
 
 

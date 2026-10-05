@@ -29,7 +29,14 @@ _CAPTURE_CALLS = {
     "_env_int",
     "_env_bool",
 }
-_SYNC_CONFIG_CALLS = {"load_config", "save_config", "read_raw_config", "load_config_readonly"}
+_SYNC_CONFIG_CALLS = {
+    "hermes_cli.config.load_config",
+    "hermes_cli.config.save_config",
+    "hermes_cli.config.read_raw_config",
+    "hermes_cli.config.load_config_readonly",
+    "hermes_cli.config_migrations.read_raw_config",
+    "hermes_cli.runtime_provider.load_config",
+}
 _SUBPROCESS_WAITS = {"run", "call", "check_call", "check_output"}
 # health: allow HX003 -- the detector's own pattern list
 _SHELL_IDENTITY = ("pgrep -f", "ps aux", "ps -ef", "ps -eo")
@@ -119,11 +126,11 @@ class _Binder(ast.NodeVisitor):
             self._import(alias.asname or top, alias.name if alias.asname else top)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        # A relative import keeps its module path minus the dots: rules match the leaf.
+        # Relative imports stay relative: they are not proof of one of the canonical APIs below.
         for alias in node.names:
             if alias.name != "*":
-                target = f"{node.module}.{alias.name}" if node.module else alias.name
-                self._import(alias.asname or alias.name, target)
+                leaf = f"{node.module}.{alias.name}" if node.module else alias.name
+                self._import(alias.asname or alias.name, "." * node.level + leaf)
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Load):
@@ -208,12 +215,14 @@ def canonical_tree(tree: ast.Module) -> ast.Module:
         def visit_Name(self, node: ast.Name) -> ast.AST:
             scope = binder.loads.get(id(node))
             target = scope.resolve(node.id) if scope else None
-            if target is None or target == node.id:
+            node._health_import = target
+            if target is None or target == node.id or target.startswith("."):
                 return node
             parts = target.split(".")
             expr: ast.expr = ast.Name(parts[0], ast.Load())
             for part in parts[1:]:
                 expr = ast.Attribute(expr, part, ast.Load())
+            expr._health_import = target
             return ast.copy_location(expr, node)
 
     return ast.fix_missing_locations(_Spell().visit(tree))
@@ -236,6 +245,17 @@ def _dotted(node: ast.AST) -> str:
 
 def _call_name(call: ast.Call) -> str:
     return _dotted(call.func)
+
+
+def _imported_name(node: ast.AST) -> str | None:
+    """Canonical import path for a proven import-bound receiver, else None."""
+    target = getattr(node, "_health_import", None)
+    if target is not None:
+        return target
+    if isinstance(node, ast.Attribute):
+        owner = _imported_name(node.value)
+        return f"{owner}.{node.attr}" if owner else None
+    return None
 
 
 def _str_arg(call: ast.Call, index: int = 0) -> str | None:
@@ -371,16 +391,32 @@ def argv_identity(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
                 yield node.lineno
 
 
+def _fallback_read(body: list[ast.stmt]) -> bool:
+    """Follow eager handler code and directly called local helpers, not unused deferred bodies."""
+    definitions = {stmt.name: stmt for stmt in body if isinstance(stmt, _FUNCS)}
+    pending: list[ast.AST] = list(body)
+    visited: set[int] = set()
+    while pending:
+        stmt = pending.pop()
+        if id(stmt) in visited:
+            continue
+        visited.add(id(stmt))
+        for node in _eager(stmt):
+            if _env_read_name(node):
+                return True
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                helper = definitions.get(node.func.id)
+                if helper is not None:
+                    pending.extend(helper.body)
+    return False
+
+
 def unscoped_secret_fallback(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ExceptHandler) or node.type is None:
-            continue
-        if "UnscopedSecretError" not in ast.unparse(node.type):
-            continue
-        for stmt in node.body:
-            if any(_env_read_name(inner) for inner in ast.walk(stmt)):
-                yield node.lineno
-                break
+        if (isinstance(node, ast.ExceptHandler) and node.type is not None
+                and "UnscopedSecretError" in ast.unparse(node.type)
+                and _fallback_read(node.body)):
+            yield node.lineno
 
 
 def _is_capture(node: ast.AST) -> bool:
@@ -750,21 +786,20 @@ def sync_config_in_async(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
             continue
         for stmt in func.body:
             for node in _eager(stmt):
-                if isinstance(node, ast.Call):
-                    if _call_name(node).rsplit(".", 1)[-1] in _SYNC_CONFIG_CALLS:
-                        yield node.lineno
+                if isinstance(node, ast.Call) and _imported_name(node.func) in _SYNC_CONFIG_CALLS:
+                    yield node.lineno
 
 
 def get_event_loop(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and _call_name(node) == "asyncio.get_event_loop":
+        if isinstance(node, ast.Call) and _imported_name(node.func) == "asyncio.get_event_loop":
             yield node.lineno
 
 
 def _is_exc_gather(node: ast.AST | None) -> bool:
     if isinstance(node, ast.Await):
         node = node.value
-    if not (isinstance(node, ast.Call) and _call_name(node) == "asyncio.gather"):
+    if not (isinstance(node, ast.Call) and _imported_name(node.func) == "asyncio.gather"):
         return False
     return any(kw.arg == "return_exceptions" and getattr(kw.value, "value", False) is True
                for kw in node.keywords)
@@ -783,8 +818,12 @@ def _from_results(node: ast.AST | None, results: set[str]) -> bool:
         return True
     if isinstance(node, ast.Name):
         return node.id in results
-    if isinstance(node, ast.Subscript):
+    if isinstance(node, (ast.Subscript, ast.NamedExpr)):
         return _from_results(node.value, results)
+    if isinstance(node, ast.IfExp):
+        return _from_results(node.body, results) or _from_results(node.orelse, results)
+    if isinstance(node, ast.BoolOp):
+        return any(_from_results(value, results) for value in node.values)
     if isinstance(node, ast.Call) and _call_name(node) in ("zip", "enumerate", "list", "reversed"):
         return any(_from_results(arg, results) for arg in node.args)
     return False
@@ -804,38 +843,175 @@ def _projected(target: ast.AST, iterable: ast.AST, results: set[str]) -> set[str
     return _names(target) if _from_results(iterable, results) else set()
 
 
-def _result_names(func: ast.AST) -> set[str]:
-    """Names bound to gather(return_exceptions=True) results in ``func``'s own body."""
-    results: set[str] = set()
-    nodes = [n for stmt in func.body for n in _eager(stmt)]
-    for _ in range(3):  # results -> loop vars -> unpacked loop vars
-        for node in nodes:
-            if isinstance(node, (ast.Assign, ast.AnnAssign)) and _from_results(node.value, results):
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                results |= set().union(*(_names(t) for t in targets))
-            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
-                results |= _projected(node.target, node.iter, results)
-    return results
+def _assigned_names(target: ast.AST) -> set[str]:
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return set().union(*(_assigned_names(item) for item in target.elts))
+    return set()
+
+
+def _assignment_results(target: ast.AST, value: ast.AST, incoming: set[str]) -> set[str]:
+    if (isinstance(target, (ast.Tuple, ast.List)) and isinstance(value, (ast.Tuple, ast.List))
+            and len(target.elts) == len(value.elts)):
+        return set().union(*(_assignment_results(t, v, incoming)
+                             for t, v in zip(target.elts, value.elts, strict=True)))
+    return _assigned_names(target) if _from_results(value, incoming) else set()
+
+
+class _ResultFlow(ast.NodeVisitor):
+    """Forward may-provenance for gather results; unconditional overwrites kill a binding."""
+
+    def __init__(self) -> None:
+        self.results: set[str] = set()
+        self.hits: set[int] = set()
+
+    def block(self, body: list[ast.stmt], incoming: set[str]) -> set[str]:
+        self.results = set(incoming)
+        for stmt in body:
+            self.visit(stmt)
+        return set(self.results)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        self.generic_visit(node)
+        if (_call_name(node) == "isinstance" and len(node.args) == 2
+                and _dotted(node.args[1]) == "Exception"
+                and _from_results(node.args[0], self.results)):
+            self.hits.add(node.lineno)
+
+    def assign(self, targets: list[ast.expr], value: ast.expr) -> None:
+        self.visit(value)
+        incoming = set(self.results)
+        for target in targets:
+            self.results.difference_update(_assigned_names(target))
+            self.results.update(_assignment_results(target, value, incoming))
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.assign(node.targets, node.value)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self.assign([node.target], node.value)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.assign([node.target], node.value)
+
+    def visit_Delete(self, node: ast.Delete) -> None:
+        for target in node.targets:
+            self.results.difference_update(_assigned_names(target))
+
+    def visit_If(self, node: ast.If) -> None:
+        self.visit(node.test)
+        incoming = set(self.results)
+        self.results = self.block(node.body, incoming) | self.block(node.orelse, incoming)
+
+    def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
+        self.visit(node.iter)
+        entry = set(self.results)
+        header = set(entry)
+        while True:
+            body_in = header - _assigned_names(node.target)
+            body_in.update(_projected(node.target, node.iter, header))
+            after = self.block(node.body, body_in)
+            joined = entry | after
+            if joined == header:
+                break
+            header = joined
+        self.results = after | self.block(node.orelse, joined)
+
+    visit_AsyncFor = visit_For
+
+    def visit_While(self, node: ast.While) -> None:
+        entry = set(self.results)
+        header = set(entry)
+        while True:
+            self.results = set(header)
+            self.visit(node.test)
+            after = self.block(node.body, self.results)
+            joined = entry | after
+            if joined == header:
+                break
+            header = joined
+        self.results = after | self.block(node.orelse, joined)
+
+    def visit_Try(self, node: ast.Try | ast.TryStar) -> None:
+        incoming = set(self.results)
+        possible = set(incoming)
+        for stmt in node.body:
+            self.visit(stmt)
+            possible.update(self.results)
+        successful = self.block(node.orelse, self.results)
+        joined = set(successful)
+        for handler in node.handlers:
+            handler_in = possible - ({handler.name} if handler.name else set())
+            joined.update(self.block(handler.body, handler_in))
+        self.results = self.block(node.finalbody, joined)
+
+    visit_TryStar = visit_Try
+
+    def visit_With(self, node: ast.With | ast.AsyncWith) -> None:
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars:
+                self.results.difference_update(_assigned_names(item.optional_vars))
+        self.results = self.block(node.body, self.results)
+
+    visit_AsyncWith = visit_With
+
+    def visit_Match(self, node: ast.Match) -> None:
+        self.visit(node.subject)
+        incoming = set(self.results)
+        joined = set(incoming)
+        for case in node.cases:
+            captures = {n.name for n in ast.walk(case.pattern)
+                        if isinstance(n, (ast.MatchAs, ast.MatchStar)) and n.name}
+            self.results = incoming - captures
+            if case.guard:
+                self.visit(case.guard)
+            joined.update(self.block(case.body, self.results))
+        self.results = joined
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for expr in _deferred_parts(node) or []:
+            self.visit(expr)
+        self.results.discard(node.name)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for expr in _deferred_parts(node) or []:
+            self.visit(expr)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        incoming = set(self.results)
+        self.generic_visit(node)
+        self.results = incoming - {node.name}
+
+    def visit_ListComp(self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp) -> None:
+        incoming = set(self.results)
+        for generator in node.generators:
+            self.visit(generator.iter)
+            projected = _projected(generator.target, generator.iter, self.results)
+            self.results.difference_update(_assigned_names(generator.target))
+            self.results.update(projected)
+            for condition in generator.ifs:
+                self.visit(condition)
+        if isinstance(node, ast.DictComp):
+            self.visit(node.key)
+            self.visit(node.value)
+        else:
+            self.visit(node.elt)
+        self.results = incoming
+
+    visit_SetComp = visit_DictComp = visit_GeneratorExp = visit_ListComp
 
 
 def gather_exception_check(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     for func in ast.walk(tree):
-        if not isinstance(func, _FUNCS):
-            continue
-        results = _result_names(func)
-        if not results:
-            continue
-        for stmt in func.body:
-            for node in _eager(stmt):
-                if (
-                    isinstance(node, ast.Call)
-                    and _call_name(node) == "isinstance"
-                    and len(node.args) == 2
-                    and _dotted(node.args[1]) == "Exception"
-                    and _from_results(node.args[0], results)
-                ):
-                    yield node.lineno
-
+        if isinstance(func, _FUNCS):
+            flow = _ResultFlow()
+            flow.block(func.body, set())
+            yield from sorted(flow.hits)
 
 def bool_of_env(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
     for node in ast.walk(tree):
@@ -881,7 +1057,7 @@ def _context_names(own: list[ast.AST]) -> set[str]:
     targets: set[int] = set()
     for node in own:
         if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call):
-            if _call_name(node.value) == _COPY_CONTEXT:
+            if _imported_name(node.value.func) == _COPY_CONTEXT:
                 names = [t for t in (node.targets if isinstance(node, ast.Assign) else [node.target])
                          if isinstance(t, ast.Name)]
                 copied.update(t.id for t in names)
@@ -891,25 +1067,58 @@ def _context_names(own: list[ast.AST]) -> set[str]:
     return copied - rebound
 
 
-def _runs_in_copied_context(call: ast.Call, contexts: set[str]) -> bool:
-    """``Thread(target=<ctx>.run, ...)`` with ``ctx`` a ``copy_context()``: the thread runs
-    in the caller's context, which is what ``spawn_context_thread`` does."""
+def _context_wrapper(node: ast.FunctionDef) -> bool:
+    """The local helper shape used by `spawn_context_thread`: copy once, forward through ctx.run."""
+    body = [stmt for stmt in node.body if not (isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str))]
+    params = [*node.args.posonlyargs, *node.args.args]
+    if len(body) != 2 or len(params) != 1 or node.decorator_list:
+        return False
+    copy, returned = body
+    if not (isinstance(copy, ast.Assign) and len(copy.targets) == 1
+            and isinstance(copy.targets[0], ast.Name) and isinstance(copy.value, ast.Call)
+            and _imported_name(copy.value.func) == _COPY_CONTEXT
+            and not copy.value.args and not copy.value.keywords
+            and copy.targets[0].id != params[0].arg
+            and isinstance(returned, ast.Return) and isinstance(returned.value, ast.Lambda)):
+        return False
+    deferred = returned.value
+    call = deferred.body
+    args = deferred.args
+    shadowed = {a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs,
+                               *([args.vararg] if args.vararg else []),
+                               *([args.kwarg] if args.kwarg else []))}
+    return (not shadowed.intersection({copy.targets[0].id, params[0].arg})
+            and isinstance(call, ast.Call) and _call_name(call) == f"{copy.targets[0].id}.run"
+            and bool(call.args) and isinstance(call.args[0], ast.Name)
+            and call.args[0].id == params[0].arg)
+
+
+def _runs_in_copied_context(call: ast.Call, contexts: set[str], wrappers: set[str]) -> bool:
     target = next((kw.value for kw in call.keywords if kw.arg == "target"),
                   call.args[1] if len(call.args) > 1 else None)
+    if isinstance(target, ast.Call) and len(target.args) == 1 and not target.keywords:
+        imported = _imported_name(target.func)
+        if imported == "agent.memory_provider.ctx_bound":
+            return True
+        if isinstance(target.func, ast.Name) and target.func.id in wrappers:
+            return True
     if not (isinstance(target, ast.Attribute) and target.attr == "run"):
         return False
     ctx = target.value
     if isinstance(ctx, ast.Call):
-        return _call_name(ctx) == _COPY_CONTEXT
+        return _imported_name(ctx.func) == _COPY_CONTEXT
     return isinstance(ctx, ast.Name) and ctx.id in contexts
 
 
 def raw_thread(tree: ast.Module, ctx: Ctx) -> Iterable[int]:
+    wrappers = {node.name for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef) and _context_wrapper(node)}
     for _, _, own in _scopes(tree):
         contexts = _context_names(own)
         for node in own:
-            if (isinstance(node, ast.Call) and _call_name(node) == "threading.Thread"
-                    and not _runs_in_copied_context(node, contexts)):
+            if (isinstance(node, ast.Call) and _imported_name(node.func) == "threading.Thread"
+                    and not _runs_in_copied_context(node, contexts, wrappers)):
                 yield node.lineno
 
 

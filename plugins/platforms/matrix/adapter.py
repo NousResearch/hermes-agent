@@ -413,6 +413,9 @@ def _resolve_max_message_length(config) -> int:
 from hermes_constants import get_hermes_dir as _get_hermes_dir
 
 _STARTUP_GRACE_SECONDS = 5  # ignore messages older than this many seconds before startup
+# A backfill grace-drop newer than this is likely a message that arrived while the gateway was
+# down (not an already-handled replay), so the post-sync summary escalates to WARNING (#133265).
+_BACKFILL_LOSS_WARN_SECONDS = 600
 
 _OUTBOUND_MENTION_RE = re.compile(r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)")
 
@@ -1933,6 +1936,10 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._dispatch_sync(sync_data)
         except Exception as exc:
             logger.warning("Matrix: %s: %s", "initial sync event dispatch error" if initial else "sync event dispatch error", exc)
+        if initial:
+            # After the replayed timeline has been dispatched: report startup-grace drops while
+            # the counts still reflect the initial sync (#133265).
+            self._report_backfill_drops()
         self._schedule_pending_invite_joins(sync_data)
         return nb
 
@@ -1998,6 +2005,11 @@ class MatrixAdapter(BasePlatformAdapter):
         self._late_grace_drops: int = 0
         self._late_grace_skew: float = 0.0
         self._clock_skew_warned: bool = False
+        # Backfill accounting (#133265): the startup grace drops initial-sync replays with no
+        # trace; count them so the post-sync report can make the loss observable.
+        self._backfill_drops: int = 0
+        self._backfill_oldest_ts: float = 0.0
+        self._backfill_newest_ts: float = 0.0
 
     def _note_late_grace_drop(self, event_ts: float) -> None:
         """Clock-skew heuristic for grace-check drops well after startup. A host clock set ahead of
@@ -2021,6 +2033,47 @@ class MatrixAdapter(BasePlatformAdapter):
                 "the startup grace filter to silently discard every incoming message. Run "
                 "`timedatectl set-ntp true` (or sync NTP) and restart the bot.", self._late_grace_drops, skew)
             self._clock_skew_warned = True
+
+    def _note_backfill_drop(self, event_ts: float) -> None:
+        """Account one startup-grace drop for the post-initial-sync report (#133265). The grace
+        filter exists to skip already-handled replays, but after more than _STARTUP_GRACE_SECONDS
+        of downtime it also swallows messages that arrived while the gateway was down — before
+        this, those drops left no log line at all."""
+        self._backfill_drops += 1
+        if not self._backfill_oldest_ts or event_ts < self._backfill_oldest_ts:
+            self._backfill_oldest_ts = event_ts
+        if event_ts > self._backfill_newest_ts:
+            self._backfill_newest_ts = event_ts
+
+    def _report_backfill_drops(self) -> None:
+        """Summarise startup-grace drops after the initial sync, then reset the accounting.
+        A newest drop within _BACKFILL_LOSS_WARN_SECONDS of startup means the replayed timeline
+        reached right up to startup — those events are likely messages sent during downtime,
+        which nobody answered, so they escalate to WARNING instead of INFO."""
+        if self._backfill_drops:
+            oldest = max(0.0, self._startup_ts - self._backfill_oldest_ts)
+            newest = max(0.0, self._startup_ts - self._backfill_newest_ts)
+            if newest <= _BACKFILL_LOSS_WARN_SECONDS:
+                logger.warning(
+                    "Matrix: startup grace dropped %d replayed event(s) (oldest ≈ %.0fs, newest ≈ %.0fs "
+                    "before startup). The newest drop is close to startup, so some may be messages that "
+                    "arrived while the gateway was offline — they were not processed and got no reply; "
+                    "ask senders to resend if a reply is missing.",
+                    self._backfill_drops,
+                    oldest,
+                    newest,
+                )
+            else:
+                logger.info(
+                    "Matrix: startup grace dropped %d replayed event(s) from before startup "
+                    "(oldest ≈ %.0fs, newest ≈ %.0fs).",
+                    self._backfill_drops,
+                    oldest,
+                    newest,
+                )
+        self._backfill_drops = 0
+        self._backfill_oldest_ts = 0.0
+        self._backfill_newest_ts = 0.0
 
     async def _on_room_message(self, event: Any) -> None:
         room_id = str(getattr(event, "room_id", ""))
@@ -2050,6 +2103,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # Startup grace: ignore old messages replayed by the initial sync.
         event_ts = _matrix_event_timestamp_seconds(event)
         if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
+            self._note_backfill_drop(event_ts)
             self._note_late_grace_drop(event_ts)
             return
         content = getattr(event, "content", None)

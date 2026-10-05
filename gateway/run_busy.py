@@ -367,7 +367,8 @@ class GatewayBusySessionMixin:
 
     # Metadata that must match for two pending events to merge into one slot.
     _SECURITY_METADATA_KEYS = (
-        "hermes_plugin_id", "hermes_plugin_injection", "gateway_session_key",
+        "hermes_plugin_id", "hermes_plugin_injection", "hermes_plugin_author",
+        "gateway_session_key",
         "gateway_session_id", "gateway_session_strict",
         "notification_category",
     )

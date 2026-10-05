@@ -602,6 +602,7 @@ class PluginContext:
     # manager's home, never the active profile's (#65593 constraint).
     def inject_message(
         self, content: str, role: str = "user", *, session_key: str | None = None,
+        author: dict | None = None,
     ) -> bool:
         """Inject a message into a CLI, Ink TUI/desktop, or messaging-gateway conversation.
 
@@ -610,6 +611,11 @@ class PluginContext:
         (the durable key, not the ephemeral UI session id). Non-CLI injection needs that
         ``session_key`` plus ``plugins.entries.<plugin_id>.allow_gateway_injection``.
         ``True`` means a host accepted the request, not that the turn completed.
+
+        The turn is attributed to this plugin, never to the human: injected text is usually an
+        instruction TO the agent, and a memory provider that treats user messages as facts about
+        the user would store it as one. A plugin that relays a real person's words (a chat
+        bridge, say) passes ``author={"id": ..., "name": ..., "is_bot": False}`` to say so.
         """
         cli = self._manager._cli_ref
         msg = content if role == "user" else f"[{role}] {content}"
@@ -629,10 +635,13 @@ class PluginContext:
         # session_key; a miss falls through so a co-resident messaging gateway
         # still receives its own keys. An exception fails closed — do not also
         # hand the same text to the gateway.
+        # ``author`` is only passed when the plugin named one, so a host registered
+        # against the older injector signature keeps working.
+        author_kwargs = {"author": author} if author else {}
         if self._manager.has_tui_message_injector:
             try:
                 if self._manager.inject_tui_message(
-                    session_key=session_key, content=msg, plugin_id=self.plugin_id,
+                    session_key=session_key, content=msg, plugin_id=self.plugin_id, **author_kwargs,
                 ):
                     return True
             except Exception:
@@ -644,7 +653,7 @@ class PluginContext:
             return False
         try:
             return bool(self._manager.inject_gateway_message(
-                session_key=session_key, content=msg, plugin_id=self.plugin_id,
+                session_key=session_key, content=msg, plugin_id=self.plugin_id, **author_kwargs,
             ))
         except Exception:
             logger.warning("inject_message: gateway scheduling failed for plugin %s", self.plugin_id,

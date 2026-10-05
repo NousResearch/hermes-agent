@@ -20,6 +20,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from agent.i18n import t
+from agent.turn_author import parse_turn_author
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
@@ -582,11 +583,21 @@ class GatewayInboundMixin:
     def _hm_merge_pending_for_source(
         self, source: SessionSource, _quick_key: str, event: "MessageEvent", *, merge_text: bool = False
     ) -> None:
-        """Merge *event* into the source adapter's pending slot (no-op without an adapter)."""
+        """Merge *event* into the source adapter's pending slot (no-op without an adapter).
+
+        An internal (plugin) event never merges into a human-held slot: the base adapter already
+        refuses that merge, and absorbing one here would append a plugin's words to a message the
+        human sent, then run the combined turn as the human — the plugin author is lost. Such an
+        event takes its own FIFO slot instead, so it runs as its own turn with its own author.
+        """
         from gateway.platforms.base import merge_pending_message_event
         adapter = self._delivery_adapter_for(source)
-        if adapter:
-            merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
+        if not adapter:
+            return
+        if event.internal:
+            self._enqueue_fifo(_quick_key, event, adapter)
+            return
+        merge_pending_message_event(adapter._pending_messages, _quick_key, event, merge_text=merge_text)
 
     async def _hm_busy_slash_or_photo(
         self, event: "MessageEvent", source: SessionSource, _quick_key: str
@@ -1820,7 +1831,7 @@ class GatewayInboundMixin:
         clear_published_gateway_message_host(self)
 
     def _schedule_plugin_message_injection(
-        self, *, session_key: str, content: str, plugin_id: str
+        self, *, session_key: str, content: str, plugin_id: str, author: dict | None = None
     ) -> bool:
         """Schedule a plugin-triggered turn on the live gateway loop (thread-safe)."""
         from gateway.run import safe_schedule_threadsafe
@@ -1829,7 +1840,7 @@ class GatewayInboundMixin:
             return False
 
         coro = self._dispatch_plugin_message_injection(
-            session_key=session_key, content=content, plugin_id=plugin_id,
+            session_key=session_key, content=content, plugin_id=plugin_id, author=author,
         )
         try:
             current_loop = asyncio.get_running_loop()
@@ -1870,7 +1881,7 @@ class GatewayInboundMixin:
         return True
 
     async def _dispatch_plugin_message_injection(
-        self, *, session_key: str, content: str, plugin_id: str
+        self, *, session_key: str, content: str, plugin_id: str, author: dict | None = None
     ) -> bool:
         """Route a plugin-triggered turn through the session's live adapter."""
         def _accepting() -> bool:
@@ -1903,11 +1914,14 @@ class GatewayInboundMixin:
         if adapter is None:
             return False
 
+        plugin_author = parse_turn_author(author)
         await adapter.handle_message(MessageEvent(
             text=content, message_type=MessageType.TEXT, source=source, internal=True,
             allow_gateway_control=False,
             metadata={
                 "hermes_plugin_id": plugin_id, "hermes_plugin_injection": True,
+                # A bridge plugin may name the human it relays; otherwise the turn stays the plugin's.
+                **({"hermes_plugin_author": plugin_author} if plugin_author else {}),
                 "gateway_session_key": session_key, "gateway_session_id": entry.session_id,
                 "gateway_session_strict": True,
             },

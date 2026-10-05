@@ -216,6 +216,30 @@ function durableRowIds(messages: ChatMessage[]): Set<number> {
   return new Set(messages.flatMap(message => (message.rowId === undefined ? [] : [message.rowId])))
 }
 
+function renderedMessageKey(message: ChatMessage): string {
+  return JSON.stringify({ role: message.role, parts: message.parts })
+}
+
+/**
+ * The live stream can retain a copy of a completed row without a durable id
+ * while hydration supplies the same row with one. Keep the persisted copy and
+ * drop only the id-less duplicate; two durable rows with identical content are
+ * legitimate repeated turns and must not be collapsed.
+ */
+export function removeLiveCopiesOfHydratedRows(messages: ChatMessage[]): ChatMessage[] {
+  const hydratedKeys = new Set(messages.filter(message => message.rowId !== undefined).map(renderedMessageKey))
+
+  return messages.filter(
+    message =>
+      message.rowId !== undefined ||
+      // Optimistic user rows were deliberately re-grafted immediately before
+      // this helper runs. Their rendered content may repeat an older durable
+      // prompt, but their `user-` id is distinct provenance, not a live copy.
+      (message.role === 'user' && message.id.startsWith('user-')) ||
+      !hydratedKeys.has(renderedMessageKey(message))
+  )
+}
+
 /** A text-only refresh can omit the live tool bubble after the turn settles. */
 function retainCompletedTurnTools(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
   const previousFinalIndex = previous.findLastIndex(

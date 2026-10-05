@@ -4,7 +4,8 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import {
   extendRefreshPageToOverlap,
   graftRefreshedTailOntoBackfill,
-  olderPageReader
+  olderPageReader,
+  removeLiveCopiesOfHydratedRows
 } from '@/app/chat/transcript-backfill'
 import { sessionCreatedThisRun } from '@/app/session/hooks/use-session-actions/created-this-run'
 import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
@@ -376,15 +377,17 @@ export async function reconcileTileTranscripts({
           // reconcileAuthoritativeChatMessages (use-session-actions/index.ts).
           // Trailing client-local system notices (fallback switch, #126422)
           // are re-grafted last: the stored page cannot carry them.
-          messages: preserveLocalSystemNotices(
-            preserveLocalAssistantErrors(
-              preserveLocalPendingTurnMessages(
-                graftRefreshedTailOntoBackfill(messages, state.messages),
+          messages: removeLiveCopiesOfHydratedRows(
+            preserveLocalSystemNotices(
+              preserveLocalAssistantErrors(
+                preserveLocalPendingTurnMessages(
+                  graftRefreshedTailOntoBackfill(messages, state.messages),
+                  state.messages
+                ),
                 state.messages
               ),
               state.messages
-            ),
-            state.messages
+            )
           )
         }),
         storedSessionId
@@ -466,15 +469,17 @@ export async function hydrateStoredSessionTranscript({
           ...state,
           // Keep backfilled pages, un-acked optimistic input, local errors, and
           // trailing client-local system notices (#126422).
-          messages: preserveLocalSystemNotices(
-            preserveLocalAssistantErrors(
-              preserveLocalPendingTurnMessages(
-                graftRefreshedTailOntoBackfill(messages, state.messages),
+          messages: removeLiveCopiesOfHydratedRows(
+            preserveLocalSystemNotices(
+              preserveLocalAssistantErrors(
+                preserveLocalPendingTurnMessages(
+                  graftRefreshedTailOntoBackfill(messages, state.messages),
+                  state.messages
+                ),
                 state.messages
               ),
               state.messages
-            ),
-            state.messages
+            )
           )
         }),
         storedSessionId

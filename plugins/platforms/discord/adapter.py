@@ -4733,8 +4733,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
             thread_id = str(interaction.channel_id)
         else:
             chat_type = "group"
-        # A slash turn re-pins the session-context prompt, so it names the chat exactly as a message
-        # there does; any other label re-renders the pinned prompt on every switch between the two.
+        # Named as a message here is: the pinned session-context prompt renders and keys on it.
         chat_name = ""
         if is_dm:
             chat_name = interaction.user.name
@@ -4802,8 +4801,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, BasePlatformAd
 
     async def _dispatch_thread_session(self, interaction: discord.Interaction, thread: Any, text: str) -> None:
         """Build a MessageEvent pointing at a thread and send it through handle_message."""
-        # Name, topic and parent come from the thread itself, as for a message posted in it: this
-        # turn opens the session and pins its context prompt, which the thread's messages then reuse.
+        # Name, topic and parent come from the thread, as for a message posted in it (same pinned prompt).
         thread_id = str(thread.id)
         _parent_id = self._get_parent_channel_id(thread) or ""
         source = self.build_source(

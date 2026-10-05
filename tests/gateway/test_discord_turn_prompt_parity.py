@@ -9,8 +9,11 @@ Voice rebuilds its source from a ``/voice join`` copy, so it must also see the p
 thread and the channel's current name and topic.
 """
 
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -23,18 +26,18 @@ from plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class _DM:
-    def __init__(self, channel_id):
+    def __init__(self, channel_id: int) -> None:
         self.id, self.name = channel_id, "dm"
 
 
 class _Text:
-    def __init__(self, channel_id, name="ops", topic="Incident triage"):
+    def __init__(self, channel_id: int, name: str = "ops", topic: str | None = "Incident triage") -> None:
         self.id, self.name, self.topic = channel_id, name, topic
         self.guild = SimpleNamespace(id=1, name="Hermes Server")
 
 
 class _Thread:
-    def __init__(self, channel_id, parent, name="incident-42"):
+    def __init__(self, channel_id: int, parent: _Text, name: str = "incident-42") -> None:
         self.id, self.name, self.parent, self.parent_id = channel_id, name, parent, parent.id
         self.guild, self.topic = parent.guild, None
 
@@ -42,7 +45,7 @@ class _Thread:
 _USER = SimpleNamespace(id=42, display_name="Alice", name="alice")
 
 
-def _adapter(monkeypatch, bound_id) -> DiscordAdapter:
+def _adapter(monkeypatch: pytest.MonkeyPatch, bound_id: int) -> DiscordAdapter:
     monkeypatch.setattr(discord_platform.discord, "DMChannel", _DM, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", _Thread, raising=False)
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
@@ -59,7 +62,7 @@ def _adapter(monkeypatch, bound_id) -> DiscordAdapter:
     return adapter
 
 
-async def _typed(adapter, channel):
+async def _typed(adapter: DiscordAdapter, channel: Any) -> Any:
     await adapter._handle_message(SimpleNamespace(
         id=123, content="what broke?", mentions=[], attachments=[], reference=None,
         created_at=datetime.now(timezone.utc), channel=channel, author=_USER,
@@ -67,7 +70,7 @@ async def _typed(adapter, channel):
     return adapter.handle_message.await_args.args[0]
 
 
-def _assert_same_prompt_inputs(typed, other):
+def _assert_same_prompt_inputs(typed: Any, other: Any) -> None:
     """typed -> other -> typed through the real pins leaves one context prompt and one channel prompt."""
     runner = object.__new__(gateway_run.GatewayRunner)
     config = GatewayConfig(platforms={Platform.DISCORD: PlatformConfig(enabled=True, token="x")})
@@ -82,11 +85,11 @@ def _assert_same_prompt_inputs(typed, other):
     assert other.auto_skill == typed.auto_skill == ["triage"]
 
 
-def _parent():
+def _parent() -> _Text:
     return _Text(700)
 
 
-def _interaction(channel):
+def _interaction(channel: Any) -> SimpleNamespace:
     return SimpleNamespace(
         channel=channel, channel_id=channel.id, guild=getattr(channel, "guild", None), guild_id=None,
         user=_USER, response=SimpleNamespace(defer=AsyncMock()), followup=SimpleNamespace(send=AsyncMock()),
@@ -96,7 +99,9 @@ def _interaction(channel):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tools", [False, True], ids=["no-discord-tools", "discord-tools"])
 @pytest.mark.parametrize("case", ["dm", "channel", "thread", "thread-starter"])
-async def test_slash_and_thread_starter_turns_match_a_message_turn(monkeypatch, case, tools):
+async def test_slash_and_thread_starter_turns_match_a_message_turn(
+    monkeypatch: pytest.MonkeyPatch, case: str, tools: bool,
+) -> None:
     # With Discord tools on, the pinned notes list IDs; a slash turn has no triggering message.
     monkeypatch.setattr("gateway.session._discord_tools_loaded", lambda: tools)
     parent = _parent()
@@ -116,7 +121,7 @@ async def test_slash_and_thread_starter_turns_match_a_message_turn(monkeypatch, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["channel", "thread-under-bound-parent", "renamed-after-join", "speaker-uncached"])
-async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch, case):
+async def test_voice_channel_turn_matches_a_typed_turn(monkeypatch: pytest.MonkeyPatch, case: str) -> None:
     parent = _parent()
     channel = _Thread(800, parent) if case == "thread-under-bound-parent" else parent
     adapter = _adapter(monkeypatch, parent.id)

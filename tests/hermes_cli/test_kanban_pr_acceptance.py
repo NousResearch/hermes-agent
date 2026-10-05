@@ -388,5 +388,3 @@ def test_billing_exception_policy_parsing():
     assert _billing_exception_repositories(
         {"github_actions_billing_exception": {"enabled": True,
          "repositories": ["freedge/repo", "bad/repo/extra", "good/repo"]}}) == {"freedge/repo", "good/repo"}
-
-

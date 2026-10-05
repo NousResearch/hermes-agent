@@ -994,6 +994,30 @@ class TestXaiToken:
         assert short in result
 
 
+class TestAirtableToken:
+    # Build the synthetic credential at runtime so repository push protection
+    # does not mistake the test fixture for a live Airtable PAT.
+    PAT = "patZx9Kq2mNvB7LcD" + "." + (
+        "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+        "0112233445566778899aabbccddeeff0"
+    )
+
+    def test_unstructured_prose_token_is_masked(self):
+        text = f"The failed request echoed {self.PAT} before retrying."
+
+        result = redact_sensitive_text(text, force=True)
+
+        assert self.PAT not in result
+        assert result.startswith("The failed request echoed patZx9...")
+        assert result.endswith(" before retrying.")
+
+    def test_near_misses_and_common_pat_words_are_unchanged(self):
+        prose = "patch the path pattern after it is patched"
+        assert redact_sensitive_text(prose, force=True) == prose
+
+        wrong_shape = "pat1234567890ABCD.abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOP_01234"
+        text = f"A response contained {wrong_shape} unexpectedly."
+        assert redact_sensitive_text(text, force=True) == text
 
 
 class TestDbConnstrCodeOutput:

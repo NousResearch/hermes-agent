@@ -431,7 +431,7 @@ class TestDeferredPlatformToolPreregistration:
         # The bookkeeping entry must not outlive the failed load attempt.
         assert "probeplat-platform" not in mgr._predeclared_tools
 
-    def test_failed_load_is_rearmed_and_heals_on_next_lookup(self, tmp_path, probe, clean_registry):
+    def test_failed_load_is_rearmed_and_heals_on_next_lookup(self, tmp_path, probe, clean_registry, monkeypatch):
         """A platform whose first deferred load raises (e.g. a load-deadline overrun under startup I/O) is
         re-armed by the reconnect watcher's hook, so the next lookup imports it again and the platform
         registers, without a forced re-discovery (#126356)."""
@@ -452,6 +452,10 @@ class TestDeferredPlatformToolPreregistration:
         mgr._register_deferred_platform(manifest)
         assert platform_registry.get("probeplat") is None
         assert platform_registry.get("probeplat") is None  # a failed load is never retried by a lookup
+        with monkeypatch.context() as m:  # a placeholder the user disabled is never imported by a re-arm
+            m.setattr("hermes_cli.plugins_discovery._get_disabled_plugins", lambda: {"probeplat-platform"})
+            mgr._gate_manifest(manifest, {"probeplat-platform"}, None)
+            assert mgr.rearm_failed_platform("probeplat") is False
 
         assert mgr.rearm_failed_platform("probeplat") is True
         assert platform_registry.get("probeplat") is not None

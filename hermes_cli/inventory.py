@@ -257,6 +257,7 @@ def _apply_limits(rows: list[dict]) -> None:
     """Attach ``limit`` to rows whose credential pool is rate-limited, so a picker can say why and until
     when instead of the row just looking broken. Only providers with a persisted pool are read (no
     seeding), and a pool that fails to load says nothing rather than failing the whole catalog."""
+    import logging
     from datetime import datetime, timezone
 
     from agent.credential_pool import load_pool
@@ -272,7 +273,8 @@ def _apply_limits(rows: list[dict]) -> None:
             continue
         try:
             state = load_pool(slug).limit_state(row.get("models") or [])
-        except Exception:
+        except Exception:  # an unreadable pool must not fail the whole catalog
+            logging.getLogger(__name__).debug("Pool limit read failed for %s", slug, exc_info=True)
             continue
         if state is None:
             continue

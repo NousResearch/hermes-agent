@@ -1010,12 +1010,7 @@ function ModelFamilyRow({
   const { name, tag } = modelDisplayParts(family.id)
   const decoration = useModelMenuRowDecoration({ label: name, model: family.id, provider: provider.slug })
   const caps = provider.capabilities?.[family.id]
-  // A limited provider stays pickable: the account-wide case dims every row
-  // (the group heading says why), the per-model case tags only the rows that
-  // are cooling down, so a sibling model reads as the way to keep working.
-  const accountLimited = accountResetMs(provider) !== null
-  const modelReset = modelResetMs(provider, family.id) ?? (family.fastId ? modelResetMs(provider, family.fastId) : null)
-  const modelResetLabel = modelReset === null ? null : formatReset(modelReset)
+  const limit = familyLimit(provider, family, isCurrent)
 
   // Live per-model $/Mtok pricing (Nous Portal and other providers that ship
   // it). A `-fast` sibling shares the base id's price: the collapsed row
@@ -1126,12 +1121,7 @@ function ModelFamilyRow({
             <Codicon name={favorite ? 'star-full' : 'star-empty'} size="0.75rem" />
           </button>
         </Tip>
-        <span
-          className={cn(
-            'flex min-w-0 flex-1 items-center gap-1.5',
-            (accountLimited || modelResetLabel) && !isCurrent && 'text-(--ui-text-tertiary)'
-          )}
-        >
+        <span className={cn('flex min-w-0 flex-1 items-center gap-1.5', limit.tone)}>
           {decoration.icon !== undefined ? <ModelMenuRowIcon icon={decoration.icon} /> : null}
           <span className="min-w-0 truncate">
             <HighlightMatches foldSeparators query={search} text={name} />
@@ -1143,13 +1133,7 @@ function ModelFamilyRow({
             </Badge>
           ) : null}
         </span>
-        {modelResetLabel ? (
-          <Tip label={copy.modelLimitedTip(modelResetLabel)}>
-            <Badge className="shrink-0 tabular-nums" size="xs" variant="warn">
-              {copy.modelResets(modelResetLabel)}
-            </Badge>
-          </Tip>
-        ) : null}
+        <ModelResetBadge time={limit.reset} />
         {loadProgress ? (
           <span className="flex shrink-0 items-center gap-1.5" title={copyPicker.loadingIntoMemory}>
             <span className="h-1 w-14 overflow-hidden rounded-full bg-(--ui-bg-tertiary)">
@@ -1220,6 +1204,35 @@ function ModelChip({ children, setting = false }: { children: ReactNode; setting
       {children}
     </Badge>
   )
+}
+
+/** A limited provider stays pickable: the account-wide case dims every row
+ *  (the group heading says why), the per-model case dims and tags only the
+ *  rows cooling down, so a sibling reads as the way to keep working. The
+ *  current row stays bright so the selection still reads. */
+function familyLimit(
+  provider: ModelOptionProvider,
+  family: ModelFamily,
+  isCurrent: boolean
+): { reset: null | string; tone?: string } {
+  const ms = modelResetMs(provider, family.id) ?? (family.fastId ? modelResetMs(provider, family.fastId) : null)
+  const reset = ms === null ? null : formatReset(ms)
+  const dim = !isCurrent && (reset !== null || accountResetMs(provider) !== null)
+
+  return { reset, tone: dim ? 'text-(--ui-text-tertiary)' : undefined }
+}
+
+function ModelResetBadge({ time }: { time: null | string }): null | ReactElement {
+  const { t } = useI18n()
+  const copy = t.shell.modelMenu
+
+  return time ? (
+    <Tip label={copy.modelLimitedTip(time)}>
+      <Badge className="shrink-0 tabular-nums" size="xs" variant="warn">
+        {copy.modelResets(time)}
+      </Badge>
+    </Tip>
+  ) : null
 }
 
 /** Trailing tag on a provider heading while its whole login is rate-limited.

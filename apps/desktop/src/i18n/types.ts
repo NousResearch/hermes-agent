@@ -8,6 +8,8 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
+import type { ModelMenuTranslations } from './types_model_menu'
+
 /** The locales compiled into the app (`TRANSLATIONS`). */
 export type BundledLocale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
 
@@ -3859,26 +3861,7 @@ export interface Translations {
     windowControls: string
     paneControls: string
     appControls: string
-    modelMenu: {
-      search: string
-      noModels: string
-      editModels: string
-      followDefault: string
-      refreshModels: string
-      favorites: string
-      addFavorite: string
-      removeFavorite: string
-      favoriteShortcut: string
-      fast: string
-      free: string
-      cacheRead: string
-      priceTitle: (input: string, output: string, cache: string) => string
-      limited: string
-      limitedUntil: (time: string) => string
-      limitedTip: (provider: string, time: null | string) => string
-      modelResets: (time: string) => string
-      modelLimitedTip: (time: string) => string
-    }
+    modelMenu: ModelMenuTranslations
     modelOptions: {
       noOptions: string
       options: string

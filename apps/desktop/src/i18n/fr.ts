@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale, type TranslationOverrides } from './define-locale'
+import { frModelMenu } from './fr_model_menu'
 import { introFr } from './intro-fr'
 
 export const frOverrides = {
@@ -5063,31 +5064,7 @@ export const frOverrides = {
     windowControls: 'Contrôles de fenêtre',
     paneControls: 'Contrôles de panneau',
     appControls: "Contrôles d'application",
-    modelMenu: {
-      search: 'Rechercher des modèles',
-      noModels: 'Aucun modèle trouvé',
-      editModels: 'Modifier les modèles…',
-      followDefault: 'Utiliser le modèle par défaut des Réglages',
-      refreshModels: 'Actualiser les modèles',
-      favorites: 'Favoris',
-      addFavorite: 'Ajouter aux favoris',
-      removeFavorite: 'Retirer des favoris',
-      favoriteShortcut: '⇧ Clic',
-      fast: 'Rapide',
-      free: 'gratuit',
-      cacheRead: 'lecture en cache',
-      priceTitle: (input: string, output: string, cache: string) =>
-        `Entrée ${input}/Mtok · Sortie ${output}/Mtok` + (cache ? ` · Lecture en cache ${cache}/Mtok` : ''),
-      limited: 'Limité',
-      limitedUntil: (time: string) => `Limité jusqu’à ${time}`,
-      limitedTip: (provider: string, time: null | string) =>
-        time
-          ? `${provider} a atteint sa limite d’utilisation. Elle se réinitialise à ${time} ; vous pouvez déjà choisir un modèle pour après.`
-          : `${provider} a atteint sa limite d’utilisation. Vous pouvez déjà choisir un modèle pour après sa réinitialisation.`,
-      modelResets: (time: string) => `de retour à ${time}`,
-      modelLimitedTip: (time: string) =>
-        `Ce modèle a atteint sa propre limite et revient à ${time}. Les autres modèles ici fonctionnent toujours.`
-    },
+    modelMenu: frModelMenu,
     modelOptions: {
       noOptions: 'Aucune option pour ce modèle',
       options: 'Options',

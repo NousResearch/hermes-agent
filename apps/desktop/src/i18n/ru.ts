@@ -1,6 +1,7 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
+import { ruModelMenu } from './ru_model_menu'
 
 // RU_PLURAL: (count, one, few, many) — русские формы сущ. падежа
 // RU_NOUN: (count, one, few, many) — формы род. множественного
@@ -3571,31 +3572,7 @@ export const ru = defineLocale({
     windowControls: 'Управление окном',
     paneControls: 'Управление панелями',
     appControls: 'Управление приложением',
-    modelMenu: {
-      search: 'Поиск моделей',
-      noModels: 'Модели не найдены',
-      editModels: 'Изменить модели…',
-      followDefault: 'Использовать модель по умолчанию из настроек',
-      refreshModels: 'Обновить модели',
-      favorites: 'Избранное',
-      addFavorite: 'Добавить в избранное',
-      removeFavorite: 'Убрать из избранного',
-      favoriteShortcut: '⇧ Клик',
-      fast: 'Быстрая',
-      free: 'бесплатно',
-      cacheRead: 'чтение из кэша',
-      priceTitle: (input: string, output: string, cache: string) =>
-        `Вход ${input}/Mtok · Выход ${output}/Mtok` + (cache ? ` · Чтение из кэша ${cache}/Mtok` : ''),
-      limited: 'Лимит',
-      limitedUntil: (time: string) => `Лимит до ${time}`,
-      limitedTip: (provider: string, time: null | string) =>
-        time
-          ? `${provider} исчерпал лимит использования. Он сбросится в ${time}; модель на потом можно выбрать уже сейчас.`
-          : `${provider} исчерпал лимит использования. Модель на время после сброса можно выбрать уже сейчас.`,
-      modelResets: (time: string) => `снова в ${time}`,
-      modelLimitedTip: (time: string) =>
-        `Эта модель исчерпала собственный лимит и вернётся в ${time}. Остальные модели здесь работают.`
-    },
+    modelMenu: ruModelMenu,
     modelOptions: {
       noOptions: 'Для этой модели нет опций',
       options: 'Опции',
